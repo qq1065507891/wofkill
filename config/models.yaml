@@ -121,3 +121,6 @@ players:
   p12:
     persona_id: adaptive_gamer
     llm_profile: balanced
+  judge:
+    persona_id: judge
+    llm_profile: pro_reasoner

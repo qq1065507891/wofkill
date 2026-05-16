@@ -44,6 +44,12 @@ from werewolf_agent.model_gateway.router import (
     MockProvider,
     UsageRecord,
 )
+from werewolf_agent.model_gateway.providers import (
+    AnthropicProvider,
+    GLMProvider,
+    OpenAIProvider,
+    create_provider_from_env,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +240,34 @@ class _JsonProvider:
                 provider=self.name, model=config.model,
             ),
         )
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHttpClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.calls.append({
+            "url": url,
+            "headers": headers or {},
+            "json": json or {},
+            "timeout": timeout,
+        })
+        return _FakeHttpResponse(self.payload)
 
 
 class TestPlayerAgentRetryFallback:
@@ -478,6 +512,72 @@ class TestModelRouter:
         assert "secret" not in config_str.lower()
         assert "bearer" not in config_str.lower()
         assert "password" not in config_str.lower()
+
+    def test_register_env_providers_registers_available_provider(self, monkeypatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+        router = ModelRouter.from_yaml(MODELS_YAML, register_env_providers=True)
+
+        assert "anthropic" in router.provider_names()
+
+    def test_create_provider_from_env_returns_none_without_key(self, monkeypatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        assert create_provider_from_env("anthropic") is None
+
+    def test_anthropic_provider_posts_messages_request(self) -> None:
+        client = _FakeHttpClient({
+            "content": [{"type": "text", "text": "hello"}],
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+        })
+        provider = AnthropicProvider(api_key="key", http_client=client)
+
+        result = provider.generate(
+            "Say hello",
+            ModelConfig(provider="anthropic", model="claude-test", max_tokens=20, temperature=0.2, top_p=0.8),
+            system_prompt="You are concise.",
+        )
+
+        assert result.text == "hello"
+        assert client.calls[0]["url"].endswith("/v1/messages")
+        assert client.calls[0]["headers"]["x-api-key"] == "key"
+        assert client.calls[0]["json"]["model"] == "claude-test"
+        assert client.calls[0]["json"]["system"] == "You are concise."
+        assert result.usage.prompt_tokens == 3
+        assert result.usage.completion_tokens == 1
+
+    def test_openai_provider_posts_chat_request(self) -> None:
+        client = _FakeHttpClient({
+            "choices": [{"message": {"content": "hello"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        })
+        provider = OpenAIProvider(api_key="key", http_client=client)
+
+        result = provider.generate(
+            "Say hello",
+            ModelConfig(provider="openai", model="gpt-test"),
+            system_prompt="You are concise.",
+        )
+
+        assert result.text == "hello"
+        assert client.calls[0]["url"].endswith("/v1/chat/completions")
+        assert client.calls[0]["headers"]["Authorization"] == "Bearer key"
+        assert client.calls[0]["json"]["messages"][0]["role"] == "system"
+
+    def test_glm_provider_posts_chat_request(self) -> None:
+        client = _FakeHttpClient({
+            "choices": [{"message": {"content": "hello"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        })
+        provider = GLMProvider(api_key="key", http_client=client)
+
+        result = provider.generate(
+            "Say hello",
+            ModelConfig(provider="glm", model="glm-test"),
+        )
+
+        assert result.text == "hello"
+        assert "bigmodel.cn" in client.calls[0]["url"]
+        assert client.calls[0]["headers"]["Authorization"] == "Bearer key"
 
 
 # ---------------------------------------------------------------------------

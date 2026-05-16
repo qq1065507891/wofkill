@@ -133,7 +133,12 @@ class ModelRouter:
         self._usage_log: list[UsageRecord] = []
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ModelRouter":
+    def from_yaml(
+        cls,
+        path: str | Path,
+        *,
+        register_env_providers: bool = False,
+    ) -> "ModelRouter":
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         model_profiles = data.get("model_profiles", {})
         llm_profiles = data.get("llm_profiles", {})
@@ -143,14 +148,30 @@ class ModelRouter:
             for pid, cfg in players.items()
             if "llm_profile" in cfg
         }
-        return cls(
+        router = cls(
             model_profiles=model_profiles,
             llm_profiles=llm_profiles,
             player_assignments=assignments,
         )
+        if register_env_providers:
+            router.register_env_providers()
+        return router
 
     def register_provider(self, provider: LLMProvider) -> None:
         self._providers[provider.name] = provider
+
+    def register_env_providers(self) -> None:
+        """Register configured providers that have API keys in env/.env."""
+        from werewolf_agent.model_gateway.providers import create_provider_from_env
+
+        provider_names = self._configured_provider_names()
+        for provider_name in provider_names:
+            provider = create_provider_from_env(provider_name)
+            if provider is not None:
+                self.register_provider(provider)
+
+    def provider_names(self) -> list[str]:
+        return list(self._providers.keys())
 
     def resolve_config(
         self, agent_id: str, task_type: str
@@ -274,6 +295,24 @@ class ModelRouter:
             top_p=model_profile.get("top_p", 0.9),
             timeout=model_profile.get("timeout", 10),
         )
+
+    def _configured_provider_names(self) -> set[str]:
+        providers: set[str] = {
+            str(cfg.get("provider", ""))
+            for cfg in self._model_profiles.values()
+            if cfg.get("provider")
+        }
+        for llm_profile in self._llm_profiles.values():
+            default_cfg = llm_profile.get("default", {})
+            if default_cfg.get("provider"):
+                providers.add(str(default_cfg["provider"]))
+            for task_cfg in llm_profile.get("tasks", {}).values():
+                if task_cfg.get("provider"):
+                    providers.add(str(task_cfg["provider"]))
+            fallback_cfg = llm_profile.get("fallback", {})
+            if fallback_cfg.get("provider"):
+                providers.add(str(fallback_cfg["provider"]))
+        return providers
 
     def get_usage_log(self) -> list[UsageRecord]:
         return list(self._usage_log)

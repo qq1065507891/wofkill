@@ -94,6 +94,72 @@ python -m pytest tests/api/test_api.py -q
 uvicorn werewolf_agent.api.app:create_app --factory --reload
 ```
 
+## 模型 Provider 与 API Key
+
+真实模型调用通过 `ModelRouter` 统一接入。`config/models.yaml` 只保存 provider、model、玩家和法官的路由配置，不保存密钥。
+
+本地复制 `.env.example` 为 `.env`，填写需要使用的 provider：
+
+```env
+ANTHROPIC_API_KEY=你的 Anthropic key
+GLM_API_KEY=你的 GLM / 智谱 key
+OPENAI_API_KEY=你的 OpenAI key
+```
+
+可选 base URL：
+
+```env
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+OPENAI_BASE_URL=https://api.openai.com
+```
+
+在代码里启用真实 provider：
+
+```python
+from werewolf_agent.model_gateway.router import ModelRouter
+
+router = ModelRouter.from_yaml(
+    "config/models.yaml",
+    register_env_providers=True,
+)
+```
+
+玩家模型在 `config/models.yaml` 的 `players` 中配置：
+
+```yaml
+players:
+  p01:
+    persona_id: logic_leader
+    llm_profile: pro_reasoner
+  p02:
+    persona_id: aggressive_bluffer
+    llm_profile: local_wolf
+```
+
+法官也使用同一个模型路由，当前已配置为虚拟 agent：
+
+```yaml
+players:
+  judge:
+    persona_id: judge
+    llm_profile: pro_reasoner
+```
+
+使用法官时传入同一个 router：
+
+```python
+from werewolf_agent.agents.judge import JudgeAgent
+
+judge = JudgeAgent(model_router=router)
+```
+
+当前内置 provider：
+
+- `anthropic`: Anthropic Messages API，读取 `ANTHROPIC_API_KEY`
+- `glm`: OpenAI-compatible Chat Completions，读取 `GLM_API_KEY`
+- `openai`: OpenAI Chat Completions，读取 `OPENAI_API_KEY`
+
 ## Git
 
 本仓库忽略 Python 缓存、pytest 缓存、虚拟环境、本地 `.env` 和覆盖率输出。不要提交本地密钥、供应商 API key 或机器相关路径。
