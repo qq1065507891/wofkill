@@ -1,0 +1,337 @@
+# V1 persona profiles: 12 anonymous jingcheng-style prototypes.
+# These drive persona routing, NOT rule adjudication.
+
+personality_dimensions:
+  - personality
+  - speech_style
+  - risk_tolerance
+  - deception_skill
+  - logic_skill
+  - leadership
+  - emotion_control
+  - learning_rate
+
+persona_profiles:
+  logic_leader:
+    display_name: 强逻辑归票型
+    base:
+      personality: analytical_leader
+      speech_style: structured_logical
+      risk_tolerance: 0.45
+      deception_skill: 0.30
+      logic_skill: 0.92
+      leadership: 0.88
+      emotion_control: 0.80
+      learning_rate: 0.65
+    task_styles:
+      speech: structured_reasoning
+      vote: decisive_reasoned
+      night_action: methodical
+      deception: low_deception
+      sheriff_speech: authority_claim
+      defense_speech: logical_rebuttal
+      last_words: concise_summary
+      reflection: data_driven_review
+    dynamic_policy:
+      when_suspected:
+        aggression_delta: 0.05
+        speech_length_delta: 0.1
+      when_teammate_exiled:
+        risk_tolerance_delta: -0.10
+      when_trusted_by_good_players:
+        leadership_delta: 0.05
+
+  aggressive_bluffer:
+    display_name: 压迫式发言型
+    base:
+      personality: dominant_pressurer
+      speech_style: aggressive_short
+      risk_tolerance: 0.82
+      deception_skill: 0.78
+      logic_skill: 0.62
+      leadership: 0.55
+      emotion_control: 0.40
+      learning_rate: 0.50
+    task_styles:
+      speech: pressure_attack
+      vote: aggressive_push
+      night_action: bold_strike
+      deception: high_pressure_push
+      sheriff_speech: forceful_claim
+      defense_speech: counterattack
+      last_words: emotional_counterpush
+      reflection: blunt_self_review
+    dynamic_policy:
+      when_suspected:
+        aggression_delta: 0.20
+        speech_length_delta: 0.15
+      when_teammate_exiled:
+        risk_tolerance_delta: -0.15
+      when_trusted_by_good_players:
+        deception_skill_delta: 0.10
+
+  steady_sider:
+    display_name: 稳健站边型
+    base:
+      personality: cautious_observer
+      speech_style: moderate_calm
+      risk_tolerance: 0.35
+      deception_skill: 0.25
+      logic_skill: 0.80
+      leadership: 0.50
+      emotion_control: 0.85
+      learning_rate: 0.70
+    task_styles:
+      speech: balanced_analysis
+      vote: consensus_follower
+      night_action: safe_choice
+      deception: minimal_deception
+      sheriff_speech: steady_platform
+      defense_speech: calm_explanation
+      last_words: measured_farewell
+      reflection: systematic_improvement
+    dynamic_policy:
+      when_suspected:
+        aggression_delta: 0.03
+        speech_length_delta: 0.05
+      when_teammate_exiled:
+        risk_tolerance_delta: -0.05
+
+  bold_pretender:
+    display_name: 悍跳进攻型
+    base:
+      personality: bold_deceiver
+      speech_style: confident_fake_claim
+      risk_tolerance: 0.90
+      deception_skill: 0.91
+      logic_skill: 0.55
+      leadership: 0.60
+      emotion_control: 0.50
+      learning_rate: 0.45
+    task_styles:
+      speech: fake_authority
+      vote: manipulative_push
+      night_action: coordinated_deception
+      deception: full_fake_seer
+      sheriff_speech: seer_claim_aggressive
+      defense_speech: redirect_blame
+      last_words: defiant_exit
+      reflection: deception_analysis
+    dynamic_policy:
+      when_suspected:
+        aggression_delta: 0.15
+        deception_skill_delta: 0.10
+      when_teammate_exiled:
+        risk_tolerance_delta: 0.10
+      when_trusted_by_good_players:
+        deception_skill_delta: 0.15
+
+  deep_hooker:
+    display_name: 倒钩潜伏型
+    base:
+      personality: patient_infiltrator
+      speech_style: subtle_helpful
+      risk_tolerance: 0.55
+      deception_skill: 0.85
+      logic_skill: 0.75
+      leadership: 0.40
+      emotion_control: 0.90
+      learning_rate: 0.60
+    task_styles:
+      speech: helpful_analysis
+      vote: appears_good_then_flips
+      night_action: strategic_target
+      deception: deep_hook
+      sheriff_speech: supportive_ally
+      defense_speech: victim_posture
+      last_words: misleading_hint
+      reflection: hook_success_analysis
+    dynamic_policy:
+      when_suspected:
+        risk_tolerance_delta: -0.20
+        speech_length_delta: 0.1
+      when_teammate_exiled:
+        deception_skill_delta: 0.05
+      when_trusted_by_good_players:
+        deception_skill_delta: 0.08
+
+  emotional_catalyst:
+    display_name: 情绪感染型
+    base:
+      personality: expressive_convincer
+      speech_style: emotional_vivid
+      risk_tolerance: 0.60
+      deception_skill: 0.55
+      logic_skill: 0.50
+      leadership: 0.65
+      emotion_control: 0.35
+      learning_rate: 0.55
+    task_styles:
+      speech: emotional_appeal
+      vote: gut_feeling
+      night_action: impulse_driven
+      deception: emotional_manipulation
+      sheriff_speech: passionate_plea
+      defense_speech: hurt_innocent
+      last_words: heartfelt_goodbye
+      reflection: feeling_based_review
+    dynamic_policy:
+      when_suspected:
+        emotion_control_delta: -0.15
+        speech_length_delta: 0.25
+      when_teammate_exiled:
+        emotion_control_delta: -0.20
+
+  chaos_joker:
+    display_name: 娱乐搅局型
+    base:
+      personality: unpredictable_joker
+      speech_style: humorous_distracting
+      risk_tolerance: 0.75
+      deception_skill: 0.60
+      logic_skill: 0.45
+      leadership: 0.30
+      emotion_control: 0.55
+      learning_rate: 0.40
+    task_styles:
+      speech: chaos_and_jokes
+      vote: random_leaning
+      night_action: unpredictable
+      deception: comedic_misdirection
+      sheriff_speech: joke_platform
+      defense_speech: deflection
+      last_words: witty_exit
+      reflection: casual_notes
+    dynamic_policy:
+      when_suspected:
+        risk_tolerance_delta: 0.10
+        speech_length_delta: 0.15
+
+  review_learner:
+    display_name: 复盘学习型
+    base:
+      personality: analytical_improver
+      speech_style: evidence_based
+      risk_tolerance: 0.40
+      deception_skill: 0.35
+      logic_skill: 0.78
+      leadership: 0.45
+      emotion_control: 0.70
+      learning_rate: 0.90
+    task_styles:
+      speech: evidence_chain
+      vote: pattern_matched
+      night_action: learned_strategy
+      deception: low_deception
+      sheriff_speech: data_driven_claim
+      defense_speech: evidence_rebuttal
+      last_words: lesson_summary
+      reflection: deep_learning_review
+    dynamic_policy:
+      when_suspected:
+        learning_rate_delta: 0.10
+        logic_skill_delta: 0.05
+
+  quiet_observer:
+    display_name: 低调观察型
+    base:
+      personality: silent_watcher
+      speech_style: brief_pointed
+      risk_tolerance: 0.30
+      deception_skill: 0.20
+      logic_skill: 0.70
+      leadership: 0.25
+      emotion_control: 0.85
+      learning_rate: 0.60
+    task_styles:
+      speech: short_observation
+      vote: quiet_follow
+      night_action: minimal_risk
+      deception: low_deception
+      sheriff_speech: brief_statement
+      defense_speech: short_denial
+      last_words: brief_farewell
+      reflection: observation_notes
+    dynamic_policy:
+      when_suspected:
+        speech_length_delta: 0.15
+        aggression_delta: 0.10
+
+  burst_visionary:
+    display_name: 视角爆发型
+    base:
+      personality: intermittent_genius
+      speech_style: mostly_quiet_then_explosive
+      risk_tolerance: 0.65
+      deception_skill: 0.50
+      logic_skill: 0.72
+      leadership: 0.55
+      emotion_control: 0.60
+      learning_rate: 0.55
+    task_styles:
+      speech: occasional_breakthrough
+      vote: decisive_when_certain
+      night_action: opportunistic
+      deception: selective_deception
+      sheriff_speech: sudden_insight
+      defense_speech: revelation_defense
+      last_words: key_revelation
+      reflection: breakthrough_analysis
+    dynamic_policy:
+      when_suspected:
+        aggression_delta: 0.20
+        logic_skill_delta: 0.10
+
+  structure_analyst:
+    display_name: 盘坑结构型
+    base:
+      personality: systematic_counter
+      speech_style: structured_slotting
+      risk_tolerance: 0.45
+      deception_skill: 0.40
+      logic_skill: 0.88
+      leadership: 0.60
+      emotion_control: 0.75
+      learning_rate: 0.65
+    task_styles:
+      speech: slot_analysis
+      vote: logic_driven
+      night_action: pattern_based
+      deception: structural_deception
+      sheriff_speech: position_claim
+      defense_speech: logical_breakdown
+      last_words: structural_summary
+      reflection: framework_improvement
+    dynamic_policy:
+      when_suspected:
+        logic_skill_delta: 0.05
+        aggression_delta: 0.08
+
+  adaptive_gamer:
+    display_name: 临场博弈型
+    base:
+      personality: flexible_strategist
+      speech_style: adaptive_varied
+      risk_tolerance: 0.60
+      deception_skill: 0.65
+      logic_skill: 0.70
+      leadership: 0.50
+      emotion_control: 0.65
+      learning_rate: 0.75
+    task_styles:
+      speech: context_adaptive
+      vote: situation_dependent
+      night_action: adaptive
+      deception: situational_deception
+      sheriff_speech: adaptive_claim
+      defense_speech: context_defense
+      last_words: adaptive_farewell
+      reflection: adaptive_learning
+    dynamic_policy:
+      when_suspected:
+        risk_tolerance_delta: 0.10
+        deception_skill_delta: 0.08
+      when_teammate_exiled:
+        learning_rate_delta: 0.10
+      when_trusted_by_good_players:
+        leadership_delta: 0.05

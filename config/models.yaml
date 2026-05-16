@@ -1,0 +1,123 @@
+# V1 model profiles: per-player LLM routing configuration.
+# Provider/model names are logical profiles resolved by ModelRouter.
+# No hardcoded API keys or credentials here.
+
+model_profiles:
+  strong_reasoner:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    temperature: 0.3
+    max_tokens: 1024
+    top_p: 0.9
+    timeout: 30
+
+  deep_reflection:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    temperature: 0.4
+    max_tokens: 2048
+    top_p: 0.9
+    timeout: 60
+
+  fast_deception:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    temperature: 0.7
+    max_tokens: 1024
+    top_p: 0.95
+    timeout: 20
+
+  local_fast:
+    provider: glm
+    model: glm-5.1
+    temperature: 0.5
+    max_tokens: 512
+    top_p: 0.9
+    timeout: 15
+
+  low_cost_fallback:
+    provider: glm
+    model: glm-5.1
+    temperature: 0.3
+    max_tokens: 256
+    top_p: 0.9
+    timeout: 10
+
+llm_profiles:
+  pro_reasoner:
+    default:
+      provider: anthropic
+      model_profile: strong_reasoner
+    tasks:
+      reflection:
+        provider: anthropic
+        model_profile: deep_reflection
+      speech:
+        provider: anthropic
+        model_profile: strong_reasoner
+
+  local_wolf:
+    default:
+      provider: glm
+      model_profile: local_fast
+    tasks:
+      deception:
+        provider: anthropic
+        model_profile: fast_deception
+    fallback:
+      provider: glm
+      model_profile: low_cost_fallback
+
+  balanced:
+    default:
+      provider: glm
+      model_profile: local_fast
+    tasks:
+      night_action:
+        provider: anthropic
+        model_profile: strong_reasoner
+      reflection:
+        provider: glm
+        model_profile: local_fast
+    fallback:
+      provider: glm
+      model_profile: low_cost_fallback
+
+# Default player assignments (can be overridden per-experiment)
+players:
+  p01:
+    persona_id: logic_leader
+    llm_profile: pro_reasoner
+  p02:
+    persona_id: aggressive_bluffer
+    llm_profile: local_wolf
+  p03:
+    persona_id: steady_sider
+    llm_profile: balanced
+  p04:
+    persona_id: bold_pretender
+    llm_profile: local_wolf
+  p05:
+    persona_id: deep_hooker
+    llm_profile: balanced
+  p06:
+    persona_id: emotional_catalyst
+    llm_profile: balanced
+  p07:
+    persona_id: chaos_joker
+    llm_profile: balanced
+  p08:
+    persona_id: review_learner
+    llm_profile: pro_reasoner
+  p09:
+    persona_id: quiet_observer
+    llm_profile: balanced
+  p10:
+    persona_id: burst_visionary
+    llm_profile: balanced
+  p11:
+    persona_id: structure_analyst
+    llm_profile: pro_reasoner
+  p12:
+    persona_id: adaptive_gamer
+    llm_profile: balanced

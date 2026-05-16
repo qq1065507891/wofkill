@@ -1,0 +1,81 @@
+"""Player profiles: ability scores with growth tracking.
+
+Design doc §10: player profile tracks logic ability, deception ability,
+leadership, credibility, learning speed, and risk preference.
+Profiles are updated after each game's review.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from werewolf_agent.memory.schemas import PlayerProfile
+
+
+class ProfileStore:
+    """Manages player profiles with ability scores and game history."""
+
+    def __init__(self) -> None:
+        self._profiles: dict[str, PlayerProfile] = {}
+
+    def get_or_create(self, player_id: str) -> PlayerProfile:
+        if player_id not in self._profiles:
+            self._profiles[player_id] = PlayerProfile(player_id=player_id)
+        return self._profiles[player_id]
+
+    def get(self, player_id: str) -> PlayerProfile | None:
+        return self._profiles.get(player_id)
+
+    def all_profiles(self) -> list[PlayerProfile]:
+        return list(self._profiles.values())
+
+    def count(self) -> int:
+        return len(self._profiles)
+
+    def update_after_game(
+        self,
+        player_id: str,
+        role: str,
+        faction_won: bool,
+        ability_deltas: dict[str, float] | None = None,
+        review_id: str = "",
+    ) -> PlayerProfile:
+        """Update profile after a game completes."""
+        profile = self.get_or_create(player_id)
+        profile.games_played += 1
+
+        if role == "werewolf":
+            profile.games_as_wolf += 1
+            if faction_won:
+                profile.wolf_wins += 1
+        else:
+            profile.games_as_good += 1
+            if faction_won:
+                profile.good_wins += 1
+
+        if ability_deltas:
+            profile.apply_deltas(ability_deltas)
+
+        if review_id:
+            profile.review_history.append(review_id)
+
+        return profile
+
+    def top_by(self, attribute: str, limit: int = 10) -> list[PlayerProfile]:
+        """Return profiles sorted descending by an ability attribute."""
+        valid = list(self._profiles.values())
+        valid.sort(key=lambda p: getattr(p, attribute, 0.0), reverse=True)
+        return valid[:limit]
+
+    def summary(self) -> dict[str, Any]:
+        """Aggregate stats across all profiles."""
+        profiles = list(self._profiles.values())
+        if not profiles:
+            return {"total_players": 0}
+        return {
+            "total_players": len(profiles),
+            "total_games_played": sum(p.games_played for p in profiles),
+            "avg_win_rate": sum(p.win_rate() for p in profiles) / len(profiles),
+            "avg_logic": sum(p.logic for p in profiles) / len(profiles),
+            "avg_deception": sum(p.deception for p in profiles) / len(profiles),
+        }

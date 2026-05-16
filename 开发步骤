@@ -1,0 +1,117 @@
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement deterministic RuleEngine behavior until tests/rules/test_rule_engine_v1.py passes.
+
+Only edit RuleEngine-related files: werewolf_agent/core/*, werewolf_agent/engine/*, tests/rules/*, config/rulesets/* if a documented conflict is found.
+
+Do not implement Runtime, Agents, RAG, UI, memory, or LangGraph.
+
+Run pytest after each coherent rule group. Update PROGRESS.md before stopping.
+
+
+
+Phase 2：Runtime / LangGraph
+
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement the runtime orchestration around the passing RuleEngine.
+
+Build the game graph skeleton, checkpointing, pause/resume, replay timeline, night flow, day flow, sheriff-election split nodes, voting branches, self-destruct/tie/no-exile/sheriff-death/victory conditional edges.
+
+Runtime must call RuleEngine for all rule decisions. Do not adjudicate rules in natural language. Do not implement LLM Agents, RAG, memory, or UI yet.
+
+Add runtime tests and run pytest. Update PROGRESS.md before stopping.
+
+
+
+Phase 3：Agents / Model Gateway
+
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement player/judge agent interfaces and model routing after RuleEngine and Runtime tests pass.
+
+Build schema-constrained agent output, private_intent separation, illegal-output retry/fallback, Persona Router hooks, and Model Router Gateway for configured providers including the existing Claude/GLM setup.
+
+Do not hardcode API keys or provider credentials. Do not allow agents to mutate GameState directly. Do not expose moderator_full or other private state to player agents.
+
+Add agent/model gateway tests and run pytest. Update PROGRESS.md before stopping.
+
+
+
+
+Phase 4：Cognitive Coprocessor / Context
+
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement Cognitive Coprocessor and Local Context Builder.
+
+Build structured world state, Visibility Policy, Attention Filter, Salience Engine, Belief Updater, Contradiction Engine, Strategy Selector, and token-budgeted local_context generation.
+
+Visibility Policy must run before RAG or Local Context Builder. Player contexts must never include forbidden private information.
+
+Add visibility and context tests. Run pytest. Update PROGRESS.md before stopping.
+
+
+
+Phase 5：RAG
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement strategy/case RAG without touching rule truth.
+
+Build external high-end game case ingestion, metadata schema, source/permission fields, quality grading, retriever, RAG hit display data, and visibility-filtered injection.
+
+RAG must not answer base rules, role-skill truth, victory truth, or live game adjudication. External god-view reviews can only be used in review/moderator contexts, not live player_context.
+
+Add RAG boundary tests and run pytest. Update PROGRESS.md before stopping.
+
+
+
+Phase 6：Memory / Review
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement memory and post-game review.
+
+Build short-term cognition matrix persistence, structured relation graph, long-term reflection memory, player profile updates, review generation, and cross-game retrieval.
+
+Do not store vote chains, claims, or attack/defense logic only as vectors. Structured facts must stay queryable as structured data.
+
+Add memory/review tests and run pytest. Update PROGRESS.md before stopping.
+
+
+
+Phase 7：Skills / MCP
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement skill registry and MCP/tool boundaries.
+
+Build werewolf skill interfaces, internal LangGraph tools for local rule/state queries, external MCP registry for optional external tools, and tool-call logs.
+
+Core rules, local GameState mutation, and deterministic adjudication must not go through MCP. MCP results are suggestions, not裁判事实.
+
+Add skill/tool boundary tests and run pytest. Update PROGRESS.md before stopping.
+
+
+Phase 8：API / Watch UI
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement API and observer UI after core backend tests pass.
+
+Build FastAPI endpoints, public-state/private-state/timeline/replay/evaluation views, player panels, role/status display, vote visualization, RAG/memory/model/persona observability, and cognitive difference view.
+
+Strictly enforce public, player_view, and moderator_full permissions. During live play, player agents must never receive moderator_full, hidden identities, other private states, or private_intent.
+
+Add API permission tests and run pytest. If frontend is added, run its tests/build too. Update PROGRESS.md before stopping.
+
+
+
+
+Phase 9：Evaluation Lab
+Read CLAUDE.md and PROGRESS.md. Activate the wofkill Conda environment.
+
+Your task: implement evaluation and benchmark tooling.
+
+Build batch games, fixed seed sets, metrics aggregation, model/persona/RAG strategy comparisons, leakage rate, illegal action rate, cost/latency statistics, growth curves, and leaderboard JSON reports.
+
+Evaluation must be replayable from initial_seed + ruleset_snapshot + event_log. Do not let evaluation mutate rule truth.
+
+Add evaluation tests and run pytest. Update PROGRESS.md before stopping.

@@ -1,0 +1,19 @@
+name: wofkill
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pyyaml
+  - pytest
+  - pytest-cov
+  - pydantic
+  - fastapi
+  - uvicorn
+  - httpx
+  - python-dotenv
+  - ruff
+  - mypy
+  - pip:
+      - langgraph
+      - langchain

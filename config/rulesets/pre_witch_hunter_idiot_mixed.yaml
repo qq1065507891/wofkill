@@ -1,0 +1,449 @@
+id: pre_witch_hunter_idiot_mixed
+name: 预女猎白混
+version: 0.2.0
+language: zh-CN
+player_count: 12
+judge_count: 1
+ruleset_family: 狼人杀
+description: >
+  12 人预女猎白混 V1 标准规则包。该配置只服务确定性 RuleEngine；
+  LLM、RAG、外部案例和玩家发言不得覆盖本配置中的裁判结算。
+
+authority:
+  design_document: docs/design/werewolf-agent-v1-design.md
+  design_section: "3. 规则设计：12 人预女猎白混"
+  priority:
+    - design_chapter_3
+    - this_ruleset
+    - rule_engine_tests
+  external_sources_are_advisory_only: true
+
+metadata:
+  sources:
+    - name: 烂柯游艺社经典版型
+      url: https://lanke.fun/classic-templates/
+      usage: cross_reference
+    - name: 口袋狼人杀预女猎白混规则
+      url: https://www.langrensha.net/strategy/2021091702.html
+      usage: cross_reference
+    - name: 游民岛 13 人变体说明
+      url: https://www.youmindao.com/langrensha/488.html
+      usage: expansion_reference_only
+
+roles:
+  villager:
+    display_name: 平民
+    count: 3
+    faction: good
+    category: villager
+    slaughter_side: villager
+    seer_result: good
+    night_action:
+      enabled: false
+    notes:
+      - 没有夜间技能，全程夜间闭眼。
+
+  seer:
+    display_name: 预言家
+    count: 1
+    faction: good
+    category: god
+    slaughter_side: god
+    seer_result: good
+    night_action:
+      enabled: true
+      order: 30
+      action_type: check_alignment
+      required: true
+      target_filter: alive_player_except_self
+    abilities:
+      result_type: alignment_only
+      returns_specific_role: false
+      hybrid_result: good
+    notes:
+      - 每晚查验一名玩家阵营属性，只返回好人或狼人，不返回具体身份。
+      - 查验混血儿时返回好人。
+
+  witch:
+    display_name: 女巫
+    count: 1
+    faction: good
+    category: god
+    slaughter_side: god
+    seer_result: good
+    night_action:
+      enabled: true
+      order: 20
+      action_type: use_potion
+      required: false
+      target_filter: wolf_kill_target_or_alive_player
+    abilities:
+      antidote:
+        count: 1
+        can_save_wolf_kill_target: true
+        can_self_save: false
+        can_self_save_first_night: false
+      poison:
+        count: 1
+        target_filter: alive_player
+      use_both_potions_same_night: false
+    notes:
+      - 解药和毒药各一瓶，每瓶全局只能使用一次。
+      - 同一晚不能同时使用解药和毒药。
+      - 女巫全程不能自救，包括首夜。
+
+  hunter:
+    display_name: 猎人
+    count: 1
+    faction: good
+    category: god
+    slaughter_side: god
+    seer_result: good
+    night_action:
+      enabled: false
+      first_night_status_confirm: true
+      order: 40
+    abilities:
+      can_shoot_on_death_reasons:
+        - wolf_kill
+        - exile
+      blocked_death_reasons:
+        - witch_poison
+      shot_death_reason: hunter_shot
+    notes:
+      - 被狼人击杀或白天放逐后可以开枪。
+      - 被女巫毒死不能开枪。
+
+  idiot:
+    display_name: 白痴
+    count: 1
+    faction: good
+    category: god
+    slaughter_side: god
+    seer_result: good
+    night_action:
+      enabled: false
+      first_night_status_confirm: true
+      order: 50
+    abilities:
+      reveal_only_on_death_reason: exile
+      reveal_prevents_exile_death: true
+      state_after_reveal:
+        alive: true
+        revealed_idiot: true
+        vote_disabled: true
+        can_speak: true
+        badge_ineligible: true
+        exile_immune: true
+      true_death_after_reveal:
+        required_for_god_slaughter: true
+        only_wolf_night_kill_counts: true
+    notes:
+      - 被白天放逐后可以翻牌自证身份。
+      - 翻牌后仍存活、可发言、失去投票权，不能成为警徽移交对象，不能再次被放逐。
+      - 翻牌后的白痴只有被狼人再次夜间击杀后才真正出局并计入神边出局。
+      - 被狼人击杀、女巫毒死或猎人带走时不触发翻牌。
+
+  werewolf:
+    display_name: 狼人
+    count: 4
+    faction: werewolf
+    category: wolf
+    slaughter_side: wolf
+    seer_result: werewolf
+    night_action:
+      enabled: true
+      order: 10
+      action_type: wolf_night_action
+      allowed_actions:
+        - kill
+        - no_kill
+      shared_team_action: true
+      required: true
+      target_filter: alive_player
+      can_self_kill: true
+      can_no_kill: true
+      timeout_policy:
+        default_action: no_kill
+        event_type: wolf_no_kill_timeout
+    day_action:
+      self_destruct:
+        enabled: true
+        death_reason: self_destruct
+        has_last_words: false
+        skip_remaining_speech: true
+        skip_exile_vote: true
+        check_victory_before_night: true
+    notes:
+      - 夜间共同睁眼限时讨论，并决定击杀一名玩家或主动空刀。
+      - 可以自刀，可以主动空刀，也可以白天自爆。
+      - 狼队夜间讨论超时且未形成合法最终动作时，默认本夜空刀并记录 wolf_no_kill_timeout。
+      - 白天自爆后无遗言，跳过剩余发言和放逐投票，先检查胜负，未结束则进入夜晚。
+
+  hybrid:
+    display_name: 混血儿
+    aliases:
+      - 混混
+    count: 1
+    faction: special_bound_to_master
+    category: villager_special
+    slaughter_side: conditional_by_master_faction
+    seer_result: good
+    night_action:
+      enabled: true
+      order: 60
+      action_type: choose_master
+      required: true
+      only_on_night: 1
+      target_filter: alive_player_except_self
+    abilities:
+      master_binding:
+        choose_on_first_night: true
+        master_can_be_good: true
+        master_can_be_werewolf: true
+        master_knows_selected: false
+        hybrid_knows_master_role: false
+        hybrid_knows_master_faction: false
+        master_death_changes_binding: false
+        hybrid_death_changes_result: false
+      win_binding: master_original_faction
+      seer_check_result: good
+      slaughter_requirement:
+        if_master_faction_good:
+          villager_slaughter_requires:
+            - all_villagers_out
+            - hybrid_out
+        if_master_faction_werewolf:
+          villager_slaughter_requires:
+            - all_villagers_out
+    notes:
+      - 首夜睁眼选择一名主人。
+      - 主人不知道自己被选择。
+      - 混血儿不知道主人身份和阵营。
+      - 混血儿最终胜负跟随主人原始阵营。
+
+role_distribution:
+  werewolf: 4
+  villager: 3
+  seer: 1
+  witch: 1
+  hunter: 1
+  idiot: 1
+  hybrid: 1
+
+night_flow:
+  order:
+    - node: wolf_discussion_and_kill
+      role: werewolf
+      action_type: wolf_night_action
+      every_night: true
+    - node: witch_action
+      role: witch
+      action_type: use_potion
+      every_night: true
+    - node: seer_check
+      role: seer
+      action_type: check_alignment
+      every_night: true
+    - node: hunter_idiot_status_confirm
+      roles:
+        - hunter
+        - idiot
+      action_type: status_confirm
+      only_on_night: 1
+    - node: hybrid_choose_master
+      role: hybrid
+      action_type: choose_master
+      only_on_night: 1
+  privacy:
+    wolf_discussion_visible_to: werewolf_team_only
+    wolf_no_kill_visible_to: werewolf_team_only
+    wolf_no_kill_public_effect: peace_night_if_no_other_deaths
+    hybrid_master_visible_to: hybrid_only
+    seer_result_visible_to: seer_only
+    witch_information_visible_to: witch_only
+
+timers:
+  wolf_discussion_seconds: 120
+  day_speech_seconds: 90
+  last_words_seconds: 60
+  sheriff_speech_seconds: 60
+  timeout_policy:
+    wolf_discussion:
+      default_action: no_kill
+      event_type: wolf_no_kill_timeout
+    day_speech:
+      default_action: end_turn
+      event_type: speech_timeout
+
+day_flow:
+  standard_order:
+    - announce_deaths
+    - last_words
+    - first_day_sheriff_election
+    - speech
+    - exile_vote
+    - resolve_exile_and_skills
+    - check_victory
+  first_day:
+    sheriff_election_after_death_announcement_and_last_words: true
+  speech:
+    sheriff_chooses_order: true
+    no_sheriff_order_policy: random_start_then_seat_order
+    torn_badge_order_policy: random_start_then_seat_order
+    per_player_time_limit_seconds: 90
+    timeout_event: speech_timeout
+  vote:
+    allow_abstain: false
+    first_tie_policy: pk_speech_then_revote
+    second_tie_policy: no_exile_then_night
+  exile:
+    triggers_last_words: true
+    idiot_reveals_instead_of_exile_death: true
+
+sheriff:
+  enabled: true
+  election_day: 1
+  vote_weight: 1.5
+  can_choose_speech_order: true
+  can_endorse_vote: true
+  badge_states:
+    - none
+    - active
+    - torn
+  death_policy:
+    may_transfer_or_tear_on_death_reasons:
+      - exile
+      - wolf_kill
+      - witch_poison
+      - hunter_shot
+      - self_destruct
+    transfer_target_filter: alive_player_not_revealed_idiot
+    tear_badge_effect:
+      sheriff_id: null
+      badge_state: torn
+      no_sheriff_for_rest_of_game: true
+      speech_order_policy: random_start_then_seat_order
+  resolution_order:
+    check_victory_before_badge_transfer: true
+    skip_badge_transfer_if_game_finished: true
+
+death:
+  reasons:
+    - wolf_kill
+    - witch_poison
+    - exile
+    - hunter_shot
+    - self_destruct
+    - rule_elimination
+  timings:
+    - night
+    - day_vote
+    - day_discussion
+    - post_exile
+  record_required_fields:
+    - player_id
+    - death_reason
+    - death_timing
+    - resolution_batch
+    - source_player_id
+    - can_leave_last_words
+    - triggered_skills
+  batch_resolution:
+    resolve_all_deaths_before_victory_check: true
+    same_night_double_death_same_batch: true
+
+last_words:
+  day_exile: true
+  first_night_death: true
+  later_night_death: false
+  self_destruct: false
+  hunter_shot_target: false
+
+victory:
+  check_timing:
+    - after_night_death_resolution
+    - after_day_exile_resolution
+    - after_idiot_reveal
+    - after_hunter_shot_resolution
+    - after_werewolf_self_destruct
+  good:
+    condition: all_werewolves_out
+  werewolf:
+    condition: slaughter_one_side
+    slaughter:
+      villagers:
+        base_requirement: all_villagers_out
+        hybrid_requirement: conditional_by_master_faction
+      gods:
+        requirement: all_gods_out
+        revealed_idiot_alive_counts_as_out: false
+  hybrid:
+    independent_third_party: false
+    result_field: hybrid_result
+    follows: hybrid_master_original_faction
+    master_death_changes_result: false
+    hybrid_death_changes_result: false
+  result_fields:
+    - winning_faction
+    - hybrid_master_id
+    - hybrid_master_faction
+    - hybrid_result
+
+information_visibility:
+  view_modes:
+    - public
+    - player_view
+    - moderator_full
+  public:
+    - player_alive_status
+    - death_announcement
+    - public_speeches
+    - votes
+    - sheriff_state
+    - exile_result
+    - revealed_idiot_status
+  private:
+    werewolf:
+      - teammate_werewolves
+      - wolf_discussion
+      - night_kill_target
+    hybrid:
+      - hybrid_master_id
+    seer:
+      - check_results
+    witch:
+      - wolf_kill_target
+      - potion_inventory
+    hunter:
+      - can_shoot_status
+    idiot:
+      - reveal_status
+  forbidden_for_player_agents:
+    - moderator_full
+    - other_player_private_state
+    - other_player_private_intent
+    - hidden_identities
+    - forbidden_night_information
+
+llm_guardrails:
+  deterministic_judgement_only: true
+  rag_may_suggest_strategy: true
+  rag_must_not_answer_base_rules: true
+  rag_must_not_override_rule_engine: true
+  agent_outputs_require_schema_validation: true
+  illegal_action_policy:
+    - reject
+    - ask_agent_to_retry
+    - fallback_to_rule_safe_action
+
+validation:
+  expected_player_count: 12
+  role_count_sum_must_equal_player_count: true
+  exactly_one_hybrid: true
+  exactly_one_seer: true
+  exactly_one_witch: true
+  exactly_one_hunter: true
+  exactly_one_idiot: true
+  werewolf_count: 4
+  villager_count: 3

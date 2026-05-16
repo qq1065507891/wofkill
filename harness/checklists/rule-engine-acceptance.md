@@ -1,0 +1,23 @@
+# RuleEngine Acceptance Checklist
+
+- [ ] 12-player role distribution is exact.
+- [ ] Hybrid chooses master only on first night.
+- [ ] Hybrid cannot learn master role or faction.
+- [ ] Seer checks hybrid as good.
+- [ ] Hybrid master good requires villagers plus hybrid eliminated for villager slaughter.
+- [ ] Hybrid master wolf requires only the three villagers eliminated for villager slaughter.
+- [ ] Witch cannot self-save.
+- [ ] Witch cannot use antidote and poison in the same night.
+- [ ] Hunter can shoot after wolf kill or exile.
+- [ ] Hunter cannot shoot after witch poison.
+- [ ] Idiot reveals only after exile.
+- [ ] Revealed idiot remains alive, can speak, cannot vote, cannot receive badge, cannot be exiled again.
+- [ ] Sheriff can pass or tear badge after every supported death cause.
+- [ ] Torn badge leaves no sheriff for the rest of the game.
+- [ ] First tie enters PK/revote.
+- [ ] Second tie creates no exile and enters night.
+- [ ] First-night night death has last words.
+- [ ] Later night death has no last words.
+- [ ] Day exile has last words.
+- [ ] Self-destruct has no last words and skips remaining day vote.
+- [ ] Victory is checked after full death batch and skill-trigger resolution.
