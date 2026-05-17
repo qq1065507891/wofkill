@@ -410,13 +410,13 @@ button { cursor: pointer; }
       </select>
       <div class="marketplace-preview" id="rulesetMarketplace">
         <strong>规则市场</strong>
-        <button class="market-card" type="button" data-ruleset-id="pre_witch_hunter_idiot_mixed" data-status="playable">新手友好局</button>
+        <button class="market-card" type="button" data-ruleset-id="pre_witch_hunter_idiot_mixed" data-status="playable" onclick="selectMarketplaceRuleset('pre_witch_hunter_idiot_mixed')">新手友好局</button>
         <button class="market-card" type="button" data-ruleset-id="wolf_king_guard_classic" data-status="display_only" disabled>经典 12 人狼王守卫 · 预览</button>
       </div>
       <div class="marketplace-preview" id="personaMarketplace">
         <strong>人格市场</strong>
-        <button class="market-card" type="button" data-profile-pack-id="default_12_ai_players" data-status="playable">默认竞技型 12 人</button>
-        <button class="market-card" type="button" data-profile-pack-id="high_pressure_test_12" data-status="playable">高端局压力测试</button>
+        <button class="market-card" type="button" data-profile-pack-id="default_12_ai_players" data-status="playable" onclick="selectMarketplacePersonaPack('default_12_ai_players')">默认竞技型 12 人</button>
+        <button class="market-card" type="button" data-profile-pack-id="high_pressure_test_12" data-status="playable" onclick="selectMarketplacePersonaPack('high_pressure_test_12')">高端局压力测试</button>
       </div>
     </div>
     <div class="recruit-panel">

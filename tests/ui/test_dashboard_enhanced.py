@@ -92,6 +92,14 @@ def test_dashboard_has_static_marketplace_cards(dashboard_html):
     assert "display_only" in dashboard_html
     assert "人格市场" in dashboard_html or "äººæ ¼å¸‚åœº" in dashboard_html
 
+def test_marketplace_cards_wire_to_selector_helpers(dashboard_html, dashboard_js):
+    assert "selectMarketplaceRuleset" in dashboard_html
+    assert "selectMarketplacePersonaPack" in dashboard_html
+    assert "function selectMarketplaceRuleset" in dashboard_js
+    assert "function selectMarketplacePersonaPack" in dashboard_js
+    assert "rulesetSelector" in dashboard_js
+    assert "personaPackSelector" in dashboard_js
+
 def test_dashboard_has_share_summary_button(dashboard_html, dashboard_js):
     assert "生成复盘分享" in dashboard_html or "ç”Ÿæˆå¤ç›˜åˆ†äº«" in dashboard_html
     assert "generateShareSummary" in dashboard_js

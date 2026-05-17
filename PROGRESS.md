@@ -238,6 +238,15 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - Verification: `pytest tests/storage/test_customization_storage.py tests/api/test_customization_api.py tests/ui tests/customization tests/runtime/test_game_runner.py -q --basetemp .pytest-tmp` passed (106 tests).
 - Remaining hardening: full dashboard inline CSS/JS extraction, deeper marketplace selection UX, and end-to-end browser verification after UI extraction.
 
+## Platform Customization Marketplace UX - 2026-05-17
+
+- Wired playable dashboard marketplace cards to selector helpers:
+  - `selectMarketplaceRuleset`
+  - `selectMarketplacePersonaPack`
+- Playable cards now update the launch wizard selectors and reset uploaded config overrides.
+- Display-only wolf king guard preview remains disabled and cannot be selected for real room creation.
+- Verification: `pytest tests/ui/test_dashboard_enhanced.py -q` passed (20 tests).
+
 ## Design Completion Audit - 2026-05-16
 
 The automated test suite passes, but passing tests do not mean the design document is fully implemented. The current repository should be treated as a strong V1 backend / experiment prototype, not as the complete design-document product.

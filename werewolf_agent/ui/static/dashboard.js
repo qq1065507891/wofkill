@@ -69,6 +69,26 @@ function buildCreateGamePayload() {
   return payload;
 }
 
+function selectMarketplaceRuleset(rulesetId) {
+  const selector = document.getElementById('rulesetSelector');
+  if (selector) selector.value = rulesetId;
+  selectedRulesetConfig = null;
+  const result = document.getElementById('rulesetValidationResult');
+  if (result) {
+    result.innerHTML = `<strong>规则市场</strong><span>${rulesetId}</span>`;
+  }
+}
+
+function selectMarketplacePersonaPack(profilePackId) {
+  const selector = document.getElementById('personaPackSelector');
+  if (selector) selector.value = profilePackId;
+  selectedPersonaPackConfig = null;
+  const result = document.getElementById('personaValidationResult');
+  if (result) {
+    result.innerHTML = `<strong>人格市场</strong><span>${profilePackId}</span>`;
+  }
+}
+
 function renderValidationResult(elementId, data) {
   const target = document.getElementById(elementId);
   if (!target) return;
