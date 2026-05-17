@@ -45,6 +45,7 @@ class TaskType(str, Enum):
     DEFENSE_SPEECH = "defense_speech"
     REFLECTION = "reflection"
     WOLF_DISCUSSION = "wolf_discussion"
+    HUNTER_SHOT = "hunter_shot"
     PK_SPEECH = "pk_speech"
 
 

@@ -888,3 +888,143 @@ def test_full_game_replay_from_events() -> None:
     assert final.players["p01"].alive is False
     assert final.hybrid_master_id == "p01"
     assert final.sheriff_badge_state == "torn"
+
+
+# -- Task 2: Seer check events from resolve_night --
+
+
+def test_resolve_night_produces_seer_check_event() -> None:
+    """resolve_night must use seer_target_id to call check_alignment and emit seer_check."""
+    engine = make_engine()
+    state = make_state()
+    new_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id=None,
+        seer_target_id="w1",
+    )
+    seer_checks = [e for e in events if e.type == "seer_check"]
+    assert len(seer_checks) == 1, f"Expected 1 seer_check event, got {len(seer_checks)}"
+    check = seer_checks[0]
+    assert check.payload["seer_id"] == "seer"
+    assert check.payload["target_id"] == "w1"
+    assert check.payload["alignment"] == "werewolf"
+    assert check.payload["night_number"] == 1
+    assert check.payload["visibility"] in ("private", "seer_only", "moderator_only")
+
+
+def test_resolve_night_seer_check_hybrid_returns_good() -> None:
+    engine = make_engine()
+    state = make_state()
+    new_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id=None,
+        seer_target_id="hybrid",
+    )
+    seer_checks = [e for e in events if e.type == "seer_check"]
+    assert len(seer_checks) == 1
+    assert seer_checks[0].payload["alignment"] == "good"
+
+
+def test_resolve_night_no_seer_check_when_seer_target_absent() -> None:
+    engine = make_engine()
+    state = make_state()
+    new_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id=None,
+        seer_target_id=None,
+    )
+    seer_checks = [e for e in events if e.type == "seer_check"]
+    assert len(seer_checks) == 0
+
+
+def test_resolve_night_seer_check_does_not_change_public_state() -> None:
+    """seer_check event is private audit; it must not create deaths or change alive status."""
+    engine = make_engine()
+    state = make_state()
+    new_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id=None,
+        seer_target_id="w1",
+    )
+    assert len(new_state.deaths) == 0
+    # All players still alive
+    assert all(p.alive for p in new_state.players.values())
+
+
+def test_resolve_night_seer_check_with_simultaneous_wolf_kill() -> None:
+    """Seer check event must be produced even when a wolf kill also happens."""
+    engine = make_engine()
+    state = make_state()
+    new_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id="v1",
+        seer_target_id="w1",
+    )
+    seer_checks = [e for e in events if e.type == "seer_check"]
+    assert len(seer_checks) == 1
+    assert seer_checks[0].payload["alignment"] == "werewolf"
+    # Wolf kill death still happens
+    assert not new_state.players["v1"].alive
+
+
+# -- Task 2: Hunter shot events in night resolution --
+
+
+def test_resolve_night_hunter_killed_by_wolf_has_triggered_shot() -> None:
+    """When hunter is wolf-killed, apply_death marks hunter_shot in triggered_skills."""
+    engine = make_engine()
+    state = make_state()
+    new_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id="hunter",
+    )
+    assert not new_state.players["hunter"].alive
+    hunter_deaths = [d for d in new_state.deaths if d.player_id == "hunter"]
+    assert len(hunter_deaths) == 1
+    assert "hunter_shot" in hunter_deaths[0].triggered_skills
+
+
+def test_resolve_night_hunter_poisoned_has_no_triggered_shot() -> None:
+    """When hunter is poisoned, hunter_shot must NOT be in triggered_skills."""
+    engine = make_engine()
+    state = make_state()
+    new_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id="v1",
+        poison_target_id="hunter",
+    )
+    assert not new_state.players["hunter"].alive
+    hunter_deaths = [d for d in new_state.deaths if d.player_id == "hunter"]
+    assert len(hunter_deaths) == 1
+    assert "hunter_shot" not in hunter_deaths[0].triggered_skills
+
+
+# -- Task 2: Reducer support for seer_check --
+
+
+def test_reduce_event_seer_check_appends_without_mutating_state() -> None:
+    """seer_check events must be replayable: appended to events, no state mutation."""
+    engine = make_engine()
+    state = make_state()
+    event = GameEvent(
+        type="seer_check",
+        payload={
+            "seer_id": "seer",
+            "target_id": "w1",
+            "alignment": "werewolf",
+            "night_number": 1,
+            "visibility": "seer_only",
+        },
+    )
+    new_state = engine.reduce_event(state, event)
+    assert new_state.events[-1] == event
+    # No deaths, no role changes
+    assert len(new_state.deaths) == len(state.deaths)
+    assert all(p.alive == op.alive for p, op in zip(new_state.players.values(), state.players.values()))

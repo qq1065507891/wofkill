@@ -96,8 +96,8 @@ class TestGameRunnerScriptedGame:
             phase="roles_assigned",
         )
         runner._state = gs
-        # Run with a wolf kill target
-        final_state = runner.run(
+        # Run with a wolf kill target via the scripted interface
+        final_state = runner.run_scripted(
             wolf_kill_target_id=non_wolves[0] if non_wolves else None,
         )
         # The game should have progressed past setup
@@ -189,6 +189,100 @@ class TestGameRunnerStepByStep:
 
 
 # ---------------------------------------------------------------------------
+# Runtime execution coordinator tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeRunner:
+    def __init__(self) -> None:
+        self.state = GameState(game_id="g_exec", phase="night")
+        self.step_count = 0
+        self.finished = False
+        self.step_calls = 0
+        self.run_calls = 0
+        self.fail_run = False
+
+    def run_step(self) -> GameState:
+        self.step_calls += 1
+        self.step_count += 1
+        self.state = replace(self.state, phase=f"step_{self.step_count}")
+        return self.state
+
+    def run(self, max_steps: int = 500) -> GameState:
+        self.run_calls += 1
+        if self.fail_run:
+            raise RuntimeError("boom")
+        self.step_count += max_steps
+        self.finished = True
+        self.state = replace(self.state, phase="finished")
+        return self.state
+
+
+class TestRuntimeExecutionCoordinator:
+    def test_try_step_rejects_when_game_lock_is_held(self) -> None:
+        from werewolf_agent.runtime.executor import LocalRuntimeExecutor
+
+        executor = LocalRuntimeExecutor()
+        runner = _FakeRunner()
+        lock = executor.lock_for("g_exec")
+
+        assert lock.acquire(blocking=False)
+        try:
+            result = executor.try_step("g_exec", runner)
+        finally:
+            lock.release()
+
+        assert result.success is False
+        assert result.status == "busy"
+        assert runner.step_calls == 0
+
+    def test_try_step_releases_lock_after_success(self) -> None:
+        from werewolf_agent.runtime.executor import LocalRuntimeExecutor
+
+        executor = LocalRuntimeExecutor()
+        runner = _FakeRunner()
+
+        first = executor.try_step("g_exec", runner)
+        second = executor.try_step("g_exec", runner)
+
+        assert first.success is True
+        assert second.success is True
+        assert runner.step_calls == 2
+        assert executor.status("g_exec").step_count == 2
+
+    def test_start_background_records_finished_status(self) -> None:
+        from werewolf_agent.runtime.executor import LocalRuntimeExecutor
+
+        executor = LocalRuntimeExecutor()
+        runner = _FakeRunner()
+
+        result = executor.start_background("g_exec", runner, max_steps=3)
+        assert result.success is True
+        executor.wait("g_exec", timeout=2.0)
+
+        status = executor.status("g_exec")
+        assert status.state == "finished"
+        assert status.step_count == 3
+        assert status.phase == "finished"
+        assert status.error == ""
+
+    def test_start_background_records_error_status(self) -> None:
+        from werewolf_agent.runtime.executor import LocalRuntimeExecutor
+
+        executor = LocalRuntimeExecutor()
+        runner = _FakeRunner()
+        runner.fail_run = True
+
+        result = executor.start_background("g_exec", runner)
+        assert result.success is True
+        executor.wait("g_exec", timeout=2.0)
+
+        status = executor.status("g_exec")
+        assert status.state == "error"
+        assert "boom" in status.error
+
+
+# ---------------------------------------------------------------------------
 # API integration tests
 # ---------------------------------------------------------------------------
 
@@ -215,7 +309,8 @@ class TestGameRunnerAPIIntegration:
         final = runner.run()
         loaded = repo.load_game(runner.game_id)
         # Repository should have the game after run
-        assert loaded is not None or final is not None
+        assert loaded is not None
+        assert loaded.game_id == runner.game_id
 
 
 # ---------------------------------------------------------------------------
@@ -309,3 +404,150 @@ class TestGameRunnerStartGameEndpoint:
         assert r.status_code == 200
         data = r.json()
         assert "step_count" in data or "success" in data
+
+    def test_step_endpoint_rejects_paused_game(self) -> None:
+        """Paused games should not advance through the step endpoint."""
+        from werewolf_agent.api.app import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app()
+        client = TestClient(app)
+        r = client.post("/games", json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "seed": 42,
+        })
+        game_id = r.json()["game"]["game_id"]
+        client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        pause = client.post(f"/games/{game_id}/pause", json={"caller_id": "mod1"})
+        assert pause.status_code == 200
+
+        step = client.post(f"/games/{game_id}/step", json={"caller_id": "mod1"})
+
+        assert step.status_code == 400
+        assert "paused" in step.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Memory lifecycle tests
+# ---------------------------------------------------------------------------
+
+
+class TestGameRunnerMemoryLifecycle:
+    def test_game_runner_persists_memory_on_finish(self) -> None:
+        """When memory_coordinator + repository are set, _save_memory_snapshot saves a snapshot."""
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=42,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        # Run enough steps to assign players (the graph may error later, but
+        # we only need players to be populated for the snapshot)
+        for _ in range(5):
+            runner.run_step()
+        assert len(runner.state.players) > 0
+        # Force-finish and save
+        runner._finished = True
+        runner._save_memory_snapshot()
+        # A memory snapshot with game_id as key should exist in the repo
+        snapshot = repo.load_memory_snapshot(runner.game_id)
+        assert snapshot is not None, "Memory snapshot should have been saved"
+        assert "cognition_matrices" in snapshot
+
+    def test_game_runner_restores_memory_on_start(self) -> None:
+        """A second runner with the same game_id should restore the prior snapshot."""
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        # Create runner 1, advance to assign players, then save a snapshot
+        runner1 = GameRunner(GameRunnerConfig(
+            seed=55,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        for _ in range(5):
+            runner1.run_step()
+        runner1._finished = True
+        runner1._save_memory_snapshot()
+        game_id_1 = runner1.game_id
+        # Verify snapshot exists
+        assert repo.load_memory_snapshot(game_id_1) is not None
+        # Create runner 2 with same game_id, coordinator, and repo
+        runner2 = GameRunner(GameRunnerConfig(
+            seed=55,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        # Override game_id to match runner1's snapshot
+        runner2.reset_game_id(game_id_1)
+        # Re-run restore with the corrected game_id
+        runner2._restore_memory_if_configured()
+        # restored_memory should now be non-None
+        assert runner2.restored_memory is not None
+
+    def test_no_memory_save_without_coordinator(self) -> None:
+        """Without memory_coordinator, no memory snapshot should be saved."""
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+
+        repo = InMemoryGameRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=42,
+            repository=repo,
+        ))
+        runner.run()
+        # No memory snapshot should exist
+        snapshot = repo.load_memory_snapshot(runner.game_id)
+        assert snapshot is None
+
+    def test_restored_memory_is_none_without_coordinator(self) -> None:
+        """restored_memory is None when no coordinator is configured."""
+        runner = GameRunner(GameRunnerConfig(seed=42))
+        assert runner.restored_memory is None
+        assert runner.restored_rag is None
+
+    def test_memory_save_uses_game_id_as_snapshot_id(self) -> None:
+        """The snapshot_id should match the runner's game_id."""
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=99,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        for _ in range(5):
+            runner.run_step()
+        runner._finished = True
+        runner._save_memory_snapshot()
+        # List all snapshots and verify one has our game_id
+        snapshots = repo.list_memory_snapshots()
+        snapshot_ids = [s["snapshot_id"] for s in snapshots]
+        assert runner.game_id in snapshot_ids
+
+    def test_save_memory_snapshot_preserves_player_matrices(self) -> None:
+        """Saved snapshot contains cognition matrices for all players."""
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=7,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        for _ in range(5):
+            runner.run_step()
+        runner._finished = True
+        runner._save_memory_snapshot()
+        snapshot = repo.load_memory_snapshot(runner.game_id)
+        matrices = snapshot.get("cognition_matrices", {})
+        assert len(matrices) == 12, f"Expected 12 cognition matrices, got {len(matrices)}"

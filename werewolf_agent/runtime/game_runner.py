@@ -10,6 +10,7 @@ Each run_step() reads one node output from the stream, then returns.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Iterator
@@ -19,6 +20,8 @@ from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.graph import RuntimeState, build_game_graph
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +70,11 @@ class GameRunner:
         self._finished: bool = False
         # Lazy-initialized stream generator for step-by-step execution
         self._stream_gen: Iterator | None = None
+        # Memory restored from previous game (None if no coordinator/repository)
+        self._restored_memory: Any = None
+        self._restored_rag: list[Any] | None = None
+        # Attempt to restore memory from a previous snapshot at init
+        self._restore_memory_if_configured()
 
     @property
     def game_id(self) -> str:
@@ -91,6 +99,21 @@ class GameRunner:
     @property
     def finished(self) -> bool:
         return self._finished
+
+    @property
+    def restored_memory(self) -> Any:
+        """MemoryStore restored from a previous game snapshot, or None."""
+        return self._restored_memory
+
+    @property
+    def restored_rag(self) -> list[Any] | None:
+        """RAG entries restored from a previous snapshot, or None."""
+        return self._restored_rag
+
+    def reset_game_id(self, game_id: str) -> None:
+        """Update game_id for API-level game tracking. Updates both runner and state."""
+        self._game_id = game_id
+        self._state = replace(self._state, game_id=game_id)
 
     def _build_runtime_state(
         self,
@@ -136,7 +159,46 @@ class GameRunner:
                 self._state = output["game_state"]
         return node_name
 
-    def run(
+    def run(self, max_steps: int = 500) -> GameState:
+        """Execute the full game graph until END or max_steps reached.
+
+        Uses LangGraph stream mode to process nodes one at a time,
+        updating internal state at each step.
+
+        Args:
+            max_steps: Maximum number of graph nodes to process.
+
+        Returns:
+            The final GameState after the game completes or max_steps reached.
+        """
+        if self._finished:
+            return self._state
+
+        initial = self._build_runtime_state()
+
+        try:
+            for chunk in self._graph.stream(
+                initial, {"recursion_limit": max_steps}
+            ):
+                self._step_count += 1
+                self._process_chunk(chunk)
+                # Check if game ended
+                if self._state.phase == "finished" or self._state.winning_faction is not None:
+                    self._finished = True
+                    self._save_memory_snapshot()
+                    self._persist_if_configured()
+                    return self._state
+        except Exception as exc:
+            # Graph hit recursion limit — keep accumulated state
+            logger.warning("Graph execution error in run() at step %d: %s", self._step_count, exc)
+
+        self._finished = self._state.phase == "finished" or self._state.winning_faction is not None
+        if self._finished:
+            self._save_memory_snapshot()
+        self._persist_if_configured()
+        return self._state
+
+    def run_scripted(
         self,
         max_steps: int = 500,
         *,
@@ -145,14 +207,15 @@ class GameRunner:
         poison_target_id: str | None = None,
         seer_target_id: str | None = None,
     ) -> GameState:
-        """Execute the full game graph until END or max_steps reached.
+        """Execute the full game with scripted night-action inputs.
 
-        Uses LangGraph stream mode to process nodes one at a time,
-        updating internal state at each step.
+        This variant is intended for testing and replay scenarios where
+        caller-controlled inputs replace LLM agent decisions for wolf kills,
+        witch actions, and seer checks.
 
         Args:
             max_steps: Maximum number of graph nodes to process.
-            wolf_kill_target_id: Optional scripted wolf kill target (first night).
+            wolf_kill_target_id: Optional scripted wolf kill target.
             use_antidote: Whether witch uses antidote (scripted).
             poison_target_id: Optional scripted witch poison target.
             seer_target_id: Optional scripted seer check target.
@@ -176,16 +239,17 @@ class GameRunner:
             ):
                 self._step_count += 1
                 self._process_chunk(chunk)
-                # Check if game ended
                 if self._state.phase == "finished" or self._state.winning_faction is not None:
                     self._finished = True
+                    self._save_memory_snapshot()
                     self._persist_if_configured()
                     return self._state
-        except Exception:
-            # Graph hit recursion limit — keep accumulated state
-            pass
+        except Exception as exc:
+            logger.warning("Graph execution error in run_scripted() at step %d: %s", self._step_count, exc)
 
         self._finished = self._state.phase == "finished" or self._state.winning_faction is not None
+        if self._finished:
+            self._save_memory_snapshot()
         self._persist_if_configured()
         return self._state
 
@@ -212,8 +276,8 @@ class GameRunner:
                 self._stream_gen = self._graph.stream(
                     initial, {"recursion_limit": max_steps}
                 )
-            except Exception:
-                self._finished = True
+            except Exception as exc:
+                logger.error("Failed to initialize stream generator: %s", exc)
                 return self._state
 
         # Read one chunk from the stream
@@ -227,10 +291,13 @@ class GameRunner:
         except StopIteration:
             # Stream exhausted — game has ended
             self._finished = True
-        except Exception:
-            # Graph error — mark as finished
-            self._finished = True
+        except Exception as exc:
+            # Transient error — do NOT mark finished
+            logger.error("Step execution error at step %d: %s", self._step_count, exc)
+            return self._state
 
+        if self._finished:
+            self._save_memory_snapshot()
         self._persist_if_configured()
         return self._state
 
@@ -239,5 +306,57 @@ class GameRunner:
         if self._config.repository is not None:
             try:
                 self._config.repository.save_game(self._state)
-            except Exception:
-                pass  # Persistence failure should not crash the game
+            except Exception as exc:
+                logger.warning("Persistence error: %s", exc)
+
+    def _restore_memory_if_configured(self) -> None:
+        """Attempt to restore memory from a previous snapshot at init.
+
+        Only acts when both memory_coordinator and repository are configured.
+        On failure, logs a warning and leaves restored_memory as None.
+        """
+        coordinator = self._config.memory_coordinator
+        if coordinator is None or self._config.repository is None:
+            return
+        try:
+            mem, rag = coordinator.restore_all(snapshot_id=self._game_id)
+            self._restored_memory = mem
+            self._restored_rag = rag
+            if mem is not None:
+                logger.info("Restored memory snapshot for game %s", self._game_id)
+        except Exception as exc:
+            logger.warning("Memory restore error for game %s: %s", self._game_id, exc)
+
+    def _save_memory_snapshot(self) -> None:
+        """Persist a memory snapshot when a memory_coordinator is configured.
+
+        Creates a minimal MemoryStore, inits cognition matrices for all
+        players in the final game state, and saves via the coordinator.
+        Called at game end, before _persist_if_configured().
+        """
+        coordinator = self._config.memory_coordinator
+        if coordinator is None or self._config.repository is None:
+            return
+        try:
+            from werewolf_agent.memory.store import MemoryStore
+
+            mem_store = MemoryStore()
+            player_ids = list(self._state.players.keys())
+            if player_ids:
+                # Collect unique role names for matrix initialization
+                role_names = [
+                    self._state.players[pid].role
+                    for pid in player_ids
+                    if pid in self._state.players
+                ]
+                for pid in player_ids:
+                    mem_store.init_matrix(pid, player_ids, role_names)
+
+            coordinator.save_all(
+                memory_store=mem_store,
+                retriever=None,
+                snapshot_id=self._game_id,
+            )
+            logger.info("Saved memory snapshot for game %s", self._game_id)
+        except Exception as exc:
+            logger.warning("Memory snapshot save error for game %s: %s", self._game_id, exc)

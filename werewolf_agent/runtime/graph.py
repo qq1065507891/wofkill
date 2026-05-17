@@ -22,6 +22,16 @@ from werewolf_agent.core.models import (
     VictoryResult,
 )
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.runtime.agent_adapter import (
+    AgentRegistry,
+    agent_day_speech,
+    agent_day_vote,
+    agent_hunter_shot,
+    agent_night_seer,
+    agent_night_witch,
+    agent_wolf_consensus,
+    agent_wolf_discussion,
+)
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
 
@@ -61,6 +71,10 @@ class RuntimeState(TypedDict, total=False):
     badge_target_id: str | None
     # Hunter shot
     hunter_shot_target_id: str | None
+    # Agent registry: when provided, nodes delegate to PlayerAgent
+    agent_registry: Any  # AgentRegistry protocol, optional
+    # Runtime flow-control timer; must not adjudicate RuleEngine truth
+    runtime_timer: Any
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +104,16 @@ def _alive_non_wolves(gs: GameState) -> list[str]:
 
 def _find_role(gs: GameState, role: str) -> str | None:
     return next((pid for pid, p in gs.players.items() if p.role == role and p.alive), None)
+
+
+def _timer_expired(state: RuntimeState, key: str) -> bool:
+    timer = state.get("runtime_timer")
+    if timer is None:
+        return False
+    expired = getattr(timer, "expired", None)
+    if expired is None:
+        return False
+    return bool(expired(key))
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +150,29 @@ def enter_night(state: RuntimeState) -> dict[str, Any]:
 
 
 def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
-    # Placeholder: in V2 agents will discuss here. For now, record event.
     gs: GameState = state["game_state"]
+    registry = state.get("agent_registry")
+
+    if registry:
+        engine: RuleEngine = state["engine"]
+        wolves = _alive_wolves(gs)
+        events = []
+        for wolf_id in wolves:
+            result = agent_wolf_discussion(state, engine, registry, wolf_id)
+            speech_text = result.get("speech_text", "") if result else ""
+            events.append(GameEvent(
+                type="wolf_discussion",
+                payload={
+                    "wolf_id": wolf_id,
+                    "night_number": gs.night_number,
+                    "text": speech_text,
+                    "visibility": "werewolf_team_only",
+                },
+            ))
+        gs = replace(gs, events=gs.events + events)
+        return {"game_state": gs}
+
+    # Scripted fallback
     gs = replace(gs, events=gs.events + [GameEvent(type="wolf_discussion", payload={})])
     return {"game_state": gs}
 
@@ -135,6 +180,44 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
 def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     """Determine wolf night action; timeout defaults to no-kill."""
     gs: GameState = state["game_state"]
+    engine: RuleEngine = state["engine"]
+
+    if _timer_expired(state, "wolf_discussion"):
+        event = GameEvent(
+            type="wolf_no_kill_timeout",
+            payload={"night_number": gs.night_number, "reason": "timer_expired"},
+        )
+        gs = replace(gs, events=gs.events + [event])
+        return {"game_state": gs, "wolf_kill_target_id": None}
+
+    # Try agent-driven decision first
+    registry = state.get("agent_registry")
+    if registry and not state.get("wolf_action"):
+        result = agent_wolf_consensus(state, engine, registry)
+        if result is not None:
+            action = result.get("wolf_action", "kill")
+            target = result.get("wolf_kill_target_id")
+            if action == "no_kill":
+                event = GameEvent(
+                    type="wolf_no_kill_declared",
+                    payload={
+                        "night_number": gs.night_number,
+                        "reason": result.get("wolf_action_reason", "agent decision"),
+                    },
+                )
+                gs = replace(gs, events=gs.events + [event])
+                return {"game_state": gs, "wolf_kill_target_id": None}
+            if action == "kill" and target:
+                target_state = gs.players.get(target)
+                if target_state and target_state.alive:
+                    event = GameEvent(
+                        type="wolf_kill_selected",
+                        payload={"night_number": gs.night_number, "target_id": target},
+                    )
+                    gs = replace(gs, events=gs.events + [event])
+                    return {"game_state": gs, "wolf_kill_target_id": target}
+
+    # Scripted fallback
     action = state.get("wolf_action")
     target = state.get("wolf_kill_target_id")
 
@@ -174,14 +257,73 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
 
 
 def night_witch(state: RuntimeState) -> dict[str, Any]:
-    # Scripted: no antidote, no poison by default
+    gs: GameState = state["game_state"]
+    engine: RuleEngine = state["engine"]
+
+    # Try agent-driven decision first
+    registry = state.get("agent_registry")
+    if registry:
+        result = agent_night_witch(state, engine, registry)
+        if result is not None:
+            use_antidote = result.get("use_antidote", False)
+            poison_target_id = result.get("poison_target_id")
+            action_taken = "no_action"
+            if use_antidote:
+                action_taken = "use_antidote"
+            elif poison_target_id:
+                action_taken = "use_poison"
+            audit = GameEvent(
+                type="witch_decision_audit",
+                payload={
+                    "night_number": gs.night_number,
+                    "wolf_kill_target_id": state.get("wolf_kill_target_id"),
+                    "action_taken": action_taken,
+                    "poison_target_id": poison_target_id,
+                    "reason": "agent_decision",
+                    "visibility": "witch_private",
+                },
+            )
+            gs = replace(gs, events=gs.events + [audit])
+            return {"game_state": gs, **result}
+
+    # Scripted fallback
     return {"use_antidote": state.get("use_antidote", False),
             "poison_target_id": state.get("poison_target_id")}
 
 
 def night_seer(state: RuntimeState) -> dict[str, Any]:
-    # Scripted: no action by default, just pass through
+    engine: RuleEngine = state["engine"]
+
+    # Try agent-driven decision first
+    registry = state.get("agent_registry")
+    if registry:
+        result = agent_night_seer(state, engine, registry)
+        if result is not None:
+            return result
+
+    # Scripted fallback
     return {"seer_target_id": state.get("seer_target_id")}
+
+
+def night_hunter_idiot_status(state: RuntimeState) -> dict[str, Any]:
+    """First night only: confirm hunter and idiot are alive for moderator audit.
+    Produces no public output; event is moderator/private visibility only."""
+    gs: GameState = state["game_state"]
+    if gs.night_number != 1:
+        return {}
+    hunter_id = _find_role(gs, "hunter")
+    idiot_id = _find_role(gs, "idiot")
+    event = GameEvent(
+        type="hunter_idiot_status_confirmed",
+        payload={
+            "night_number": 1,
+            "hunter_id": hunter_id,
+            "idiot_id": idiot_id,
+            "visibility": "moderator_only",
+        },
+    )
+    gs = replace(gs, events=gs.events + [event])
+    return {"game_state": gs}
 
 
 def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
@@ -214,6 +356,7 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
         wolf_kill_target_id=state.get("wolf_kill_target_id"),
         use_antidote=state.get("use_antidote", False),
         poison_target_id=state.get("poison_target_id"),
+        seer_target_id=state.get("seer_target_id"),
     )
     if events:
         gs = replace(gs, events=gs.events + events)
@@ -291,8 +434,15 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
     speech_order = state.get("speech_order", [])
     speech_index = state.get("speech_index", 0)
     speaker_id = state.get("current_speaker_id")
+
+    # Auto-populate speech order from alive players when agent registry is present
+    registry = state.get("agent_registry")
+    if not speech_order and registry:
+        speech_order = [pid for pid, p in gs.players.items() if p.alive]
+
     if speaker_id is None and speech_index < len(speech_order):
         speaker_id = speech_order[speech_index]
+
     def advance_speaker() -> dict[str, Any]:
         next_index = speech_index + 1
         next_speaker = speech_order[next_index] if next_index < len(speech_order) else None
@@ -301,9 +451,14 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
             "current_speaker_id": next_speaker,
             "speech_timed_out": False,
             "speech_text": "",
+            "speech_order": speech_order,
         }
 
-    if speaker_id and state.get("speech_timed_out", False):
+    timed_out = state.get("speech_timed_out", False) or (
+        speaker_id is not None and _timer_expired(state, f"speech:{speaker_id}")
+    )
+
+    if speaker_id and timed_out:
         gs = replace(gs, events=gs.events + [GameEvent(
             type="speech_timeout",
             payload={
@@ -314,12 +469,18 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         )])
         return {"game_state": gs, **advance_speaker()}
     if speaker_id:
+        speech_text = state.get("speech_text", "")
+        if registry and not speech_text:
+            engine: RuleEngine = state["engine"]
+            result = agent_day_speech(state, engine, registry, speaker_id)
+            if result:
+                speech_text = result.get("speech_text", "")
         gs = replace(gs, events=gs.events + [GameEvent(
             type="speech",
             payload={
                 "speaker": speaker_id,
                 "day_number": gs.day_number,
-                "text": state.get("speech_text", ""),
+                "text": speech_text,
             },
         )])
         return {"game_state": gs, **advance_speaker()}
@@ -328,8 +489,19 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
 
 
 def day_vote(state: RuntimeState) -> dict[str, Any]:
-    return {"exile_votes": state.get("exile_votes", {}),
-            "revote": state.get("revote", False)}
+    existing_votes = state.get("exile_votes", {})
+    registry = state.get("agent_registry")
+    if registry and not existing_votes:
+        gs: GameState = state["game_state"]
+        engine: RuleEngine = state["engine"]
+        votes: dict[str, str] = {}
+        for pid, player in gs.players.items():
+            if player.alive:
+                result = agent_day_vote(state, engine, registry, pid)
+                if result and result.get("vote_target"):
+                    votes[pid] = result["vote_target"]
+        return {"exile_votes": votes, "revote": state.get("revote", False)}
+    return {"exile_votes": existing_votes, "revote": state.get("revote", False)}
 
 
 def resolve_vote(state: RuntimeState) -> dict[str, Any]:
@@ -374,6 +546,44 @@ def post_exile_skills(state: RuntimeState) -> dict[str, Any]:
                             source_player_id=death.player_id,
                         )
                         gs = engine.apply_death(gs, shot_death)
+    return {"game_state": gs}
+
+
+def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
+    """Resolve pending hunter shot after night wolf-kill, before victory check."""
+    engine: RuleEngine = state["engine"]
+    gs: GameState = state["game_state"]
+
+    for death in gs.deaths:
+        if "hunter_shot" not in death.triggered_skills:
+            continue
+        if death.player_id not in gs.players:
+            continue
+        player = gs.players[death.player_id]
+        if player.role != "hunter" or player.alive:
+            continue
+        # Skip if already resolved (death from this hunter already applied)
+        already_shot = any(
+            d.source_player_id == death.player_id and d.reason == "hunter_shot"
+            for d in gs.deaths
+        )
+        if already_shot:
+            continue
+
+        # Get target: scripted, then agent
+        target = state.get("hunter_shot_target_id")
+        registry = state.get("agent_registry")
+        if target is None and registry:
+            target = agent_hunter_shot(state, engine, registry, death.player_id)
+        if target:
+            shot_death = Death(
+                player_id=target, reason="hunter_shot",
+                timing=death.timing, resolution_batch=death.resolution_batch,
+                source_player_id=death.player_id,
+            )
+            gs = engine.apply_death(gs, shot_death)
+        break
+
     return {"game_state": gs}
 
 
@@ -446,12 +656,45 @@ def finish_game(state: RuntimeState) -> dict[str, Any]:
 # Conditional edge routers
 # ---------------------------------------------------------------------------
 
+def _sheriff_died_this_batch(gs: GameState) -> bool:
+    """Check if the sheriff died in the current resolution batch."""
+    if gs.sheriff_id is None or gs.sheriff_badge_state != "active":
+        return False
+    sheriff = gs.players.get(gs.sheriff_id)
+    return sheriff is not None and not sheriff.alive
+
+
 def route_after_resolve_night(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
+    # Check for pending hunter shot first (must resolve before victory check)
+    for death in gs.deaths:
+        if "hunter_shot" in death.triggered_skills:
+            if death.player_id in gs.players and not gs.players[death.player_id].alive:
+                already_shot = any(
+                    d.source_player_id == death.player_id and d.reason == "hunter_shot"
+                    for d in gs.deaths
+                )
+                if not already_shot:
+                    return "resolve_hunter_shot"
     engine: RuleEngine = state["engine"]
     result = engine.check_victory(gs)
     if result.winner is not None:
         return "check_victory"
+    # If sheriff died at night and game continues, route to badge transfer
+    if _sheriff_died_this_batch(gs):
+        return "sheriff_badge_transfer"
+    return "announce_deaths"
+
+
+def route_after_hunter_shot(state: RuntimeState) -> str:
+    engine: RuleEngine = state["engine"]
+    gs: GameState = state["game_state"]
+    result = engine.check_victory(gs)
+    if result.winner is not None:
+        return "check_victory"
+    # If sheriff died at night and game continues, route to badge transfer
+    if _sheriff_died_this_batch(gs):
+        return "sheriff_badge_transfer"
     return "announce_deaths"
 
 
@@ -474,6 +717,20 @@ def route_after_exile(state: RuntimeState) -> str:
 
 def route_after_post_exile(state: RuntimeState) -> str:
     return "check_victory"
+
+
+def _route_after_badge_transfer(state: RuntimeState) -> str:
+    """After badge transfer, route based on context.
+
+    Night-death path: sheriff died at night -> badge transfer -> announce_deaths.
+    Post-victory path: check_victory -> badge transfer -> enter_night.
+    """
+    gs: GameState = state["game_state"]
+    # If phase is still "night", we're in the night-death path and need to
+    # proceed to announce_deaths (which sets phase to "day").
+    if gs.phase == "night":
+        return "announce_deaths"
+    return "enter_night"
 
 
 def route_victory(state: RuntimeState) -> str:
@@ -561,6 +818,7 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("wolf_consensus", wolf_consensus)
     graph.add_node("night_witch", night_witch)
     graph.add_node("night_seer", night_seer)
+    graph.add_node("night_hunter_idiot_status", night_hunter_idiot_status)
     graph.add_node("first_night_hybrid_master", first_night_hybrid_master)
     graph.add_node("resolve_night_node", resolve_night)
     graph.add_node("announce_deaths", announce_deaths)
@@ -577,6 +835,7 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("tie_revote", tie_revote)
     graph.add_node("resolve_exile", resolve_exile)
     graph.add_node("post_exile_skills", post_exile_skills)
+    graph.add_node("resolve_hunter_shot", resolve_hunter_shot)
     graph.add_node("check_victory", check_victory)
     graph.add_node("sheriff_badge_transfer", sheriff_badge_transfer)
     graph.add_node("finish_game", finish_game)
@@ -590,10 +849,18 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_edge("wolf_discussion", "wolf_consensus")
     graph.add_edge("wolf_consensus", "night_witch")
     graph.add_edge("night_witch", "night_seer")
-    graph.add_edge("night_seer", "first_night_hybrid_master")
+    graph.add_edge("night_seer", "night_hunter_idiot_status")
+    graph.add_edge("night_hunter_idiot_status", "first_night_hybrid_master")
     graph.add_edge("first_night_hybrid_master", "resolve_night_node")
     graph.add_conditional_edges("resolve_night_node", route_after_resolve_night, {
+        "resolve_hunter_shot": "resolve_hunter_shot",
         "check_victory": "check_victory",
+        "sheriff_badge_transfer": "sheriff_badge_transfer",
+        "announce_deaths": "announce_deaths",
+    })
+    graph.add_conditional_edges("resolve_hunter_shot", route_after_hunter_shot, {
+        "check_victory": "check_victory",
+        "sheriff_badge_transfer": "sheriff_badge_transfer",
         "announce_deaths": "announce_deaths",
     })
     graph.add_edge("announce_deaths", "night_death_last_words")
@@ -628,5 +895,8 @@ def _add_all_edges(graph: StateGraph) -> None:
         "sheriff_badge_transfer": "sheriff_badge_transfer",
         "enter_night": "enter_night",
     })
-    graph.add_edge("sheriff_badge_transfer", "enter_night")
+    graph.add_conditional_edges("sheriff_badge_transfer", _route_after_badge_transfer, {
+        "announce_deaths": "announce_deaths",
+        "enter_night": "enter_night",
+    })
     graph.add_edge("finish_game", END)

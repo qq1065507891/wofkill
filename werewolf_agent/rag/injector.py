@@ -5,10 +5,12 @@ Enforces:
 - God-view reviews only in review/moderator contexts, never live player
 - Each hit annotated with source, quality, visibility for spectating
 - RAG hits never contain base rules or adjudication truth
+- Audit logging: every injection is traceable by game_id, player_id, phase, source, quality, visibility
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from werewolf_agent.agents.schemas import AgentContext
@@ -32,6 +34,21 @@ class InjectionContext(str):
 
 
 # ---------------------------------------------------------------------------
+# RAG hit audit record
+# ---------------------------------------------------------------------------
+
+@dataclass
+class InjectionAuditRecord:
+    """Audit record for a single RAG injection call."""
+    game_id: str | None = None
+    player_id: str | None = None
+    phase: str | None = None
+    query_role: str | None = None
+    injection_context: str | None = None
+    hits: list[dict[str, Any]] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # RAG Injector
 # ---------------------------------------------------------------------------
 
@@ -40,11 +57,16 @@ class RAGInjector:
 
     def __init__(self, retriever: StrategyRetriever) -> None:
         self._retriever = retriever
+        self._audit_log: list[InjectionAuditRecord] = []
+        self._last_audit: InjectionAuditRecord | None = None
 
     def inject(
         self,
         query: RAGQuery,
         injection_context: str = InjectionContext.LIVE_PLAYER,
+        *,
+        game_id: str | None = None,
+        player_id: str | None = None,
     ) -> list[RAGHit]:
         """Retrieve and filter RAG hits for the given context."""
         # God-view only allowed in review/moderator
@@ -59,7 +81,6 @@ class RAGInjector:
         if injection_context == InjectionContext.LIVE_PLAYER:
             hits = [h for h in hits if h.allowed_in_live_context]
         elif injection_context == InjectionContext.SPECTATOR:
-            # Spectators see player-perspective content only
             hits = [
                 h for h in hits
                 if h.visibility_boundary in (
@@ -69,7 +90,35 @@ class RAGInjector:
             ]
         # review and moderator see everything
 
+        # Build audit record
+        audit = InjectionAuditRecord(
+            game_id=game_id,
+            player_id=player_id,
+            phase=query.phase,
+            query_role=query.role,
+            injection_context=injection_context,
+            hits=[
+                {
+                    "entry_id": h.entry_id,
+                    "relevance_score": h.relevance_score,
+                    "quality_grade": h.quality_grade.value,
+                    "source_type": h.source_type.value,
+                    "visibility_boundary": h.visibility_boundary.value,
+                    "case_type": h.case_type.value if h.case_type else None,
+                }
+                for h in hits
+            ],
+        )
+        self._last_audit = audit
+        self._audit_log.append(audit)
+
         return hits
+
+    def last_audit(self) -> InjectionAuditRecord | None:
+        return self._last_audit
+
+    def audit_log(self) -> list[InjectionAuditRecord]:
+        return list(self._audit_log)
 
     def hits_to_context_items(
         self,

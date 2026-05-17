@@ -1,0 +1,291 @@
+"""SQLite-backed game repository for persistent local development.
+
+Uses stdlib sqlite3. Tables:
+- games: serialized GameState JSON
+- events: ordered event log per game
+- deaths: death records per game
+- model_usage: model call logs per game
+- evaluations: evaluation result per game
+- config_snapshots: config JSON per game
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import asdict, replace
+from typing import Any
+
+from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+
+
+def _serialize_game_state(gs: GameState) -> str:
+    data = asdict(gs)
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _deserialize_game_state(raw: str) -> GameState:
+    data = json.loads(raw)
+    players = {
+        pid: PlayerState(**pdata) for pid, pdata in data.pop("players", {}).items()
+    }
+    deaths = [Death(**d) for d in data.pop("deaths", [])]
+    events = [GameEvent(**e) for e in data.pop("events", [])]
+    return GameState(
+        players=players,
+        deaths=deaths,
+        events=events,
+        **data,
+    )
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS games (
+    game_id TEXT PRIMARY KEY,
+    state_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS deaths (
+    game_id TEXT NOT NULL,
+    player_id TEXT NOT NULL,
+    death_json TEXT NOT NULL,
+    PRIMARY KEY (game_id, player_id),
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS model_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS evaluations (
+    game_id TEXT PRIMARY KEY,
+    result_json TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS config_snapshots (
+    game_id TEXT PRIMARY KEY,
+    config_json TEXT NOT NULL,
+    FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS rag_entries (
+    entry_id TEXT PRIMARY KEY,
+    entry_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+class SqliteGameRepository:
+    """SQLite implementation of GameRepository."""
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.executescript(_SCHEMA)
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    # -- Game state --------------------------------------------------------
+
+    def save_game(self, state: GameState) -> None:
+        data = _serialize_game_state(state)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO games (game_id, state_json) VALUES (?, ?)",
+            (state.game_id, data),
+        )
+        self._conn.commit()
+
+    def load_game(self, game_id: str) -> GameState | None:
+        row = self._conn.execute(
+            "SELECT state_json FROM games WHERE game_id = ?",
+            (game_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _deserialize_game_state(row[0])
+
+    # -- Events -----------------------------------------------------------
+
+    def append_events(self, game_id: str, events: list[GameEvent]) -> None:
+        current_max = self._conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
+            (game_id,),
+        ).fetchone()[0]
+        for i, event in enumerate(events):
+            self._conn.execute(
+                "INSERT INTO events (game_id, seq, event_type, payload_json) VALUES (?, ?, ?, ?)",
+                (game_id, current_max + i + 1, event.type, json.dumps(event.payload, ensure_ascii=False)),
+            )
+        self._conn.commit()
+
+    def load_events(self, game_id: str) -> list[GameEvent]:
+        rows = self._conn.execute(
+            "SELECT event_type, payload_json FROM events WHERE game_id = ? ORDER BY seq",
+            (game_id,),
+        ).fetchall()
+        return [
+            GameEvent(type=r[0], payload=json.loads(r[1]))
+            for r in rows
+        ]
+
+    # -- Deaths -----------------------------------------------------------
+
+    def save_deaths(self, game_id: str, deaths: list[Death]) -> None:
+        self._conn.execute("DELETE FROM deaths WHERE game_id = ?", (game_id,))
+        for death in deaths:
+            self._conn.execute(
+                "INSERT INTO deaths (game_id, player_id, death_json) VALUES (?, ?, ?)",
+                (game_id, death.player_id, json.dumps(asdict(death), ensure_ascii=False)),
+            )
+        self._conn.commit()
+
+    def load_deaths(self, game_id: str) -> list[Death]:
+        rows = self._conn.execute(
+            "SELECT death_json FROM deaths WHERE game_id = ?",
+            (game_id,),
+        ).fetchall()
+        return [Death(**json.loads(r[0])) for r in rows]
+
+    # -- Model usage -------------------------------------------------------
+
+    def save_model_usage(self, game_id: str, record: dict[str, Any]) -> None:
+        self._conn.execute(
+            "INSERT INTO model_usage (game_id, record_json) VALUES (?, ?)",
+            (game_id, json.dumps(record, ensure_ascii=False)),
+        )
+        self._conn.commit()
+
+    def load_model_usage(self, game_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT record_json FROM model_usage WHERE game_id = ? ORDER BY id",
+            (game_id,),
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    # -- Evaluation --------------------------------------------------------
+
+    def save_evaluation(self, game_id: str, result: dict[str, Any]) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO evaluations (game_id, result_json) VALUES (?, ?)",
+            (game_id, json.dumps(result, ensure_ascii=False)),
+        )
+        self._conn.commit()
+
+    def load_evaluation(self, game_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT result_json FROM evaluations WHERE game_id = ?",
+            (game_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    # -- Config snapshots --------------------------------------------------
+
+    def save_config_snapshot(self, game_id: str, config: dict[str, Any]) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO config_snapshots (game_id, config_json) VALUES (?, ?)",
+            (game_id, json.dumps(config, ensure_ascii=False)),
+        )
+        self._conn.commit()
+
+    def load_config_snapshot(self, game_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT config_json FROM config_snapshots WHERE game_id = ?",
+            (game_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    # -- List / Delete -----------------------------------------------------
+
+    def list_games(self) -> list[GameState]:
+        rows = self._conn.execute(
+            "SELECT state_json FROM games"
+        ).fetchall()
+        return [_deserialize_game_state(r[0]) for r in rows]
+
+    def delete_game(self, game_id: str) -> None:
+        self._conn.execute("DELETE FROM games WHERE game_id = ?", (game_id,))
+        # ON DELETE CASCADE handles related tables
+        self._conn.commit()
+
+    # -- RAG entries ---------------------------------------------------------
+
+    def save_rag_entries(self, entries: list[dict[str, Any]]) -> None:
+        """Persist RAG entries (list of serialized RAGEntry dicts)."""
+        for entry in entries:
+            entry_id = entry.get("entry_id", "")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO rag_entries (entry_id, entry_json) VALUES (?, ?)",
+                (entry_id, json.dumps(entry, ensure_ascii=False)),
+            )
+        self._conn.commit()
+
+    def load_rag_entries(self) -> list[dict[str, Any]]:
+        """Load all persisted RAG entries."""
+        rows = self._conn.execute(
+            "SELECT entry_json FROM rag_entries"
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    def delete_rag_entry(self, entry_id: str) -> None:
+        self._conn.execute("DELETE FROM rag_entries WHERE entry_id = ?", (entry_id,))
+        self._conn.commit()
+
+    # -- Memory snapshots ----------------------------------------------------
+
+    def save_memory_snapshot(self, snapshot_id: str, data: dict[str, Any]) -> None:
+        """Persist a MemoryStore snapshot."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO memory_snapshots (snapshot_id, snapshot_json) VALUES (?, ?)",
+            (snapshot_id, json.dumps(data, ensure_ascii=False)),
+        )
+        self._conn.commit()
+
+    def load_memory_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        """Load a MemoryStore snapshot by ID."""
+        row = self._conn.execute(
+            "SELECT snapshot_json FROM memory_snapshots WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def list_memory_snapshots(self) -> list[dict[str, Any]]:
+        """List all memory snapshot metadata."""
+        rows = self._conn.execute(
+            "SELECT snapshot_id, created_at FROM memory_snapshots ORDER BY created_at DESC"
+        ).fetchall()
+        return [{"snapshot_id": r[0], "created_at": r[1]} for r in rows]
+
+    def delete_memory_snapshot(self, snapshot_id: str) -> None:
+        self._conn.execute(
+            "DELETE FROM memory_snapshots WHERE snapshot_id = ?", (snapshot_id,)
+        )
+        self._conn.commit()

@@ -844,3 +844,361 @@ class TestEvaluationIntegration:
         assert snap.safety_metrics.illegal_action_count >= 1
         assert snap.safety_metrics.leakage_count >= 1
         assert snap.safety_metrics.illegal_action_rate > 0.0
+
+
+# ===========================================================================
+# Advanced quality metrics — data-backed computation
+# ===========================================================================
+
+
+class TestAdvancedQualityMetrics:
+    """Test that previously-placeholder metrics now compute from real data."""
+
+    def test_lie_detection_from_claims(self):
+        """Lie detection rate from claim_role events + cognition snapshots."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
+                {"type": "claim_role", "payload": {"player_id": "player_03", "claimed_role": "witch"}},
+            ],
+            cognition_snapshots={
+                "player_05": {
+                    "entries": {
+                        "player_01": {"top_role_guess": "werewolf"},
+                        "player_03": {"top_role_guess": "werewolf"},
+                    },
+                },
+            },
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # 2 lies (wolf claiming power role), both detected by player_05
+        assert snap.quality_metrics.lie_detection_rate == pytest.approx(1.0)
+
+    def test_lie_detection_partial(self):
+        """Lie detection rate with partial detection."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
+                {"type": "claim_role", "payload": {"player_id": "player_03", "claimed_role": "witch"}},
+            ],
+            cognition_snapshots={
+                "player_05": {
+                    "entries": {
+                        "player_01": {"top_role_guess": "werewolf"},
+                        "player_03": {"top_role_guess": "villager"},
+                    },
+                },
+            },
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # 2 lies, 1 detected (player_01)
+        assert snap.quality_metrics.lie_detection_rate == pytest.approx(0.5)
+
+    def test_stance_accuracy_from_votes(self):
+        """Stance accuracy from vote action records — good voters only."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            action_records=[
+                ActionRecord(player_id="player_05", action_type="vote", target_id="player_01"),  # good→wolf: correct
+                ActionRecord(player_id="player_06", action_type="vote", target_id="player_01"),  # good→wolf: correct
+                ActionRecord(player_id="player_07", action_type="vote", target_id="player_05"),  # good→good: incorrect
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # 2 correct out of 3 good-player votes
+        assert snap.quality_metrics.stance_accuracy == pytest.approx(2 / 3, abs=0.01)
+
+    def test_bold_claim_success_rate(self):
+        """Bold claim success from claim events + survival/outcome."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="werewolf",
+            event_log=[
+                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
+                {"type": "claim_role", "payload": {"player_id": "player_02", "claimed_role": "seer"}},
+            ],
+            deaths=[
+                {"player_id": "player_01", "reason": "exile", "timing": "day_vote", "resolution_batch": "day_1"},
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # player_01: bold claim + exiled → failed
+        # player_02: bold claim + survived + wolf won → success
+        assert 0.0 < snap.quality_metrics.bold_claim_success_rate <= 1.0
+
+    def test_hybrid_master_choice_benefit(self):
+        """Hybrid master choice benefit = hybrid co-win fraction."""
+        agg = MetricsAggregator()
+        r1 = _make_game_result(game_id="g1", winning_faction="good")
+        r1.hybrid_result = "win"
+        r2 = _make_game_result(game_id="g2", winning_faction="werewolf")
+        r2.hybrid_result = "lose"
+        r2.player_factions["player_12"] = "good"
+        agg.add_results([r1, r2])
+        snap = agg.compute_snapshot()
+        assert snap.quality_metrics.hybrid_master_choice_benefit == pytest.approx(0.5, abs=0.01)
+
+    def test_witch_potion_benefit(self):
+        """Witch potion benefit from antidote/poison events."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "antidote_used", "payload": {"witch_id": "player_09", "target_id": "player_05"}},
+                {"type": "poison_used", "payload": {"witch_id": "player_09", "target_id": "player_01"}},
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # antidote saved good villager → beneficial; poison killed wolf → beneficial
+        assert snap.quality_metrics.witch_potion_benefit == pytest.approx(1.0)
+
+    def test_witch_potion_partial(self):
+        """Witch potion benefit when some potions are misused."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "antidote_used", "payload": {"witch_id": "player_09", "target_id": "player_01"}},  # saved wolf
+                {"type": "poison_used", "payload": {"witch_id": "player_09", "target_id": "player_05"}},  # killed good
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # Both misused → 0.0
+        assert snap.quality_metrics.witch_potion_benefit == pytest.approx(0.0)
+
+    def test_seer_badge_flow_quality(self):
+        """Seer badge-flow quality from seer checks + subsequent exile."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "seer_check", "payload": {"seer_id": "player_08", "target_id": "player_01", "alignment": "wolf"}},
+            ],
+            deaths=[
+                {"player_id": "player_01", "reason": "exile", "timing": "day_vote", "resolution_batch": "day_1"},
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # Seer checked wolf, wolf was exiled → quality > 0
+        assert snap.quality_metrics.seer_badge_flow_quality > 0.0
+
+    def test_wolf_consensus_quality(self):
+        """Wolf consensus quality: targeting power roles is strategic."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="werewolf",
+            event_log=[
+                {"type": "wolf_kill", "payload": {"target_id": "player_08"}},
+            ],
+            deaths=[
+                {"player_id": "player_08", "reason": "wolf_kill", "timing": "night", "resolution_batch": "night_1"},
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # Killed seer (power role) → strategic → quality > 0
+        assert snap.quality_metrics.wolf_consensus_quality > 0.0
+
+    def test_contradiction_adopted_rate(self):
+        """Contradiction adopted rate from reviews."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            reviews=[
+                {
+                    "contradiction_alerts": [
+                        {"player_id": "player_01", "type": "stance_reversal"},
+                        {"player_id": "player_02", "type": "claim_conflict"},
+                    ],
+                    "contradiction_adopted": [
+                        {"player_id": "player_01", "alert_type": "stance_reversal"},
+                    ],
+                },
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        # 2 alerts, 1 adopted → 0.5
+        assert snap.quality_metrics.contradiction_adopted_rate == pytest.approx(0.5, abs=0.01)
+
+    def test_badge_decision_quality(self):
+        """Badge transfer/tear decision quality from events."""
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "badge_transfer", "payload": {"from_id": "player_08", "to_id": "player_05"}},
+            ],
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        assert snap.quality_metrics.badge_decision_quality >= 0.0
+
+
+# ===========================================================================
+# Metric provenance tests
+# ===========================================================================
+
+
+class TestMetricProvenance:
+    """Test that every advanced metric has provenance tracking."""
+
+    def test_provenance_keys_cover_quality_metrics(self):
+        from werewolf_agent.evaluation.schemas import MetricProvenance
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
+                {"type": "seer_check", "payload": {"seer_id": "player_08", "target_id": "player_01", "alignment": "wolf"}},
+            ],
+            action_records=[
+                ActionRecord(player_id="player_05", action_type="vote", target_id="player_01"),
+            ],
+            cognition_snapshots={
+                "player_05": {"entries": {"player_01": {"top_role_guess": "werewolf"}}},
+            },
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        assert isinstance(snap.provenance, dict)
+        # Key metrics should have provenance entries
+        for key in ("lie_detection_rate", "stance_accuracy", "vote_accuracy"):
+            assert key in snap.provenance, f"Missing provenance for {key}"
+            p = snap.provenance[key]
+            assert isinstance(p, MetricProvenance)
+            assert p.source_count > 0
+            assert len(p.contributing_games) > 0
+
+    def test_provenance_records_source_types(self):
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
+            ],
+            cognition_snapshots={
+                "player_05": {"entries": {"player_01": {"top_role_guess": "werewolf"}}},
+            },
+        )
+        agg.add_result(result)
+        snap = agg.compute_snapshot()
+        p = snap.provenance.get("lie_detection_rate")
+        assert p is not None
+        assert "event_log" in p.source_types
+        assert "cognition_snapshots" in p.source_types
+
+    def test_provenance_game_ids(self):
+        agg = MetricsAggregator()
+        agg.add_result(_make_game_result(game_id="g_abc", winning_faction="good"))
+        snap = agg.compute_snapshot()
+        for p in snap.provenance.values():
+            assert "g_abc" in p.contributing_games
+
+
+# ===========================================================================
+# Report export tests
+# ===========================================================================
+
+
+class TestReportExport:
+    """Test JSON report export for observer UI."""
+
+    def test_metrics_snapshot_json_export(self):
+        agg = MetricsAggregator()
+        agg.add_result(_make_game_result())
+        snap = agg.compute_snapshot()
+        d = snap.to_json_dict()
+        assert isinstance(d, dict)
+        assert "batch_id" in d
+        assert "faction_metrics" in d
+        assert "quality_metrics" in d
+        assert "safety_metrics" in d
+        assert "cost_metrics" in d
+        assert "provenance" in d
+        # Round-trip via JSON
+        json_str = json.dumps(d, ensure_ascii=False)
+        parsed = json.loads(json_str)
+        assert parsed["batch_id"] == snap.batch_id
+
+    def test_full_evaluation_report(self):
+        from werewolf_agent.evaluation.schemas import FullEvaluationReport
+        agg = MetricsAggregator(BatchConfig(batch_id="report_test"))
+        agg.add_result(_make_game_result())
+        snap = agg.compute_snapshot()
+
+        gen = ReportGenerator()
+        gen.add_snapshot(snap)
+        report = gen.generate_leaderboard()
+
+        full = FullEvaluationReport(
+            report_id="full_001",
+            batch_id="report_test",
+            metrics=snap.to_json_dict(),
+            leaderboard=report.to_json_dict(),
+        )
+        d = full.to_json_dict()
+        assert d["report_id"] == "full_001"
+        assert "metrics" in d
+        assert "leaderboard" in d
+        json_str = json.dumps(d, ensure_ascii=False)
+        parsed = json.loads(json_str)
+        assert parsed["report_id"] == "full_001"
+
+    def test_report_generator_export_full_report(self):
+        gen = ReportGenerator()
+        agg = MetricsAggregator(BatchConfig(batch_id="export_test"))
+        agg.add_results([
+            _make_game_result(game_id="g1", winning_faction="good"),
+            _make_game_result(game_id="g2", winning_faction="werewolf"),
+        ])
+        snap = agg.compute_snapshot()
+        gen.add_snapshot(snap)
+
+        full_dict = gen.export_full_report(snap)
+        assert "report_id" in full_dict
+        assert "metrics" in full_dict
+        assert "leaderboard" in full_dict
+        assert "provenance" in full_dict.get("metrics", {})
+        # Must be JSON-serializable
+        json_str = json.dumps(full_dict, ensure_ascii=False)
+        assert len(json_str) > 0
+
+    def test_compare_snapshots_includes_new_metrics(self):
+        agg_a = MetricsAggregator(BatchConfig(batch_id="cmp_a"))
+        agg_a.add_result(_make_game_result(
+            winning_faction="good",
+            event_log=[
+                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
+            ],
+            cognition_snapshots={
+                "player_05": {"entries": {"player_01": {"top_role_guess": "werewolf"}}},
+            },
+        ))
+        agg_b = MetricsAggregator(BatchConfig(batch_id="cmp_b"))
+        agg_b.add_result(_make_game_result(
+            winning_faction="werewolf",
+            event_log=[
+                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
+            ],
+        ))
+
+        snap_a = agg_a.compute_snapshot()
+        snap_b = agg_b.compute_snapshot()
+        comparisons = MetricsAggregator.compare_snapshots(snap_a, snap_b)
+        metric_names = {c["metric_name"] for c in comparisons}
+        # Should include new metrics in comparison
+        assert "lie_detection_rate" in metric_names
+        assert "stance_accuracy" in metric_names

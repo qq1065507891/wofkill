@@ -175,3 +175,34 @@ class RelationGraph:
             ))
 
         return events
+
+    # --- Serialization ---
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "events": [
+                {
+                    "predicate": e.predicate.value,
+                    "source": e.source,
+                    "target": e.target,
+                    "day": e.day,
+                    "value": e.value,
+                    "metadata": e.metadata,
+                }
+                for e in self._events
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RelationGraph:
+        graph = cls()
+        for e_data in data.get("events", []):
+            graph.add_event(RelationEvent(
+                predicate=RelationType(e_data["predicate"]),
+                source=e_data["source"],
+                target=e_data["target"],
+                day=e_data.get("day", 0),
+                value=e_data.get("value", ""),
+                metadata=e_data.get("metadata"),
+            ))
+        return graph

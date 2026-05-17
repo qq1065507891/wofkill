@@ -301,7 +301,7 @@ class RuleEngine:
                     antidote_used = True
                     events.append(GameEvent(
                         type="witch_antidote_used",
-                        payload={"target_id": wolf_kill_target_id},
+                        payload={"target_id": wolf_kill_target_id, "visibility": "witch_private"},
                     ))
             if not saved_by_antidote:
                 deaths.append(wolf_death)
@@ -318,7 +318,7 @@ class RuleEngine:
             ))
             events.append(GameEvent(
                 type="witch_poison_used",
-                payload={"target_id": poison_target_id},
+                payload={"target_id": poison_target_id, "visibility": "witch_private"},
             ))
 
         # Apply deaths
@@ -327,6 +327,25 @@ class RuleEngine:
             new_state = self.apply_death(new_state, death)
 
         new_state = replace(new_state, antidote_used=antidote_used, poison_used=poison_used)
+
+        # 4. Seer check
+        if seer_target_id is not None:
+            seer_id = next(
+                (pid for pid, p in new_state.players.items() if p.role == "seer" and p.alive),
+                None,
+            )
+            if seer_id is not None:
+                alignment_result = self.check_alignment(new_state, seer_id=seer_id, target_id=seer_target_id)
+                events.append(GameEvent(
+                    type="seer_check",
+                    payload={
+                        "seer_id": seer_id,
+                        "target_id": seer_target_id,
+                        "alignment": alignment_result.alignment,
+                        "night_number": night_number,
+                        "visibility": "seer_only",
+                    },
+                ))
 
         return new_state, events
 
@@ -668,6 +687,27 @@ class RuleEngine:
             return replace(
                 state, poison_used=True, events=state.events + [event]
             )
+
+        # Game started — transition to night with initial players
+        if etype == "game_started":
+            new_players = {}
+            for pid, pdata in payload.get("players", {}).items():
+                if isinstance(pdata, dict):
+                    new_players[pid] = PlayerState(**pdata)
+                else:
+                    new_players[pid] = pdata
+            return replace(
+                state,
+                players=new_players or state.players,
+                phase="night",
+                events=state.events + [event],
+            )
+
+        # Pause / resume
+        if etype == "game_paused":
+            return replace(state, paused=True, events=state.events + [event])
+        if etype == "game_resumed":
+            return replace(state, paused=False, events=state.events + [event])
 
         # Default: just append event
         return replace(state, events=state.events + [event])

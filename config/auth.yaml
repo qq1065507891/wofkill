@@ -1,0 +1,6 @@
+mode: local
+token_ttl_seconds: 3600
+local_users:
+  mod1: moderator
+  dbg1: debugger
+  spectator: spectator

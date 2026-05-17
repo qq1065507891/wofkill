@@ -17,6 +17,7 @@ from werewolf_agent.evaluation.schemas import (
     ExperimentComparison,
     ExperimentDimension,
     FactionMetrics,
+    FullEvaluationReport,
     GrowthPoint,
     LeaderboardEntry,
     LeaderboardReport,
@@ -202,6 +203,18 @@ class ReportGenerator:
     def to_json(report: LeaderboardReport) -> str:
         """Serialize leaderboard report to JSON string."""
         return json.dumps(report.to_json_dict(), indent=2, ensure_ascii=False)
+
+    def export_full_report(self, snapshot: MetricsSnapshot) -> dict[str, Any]:
+        """Export full evaluation report as JSON-compatible dict for observer UI."""
+        report = self.generate_leaderboard()
+        full = FullEvaluationReport(
+            report_id=f"full_{int(time.time())}",
+            batch_id=snapshot.batch_id,
+            metrics=snapshot.to_json_dict(),
+            leaderboard=report.to_json_dict(),
+            generated_at=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+        )
+        return full.to_json_dict()
 
     @staticmethod
     def from_json(json_str: str) -> LeaderboardReport:

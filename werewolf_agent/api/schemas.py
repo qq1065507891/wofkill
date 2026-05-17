@@ -158,7 +158,7 @@ class ReplaySnapshot(BaseModel):
     phase: str
     public_state: dict[str, Any] = Field(default_factory=dict)
     player_views: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    moderator_full: dict[str, Any] = Field(default_factory=dict)
+    moderator_full: dict[str, Any] | None = None
 
 
 class ReplayResponse(BaseModel):

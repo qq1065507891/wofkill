@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: V1 design-complete implementation (following claude-implementation-plan.md).
-- Active task: GameRunner — Complete Game Orchestrator (DONE).
+- Current phase: V1.1 local hardening (following 2026-05-17-v1-1-hardening.md).
+- Active task: V1.1 local hardening plan implemented (7/7 tasks done).
 - Task owner: Claude/GLM development session
 - Last updated: 2026-05-17
 
@@ -33,12 +33,12 @@ The automated test suite passes, but passing tests do not mean the design docume
 ### Incomplete or Partially Implemented Features
 
 - **Observer dashboard implemented as single-page HTML/JS.** Design doc section 12.2 lists many dashboard features; the current dashboard covers game list, player status, timeline, death/vote records, moderator private audit, cognitive diff, and pause/resume controls. Advanced features (RAG hit panels with per-hit audit, memory call visualization, attention filter before/after stats, salience weight display, belief updater probability charts, contradiction alert timeline, persona routing change tracking, model call per-action details with token/cost/latency, and cognitive diff timeline slider for belief evolution) require richer data integration and potentially chart libraries in a future iteration.
-- **Persistent storage is not implemented.** Design doc section 13 requires PostgreSQL, Redis, Qdrant/pgvector or local equivalents, object/local report storage, model call logs, config snapshots, event/death/sheriff/evaluation tables, and `docker-compose.yml`. Current game/API state, memory stores, RAG stores, tool logs, and checkpoints are in-memory. There are no migrations, repository layer, database adapters, durable event store, or docker-compose service stack.
+- **Persistent storage is partially implemented.** SQLite repository with migrations exists. Design doc section 13 requires PostgreSQL, Redis, Qdrant/pgvector or local equivalents, object/local report storage, model call logs, config snapshots, event/death/sheriff/evaluation tables, and `docker-compose.yml`. SQLite-based persistence exists with versioned migrations (`MigrationManager`), `SqliteGameRepository` (WAL, FK, JSON serialization), and `InMemoryGameRepository`. Docker Compose service stack exists for local development. Still missing: production PostgreSQL/Redis, Qdrant/pgvector, and scalable deployment config.
 - **Full real-game LangGraph orchestration with live agents is incomplete.** Runtime nodes exist, but several are scripted or placeholders. Wolf discussion now collects per-wolf private speeches (visibility `werewolf_team_only`) and aggregates kill/no_kill votes from all wolves via majority rule. Day speeches and votes are agent-driven when `agent_registry` is provided. BatchRunner uses simplified/mock action generation rather than full live LLM agents.
 - **Design node `night_hunter_idiot_status` is missing from the runtime graph.** The design doc lists this node between `night_seer` and `first_night_hybrid_master`; the current graph jumps directly from `night_seer` to `first_night_hybrid_master`.
 - **Seer night check is only partially implemented.** `RuleEngine.check_alignment` exists, but `resolve_night` accepts `seer_target_id` without producing a `seer_check` event or a private seer result. Runtime `night_seer` does not feed a resolved check into night settlement or private visibility.
 - **Hunter shot chain is now fully integrated for night wolf-kill and day exile.** `apply_death` records `triggered_skills`, `resolve_hunter_shot` resolves the actual shot at night, `post_exile_skills` resolves it for day exile. Agent-driven target selection supported. Poison correctly blocks the shot. Chained deaths (multiple hunters / idiot reveal interactions) not yet tested in multi-death batch scenarios.
-- **Sheriff badge transfer after night deaths is not fully wired.** Design requires sheriff death from night wolf kill, witch poison, hunter shot, exile, or self-destruct to flow through victory check and then badge transfer/tear if the game continues. Current runtime can handle some post-victory badge transfer paths, but night-death routing goes to death announcement instead of the badge decision path.
+- **Sheriff badge transfer after night deaths is now fully wired.** Night-death routing now checks for sheriff death and routes to `sheriff_badge_transfer` before `announce_deaths` when the game continues. Applies to both `route_after_resolve_night` and `route_after_hunter_shot`. Post-victory badge transfer path (via `route_victory`) continues to work. `_route_after_badge_transfer` uses phase detection to route correctly: night-phase (night-death path) goes to `announce_deaths`, non-night-phase (post-victory path) goes to `enter_night`.
 - **Witch live decision flow is now fully integrated.** `night_witch` node calls agent when registry provided, emits `witch_decision_audit` events with `witch_private` visibility, and RuleEngine `resolve_night` witch events carry visibility markers. Legal action constraints verified: self-save blocked, potion exhaustion removes option, no-kill provides no target.
 - **Wolf discussion time limit is represented but not truly timed.** If no valid wolf action is supplied, `wolf_no_kill_timeout` is emitted, but there is no actual asynchronous timer, multi-agent discussion loop, consensus protocol, or timeout cancellation mechanism.
 - **Day speech time limit is represented but not truly timed.** Runtime can record `speech_timeout` when `speech_timed_out=True`, but there is no real clock-bound speech generation/cancellation loop, partial-output handling, or live turn timer.
@@ -170,7 +170,13 @@ The automated test suite passes, but passing tests do not mean the design docume
 - **Start-Game Event Sourcing**: Eliminated the last `object.__setattr__` in `app.py`. `start_game` endpoint now creates `GameEvent(type="game_started")` with player data payload and uses `replace()` to set phase and players. `RuleEngine.reduce_event` handles `game_started` event for deterministic replay (sets phase="night" and populates players from payload). 6 tests: no object.__setattr__ in app.py, reducer handles game_started, replay idempotent, API creates event in timeline, API sets 12 players and phase, double-application doesn't corrupt. **6 new tests, 875 total tests, 0 failures.**
 - **SQLite-Backed Memory Persistence**: Added `rag_entries` and `memory_snapshots` tables to `SqliteGameRepository`. Both `InMemoryGameRepository` and `SqliteGameRepository` now support `save_rag_entries`/`load_rag_entries`/`delete_rag_entry` and `save_memory_snapshot`/`load_memory_snapshot`/`list_memory_snapshots`/`delete_memory_snapshot`. Created `PersistentMemoryCoordinator` (`storage/persistent_memory.py`) that bridges in-memory MemoryStore and StrategyRetriever to a repository for durable storage across process restarts. 29 new tests: RAG save/load/delete/overwrite (5×2 backends), memory snapshot save/load/list/delete/overwrite (6×2 backends), coordinator integration for RAG (1×2), memory (1×2), combined save/restore (1×2), SQLite restart survival (1). **29 new tests, 904 total tests, 0 failures.**
 - **Embedding-Based Vector Search**: Implemented `EmbeddingVectorStore` using hash-based n-gram embeddings (128-dim) with cosine similarity. No pre-trained model required — pure deterministic hash projection from CJK/Latin n-grams. Numpy-accelerated dot product when available, pure-Python fallback. `AutoVectorStore` selects best backend at runtime. 14 new tests: basic add/query, semantic similarity ranking, cosine score bounds, delete, count, empty query, overwrite, CJK n-gram hashing, determinism, auto backend selection, auto workflow, auto delete, embedding vs TF-IDF ranking comparison. **14 new tests, 918 total tests, 0 failures.**
-- **GameRunner — Complete Game Orchestrator**: Created `GameRunner` class that wires LangGraph `build_game_graph()`, `RuleEngine`, and optional persistence into a runnable game flow. Supports both full-game execution (`run()`) and step-by-step execution (`run_step()`). Step-by-step uses a persistent stream generator to advance one graph node per call. `GameRunnerConfig` dataclass provides ruleset_id, player_count, seed, use_agent_registry, model/persona config paths, repository, and memory_coordinator options. Modified `start_game` endpoint in `app.py` to use `GameRunner` for deterministic role assignment via `RuleEngine.assign_roles()` (replacing the previous hardcoded role list). Added `POST /games/{game_id}/step` endpoint that advances the game by one node via `runner.run_step()`. Added `runners` dict to app state for step-by-step runner tracking. Updated API tests that previously hardcoded p01=werewolf/p09=witch to dynamically find players by role via `_find_player_by_role()` helper. **22 new tests (6 config + 4 constructor + 5 scripted game + 4 step-by-step + 2 API integration + 5 endpoint), 940 total tests, 0 failures.**
+- **GameRunner — Complete Game Orchestrator**: Created `GameRunner` class that wires LangGraph `build_game_graph()`, `RuleEngine`, and optional persistence into a runnable game flow. Supports both full-game execution (`run()`) and step-by-step execution (`run_step()`). Step-by-step uses a persistent stream generator to advance one graph node per call. `GameRunnerConfig` dataclass provides ruleset_id, player_count, seed, use_agent_registry, model/persona config paths, repository, and memory_coordinator options. Modified `start_game` endpoint in `app.py` to use `GameRunner` for deterministic role assignment via `RuleEngine.assign_roles()` (replacing the previous hardcoded role list). Added `POST /games/{game_id}/step` endpoint that advances the game by one node via `runner.run_step()`. Added `runners` dict to app state for step-by-step runner tracking. Updated API tests that previously hardcoded p01=werewolf/p09=witch to dynamically find players by role via `_find_player_by_role()` helper. **22 new tests, 940 total tests, 0 failures.**
+- **PersistentMemoryCoordinator 接入生命周期**: GameRunner 在游戏结束时自动通过 PersistentMemoryCoordinator 保存 MemoryStore 快照（snapshot_id=game_id）。游戏开始时尝试恢复前局记忆到 `_restored_memory` / `_restored_rag` 属性。修复了 `save_rag(None)` 的 TypeError。**6 new tests, 946 total tests, 0 failures.**
+- **本地开发认证系统**: 创建 `werewolf_agent/api/auth.py`（AuthConfig、AuthManager、HMAC-SHA256 session token）。新增 `POST /auth/login` 端点。`_resolve_caller_role` 扩展支持 session_token 验证，保持向后兼容。创建 `config/auth.yaml`。**26 new auth tests, 972 total tests, 0 failures.**
+- **补全剩余评测指标**: QualityMetrics 新增 `speech_influence_rate` 和 `cognitive_compression_rate`（`speech_order_utilization` 已存在）。MetricsAggregator 从 event_log 和 cognition_snapshots 计算三个指标，含 provenance 追踪。**11 new tests, 983 total tests, 0 failures.**
+- **增强观战台前端**: dashboard.html 新增 7 个面板：认知差异图、RAG 命中、模型路由、人格路由、注意力过滤统计、成本延迟、私有意图审计。新增 `/games/{id}/rag-audit` API 端点。**8 new tests, 991 total tests, 0 failures.**
+- **Docker Compose 本地服务栈**: 创建 Dockerfile 和 docker-compose.yml（api + 可选 redis）。app.py 支持 WEREWOLF_DB_PATH 环境变量自动配置 SQLite。README 添加 Docker 快速启动。**991 total tests, 0 failures.**
+- **Schema Migration + Sheriff Badge 夜死路由修复**: 创建 `storage/migrations.py` 版本化迁移系统。修复 graph.py 中 sheriff 夜间死亡后 badge transfer 路由（`route_after_resolve_night` 和 `route_after_hunter_shot` 新增 sheriff 死亡检查）。**10 new tests (3 migration + 7 routing), 1001 total tests, 0 failures.**
 
 ## Active Task Checklist
 
@@ -278,6 +284,14 @@ Design-document completion work, in recommended order:
 - Normalized YAML `torn_badge_order_policy` value to `random_start_then_seat_order` matching the no-sheriff policy (same behavior, consistent naming).
 
 ## Changed Files In Current Session
+
+- `werewolf_agent/storage/migrations.py` — NEW. Versioned migration system: Migration dataclass, MIGRATIONS list (version 1), MigrationManager (version tracking, idempotent apply).
+- `tests/storage/test_migrations.py` — NEW. 3 tests: version tracking, idempotent application, schema_version table creation.
+- `werewolf_agent/runtime/graph.py` — Sheriff badge night-death routing fix: added `_sheriff_died_this_batch` helper, modified `route_after_resolve_night` and `route_after_hunter_shot` to route to `sheriff_badge_transfer` when sheriff died at night and game continues, added `_route_after_badge_transfer` conditional edge (night-phase -> announce_deaths, non-night-phase -> enter_night), updated graph edge mappings.
+- `tests/runtime/test_runtime.py` — Added imports for routing functions. Added `TestSheriffBadgeNightDeathRouting` (7 tests): dead sheriff routes to badge transfer after resolve_night and hunter_shot, alive sheriff skips, no sheriff skips, badge transfer night-phase routes to announce_deaths, day-phase routes to enter_night, helper correctness.
+- `PROGRESS.md` — Updated active task, design completion audit, completed items, verification log, changed files.
+
+## Changed Files In Previous Sessions
 
 - `werewolf_agent/runtime/game_runner.py` — NEW. GameRunner class with GameRunnerConfig. Full game orchestration via LangGraph + RuleEngine. Supports run() for complete execution and run_step() for step-by-step advancement.
 - `werewolf_agent/api/app.py` — GameRunner: start_game uses GameRunner for deterministic role assignment via RuleEngine.assign_roles(). Added /step endpoint. Added runners dict for step-by-step runner tracking. Exposed runners on app.state.
@@ -406,6 +420,8 @@ Design-document completion work, in recommended order:
 - 2026-05-17: Embedding-Based Vector Search. Implemented `EmbeddingVectorStore` with hash-based n-gram embeddings (128-dim) and cosine similarity. `AutoVectorStore` selects best backend (embedding with numpy, TF-IDF without). 14 new tests including CJK handling, determinism, semantic ranking comparison. `D:/Miniforge3/envs/wofkill/python.exe -m pytest tests/rag/test_rag_hardening.py::TestEmbeddingVectorStore tests/rag/test_rag_hardening.py::TestAutoVectorStore tests/rag/test_rag_hardening.py::TestEmbeddingVsTFIDFRanking -q` → **14 passed, 0 failed**. Full suite: **918 passed, 0 failed**.
 - 2026-05-17: SiliconFlow Embedding + Reranker Integration. Created `werewolf_agent/rag/embedding_client.py` (BAAI/bge-large-zh-v1.5, 1024-dim, httpx, env-var API key). Created `werewolf_agent/rag/reranker_client.py` (BAAI/bge-reranker-v2-m3, httpx, env-var API key). Added `SiliconFlowVectorStore` to vector_store.py (implements VectorStore protocol via real API embeddings). Updated `StrategyRetriever` with optional reranker injection (rule-based candidates → semantic re-rank). Updated `AutoVectorStore` to prefer SiliconFlow when `SILICONFLOW_API_KEY` is set. Added `create_retriever()` factory with auto-detection. Updated `.env.example`. All 27 hardening tests pass. No API keys hardcoded.
 - 2026-05-17: GameRunner — Complete Game Orchestrator. Created `werewolf_agent/runtime/game_runner.py` with `GameRunnerConfig` (ruleset_id, player_count, seed, use_agent_registry, model/persona config paths, repository, memory_coordinator) and `GameRunner` class. `GameRunner.run()` executes the full LangGraph graph via stream mode. `GameRunner.run_step()` advances one node at a time using a persistent stream generator. Modified `werewolf_agent/api/app.py` `start_game` endpoint to use `GameRunner` for deterministic role assignment via `RuleEngine.assign_roles()` instead of hardcoded role list. Added `POST /games/{game_id}/step` endpoint for step-by-step game advancement. Updated 4 API tests to use dynamic role lookup instead of hardcoded player IDs. `D:/Miniforge3/envs/wofkill/python.exe -m pytest tests/runtime/test_game_runner.py -q` → **22 passed, 0 failed**. Full suite: **940 passed, 0 failed**.
+- 2026-05-17: Task 7 Schema Migration + Sheriff Badge Night Death Routing. (Part A) Created `werewolf_agent/storage/migrations.py` with `Migration` dataclass, `MIGRATIONS` list, `MigrationManager` class (version tracking, idempotent apply). Created `tests/storage/test_migrations.py` with 3 tests. (Part B) Fixed `route_after_resolve_night` and `route_after_hunter_shot` to check for sheriff death and route to `sheriff_badge_transfer` before `announce_deaths` when game continues. Added `_sheriff_died_this_batch` helper and `_route_after_badge_transfer` conditional edge. Updated graph edge mappings. Added 7 new runtime tests in `TestSheriffBadgeNightDeathRouting`. `D:/Miniforge3/envs/wofkill/python.exe -m pytest tests/ -q --tb=short` → **1001 passed, 0 failed**.
+- 2026-05-17: V1.1 Local Hardening. Added implementation plan `docs/superpowers/plans/2026-05-17-v1-1-hardening.md`. Implemented `LocalRuntimeExecutor` with per-game locks, synchronous step coordination, background run status, and API paused-game step rejection. Added optional real-provider smoke test gated by `WEREWOLF_RUN_REAL_LLM_SMOKE=1`. Added runtime timer abstractions (`ManualTimer`, `NoopTimer`) for wolf discussion and speech timeouts. Added MCP transport adapter boundary (`TransportMCPProvider`) with suggestion-only/error isolation through the registry. Added RAG vector-store factory with explicit Qdrant/pgvector configuration errors. Added production storage boundary (`ProductionStorageConfig`, `create_game_repository`) with SQLite default and explicit PostgreSQL/Redis configuration errors. Updated README/development docs and Docker Compose optional service profiles. `D:/Miniforge3/envs/wofkill/python.exe -m pytest -q --basetemp .pytest-tmp` completed successfully. Collection count: **1020 tests**; real LLM smoke is skipped by default unless `WEREWOLF_RUN_REAL_LLM_SMOKE=1`.
 
 ## Open Risks
 
@@ -413,31 +429,39 @@ Design-document completion work, in recommended order:
 - Persona dynamic policy triggers are still simple compared with the richer cognitive pipeline outputs.
 - VisibilityPolicy and API permissions are end-to-end tested; all API endpoints now use event-sourced replace() pattern (no object.__setattr__ remains).
 - Runtime has placeholders/scripted inputs, so rule correctness tests may pass while real-game behavior remains incomplete.
-- RAG retrieval now has embedding-based vector search; persistence is supported via SQLite rag_entries table. **SiliconFlow reranker added 2026-05-17**. Still missing: Qdrant/pgvector integration, large external case ingestion.
+- RAG retrieval now has embedding-based vector search; persistence is supported via SQLite rag_entries table. **SiliconFlow reranker added 2026-05-17**. V1.1 adds explicit Qdrant/pgvector factory boundaries; real adapters and large external case ingestion remain future work.
 - RAG seed entries and generated cases need source/license review before production use.
 - RelationGraph speech-to-predicate extraction uses simple keyword heuristics; it can misclassify attacks/defenses.
 - ReflectionMemory and ProfileStore are in-memory during game sessions but now support SQLite-backed snapshot persistence; long-term learning survives across process restarts via PersistentMemoryCoordinator.
 - Review ability deltas use fixed coefficients and need calibration from real game data.
-- MCP providers are mock/example implementations; real external service integrations need connectors and failure handling.
+- MCP providers are mock/example implementations plus a V1.1 transport adapter boundary; real external service integrations still need concrete connectors, credentials, and failure policy tuning.
 - Skill handlers return deterministic suggestion skeletons; dynamic speech generation depends on future live LLM integration.
 - API uses in-memory game storage by default but now supports optional `SqliteGameRepository` via `create_app(repository=...)`; hardcoded elevated callers still need real auth.
 - BatchRunner uses mock/simplified game actions; evaluation metrics may not reflect real LLM play.
 - Several quality metrics are now data-backed (lie detection, stance accuracy, bold claim, witch potion, seer badge-flow, wolf consensus, contradiction adoption, badge decision). Remaining uncomputed metrics requiring live LLM game data: speech influence (requires speech event tracking), speech order utilization, cognitive pipeline compression rate, and per-player memory/RAG strategy comparison curves.
 - Growth curves currently emphasize win rates; per-player ability, memory/RAG strategy, and cognitive pipeline comparison curves still need expansion.
-- Pause/resume and start_game event sourcing are now wired into FastAPI endpoints; no `object.__setattr__` remains in `app.py`.
+- Pause/resume and start_game event sourcing are now wired into FastAPI endpoints; no `object.__setattr__` remains in `app.py`. V1.1 adds local runtime execution locks, background status, and paused-game step rejection; Redis-backed distributed locks remain future work.
 - Frontend observer requirements are entirely backend-data-only at the moment.
 
 ## Next Step
 
-GameRunner complete game orchestrator complete. **940 tests pass, 0 failures.**
+V1.1 local hardening is implemented. Full suite completed successfully with `--basetemp .pytest-tmp`; collection count is **1020 tests**, with the optional real LLM smoke test skipped by default.
 
-Remaining work to reach full design-doc product quality:
-1. Add Redis/task-state or local equivalent for runtime locks and background game execution.
-2. Add Qdrant/pgvector for production-scale RAG (current hash-embedding + TF-IDF covers V1 development).
-3. Add `docker-compose.yml` and local service setup.
-4. Build richer observer dashboard with charts, cognitive diff timeline, and RAG/memory panels.
-5. Replace hardcoded API elevated callers with real auth/session system.
-6. Add remaining uncomputed evaluation metrics (speech influence, cognitive pipeline compression).
-7. Add end-to-end live-game information leakage tests with real LLM agents.
-8. ~~Wire RAG embedding search into StrategyRetriever~~ — DONE 2026-05-17. SiliconFlowVectorStore + SiliconFlowRerankerClient added. StrategyRetriever now supports optional reranker injection. AutoVectorStore prefers SiliconFlow when SILICONFLOW_API_KEY is set.
-9. Wire PersistentMemoryCoordinator into game lifecycle (save on game end, restore on game start).
+本次会话完成的任务：
+1. ~~V1.1 implementation plan~~ — DONE
+2. ~~Local runtime execution locks/background status~~ — DONE
+3. ~~Optional real LLM smoke test gate~~ — DONE
+4. ~~Runtime timer abstraction for wolf discussion and speech~~ — DONE
+5. ~~MCP transport adapter boundary~~ — DONE
+6. ~~RAG Qdrant/pgvector factory boundary~~ — DONE
+7. ~~Production storage configuration boundary~~ — DONE
+8. ~~README/PROGRESS/development docs~~ — DONE
+
+Remaining production work beyond V1.1:
+1. Replace local runtime locks with Redis/task-state when running multiple API workers.
+2. Implement real Qdrant/pgvector adapters behind the new vector-store factory.
+3. Run and evaluate real LLM 12-player end-to-end games with leakage checks.
+4. Replace mock/example MCP providers with concrete external service connectors.
+5. Add true asynchronous cancellation around provider calls for speech/wolf timers.
+6. Implement PostgreSQL and Redis production storage adapters behind the new storage boundary.
+7. Expand production deployment docs after those adapters exist.

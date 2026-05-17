@@ -110,7 +110,15 @@ MCP_SOURCE_TEMPLATE = (
 
 
 def annotate_mcp_result(result: ToolResult, provider_name: str) -> ToolResult:
-    """Annotate an MCP result with source and suggestion markers."""
+    """Annotate an MCP result with source and suggestion markers.
+
+    Adds ``_suggestion_only = True`` to result.data so downstream consumers
+    can programmatically check that this is a suggestion, not rule truth.
+    """
     result.is_suggestion = True
     result.source_annotation = MCP_SOURCE_TEMPLATE.format(provider_name=provider_name)
+    if result.data is None:
+        result.data = {}
+    if isinstance(result.data, dict):
+        result.data["_suggestion_only"] = True
     return result

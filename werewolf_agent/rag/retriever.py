@@ -54,10 +54,20 @@ _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
 # ---------------------------------------------------------------------------
 
 class StrategyRetriever:
-    """Retrieves and ranks RAG entries by query criteria."""
+    """Retrieves and ranks RAG entries by query criteria.
 
-    def __init__(self, entries: list[RAGEntry] | None = None) -> None:
+    When a reranker is provided, rule-based scoring narrows the candidate
+    pool and the reranker semantically re-ranks the top candidates.
+    """
+
+    def __init__(
+        self,
+        entries: list[RAGEntry] | None = None,
+        *,
+        reranker: Any = None,
+    ) -> None:
         self._entries: dict[str, RAGEntry] = {}
+        self._reranker = reranker
         if entries:
             for e in entries:
                 self._entries[e.entry_id] = e
@@ -70,16 +80,61 @@ class StrategyRetriever:
             self.add_entry(e)
 
     def retrieve(self, query: RAGQuery) -> list[RAGHit]:
-        """Retrieve ranked RAG hits matching the query."""
+        """Retrieve ranked RAG hits matching the query.
+
+        When a reranker is configured, rule-based scoring selects a wider
+        candidate pool (max_results * 3), then the reranker semantically
+        re-ranks the candidates.
+        """
         candidates = self._filter_candidates(query)
         scored = [(self._score(entry, query), entry) for entry in candidates]
         scored.sort(key=lambda x: x[0], reverse=True)
 
-        results: list[RAGHit] = []
+        if self._reranker and scored:
+            # Take a wider pool for reranking
+            rerank_pool_size = min(len(scored), query.max_results * 3)
+            rerank_pool = scored[:rerank_pool_size]
+            query_text = self._build_rerank_query(query)
+
+            # Rerank by semantic relevance
+            reranked = self._reranker.rerank_hits(
+                query=query_text,
+                documents=[
+                    {"score": s, "entry": e, "summary": e.summary}
+                    for s, e in rerank_pool
+                ],
+                text_key="summary",
+                top_n=query.max_results,
+            )
+            results: list[RAGHit] = []
+            for doc in reranked:
+                entry = doc["entry"]
+                combined_score = min(
+                    (doc.get("rerank_score", 0) + doc.get("score", 0)) / 2,
+                    1.0,
+                )
+                hit = self._entry_to_hit(entry, round(combined_score, 3), query)
+                results.append(hit)
+            return results
+
+        results = []
         for score, entry in scored[:query.max_results]:
             hit = self._entry_to_hit(entry, score, query)
             results.append(hit)
         return results
+
+    def _build_rerank_query(self, query: RAGQuery) -> str:
+        """Build a semantic query string for the reranker."""
+        parts = []
+        if query.role:
+            parts.append(f"角色:{query.role}")
+        if query.phase:
+            parts.append(f"阶段:{query.phase}")
+        if query.situation:
+            parts.append(query.situation)
+        if query.persona_style:
+            parts.append(f"风格:{query.persona_style}")
+        return " ".join(parts) if parts else "通用策略检索"
 
     def _filter_candidates(self, query: RAGQuery) -> list[RAGEntry]:
         """Filter entries by hard criteria."""
@@ -180,3 +235,23 @@ class StrategyRetriever:
             allowed_in_live_context=allowed_in_live,
             display_annotation=annotation,
         )
+
+
+def create_retriever(
+    entries: list[RAGEntry] | None = None,
+    *,
+    enable_reranker: bool = True,
+) -> StrategyRetriever:
+    """Create a StrategyRetriever with optional reranker auto-detected.
+
+    When SILICONFLOW_API_KEY is set, the reranker is enabled automatically.
+    Pass enable_reranker=False to force rule-based-only mode.
+    """
+    reranker = None
+    if enable_reranker:
+        try:
+            from werewolf_agent.rag.reranker_client import SiliconFlowRerankerClient
+            reranker = SiliconFlowRerankerClient()
+        except Exception:
+            pass
+    return StrategyRetriever(entries, reranker=reranker)

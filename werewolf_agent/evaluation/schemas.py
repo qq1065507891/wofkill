@@ -205,6 +205,8 @@ class QualityMetrics:
     wolf_consensus_quality: float = 0.0
     contradiction_hit_rate: float = 0.0
     contradiction_adopted_rate: float = 0.0
+    speech_influence_rate: float = 0.0
+    cognitive_compression_rate: float = 0.0
 
 
 @dataclass
@@ -238,6 +240,16 @@ class GrowthPoint:
 
 
 @dataclass
+class MetricProvenance:
+    metric_name: str
+    computation_method: str
+    source_types: list[str] = field(default_factory=list)
+    source_count: int = 0
+    contributing_games: list[str] = field(default_factory=list)
+    sample_entries: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class MetricsSnapshot:
     batch_id: str
     faction_metrics: FactionMetrics = field(default_factory=FactionMetrics)
@@ -247,7 +259,31 @@ class MetricsSnapshot:
     safety_metrics: SafetyMetrics = field(default_factory=SafetyMetrics)
     cost_metrics: CostMetrics = field(default_factory=CostMetrics)
     growth_curve: list[GrowthPoint] = field(default_factory=list)
+    provenance: dict[str, MetricProvenance] = field(default_factory=dict)
     total_games: int = 0
+
+    def to_json_dict(self) -> dict[str, Any]:
+        def _dataclass_to_dict(obj: Any) -> Any:
+            if hasattr(obj, "__dataclass_fields__"):
+                return {k: _dataclass_to_dict(v) for k, v in obj.__dict__.items()}
+            if isinstance(obj, dict):
+                return {k: _dataclass_to_dict(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_dataclass_to_dict(v) for v in obj]
+            return obj
+
+        return {
+            "batch_id": self.batch_id,
+            "faction_metrics": _dataclass_to_dict(self.faction_metrics),
+            "player_metrics": _dataclass_to_dict(self.player_metrics),
+            "role_metrics": _dataclass_to_dict(self.role_metrics),
+            "quality_metrics": _dataclass_to_dict(self.quality_metrics),
+            "safety_metrics": _dataclass_to_dict(self.safety_metrics),
+            "cost_metrics": _dataclass_to_dict(self.cost_metrics),
+            "growth_curve": _dataclass_to_dict(self.growth_curve),
+            "provenance": _dataclass_to_dict(self.provenance),
+            "total_games": self.total_games,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -370,3 +406,25 @@ class ReplayRecord:
             ruleset_snapshot=data["ruleset_snapshot"],
             event_log=data["event_log"],
         )
+
+
+# ---------------------------------------------------------------------------
+# Full evaluation report — observer-UI-ready JSON bundle
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FullEvaluationReport:
+    report_id: str
+    batch_id: str
+    metrics: dict[str, Any]
+    leaderboard: dict[str, Any] | None = None
+    generated_at: str = ""
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "report_id": self.report_id,
+            "batch_id": self.batch_id,
+            "metrics": self.metrics,
+            "leaderboard": self.leaderboard,
+            "generated_at": self.generated_at,
+        }

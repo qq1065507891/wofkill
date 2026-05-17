@@ -537,7 +537,7 @@ class TestMCPRegistry:
         registry.register(provider)
         result = registry.call("mock1", "query_data", {})
         assert result.status == ToolStatus.SUCCESS
-        assert result.data == {"result": "ok"}
+        assert result.data == {"result": "ok", "_suggestion_only": True}
         assert result.is_suggestion is True
         assert "mock1" in result.source_annotation
 

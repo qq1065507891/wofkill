@@ -14,6 +14,8 @@ Design doc §12.1 endpoints:
 
 from __future__ import annotations
 
+import hashlib
+import os
 from typing import Any, TYPE_CHECKING
 from dataclasses import replace
 from uuid import uuid4
@@ -23,6 +25,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, FileResponse
 
+from werewolf_agent.api.auth import AuthManager, AuthConfig
 from werewolf_agent.api.permissions import PermissionChecker, PermissionDenied
 from werewolf_agent.api.schemas import (
     CallerRole,
@@ -56,14 +59,26 @@ from werewolf_agent.api.views import (
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+from werewolf_agent.runtime.executor import LocalRuntimeExecutor
 
 if TYPE_CHECKING:
     from werewolf_agent.storage.repository import GameRepository
 
 
-def create_app(repository: GameRepository | None = None) -> FastAPI:
+def create_app(
+    repository: GameRepository | None = None,
+    auth_manager: AuthManager | None = None,
+) -> FastAPI:
+    # Auto-configure SQLite repository if env var is set
+    if repository is None:
+        db_path = os.environ.get("WEREWOLF_DB_PATH")
+        if db_path:
+            from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+            repository = SqliteGameRepository(db_path)
     app = FastAPI(title="Werewolf Agent API", version="1.0")
     checker = PermissionChecker()
+    auth = auth_manager or AuthManager()
+    executor = LocalRuntimeExecutor()
     games: dict[str, GameState] = {}
     runners: dict[str, GameRunner] = {}
     authorized_callers: dict[str, CallerRole] = {
@@ -76,6 +91,17 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
         games[state.game_id] = state
         if _repo is not None:
             _repo.save_game(state)
+
+    @app.post("/auth/login")
+    def auth_login(
+        caller_id: str = Query(...),
+        role: str = Query(...),
+    ) -> dict:
+        try:
+            token = auth.create_session(caller_id, role)
+        except PermissionError as e:
+            raise HTTPException(403, detail=str(e))
+        return {"token": token, "caller_id": caller_id, "role": role}
 
     @app.post("/games", response_model=GameCreateResponse)
     def create_game(req: CreateGameRequest) -> GameCreateResponse:
@@ -104,18 +130,19 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
         state = _get_game(games, game_id)
         if state.phase != "setup":
             raise HTTPException(400, "Game already started")
+        # Deterministic seed from game_id (hashlib.sha256 is stable across sessions)
+        seed = int.from_bytes(hashlib.sha256(game_id.encode()).digest()[:4], "big") & 0x7FFFFFFF
         # Use GameRunner for deterministic role assignment via RuleEngine
         runner = GameRunner(GameRunnerConfig(
             ruleset_id=state.ruleset_id,
-            seed=hash(game_id) & 0xFFFFFFFF,
+            seed=seed,
         ))
         # Override the runner's game_id to match the API game_id
-        runner._game_id = game_id
-        runner._state = replace(runner.state, game_id=game_id)
+        runner.reset_game_id(game_id)
         # Use RuleEngine.assign_roles for deterministic role assignment
         players = runner.engine.assign_roles(
             [f"p{i:02d}" for i in range(1, 13)],
-            seed=hash(game_id) & 0xFFFFFFFF,
+            seed=seed,
         )
         players_data: dict[str, dict] = {}
         for pid, p in players.items():
@@ -142,12 +169,19 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
     @app.post("/games/{game_id}/step", response_model=GameActionResponse)
     def step_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
         """Advance the game by one LangGraph node using GameRunner."""
+        state = _get_game(games, game_id)
+        if state.paused:
+            raise HTTPException(400, "Game is paused")
         runner = runners.get(game_id)
         if runner is None:
             raise HTTPException(404, f"No runner for game {game_id}. Start the game first.")
         if runner.finished:
             raise HTTPException(400, "Game already finished")
-        runner.run_step()
+        result = executor.try_step(game_id, runner)
+        if result.status == "busy":
+            raise HTTPException(409, result.message)
+        if not result.success:
+            raise HTTPException(500, result.message or "Step execution failed")
         # Sync API state with runner state
         games[game_id] = runner.state
         _persist(runner.state)
@@ -165,6 +199,8 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
             "game_id": game_id, "phase": state.phase,
         })
         state = replace(state, paused=True, events=state.events + [event])
+        if game_id in runners:
+            runners[game_id]._state = state
         _persist(state)
         return GameActionResponse(
             game_id=game_id, action="pause", success=True,
@@ -180,6 +216,8 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
             "game_id": game_id, "phase": state.phase,
         })
         state = replace(state, paused=False, events=state.events + [event])
+        if game_id in runners:
+            runners[game_id]._state = state
         _persist(state)
         return GameActionResponse(
             game_id=game_id, action="resume", success=True,
@@ -201,10 +239,14 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
         caller_id: str = Query(""),
         caller_role: CallerRole = Query(CallerRole.PLAYER_AGENT),
         view_mode: ViewMode = Query(ViewMode.PLAYER_VIEW),
+        session_token: str = Query(""),
     ) -> PrivateStateResponse:
         state = _get_game(games, game_id)
         game_active = state.winning_faction is None
-        caller_role = _resolve_caller_role(authorized_callers, caller_id, caller_role)
+        caller_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
 
         try:
             allowed_view = checker.check_private_state(
@@ -251,10 +293,14 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
         caller_id: str = Query(""),
         caller_role: CallerRole = Query(CallerRole.MODERATOR),
         view_mode: ViewMode = Query(ViewMode.MODERATOR_FULL),
+        session_token: str = Query(""),
     ) -> ReplayResponse:
         state = _get_game(games, game_id)
         game_active = state.winning_faction is None
-        caller_role = _resolve_caller_role(authorized_callers, caller_id, caller_role)
+        caller_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
 
         try:
             allowed_view = checker.check(
@@ -276,10 +322,14 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
         caller_id: str = Query(""),
         caller_role: CallerRole = Query(CallerRole.MODERATOR),
         view_mode: ViewMode = Query(ViewMode.MODERATOR_FULL),
+        session_token: str = Query(""),
     ) -> EvaluationResponse:
         state = _get_game(games, game_id)
         game_active = state.winning_faction is None
-        caller_role = _resolve_caller_role(authorized_callers, caller_id, caller_role)
+        caller_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
 
         try:
             allowed_view = checker.check(
@@ -305,10 +355,14 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
         caller_role: CallerRole = Query(CallerRole.DEBUGGER),
         player_id: str = Query(""),
         view_mode: ViewMode = Query(ViewMode.MODERATOR_FULL),
+        session_token: str = Query(""),
     ) -> CognitiveDiffResponse:
         state = _get_game(games, game_id)
         game_active = state.winning_faction is None
-        caller_role = _resolve_caller_role(authorized_callers, caller_id, caller_role)
+        caller_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
 
         try:
             allowed_view = checker.check_cognitive_diff(
@@ -322,6 +376,23 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
             raise HTTPException(403, detail=e.reason)
 
         return build_cognitive_diff(state, player_id or "p01", allowed_view)
+
+    @app.get("/games/{game_id}/rag-audit")
+    def get_rag_audit(
+        game_id: str,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.DEBUGGER),
+        session_token: str = Query(""),
+    ) -> dict:
+        state = _get_game(games, game_id)
+        resolved_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
+        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
+            raise HTTPException(403, "RAG audit requires moderator or debugger access")
+        rag_events = [e for e in state.events if e.type == "rag_injection_audit"]
+        return {"game_id": game_id, "rag_audits": [e.payload for e in rag_events]}
 
     @app.get("/games", response_model=list[GameInfo])
     def list_games() -> list[GameInfo]:
@@ -345,8 +416,10 @@ def create_app(repository: GameRepository | None = None) -> FastAPI:
     # Expose for testing
     app.state.games = games
     app.state.runners = runners
+    app.state.executor = executor
     app.state.checker = checker
     app.state.authorized_callers = authorized_callers
+    app.state.auth = auth
 
     return app
 
@@ -362,7 +435,19 @@ def _resolve_caller_role(
     authorized_callers: dict[str, CallerRole],
     caller_id: str,
     requested_role: CallerRole,
+    session_token: str = "",
+    auth_manager: AuthManager | None = None,
 ) -> CallerRole:
+    # When a session token is provided, validate it first.
+    if session_token and auth_manager is not None:
+        validated_role = auth_manager.validate_session(session_token)
+        if validated_role is not None:
+            try:
+                return CallerRole(validated_role)
+            except ValueError:
+                pass
+        raise HTTPException(403, "Invalid or expired session token")
+    # Fallback: legacy caller_id authorization.
     if requested_role in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
         if caller_id and authorized_callers.get(caller_id) == requested_role:
             return requested_role
