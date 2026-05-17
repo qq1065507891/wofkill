@@ -1,0 +1,33 @@
+items:
+  - ruleset_id: pre_witch_hunter_idiot_mixed
+    title: 新手友好局
+    status: playable
+    player_count: 12
+    tags: [classic, beginner]
+    summary: Current RuleEngine-supported pre-witch-hunter-idiot-hybrid ruleset.
+  - ruleset_id: logic_competitive_12
+    title: 全员逻辑局
+    status: playable
+    player_count: 12
+    tags: [logic, competitive]
+    summary: Uses the current playable role family with stricter persona style.
+  - ruleset_id: pressure_bluff_12
+    title: 高压悍跳局
+    status: playable
+    player_count: 12
+    tags: [pressure, bluff]
+    summary: Playable current role family tuned for stronger fake-claim pressure.
+  - ruleset_id: variety_show_12
+    title: 综艺效果局
+    status: playable
+    player_count: 12
+    tags: [variety, replay]
+    summary: Playable current role family with entertainment-first personalities.
+  - ruleset_id: wolf_king_guard_classic
+    title: 经典 12 人狼王守卫
+    status: display_only
+    player_count: 12
+    tags: [wolf_king, guard, future]
+    unsupported_roles: [wolf_king, guard]
+    missing_abilities: [wolf_king_shot, guard_protect]
+    summary: Preview only until RoleAbilityRegistry and RuleEngine support land.

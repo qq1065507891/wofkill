@@ -1,0 +1,26 @@
+items:
+  - profile_pack_id: default_12_ai_players
+    title: 默认竞技型 12 人
+    status: playable
+    tags: [default, competitive]
+    summary: Balanced built-in persona pack for current playable roles.
+  - profile_pack_id: beginner_training_12
+    title: 新手陪练 12 人
+    status: playable
+    tags: [beginner, teaching]
+    summary: Softer pressure and clearer explanations for teaching rooms.
+  - profile_pack_id: high_pressure_test_12
+    title: 高端局压力测试
+    status: playable
+    tags: [pressure, stress_test]
+    summary: Aggressive and deceptive style mix for advanced evaluation.
+  - profile_pack_id: logic_table_12
+    title: 全员逻辑局
+    status: playable
+    tags: [logic, review]
+    summary: High-logic personalities for replay and reasoning analysis.
+  - profile_pack_id: variety_show_12
+    title: 综艺效果局
+    status: playable
+    tags: [variety, entertainment]
+    summary: More expressive personalities for public spectating.

@@ -3,10 +3,15 @@ import pytest
 from pathlib import Path
 
 DASHBOARD_PATH = Path(__file__).parent.parent.parent / "werewolf_agent" / "ui" / "static" / "dashboard.html"
+DASHBOARD_JS_PATH = Path(__file__).parent.parent.parent / "werewolf_agent" / "ui" / "static" / "dashboard.js"
 
 @pytest.fixture
 def dashboard_html():
     return DASHBOARD_PATH.read_text(encoding="utf-8")
+
+@pytest.fixture
+def dashboard_js():
+    return DASHBOARD_JS_PATH.read_text(encoding="utf-8")
 
 def test_cognitive_diff_section(dashboard_html):
     assert "cognitive-diff" in dashboard_html or "identity-prob" in dashboard_html
@@ -31,3 +36,68 @@ def test_cost_latency_panel(dashboard_html):
 
 def test_private_intent_audit(dashboard_html):
     assert "private-intent" in dashboard_html
+
+def test_dashboard_is_localized_to_chinese(dashboard_html):
+    assert "创建新游戏" in dashboard_html
+    assert "开始游戏" in dashboard_html
+    assert "当前阶段" in dashboard_html
+    assert "阶段" in dashboard_html
+    assert "天数" in dashboard_html
+    assert "胜利方" in dashboard_html
+
+def test_create_game_selects_created_game_before_start(dashboard_html):
+    assert "const created = await readJsonOrThrow(r);" in dashboard_html
+    assert "currentGame = created.game.game_id;" in dashboard_html
+
+def test_start_without_selected_game_shows_status_message(dashboard_html):
+    assert "请先创建或选择一局游戏" in dashboard_html
+
+def test_dashboard_has_growth_oriented_werewolf_table_design(dashboard_html):
+    assert "game-shell" in dashboard_html
+    assert "table-board" in dashboard_html
+    assert "recruit-panel" in dashboard_html
+    assert "智能体广场" in dashboard_html
+    assert "邀请好友" in dashboard_html
+    assert "公开观战" in dashboard_html
+    assert "房间分享" in dashboard_html
+def test_dashboard_references_split_static_assets(dashboard_html):
+    assert "dashboard.css" in dashboard_html
+    assert "dashboard.js" in dashboard_html
+
+def test_dashboard_has_launch_wizard_customization_controls(dashboard_html):
+    assert "开局向导" in dashboard_html or "å¼€å±€å‘å¯¼" in dashboard_html
+    assert "下载规则模板" in dashboard_html or "ä¸‹è½½è§„åˆ™æ¨¡æ¿" in dashboard_html
+    assert "上传规则" in dashboard_html or "ä¸Šä¼ è§„åˆ™" in dashboard_html
+    assert "下载玩家模板" in dashboard_html or "ä¸‹è½½çŽ©å®¶æ¨¡æ¿" in dashboard_html
+    assert "上传玩家配置" in dashboard_html or "ä¸Šä¼ çŽ©å®¶é…ç½®" in dashboard_html
+    assert "规则校验结果" in dashboard_html or "è§„åˆ™æ ¡éªŒç»“æžœ" in dashboard_html
+    assert "人格预览" in dashboard_html or "äººæ ¼é¢„è§ˆ" in dashboard_html
+    assert "公开观战" in dashboard_html or "å…¬å¼€è§‚æˆ˜" in dashboard_html
+    assert "我参与一席" in dashboard_html or "æˆ‘å‚ä¸Žä¸€å¸­" in dashboard_html
+
+def test_dashboard_upload_js_keeps_validated_config_state(dashboard_js):
+    assert "let selectedRulesetConfig" in dashboard_js
+    assert "let selectedPersonaPackConfig" in dashboard_js
+    assert "selectedRulesetConfig = data.normalized" in dashboard_js
+    assert "selectedPersonaPackConfig = data.normalized" in dashboard_js
+    assert "getSelectedRulesetId" in dashboard_js
+
+def test_create_game_uses_selected_ruleset(dashboard_html, dashboard_js):
+    assert "buildCreateGamePayload()" in dashboard_html
+    assert "ruleset_id: getSelectedRulesetId()" in dashboard_js
+
+def test_dashboard_has_static_marketplace_cards(dashboard_html):
+    assert "规则市场" in dashboard_html or "è§„åˆ™å¸‚åœº" in dashboard_html
+    assert "经典 12 人狼王守卫" in dashboard_html or "ç»å…¸ 12 äººç‹¼çŽ‹å®ˆå«" in dashboard_html
+    assert "display_only" in dashboard_html
+    assert "人格市场" in dashboard_html or "äººæ ¼å¸‚åœº" in dashboard_html
+
+def test_dashboard_has_share_summary_button(dashboard_html, dashboard_js):
+    assert "生成复盘分享" in dashboard_html or "ç”Ÿæˆå¤ç›˜åˆ†äº«" in dashboard_html
+    assert "generateShareSummary" in dashboard_js
+    assert "/share-summary" in dashboard_js
+
+def test_dashboard_has_human_seat_planning_controls(dashboard_html, dashboard_js):
+    assert "humanSeatSelector" in dashboard_html
+    assert "human_seat" in dashboard_js
+    assert "experience_mode" in dashboard_js

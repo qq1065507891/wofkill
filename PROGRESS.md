@@ -4,10 +4,225 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: V1.1 local hardening (following 2026-05-17-v1-1-hardening.md).
-- Active task: V1.1 local hardening plan implemented (7/7 tasks done).
+- Current phase: Platform customization and growth planning.
+- Active task: Platform customization/growth plan revised after architecture review; awaiting execution choice.
 - Task owner: Claude/GLM development session
 - Last updated: 2026-05-17
+
+## Dashboard Redesign Session - 2026-05-17
+
+- Redesigned `werewolf_agent/ui/static/dashboard.html` into a Blood Moon themed game room with lobby, player table, log area, and intelligent-agent workshop panels.
+- Added compliant growth-oriented entry points for intelligent-agent plaza, friend invites, public spectating, and room sharing.
+- Preserved existing dashboard API hooks and moderator/debug audit panels.
+- Verification: `pytest tests/ui -q` passed (34 tests).
+
+## Platform Customization And Growth Planning - 2026-05-17
+
+- Added `docs/design/platform-customization-growth-design.md` to define the platform layer beyond the V1 rule authority: launch wizard, custom ruleset uploads, custom 12-player persona packs, persona previews, static marketplace, replay sharing, human-seat mode, and safe growth boundaries.
+- Added `docs/superpowers/plans/2026-05-17-platform-customization-growth.md` with task-by-task implementation steps, file ownership, TDD checkpoints, API/UI scope, and verification commands.
+- Key product decisions recorded:
+  - Rules and persona configs use YAML templates and safe parsing.
+  - Uploaded templates are data only; no scripts, prompt overrides, or third-party user scraping.
+  - RuleEngine remains the only adjudication authority.
+  - Unsupported natural-language rules are notes only and cannot affect裁决.
+  - Default 12 AI players and user-uploaded persona packs are both supported.
+  - Replay sharing, AI commentary, and human-seat mode are planned as follow-up slices.
+- Next recommended execution slice: Task 1 and Task 2 from the new plan, covering ruleset template validation and persona pack validation/preview.
+
+## Platform Plan Architecture Review - 2026-05-17
+
+- A dedicated review agent performed a read-only consistency review of the new platform design/plan against V1 design, V1 implementation plans, PROGRESS, RuleEngine, GameRunner, PersonaRouter, API schemas, and existing configs.
+- Review found several blocking issues:
+  - Custom `ruleset_id` creation would not affect real adjudication because GameRunner still needs a registry/repository-backed ruleset loading path.
+  - `guard` and `wolf_king` were incorrectly included as initially playable despite no current RuleEngine implementation.
+  - User-facing persona packs were not compatible with PersonaRouter's `persona_profiles` plus `player_assignments` runtime format.
+  - Upload security requirements were not reflected strongly enough in tests.
+  - Config persistence and game metadata ownership were underspecified.
+  - The single-file dashboard would become difficult to maintain under upload/marketplace/share features.
+- Updated `docs/design/platform-customization-growth-design.md` with review decisions:
+  - First playable version is limited to the current `pre_witch_hunter_idiot_mixed` family and its RuleEngine-supported roles.
+  - Unsupported roles are `display_only` until RuleEngine support and tests exist.
+  - Added RulesetRegistry, PersonaPackAdapter, storage lifecycle, public replay privacy, upload security test requirements, and frontend split boundaries.
+- Updated `docs/superpowers/plans/2026-05-17-platform-customization-growth.md`:
+  - Added Task 0 for RuleEngine capability and RulesetRegistry.
+  - Required GameRunner to load rules through the registry.
+  - Removed `guard`/`wolf_king` from playable whitelist.
+  - Added PersonaPackAdapter tests and implementation.
+  - Expanded customization persistence and upload security tests.
+  - Required dashboard split into `dashboard.html`, `dashboard.css`, and `dashboard.js`.
+  - Expanded final verification to include customization, API, UI, runtime, storage, and full `pytest -q`.
+- Next recommended execution slice is now Task 0, not Task 1.
+
+## Future Rule Ability Architecture Note - 2026-05-17
+
+- Added future-facing design for real wolf king + guard gameplay to `docs/design/platform-customization-growth-design.md`.
+- Added a non-first-slice Future Phase to `docs/superpowers/plans/2026-05-17-platform-customization-growth.md`.
+- Decision: new roles such as `guard` and `wolf_king` become playable only through built-in `RoleAbilityRegistry` capabilities, never by executing user-uploaded template code.
+- Required future capabilities:
+  - `guard_protect`
+  - `wolf_king_shot`
+  - `night_protection_resolution`
+  - `death_trigger_chain`
+  - ability-specific visibility policy
+- Current platform first slice remains unchanged: `guard` and `wolf_king` are `display_only` until RuleEngine implementation, replay reducers, visibility checks, and tests exist.
+
+## Platform Reliability Additions - 2026-05-17
+
+- Added four reliability/product-professionalism requirements to `docs/design/platform-customization-growth-design.md` and `docs/superpowers/plans/2026-05-17-platform-customization-growth.md`:
+  - Ruleset compatibility matrix.
+  - Normalized template diff against defaults.
+  - Locked per-game configuration snapshot.
+  - Public-safe information leakage audit summary.
+- Planned implementation files now include `werewolf_agent/customization/compatibility.py`.
+- Planned tests now include compatibility matrix/diff coverage and share-audit coverage.
+- Decision: every playable game must be explainable from its locked config snapshot, and every public replay/share page must include only public-safe audit summaries.
+
+## Future Platform Roadmap Additions - 2026-05-17
+
+- Added long-term platform roadmap to `docs/design/platform-customization-growth-design.md`.
+- Added non-blocking `Future Phase: Platform Professionalization Roadmap` to `docs/superpowers/plans/2026-05-17-platform-customization-growth.md`.
+- Future roadmap now covers:
+  - Room experience presets.
+  - AI player skill levels.
+  - Human training modes.
+  - Multi-perspective replay.
+  - Key moment timeline.
+  - Game quality scoring.
+  - Judge/commentator separation.
+  - Configuration sandbox validation.
+  - Template health score.
+  - Agent behavior regression scenarios.
+  - Prompt/model A/B experiments.
+  - Operations console.
+  - Content moderation and copyright boundaries.
+  - AI player memory growth.
+  - Cost budget modes.
+- These roadmap items do not change the immediate execution boundary: Task 0 remains the next recommended implementation slice.
+
+## Platform Customization Task 0 - 2026-05-17
+
+- Implemented `werewolf_agent/customization/` package with conservative RuleEngine capability boundaries.
+- Added `RulesetRegistry` and compatibility matrix helpers.
+- Current playable roles are limited to `werewolf`, `villager`, `seer`, `witch`, `hunter`, `idiot`, and `hybrid`.
+- `guard`/`wolf_king` and their abilities remain `display_only` until future RoleAbilityRegistry work lands.
+- Updated `GameRunner` to resolve `ruleset_id` through `RulesetRegistry`; non-playable rulesets now fail before RuleEngine startup.
+- Verification: `pytest tests/customization/test_ruleset_registry.py tests/customization/test_compatibility.py tests/runtime/test_game_runner.py -q` passed (39 tests).
+- Next recommended execution slice: Task 1, ruleset template schema and validator.
+
+## Platform Customization Task 1 - 2026-05-17
+
+- Added shared customization validation schemas.
+- Added `validate_ruleset_yaml()` with safe YAML parsing, top-level field whitelist, role-count validation, constraint whitelist, prompt/executable marker checks, compatibility matrix output, and normalized diff against default constraints.
+- Added downloadable starter template at `config/rulesets/templates/custom_ruleset_template.yaml`.
+- Future roles such as `guard` and `wolf_king` validate as `display_only`; they are not promoted to playable.
+- Verification: `pytest tests/customization/test_ruleset_registry.py tests/customization/test_compatibility.py tests/customization/test_ruleset_templates.py tests/runtime/test_game_runner.py -q` passed (44 tests).
+- Next recommended execution slice: Task 2, persona pack schema, validator, adapter, and previews.
+
+## Platform Customization Task 2 - 2026-05-17
+
+- Added persona pack validation through `validate_persona_pack_yaml()`.
+- Added deterministic persona preview snippets for villager opening, defense, wolf night, and seer claim modes.
+- Added `PersonaPackAdapter` via `adapt_persona_pack()` to produce existing `PersonaRouter` inputs: `persona_profiles` and `player_assignments`.
+- Added default user-facing persona templates at `config/personas/templates/player_profile_pack_template.yaml` and `config/personas/default_12_ai_players.yaml`.
+- Validation now requires exactly 12 players, unique seats, bounded text fields, controlled low/medium/high values, supported preferred roles, and prompt/executable marker rejection.
+- Verification: `pytest tests/customization tests/runtime/test_game_runner.py -q` passed (50 tests).
+- Next recommended execution slice: Task 3, customization persistence and API endpoints.
+
+## Platform Customization Task 3 - 2026-05-17
+
+- Added in-memory customization repository boundary for validated configuration records.
+- Added template download endpoints:
+  - `GET /templates/ruleset`
+  - `GET /templates/persona-pack`
+- Added upload validation endpoints:
+  - `POST /customization/rulesets/validate`
+  - `POST /customization/persona-packs/validate`
+- Added authorized save endpoints:
+  - `POST /customization/rulesets`
+  - `POST /customization/persona-packs`
+- Persona validation responses include deterministic preview snippets keyed by player seat.
+- Save endpoints store content hash, config type, status, compatibility summary, diff, creator, and timestamps; unauthorized save attempts are rejected.
+- Verification: `pytest tests/customization tests/api/test_customization_api.py tests/runtime/test_game_runner.py -q` passed (57 tests).
+- Remaining Task 3 hardening for later production slice: durable SQLite customization tables and locked config snapshots on game creation.
+- Next recommended execution slice: Task 4, launch wizard UI and dashboard asset split.
+
+## Platform Customization Task 4 - 2026-05-17
+
+- Added launch wizard controls to the dashboard:
+  - ruleset selector
+  - rule template download
+  - rule upload validation
+  - persona pack selector
+  - persona template download
+  - persona upload validation
+  - validation result panels
+  - persona preview panel
+  - experience mode selector for public spectate, human seat, all-AI, and teaching replay.
+- Added `werewolf_agent/ui/static/dashboard.css` for launch wizard styling.
+- Added `werewolf_agent/ui/static/dashboard.js` with upload validation hooks:
+  - `validateRulesetUpload`
+  - `validatePersonaUpload`
+  - `renderValidationResult`
+  - `renderPersonaPreview`
+- Mounted `/static` in FastAPI so dashboard assets are served.
+- Verification: `pytest tests/customization tests/api/test_customization_api.py tests/ui tests/runtime/test_game_runner.py -q` passed (93 tests).
+- Remaining Task 4 hardening for later UI slice: fully extract the existing inline dashboard CSS/JS instead of only adding split asset files and references.
+- Next recommended execution slice: Task 5, wire UI upload flows deeper into room creation state.
+
+## Platform Customization Task 5 - 2026-05-17
+
+- Wired dashboard upload JavaScript to keep validated rule/persona configs in page state.
+- Added `getSelectedRulesetId()` and `getSelectedPersonaPackId()` helpers.
+- Updated room creation payload to use the selected ruleset and persona pack IDs instead of a hardcoded ruleset only.
+- Added static UI tests covering validated config state and create-game ruleset selection.
+- Verification: `pytest tests/customization tests/api/test_customization_api.py tests/ui tests/runtime/test_game_runner.py -q` passed (95 tests).
+- Next recommended execution slice: Task 6, static rules/persona marketplace.
+
+## Platform Customization Task 6 - 2026-05-17
+
+- Added static marketplace configs:
+  - `config/rulesets/marketplace.yaml`
+  - `config/personas/marketplace.yaml`
+- Added marketplace endpoints:
+  - `GET /marketplace/rulesets`
+  - `GET /marketplace/persona-packs`
+- Marketplace rulesets distinguish `playable` from `display_only`.
+- `wolf_king_guard_classic` is present as a preview-only/display-only ruleset with unsupported `wolf_king`, `guard`, `wolf_king_shot`, and `guard_protect` metadata.
+- Dashboard launch wizard now includes static rule/persona marketplace cards, with display-only wolf king guard preview disabled for real room creation.
+- Verification: `pytest tests/customization tests/api/test_customization_api.py tests/ui tests/runtime/test_game_runner.py -q` passed (98 tests).
+- Next recommended execution slice: Task 7, public-safe replay share summary.
+
+## Platform Customization Task 7 - 2026-05-17
+
+- Added public-safe replay share endpoint: `GET /games/{game_id}/share-summary`.
+- Share summary returns:
+  - `game_id`
+  - `winning_faction`
+  - sanitized public `highlight_events`
+  - deterministic `mvp_candidate`
+  - `share_title`
+  - `public_only`
+  - `leak_audit_summary`
+- Share summary excludes known private/moderator-only event types and private visibility markers.
+- Dashboard now has a `生成复盘分享` button and a share summary display bar.
+- Added `generateShareSummary()` JavaScript hook.
+- Verification: `pytest tests/customization tests/api/test_customization_api.py tests/ui tests/runtime/test_game_runner.py -q` passed (100 tests).
+- Next recommended execution slice: Task 8, human-seat mode planning hooks.
+
+## Platform Customization Task 8 - 2026-05-17
+
+- Added room creation fields to API schemas:
+  - `experience_mode`
+  - `human_seat`
+  - `profile_pack_id`
+  - `share_code`
+- `experience_mode="human_seat"` now validates that `human_seat` is present and between 1 and 12.
+- Game creation now emits a `config_snapshot_locked` event containing ruleset, persona pack, model/persona/RAG hashes, engine version, seeds, experience mode, human seat, and share code.
+- When a repository is configured, game creation also saves the locked config snapshot via `save_config_snapshot()`.
+- Dashboard now has a human seat selector and builds create-game payloads with ruleset, persona pack, experience mode, and optional human seat.
+- This is a planning hook only; live human turn handling is not claimed complete.
+- Verification: `pytest tests/customization tests/api/test_customization_api.py tests/ui tests/runtime/test_game_runner.py -q` passed (103 tests).
+- Immediate platform customization plan Tasks 0-8 are now implemented at the planned first-slice depth, with noted hardening work still remaining for production storage and full UI extraction.
 
 ## Design Completion Audit - 2026-05-16
 

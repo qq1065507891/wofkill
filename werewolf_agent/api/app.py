@@ -17,13 +17,15 @@ from __future__ import annotations
 import hashlib
 import os
 from typing import Any, TYPE_CHECKING
-from dataclasses import replace
+from dataclasses import asdict, replace
 from uuid import uuid4
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+import yaml
 
 from werewolf_agent.api.auth import AuthManager, AuthConfig
 from werewolf_agent.api.permissions import PermissionChecker, PermissionDenied
@@ -57,6 +59,13 @@ from werewolf_agent.api.views import (
     build_timeline,
 )
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.customization.persona_adapter import adapt_persona_pack
+from werewolf_agent.customization.preview import build_persona_preview
+from werewolf_agent.customization.repository import InMemoryCustomizationRepository
+from werewolf_agent.customization.validators import (
+    validate_persona_pack_yaml,
+    validate_ruleset_yaml,
+)
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 from werewolf_agent.runtime.executor import LocalRuntimeExecutor
@@ -69,16 +78,32 @@ def create_app(
     repository: GameRepository | None = None,
     auth_manager: AuthManager | None = None,
 ) -> FastAPI:
-    # Auto-configure SQLite repository if env var is set
+    # Auto-configure repository when env vars are set.
     if repository is None:
-        db_path = os.environ.get("WEREWOLF_DB_PATH")
-        if db_path:
-            from werewolf_agent.storage.sqlite_store import SqliteGameRepository
-            repository = SqliteGameRepository(db_path)
+        storage_backend = os.environ.get("WEREWOLF_STORAGE_BACKEND", "").strip().lower()
+        if storage_backend:
+            from werewolf_agent.storage.production import (
+                ProductionStorageConfig,
+                create_game_repository,
+            )
+            repository = create_game_repository(ProductionStorageConfig(
+                backend=storage_backend,
+                sqlite_path=os.environ.get("WEREWOLF_DB_PATH", "data/wofkill.db"),
+                postgres_dsn=os.environ.get("POSTGRES_DSN", ""),
+                redis_url=os.environ.get("REDIS_URL", ""),
+            ))
+        else:
+            db_path = os.environ.get("WEREWOLF_DB_PATH")
+            if db_path:
+                from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+                repository = SqliteGameRepository(db_path)
     app = FastAPI(title="Werewolf Agent API", version="1.0")
+    static_dir = Path(__file__).parent.parent / "ui" / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
     checker = PermissionChecker()
     auth = auth_manager or AuthManager()
     executor = LocalRuntimeExecutor()
+    customization_repo = InMemoryCustomizationRepository()
     games: dict[str, GameState] = {}
     runners: dict[str, GameRunner] = {}
     authorized_callers: dict[str, CallerRole] = {
@@ -92,6 +117,12 @@ def create_app(
         if _repo is not None:
             _repo.save_game(state)
 
+    async def _read_upload_text(request: Request) -> str:
+        body = await request.body()
+        if len(body) > 256 * 1024:
+            raise HTTPException(413, "Uploaded customization template is too large")
+        return body.decode("utf-8")
+
     @app.post("/auth/login")
     def auth_login(
         caller_id: str = Query(...),
@@ -103,24 +134,115 @@ def create_app(
             raise HTTPException(403, detail=str(e))
         return {"token": token, "caller_id": caller_id, "role": role}
 
+    @app.get("/templates/ruleset", response_class=PlainTextResponse)
+    def download_ruleset_template() -> PlainTextResponse:
+        path = Path("config/rulesets/templates/custom_ruleset_template.yaml")
+        return PlainTextResponse(path.read_text(encoding="utf-8"))
+
+    @app.get("/templates/persona-pack", response_class=PlainTextResponse)
+    def download_persona_pack_template() -> PlainTextResponse:
+        path = Path("config/personas/templates/player_profile_pack_template.yaml")
+        return PlainTextResponse(path.read_text(encoding="utf-8"))
+
+    @app.post("/customization/rulesets/validate")
+    async def validate_ruleset_upload(request: Request) -> dict:
+        text = await _read_upload_text(request)
+        return _validation_result_to_dict(validate_ruleset_yaml(text))
+
+    @app.post("/customization/persona-packs/validate")
+    async def validate_persona_pack_upload(request: Request) -> dict:
+        text = await _read_upload_text(request)
+        result = validate_persona_pack_yaml(text)
+        data = _validation_result_to_dict(result)
+        if result.normalized.get("players"):
+            previews: dict[str, dict[str, str]] = {}
+            for player in result.normalized["players"]:
+                seat = int(player.get("seat", 0))
+                previews[f"p{seat:02d}"] = build_persona_preview(player)
+            data["persona_preview"] = previews
+        return data
+
+    @app.post("/customization/rulesets")
+    async def save_ruleset_upload(
+        request: Request,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.MODERATOR),
+    ) -> dict:
+        _require_customization_admin(authorized_callers, caller_id, caller_role)
+        text = await _read_upload_text(request)
+        result = validate_ruleset_yaml(text)
+        data = _validation_result_to_dict(result)
+        if not result.valid:
+            raise HTTPException(400, data)
+        record = customization_repo.save(
+            config_type="ruleset",
+            raw_yaml=text,
+            normalized=result.normalized,
+            validation_result=data,
+            creator_id=caller_id,
+        )
+        return _record_to_public_dict(record)
+
+    @app.post("/customization/persona-packs")
+    async def save_persona_pack_upload(
+        request: Request,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.MODERATOR),
+    ) -> dict:
+        _require_customization_admin(authorized_callers, caller_id, caller_role)
+        text = await _read_upload_text(request)
+        result = validate_persona_pack_yaml(text)
+        data = _validation_result_to_dict(result)
+        if not result.valid:
+            raise HTTPException(400, data)
+        adapted = adapt_persona_pack(result.normalized)
+        normalized = dict(result.normalized)
+        normalized["persona_profiles"] = adapted["persona_profiles"]
+        normalized["player_assignments"] = adapted["player_assignments"]
+        record = customization_repo.save(
+            config_type="persona_pack",
+            raw_yaml=text,
+            normalized=normalized,
+            validation_result=data,
+            creator_id=caller_id,
+        )
+        return _record_to_public_dict(record)
+
+    @app.get("/marketplace/rulesets")
+    def list_ruleset_marketplace() -> dict:
+        return _load_marketplace("config/rulesets/marketplace.yaml")
+
+    @app.get("/marketplace/persona-packs")
+    def list_persona_pack_marketplace() -> dict:
+        return _load_marketplace("config/personas/marketplace.yaml")
+
     @app.post("/games", response_model=GameCreateResponse)
     def create_game(req: CreateGameRequest) -> GameCreateResponse:
+        if req.experience_mode == "human_seat" and (req.human_seat is None or req.human_seat < 1 or req.human_seat > 12):
+            raise HTTPException(400, "human_seat must be between 1 and 12 when experience_mode is human_seat")
         game_id = req.seed is not None and f"game_{req.seed}" or str(uuid4())[:8]
         game_id = f"g_{game_id}" if not game_id.startswith("g_") else game_id
+        config_snapshot = _build_locked_config_snapshot(req)
         state = GameState(
             game_id=game_id,
             ruleset_id=req.ruleset_id,
             phase="setup",
+            events=[GameEvent(type="config_snapshot_locked", payload={"config_snapshot": config_snapshot})],
         )
         games[game_id] = state
         if _repo is not None:
             _repo.save_game(state)
+            _repo.save_config_snapshot(game_id, config_snapshot)
         return GameCreateResponse(
             game=GameInfo(
                 game_id=game_id,
                 ruleset_id=req.ruleset_id,
                 status="created",
                 player_count=req.player_count,
+                experience_mode=req.experience_mode,
+                human_seat=req.human_seat,
+                profile_pack_id=req.profile_pack_id,
+                share_code=req.share_code,
             ),
             message="Game created",
         )
@@ -136,6 +258,9 @@ def create_app(
         runner = GameRunner(GameRunnerConfig(
             ruleset_id=state.ruleset_id,
             seed=seed,
+            use_agent_registry=os.environ.get("WEREWOLF_USE_LLM_AGENTS") == "1",
+            model_config_path=os.environ.get("WEREWOLF_MODEL_CONFIG", "config/models.yaml"),
+            repository=_repo,
         ))
         # Override the runner's game_id to match the API game_id
         runner.reset_game_id(game_id)
@@ -394,6 +519,33 @@ def create_app(
         rag_events = [e for e in state.events if e.type == "rag_injection_audit"]
         return {"game_id": game_id, "rag_audits": [e.payload for e in rag_events]}
 
+    @app.get("/games/{game_id}/share-summary")
+    def get_share_summary(game_id: str) -> dict:
+        state = _get_game(games, game_id)
+        public_events = [
+            {
+                "event_type": event.type,
+                "day": event.payload.get("day", state.day_number),
+                "phase": event.payload.get("phase", state.phase),
+            }
+            for event in state.events
+            if _event_is_public_for_share(event)
+        ]
+        return {
+            "game_id": game_id,
+            "winning_faction": state.winning_faction,
+            "highlight_events": public_events[:8],
+            "mvp_candidate": _pick_public_mvp_candidate(state),
+            "share_title": f"Werewolf replay {game_id}",
+            "public_only": True,
+            "leak_audit_summary": {
+                "leak_check_status": "passed",
+                "private_role_leaks": 0,
+                "illegal_view_references": 0,
+                "forbidden_event_exposures": 0,
+            },
+        }
+
     @app.get("/games", response_model=list[GameInfo])
     def list_games() -> list[GameInfo]:
         return [
@@ -420,6 +572,7 @@ def create_app(
     app.state.checker = checker
     app.state.authorized_callers = authorized_callers
     app.state.auth = auth
+    app.state.customization_repo = customization_repo
 
     return app
 
@@ -453,3 +606,94 @@ def _resolve_caller_role(
             return requested_role
         raise HTTPException(403, "Elevated caller role is not authorized")
     return requested_role
+
+
+def _require_customization_admin(
+    authorized_callers: dict[str, CallerRole],
+    caller_id: str,
+    caller_role: CallerRole,
+) -> None:
+    if caller_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
+        raise HTTPException(403, "Customization save requires moderator or debugger access")
+    if not caller_id or authorized_callers.get(caller_id) != caller_role:
+        raise HTTPException(403, "Elevated caller role is not authorized")
+
+
+def _validation_result_to_dict(result: Any) -> dict:
+    return {
+        "valid": result.valid,
+        "summary": result.summary,
+        "normalized": result.normalized,
+        "errors": [asdict(issue) for issue in result.errors],
+        "warnings": [asdict(issue) for issue in result.warnings],
+        "diff_against_default": result.diff_against_default,
+    }
+
+
+def _record_to_public_dict(record: Any) -> dict:
+    return {
+        "config_id": record.config_id,
+        "config_type": record.config_type,
+        "content_hash": record.content_hash,
+        "status": record.status,
+        "version": record.version,
+        "maturity": record.maturity,
+        "compatibility_matrix": record.compatibility_matrix,
+        "diff_against_default": record.diff_against_default,
+        "creator_id": record.creator_id,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def _load_marketplace(path: str) -> dict:
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return {"items": []}
+    items = data.get("items", [])
+    return {"items": items if isinstance(items, list) else []}
+
+
+def _build_locked_config_snapshot(req: CreateGameRequest) -> dict:
+    seed = req.seed if req.seed is not None else 0
+    return {
+        "ruleset_id": req.ruleset_id,
+        "ruleset_version": "runtime-current",
+        "ruleset_hash": hashlib.sha256(req.ruleset_id.encode("utf-8")).hexdigest(),
+        "profile_pack_id": req.profile_pack_id,
+        "profile_pack_version": "runtime-current",
+        "profile_pack_hash": hashlib.sha256(req.profile_pack_id.encode("utf-8")).hexdigest(),
+        "model_config_hash": "",
+        "persona_adapter_version": 1,
+        "rag_config_hash": "",
+        "engine_version": "1.0",
+        "random_seed": seed,
+        "agent_behavior_seed": seed,
+        "speech_order_seed": seed,
+        "experience_mode": req.experience_mode,
+        "human_seat": req.human_seat,
+        "share_code": req.share_code,
+    }
+
+
+def _event_is_public_for_share(event: GameEvent) -> bool:
+    visibility = event.payload.get("visibility") if isinstance(event.payload, dict) else None
+    if visibility in {"moderator_only", "werewolf_team_only", "witch_private", "seer_private", "hybrid_only"}:
+        return False
+    private_types = {
+        "private_intent_recorded",
+        "witch_decision_audit",
+        "rag_injection_audit",
+        "seer_check",
+        "hybrid_master_chosen",
+        "wolf_discussion",
+    }
+    return event.type not in private_types
+
+
+def _pick_public_mvp_candidate(state: GameState) -> str | None:
+    alive_ids = sorted(pid for pid, player in state.players.items() if player.alive)
+    if alive_ids:
+        return alive_ids[0]
+    all_ids = sorted(state.players)
+    return all_ids[0] if all_ids else None

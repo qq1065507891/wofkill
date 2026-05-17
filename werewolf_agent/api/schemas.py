@@ -52,6 +52,10 @@ class CreateGameRequest(BaseModel):
     ruleset_id: str = "pre_witch_hunter_idiot_mixed"
     player_count: int = 12
     seed: int | None = None
+    experience_mode: str = "public_spectate"
+    human_seat: int | None = None
+    profile_pack_id: str = "default_12_ai_players"
+    share_code: str = ""
 
 
 class GameActionRequest(BaseModel):
@@ -207,6 +211,10 @@ class GameInfo(BaseModel):
     ruleset_id: str
     status: str = "created"
     player_count: int = 12
+    experience_mode: str = "public_spectate"
+    human_seat: int | None = None
+    profile_pack_id: str = "default_12_ai_players"
+    share_code: str = ""
 
 
 class GameCreateResponse(BaseModel):

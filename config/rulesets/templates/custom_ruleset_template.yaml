@@ -1,0 +1,53 @@
+ruleset_id: custom_pre_witch_hunter_idiot_mixed
+name: Custom Pre Witch Hunter Idiot Hybrid
+version: 1
+description: Data-only ruleset template. Unsupported roles stay display_only.
+player_count: 12
+roles:
+  werewolf:
+    count: 4
+    faction: werewolf
+  villager:
+    count: 3
+    faction: good
+  seer:
+    count: 1
+    faction: good
+  witch:
+    count: 1
+    faction: good
+  hunter:
+    count: 1
+    faction: good
+  idiot:
+    count: 1
+    faction: good
+  hybrid:
+    count: 1
+    faction: special_bound_to_master
+abilities:
+  - wolf_kill
+  - wolf_no_kill
+  - witch_potion
+  - seer_check
+  - hunter_shot
+  - idiot_reveal
+  - hybrid_bind
+night_order:
+  - werewolf
+  - witch
+  - seer
+  - hunter_idiot_status
+  - hybrid
+victory:
+  good:
+    - eliminate_all_wolves
+  werewolf:
+    - slaughter_villagers
+    - slaughter_gods
+constraints:
+  witch_can_self_save: false
+  witch_can_use_both_potions_same_night: false
+  werewolf_can_no_kill: true
+  wolf_timeout_default: no_kill
+  hybrid_enabled: true

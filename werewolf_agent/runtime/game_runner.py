@@ -16,8 +16,12 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterator
 
 from werewolf_agent.core.models import GameState, GameEvent
+from werewolf_agent.customization.ruleset_registry import RulesetRegistry
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.graph import RuntimeState, build_game_graph
+from werewolf_agent.runtime.agent_adapter import SimpleAgentRegistry
+from werewolf_agent.agents.player import PlayerAgent
+from werewolf_agent.model_gateway.router import ModelRouter
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
 
@@ -34,6 +38,7 @@ class GameRunnerConfig:
     use_agent_registry: bool = False
     model_config_path: str = ""
     persona_config_path: str = ""
+    ruleset_registry: Any = None  # RulesetRegistry, optional
     repository: Any = None  # GameRepository, optional
     memory_coordinator: Any = None  # PersistentMemoryCoordinator, optional
 
@@ -60,7 +65,9 @@ class GameRunner:
     def __init__(self, config: GameRunnerConfig) -> None:
         self._config = config
         self._game_id = f"g_{config.seed or uuid.uuid4().hex[:8]}"
-        self._engine = RuleEngine.from_yaml(RULESET_PATH)
+        self._ruleset_registry: RulesetRegistry = config.ruleset_registry or RulesetRegistry()
+        self._ruleset_entry = self._ruleset_registry.require_playable(config.ruleset_id)
+        self._engine = RuleEngine.from_yaml(self._ruleset_entry.path)
         self._state = GameState(
             game_id=self._game_id,
             ruleset_id=config.ruleset_id,
@@ -73,6 +80,7 @@ class GameRunner:
         # Memory restored from previous game (None if no coordinator/repository)
         self._restored_memory: Any = None
         self._restored_rag: list[Any] | None = None
+        self._agent_registry: SimpleAgentRegistry | None = self._build_agent_registry()
         # Attempt to restore memory from a previous snapshot at init
         self._restore_memory_if_configured()
 
@@ -144,7 +152,21 @@ class GameRunner:
             "badge_target_id": None,
             "hunter_shot_target_id": None,
         }
+        if self._agent_registry is not None:
+            rt["agent_registry"] = self._agent_registry
         return rt
+
+    def _build_agent_registry(self) -> SimpleAgentRegistry | None:
+        """Build PlayerAgent registry when real agent mode is enabled."""
+        if not self._config.use_agent_registry:
+            return None
+        model_config_path = self._config.model_config_path or "config/models.yaml"
+        router = ModelRouter.from_yaml(model_config_path, register_env_providers=True)
+        registry = SimpleAgentRegistry()
+        for i in range(1, self._config.player_count + 1):
+            player_id = f"p{i:02d}"
+            registry.register(player_id, PlayerAgent(agent_id=player_id, model_router=router))
+        return registry
 
     def _process_chunk(self, chunk: dict) -> str | None:
         """Process a single stream chunk, updating internal state.
