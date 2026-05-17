@@ -23,6 +23,21 @@ def _make_client() -> TestClient:
     return client, game_id
 
 
+def _find_player_by_role(client: TestClient, game_id: str, role: str) -> str | None:
+    """Find a player ID with the given role via internal game state."""
+    # Access the app's internal game state for role lookup.
+    # This is acceptable in tests where we need to know role assignments
+    # that are not available through public API endpoints.
+    app = client.app  # type: ignore[attr-defined]
+    gs = app.state.games.get(game_id)
+    if gs is None:
+        return None
+    for pid, p in gs.players.items():
+        if p.role == role:
+            return pid
+    return None
+
+
 # ---------------------------------------------------------------------------
 # PermissionChecker unit tests
 # ---------------------------------------------------------------------------
@@ -198,21 +213,25 @@ class TestPrivateStatePermissions:
 
     def test_own_private_state_allowed(self):
         client, game_id = _make_client()
+        wolf_id = _find_player_by_role(client, game_id, "werewolf")
+        assert wolf_id is not None, "No werewolf found in game"
         resp = client.get(
-            f"/games/{game_id}/players/p01/private-state",
-            params={"caller_id": "p01", "caller_role": "player_agent"},
+            f"/games/{game_id}/players/{wolf_id}/private-state",
+            params={"caller_id": wolf_id, "caller_role": "player_agent"},
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["viewer_id"] == "p01"
+        assert data["viewer_id"] == wolf_id
         assert data["player_info"]["role"] == "werewolf"
         assert data["view_mode"] == "player_view"
 
     def test_wolf_teammates_visible_to_self(self):
         client, game_id = _make_client()
+        wolf_id = _find_player_by_role(client, game_id, "werewolf")
+        assert wolf_id is not None, "No werewolf found in game"
         resp = client.get(
-            f"/games/{game_id}/players/p01/private-state",
-            params={"caller_id": "p01", "caller_role": "player_agent"},
+            f"/games/{game_id}/players/{wolf_id}/private-state",
+            params={"caller_id": wolf_id, "caller_role": "player_agent"},
         )
         data = resp.json()
         wolf_teammates = data["player_info"].get("wolf_teammates")
@@ -221,9 +240,11 @@ class TestPrivateStatePermissions:
 
     def test_witch_potion_availability(self):
         client, game_id = _make_client()
+        witch_id = _find_player_by_role(client, game_id, "witch")
+        assert witch_id is not None, "No witch found in game"
         resp = client.get(
-            f"/games/{game_id}/players/p09/private-state",
-            params={"caller_id": "p09", "caller_role": "player_agent"},
+            f"/games/{game_id}/players/{witch_id}/private-state",
+            params={"caller_id": witch_id, "caller_role": "player_agent"},
         )
         data = resp.json()
         info = data["player_info"]
@@ -326,14 +347,16 @@ class TestReplayPermissions:
 
     def test_player_replay_only_contains_own_private_view(self):
         client, game_id = _make_client()
+        wolf_id = _find_player_by_role(client, game_id, "werewolf")
+        assert wolf_id is not None, "No werewolf found in game"
         resp = client.get(
             f"/games/{game_id}/replay",
-            params={"caller_id": "p01", "caller_role": "player_agent", "view_mode": "player_view"},
+            params={"caller_id": wolf_id, "caller_role": "player_agent", "view_mode": "player_view"},
         )
         assert resp.status_code == 200
         snapshot = resp.json()["snapshots"][0]
-        assert set(snapshot["player_views"]) == {"p01"}
-        assert snapshot["player_views"]["p01"]["player_info"]["role"] == "werewolf"
+        assert set(snapshot["player_views"]) == {wolf_id}
+        assert snapshot["player_views"][wolf_id]["player_info"]["role"] == "werewolf"
 
 
 class TestEvaluationPermissions:

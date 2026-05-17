@@ -14,10 +14,14 @@ Design doc §12.1 endpoints:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
+from dataclasses import replace
 from uuid import uuid4
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse, FileResponse
 
 from werewolf_agent.api.permissions import PermissionChecker, PermissionDenied
 from werewolf_agent.api.schemas import (
@@ -49,17 +53,29 @@ from werewolf_agent.api.views import (
     build_replay,
     build_timeline,
 )
-from werewolf_agent.core.models import GameState, PlayerState
+from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.storage.memory_store import InMemoryGameRepository
+from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+
+if TYPE_CHECKING:
+    from werewolf_agent.storage.repository import GameRepository
 
 
-def create_app() -> FastAPI:
+def create_app(repository: GameRepository | None = None) -> FastAPI:
     app = FastAPI(title="Werewolf Agent API", version="1.0")
     checker = PermissionChecker()
     games: dict[str, GameState] = {}
+    runners: dict[str, GameRunner] = {}
     authorized_callers: dict[str, CallerRole] = {
         "mod1": CallerRole.MODERATOR,
         "dbg1": CallerRole.DEBUGGER,
     }
+    _repo = repository
+
+    def _persist(state: GameState) -> None:
+        games[state.game_id] = state
+        if _repo is not None:
+            _repo.save_game(state)
 
     @app.post("/games", response_model=GameCreateResponse)
     def create_game(req: CreateGameRequest) -> GameCreateResponse:
@@ -71,6 +87,8 @@ def create_app() -> FastAPI:
             phase="setup",
         )
         games[game_id] = state
+        if _repo is not None:
+            _repo.save_game(state)
         return GameCreateResponse(
             game=GameInfo(
                 game_id=game_id,
@@ -86,17 +104,56 @@ def create_app() -> FastAPI:
         state = _get_game(games, game_id)
         if state.phase != "setup":
             raise HTTPException(400, "Game already started")
-        # Initialize with 12 players
-        roles = ["werewolf"] * 4 + ["villager"] * 3 + [
-            "seer", "witch", "hunter", "idiot", "hybrid",
-        ]
-        for i, role in enumerate(roles):
-            pid = f"p{i + 1:02d}"
-            state.players[pid] = PlayerState(id=pid, role=role)
-        object.__setattr__(state, "phase", "night")
+        # Use GameRunner for deterministic role assignment via RuleEngine
+        runner = GameRunner(GameRunnerConfig(
+            ruleset_id=state.ruleset_id,
+            seed=hash(game_id) & 0xFFFFFFFF,
+        ))
+        # Override the runner's game_id to match the API game_id
+        runner._game_id = game_id
+        runner._state = replace(runner.state, game_id=game_id)
+        # Use RuleEngine.assign_roles for deterministic role assignment
+        players = runner.engine.assign_roles(
+            [f"p{i:02d}" for i in range(1, 13)],
+            seed=hash(game_id) & 0xFFFFFFFF,
+        )
+        players_data: dict[str, dict] = {}
+        for pid, p in players.items():
+            players_data[pid] = {"id": pid, "role": p.role}
+        event = GameEvent(type="game_started", payload={
+            "game_id": game_id,
+            "players": players_data,
+        })
+        state = replace(
+            state,
+            players=players,
+            phase="night",
+            events=state.events + [event],
+        )
+        # Sync runner state with API state
+        runner._state = state
+        runners[game_id] = runner
+        _persist(state)
         return GameActionResponse(
             game_id=game_id, action="start", success=True,
             message="Game started",
+        )
+
+    @app.post("/games/{game_id}/step", response_model=GameActionResponse)
+    def step_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
+        """Advance the game by one LangGraph node using GameRunner."""
+        runner = runners.get(game_id)
+        if runner is None:
+            raise HTTPException(404, f"No runner for game {game_id}. Start the game first.")
+        if runner.finished:
+            raise HTTPException(400, "Game already finished")
+        runner.run_step()
+        # Sync API state with runner state
+        games[game_id] = runner.state
+        _persist(runner.state)
+        return GameActionResponse(
+            game_id=game_id, action="step", success=True,
+            message=f"Step {runner.step_count}: phase={runner.state.phase}",
         )
 
     @app.post("/games/{game_id}/pause", response_model=GameActionResponse)
@@ -104,7 +161,11 @@ def create_app() -> FastAPI:
         state = _get_game(games, game_id)
         if state.paused:
             raise HTTPException(400, "Already paused")
-        object.__setattr__(state, "paused", True)
+        event = GameEvent(type="game_paused", payload={
+            "game_id": game_id, "phase": state.phase,
+        })
+        state = replace(state, paused=True, events=state.events + [event])
+        _persist(state)
         return GameActionResponse(
             game_id=game_id, action="pause", success=True,
             message="Game paused",
@@ -115,7 +176,11 @@ def create_app() -> FastAPI:
         state = _get_game(games, game_id)
         if not state.paused:
             raise HTTPException(400, "Not paused")
-        object.__setattr__(state, "paused", False)
+        event = GameEvent(type="game_resumed", payload={
+            "game_id": game_id, "phase": state.phase,
+        })
+        state = replace(state, paused=False, events=state.events + [event])
+        _persist(state)
         return GameActionResponse(
             game_id=game_id, action="resume", success=True,
             message="Game resumed",
@@ -270,8 +335,16 @@ def create_app() -> FastAPI:
             for gid, s in games.items()
         ]
 
+    # Dashboard
+    _dashboard_path = Path(__file__).parent.parent / "ui" / "static" / "dashboard.html"
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard() -> HTMLResponse:
+        return HTMLResponse(content=_dashboard_path.read_text(encoding="utf-8"))
+
     # Expose for testing
     app.state.games = games
+    app.state.runners = runners
     app.state.checker = checker
     app.state.authorized_callers = authorized_callers
 
