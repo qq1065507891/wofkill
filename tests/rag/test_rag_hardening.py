@@ -378,7 +378,7 @@ class TestProductionVectorStoreBoundary:
 
         monkeypatch.delenv("QDRANT_URL", raising=False)
 
-        with pytest.raises(VectorStoreConfigError, match="QDRANT_URL"):
+        with pytest.raises(VectorStoreConfigError, match="Qdrant is not supported"):
             create_vector_store("qdrant")
 
     def test_pgvector_backend_requires_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,6 +388,22 @@ class TestProductionVectorStoreBoundary:
 
         with pytest.raises(VectorStoreConfigError, match="PGVECTOR_DSN"):
             create_vector_store("pgvector")
+
+    def test_qdrant_backend_is_not_supported(self) -> None:
+        from werewolf_agent.rag.vector_store import VectorStoreConfigError, create_vector_store
+
+        with pytest.raises(VectorStoreConfigError, match="Qdrant is not supported"):
+            create_vector_store("qdrant")
+
+    def test_pgvector_backend_uses_configured_dsn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from werewolf_agent.rag.vector_store import PgVectorStore, create_vector_store
+
+        monkeypatch.setenv("PGVECTOR_DSN", "postgresql://wofkill:wofkill-dev@localhost:5432/wofkill")
+
+        store = create_vector_store("pgvector", initialize=False)
+
+        assert isinstance(store, PgVectorStore)
+        assert store.backend == "pgvector"
 
 
 class TestEmbeddingVsTFIDFRanking:
@@ -419,3 +435,175 @@ class TestEmbeddingVsTFIDFRanking:
             top_ids = [r["doc_id"] for r in results[:2]]
             # Either seer or wolf should be top (both mention 预言家/查杀)
             assert "seer1" in top_ids or "wolf1" in top_ids
+
+
+# ---------------------------------------------------------------------------
+# PgVectorStore mocked unit tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _mock_psycopg(monkeypatch: pytest.MonkeyPatch):
+    """Inject a mock psycopg module via sys.modules so import psycopg succeeds."""
+    import sys
+    from unittest.mock import MagicMock
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.execute.return_value = mock_cursor
+    mock_cursor.fetchone.return_value = (0,)
+    mock_cursor.fetchall.return_value = []
+
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+
+    monkeypatch.setitem(sys.modules, "psycopg", mock_psycopg)
+
+    return mock_psycopg, mock_conn, mock_cursor
+
+
+class TestPgVectorStore:
+    """Unit tests for PgVectorStore with mocked psycopg connection."""
+
+    def _make_store(self, _mock_psycopg, **kwargs):
+        from werewolf_agent.rag.vector_store import PgVectorStore
+        return PgVectorStore("postgresql://test:test@localhost:5432/testdb", **kwargs)
+
+    # -- add --
+
+    def test_add_inserts_embedding(self, _mock_psycopg):
+        _, mock_conn, _ = _mock_psycopg
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        store.add("doc1", "test text", {"role": "seer"})
+        mock_conn.execute.assert_called()
+        mock_conn.commit.assert_called()
+
+    def test_add_upsert_on_conflict(self, _mock_psycopg):
+        _, mock_conn, _ = _mock_psycopg
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        store.add("doc1", "test text", {"role": "seer"})
+        sql_arg = mock_conn.execute.call_args[0][0]
+        assert "ON CONFLICT" in sql_arg
+
+    # -- query --
+
+    def test_query_returns_results(self, _mock_psycopg):
+        _, mock_conn, mock_cursor = _mock_psycopg
+        mock_cursor.fetchall.return_value = [
+            ("doc1", "some text", '{"role": "seer"}', 0.95),
+        ]
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        results = store.query("seer strategy")
+        assert len(results) == 1
+        assert results[0]["doc_id"] == "doc1"
+        assert results[0]["text"] == "some text"
+        assert results[0]["score"] == 0.95
+
+    def test_query_parses_string_metadata(self, _mock_psycopg):
+        _, mock_conn, mock_cursor = _mock_psycopg
+        mock_cursor.fetchall.return_value = [
+            ("d1", "text", '{"role": "seer", "phase": "night"}', 0.8),
+        ]
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        results = store.query("test")
+        assert results[0]["metadata"] == {"role": "seer", "phase": "night"}
+
+    def test_query_empty_returns_empty(self, _mock_psycopg):
+        _, mock_conn, mock_cursor = _mock_psycopg
+        mock_cursor.fetchall.return_value = []
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        results = store.query("nothing matches")
+        assert results == []
+
+    # -- delete --
+
+    def test_delete_removes_entry(self, _mock_psycopg):
+        _, mock_conn, _ = _mock_psycopg
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        store.delete("doc1")
+        mock_conn.execute.assert_called()
+        mock_conn.commit.assert_called()
+
+    # -- count --
+
+    def test_count_returns_number(self, _mock_psycopg):
+        _, mock_conn, mock_cursor = _mock_psycopg
+        mock_cursor.fetchone.return_value = (42,)
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        assert store.count() == 42
+
+    def test_count_returns_zero(self, _mock_psycopg):
+        _, mock_conn, mock_cursor = _mock_psycopg
+        mock_cursor.fetchone.return_value = (0,)
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        assert store.count() == 0
+
+    # -- close --
+
+    def test_close_closes_connection(self, _mock_psycopg):
+        _, mock_conn, _ = _mock_psycopg
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        store.close()
+        mock_conn.close.assert_called_once()
+
+    def test_close_idempotent(self, _mock_psycopg):
+        _, mock_conn, _ = _mock_psycopg
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        store.close()
+        store.close()  # second call must not raise
+        assert mock_conn.close.call_count == 1
+
+    # -- schema --
+
+    def test_schema_creates_table_and_index(self, _mock_psycopg):
+        _, mock_conn, _ = _mock_psycopg
+        store = self._make_store(_mock_psycopg, initialize=False)
+        store._connect()
+        store._ensure_schema()
+        all_sql = " ".join(call.args[0] for call in mock_conn.execute.call_args_list)
+        assert "rag_vectors" in all_sql
+        assert "ivfflat" in all_sql
+
+    # -- error handling --
+
+    def test_psycopg_missing_raises_error(self, monkeypatch: pytest.MonkeyPatch):
+        from werewolf_agent.rag.vector_store import PgVectorStore, VectorStoreConfigError
+
+        # Remove psycopg from the vector_store module level if present
+        import werewolf_agent.rag.vector_store as _vs
+        monkeypatch.delattr(_vs, "psycopg", raising=False)
+
+        # Make import of psycopg fail
+        import builtins
+        orig_import = builtins.__import__
+
+        def _block_psycopg(name, *args, **kwargs):
+            if name == "psycopg":
+                raise ImportError("no psycopg")
+            return orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _block_psycopg)
+
+        store = PgVectorStore("postgresql://x:x@localhost/db", initialize=False)
+        with pytest.raises(VectorStoreConfigError, match="psycopg"):
+            store._connect()
+
+    # -- properties --
+
+    def test_backend_property(self, _mock_psycopg):
+        store = self._make_store(_mock_psycopg, initialize=False)
+        assert store.backend == "pgvector"
+
+    def test_dimension_property(self, _mock_psycopg):
+        store = self._make_store(_mock_psycopg, dim=256, initialize=False)
+        assert store.dimension == 256
