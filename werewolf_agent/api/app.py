@@ -117,6 +117,10 @@ def create_app(
         if _repo is not None:
             _repo.save_game(state)
 
+    def _persist_custom_config(record: Any) -> None:
+        if _repo is not None and hasattr(_repo, "save_custom_config"):
+            _repo.save_custom_config(_record_to_storage_dict(record))
+
     async def _read_upload_text(request: Request) -> str:
         body = await request.body()
         if len(body) > 256 * 1024:
@@ -181,6 +185,7 @@ def create_app(
             validation_result=data,
             creator_id=caller_id,
         )
+        _persist_custom_config(record)
         return _record_to_public_dict(record)
 
     @app.post("/customization/persona-packs")
@@ -206,6 +211,7 @@ def create_app(
             validation_result=data,
             creator_id=caller_id,
         )
+        _persist_custom_config(record)
         return _record_to_public_dict(record)
 
     @app.get("/marketplace/rulesets")
@@ -634,6 +640,25 @@ def _record_to_public_dict(record: Any) -> dict:
     return {
         "config_id": record.config_id,
         "config_type": record.config_type,
+        "content_hash": record.content_hash,
+        "status": record.status,
+        "version": record.version,
+        "maturity": record.maturity,
+        "compatibility_matrix": record.compatibility_matrix,
+        "diff_against_default": record.diff_against_default,
+        "creator_id": record.creator_id,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def _record_to_storage_dict(record: Any) -> dict:
+    return {
+        "config_id": record.config_id,
+        "config_type": record.config_type,
+        "raw_yaml": record.raw_yaml,
+        "normalized": record.normalized,
+        "validation_result": record.validation_result,
         "content_hash": record.content_hash,
         "status": record.status,
         "version": record.version,

@@ -21,6 +21,7 @@ class InMemoryGameRepository:
         self._usage: dict[str, list[dict[str, Any]]] = {}
         self._evaluations: dict[str, dict[str, Any]] = {}
         self._configs: dict[str, dict[str, Any]] = {}
+        self._custom_configs: dict[str, dict[str, Any]] = {}
 
     def save_game(self, state: GameState) -> None:
         self._games[state.game_id] = state
@@ -61,6 +62,19 @@ class InMemoryGameRepository:
 
     def load_config_snapshot(self, game_id: str) -> dict[str, Any] | None:
         return self._configs.get(game_id)
+
+    def save_custom_config(self, record: dict[str, Any]) -> None:
+        self._custom_configs[str(record["config_id"])] = dict(record)
+
+    def load_custom_config(self, config_id: str) -> dict[str, Any] | None:
+        record = self._custom_configs.get(config_id)
+        return dict(record) if record is not None else None
+
+    def list_custom_configs(self, config_type: str | None = None) -> list[dict[str, Any]]:
+        records = list(self._custom_configs.values())
+        if config_type is not None:
+            records = [record for record in records if record.get("config_type") == config_type]
+        return [dict(record) for record in records]
 
     def list_games(self) -> list[GameState]:
         return list(self._games.values())

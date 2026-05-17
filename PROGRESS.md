@@ -224,6 +224,20 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - Verification: `pytest tests/customization tests/api/test_customization_api.py tests/ui tests/runtime/test_game_runner.py -q` passed (103 tests).
 - Immediate platform customization plan Tasks 0-8 are now implemented at the planned first-slice depth, with noted hardening work still remaining for production storage and full UI extraction.
 
+## Platform Customization Storage Hardening - 2026-05-17
+
+- Added custom configuration persistence methods to the game repository boundary:
+  - `save_custom_config`
+  - `load_custom_config`
+  - `list_custom_configs`
+- Implemented custom config storage in `InMemoryGameRepository`.
+- Implemented durable custom config storage in `SqliteGameRepository` using a `custom_configs` table.
+- Updated migrations to include the `custom_configs` table.
+- Customization save endpoints now also persist validated config records to the configured game repository when available.
+- Added storage tests for in-memory round trip, SQLite restart survival, and API-to-repository persistence.
+- Verification: `pytest tests/storage/test_customization_storage.py tests/api/test_customization_api.py tests/ui tests/customization tests/runtime/test_game_runner.py -q --basetemp .pytest-tmp` passed (106 tests).
+- Remaining hardening: full dashboard inline CSS/JS extraction, deeper marketplace selection UX, and end-to-end browser verification after UI extraction.
+
 ## Design Completion Audit - 2026-05-16
 
 The automated test suite passes, but passing tests do not mean the design document is fully implemented. The current repository should be treated as a strong V1 backend / experiment prototype, not as the complete design-document product.

@@ -69,6 +69,13 @@ MIGRATIONS: list[Migration] = [
             snapshot_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS custom_configs (
+            config_id TEXT PRIMARY KEY,
+            config_type TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """,
     ),
 ]

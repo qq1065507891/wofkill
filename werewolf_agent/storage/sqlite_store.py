@@ -91,6 +91,14 @@ CREATE TABLE IF NOT EXISTS memory_snapshots (
     snapshot_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS custom_configs (
+    config_id TEXT PRIMARY KEY,
+    config_type TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -220,6 +228,46 @@ class SqliteGameRepository:
         if row is None:
             return None
         return json.loads(row[0])
+
+    # -- Customization configs --------------------------------------------
+
+    def save_custom_config(self, record: dict[str, Any]) -> None:
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO custom_configs
+                (config_id, config_type, record_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                record["config_id"],
+                record["config_type"],
+                json.dumps(record, ensure_ascii=False),
+                record.get("created_at", ""),
+                record.get("updated_at", ""),
+            ),
+        )
+        self._conn.commit()
+
+    def load_custom_config(self, config_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT record_json FROM custom_configs WHERE config_id = ?",
+            (config_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def list_custom_configs(self, config_type: str | None = None) -> list[dict[str, Any]]:
+        if config_type is None:
+            rows = self._conn.execute(
+                "SELECT record_json FROM custom_configs ORDER BY created_at, config_id"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT record_json FROM custom_configs WHERE config_type = ? ORDER BY created_at, config_id",
+                (config_type,),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
 
     # -- List / Delete -----------------------------------------------------
 
