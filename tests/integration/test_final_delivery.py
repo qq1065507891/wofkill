@@ -11,11 +11,13 @@ Covers Task 10 Steps 1-5:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
@@ -378,3 +380,51 @@ class TestFinalAcceptance:
         # Hybrid
         assert replayed.hybrid_result == result.hybrid_result
         assert replayed.hybrid_master_id == result.hybrid_master_id
+
+
+class TestRealRunConfiguration:
+    """Configuration checks for the real local runtime path."""
+
+    def test_docker_compose_uses_pgvector_not_qdrant(self) -> None:
+        compose_path = Path(__file__).parent.parent.parent / "docker-compose.yml"
+        data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+        services = data.get("services", {})
+
+        assert "qdrant" not in services
+        assert services["postgres"]["image"].startswith("pgvector/pgvector")
+        assert "profiles" not in services["postgres"]
+        assert "${WEREWOLF_API_PORT:-18000}:8000" in services["api"].get("ports", [])
+        env = services["api"].get("environment", [])
+        assert any("WEREWOLF_STORAGE_BACKEND=postgres" in item for item in env)
+        assert any("WEREWOLF_VECTOR_BACKEND=pgvector" in item for item in env)
+
+    def test_models_yaml_uses_minimax_m27_for_players_and_judge(self) -> None:
+        models_path = Path(__file__).parent.parent.parent / "config" / "models.yaml"
+        data = yaml.safe_load(models_path.read_text(encoding="utf-8"))
+
+        for profile in data["model_profiles"].values():
+            assert profile["provider"] == "anthropic"
+            assert profile["model"] == "MiniMax-M2.7"
+
+        for player_id, assignment in data["players"].items():
+            assert assignment["llm_profile"] == "minimax_default", player_id
+
+    def test_provider_dotenv_loading_does_not_enable_postgres_app_storage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from werewolf_agent.model_gateway.providers import load_local_dotenv
+
+        monkeypatch.delenv("WEREWOLF_STORAGE_BACKEND", raising=False)
+        monkeypatch.delenv("POSTGRES_DSN", raising=False)
+        monkeypatch.delenv("WEREWOLF_VECTOR_BACKEND", raising=False)
+        monkeypatch.delenv("PGVECTOR_DSN", raising=False)
+
+        load_local_dotenv()
+
+        assert os.getenv("ANTHROPIC_API_KEY")
+        assert os.getenv("ANTHROPIC_BASE_URL") is not None
+        assert os.getenv("WEREWOLF_STORAGE_BACKEND") is None
+        assert os.getenv("POSTGRES_DSN") is None
+        assert os.getenv("WEREWOLF_VECTOR_BACKEND") is None
+        assert os.getenv("PGVECTOR_DSN") is None

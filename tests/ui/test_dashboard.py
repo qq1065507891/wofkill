@@ -55,7 +55,7 @@ class TestDashboardServed:
     def test_dashboard_has_title(self, client: TestClient) -> None:
         resp = client.get("/")
         html = resp.text
-        assert "Werewolf Agent" in html or "werewolf" in html.lower()
+        assert "狼人杀" in html or "Werewolf Agent" in html or "werewolf" in html.lower()
 
 
 # ---------------------------------------------------------------------------

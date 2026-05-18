@@ -17,6 +17,18 @@ import httpx
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig, UsageRecord
 
 
+PROVIDER_DOTENV_KEYS = {
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "GLM_API_KEY",
+    "GLM_BASE_URL",
+    "SILICONFLOW_API_KEY",
+    "SILICONFLOW_BASE_URL",
+}
+
+
 class ProviderConfigError(RuntimeError):
     """Raised when a provider cannot be configured safely."""
 
@@ -216,19 +228,26 @@ def create_provider_from_env(provider_name: str):
     return None
 
 
-def load_local_dotenv(path: str | Path = ".env") -> None:
-    """Load simple KEY=VALUE lines without requiring python-dotenv at runtime."""
+def load_local_dotenv(
+    path: str | Path = ".env",
+    *,
+    keys: set[str] | None = None,
+) -> None:
+    """Load provider KEY=VALUE lines without requiring python-dotenv at runtime."""
     env_path = Path(path)
     if not env_path.exists():
         return
+    allowed_keys = keys or PROVIDER_DOTENV_KEYS
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
+        if key not in allowed_keys:
+            continue
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key and value:
             os.environ[key] = value
 
 

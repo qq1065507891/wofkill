@@ -11,6 +11,7 @@ Two implementations:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -327,7 +328,133 @@ class AutoVectorStore:
         return self._store.count()
 
 
-def create_vector_store(backend: str = "auto") -> VectorStore:
+class PgVectorStore:
+    """PostgreSQL pgvector-backed VectorStore.
+
+    Uses the existing deterministic hash embedding to avoid introducing an
+    external embedding dependency for the database path. The table can later
+    be reindexed or repopulated with provider embeddings behind the same
+    VectorStore interface.
+    """
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        dim: int = _EMBEDDING_DIM,
+        table_name: str = "rag_vectors",
+        initialize: bool = True,
+    ) -> None:
+        self._dsn = dsn
+        self._dim = dim
+        self._table_name = table_name
+        self._conn: Any | None = None
+        if initialize:
+            self._connect()
+            self._ensure_schema()
+
+    @property
+    def backend(self) -> str:
+        return "pgvector"
+
+    @property
+    def dimension(self) -> int:
+        return self._dim
+
+    def add(self, doc_id: str, text: str, metadata: dict[str, Any]) -> None:
+        embedding = _text_to_embedding(text, self._dim)
+        vector = _to_pgvector_literal(embedding)
+        conn = self._connect()
+        conn.execute(
+            f"""
+            INSERT INTO {self._table_name} (doc_id, text, metadata, embedding)
+            VALUES (%s, %s, %s::jsonb, %s::vector)
+            ON CONFLICT (doc_id) DO UPDATE SET
+                text = EXCLUDED.text,
+                metadata = EXCLUDED.metadata,
+                embedding = EXCLUDED.embedding
+            """,
+            (doc_id, text, json.dumps(metadata, ensure_ascii=False), vector),
+        )
+        conn.commit()
+
+    def query(self, query_text: str, top_k: int = 5) -> list[dict[str, Any]]:
+        vector = _to_pgvector_literal(_text_to_embedding(query_text, self._dim))
+        conn = self._connect()
+        rows = conn.execute(
+            f"""
+            SELECT doc_id, text, metadata, 1 - (embedding <=> %s::vector) AS score
+            FROM {self._table_name}
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (vector, vector, top_k),
+        ).fetchall()
+        results: list[dict[str, Any]] = []
+        for doc_id, text, metadata, score in rows:
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            results.append({
+                "doc_id": doc_id,
+                "text": text,
+                "metadata": metadata or {},
+                "score": float(score),
+            })
+        return results
+
+    def delete(self, doc_id: str) -> None:
+        conn = self._connect()
+        conn.execute(f"DELETE FROM {self._table_name} WHERE doc_id = %s", (doc_id,))
+        conn.commit()
+
+    def count(self) -> int:
+        conn = self._connect()
+        row = conn.execute(f"SELECT COUNT(*) FROM {self._table_name}").fetchone()
+        return int(row[0])
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def _connect(self) -> Any:
+        if self._conn is not None:
+            return self._conn
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise VectorStoreConfigError("psycopg is required for pgvector backend") from exc
+        self._conn = psycopg.connect(self._dsn)
+        return self._conn
+
+    def _ensure_schema(self) -> None:
+        conn = self._connect()
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self._table_name} (
+                doc_id TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                embedding vector({self._dim}) NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS {self._table_name}_embedding_idx
+            ON {self._table_name}
+            USING ivfflat (embedding vector_cosine_ops)
+            """
+        )
+        conn.commit()
+
+
+def _to_pgvector_literal(values: list[float]) -> str:
+    return "[" + ",".join(f"{v:.8f}" for v in values) + "]"
+
+
+def create_vector_store(backend: str = "auto", *, initialize: bool = True) -> VectorStore:
     """Create a vector store backend by name.
 
     Production backends are explicit opt-in. When requested without required
@@ -344,15 +471,12 @@ def create_vector_store(backend: str = "auto") -> VectorStore:
         from werewolf_agent.rag.embedding_client import SiliconFlowEmbeddingClient
         return SiliconFlowVectorStore(SiliconFlowEmbeddingClient())
     if normalized == "qdrant":
-        url = os.getenv("QDRANT_URL", "")
-        if not url:
-            raise VectorStoreConfigError("QDRANT_URL is required for qdrant vector store")
-        raise VectorStoreConfigError("qdrant vector store adapter is not implemented in V1.1")
+        raise VectorStoreConfigError("Qdrant is not supported; use pgvector")
     if normalized == "pgvector":
         dsn = os.getenv("PGVECTOR_DSN", "")
         if not dsn:
             raise VectorStoreConfigError("PGVECTOR_DSN is required for pgvector vector store")
-        raise VectorStoreConfigError("pgvector vector store adapter is not implemented in V1.1")
+        return PgVectorStore(dsn, initialize=initialize)
     raise VectorStoreConfigError(f"Unknown vector store backend: {backend}")
 
 

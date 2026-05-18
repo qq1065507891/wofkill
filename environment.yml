@@ -17,3 +17,4 @@ dependencies:
   - pip:
       - langgraph
       - langchain
+      - psycopg[binary]

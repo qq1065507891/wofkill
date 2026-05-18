@@ -66,6 +66,22 @@ class TestGameRunnerConstructor:
         assert runner.config.seed == 99
         assert runner.config.use_agent_registry is True
 
+    def test_use_agent_registry_builds_player_agents(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        cfg = GameRunnerConfig(
+            seed=99,
+            use_agent_registry=True,
+            model_config_path="config/models.yaml",
+        )
+        runner = GameRunner(cfg)
+
+        rt = runner._build_runtime_state()
+
+        registry = rt.get("agent_registry")
+        assert registry is not None
+        assert registry.get_agent("p01") is not None
+        assert registry.get_agent("judge") is None
+
 
 # ---------------------------------------------------------------------------
 # Full scripted game tests

@@ -25,6 +25,7 @@ class ProductionStorageConfig:
     postgres_dsn: str = ""
     redis_url: str = ""
     redis_runtime_state: bool = False
+    initialize: bool = True
 
     def validate(self) -> None:
         backend = self.backend.lower().strip()
@@ -45,5 +46,7 @@ def create_game_repository(config: ProductionStorageConfig) -> GameRepository:
     if backend == "sqlite":
         return SqliteGameRepository(config.sqlite_path)
     if backend == "postgres":
-        raise ProductionStorageConfigError("postgres storage adapter is not implemented in V1.1")
+        from werewolf_agent.storage.postgres_store import PostgresGameRepository
+        dsn = config.postgres_dsn or os.getenv("POSTGRES_DSN", "")
+        return PostgresGameRepository(dsn, initialize=config.initialize)
     raise ProductionStorageConfigError(f"Unknown storage backend: {config.backend}")

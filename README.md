@@ -100,28 +100,33 @@ python -m pytest tests/ui/test_dashboard.py -q
 ## Docker 快速启动
 
 ```bash
-# 构建并启动 API 服务
+# 构建并启动 API + PostgreSQL/pgvector
 docker compose up
 
 # 访问观战台
-# http://localhost:8000
+# http://localhost:18000
 
 # 包含 Redis 的完整启动
 docker compose --profile with-redis up
 
-# 可选生产依赖占位服务（适配器仍需后续实现）
-docker compose --profile production-adapters up postgres qdrant redis
+# 如需改宿主机端口
+WEREWOLF_API_PORT=8000 docker compose up
 ```
+
+## 生产部署
+
+完整的生产部署文档见 [docs/operations/deployment-guide.md](docs/operations/deployment-guide.md)，涵盖 Docker Compose 编排、环境变量配置、存储后端选择（SQLite/PostgreSQL）、模型路由、健康检查、备份策略和扩展方案。生产环境推荐使用 PostgreSQL + pgvector 后端，并替换默认的 `WEREWOLF_AUTH_SECRET` 和数据库密码。
 
 ## V1.1 硬化边界
 
 V1.1 增加了本地运行硬化和生产适配边界，但默认开发路径仍保持轻量：
 
-- Runtime：`LocalRuntimeExecutor` 提供单进程 per-game lock、后台运行状态和 paused-game step 拦截；多进程部署仍需 Redis/task-state。
+- Runtime：`LocalRuntimeExecutor` 提供单进程 per-game lock、后台运行状态和 paused-game step 拦截。多进程部署使用 `RedisRuntimeExecutor`（V1.2 新增）。
+- Redis：`RedisRuntimeExecutor` 提供分布式 per-game 锁（TTL + 刷新）和 JSON 状态追踪，Redis 不可用时优雅降级。
 - Timer：`runtime.timers` 提供 `ManualTimer` / `NoopTimer`，用于狼队讨论和白天发言的流程超时测试；真实 provider 调用取消仍是后续工作。
 - MCP：`TransportMCPProvider` 可以包装真实 transport，但 MCP 结果仍统一标注为 suggestion-only。
-- RAG：`create_vector_store()` 支持 `auto`、`local`、`embedding`、`siliconflow`，并对 `qdrant` / `pgvector` 给出显式配置错误。
-- Storage：`ProductionStorageConfig` / `create_game_repository()` 默认返回 SQLite；PostgreSQL/Redis 生产适配器尚未实现，会显式报错而不是静默 fallback。
+- RAG：`create_vector_store()` 支持 `auto`、`local`、`embedding`、`siliconflow`、`pgvector`；Qdrant 不启用。
+- Storage：`ProductionStorageConfig` / `create_game_repository()` 支持 SQLite 和 PostgreSQL；Docker 默认使用 `pgvector/pgvector:pg16`。
 
 ## 持久化模式
 
@@ -210,18 +215,16 @@ uvicorn werewolf_agent.api.app:create_app --factory --reload
 本地复制 `.env.example` 为 `.env`，填写需要使用的 provider：
 
 ```env
-ANTHROPIC_API_KEY=你的 Anthropic key
-GLM_API_KEY=你的 GLM / 智谱 key
-OPENAI_API_KEY=你的 OpenAI key
+ANTHROPIC_API_KEY=你的 MiniMax key
+ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic
+WEREWOLF_USE_LLM_AGENTS=1
+WEREWOLF_STORAGE_BACKEND=postgres
+POSTGRES_DSN=postgresql://wofkill:wofkill-dev@localhost:5432/wofkill
+WEREWOLF_VECTOR_BACKEND=pgvector
+PGVECTOR_DSN=postgresql://wofkill:wofkill-dev@localhost:5432/wofkill
 ```
 
-可选 base URL：
-
-```env
-ANTHROPIC_BASE_URL=https://api.anthropic.com
-GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-OPENAI_BASE_URL=https://api.openai.com
-```
+当前 `config/models.yaml` 已将 12 名玩家和 judge 都配置到 Anthropic-compatible provider，模型名为 `MiniMax-M2.7`。
 
 在代码里启用真实 provider：
 
@@ -240,10 +243,10 @@ router = ModelRouter.from_yaml(
 players:
   p01:
     persona_id: logic_leader
-    llm_profile: pro_reasoner
+    llm_profile: minimax_default
   p02:
     persona_id: aggressive_bluffer
-    llm_profile: local_wolf
+    llm_profile: minimax_default
 ```
 
 法官也使用同一个模型路由，当前已配置为虚拟 agent：
@@ -252,7 +255,7 @@ players:
 players:
   judge:
     persona_id: judge
-    llm_profile: pro_reasoner
+    llm_profile: minimax_default
 ```
 
 使用法官时传入同一个 router：
@@ -265,9 +268,9 @@ judge = JudgeAgent(model_router=router)
 
 当前内置 provider：
 
-- `anthropic`: Anthropic Messages API，读取 `ANTHROPIC_API_KEY`
-- `glm`: OpenAI-compatible Chat Completions，读取 `GLM_API_KEY`
-- `openai`: OpenAI Chat Completions，读取 `OPENAI_API_KEY`
+- `anthropic`: Anthropic-compatible Messages API，当前指向 MiniMax `ANTHROPIC_BASE_URL`
+- `glm`: OpenAI-compatible Chat Completions，保留为可选扩展
+- `openai`: OpenAI Chat Completions，保留为可选扩展
 
 ### 真实 Provider 冒烟测试
 
@@ -275,8 +278,8 @@ judge = JudgeAgent(model_router=router)
 
 ```powershell
 $env:WEREWOLF_RUN_REAL_LLM_SMOKE = "1"
-$env:OPENAI_API_KEY = "..."
-# 或 ANTHROPIC_API_KEY / GLM_API_KEY
+$env:ANTHROPIC_API_KEY = "..."
+$env:ANTHROPIC_BASE_URL = "https://api.minimaxi.com/anthropic"
 D:/Miniforge3/envs/wofkill/python.exe -m pytest tests/integration/test_real_llm_smoke.py -q --basetemp .pytest-tmp
 ```
 

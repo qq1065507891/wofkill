@@ -38,6 +38,7 @@ class GameRunnerConfig:
     use_agent_registry: bool = False
     model_config_path: str = ""
     persona_config_path: str = ""
+    agent_call_timeout: float = 0  # seconds; 0 = no timeout wrapper
     ruleset_registry: Any = None  # RulesetRegistry, optional
     repository: Any = None  # GameRepository, optional
     memory_coordinator: Any = None  # PersistentMemoryCoordinator, optional
@@ -154,6 +155,8 @@ class GameRunner:
         }
         if self._agent_registry is not None:
             rt["agent_registry"] = self._agent_registry
+        if self._config.agent_call_timeout > 0:
+            rt["agent_call_timeout"] = self._config.agent_call_timeout
         return rt
 
     def _build_agent_registry(self) -> SimpleAgentRegistry | None:
@@ -177,7 +180,7 @@ class GameRunner:
         node_name = None
         for name, output in chunk.items():
             node_name = name
-            if "game_state" in output:
+            if output is not None and "game_state" in output:
                 self._state = output["game_state"]
         return node_name
 
@@ -211,8 +214,8 @@ class GameRunner:
                     self._persist_if_configured()
                     return self._state
         except Exception as exc:
-            # Graph hit recursion limit — keep accumulated state
-            logger.warning("Graph execution error in run() at step %d: %s", self._step_count, exc)
+            import traceback
+            logger.warning("Graph execution error in run() at step %d: %s\n%s", self._step_count, exc, traceback.format_exc())
 
         self._finished = self._state.phase == "finished" or self._state.winning_faction is not None
         if self._finished:

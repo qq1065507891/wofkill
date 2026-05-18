@@ -1,12 +1,12 @@
-__pycache__/
-*.py[cod]
+.git/
 .pytest_cache/
 .pytest-tmp/
 .ruff_cache/
 .mypy_cache/
+__pycache__/
+*.py[cod]
 .coverage
 htmlcov/
 .env
 .venv/
 venv/
-.claude/settings.local.json

@@ -2,18 +2,25 @@ services:
   api:
     build: .
     ports:
-      - "8000:8000"
+      - "${WEREWOLF_API_PORT:-18000}:8000"
     volumes:
       - werewolf-data:/app/data
       - ./.env:/app/.env:ro
     environment:
-      - WEREWOLF_DB_PATH=/app/data/wofkill.db
+      - WEREWOLF_STORAGE_BACKEND=postgres
+      - POSTGRES_DSN=postgresql://wofkill:wofkill-dev@postgres:5432/wofkill
+      - WEREWOLF_VECTOR_BACKEND=pgvector
+      - PGVECTOR_DSN=postgresql://wofkill:wofkill-dev@postgres:5432/wofkill
+      - WEREWOLF_USE_LLM_AGENTS=${WEREWOLF_USE_LLM_AGENTS:-1}
+      - WEREWOLF_MODEL_CONFIG=config/models.yaml
       - WEREWOLF_AUTH_SECRET=${WEREWOLF_AUTH_SECRET:-wofkill-dev-key}
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/games')"]
       interval: 10s
       timeout: 5s
       retries: 3
+    depends_on:
+      - postgres
 
   redis:
     image: redis:7-alpine
@@ -26,7 +33,7 @@ services:
       - production-adapters
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_DB=wofkill
       - POSTGRES_USER=wofkill
@@ -35,21 +42,8 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-    profiles:
-      - production-adapters
-
-  qdrant:
-    image: qdrant/qdrant:v1.9.7
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant-data:/qdrant/storage
-    profiles:
-      - production-adapters
 
 volumes:
   werewolf-data:
   redis-data:
   postgres-data:
-  qdrant-data:

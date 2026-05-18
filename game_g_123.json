@@ -1,0 +1,390 @@
+{
+  "game_id": "g_123",
+  "winning_faction": null,
+  "phase": "night",
+  "day_number": 1,
+  "night_number": 2,
+  "players": {
+    "p01": {
+      "role": "villager",
+      "alive": false
+    },
+    "p02": {
+      "role": "werewolf",
+      "alive": true
+    },
+    "p03": {
+      "role": "hybrid",
+      "alive": true
+    },
+    "p04": {
+      "role": "villager",
+      "alive": true
+    },
+    "p05": {
+      "role": "seer",
+      "alive": true
+    },
+    "p06": {
+      "role": "werewolf",
+      "alive": true
+    },
+    "p07": {
+      "role": "werewolf",
+      "alive": true
+    },
+    "p08": {
+      "role": "idiot",
+      "alive": true
+    },
+    "p09": {
+      "role": "hunter",
+      "alive": true
+    },
+    "p10": {
+      "role": "villager",
+      "alive": true
+    },
+    "p11": {
+      "role": "witch",
+      "alive": true
+    },
+    "p12": {
+      "role": "werewolf",
+      "alive": true
+    }
+  },
+  "deaths": [
+    {
+      "player_id": "p01",
+      "reason": "wolf_kill"
+    }
+  ],
+  "events": [
+    {
+      "type": "roles_assigned",
+      "payload": {}
+    },
+    {
+      "type": "enter_night",
+      "payload": {
+        "night": 1
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p02",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p06",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p07",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p12",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_kill_selected",
+      "payload": {
+        "night_number": 1,
+        "target_id": "p01"
+      }
+    },
+    {
+      "type": "witch_decision_audit",
+      "payload": {
+        "night_number": 1,
+        "wolf_kill_target_id": "p01",
+        "action_taken": "no_action",
+        "poison_target_id": null,
+        "reason": "agent_decision",
+        "visibility": "witch_private"
+      }
+    },
+    {
+      "type": "hunter_idiot_status_confirmed",
+      "payload": {
+        "night_number": 1,
+        "hunter_id": "p09",
+        "idiot_id": "p08",
+        "visibility": "moderator_only"
+      }
+    },
+    {
+      "type": "hybrid_master_chosen",
+      "payload": {
+        "hybrid_id": "p03",
+        "master_id": "p01"
+      }
+    },
+    {
+      "type": "player_died",
+      "payload": {
+        "player_id": "p01",
+        "reason": "wolf_kill",
+        "timing": "night",
+        "resolution_batch": "night_1",
+        "source_player_id": null,
+        "can_leave_last_words": true,
+        "triggered_skills": []
+      }
+    },
+    {
+      "type": "seer_check",
+      "payload": {
+        "seer_id": "p05",
+        "target_id": "p01",
+        "alignment": "good",
+        "night_number": 1,
+        "visibility": "seer_only"
+      }
+    },
+    {
+      "type": "day_announce",
+      "payload": {
+        "day": 1
+      }
+    },
+    {
+      "type": "night_death_last_words",
+      "payload": {
+        "players": [
+          "p01"
+        ]
+      }
+    },
+    {
+      "type": "sheriff_registered",
+      "payload": {
+        "candidates": [
+          "p02",
+          "p03",
+          "p04",
+          "p05",
+          "p06",
+          "p07",
+          "p08",
+          "p09",
+          "p10",
+          "p11",
+          "p12"
+        ]
+      }
+    },
+    {
+      "type": "sheriff_speech",
+      "payload": {}
+    },
+    {
+      "type": "sheriff_withdraw",
+      "payload": {
+        "remaining": [
+          "p02",
+          "p03",
+          "p04",
+          "p05",
+          "p06",
+          "p07",
+          "p08",
+          "p09",
+          "p10",
+          "p11",
+          "p12"
+        ],
+        "withdrew": []
+      }
+    },
+    {
+      "type": "sheriff_no_election",
+      "payload": {}
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p02",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p03",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p04",
+        "day_number": 1,
+        "text": "大家好，我是p04，一个村民。昨晚p01离开了，这个信息很关键。p02和p03刚才都没怎么说话，我很好奇你们对昨晚的情况有什么看法？作为村民，我会认真分析每个人的发言，努力找出狼人的线索。希望大家能多分享一些信息，我们一起找出真相。"
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p05",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p06",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p07",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p08",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p09",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p10",
+        "day_number": 1,
+        "text": "大家好，我是p10，一个村民。昨晚p01离开了，这确实是关键信息。p04的分析很有道理，p02和p03作为前面的玩家没有发言确实值得注意。作为村民，我认为第一天的主要任务是观察每个人的态度和逻辑。p01的死可能是狼人想制造混乱或者消除某些关键信息。我建议大家都坦诚地分享看法，这样才能更快找出狼人的线索。"
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p11",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p12",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "vote_resolved",
+      "payload": {
+        "exiled": "p02",
+        "reason": "majority"
+      }
+    },
+    {
+      "type": "victory_checked",
+      "payload": {
+        "winner": null,
+        "reason": null
+      }
+    },
+    {
+      "type": "enter_night",
+      "payload": {
+        "night": 2
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p02",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p06",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p07",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p12",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_kill_selected",
+      "payload": {
+        "night_number": 2,
+        "target_id": "p03"
+      }
+    },
+    {
+      "type": "witch_decision_audit",
+      "payload": {
+        "night_number": 2,
+        "wolf_kill_target_id": "p03",
+        "action_taken": "no_action",
+        "poison_target_id": null,
+        "reason": "agent_decision",
+        "visibility": "witch_private"
+      }
+    }
+  ],
+  "elapsed_seconds": 719.8,
+  "steps": 38
+}

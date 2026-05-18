@@ -37,20 +37,20 @@ def test_cost_latency_panel(dashboard_html):
 def test_private_intent_audit(dashboard_html):
     assert "private-intent" in dashboard_html
 
-def test_dashboard_is_localized_to_chinese(dashboard_html):
+def test_dashboard_is_localized_to_chinese(dashboard_html, dashboard_js):
     assert "创建新游戏" in dashboard_html
     assert "开始游戏" in dashboard_html
     assert "当前阶段" in dashboard_html
     assert "阶段" in dashboard_html
     assert "天数" in dashboard_html
-    assert "胜利方" in dashboard_html
+    assert "胜利方" in dashboard_js
 
-def test_create_game_selects_created_game_before_start(dashboard_html):
-    assert "const created = await readJsonOrThrow(r);" in dashboard_html
-    assert "currentGame = created.game.game_id;" in dashboard_html
+def test_create_game_selects_created_game_before_start(dashboard_js):
+    assert "const created = await readJsonOrThrow(r);" in dashboard_js
+    assert "currentGame = created.game.game_id;" in dashboard_js
 
-def test_start_without_selected_game_shows_status_message(dashboard_html):
-    assert "请先创建或选择一局游戏" in dashboard_html
+def test_start_without_selected_game_shows_status_message(dashboard_js):
+    assert "请先创建或选择一局游戏" in dashboard_js
 
 def test_dashboard_has_growth_oriented_werewolf_table_design(dashboard_html):
     assert "game-shell" in dashboard_html
@@ -82,8 +82,8 @@ def test_dashboard_upload_js_keeps_validated_config_state(dashboard_js):
     assert "selectedPersonaPackConfig = data.normalized" in dashboard_js
     assert "getSelectedRulesetId" in dashboard_js
 
-def test_create_game_uses_selected_ruleset(dashboard_html, dashboard_js):
-    assert "buildCreateGamePayload()" in dashboard_html
+def test_create_game_uses_selected_ruleset(dashboard_js):
+    assert "buildCreateGamePayload()" in dashboard_js
     assert "ruleset_id: getSelectedRulesetId()" in dashboard_js
 
 def test_dashboard_has_static_marketplace_cards(dashboard_html):

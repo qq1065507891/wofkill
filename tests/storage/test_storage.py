@@ -230,6 +230,19 @@ class TestProductionStorageBoundary:
         with pytest.raises(ProductionStorageConfigError, match="Unknown storage backend"):
             create_game_repository(ProductionStorageConfig(backend="mystery"))
 
+    def test_postgres_backend_factory_returns_postgres_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from werewolf_agent.storage.postgres_store import PostgresGameRepository
+        from werewolf_agent.storage.production import (
+            ProductionStorageConfig,
+            create_game_repository,
+        )
+
+        monkeypatch.setenv("POSTGRES_DSN", "postgresql://wofkill:wofkill-dev@localhost:5432/wofkill")
+
+        repo = create_game_repository(ProductionStorageConfig(backend="postgres", initialize=False))
+
+        assert isinstance(repo, PostgresGameRepository)
+
 
 # ---------------------------------------------------------------------------
 # 2. Append and load event log

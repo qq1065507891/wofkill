@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
 
 COPY environment.yml .
-RUN pip install --no-cache-dir fastapi uvicorn httpx pydantic langgraph langchain-core pyyaml pytest
+RUN pip install --no-cache-dir fastapi uvicorn httpx pydantic langgraph langchain-core pyyaml pytest "psycopg[binary]"
 
 COPY . .
 

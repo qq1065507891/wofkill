@@ -1,0 +1,379 @@
+{
+  "game_id": "g_42",
+  "winning_faction": null,
+  "phase": "night",
+  "day_number": 1,
+  "night_number": 2,
+  "players": {
+    "p01": {
+      "role": "werewolf",
+      "alive": true
+    },
+    "p02": {
+      "role": "villager",
+      "alive": true
+    },
+    "p03": {
+      "role": "seer",
+      "alive": true
+    },
+    "p04": {
+      "role": "hybrid",
+      "alive": true
+    },
+    "p05": {
+      "role": "villager",
+      "alive": true
+    },
+    "p06": {
+      "role": "witch",
+      "alive": true
+    },
+    "p07": {
+      "role": "hunter",
+      "alive": true
+    },
+    "p08": {
+      "role": "idiot",
+      "alive": true
+    },
+    "p09": {
+      "role": "werewolf",
+      "alive": true
+    },
+    "p10": {
+      "role": "villager",
+      "alive": true
+    },
+    "p11": {
+      "role": "werewolf",
+      "alive": true
+    },
+    "p12": {
+      "role": "werewolf",
+      "alive": true
+    }
+  },
+  "deaths": [],
+  "events": [
+    {
+      "type": "roles_assigned",
+      "payload": {}
+    },
+    {
+      "type": "enter_night",
+      "payload": {
+        "night": 1
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p01",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p09",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p11",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p12",
+        "night_number": 1,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_no_kill_timeout",
+      "payload": {
+        "night_number": 1
+      }
+    },
+    {
+      "type": "witch_decision_audit",
+      "payload": {
+        "night_number": 1,
+        "wolf_kill_target_id": null,
+        "action_taken": "no_action",
+        "poison_target_id": null,
+        "reason": "agent_decision",
+        "visibility": "witch_private"
+      }
+    },
+    {
+      "type": "hunter_idiot_status_confirmed",
+      "payload": {
+        "night_number": 1,
+        "hunter_id": "p07",
+        "idiot_id": "p08",
+        "visibility": "moderator_only"
+      }
+    },
+    {
+      "type": "hybrid_master_chosen",
+      "payload": {
+        "hybrid_id": "p04",
+        "master_id": "p08"
+      }
+    },
+    {
+      "type": "seer_check",
+      "payload": {
+        "seer_id": "p03",
+        "target_id": "p01",
+        "alignment": "werewolf",
+        "night_number": 1,
+        "visibility": "seer_only"
+      }
+    },
+    {
+      "type": "day_announce",
+      "payload": {
+        "day": 1
+      }
+    },
+    {
+      "type": "night_death_last_words",
+      "payload": {
+        "players": []
+      }
+    },
+    {
+      "type": "sheriff_registered",
+      "payload": {
+        "candidates": [
+          "p01",
+          "p02",
+          "p03",
+          "p04",
+          "p05",
+          "p06",
+          "p07",
+          "p08",
+          "p09",
+          "p10",
+          "p11",
+          "p12"
+        ]
+      }
+    },
+    {
+      "type": "sheriff_speech",
+      "payload": {}
+    },
+    {
+      "type": "sheriff_withdraw",
+      "payload": {
+        "remaining": [
+          "p01",
+          "p02",
+          "p03",
+          "p04",
+          "p05",
+          "p06",
+          "p07",
+          "p08",
+          "p09",
+          "p10",
+          "p11",
+          "p12"
+        ],
+        "withdrew": []
+      }
+    },
+    {
+      "type": "sheriff_no_election",
+      "payload": {}
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p01",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p02",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p03",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p04",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p05",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p06",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p07",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p08",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p09",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p10",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p11",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "speech",
+      "payload": {
+        "speaker": "p12",
+        "day_number": 1,
+        "text": ""
+      }
+    },
+    {
+      "type": "vote_resolved",
+      "payload": {
+        "exiled": "p01",
+        "reason": "majority"
+      }
+    },
+    {
+      "type": "victory_checked",
+      "payload": {
+        "winner": null,
+        "reason": null
+      }
+    },
+    {
+      "type": "enter_night",
+      "payload": {
+        "night": 2
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p01",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p09",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p11",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_discussion",
+      "payload": {
+        "wolf_id": "p12",
+        "night_number": 2,
+        "text": "",
+        "visibility": "werewolf_team_only"
+      }
+    },
+    {
+      "type": "wolf_no_kill_timeout",
+      "payload": {
+        "night_number": 2
+      }
+    },
+    {
+      "type": "witch_decision_audit",
+      "payload": {
+        "night_number": 2,
+        "wolf_kill_target_id": null,
+        "action_taken": "no_action",
+        "poison_target_id": null,
+        "reason": "agent_decision",
+        "visibility": "witch_private"
+      }
+    }
+  ],
+  "elapsed_seconds": 1124.6,
+  "steps": 39
+}

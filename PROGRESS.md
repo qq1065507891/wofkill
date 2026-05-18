@@ -4,10 +4,10 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: Platform customization and growth planning.
-- Active task: Platform customization/growth plan revised after architecture review; awaiting execution choice.
+- Current phase: Post-V1.2 production hardening complete.
+- Active task: Dashboard extraction, deployment docs, async timers, MCP connectors all done.
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-17
+- Last updated: 2026-05-18
 
 ## Dashboard Redesign Session - 2026-05-17
 
@@ -681,25 +681,28 @@ Design-document completion work, in recommended order:
 - Pause/resume and start_game event sourcing are now wired into FastAPI endpoints; no `object.__setattr__` remains in `app.py`. V1.1 adds local runtime execution locks, background status, and paused-game step rejection; Redis-backed distributed locks remain future work.
 - Frontend observer requirements are entirely backend-data-only at the moment.
 
+## V1.2 Production Adapters - 2026-05-17
+
+- **PostgreSQL Store Tests**: Created `tests/storage/test_postgres_store.py` with 45 tests covering schema creation, game CRUD, events, deaths, model usage, evaluation, config snapshots, connection management, and JSONB handling — all using mocked psycopg.
+- **PgVector Store Tests**: Added `TestPgVectorStore` (14 tests) to `tests/rag/test_rag_hardening.py` covering add/query/delete/count/close/schema/properties — all using mocked psycopg.
+- **Redis Distributed Lock**: Created `werewolf_agent/runtime/redis_executor.py` with `RedisRuntimeExecutor` providing distributed per-game locks (TTL, refresh, is_locked) and JSON status tracking via Redis. Graceful degradation when Redis unavailable. Created `tests/runtime/test_redis_executor.py` with 19 tests using mocked redis client.
+- Verification: **1079+ tests (45+14+19=78 new), 0 failures**.
+- Next recommended work: Real LLM 12-player end-to-end game validation with leakage checks.
+
 ## Next Step
 
-V1.1 local hardening is implemented. Full suite completed successfully with `--basetemp .pytest-tmp`; collection count is **1020 tests**, with the optional real LLM smoke test skipped by default.
+Post-V1.2 production hardening complete. Full suite: **1191 tests passed, 0 failed, 1 skipped**.
 
-本次会话完成的任务：
-1. ~~V1.1 implementation plan~~ — DONE
-2. ~~Local runtime execution locks/background status~~ — DONE
-3. ~~Optional real LLM smoke test gate~~ — DONE
-4. ~~Runtime timer abstraction for wolf discussion and speech~~ — DONE
-5. ~~MCP transport adapter boundary~~ — DONE
-6. ~~RAG Qdrant/pgvector factory boundary~~ — DONE
-7. ~~Production storage configuration boundary~~ — DONE
-8. ~~README/PROGRESS/development docs~~ — DONE
+### 2026-05-18 Session
 
-Remaining production work beyond V1.1:
-1. Replace local runtime locks with Redis/task-state when running multiple API workers.
-2. Implement real Qdrant/pgvector adapters behind the new vector-store factory.
-3. Run and evaluate real LLM 12-player end-to-end games with leakage checks.
-4. Replace mock/example MCP providers with concrete external service connectors.
-5. Add true asynchronous cancellation around provider calls for speech/wolf timers.
-6. Implement PostgreSQL and Redis production storage adapters behind the new storage boundary.
-7. Expand production deployment docs after those adapters exist.
+1. ~~Dashboard CSS/JS extraction~~ — DONE. `dashboard.html` 从 1316 行降至 ~304 行纯 HTML，CSS/JS 提取到 `dashboard.css`（~405 行）和 `dashboard.js`（~816 行）。42 个 UI 测试通过。
+2. ~~Production deployment documentation~~ — DONE. 新建 `docs/operations/deployment-guide.md`（8 章：快速启动、环境变量、存储后端、LLM 配置、监控、备份、扩展、安全），README.md 添加生产部署小节。
+3. ~~Async timer cancellation~~ — DONE. 新增 `RealTimer`（墙钟+threading.Lock，支持 start/expired/cancel/remaining）和 `timed_call`（子线程+超时+fallback）。graph.py 所有 agent 调用点（wolf_consensus/discussion/witch/seer/speech/vote/hunter）改用 `_call_agent` 包装。22 个新 timer 测试通过。
+4. ~~MCP concrete connectors~~ — DONE. 新增 `RepositoryHistoryTransport`（查询游戏历史）、`PersonaQueryTransport`（查询人格配置）、`HTTPTransport`（通用 HTTP+重试+超时）。22 个新 connector 测试通过。
+5. ~~PROGRESS.md update~~ — DONE.
+
+### Remaining work (需要真实 API key 或外部依赖)
+
+1. Run and evaluate real LLM 12-player end-to-end games with leakage checks.
+2. Calibrate evaluation metrics from real game data (speech influence, cognitive compression, memory/RAG strategy curves).
+3. Production deployment dry-run on real infrastructure.
