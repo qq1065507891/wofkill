@@ -86,6 +86,7 @@ class VoteResult:
     exiled_player_id: str | None
     next_phase: str
     reason: str
+    tied_player_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

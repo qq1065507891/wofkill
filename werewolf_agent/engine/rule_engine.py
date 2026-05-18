@@ -22,6 +22,12 @@ from werewolf_agent.core.models import (
 )
 
 
+def _stable_seed_val(*parts: object) -> int:
+    import hashlib
+    raw = "|".join(str(part) for part in parts).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") & 0xFFFFFFFF
+
+
 @dataclass(frozen=True)
 class Ruleset:
     raw: dict[str, Any]
@@ -471,7 +477,16 @@ class RuleEngine:
 
     # -- Vote --
 
-    def resolve_vote(self, state: GameState, *, votes: dict[str, str], revote: bool) -> VoteResult:
+    def resolve_vote(
+        self,
+        state: GameState,
+        *,
+        votes: dict[str, str],
+        revote: bool,
+        consecutive_no_exile_days: int = 0,
+        pk_candidates: list[str] | None = None,
+        rng_seed: str | None = None,
+    ) -> VoteResult:
         tally: dict[str, int] = {}
         legal_targets = set(self.legal_exile_targets(state))
         for voter_id, target_id in votes.items():
@@ -483,22 +498,92 @@ class RuleEngine:
             weight = 3 if voter_id == state.sheriff_id and state.sheriff_badge_state == "active" else 2
             tally[target_id] = tally.get(target_id, 0) + weight
 
+        cfg = self.ruleset.raw["day_flow"]["vote"]
+
         if not tally:
             if revote:
+                # Anti-stall: force exile when tally is empty but consecutive no-exile is high
+                pace_cfg = cfg.get("simulation_pace", {})
+                max_allowed = pace_cfg.get("max_consecutive_no_exile_days", 0)
+                if (
+                    pace_cfg.get("enabled", False)
+                    and max_allowed > 0
+                    and consecutive_no_exile_days >= max_allowed
+                ):
+                    candidates = [
+                        pid for pid in (pk_candidates or [])
+                        if pid in legal_targets
+                    ]
+                    if candidates:
+                        seed_val = _stable_seed_val(rng_seed or "anti-stall-empty", *candidates)
+                        chosen = random.Random(seed_val).choice(candidates)
+                        return VoteResult(
+                            exiled_player_id=chosen,
+                            next_phase="resolve_exile",
+                            reason="anti_stall_empty_tally",
+                        )
                 return VoteResult(exiled_player_id=None, next_phase="night", reason="second_tie_no_exile")
             return VoteResult(exiled_player_id=None, next_phase="pk_speech", reason="first_tie_pk")
 
         max_votes = max(tally.values())
         top = [pid for pid, count in tally.items() if count == max_votes]
 
-        cfg = self.ruleset.raw["day_flow"]["vote"]
         if len(top) > 1:
             if not revote:
-                return VoteResult(exiled_player_id=None, next_phase="pk_speech", reason="first_tie_pk")
+                return VoteResult(
+                    exiled_player_id=None,
+                    next_phase="pk_speech",
+                    reason="first_tie_pk",
+                    tied_player_ids=top,
+                )
             if cfg["second_tie_policy"] == "no_exile_then_night":
+                # Anti-stall: break repeated ties deterministically
+                pace_cfg = cfg.get("simulation_pace", {})
+                max_allowed = pace_cfg.get("max_consecutive_no_exile_days", 0)
+                if (
+                    pace_cfg.get("enabled", False)
+                    and max_allowed > 0
+                    and consecutive_no_exile_days >= max_allowed
+                ):
+                    return self._anti_stall_tie_break(state, top, rng_seed)
                 return VoteResult(exiled_player_id=None, next_phase="night", reason="second_tie_no_exile")
 
         return VoteResult(exiled_player_id=top[0], next_phase="resolve_exile", reason="majority")
+
+    def _anti_stall_tie_break(
+        self, state: GameState, tied: list[str], rng_seed: str | None,
+    ) -> VoteResult:
+        """Deterministic tie-break for anti-stall: sheriff vote then seeded random."""
+        # 1. If active sheriff voted for one of the tied candidates, exile that one
+        if state.sheriff_id and state.sheriff_badge_state == "active":
+            for ev in reversed(state.events):
+                if ev.type == "vote_resolved":
+                    break
+            # Check if sheriff cast a vote for a tied candidate
+            last_votes = {}
+            for ev2 in state.events:
+                if ev2.type == "speech" and ev2.payload.get("speaker") == state.sheriff_id:
+                    text = ev2.payload.get("text", "")
+                    for candidate in tied:
+                        if candidate in text:
+                            last_votes[state.sheriff_id] = candidate
+            sheriff_vote = last_votes.get(state.sheriff_id)
+            if sheriff_vote in tied:
+                return VoteResult(
+                    exiled_player_id=sheriff_vote,
+                    next_phase="resolve_exile",
+                    reason="anti_stall_tie_break",
+                )
+
+        # 2. Seeded random from tied candidates
+        seed_val = _stable_seed_val(rng_seed or "anti-stall", *tied)
+        rng = random.Random(seed_val)
+        chosen = rng.choice(tied)
+        return VoteResult(
+            exiled_player_id=chosen,
+            next_phase="resolve_exile",
+            reason="anti_stall_tie_break",
+        )
 
     # -- Last Words --
 

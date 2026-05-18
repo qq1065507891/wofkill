@@ -1202,3 +1202,53 @@ class TestReportExport:
         # Should include new metrics in comparison
         assert "lie_detection_rate" in metric_names
         assert "stance_accuracy" in metric_names
+
+
+# ---------------------------------------------------------------------------
+# Game pace metrics tests
+# ---------------------------------------------------------------------------
+
+
+class TestGamePaceMetrics:
+    def test_pace_metrics_detect_stale_votes_and_no_exile_streak(self) -> None:
+        from werewolf_agent.evaluation.metrics import compute_pace_metrics
+
+        events = [
+            {"type": "vote_resolved", "payload": {"exiled": "p01", "reason": "majority", "votes": {"p02": "p01"}}},
+            {"type": "vote_resolved", "payload": {"exiled": "p01", "reason": "majority", "votes": {"p02": "p01"}}},
+            {"type": "vote_resolved", "payload": {"exiled": None, "reason": "second_tie_no_exile"}},
+            {"type": "vote_resolved", "payload": {"exiled": None, "reason": "second_tie_no_exile"}},
+        ]
+
+        metrics = compute_pace_metrics(events, finish_night=6)
+
+        assert metrics["stale_vote_reuse_count"] == 1
+        assert metrics["max_consecutive_no_exile_days"] == 2
+        assert metrics["second_tie_count"] == 2
+        assert metrics["day_exile_rate"] == 0.5
+        assert metrics["finish_night_number"] == 6
+
+    def test_pace_target_met_when_good(self) -> None:
+        from werewolf_agent.evaluation.metrics import compute_pace_metrics
+
+        events = [
+            {"type": "vote_resolved", "payload": {"exiled": "p01", "reason": "majority"}},
+            {"type": "vote_resolved", "payload": {"exiled": "p02", "reason": "majority"}},
+            {"type": "vote_resolved", "payload": {"exiled": "p03", "reason": "majority"}},
+        ]
+
+        metrics = compute_pace_metrics(events, finish_night=5)
+        assert metrics["pace_target_met"] is True
+
+    def test_pace_target_not_met_when_too_long(self) -> None:
+        from werewolf_agent.evaluation.metrics import compute_pace_metrics
+
+        events = [
+            {"type": "vote_resolved", "payload": {"exiled": None, "reason": "second_tie_no_exile"}},
+            {"type": "vote_resolved", "payload": {"exiled": None, "reason": "second_tie_no_exile"}},
+            {"type": "vote_resolved", "payload": {"exiled": None, "reason": "second_tie_no_exile"}},
+        ]
+
+        metrics = compute_pace_metrics(events, finish_night=12)
+        assert metrics["pace_target_met"] is False
+        assert metrics["max_consecutive_no_exile_days"] == 3

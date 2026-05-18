@@ -697,3 +697,81 @@ class MetricsAggregator:
         _add("avg_latency_ms", float(cm_a.avg_latency_ms), float(cm_b.avg_latency_ms))
 
         return comparisons
+
+
+# ---------------------------------------------------------------------------
+# Game pace metrics (from event log / GameState)
+# ---------------------------------------------------------------------------
+
+
+def compute_pace_metrics(
+    events: list[dict[str, Any]],
+    *,
+    deaths: list[dict[str, Any]] | None = None,
+    finish_night: int | None = None,
+) -> dict[str, Any]:
+    """Compute game pace metrics from event log.
+
+    Returns dict with:
+    - day_exile_rate: fraction of days that produced an exile
+    - max_consecutive_no_exile_days: longest streak of no-exile days
+    - second_tie_count: number of second_tie_no_exile events
+    - stale_vote_reuse_count: days where votes were identical to a previous day
+    - finish_night_number: night the game ended
+    - pace_target_met: bool
+    """
+    vote_events = [
+        e for e in events if e.get("type") == "vote_resolved"
+    ]
+
+    total_vote_days = len(vote_events)
+    exile_days = sum(
+        1 for e in vote_events
+        if e.get("payload", {}).get("exiled") is not None
+    )
+    second_tie_count = sum(
+        1 for e in vote_events
+        if e.get("payload", {}).get("reason") == "second_tie_no_exile"
+    )
+
+    day_exile_rate = exile_days / total_vote_days if total_vote_days > 0 else 0.0
+
+    # Consecutive no-exile streak
+    max_streak = 0
+    current_streak = 0
+    for e in vote_events:
+        if e.get("payload", {}).get("exiled") is None:
+            current_streak += 1
+            max_streak = max(max_streak, current_streak)
+        else:
+            current_streak = 0
+
+    # Stale vote reuse: check if exile_votes on different days are identical
+    stale_count = 0
+    seen_votes: list[dict] = []
+    for e in events:
+        if e.get("type") == "vote_resolved":
+            votes_snapshot = e.get("payload", {}).get("votes", {})
+            if votes_snapshot:
+                for prev in seen_votes:
+                    if votes_snapshot == prev:
+                        stale_count += 1
+                        break
+                seen_votes.append(votes_snapshot)
+
+    # Pace target
+    pace_target_met = (
+        (finish_night is not None and finish_night <= 8)
+        and max_streak <= 1
+        and stale_count == 0
+        and (total_vote_days < 3 or day_exile_rate >= 0.5)
+    )
+
+    return {
+        "day_exile_rate": round(day_exile_rate, 3),
+        "max_consecutive_no_exile_days": max_streak,
+        "second_tie_count": second_tie_count,
+        "stale_vote_reuse_count": stale_count,
+        "finish_night_number": finish_night,
+        "pace_target_met": pace_target_met,
+    }

@@ -91,6 +91,17 @@ class PrivateIntent(BaseModel):
 # Player action output — schema-constrained
 # ---------------------------------------------------------------------------
 
+class ActionTrace(BaseModel):
+    """Moderator/audit trace for a model action attempt."""
+    raw_text: str = ""
+    parsed_action: dict[str, Any] | None = None
+    final_action_type: str = ""
+    legal_actions: list[str] = Field(default_factory=list)
+    legal_targets: list[str] = Field(default_factory=list)
+    retry: dict[str, Any] | None = None
+    fallback_reason: str | None = None
+
+
 class PlayerAction(BaseModel):
     """Structured output from a player agent. Must pass schema validation."""
     action_type: ActionType
@@ -103,6 +114,7 @@ class PlayerAction(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Confidence in this action"
     )
     private_intent: PrivateIntent | None = None
+    trace: ActionTrace | None = None
 
     @model_validator(mode="after")
     def validate_target_required(self) -> "PlayerAction":
@@ -157,6 +169,7 @@ class FallbackAction(BaseModel):
     action_type: ActionType = ActionType.NO_ACTION
     target_id: str | None = None
     reason: str = "fallback: retries exhausted"
+    trace: ActionTrace | None = None
 
 
 # ---------------------------------------------------------------------------

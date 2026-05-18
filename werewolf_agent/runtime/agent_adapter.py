@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
 from typing import Any, Protocol
 
 from werewolf_agent.agents.player import PlayerAgent
@@ -43,6 +42,11 @@ class SimpleAgentRegistry:
 
     def get_agent(self, player_id: str) -> PlayerAgent | None:
         return self._agents.get(player_id)
+
+
+def _action_trace_payload(action: Any) -> dict[str, Any] | None:
+    trace = getattr(action, "trace", None)
+    return trace.model_dump() if trace else None
 
 
 def build_agent_context(
@@ -190,7 +194,11 @@ def agent_night_witch(
     use_antidote = action.action_type == ActionType.USE_ANTIDOTE
     poison_target_id = action.target_id if action.action_type == ActionType.USE_POISON else None
 
-    return {"use_antidote": use_antidote, "poison_target_id": poison_target_id}
+    return {
+        "use_antidote": use_antidote,
+        "poison_target_id": poison_target_id,
+        "witch_action_trace": _action_trace_payload(action),
+    }
 
 
 def agent_night_seer(
@@ -221,7 +229,10 @@ def agent_night_seer(
     action, retry_info = agent.act(context)
 
     seer_target_id = action.target_id if action.action_type == ActionType.CHECK_ALIGNMENT else None
-    return {"seer_target_id": seer_target_id}
+    return {
+        "seer_target_id": seer_target_id,
+        "seer_action_trace": _action_trace_payload(action),
+    }
 
 
 def agent_wolf_consensus(
@@ -238,12 +249,15 @@ def agent_wolf_consensus(
     # Collect votes from ALL alive wolves
     kill_votes: dict[str, int] = {}
     no_kill_count = 0
+    action_traces: dict[str, Any] = {}
 
     for wolf_id in wolves:
         vote = _single_wolf_vote(state, engine, registry, wolf_id)
         if vote is None:
             no_kill_count += 1
             continue
+        if vote.get("action_trace"):
+            action_traces[wolf_id] = vote["action_trace"]
         if vote.get("wolf_action") == "kill" and vote.get("wolf_kill_target_id"):
             target = vote["wolf_kill_target_id"]
             kill_votes[target] = kill_votes.get(target, 0) + 1
@@ -254,9 +268,11 @@ def agent_wolf_consensus(
     if total_kill > no_kill_count and kill_votes:
         best_target = max(kill_votes, key=kill_votes.get)
         return {"wolf_action": "kill", "wolf_kill_target_id": best_target,
-                "wolf_action_reason": f"majority({total_kill}/{total_kill + no_kill_count})"}
+                "wolf_action_reason": f"majority({total_kill}/{total_kill + no_kill_count})",
+                "action_traces": action_traces}
     return {"wolf_action": "no_kill", "wolf_kill_target_id": None,
-            "wolf_action_reason": f"no_kill_majority({no_kill_count}/{total_kill + no_kill_count})"}
+            "wolf_action_reason": f"no_kill_majority({no_kill_count}/{total_kill + no_kill_count})",
+            "action_traces": action_traces}
 
 
 def _single_wolf_vote(
@@ -264,8 +280,14 @@ def _single_wolf_vote(
     engine: RuleEngine,
     registry: AgentRegistry,
     wolf_id: str,
+    per_wolf_timeout: float = 15.0,
 ) -> dict[str, Any] | None:
-    """Get a single wolf's kill/no_kill vote."""
+    """Get a single wolf's kill/no_kill vote.
+
+    Each wolf gets an individual timeout.  Unknown action types are treated
+    as wolf_no_kill (the agent chose something unexpected) rather than
+    silently swallowed as None which would distort consensus.
+    """
     gs: GameState = state["game_state"]
     agent = registry.get_agent(wolf_id)
     if agent is None:
@@ -278,13 +300,22 @@ def _single_wolf_vote(
         legal_targets=legal_targets,
     )
 
-    action, retry_info = agent.act(context)
+    from werewolf_agent.runtime.timers import timed_call
+    action_result = timed_call(agent.act, context, timeout=per_wolf_timeout, fallback=None)
+
+    if action_result is None:
+        # Timeout or exception — count as no_kill (strategy: skip this vote)
+        return {"wolf_action": "no_kill", "wolf_kill_target_id": None}
+
+    action, retry_info = action_result
+    action_trace = _action_trace_payload(action)
 
     if action.action_type == ActionType.WOLF_NO_KILL:
-        return {"wolf_action": "no_kill", "wolf_kill_target_id": None}
+        return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
     if action.action_type == ActionType.WOLF_KILL and action.target_id:
-        return {"wolf_action": "kill", "wolf_kill_target_id": action.target_id}
-    return None
+        return {"wolf_action": "kill", "wolf_kill_target_id": action.target_id, "action_trace": action_trace}
+    # Unknown action type — treat as no_kill rather than silently returning None
+    return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
 
 
 def agent_wolf_discussion(
@@ -306,7 +337,7 @@ def agent_wolf_discussion(
 
     action, retry_info = agent.act(context)
     speech_text = getattr(action, "speech", "") or ""
-    return {"speech_text": speech_text}
+    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
 
 
 def agent_day_speech(
@@ -329,7 +360,7 @@ def agent_day_speech(
     action, retry_info = agent.act(context)
 
     speech_text = getattr(action, "speech", "") or ""
-    return {"speech_text": speech_text}
+    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
 
 
 def agent_day_vote(
@@ -344,17 +375,45 @@ def agent_day_vote(
     if agent is None:
         return None
 
+    allow_abstain = engine.ruleset.raw["day_flow"]["vote"].get("allow_abstain", False)
+    legal_actions = [ActionType.VOTE]
+    if allow_abstain:
+        legal_actions.append(ActionType.NO_ACTION)
+
     legal_targets = engine.legal_exile_targets(gs)
+    if state.get("revote") and state.get("pk_candidates"):
+        pk_candidates = set(state.get("pk_candidates") or [])
+        legal_targets = [pid for pid in legal_targets if pid in pk_candidates]
+
+    # Pass consecutive no-exile info as strategy directive
+    consecutive_no_exile = state.get("consecutive_no_exile_days", 0)
+    strategy_directive = None
+    if not allow_abstain:
+        parts = ["必须投票选出一名玩家放逐，不能弃票。"]
+        if consecutive_no_exile > 0:
+            parts.append(f"已经连续{consecutive_no_exile}天无人出局，必须做出决定。")
+        strategy_directive = {"vote_pressure": " ".join(parts)}
+
     context = build_agent_context(
         engine, gs, voter_id, TaskType.VOTE,
-        legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+        legal_actions=legal_actions,
         legal_targets=legal_targets,
     )
+    if strategy_directive:
+        context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     action, retry_info = agent.act(context)
 
     target = action.target_id if action.action_type == ActionType.VOTE else None
-    return {"vote_target": target}
+    # Fallback: if agent returned wrong action type but has legal targets,
+    # pick the first one rather than abstaining silently
+    if target is None and legal_targets:
+        target = legal_targets[0]
+    trace = getattr(action, "trace", None)
+    return {
+        "vote_target": target,
+        "action_trace": trace.model_dump() if trace else None,
+    }
 
 
 def agent_hunter_shot(

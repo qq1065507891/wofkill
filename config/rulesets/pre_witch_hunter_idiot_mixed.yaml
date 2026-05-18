@@ -297,6 +297,11 @@ day_flow:
     allow_abstain: false
     first_tie_policy: pk_speech_then_revote
     second_tie_policy: no_exile_then_night
+    simulation_pace:
+      enabled: true
+      max_consecutive_no_exile_days: 1
+      forced_consolidation_policy: top_tied_or_top_suspects
+      final_tie_breaker: sheriff_then_seeded_random
   exile:
     triggers_last_words: true
     idiot_reveals_instead_of_exile_death: true

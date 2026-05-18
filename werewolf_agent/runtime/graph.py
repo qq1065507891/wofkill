@@ -32,6 +32,7 @@ from werewolf_agent.runtime.agent_adapter import (
     agent_wolf_consensus,
     agent_wolf_discussion,
 )
+from werewolf_agent.runtime.timers import timed_call
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
 
@@ -50,6 +51,8 @@ class RuntimeState(TypedDict, total=False):
     use_antidote: bool
     poison_target_id: str | None
     seer_target_id: str | None
+    seer_action_trace: dict[str, Any]
+    witch_action_trace: dict[str, Any]
     hybrid_master_target_id: str | None
     # Day action inputs
     self_destruct_wolf_id: str | None
@@ -61,6 +64,10 @@ class RuntimeState(TypedDict, total=False):
     speech_seconds_limit: int
     # Vote inputs
     exile_votes: dict[str, str]
+    exile_vote_day: int
+    exile_vote_revote: bool
+    pk_candidates: list[str]
+    vote_action_traces: dict[str, Any]
     revote: bool
     # Sheriff election inputs
     sheriff_candidates: list[str]
@@ -75,6 +82,10 @@ class RuntimeState(TypedDict, total=False):
     agent_registry: Any  # AgentRegistry protocol, optional
     # Runtime flow-control timer; must not adjudicate RuleEngine truth
     runtime_timer: Any
+    # Anti-stall: consecutive days with no exile from vote
+    consecutive_no_exile_days: int
+    # Per-call timeout (seconds) for agent provider calls; 0 = no timeout
+    agent_call_timeout: float
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +113,24 @@ def _alive_non_wolves(gs: GameState) -> list[str]:
     return [pid for pid, p in gs.players.items() if p.alive and p.role != "werewolf"]
 
 
+def _force_wolf_kill(gs: GameState, reason: str) -> dict[str, Any]:
+    """Force a wolf kill on a random alive non-wolf (consecutive no-kill cap)."""
+    import random as _random
+    non_wolves = _alive_non_wolves(gs)
+    if not non_wolves:
+        event = GameEvent(type="wolf_no_kill_timeout", payload={"night_number": gs.night_number})
+        gs = replace(gs, events=gs.events + [event])
+        return {"game_state": gs, "wolf_kill_target_id": None}
+    rng = _random.Random(_stable_seed(gs.game_id, reason, gs.night_number))
+    target = rng.choice(non_wolves)
+    event = GameEvent(
+        type="wolf_kill_selected",
+        payload={"night_number": gs.night_number, "target_id": target, "reason": reason},
+    )
+    gs = replace(gs, events=gs.events + [event])
+    return {"game_state": gs, "wolf_kill_target_id": target}
+
+
 def _find_role(gs: GameState, role: str) -> str | None:
     return next((pid for pid, p in gs.players.items() if p.role == role and p.alive), None)
 
@@ -114,6 +143,19 @@ def _timer_expired(state: RuntimeState, key: str) -> bool:
     if expired is None:
         return False
     return bool(expired(key))
+
+
+def _agent_timeout(state: RuntimeState) -> float:
+    """Return per-call agent timeout in seconds; 0 means no wrapping."""
+    return float(state.get("agent_call_timeout") or 0)
+
+
+def _call_agent(fn, state: RuntimeState, *args):
+    """Call an agent adapter function, optionally wrapped with a timeout."""
+    timeout = _agent_timeout(state)
+    if timeout > 0:
+        return timed_call(fn, *args, timeout=timeout)
+    return fn(*args)
 
 
 # ---------------------------------------------------------------------------
@@ -158,16 +200,19 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         wolves = _alive_wolves(gs)
         events = []
         for wolf_id in wolves:
-            result = agent_wolf_discussion(state, engine, registry, wolf_id)
+            result = _call_agent(agent_wolf_discussion, state, state, engine, registry, wolf_id)
             speech_text = result.get("speech_text", "") if result else ""
+            payload = {
+                "wolf_id": wolf_id,
+                "night_number": gs.night_number,
+                "text": speech_text,
+                "visibility": "werewolf_team_only",
+            }
+            if result and result.get("action_trace"):
+                payload["action_trace"] = result["action_trace"]
             events.append(GameEvent(
                 type="wolf_discussion",
-                payload={
-                    "wolf_id": wolf_id,
-                    "night_number": gs.night_number,
-                    "text": speech_text,
-                    "visibility": "werewolf_team_only",
-                },
+                payload=payload,
             ))
         gs = replace(gs, events=gs.events + events)
         return {"game_state": gs}
@@ -178,11 +223,30 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
 
 
 def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
-    """Determine wolf night action; timeout defaults to no-kill."""
+    """Determine wolf night action.
+
+    Wolves may strategically skip a kill (空刀脏人), but consecutive
+    no-kill nights are capped to prevent degenerate infinite loops.
+    """
     gs: GameState = state["game_state"]
     engine: RuleEngine = state["engine"]
+    max_consecutive_no_kill = 2  # After N straight no-kill nights, force a kill
+
+    # Count consecutive no-kill nights so far
+    consecutive_no_kill = 0
+    for ev in reversed(gs.events):
+        if ev.type == "wolf_no_kill_timeout" or ev.type == "wolf_no_kill_declared":
+            consecutive_no_kill += 1
+        elif ev.type in ("wolf_kill_selected",):
+            break
+        elif ev.type == "enter_night":
+            continue
+        else:
+            continue
 
     if _timer_expired(state, "wolf_discussion"):
+        if consecutive_no_kill >= max_consecutive_no_kill:
+            return _force_wolf_kill(gs, "timer_expired_forced_kill")
         event = GameEvent(
             type="wolf_no_kill_timeout",
             payload={"night_number": gs.night_number, "reason": "timer_expired"},
@@ -193,16 +257,19 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry and not state.get("wolf_action"):
-        result = agent_wolf_consensus(state, engine, registry)
+        result = _call_agent(agent_wolf_consensus, state, state, engine, registry)
         if result is not None:
             action = result.get("wolf_action", "kill")
             target = result.get("wolf_kill_target_id")
             if action == "no_kill":
+                if consecutive_no_kill >= max_consecutive_no_kill:
+                    return _force_wolf_kill(gs, "consecutive_no_kill_limit")
                 event = GameEvent(
                     type="wolf_no_kill_declared",
                     payload={
                         "night_number": gs.night_number,
                         "reason": result.get("wolf_action_reason", "agent decision"),
+                        "action_traces": result.get("action_traces", {}),
                     },
                 )
                 gs = replace(gs, events=gs.events + [event])
@@ -212,10 +279,24 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
                 if target_state and target_state.alive:
                     event = GameEvent(
                         type="wolf_kill_selected",
-                        payload={"night_number": gs.night_number, "target_id": target},
+                        payload={
+                            "night_number": gs.night_number,
+                            "target_id": target,
+                            "action_traces": result.get("action_traces", {}),
+                        },
                     )
                     gs = replace(gs, events=gs.events + [event])
                     return {"game_state": gs, "wolf_kill_target_id": target}
+        else:
+            # Agent call timed out entirely
+            if consecutive_no_kill >= max_consecutive_no_kill:
+                return _force_wolf_kill(gs, "agent_timeout_forced_kill")
+            event = GameEvent(
+                type="wolf_no_kill_timeout",
+                payload={"night_number": gs.night_number},
+            )
+            gs = replace(gs, events=gs.events + [event])
+            return {"game_state": gs, "wolf_kill_target_id": None}
 
     # Scripted fallback
     action = state.get("wolf_action")
@@ -263,7 +344,7 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry:
-        result = agent_night_witch(state, engine, registry)
+        result = _call_agent(agent_night_witch, state, state, engine, registry)
         if result is not None:
             use_antidote = result.get("use_antidote", False)
             poison_target_id = result.get("poison_target_id")
@@ -281,6 +362,7 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
                     "poison_target_id": poison_target_id,
                     "reason": "agent_decision",
                     "visibility": "witch_private",
+                    "action_trace": result.get("witch_action_trace"),
                 },
             )
             gs = replace(gs, events=gs.events + [audit])
@@ -297,7 +379,7 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry:
-        result = agent_night_seer(state, engine, registry)
+        result = _call_agent(agent_night_seer, state, state, engine, registry)
         if result is not None:
             return result
 
@@ -358,6 +440,13 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
         poison_target_id=state.get("poison_target_id"),
         seer_target_id=state.get("seer_target_id"),
     )
+    seer_trace = state.get("seer_action_trace")
+    if seer_trace:
+        events = [
+            replace(event, payload={**event.payload, "action_trace": seer_trace})
+            if event.type == "seer_check" else event
+            for event in events
+        ]
     if events:
         gs = replace(gs, events=gs.events + events)
     return {"game_state": gs}
@@ -370,7 +459,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     d = gs.day_number + 1
     gs = replace(gs, phase="day", day_number=d,
                  events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
-    return {"game_state": gs}
+    return {"game_state": gs, "revote": False}
 
 
 def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
@@ -470,18 +559,23 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         return {"game_state": gs, **advance_speaker()}
     if speaker_id:
         speech_text = state.get("speech_text", "")
+        action_trace = None
         if registry and not speech_text:
             engine: RuleEngine = state["engine"]
-            result = agent_day_speech(state, engine, registry, speaker_id)
+            result = _call_agent(agent_day_speech, state, state, engine, registry, speaker_id)
             if result:
                 speech_text = result.get("speech_text", "")
+                action_trace = result.get("action_trace")
+        payload = {
+            "speaker": speaker_id,
+            "day_number": gs.day_number,
+            "text": speech_text,
+        }
+        if action_trace:
+            payload["action_trace"] = action_trace
         gs = replace(gs, events=gs.events + [GameEvent(
             type="speech",
-            payload={
-                "speaker": speaker_id,
-                "day_number": gs.day_number,
-                "text": speech_text,
-            },
+            payload=payload,
         )])
         return {"game_state": gs, **advance_speaker()}
     gs = replace(gs, events=gs.events + [GameEvent(type="free_discussion", payload={})])
@@ -489,42 +583,91 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
 
 
 def day_vote(state: RuntimeState) -> dict[str, Any]:
-    existing_votes = state.get("exile_votes", {})
+    gs: GameState = state["game_state"]
+    same_vote_window = (
+        state.get("exile_vote_day") == gs.day_number
+        and state.get("exile_vote_revote") == state.get("revote", False)
+    )
+    existing_votes = state.get("exile_votes", {}) if same_vote_window else {}
     registry = state.get("agent_registry")
     if registry and not existing_votes:
-        gs: GameState = state["game_state"]
         engine: RuleEngine = state["engine"]
         votes: dict[str, str] = {}
+        vote_traces: dict[str, Any] = {}
         for pid, player in gs.players.items():
             if player.alive:
-                result = agent_day_vote(state, engine, registry, pid)
+                result = _call_agent(agent_day_vote, state, state, engine, registry, pid)
                 if result and result.get("vote_target"):
                     votes[pid] = result["vote_target"]
-        return {"exile_votes": votes, "revote": state.get("revote", False)}
-    return {"exile_votes": existing_votes, "revote": state.get("revote", False)}
+                if result and result.get("action_trace"):
+                    vote_traces[pid] = result["action_trace"]
+        return {
+            "exile_votes": votes,
+            "vote_action_traces": vote_traces,
+            "exile_vote_day": gs.day_number,
+            "exile_vote_revote": state.get("revote", False),
+            "revote": state.get("revote", False),
+        }
+    return {
+        "exile_votes": existing_votes,
+        "exile_vote_day": gs.day_number,
+        "exile_vote_revote": state.get("revote", False),
+        "revote": state.get("revote", False),
+    }
 
 
 def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
+    consecutive = state.get("consecutive_no_exile_days", 0)
     result = engine.resolve_vote(
-        gs, votes=state.get("exile_votes", {}), revote=state.get("revote", False)
+        gs, votes=state.get("exile_votes", {}),
+        revote=state.get("revote", False),
+        consecutive_no_exile_days=consecutive,
+        pk_candidates=state.get("pk_candidates"),
+        rng_seed=f"{gs.game_id}-vote-d{gs.day_number}",
     )
+    payload: dict[str, Any] = {
+        "exiled": result.exiled_player_id,
+        "reason": result.reason,
+    }
+    if result.tied_player_ids:
+        payload["tied"] = result.tied_player_ids
+    if state.get("vote_action_traces"):
+        payload["action_traces"] = state.get("vote_action_traces")
     gs = replace(gs, votes=state.get("exile_votes", {}),
                  events=gs.events + [GameEvent(
                      type="vote_resolved",
-                     payload={"exiled": result.exiled_player_id, "reason": result.reason},
+                     payload=payload,
                  )])
-    return {"game_state": gs, "_vote_result": result}
+    next_consecutive = (
+        consecutive + 1 if result.reason == "second_tie_no_exile" else 0
+    )
+    next_state: dict[str, Any] = {
+        "game_state": gs,
+        "_vote_result": result,
+        "consecutive_no_exile_days": next_consecutive,
+    }
+    if result.reason == "first_tie_pk":
+        next_state["pk_candidates"] = result.tied_player_ids
+    elif result.exiled_player_id is not None or result.reason == "second_tie_no_exile":
+        next_state["pk_candidates"] = []
+    return next_state
 
 
 def resolve_exile(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
-    result = state.get("_vote_result")
-    if result is None or result.exiled_player_id is None:
+    # Read exiled player from the last vote_resolved event (not _vote_result
+    # which is not in RuntimeState and gets dropped by LangGraph channels).
+    exiled_id = None
+    for event in reversed(gs.events):
+        if event.type == "vote_resolved":
+            exiled_id = event.payload.get("exiled")
+            break
+    if exiled_id is None:
         return {"game_state": gs}
-    gs, events = engine.resolve_exile(gs, target_id=result.exiled_player_id)
+    gs, events = engine.resolve_exile(gs, target_id=exiled_id)
     gs = replace(gs, events=gs.events + events)
     return {"game_state": gs}
 
@@ -555,7 +698,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
 
     for death in gs.deaths:
-        if "hunter_shot" not in death.triggered_skills:
+        if "hunter_shot" not in (death.triggered_skills or []):
             continue
         if death.player_id not in gs.players:
             continue
@@ -574,7 +717,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         target = state.get("hunter_shot_target_id")
         registry = state.get("agent_registry")
         if target is None and registry:
-            target = agent_hunter_shot(state, engine, registry, death.player_id)
+            target = _call_agent(agent_hunter_shot, state, state, engine, registry, death.player_id)
         if target:
             shot_death = Death(
                 player_id=target, reason="hunter_shot",
@@ -668,7 +811,7 @@ def route_after_resolve_night(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
     # Check for pending hunter shot first (must resolve before victory check)
     for death in gs.deaths:
-        if "hunter_shot" in death.triggered_skills:
+        if "hunter_shot" in (death.triggered_skills or []):
             if death.player_id in gs.players and not gs.players[death.player_id].alive:
                 already_shot = any(
                     d.source_player_id == death.player_id and d.reason == "hunter_shot"
@@ -785,8 +928,13 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
 
 
 def tie_revote(state: RuntimeState) -> dict[str, Any]:
-    return {"exile_votes": state.get("exile_votes", {}),
-            "revote": True}
+    gs: GameState = state["game_state"]
+    return {
+        "exile_votes": {},
+        "exile_vote_day": gs.day_number,
+        "exile_vote_revote": True,
+        "revote": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -887,7 +1035,7 @@ def _add_all_edges(graph: StateGraph) -> None:
         "check_victory": "check_victory",
     })
     graph.add_edge("tie_pk_speech", "tie_revote")
-    graph.add_edge("tie_revote", "resolve_vote_node")
+    graph.add_edge("tie_revote", "day_vote")
     graph.add_edge("resolve_exile", "post_exile_skills")
     graph.add_edge("post_exile_skills", "check_victory")
     graph.add_conditional_edges("check_victory", route_victory, {

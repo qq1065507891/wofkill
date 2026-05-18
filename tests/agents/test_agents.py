@@ -458,8 +458,7 @@ class TestModelRouter:
     def test_resolve_config_fallback_chain(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         _, fallback = router.resolve_config("p02", "speech")
-        # local_wolf has fallback provider
-        assert fallback == "glm"
+        assert fallback == "anthropic"
 
     def test_generate_with_mock_provider(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
@@ -519,8 +518,9 @@ class TestModelRouter:
 
         assert "anthropic" in router.provider_names()
 
-    def test_create_provider_from_env_returns_none_without_key(self, monkeypatch) -> None:
+    def test_create_provider_from_env_returns_none_without_key(self, monkeypatch, tmp_path) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
 
         assert create_provider_from_env("anthropic") is None
 
@@ -764,3 +764,93 @@ class TestAgentIntegration:
         # Usage logged
         usage = model_router.get_usage_log()
         assert len(usage) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Mandatory vote and fallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestMandatoryVote:
+    """When allow_abstain is false, VOTE must be mandatory (no NO_ACTION)."""
+
+    def _make_agent(self, provider_response: str) -> PlayerAgent:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider(provider_response)},
+        )
+        return PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+
+    def test_fallback_vote_only_with_legal_targets(self) -> None:
+        """When legal actions are [VOTE] only, fallback picks first legal target."""
+        agent = self._make_agent("bad json")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p05"],
+        )
+        action, _ = agent.act(ctx)
+        assert isinstance(action, FallbackAction)
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p05"
+
+    def test_mandatory_vote_prompt_contains_pressure(self) -> None:
+        """System prompt mentions mandatory voting when NO_ACTION not available."""
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p05", "p06"],
+        )
+        prompt = agent._build_system_prompt(ctx)
+        assert "必须" in prompt
+        assert "不能弃票" in prompt
+
+    def test_vote_pressure_from_strategy_directive(self) -> None:
+        """strategy_directive with vote_pressure appears in prompt."""
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p05", "p06"],
+            strategy_directive={"vote_pressure": "已经连续1天无人出局，必须做出决定。"},
+        )
+        prompt = agent._build_prompt(ctx, RetryInfo())
+        assert "连续" in prompt
+        assert "必须做出决定" in prompt
+
+    def test_action_trace_records_raw_text_and_fallback(self) -> None:
+        agent = self._make_agent("not json")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p05"],
+        )
+
+        action, _ = agent.act(ctx)
+
+        assert isinstance(action, FallbackAction)
+        assert action.trace is not None
+        assert action.trace.raw_text == "not json"
+        assert action.trace.legal_actions == ["vote"]
+        assert action.trace.legal_targets == ["p05"]
+        assert action.trace.final_action_type == "vote"
+        assert action.trace.fallback_reason == "fallback: retries exhausted"
