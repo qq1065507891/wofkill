@@ -150,9 +150,19 @@ def _agent_timeout(state: RuntimeState) -> float:
     return float(state.get("agent_call_timeout") or 0)
 
 
-def _call_agent(fn, state: RuntimeState, *args):
+def _player_display(state: RuntimeState, player_id: str) -> str:
+    """Return '名字(pid)' for display, e.g. '陈思远(p01)'."""
+    registry = state.get("agent_registry")
+    if registry:
+        agent = registry.get_agent(player_id)
+        if agent and hasattr(agent, "player_name") and agent.player_name != player_id:
+            return f"{agent.player_name}({player_id})"
+    return player_id
+
+
+def _call_agent(fn, state: RuntimeState, *args, timeout_override: float | None = None):
     """Call an agent adapter function, optionally wrapped with a timeout."""
-    timeout = _agent_timeout(state)
+    timeout = timeout_override if timeout_override is not None else _agent_timeout(state)
     if timeout > 0:
         return timed_call(fn, *args, timeout=timeout)
     return fn(*args)
@@ -178,6 +188,11 @@ def assign_roles(state: RuntimeState) -> dict[str, Any]:
     players = engine.assign_roles(player_ids, seed=_stable_seed(gs.game_id, "roles"))
     gs = replace(gs, players=players, phase="roles_assigned",
                  events=gs.events + [GameEvent(type="roles_assigned", payload={})])
+    print(f"\n{'='*60}")
+    print(f"  角色分配完成 (Game: {gs.game_id})")
+    for pid, p in sorted(players.items()):
+        print(f"    {_player_display(state, pid)}: {p.role}")
+    print(f"{'='*60}")
     return {"game_state": gs}
 
 
@@ -188,6 +203,10 @@ def enter_night(state: RuntimeState) -> dict[str, Any]:
     n = gs.night_number + 1
     gs = replace(gs, phase="night", night_number=n,
                  events=gs.events + [GameEvent(type="enter_night", payload={"night": n})])
+    alive = [pid for pid, p in gs.players.items() if p.alive]
+    print(f"\n{'='*60}")
+    print(f"  【第{n}夜】天黑请闭眼 (存活: {len(alive)}人)")
+    print(f"{'='*60}")
     return {"game_state": gs}
 
 
@@ -199,9 +218,11 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         engine: RuleEngine = state["engine"]
         wolves = _alive_wolves(gs)
         events = []
+        print(f"  [狼人密谈] 狼人: {[_player_display(state, w) for w in wolves]}")
         for wolf_id in wolves:
-            result = _call_agent(agent_wolf_discussion, state, state, engine, registry, wolf_id)
+            result = _call_agent(agent_wolf_discussion, state, state, engine, registry, wolf_id, timeout_override=120.0)
             speech_text = result.get("speech_text", "") if result else ""
+            print(f"    {_player_display(state, wolf_id)}(狼人): {speech_text if speech_text else '(沉默)'}")
             payload = {
                 "wolf_id": wolf_id,
                 "night_number": gs.night_number,
@@ -246,7 +267,9 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
 
     if _timer_expired(state, "wolf_discussion"):
         if consecutive_no_kill >= max_consecutive_no_kill:
+            print(f"  [狼人决策] 连续{consecutive_no_kill}夜空刀，强制击杀")
             return _force_wolf_kill(gs, "timer_expired_forced_kill")
+        print(f"  [狼人决策] 讨论超时，空刀")
         event = GameEvent(
             type="wolf_no_kill_timeout",
             payload={"night_number": gs.night_number, "reason": "timer_expired"},
@@ -257,13 +280,15 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry and not state.get("wolf_action"):
-        result = _call_agent(agent_wolf_consensus, state, state, engine, registry)
+        result = _call_agent(agent_wolf_consensus, state, state, engine, registry, timeout_override=120.0)
         if result is not None:
             action = result.get("wolf_action", "kill")
             target = result.get("wolf_kill_target_id")
             if action == "no_kill":
                 if consecutive_no_kill >= max_consecutive_no_kill:
+                    print(f"  [狼人决策] 连续{consecutive_no_kill}夜空刀，强制击杀")
                     return _force_wolf_kill(gs, "consecutive_no_kill_limit")
+                print(f"  [狼人决策] 狼人选择空刀 (原因: {result.get('wolf_action_reason', 'agent decision')})")
                 event = GameEvent(
                     type="wolf_no_kill_declared",
                     payload={
@@ -277,6 +302,7 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
             if action == "kill" and target:
                 target_state = gs.players.get(target)
                 if target_state and target_state.alive:
+                    print(f"  [狼人决策] 击杀目标: {_player_display(state, target)} (原因: {result.get('wolf_action_reason', '')})")
                     event = GameEvent(
                         type="wolf_kill_selected",
                         payload={
@@ -290,7 +316,9 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
         else:
             # Agent call timed out entirely
             if consecutive_no_kill >= max_consecutive_no_kill:
+                print(f"  [狼人决策] Agent超时，连续{consecutive_no_kill}夜空刀，强制击杀")
                 return _force_wolf_kill(gs, "agent_timeout_forced_kill")
+            print(f"  [狼人决策] Agent调用超时，空刀")
             event = GameEvent(
                 type="wolf_no_kill_timeout",
                 payload={"night_number": gs.night_number},
@@ -344,7 +372,7 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry:
-        result = _call_agent(agent_night_witch, state, state, engine, registry)
+        result = _call_agent(agent_night_witch, state, state, engine, registry, timeout_override=180.0)
         if result is not None:
             use_antidote = result.get("use_antidote", False)
             poison_target_id = result.get("poison_target_id")
@@ -353,6 +381,13 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
                 action_taken = "use_antidote"
             elif poison_target_id:
                 action_taken = "use_poison"
+            wolf_target = state.get("wolf_kill_target_id")
+            if use_antidote:
+                print(f"  [女巫] 使用解药救了 {_player_display(state, wolf_target)}")
+            if poison_target_id:
+                print(f"  [女巫] 使用毒药毒了 {_player_display(state, poison_target_id)}")
+            if not use_antidote and not poison_target_id:
+                print(f"  [女巫] 不使用药水 (解药{'已用' if gs.antidote_used else '可用'}, 毒药{'已用' if gs.poison_used else '可用'})")
             audit = GameEvent(
                 type="witch_decision_audit",
                 payload={
@@ -379,8 +414,11 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry:
-        result = _call_agent(agent_night_seer, state, state, engine, registry)
+        result = _call_agent(agent_night_seer, state, state, engine, registry, timeout_override=180.0)
         if result is not None:
+            target = result.get("seer_target_id")
+            if target:
+                print(f"  [预言家] 查验目标: {_player_display(state, target)}")
             return result
 
     # Scripted fallback
@@ -449,6 +487,23 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
         ]
     if events:
         gs = replace(gs, events=gs.events + events)
+    # Log night resolution events
+    for ev in events:
+        if ev.type == "wolf_kill":
+            target = ev.payload.get("player_id", "?")
+            saved = ev.payload.get("saved_by_antidote", False)
+            if saved:
+                print(f"  [夜晚结算] {_player_display(state, target)} 被狼人袭击，但被女巫救活")
+            else:
+                print(f"  [夜晚结算] {_player_display(state, target)} 被狼人袭击身亡")
+        elif ev.type == "poison_death":
+            print(f"  [夜晚结算] {_player_display(state, ev.payload.get('player_id', '?'))} 被女巫毒杀")
+        elif ev.type == "seer_check":
+            target = ev.payload.get("target_id", "?")
+            alignment = ev.payload.get("alignment", "?")
+            print(f"  [夜晚结算] 预言家查验 {_player_display(state, target)}: {'好人' if alignment == 'good' else '狼人'}")
+        elif ev.type == "no_death":
+            print(f"  [夜晚结算] 平安夜，无人死亡")
     return {"game_state": gs}
 
 
@@ -459,6 +514,10 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     d = gs.day_number + 1
     gs = replace(gs, phase="day", day_number=d,
                  events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
+    alive = [pid for pid, p in gs.players.items() if p.alive]
+    print(f"\n{'='*60}")
+    print(f"  【第{d}天】天亮了 (存活: {len(alive)}人: {alive})")
+    print(f"{'='*60}")
     return {"game_state": gs, "revote": False}
 
 
@@ -562,10 +621,12 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         action_trace = None
         if registry and not speech_text:
             engine: RuleEngine = state["engine"]
-            result = _call_agent(agent_day_speech, state, state, engine, registry, speaker_id)
+            result = _call_agent(agent_day_speech, state, state, engine, registry, speaker_id, timeout_override=180.0)
             if result:
                 speech_text = result.get("speech_text", "")
                 action_trace = result.get("action_trace")
+        player_role = gs.players[speaker_id].role if speaker_id in gs.players else "?"
+        print(f"  [{_player_display(state, speaker_id)}({player_role})]: {speech_text if speech_text else '(未发言)'}")
         payload = {
             "speaker": speaker_id,
             "day_number": gs.day_number,
@@ -590,15 +651,30 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
     )
     existing_votes = state.get("exile_votes", {}) if same_vote_window else {}
     registry = state.get("agent_registry")
+    is_revote = state.get("revote", False)
+    if is_revote:
+        print(f"\n  --- PK重新投票 ---")
+    else:
+        print(f"\n  --- 投票开始 ---")
     if registry and not existing_votes:
         engine: RuleEngine = state["engine"]
         votes: dict[str, str] = {}
         vote_traces: dict[str, Any] = {}
         for pid, player in gs.players.items():
             if player.alive:
-                result = _call_agent(agent_day_vote, state, state, engine, registry, pid)
+                result = _call_agent(agent_day_vote, state, state, engine, registry, pid, timeout_override=60.0)
                 if result and result.get("vote_target"):
                     votes[pid] = result["vote_target"]
+                    vote_speech = result.get("vote_speech", "")
+                    vote_reason = result.get("vote_reason", "")
+                    display = f"    {_player_display(state, pid)} 投票给 {_player_display(state, result['vote_target'])}"
+                    if vote_speech:
+                        display += f"\n      发言: {vote_speech}"
+                    elif vote_reason:
+                        display += f"\n      理由: {vote_reason}"
+                    print(display)
+                else:
+                    print(f"    {_player_display(state, pid)} 弃票")
                 if result and result.get("action_trace"):
                     vote_traces[pid] = result["action_trace"]
         return {
@@ -620,13 +696,32 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
     consecutive = state.get("consecutive_no_exile_days", 0)
+    votes = state.get("exile_votes", {})
     result = engine.resolve_vote(
-        gs, votes=state.get("exile_votes", {}),
+        gs, votes=votes,
         revote=state.get("revote", False),
         consecutive_no_exile_days=consecutive,
         pk_candidates=state.get("pk_candidates"),
         rng_seed=f"{gs.game_id}-vote-d{gs.day_number}",
     )
+    # Log vote tally
+    from collections import Counter
+    if votes:
+        tally = Counter(votes.values())
+        tally_text = "  投票统计: " + ", ".join(f"{t}:{c}票" for t, c in tally.most_common())
+    else:
+        tally_text = "  投票统计: 无有效票"
+    print(tally_text)
+    if result.exiled_player_id:
+        print(f"  [投票结果] {_player_display(state, result.exiled_player_id)} 被放逐 (原因: {result.reason})")
+    elif result.reason == "first_tie_pk":
+        print(f"  [投票结果] 首次平票，进入PK: {[_player_display(state, t) for t in (result.tied_player_ids or [])]}")
+    elif result.reason == "second_tie_no_exile":
+        print(f"  [投票结果] 二次平票，无人出局")
+    elif result.reason == "anti_stall_empty_tally":
+        print(f"  [投票结果] 防死循环强制放逐: {_player_display(state, result.exiled_player_id)}")
+    else:
+        print(f"  [投票结果] {result.reason}")
     payload: dict[str, Any] = {
         "exiled": result.exiled_player_id,
         "reason": result.reason,
@@ -667,8 +762,14 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
             break
     if exiled_id is None:
         return {"game_state": gs}
+    exiled_role = gs.players.get(exiled_id, None)
+    role_str = exiled_role.role if exiled_role else "?"
     gs, events = engine.resolve_exile(gs, target_id=exiled_id)
     gs = replace(gs, events=gs.events + events)
+    print(f"  [放逐] {_player_display(state, exiled_id)}({role_str}) 被放逐出局")
+    for ev in events:
+        if ev.type == "idiot_reveal":
+            print(f"  [白痴亮牌] {_player_display(state, exiled_id)} 是白痴，不会被放逐")
     return {"game_state": gs}
 
 
@@ -717,7 +818,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         target = state.get("hunter_shot_target_id")
         registry = state.get("agent_registry")
         if target is None and registry:
-            target = _call_agent(agent_hunter_shot, state, state, engine, registry, death.player_id)
+            target = _call_agent(agent_hunter_shot, state, state, engine, registry, death.player_id, timeout_override=120.0)
         if target:
             shot_death = Death(
                 player_id=target, reason="hunter_shot",
@@ -739,6 +840,9 @@ def check_victory(state: RuntimeState) -> dict[str, Any]:
 
     if result.winner is not None:
         wf = result.winner
+        print(f"\n{'='*60}")
+        print(f"  【游戏结束】胜利方: {'好人阵营' if wf == 'good' else '狼人阵营'} ({result.reason})")
+        print(f"{'='*60}")
         hr = None
         if wf == "good" and gs.hybrid_master_faction == "good":
             hr = "win"

@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -301,6 +303,69 @@ class TestPlayerAgentRetryFallback:
         assert action.target_id == "p07"
         assert retry.attempt == 1
 
+    def test_player_agent_requests_tool_call_schema(self) -> None:
+        class ToolAwareProvider:
+            @property
+            def name(self) -> str:
+                return "mock"
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                self.calls.append({"tools": tools, "tool_choice": tool_choice})
+                return GenerateResult(
+                    text='{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8}',
+                    provider=self.name,
+                    model=config.model,
+                    usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
+                )
+
+        provider = ToolAwareProvider()
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router)
+
+        action, _ = agent.act(self._make_context())
+
+        assert action.action_type == ActionType.VOTE
+        assert provider.calls[0]["tool_choice"] == {
+            "type": "tool",
+            "name": "submit_player_action",
+        }
+        tool = provider.calls[0]["tools"][0]
+        assert tool["name"] == "submit_player_action"
+        assert tool["input_schema"]["properties"]["action_type"]["enum"] == [
+            "vote",
+            "no_action",
+        ]
+        assert tool["input_schema"]["properties"]["target_id"]["enum"] == [
+            "p07",
+            "p08",
+            None,
+        ]
+
+    def test_tool_call_schema_disallows_null_target_when_all_actions_require_target(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07", "p08"],
+        )
+
+        tool = agent._player_action_tool(ctx)
+
+        assert tool["input_schema"]["properties"]["action_type"]["enum"] == ["vote"]
+        assert tool["input_schema"]["properties"]["target_id"]["enum"] == ["p07", "p08"]
+
     def test_invalid_json_triggers_retry(self) -> None:
         agent = self._make_agent("not json at all")
         action, retry = agent.act(self._make_context())
@@ -479,6 +544,19 @@ class TestModelRouter:
         # Fail provider raises, so it should try fallback
         assert result.text != "" or result.provider == "anthropic"
 
+    def test_failed_generation_records_exception_reason(self) -> None:
+        router = ModelRouter.from_yaml(MODELS_YAML)
+        router._providers["anthropic"] = _FailProvider()
+
+        result = router.generate("p01", "speech", "Test prompt")
+        log = router.get_usage_log()
+
+        assert result.text == ""
+        assert log[-1].success is False
+        assert log[-1].fallback_reason is not None
+        assert "primary_failed" in log[-1].fallback_reason
+        assert "RuntimeError" in log[-1].fallback_reason
+
     def test_usage_logging(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         router.register_provider(MockProvider("anthropic"))
@@ -544,6 +622,75 @@ class TestModelRouter:
         assert client.calls[0]["json"]["system"] == "You are concise."
         assert result.usage.prompt_tokens == 3
         assert result.usage.completion_tokens == 1
+
+    def test_anthropic_provider_uses_tool_call_for_structured_output(self) -> None:
+        tool_input = {
+            "action_type": "vote",
+            "target_id": "p07",
+            "speech": "归票7",
+            "reason": "发言可疑",
+            "confidence": 0.8,
+        }
+        client = _FakeHttpClient({
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "submit_player_action",
+                    "input": tool_input,
+                }
+            ],
+            "usage": {"input_tokens": 9, "output_tokens": 7},
+        })
+        provider = AnthropicProvider(api_key="key", http_client=client)
+
+        result = provider.generate(
+            "Choose an action",
+            ModelConfig(provider="anthropic", model="claude-test"),
+            system_prompt="Use the tool.",
+            tools=[{
+                "name": "submit_player_action",
+                "description": "Submit one player action.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action_type": {"type": "string"},
+                        "target_id": {"type": ["string", "null"]},
+                        "speech": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["action_type", "target_id", "speech", "reason", "confidence"],
+                },
+            }],
+            tool_choice={"type": "tool", "name": "submit_player_action"},
+        )
+
+        assert json.loads(result.text) == tool_input
+        assert client.calls[0]["json"]["tools"][0]["name"] == "submit_player_action"
+        assert client.calls[0]["json"]["tool_choice"] == {
+            "type": "tool",
+            "name": "submit_player_action",
+        }
+
+    def test_anthropic_provider_rejects_text_when_tool_call_required(self) -> None:
+        client = _FakeHttpClient({
+            "content": [{"type": "text", "text": "{\"action_type\":\"vote\"}"}],
+            "usage": {"input_tokens": 4, "output_tokens": 2},
+        })
+        provider = AnthropicProvider(api_key="key", http_client=client)
+
+        with pytest.raises(RuntimeError, match="tool_use"):
+            provider.generate(
+                "Choose an action",
+                ModelConfig(provider="anthropic", model="claude-test"),
+                tools=[{
+                    "name": "submit_player_action",
+                    "description": "Submit one player action.",
+                    "input_schema": {"type": "object"},
+                }],
+                tool_choice={"type": "tool", "name": "submit_player_action"},
+            )
 
     def test_openai_provider_posts_chat_request(self) -> None:
         client = _FakeHttpClient({

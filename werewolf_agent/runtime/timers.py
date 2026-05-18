@@ -7,12 +7,14 @@ or victory.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, TypeVar
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 
 class RuntimeTimer(Protocol):
@@ -99,10 +101,21 @@ def timed_call(
     thread.join(timeout=timeout)
 
     if thread.is_alive():
+        logger.warning(
+            "Timed call exceeded %.1fs timeout for %s",
+            timeout,
+            getattr(fn, "__qualname__", repr(fn)),
+        )
         # Timed out — thread is daemon so it will be cleaned up at exit
         return fallback
 
     if error_box[0] is not None:
+        logger.warning(
+            "Timed call failed for %s: %s: %s",
+            getattr(fn, "__qualname__", repr(fn)),
+            type(error_box[0]).__name__,
+            error_box[0],
+        )
         return fallback
 
     return result_box[0]

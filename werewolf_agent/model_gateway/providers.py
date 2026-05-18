@@ -7,6 +7,7 @@ not required for the V1 runtime.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -95,6 +96,8 @@ class AnthropicProvider(_BaseHttpProvider):
         prompt: str,
         config: ModelConfig,
         system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
         payload: dict[str, Any] = {
             "model": config.model,
@@ -105,6 +108,10 @@ class AnthropicProvider(_BaseHttpProvider):
         }
         if system_prompt:
             payload["system"] = system_prompt
+        if tools:
+            payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
 
         start = time.monotonic()
         response = self._http_client.post(
@@ -160,6 +167,8 @@ class OpenAIProvider(_BaseHttpProvider):
         prompt: str,
         config: ModelConfig,
         system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -172,6 +181,8 @@ class OpenAIProvider(_BaseHttpProvider):
             http_client=self._http_client,
             messages=messages,
             config=config,
+            tools=tools,
+            tool_choice=tool_choice,
         )
 
 
@@ -200,6 +211,8 @@ class GLMProvider(_BaseHttpProvider):
         prompt: str,
         config: ModelConfig,
         system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -212,6 +225,8 @@ class GLMProvider(_BaseHttpProvider):
             http_client=self._http_client,
             messages=messages,
             config=config,
+            tools=tools,
+            tool_choice=tool_choice,
         )
 
 
@@ -259,7 +274,33 @@ def _generate_openai_compatible(
     http_client: Any,
     messages: list[dict[str, str]],
     config: ModelConfig,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: dict[str, Any] | None = None,
 ) -> GenerateResult:
+    payload: dict[str, Any] = {
+        "model": config.model,
+        "messages": messages,
+        "temperature": config.temperature,
+        "max_tokens": config.max_tokens,
+        "top_p": config.top_p,
+    }
+    if tools:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("input_schema", {}),
+                },
+            }
+            for tool in tools
+        ]
+    if tool_choice and tool_choice.get("name"):
+        payload["tool_choice"] = {
+            "type": "function",
+            "function": {"name": tool_choice["name"]},
+        }
     start = time.monotonic()
     response = http_client.post(
         f"{base_url}/v1/chat/completions",
@@ -267,19 +308,14 @@ def _generate_openai_compatible(
             "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
         },
-        json={
-            "model": config.model,
-            "messages": messages,
-            "temperature": config.temperature,
-            "max_tokens": config.max_tokens,
-            "top_p": config.top_p,
-        },
+        json=payload,
         timeout=config.timeout,
     )
     response.raise_for_status()
     latency_ms = int((time.monotonic() - start) * 1000)
     data = response.json()
-    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    message = data.get("choices", [{}])[0].get("message", {})
+    text = message.get("content", "") or _extract_openai_tool_text(message)
     usage = data.get("usage", {})
     return GenerateResult(
         text=text,
@@ -299,4 +335,16 @@ def _extract_anthropic_text(data: dict[str, Any]) -> str:
     for item in data.get("content", []):
         if item.get("type") == "text":
             parts.append(str(item.get("text", "")))
+        elif item.get("type") == "tool_use":
+            parts.append(json.dumps(item.get("input", {}), ensure_ascii=False))
     return "\n".join(part for part in parts if part)
+
+
+def _extract_openai_tool_text(message: dict[str, Any]) -> str:
+    calls = message.get("tool_calls") or []
+    for call in calls:
+        function = call.get("function") or {}
+        arguments = function.get("arguments")
+        if arguments:
+            return str(arguments)
+    return ""

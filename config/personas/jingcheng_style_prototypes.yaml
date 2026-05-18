@@ -14,6 +14,7 @@ personality_dimensions:
 persona_profiles:
   logic_leader:
     display_name: 强逻辑归票型
+    player_name: 陈思远
     base:
       personality: analytical_leader
       speech_style: structured_logical
@@ -43,6 +44,7 @@ persona_profiles:
 
   aggressive_bluffer:
     display_name: 压迫式发言型
+    player_name: 赵猛
     base:
       personality: dominant_pressurer
       speech_style: aggressive_short
@@ -72,6 +74,7 @@ persona_profiles:
 
   steady_sider:
     display_name: 稳健站边型
+    player_name: 林静雅
     base:
       personality: cautious_observer
       speech_style: moderate_calm
@@ -99,6 +102,7 @@ persona_profiles:
 
   bold_pretender:
     display_name: 悍跳进攻型
+    player_name: 周烈
     base:
       personality: bold_deceiver
       speech_style: confident_fake_claim
@@ -128,6 +132,7 @@ persona_profiles:
 
   deep_hooker:
     display_name: 倒钩潜伏型
+    player_name: 沈墨
     base:
       personality: patient_infiltrator
       speech_style: subtle_helpful
@@ -157,6 +162,7 @@ persona_profiles:
 
   emotional_catalyst:
     display_name: 情绪感染型
+    player_name: 方晴
     base:
       personality: expressive_convincer
       speech_style: emotional_vivid
@@ -184,6 +190,7 @@ persona_profiles:
 
   chaos_joker:
     display_name: 娱乐搅局型
+    player_name: 孙乐
     base:
       personality: unpredictable_joker
       speech_style: humorous_distracting
@@ -209,6 +216,7 @@ persona_profiles:
 
   review_learner:
     display_name: 复盘学习型
+    player_name: 韩书生
     base:
       personality: analytical_improver
       speech_style: evidence_based
@@ -234,6 +242,7 @@ persona_profiles:
 
   quiet_observer:
     display_name: 低调观察型
+    player_name: 陆无声
     base:
       personality: silent_watcher
       speech_style: brief_pointed
@@ -259,6 +268,7 @@ persona_profiles:
 
   burst_visionary:
     display_name: 视角爆发型
+    player_name: 吴闪
     base:
       personality: intermittent_genius
       speech_style: mostly_quiet_then_explosive
@@ -284,6 +294,7 @@ persona_profiles:
 
   structure_analyst:
     display_name: 盘坑结构型
+    player_name: 郑铭
     base:
       personality: systematic_counter
       speech_style: structured_slotting
@@ -309,6 +320,7 @@ persona_profiles:
 
   adaptive_gamer:
     display_name: 临场博弈型
+    player_name: 冯弈
     base:
       personality: flexible_strategist
       speech_style: adaptive_varied

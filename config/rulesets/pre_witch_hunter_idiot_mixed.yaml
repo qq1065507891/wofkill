@@ -264,9 +264,9 @@ night_flow:
     witch_information_visible_to: witch_only
 
 timers:
-  wolf_discussion_seconds: 120
-  day_speech_seconds: 90
-  last_words_seconds: 60
+  wolf_discussion_seconds: 480
+  day_speech_seconds: 180
+  last_words_seconds: 180
   sheriff_speech_seconds: 60
   timeout_policy:
     wolf_discussion:
@@ -291,7 +291,7 @@ day_flow:
     sheriff_chooses_order: true
     no_sheriff_order_policy: random_start_then_seat_order
     torn_badge_order_policy: random_start_then_seat_order
-    per_player_time_limit_seconds: 90
+    per_player_time_limit_seconds: 180
     timeout_event: speech_timeout
   vote:
     allow_abstain: false

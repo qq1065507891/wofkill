@@ -1,7 +1,7 @@
 """Run a real 12-player werewolf game with MiniMax LLM agents.
 
 Usage:
-    python scripts/run_real_game.py [--seed 42] [--max-steps 500] [--timeout 60]
+    python scripts/run_real_game.py [--seed 42] [--max-steps 500] [--timeout 120]
 
 Requires .env with ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL configured.
 """
@@ -146,6 +146,16 @@ def print_usage_stats(runner: GameRunner) -> None:
     for aid, stats in sorted(agent_stats.items()):
         print(f"    {aid}: {stats['calls']} calls, {stats['tokens']:,} tokens, {stats['latency'] / 1000:.1f}s")
 
+    failure_reasons: dict[str, int] = {}
+    for u in usage_log:
+        if not u.success:
+            reason = u.fallback_reason or "unknown"
+            failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+    if failure_reasons:
+        print("\n  Failure reasons:")
+        for reason, count in sorted(failure_reasons.items(), key=lambda item: item[1], reverse=True):
+            print(f"    {count}x {reason}")
+
     print_separator()
 
 
@@ -218,7 +228,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a real 12-player werewolf game")
     parser.add_argument("--seed", type=int, default=None, help="Game seed (default: auto)")
     parser.add_argument("--max-steps", type=int, default=500, help="Max graph steps")
-    parser.add_argument("--timeout", type=float, default=60.0, help="Agent call timeout (seconds)")
+    parser.add_argument("--timeout", type=float, default=120.0, help="Agent act timeout (seconds)")
     parser.add_argument("--no-timeout", action="store_true", help="Disable agent call timeout")
     args = parser.parse_args()
 

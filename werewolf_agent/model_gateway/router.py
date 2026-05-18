@@ -7,12 +7,16 @@ retry, timeout, and cost tracking. No hardcoded API keys.
 
 from __future__ import annotations
 
+import logging
+import inspect
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +73,8 @@ class LLMProvider(Protocol):
         prompt: str,
         config: ModelConfig,
         system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult: ...
 
 
@@ -87,6 +93,8 @@ class MockProvider:
         prompt: str,
         config: ModelConfig,
         system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
         start = time.monotonic()
         text = f"[{self._name}:{config.model}] mock response"
@@ -215,6 +223,8 @@ class ModelRouter:
         task_type: str,
         prompt: str,
         system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
         """Generate via routed provider with fallback."""
         config, fallback_provider = self.resolve_config(agent_id, task_type)
@@ -224,8 +234,18 @@ class ModelRouter:
             provider = MockProvider(config.provider)
             self._providers[config.provider] = provider
 
+        primary_error: Exception | None = None
+        fallback_error: Exception | None = None
+
         try:
-            result = provider.generate(prompt, config, system_prompt)
+            result = _call_provider_generate(
+                provider,
+                prompt,
+                config,
+                system_prompt,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
             if result.usage:
                 usage = UsageRecord(
                     agent_id=agent_id,
@@ -239,7 +259,16 @@ class ModelRouter:
                 )
                 self._usage_log.append(usage)
             return result
-        except Exception:
+        except Exception as exc:
+            primary_error = exc
+            logger.warning(
+                "Model generation failed for agent=%s task=%s provider=%s model=%s: %s",
+                agent_id,
+                task_type,
+                config.provider,
+                config.model,
+                _format_exception(exc),
+            )
             # Try fallback
             if fallback_provider and fallback_provider in self._providers:
                 fb_provider = self._providers[fallback_provider]
@@ -248,7 +277,14 @@ class ModelRouter:
                     provider=fallback_provider, model="fallback"
                 )
                 try:
-                    result = fb_provider.generate(prompt, fb_config, system_prompt)
+                    result = _call_provider_generate(
+                        fb_provider,
+                        prompt,
+                        fb_config,
+                        system_prompt,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
                     if result.usage:
                         usage = UsageRecord(
                             agent_id=agent_id,
@@ -258,20 +294,30 @@ class ModelRouter:
                             prompt_tokens=result.usage.prompt_tokens,
                             completion_tokens=result.usage.completion_tokens,
                             latency_ms=result.usage.latency_ms,
-                            fallback_reason="primary_failed",
+                            fallback_reason=f"primary_failed:{_format_exception(primary_error)}",
                             success=True,
                         )
                         self._usage_log.append(usage)
                     return result
-                except Exception:
-                    pass
+                except Exception as exc:
+                    fallback_error = exc
+                    logger.warning(
+                        "Fallback model generation failed for agent=%s task=%s provider=%s model=%s: %s",
+                        agent_id,
+                        task_type,
+                        fb_config.provider,
+                        fb_config.model,
+                        _format_exception(exc),
+                    )
 
             # Record failure
+            failure_reason = _failure_reason(primary_error, fallback_error)
             self._usage_log.append(UsageRecord(
                 agent_id=agent_id,
                 task_type=task_type,
                 provider=config.provider,
                 model=config.model,
+                fallback_reason=failure_reason,
                 success=False,
             ))
             return GenerateResult(
@@ -327,3 +373,43 @@ class ModelRouter:
             "llm_profiles": dict(self._llm_profiles),
             "player_assignments": dict(self._player_assignments),
         }
+
+
+def _format_exception(exc: BaseException | None) -> str:
+    if exc is None:
+        return "unknown"
+    message = str(exc)
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
+def _failure_reason(
+    primary_error: BaseException | None,
+    fallback_error: BaseException | None,
+) -> str:
+    reason = f"primary_failed:{_format_exception(primary_error)}"
+    if fallback_error is not None:
+        reason += f"; fallback_failed:{_format_exception(fallback_error)}"
+    return reason
+
+
+def _call_provider_generate(
+    provider: LLMProvider,
+    prompt: str,
+    config: ModelConfig,
+    system_prompt: str | None,
+    *,
+    tools: list[dict[str, Any]] | None,
+    tool_choice: dict[str, Any] | None,
+) -> GenerateResult:
+    signature = inspect.signature(provider.generate)
+    if "tools" in signature.parameters:
+        return provider.generate(
+            prompt,
+            config,
+            system_prompt,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+    return provider.generate(prompt, config, system_prompt)

@@ -280,7 +280,6 @@ def _single_wolf_vote(
     engine: RuleEngine,
     registry: AgentRegistry,
     wolf_id: str,
-    per_wolf_timeout: float = 15.0,
 ) -> dict[str, Any] | None:
     """Get a single wolf's kill/no_kill vote.
 
@@ -300,8 +299,16 @@ def _single_wolf_vote(
         legal_targets=legal_targets,
     )
 
-    from werewolf_agent.runtime.timers import timed_call
-    action_result = timed_call(agent.act, context, timeout=per_wolf_timeout, fallback=None)
+    timeout = float(state.get("agent_call_timeout") or 0)
+    if timeout > 0:
+        from werewolf_agent.runtime.timers import timed_call
+        action_result = timed_call(agent.act, context, timeout=timeout, fallback=None)
+    else:
+        try:
+            action_result = agent.act(context)
+        except Exception as exc:
+            logger.warning("Wolf vote failed for %s: %s: %s", wolf_id, type(exc).__name__, exc)
+            action_result = None
 
     if action_result is None:
         # Timeout or exception — count as no_kill (strategy: skip this vote)
@@ -409,9 +416,13 @@ def agent_day_vote(
     # pick the first one rather than abstaining silently
     if target is None and legal_targets:
         target = legal_targets[0]
+    speech = getattr(action, "speech", "") or ""
+    reason = getattr(action, "reason", "") or ""
     trace = getattr(action, "trace", None)
     return {
         "vote_target": target,
+        "vote_speech": speech,
+        "vote_reason": reason,
         "action_trace": trace.model_dump() if trace else None,
     }
 

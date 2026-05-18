@@ -95,8 +95,12 @@ class PlayerAgent:
         model_router: ModelRouter,
         validator: ActionValidator | None = None,
         max_retries: int = 3,
+        player_name: str | None = None,
+        persona_key: str | None = None,
     ) -> None:
         self.agent_id = agent_id
+        self.player_name = player_name or agent_id
+        self.persona_key = persona_key
         self.model_router = model_router
         self.validator = validator or DefaultActionValidator()
         self.max_retries = max_retries
@@ -122,6 +126,8 @@ class PlayerAgent:
                 task_type=context.task_type.value,
                 prompt=prompt,
                 system_prompt=self._build_system_prompt(context),
+                tools=[self._player_action_tool(context)],
+                tool_choice={"type": "tool", "name": "submit_player_action"},
             )
             raw_text = result.text or ""
 
@@ -238,6 +244,89 @@ class PlayerAgent:
         except ValidationError as e:
             return None, f"Schema validation error: {e}"
 
+    def _player_action_tool(self, context: AgentContext) -> dict[str, Any]:
+        action_values = [action.value for action in context.legal_actions]
+        if not action_values:
+            action_values = [action.value for action in ActionType]
+        target_values: list[str | None] = list(context.legal_targets)
+        if not self._all_legal_actions_require_target(context) and None not in target_values:
+            target_values.append(None)
+        return {
+            "name": "submit_player_action",
+            "description": "Submit exactly one legal Werewolf player action.",
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "action_type": {
+                        "type": "string",
+                        "enum": action_values,
+                        "description": "Must be one of the currently legal actions.",
+                    },
+                    "target_id": {
+                        "enum": target_values,
+                        "description": "Target player id when required; null otherwise.",
+                    },
+                    "speech": {
+                        "type": "string",
+                        "description": "Public Chinese speech. Empty string for private night actions if no speech is needed.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Short Chinese reason for the action.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                    "private_intent": {
+                        "type": ["object", "null"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "true_role": {"type": "string"},
+                            "faction_goal": {
+                                "type": "string",
+                                "enum": [
+                                    "push_good_player_out",
+                                    "protect_teammate",
+                                    "find_wolves",
+                                    "survive",
+                                    "help_master_faction",
+                                    "confuse_good",
+                                    "deep_hook",
+                                    "aggressive_push",
+                                ],
+                            },
+                            "claimed_view": {"type": "string"},
+                            "pressure_target": {"enum": target_values},
+                            "risk_flags": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": [
+                                        "avoid_night_kill_leak",
+                                        "avoid_teammate_exposure",
+                                        "high_visibility",
+                                        "low_trust",
+                                        "suspected",
+                                    ],
+                                },
+                            },
+                        },
+                        "required": ["true_role", "faction_goal", "claimed_view"],
+                    },
+                },
+                "required": ["action_type", "target_id", "speech", "reason", "confidence"],
+            },
+        }
+
+    def _all_legal_actions_require_target(self, context: AgentContext) -> bool:
+        return bool(context.legal_actions) and all(
+            action in DefaultActionValidator._TARGET_REQUIRED_ACTIONS
+            for action in context.legal_actions
+        )
+
     def _fallback_action(self, context: AgentContext) -> FallbackAction:
         """Compute a safe fallback action from legal sets."""
         if context.legal_actions:
@@ -273,6 +362,7 @@ class PlayerAgent:
         parts = [
             "你是一场狼人杀游戏的玩家。请用中文发言和思考。",
             f"你的玩家ID: {context.agent_id}",
+            f"你的名字: {self.player_name}",
         ]
         if context.own_role:
             parts.append(f"你的角色: {role_cn}（{context.own_role}）")

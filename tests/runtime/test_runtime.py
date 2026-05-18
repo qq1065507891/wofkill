@@ -29,6 +29,7 @@ from werewolf_agent.runtime.graph import (
     _sheriff_died_this_batch,
     _route_after_badge_transfer,
 )
+from werewolf_agent.runtime.agent_adapter import _single_wolf_vote
 from werewolf_agent.runtime.replay import replay_from_events, extract_event_log
 from werewolf_agent.runtime.checkpoints import make_checkpointer
 
@@ -252,6 +253,48 @@ def test_wolf_consensus_kill_records_selected_target() -> None:
     event = result["game_state"].events[-1]
     assert event.type == "wolf_kill_selected"
     assert event.payload["target_id"] == "p01"
+
+
+def test_single_wolf_vote_uses_global_agent_timeout(monkeypatch) -> None:
+    engine = _new_engine()
+    players = {
+        "p01": PlayerState(id="p01", role="werewolf", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+    }
+    gs = GameState(game_id="wolf_timeout_config", players=players, night_number=1)
+    captured: dict[str, float] = {}
+
+    class Agent:
+        def act(self, context):
+            return (
+                PlayerAction(action_type=ActionType.WOLF_KILL, target_id="p02"),
+                RetryInfo(),
+            )
+
+    class Registry:
+        def get_agent(self, player_id):
+            return Agent()
+
+    def fake_timed_call(fn, *args, timeout, fallback=None):
+        captured["timeout"] = timeout
+        return fn(*args)
+
+    monkeypatch.setattr("werewolf_agent.runtime.timers.timed_call", fake_timed_call)
+
+    result = _single_wolf_vote(
+        {
+            "game_state": gs,
+            "engine": engine,
+            "agent_call_timeout": 120.0,
+        },
+        engine,
+        Registry(),
+        "p01",
+    )
+
+    assert captured["timeout"] == 120.0
+    assert result["wolf_action"] == "kill"
+    assert result["wolf_kill_target_id"] == "p02"
 
 
 def test_free_discussion_speech_timeout_records_event() -> None:

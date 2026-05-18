@@ -165,11 +165,43 @@ class GameRunner:
             return None
         model_config_path = self._config.model_config_path or "config/models.yaml"
         router = ModelRouter.from_yaml(model_config_path, register_env_providers=True)
+        # Load persona config for player names
+        persona_map = self._load_persona_names()
         registry = SimpleAgentRegistry()
         for i in range(1, self._config.player_count + 1):
             player_id = f"p{i:02d}"
-            registry.register(player_id, PlayerAgent(agent_id=player_id, model_router=router))
+            name, pkey = persona_map.get(player_id, (player_id, None))
+            registry.register(player_id, PlayerAgent(
+                agent_id=player_id, model_router=router,
+                player_name=name, persona_key=pkey,
+            ))
         return registry
+
+    def _load_persona_names(self) -> dict[str, tuple[str, str | None]]:
+        """Load player_name from persona config, round-robin assignment."""
+        persona_path = self._config.persona_config_path
+        if not persona_path:
+            return {}
+        from pathlib import Path
+        p = Path(persona_path)
+        if not p.exists():
+            return {}
+        import yaml
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        profiles = data.get("persona_profiles", {})
+        # Collect (key, player_name) pairs in definition order
+        names = []
+        for key, prof in profiles.items():
+            pname = prof.get("player_name", key)
+            names.append((key, pname))
+        if not names:
+            return {}
+        result: dict[str, tuple[str, str | None]] = {}
+        for i in range(1, self._config.player_count + 1):
+            pid = f"p{i:02d}"
+            pkey, pname = names[(i - 1) % len(names)]
+            result[pid] = (pname, pkey)
+        return result
 
     def _process_chunk(self, chunk: dict) -> str | None:
         """Process a single stream chunk, updating internal state.
