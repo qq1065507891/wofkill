@@ -879,6 +879,79 @@ def agent_hybrid_choose_master(
     return {"master_target_id": master_target_id}
 
 
+def agent_exile_last_words(
+    state: dict[str, Any],
+    engine: RuleEngine,
+    registry: AgentRegistry,
+    player_id: str,
+) -> dict[str, Any] | None:
+    """Exiled player gives last words."""
+    gs: GameState = state["game_state"]
+    agent = registry.get_agent(player_id)
+    if agent is None:
+        return None
+
+    player_role = gs.players[player_id].role if player_id in gs.players else ""
+    context = build_agent_context(
+        engine, gs, player_id, TaskType.LAST_WORDS,
+        legal_actions=[ActionType.SPEECH],
+    )
+    strategy_directive = {
+        "last_words": (
+            f"你已被放逐出局，这是你的遗言。你已确认死亡，身份已公开（{player_role}）。"
+            "遗言中你可以：\n"
+            "- 预言家：交代你所有的验人结果和警徽流\n"
+            "- 猎人：声明你可以开枪（如果被放逐而非毒杀）\n"
+            "- 其他好人：表达你对场上局势的最终看法，给存活玩家建议\n"
+            "- 狼人：做最后的表演，误导好人\n"
+            "遗言必须简短有力。"
+        ),
+    }
+    context = context.model_copy(update={"strategy_directive": strategy_directive})
+
+    action, retry_info = agent.act(context)
+    speech_text = getattr(action, "speech", "") or ""
+    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
+
+
+def agent_badge_decision(
+    state: dict[str, Any],
+    engine: RuleEngine,
+    registry: AgentRegistry,
+    sheriff_id: str,
+) -> dict[str, Any] | None:
+    """Dying sheriff decides to transfer badge or tear it."""
+    gs: GameState = state["game_state"]
+    agent = registry.get_agent(sheriff_id)
+    if agent is None:
+        return None
+
+    alive_others = [pid for pid, p in gs.players.items() if p.alive and pid != sheriff_id]
+    context = build_agent_context(
+        engine, gs, sheriff_id, TaskType.LAST_WORDS,
+        legal_actions=[ActionType.BADGE_TRANSFER, ActionType.BADGE_TEAR],
+        legal_targets=alive_others,
+    )
+    strategy_directive = {
+        "badge_decision": (
+            "你是即将离场的警长，必须决定警徽去向：\n"
+            "1) 移交（BADGE_TRANSFER）：选择一名存活玩家作为新警长。\n"
+            "   - 如果你是好人：移交给你最信任的明好人。\n"
+            "   - 如果你是预言家：移交给你验过的金水（被你验出好人的玩家）。\n"
+            "2) 撕毁（BADGE_TEAR）：撕毁警徽，本局不再有警长。"
+            "除非你确信撕毁对好人更有利，否则应该选择移交。\n"
+            "请做出对好人阵营最有利的决定。"
+        ),
+        "alive_players": alive_others,
+    }
+    context = context.model_copy(update={"strategy_directive": strategy_directive})
+
+    action, retry_info = agent.act(context)
+    if action.action_type == ActionType.BADGE_TRANSFER and action.target_id:
+        return {"badge_decision": "transfer", "badge_target_id": action.target_id}
+    return {"badge_decision": "tear", "badge_target_id": None}
+
+
 def agent_hunter_shot(
     state: dict[str, Any],
     engine: RuleEngine,

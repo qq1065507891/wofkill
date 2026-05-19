@@ -24,8 +24,10 @@ from werewolf_agent.core.models import (
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     AgentRegistry,
+    agent_badge_decision,
     agent_day_speech,
     agent_day_vote,
+    agent_exile_last_words,
     agent_hunter_shot,
     agent_hybrid_choose_master,
     agent_night_seer,
@@ -734,7 +736,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     else:
         print(f"  [死讯] 平安夜，无人死亡")
     print(f"{'='*60}")
-    return {"game_state": gs, "revote": False}
+    return {"game_state": gs, "revote": False, "speech_index": 0, "current_speaker_id": None, "speech_order": []}
 
 
 def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
@@ -1319,6 +1321,46 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
     return {"game_state": gs}
 
 
+def exile_last_words(state: RuntimeState) -> dict[str, Any]:
+    """Exiled player gives last words before death effects resolve."""
+    gs: GameState = state["game_state"]
+    exiled_id = None
+    for event in reversed(gs.events):
+        if event.type == "vote_resolved":
+            exiled_id = event.payload.get("exiled")
+            break
+    if exiled_id is None:
+        return {"game_state": gs}
+    # Idiot reveal: player stays alive, no last words needed
+    player = gs.players.get(exiled_id)
+    if player is None or player.alive:
+        return {"game_state": gs}
+
+    gs, _ = _judge_broadcast(
+        phase="exile_last_words",
+        message=f"请{_player_display(state, exiled_id)}发表遗言",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+    print(f"  [遗言] 请{_player_display(state, exiled_id)}发表遗言")
+
+    registry = state.get("agent_registry")
+    if registry:
+        engine: RuleEngine = state["engine"]
+        result = _call_agent(
+            agent_exile_last_words, state, state, engine, registry, exiled_id,
+            timeout_override=AGENT_TIMEOUTS.day_speech,
+        )
+        speech_text = result.get("speech_text", "") if result else ""
+        print(f"  [遗言] {_player_display(state, exiled_id)}: {speech_text if speech_text else '(无遗言)'}")
+        gs = replace(gs, events=gs.events + [GameEvent(
+            type="exile_last_words",
+            payload={"speaker": exiled_id, "day_number": gs.day_number, "text": speech_text},
+        )])
+
+    return {"game_state": gs}
+
+
 def post_exile_skills(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
@@ -1421,16 +1463,52 @@ def sheriff_badge_transfer(state: RuntimeState) -> dict[str, Any]:
     sheriff = gs.players.get(gs.sheriff_id)
     if sheriff is None or sheriff.alive:
         return {"game_state": gs}
-    # Sheriff is dead, find last death reason
-    death_reason = "exile"
-    for death in reversed(gs.deaths):
-        if death.player_id == gs.sheriff_id:
-            death_reason = death.reason
-            break
-    decision = state.get("badge_decision", "tear")
+
+    gs, _ = _judge_broadcast(
+        phase="badge_decision",
+        message=f"警长{_player_display(state, gs.sheriff_id)}死亡，请决定警徽去向",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+    print(f"  [警徽] 警长{_player_display(state, gs.sheriff_id)}死亡，决定警徽去向")
+
+    decision = state.get("badge_decision")
     target_id = state.get("badge_target_id")
+
+    # Agent-driven: dying sheriff decides transfer or tear
+    registry = state.get("agent_registry")
+    if registry and decision is None:
+        result = _call_agent(
+            agent_badge_decision, state, state, engine, registry, gs.sheriff_id,
+            timeout_override=AGENT_TIMEOUTS.day_vote,
+        )
+        if result:
+            decision = result.get("badge_decision", "tear")
+            target_id = result.get("badge_target_id")
+
+    if decision is None:
+        decision = "tear"
+
     gs = engine.resolve_badge_decision(gs, decision=decision, target_id=target_id)
     event_type = "badge_torn" if decision == "tear" else "badge_transferred"
+
+    if decision == "transfer" and target_id:
+        gs, _ = _judge_broadcast(
+            phase="badge_transferred",
+            message=f"警长将警徽移交给{_player_display(state, target_id)}",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        print(f"  [警徽] 警长将警徽移交给 {_player_display(state, target_id)}")
+    else:
+        gs, _ = _judge_broadcast(
+            phase="badge_torn",
+            message="警长撕毁了警徽，本局不再有警长",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        print(f"  [警徽] 警长撕毁了警徽")
+
     gs = replace(gs, events=gs.events + [GameEvent(
         type=event_type,
         payload={"new_sheriff_id": target_id} if decision == "transfer" else {},
@@ -1842,6 +1920,7 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("tie_pk_speech", tie_pk_speech)
     graph.add_node("tie_revote", tie_revote)
     graph.add_node("resolve_exile", resolve_exile)
+    graph.add_node("exile_last_words", exile_last_words)
     graph.add_node("post_exile_skills", post_exile_skills)
     graph.add_node("resolve_hunter_shot", resolve_hunter_shot)
     graph.add_node("check_victory", check_victory)
@@ -1896,7 +1975,8 @@ def _add_all_edges(graph: StateGraph) -> None:
     })
     graph.add_edge("tie_pk_speech", "tie_revote")
     graph.add_edge("tie_revote", "day_vote")
-    graph.add_edge("resolve_exile", "post_exile_skills")
+    graph.add_edge("resolve_exile", "exile_last_words")
+    graph.add_edge("exile_last_words", "post_exile_skills")
     graph.add_edge("post_exile_skills", "check_victory")
     graph.add_conditional_edges("check_victory", route_victory, {
         "finish_game": "finish_game",
