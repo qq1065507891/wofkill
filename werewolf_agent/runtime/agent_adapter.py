@@ -333,15 +333,27 @@ def agent_night_witch(
     )
 
     # Build witch strategy directive with clear action guidance
+    # Build clear status + options
+    potion_status = (
+        f"当前药水状态：解药{'已用' if gs.antidote_used else '可用'}，"
+        f"毒药{'已用' if gs.poison_used else '可用'}。"
+    )
+    if gs.antidote_used and not gs.poison_used:
+        potion_status += "你只剩毒药，只能选择毒人或不用。"
+    elif not gs.antidote_used and gs.poison_used:
+        potion_status += "你只剩解药，只能选择救人或不用。"
+
     witch_directive: dict[str, Any] = {
         "witch_night_action": (
-            "你是女巫，现在是夜间行动阶段。你的选择：\n"
+            f"你是女巫，现在是夜间行动阶段。{potion_status}\n你的选择：\n"
         ),
     }
     options = []
     if wolf_kill_target_id and not gs.antidote_used and ActionType.USE_ANTIDOTE in legal_actions:
+        can_self = wolf_kill_target_id != witch_id
+        save_hint = f"（他被狼人杀害了）" if can_self else "（但是你不能自救！）"
         options.append(
-            f"1) 使用解药救{wolf_kill_target_id}（他被狼人杀害了）—— action_type='use_antidote', target_id='{wolf_kill_target_id}'"
+            f"1) 使用解药救{wolf_kill_target_id}{save_hint} —— action_type='use_antidote', target_id='{wolf_kill_target_id}'"
         )
     if not gs.poison_used and ActionType.USE_POISON in legal_actions:
         options.append(
@@ -351,7 +363,8 @@ def agent_night_witch(
     witch_directive["witch_night_action"] += "\n".join(options)
     witch_directive["witch_night_action"] += (
         "\n\n重要规则：不能在同一夜同时使用解药和毒药。"
-        "不能自救（解药不能救自己）。"
+        "解药不能自救。"
+        "第一夜大概率应该救人。"
         "speech字段留空（夜间行动不需要发言）。"
     )
 
