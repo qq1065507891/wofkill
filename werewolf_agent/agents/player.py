@@ -459,6 +459,25 @@ class PlayerAgent:
             }
             if context.own_role in role_rules:
                 parts.append(role_rules[context.own_role])
+        # Inject belief state: who I suspect and trust
+        if context.belief_state:
+            suspects = context.belief_state.get("my_suspects", [])
+            trusted = context.belief_state.get("my_trusted", [])
+            belief_lines = []
+            if suspects:
+                suspect_desc = ", ".join(
+                    f"{s['player']}(嫌疑{s['faction_lean']}, 猜{s['top_role_guess']})"
+                    for s in suspects[:5]
+                )
+                belief_lines.append(f"我怀疑的玩家: {suspect_desc}")
+            if trusted:
+                trust_desc = ", ".join(
+                    f"{t['player']}(倾向{t['faction_lean']}, 信任{t['trust']})"
+                    for t in trusted[:5]
+                )
+                belief_lines.append(f"我信任的玩家: {trust_desc}")
+            if belief_lines:
+                parts.append("【我的判断（基于已有信息的推理，可能是错的）】" + " ".join(belief_lines))
         parts.append(f"当前阶段: {context.phase}")
         if context.legal_actions:
             parts.append(

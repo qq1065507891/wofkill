@@ -214,19 +214,56 @@ def build_agent_context(
         total -= len(dropped)
     public_summary = "\n".join(summary_parts) if summary_parts else ""
 
-    # Build contradiction alerts from world state
+    # Build contradiction alerts and belief state from world state
     ctx_alerts: list[dict[str, Any]] = []
     must_address: list[dict[str, Any]] = []
     strategy_directive: dict[str, Any] = {}
+    belief_dict: dict[str, Any] = {}
     try:
         from werewolf_agent.cognition.world_state import build_world_state
         from werewolf_agent.cognition.contradiction import ContradictionEngine
+        from werewolf_agent.cognition.belief import BeliefUpdater
 
         world_state = build_world_state(gs)
+
+        # -- Belief update: who do I suspect / trust --
+        updater = BeliefUpdater()
+        belief_state = updater.initialize(list(gs.players.keys()), player_id)
+        # Only feed facts visible to this player (exclude werewolf-team-only events)
+        visible_facts = [
+            f for f in world_state.facts
+            if f.fact_type not in ("wolf_kill_selected", "witch_kill_target")
+        ]
+        belief_state = updater.update(belief_state, visible_facts, gs.day_number)
+
+        # Build structured belief summary for agent prompt
+        suspect_list = []
+        trust_list = []
+        for pid, b in belief_state.beliefs.items():
+            if pid == player_id or pid not in gs.players or not gs.players[pid].alive:
+                continue
+            top_role, top_prob = b.top_role_guess()
+            entry = {
+                "player": pid,
+                "faction_lean": b.faction_lean,
+                "trust": round(b.trust, 2),
+                "top_role_guess": top_role,
+                "top_role_prob": round(top_prob, 2),
+            }
+            if b.faction_lean == "wolf_lean" or b.trust < 0.35:
+                suspect_list.append(entry)
+            elif b.faction_lean == "good_lean" or b.trust > 0.65:
+                trust_list.append(entry)
+
+        belief_dict = {
+            "my_suspects": sorted(suspect_list, key=lambda x: x["trust"]),
+            "my_trusted": sorted(trust_list, key=lambda x: -x["trust"]),
+        }
+
+        # -- Contradiction detection --
         contradiction_engine = ContradictionEngine()
         alerts = contradiction_engine.detect(world_state.facts, gs.day_number)
 
-        # Filter to high-priority alerts
         for alert in alerts:
             if alert.priority == "high":
                 alert_entry = {
@@ -238,7 +275,6 @@ def build_agent_context(
                 }
                 ctx_alerts.append(alert_entry)
 
-        # Build must_address_alerts from high-priority alerts
         for alert in ctx_alerts:
             players = [p for p in alert["player_id"].split(",") if p]
             must_address.append({
@@ -254,7 +290,7 @@ def build_agent_context(
                 "directive": "你必须在发言中回应以下矛盾：选择站队、质疑、或明确表示暂不判断。",
             }
     except Exception:
-        logger.debug("Contradiction alert building failed, skipping", exc_info=True)
+        logger.debug("Contradiction/belief building failed, skipping", exc_info=True)
 
     if legal_actions is None:
         legal_actions = []
@@ -274,6 +310,7 @@ def build_agent_context(
         visible_world_state=visible,
         recent_transcript=transcript,
         contradiction_alerts=ctx_alerts,
+        belief_state=belief_dict,
         strategy_directive=strategy_directive,
     )
 
