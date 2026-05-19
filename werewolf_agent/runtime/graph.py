@@ -1624,7 +1624,7 @@ def route_after_announce(state: RuntimeState) -> str:
 
 
 def route_after_sheriff_vote(state: RuntimeState) -> str:
-    return "day_vote"
+    return "free_discussion"
 
 
 def route_self_destruct_check(state: RuntimeState) -> str:
@@ -1959,7 +1959,7 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_edge("sheriff_speech", "sheriff_withdraw")
     graph.add_edge("sheriff_withdraw", "sheriff_vote")
     graph.add_conditional_edges("sheriff_vote", route_after_sheriff_vote, {
-        "day_vote": "day_vote",
+        "free_discussion": "free_discussion",
     })
     graph.add_conditional_edges("free_discussion", route_self_destruct_check, {
         "resolve_self_destruct": "resolve_self_destruct",
