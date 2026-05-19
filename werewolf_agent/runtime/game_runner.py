@@ -45,10 +45,9 @@ class GameRunnerConfig:
 
     def __post_init__(self) -> None:
         if self.seed is None:
-            # Generate a stable default seed from a hash of the ruleset_id
-            import hashlib
-            raw = self.ruleset_id.encode("utf-8")
-            self.seed = int.from_bytes(hashlib.sha256(raw).digest()[:4], "big") & 0xFFFFFFFF
+            import random
+            import time
+            self.seed = random.Random(time.time()).randrange(0, 2**32)
 
 
 class GameRunner:
