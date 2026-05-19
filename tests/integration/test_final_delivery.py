@@ -403,7 +403,7 @@ class TestRealRunConfiguration:
         data = yaml.safe_load(models_path.read_text(encoding="utf-8"))
 
         for profile in data["model_profiles"].values():
-            assert profile["provider"] == "anthropic"
+            assert profile["provider"] == "minimax"
             assert profile["model"] == "MiniMax-M2.7"
 
         for player_id, assignment in data["players"].items():

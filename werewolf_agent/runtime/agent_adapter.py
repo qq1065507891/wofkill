@@ -398,11 +398,54 @@ def agent_night_seer(
         return None
 
     legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != seer_id]
+
+    # Build seer strategy: follow badge flow plan from election speech
+    badge_flow_next = None
+    for e in gs.events:
+        if e.type == "sheriff_speech" and e.payload.get("speaker") == seer_id:
+            # Try to extract badge flow targets from the speech text
+            text = e.payload.get("text", "")
+            # Simple extraction: find player IDs mentioned near "验" or "警徽流"
+            import re
+            mentioned = re.findall(r'p\d+', text)
+            if mentioned:
+                badge_flow_next = [pid for pid in mentioned if pid in legal_targets]
+            break
+
+    night_num = gs.night_number
+    if night_num == 1:
+        seer_guidance = (
+            "第一夜验人策略：选择你最怀疑的人，或者按照你上警时承诺的警徽流第一夜验人对象。"
+            "如果上警时没有明确指定，优先验发言最少、最不透明的人。"
+        )
+    else:
+        seer_guidance = (
+            f"第{night_num}夜验人策略：根据白天讨论中你最怀疑的人选择查验目标。"
+            "优先验：1) 发言前后矛盾的人；2) 站边不明确的人；3) 被多人怀疑但你不确定的人。"
+            "不要验你已经确认的好人。"
+        )
+
+    strategy_directive = {
+        "seer_night_check": (
+            "你是预言家，现在是夜间验人阶段。你必须选择一名玩家查验其身份。"
+            "验人结果（好人/狼人）将在明天白天得知。"
+            f"\n\n{seer_guidance}"
+            "\n\n注意：本局没有守卫，预言家无法被守护，必须谨慎选择。"
+            "speech字段留空（夜间行动不需要发言）。"
+        ),
+    }
+    if badge_flow_next:
+        strategy_directive["badge_flow_plan"] = (
+            f"你在警上承诺的警徽流计划中提到的验人对象: {badge_flow_next}，"
+            "请优先按此计划验人以保持信息传递的一致性。"
+        )
+
     context = build_agent_context(
         engine, gs, seer_id, TaskType.NIGHT_ACTION,
         legal_actions=[ActionType.CHECK_ALIGNMENT, ActionType.NO_ACTION],
         legal_targets=legal_targets,
     )
+    context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     action, retry_info = agent.act(context)
 
@@ -759,6 +802,13 @@ def agent_day_vote(
             "你只能内心选择要投谁，不能在投票时发表任何公开言论。"
             "请在reason字段中写下你的内心理由（只有你自己能看到）。"
         ),
+        "vote_strategy": (
+            "投票原则：\n"
+            "1) 有查杀走查杀：如果被信任的预言家查杀了某人，优先投查杀对象。"
+            "2) 跟预言家走：听完发言后，根据你信任的预言家的归票方向投票。"
+            "3) 警上单边预言家可信度高，警下跳预言家的可信度很低。"
+            "4) 如果没有明确查杀，投发言最可疑、逻辑最不通的人。"
+        ),
     }
     if not allow_abstain:
         parts = ["必须投票选出一名玩家放逐，不能弃票。"]
@@ -791,6 +841,42 @@ def agent_day_vote(
         "vote_reason": reason,
         "action_trace": trace.model_dump() if trace else None,
     }
+
+
+def agent_hybrid_choose_master(
+    state: dict[str, Any],
+    engine: RuleEngine,
+    registry: AgentRegistry,
+    hybrid_id: str,
+) -> dict[str, Any] | None:
+    """Ask hybrid agent to choose their master. Returns None if agent unavailable."""
+    gs: GameState = state["game_state"]
+    agent = registry.get_agent(hybrid_id)
+    if agent is None:
+        return None
+
+    candidates = [pid for pid, p in gs.players.items() if p.alive and pid != hybrid_id]
+    context = build_agent_context(
+        engine, gs, hybrid_id, TaskType.NIGHT_ACTION,
+        legal_actions=[ActionType.CHOOSE_MASTER],
+        legal_targets=candidates,
+    )
+    strategy_directive = {
+        "hybrid_master_choice": (
+            "你是混血儿，第一夜需要选择一名玩家作为你的主人。"
+            "你不知道主人的身份和阵营，但你将跟随主人的阵营获胜。"
+            "你可以自由选择任何玩家作为主人——可以根据直觉、位置、或任何你喜欢的理由。"
+            "选择后不能更改。speech字段留空。"
+        ),
+    }
+    context = context.model_copy(update={"strategy_directive": strategy_directive})
+
+    action, retry_info = agent.act(context)
+    master_target_id = action.target_id if action.action_type == ActionType.CHOOSE_MASTER else None
+    if master_target_id is None and candidates:
+        master_target_id = candidates[0]
+
+    return {"master_target_id": master_target_id}
 
 
 def agent_hunter_shot(
@@ -860,10 +946,40 @@ def agent_sheriff_register(
     if agent is None:
         return False
 
+    player_role = gs.players[player_id].role if player_id in gs.players else ""
+    # Build role-specific registration guidance
+    if player_role == "seer":
+        role_hint = (
+            "你是预言家，强烈建议上警！预言家几乎必须上警留警徽流，"
+            "这是预言家的核心玩法——通过警徽流传递验人信息。"
+        )
+    elif player_role == "werewolf":
+        # Check if any wolf is already planning to claim seer
+        role_hint = (
+            "你是狼人。如果团队安排你悍跳预言家，你必须上警与真预言家对抗。"
+            "如果不悍跳，也可以上警发言获取信息或带节奏。"
+        )
+    else:
+        # Good player (non-seer)
+        role_hint = (
+            "你是好人（非预言家），可以考虑上警发言表达观点、压制狼人发言空间。"
+            "但注意：如果你不是预言家，不要在警上冒充预言家抢警徽，"
+            "这会干扰真预言家的信息传递。上警主要目的是发言和表达立场。"
+        )
+
+    strategy_directive = {
+        "sheriff_registration": (
+            f"{role_hint}\n"
+            "上警意味着你将在竞选环节发言，争取警长职位或表达观点。"
+            "不上警则留在警下投票选出警长。"
+        ),
+    }
+
     context = build_agent_context(
         engine, gs, player_id, TaskType.SHERIFF_REGISTRATION,
         legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
     )
+    context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     try:
         action, retry_info = agent.act(context)
@@ -927,8 +1043,28 @@ def agent_sheriff_election_speech(
     badge_flow_instruction = ""
     if is_seer_or_claiming:
         badge_flow_instruction = (
-            "2) 你的警徽流（如果今晚死亡，警徽给谁，先验谁后验谁）；"
+            "2) 你的警徽流：必须留两个晚上的验人对象！"
+            "格式如'先验X，后验Y'。如果你验到好人，死后警徽给该好人；"
+            "如果验到狼人，则不给警徽（撕徽或给之前验过的好人）。"
+            "警徽流是预言家传递信息的核心机制，必须明确留出两夜验人计划。"
         )
+
+    # Single-sided vs multi-seer context
+    seer_count = sum(1 for c in all_candidates
+                     if gs.players.get(c) and gs.players[c].role in ("seer", "werewolf"))
+    seer_context = ""
+    if seer_count >= 2:
+        seer_context = (
+            "场上有多人跳预言家，这是典型的悍跳局面。"
+            "真预言家必须坚定立场，用逻辑和验人信息证明自己；"
+            "悍跳预言家需要制造合理怀疑，攻击对方的逻辑漏洞。"
+        )
+    else:
+        if player_role in ("seer", "werewolf"):
+            seer_context = (
+                "目前警上只有你跳预言家（单边预言家），你的可信度很高。"
+                "要充分利用这一点，留下完整的警徽流，让好人信任你。"
+            )
 
     strategy_directive = {
         "sheriff_election_speech": (
@@ -938,6 +1074,8 @@ def agent_sheriff_election_speech(
             "3) 你对场上局势的初步判断。"
             "不能只说'我来上警'之类空洞的话，必须有实质内容。"
             "注意：只有预言家（或悍跳预言家）才能留警徽流，其他身份不要提警徽流。"
+            "非预言家不要在警上冒充预言家抢警徽。"
+            f"{seer_context}"
         ),
         "other_candidates": other_candidates,
     }

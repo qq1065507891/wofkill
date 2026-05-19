@@ -27,6 +27,7 @@ from werewolf_agent.runtime.agent_adapter import (
     agent_day_speech,
     agent_day_vote,
     agent_hunter_shot,
+    agent_hybrid_choose_master,
     agent_night_seer,
     agent_night_witch,
     agent_pk_speech,
@@ -575,16 +576,26 @@ def night_hunter_idiot_status(state: RuntimeState) -> dict[str, Any]:
     """First night only: confirm hunter and idiot are alive for moderator audit.
     Produces no public output; event is moderator/private visibility only."""
     gs: GameState = state["game_state"]
-    gs, _ = _judge_broadcast(
-        phase="hunter_status",
-        message="猎人状态确认",
-        gs=gs, night_number=gs.night_number,
-        visibility="moderator_only",
-    )
-    if gs.night_number != 1:
-        return {}
     hunter_id = _find_role(gs, "hunter")
     idiot_id = _find_role(gs, "idiot")
+    if hunter_id:
+        gs, _ = _judge_broadcast(
+            phase="hunter_status",
+            message=f"猎人{_player_display(state, hunter_id)}请确认开枪状态",
+            gs=gs, night_number=gs.night_number,
+            visibility="moderator_only",
+        )
+        print(f"  [法官] 猎人{_player_display(state, hunter_id)}请确认开枪状态")
+    if idiot_id and gs.night_number == 1:
+        gs, _ = _judge_broadcast(
+            phase="idiot_status",
+            message=f"白痴{_player_display(state, idiot_id)}请确认身份",
+            gs=gs, night_number=gs.night_number,
+            visibility="moderator_only",
+        )
+        print(f"  [法官] 白痴{_player_display(state, idiot_id)}请确认身份")
+    if gs.night_number != 1:
+        return {}
     event = GameEvent(
         type="hunter_idiot_status_confirmed",
         payload={
@@ -600,28 +611,47 @@ def night_hunter_idiot_status(state: RuntimeState) -> dict[str, Any]:
 
 def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
-    gs, _ = _judge_broadcast(
-        phase="hybrid_master_choice",
-        message="混血儿选择主人",
-        gs=gs, night_number=gs.night_number,
-        visibility="moderator_only",
-    )
     if gs.night_number != 1 or gs.hybrid_master_id is not None:
-        return {}
-    engine: RuleEngine = state["engine"]
-    master_target = state.get("hybrid_master_target_id")
-    if master_target is None:
-        import random
-        candidates = [pid for pid in _player_ids(gs) if pid != _find_role(gs, "hybrid")]
-        rng = random.Random(_stable_seed(gs.game_id, "hybrid_master"))
-        master_target = rng.choice(candidates) if candidates else None
-    if master_target is None:
         return {}
     hybrid_id = _find_role(gs, "hybrid")
     if hybrid_id is None:
         return {}
+
+    gs, _ = _judge_broadcast(
+        phase="hybrid_master_choice",
+        message=f"混血儿{_player_display(state, hybrid_id)}请睁眼，选择你的主人",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
+    print(f"  [法官] 混血儿{_player_display(state, hybrid_id)}请睁眼，选择你的主人")
+
+    engine: RuleEngine = state["engine"]
+    master_target = state.get("hybrid_master_target_id")
+
+    # Agent-driven: ask hybrid player to choose master
+    registry = state.get("agent_registry")
+    if registry and master_target is None:
+        result = _call_agent(
+            agent_hybrid_choose_master,
+            state, state, engine, registry, hybrid_id,
+            timeout_override=AGENT_TIMEOUTS.seer,
+        )
+        if result and result.get("master_target_id"):
+            master_target = result["master_target_id"]
+
+    # Fallback: random selection
+    if master_target is None:
+        import random
+        candidates = [pid for pid in _player_ids(gs) if pid != hybrid_id]
+        rng = random.Random(_stable_seed(gs.game_id, "hybrid_master"))
+        master_target = rng.choice(candidates) if candidates else None
+
+    if master_target is None:
+        return {}
     gs, event = engine.choose_master(gs, hybrid_id=hybrid_id, master_id=master_target)
     gs = replace(gs, events=gs.events + [event])
+    master_role = gs.players[master_target].role if master_target in gs.players else "?"
+    print(f"  [混血儿] {_player_display(state, hybrid_id)} 选择了 {_player_display(state, master_target)}({master_role}) 作为主人")
     return {"game_state": gs}
 
 

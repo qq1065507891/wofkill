@@ -440,11 +440,23 @@ class PlayerAgent:
         role_cn = self._ROLE_NAMES.get(context.own_role or "", context.own_role or "")
         parts = [
             "你是一场狼人杀游戏的玩家。请用中文发言和思考。",
+            "本局角色仅有：狼人、村民、预言家、女巫、猎人、白痴、混血儿。不存在恋人、守卫、丘比特等其他角色，不要编造。",
             f"你的玩家ID: {context.agent_id}",
             f"你的名字: {self.player_name}",
         ]
         if context.own_role:
             parts.append(f"你的角色: {role_cn}（{context.own_role}）")
+            # Role-specific rules
+            role_rules = {
+                "hunter": "猎人规则：被狼人杀死或被放逐时可以开枪带走一人；被女巫毒杀时不能开枪。夜间无法自保。",
+                "idiot": "白痴规则：被放逐时亮出身份免死，但失去投票权且不能再被放逐；之后被狼人杀死才算真正死亡。夜间无法自保。",
+                "witch": "女巫规则：有一瓶解药和一瓶毒药，不能在同一夜同时使用。解药不能自救。第一夜大概率应该救人。",
+                "seer": "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。上警时必须留两夜警徽流。",
+                "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
+                "hybrid": "混血儿规则：第一夜选择一名主人，跟随主人阵营获胜。主人死亡后阵营不再改变。",
+            }
+            if context.own_role in role_rules:
+                parts.append(role_rules[context.own_role])
         parts.append(f"当前阶段: {context.phase}")
         if context.legal_actions:
             parts.append(

@@ -512,27 +512,26 @@ class TestModelRouter:
     def test_resolve_config_for_known_agent(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         config, fallback = router.resolve_config("p01", "speech")
-        assert config.provider == "anthropic"
+        assert config.provider == "minimax"
         assert config.model != ""
 
     def test_resolve_config_task_specific(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         config, _ = router.resolve_config("p01", "reflection")
-        # pro_reasoner has task-specific reflection config
-        assert config.provider == "anthropic"
+        assert config.provider == "minimax"
 
     def test_resolve_config_fallback_chain(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         _, fallback = router.resolve_config("p02", "speech")
-        assert fallback == "anthropic"
+        assert fallback == "minimax"
 
     def test_generate_with_mock_provider(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
-        router.register_provider(MockProvider("anthropic"))
+        router.register_provider(MockProvider("minimax"))
         router.register_provider(MockProvider("glm"))
         result = router.generate("p01", "speech", "Test prompt")
         assert result.text != ""
-        assert result.provider in ("anthropic", "glm", "mock")
+        assert result.provider in ("minimax", "glm", "mock")
 
     def test_generate_fallback_on_failure(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
@@ -547,7 +546,7 @@ class TestModelRouter:
 
     def test_failed_generation_records_exception_reason(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
-        router._providers["anthropic"] = _FailProvider()
+        router._providers["minimax"] = _FailProvider()
 
         result = router.generate("p01", "speech", "Test prompt")
         log = router.get_usage_log()
@@ -595,7 +594,7 @@ class TestModelRouter:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
         router = ModelRouter.from_yaml(MODELS_YAML, register_env_providers=True)
 
-        assert "anthropic" in router.provider_names()
+        assert "minimax" in router.provider_names()
 
     def test_create_provider_from_env_returns_none_without_key(self, monkeypatch, tmp_path) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -674,24 +673,27 @@ class TestModelRouter:
             "name": "submit_player_action",
         }
 
-    def test_anthropic_provider_rejects_text_when_tool_call_required(self) -> None:
+    def test_anthropic_provider_falls_through_when_tool_call_missing(self) -> None:
+        """When model returns text instead of tool_use despite tool_choice,
+        the provider should fall through to text parsing instead of raising."""
         client = _FakeHttpClient({
             "content": [{"type": "text", "text": "{\"action_type\":\"vote\"}"}],
             "usage": {"input_tokens": 4, "output_tokens": 2},
         })
         provider = AnthropicProvider(api_key="key", http_client=client)
 
-        with pytest.raises(RuntimeError, match="tool_use"):
-            provider.generate(
-                "Choose an action",
-                ModelConfig(provider="anthropic", model="claude-test"),
-                tools=[{
-                    "name": "submit_player_action",
-                    "description": "Submit one player action.",
-                    "input_schema": {"type": "object"},
-                }],
-                tool_choice={"type": "tool", "name": "submit_player_action"},
-            )
+        result = provider.generate(
+            "Choose an action",
+            ModelConfig(provider="anthropic", model="claude-test"),
+            tools=[{
+                "name": "submit_player_action",
+                "description": "Submit one player action.",
+                "input_schema": {"type": "object"},
+            }],
+            tool_choice={"type": "tool", "name": "submit_player_action"},
+        )
+        # Should return the text content for JSON parsing fallback
+        assert result.text == '{"action_type":"vote"}'
 
     def test_openai_provider_posts_chat_request(self) -> None:
         client = _FakeHttpClient({
@@ -875,7 +877,7 @@ class TestAgentIntegration:
         persona_router.load_assignments({"p01": "logic_leader"})
 
         model_router = ModelRouter.from_yaml(MODELS_YAML)
-        model_router.register_provider(MockProvider("anthropic"))
+        model_router.register_provider(MockProvider("minimax"))
         model_router.register_provider(MockProvider("glm"))
 
         # Resolve persona
@@ -889,7 +891,7 @@ class TestAgentIntegration:
         # Create agent and act
         json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"逻辑链完整","confidence":0.85}'
         # Override provider to return valid JSON
-        model_router._providers["anthropic"] = _JsonProvider(json_resp)
+        model_router._providers["minimax"] = _JsonProvider(json_resp)
 
         agent = PlayerAgent(agent_id="p01", model_router=model_router)
         ctx = AgentContext(

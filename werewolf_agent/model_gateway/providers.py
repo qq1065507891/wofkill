@@ -27,6 +27,8 @@ PROVIDER_DOTENV_KEYS = {
     "GLM_BASE_URL",
     "SILICONFLOW_API_KEY",
     "SILICONFLOW_BASE_URL",
+    "MINIMAX_API_KEY",
+    "MINIMAX_BASE_URL",
 }
 
 
@@ -128,7 +130,9 @@ class AnthropicProvider(_BaseHttpProvider):
         latency_ms = int((time.monotonic() - start) * 1000)
         data = response.json()
         if tools and tool_choice and not _has_anthropic_tool_use(data):
-            raise RuntimeError("tool_use response required when tool_choice is specified")
+            # Model did not return tool_use despite tool_choice — fall through
+            # to text parsing instead of raising, so non-compliant models still work
+            pass
         text = _extract_anthropic_text(data)
         usage = data.get("usage", {})
         return GenerateResult(
@@ -232,6 +236,89 @@ class GLMProvider(_BaseHttpProvider):
         )
 
 
+class MiniMaxProvider(_BaseHttpProvider):
+    """MiniMax Anthropic-compatible provider.
+
+    MiniMax exposes an Anthropic-compatible API but does NOT reliably
+    support tool_choice.  When tool_choice is specified, MiniMax may
+    return plain text instead of a tool_use block.  This provider:
+      - Sends tools in the request (so the model knows the schema)
+      - Strips tool_choice from the payload (MiniMax ignores it anyway)
+      - Extracts structured JSON from either tool_use or plain text
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        base_url: str | None = None,
+        http_client: Any | None = None,
+    ) -> None:
+        super().__init__(
+            api_key=api_key or os.getenv("MINIMAX_API_KEY", "")
+                or os.getenv("ANTHROPIC_API_KEY", ""),
+            base_url=base_url or os.getenv("MINIMAX_BASE_URL", "")
+                or os.getenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic"),
+            http_client=http_client,
+        )
+
+    @property
+    def name(self) -> str:
+        return "minimax"
+
+    def generate(
+        self,
+        prompt: str,
+        config: ModelConfig,
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
+    ) -> GenerateResult:
+        payload: dict[str, Any] = {
+            "model": config.model,
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature,
+            "top_p": config.top_p,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        # Send tools so model knows the schema, but DO NOT send tool_choice
+        # — MiniMax does not reliably enforce it
+        if tools:
+            payload["tools"] = tools
+
+        start = time.monotonic()
+        response = self._http_client.post(
+            f"{self._base_url}/v1/messages",
+            headers={
+                "x-api-key": self._api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=config.timeout,
+        )
+        response.raise_for_status()
+        latency_ms = int((time.monotonic() - start) * 1000)
+        data = response.json()
+
+        # Extract text: prefer tool_use input, fall back to plain text
+        text = _extract_anthropic_text(data)
+        usage = data.get("usage", {})
+        return GenerateResult(
+            text=text,
+            provider=self.name,
+            model=config.model,
+            usage=self._usage(
+                model=config.model,
+                latency_ms=latency_ms,
+                prompt_tokens=int(usage.get("input_tokens", 0) or 0),
+                completion_tokens=int(usage.get("output_tokens", 0) or 0),
+            ),
+        )
+
+
 def create_provider_from_env(provider_name: str):
     """Create a known provider only when its API key is present."""
     load_local_dotenv()
@@ -242,6 +329,8 @@ def create_provider_from_env(provider_name: str):
         return OpenAIProvider()
     if normalized == "glm" and os.getenv("GLM_API_KEY"):
         return GLMProvider()
+    if normalized == "minimax":
+        return MiniMaxProvider()
     return None
 
 
@@ -318,7 +407,9 @@ def _generate_openai_compatible(
     data = response.json()
     message = data.get("choices", [{}])[0].get("message", {})
     if tools and tool_choice and not message.get("tool_calls"):
-        raise RuntimeError("tool_call response required when tool_choice is specified")
+        # Model did not return tool_calls despite tool_choice — fall through
+        # to text parsing instead of raising, so non-compliant models still work
+        pass
     text = message.get("content", "") or _extract_openai_tool_text(message)
     usage = data.get("usage", {})
     return GenerateResult(
