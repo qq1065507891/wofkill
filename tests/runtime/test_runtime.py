@@ -11,6 +11,7 @@ from werewolf_agent.core.models import Death, GameState, PlayerState, GameEvent
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.agents.schemas import (
     ActionType, AgentContext, PlayerAction, RetryInfo, FallbackAction,
+    TaskType,
 )
 from werewolf_agent.runtime.graph import (
     RuntimeState,
@@ -401,6 +402,279 @@ def test_free_discussion_normal_speech_advances_speech_queue() -> None:
     assert result["current_speaker_id"] == "p02"
     assert result["game_state"].events[-1].type == "speech"
     assert result["game_state"].events[-1].payload["speaker"] == "p01"
+
+
+def test_free_discussion_keeps_action_trace_out_of_public_speech(monkeypatch) -> None:
+    from werewolf_agent.runtime import graph as runtime_graph
+
+    gs = GameState(game_id="speech_trace_private", day_number=1)
+    private_trace = {
+        "raw_text": '{"private_intent":{"true_role":"werewolf"}}',
+        "parsed_action": {
+            "action_type": "speech",
+            "private_intent": {"true_role": "werewolf"},
+        },
+        "final_action_type": "speech",
+    }
+
+    def fake_call_agent(*args, **kwargs):
+        return {"speech_text": "公开发言", "action_trace": private_trace}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+
+    result = runtime_graph.free_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+        "speech_order": ["p01"],
+        "speech_index": 0,
+    })
+
+    events = result["game_state"].events
+    public_speech = next(event for event in events if event.type == "speech")
+    audit_event = next(event for event in events if event.type == "action_trace_audit")
+
+    assert "action_trace" not in public_speech.payload
+    assert public_speech.payload["text"] == "公开发言"
+    assert audit_event.payload["visibility"] == "moderator_only"
+    assert audit_event.payload["action_trace"] == private_trace
+
+
+def test_resolve_vote_keeps_action_traces_out_of_public_result() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    engine = _new_engine()
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+    }
+    gs = GameState(game_id="vote_trace_private", players=players, day_number=1)
+    private_trace = {"parsed_action": {"private_intent": {"true_role": "werewolf"}}}
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": engine,
+        "exile_votes": {"p01": "p02"},
+        "vote_action_traces": {"p01": private_trace},
+        "revote": False,
+    })
+
+    events = result["game_state"].events
+    vote_event = next(event for event in events if event.type == "vote_resolved")
+    audit_event = next(event for event in events if event.type == "action_trace_audit")
+
+    assert "action_traces" not in vote_event.payload
+    assert audit_event.payload["phase"] == "vote"
+    assert audit_event.payload["visibility"] == "moderator_only"
+
+
+def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monkeypatch) -> None:
+    from werewolf_agent.runtime import graph as runtime_graph
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "w3": PlayerState(id="w3", role="werewolf"),
+        "w4": PlayerState(id="w4", role="werewolf"),
+        "s1": PlayerState(id="s1", role="seer"),
+        "v1": PlayerState(id="v1", role="villager"),
+    }
+    gs = GameState(game_id="wolf_plan", players=players, night_number=1, phase="night")
+    calls: list[tuple[str, Any]] = []
+
+    def fake_call_agent(_fn, _state, *_args, **_kwargs):
+        wolf_id = _args[-1]
+        calls.append((wolf_id, _state.get("wolf_discussion_round")))
+        return {"speech_text": f"{wolf_id} round {_state.get('wolf_discussion_round')}"}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+
+    result = runtime_graph.wolf_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+    })
+
+    events = result["game_state"].events
+    round_events = [event for event in events if event.type == "wolf_discussion"]
+    plan_events = [event for event in events if event.type == "wolf_team_plan"]
+    plan = result["wolf_team_plan"]
+
+    assert len(round_events) == 12
+    assert {event.payload["round"] for event in round_events} == {1, 2, 3}
+    assert len(plan_events) == 1
+    assert plan_events[0].payload["visibility"] == "werewolf_team_only"
+    for key in (
+        "fake_seer",
+        "pusher",
+        "hooker",
+        "deep_cover",
+        "night_kill_primary",
+        "night_kill_backup",
+        "day_push_target",
+        "public_story",
+    ):
+        assert plan[key]
+
+    assignments = [plan["fake_seer"], plan["pusher"], plan["hooker"], plan["deep_cover"]]
+    assert sorted(assignments) == ["w1", "w2", "w3", "w4"]
+
+
+def test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan(monkeypatch) -> None:
+    from werewolf_agent.runtime import graph as runtime_graph
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "v1": PlayerState(id="v1", role="villager"),
+        "v2": PlayerState(id="v2", role="villager"),
+    }
+    gs = GameState(game_id="wolf_plan_later", players=players, night_number=2, phase="night")
+
+    def fake_call_agent(_fn, _state, *_args, **_kwargs):
+        return {"speech_text": "revise plan"}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+
+    result = runtime_graph.wolf_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+        "wolf_team_plan": {"fake_seer": "w1", "pusher": "w2"},
+    })
+
+    round_events = [event for event in result["game_state"].events if event.type == "wolf_discussion"]
+    assert len(round_events) == 4
+    assert {event.payload["round"] for event in round_events} == {1, 2}
+    assert result["wolf_team_plan"]["night_number"] == 2
+
+
+def test_wolf_consensus_prefers_planned_primary_then_backup_target() -> None:
+    from werewolf_agent.runtime.graph import wolf_consensus
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "v1": PlayerState(id="v1", role="villager", alive=False),
+        "v2": PlayerState(id="v2", role="villager"),
+    }
+    gs = GameState(game_id="wolf_plan_kill", players=players, night_number=2)
+
+    result = wolf_consensus({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "wolf_team_plan": {
+            "night_kill_primary": "v1",
+            "night_kill_backup": "v2",
+        },
+    })
+
+    assert result["wolf_kill_target_id"] == "v2"
+    event = result["game_state"].events[-1]
+    assert event.type == "wolf_kill_selected"
+    assert event.payload["target_id"] == "v2"
+    assert event.payload["reason"] == "wolf_team_plan"
+
+
+def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypatch) -> None:
+    from werewolf_agent.runtime import graph as runtime_graph
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+    }
+    gs = GameState(
+        game_id="sheriff_agent",
+        players=players,
+        day_number=1,
+        sheriff_candidates=["p01", "p02"],
+    )
+    private_trace = {"parsed_action": {"private_intent": {"true_role": "werewolf"}}}
+
+    def fake_call_agent(*_args, **_kwargs):
+        return {"speech_text": "我上警竞选警长。", "action_trace": private_trace}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+
+    result = runtime_graph.sheriff_speech({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+    })
+
+    events = result["game_state"].events
+    speeches = [event for event in events if event.type == "sheriff_speech"]
+    audits = [event for event in events if event.type == "action_trace_audit"]
+
+    assert [event.payload["speaker"] for event in speeches] == ["p01", "p02"]
+    assert all("action_trace" not in event.payload for event in speeches)
+    assert len(audits) == 2
+    assert all(event.payload["visibility"] == "moderator_only" for event in audits)
+
+
+def test_day_speech_passes_wolf_team_plan_to_werewolf_agent() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_day_speech
+
+    players = {
+        "w3": PlayerState(id="w3", role="werewolf"),
+        "p08": PlayerState(id="p08", role="seer"),
+    }
+    gs = GameState(game_id="wolf_day_assignment", players=players, day_number=1, phase="day")
+
+    class Agent:
+        player_name = "Hook Wolf"
+
+        def __init__(self):
+            self.context = None
+
+        def act(self, context):
+            self.context = context
+            return PlayerAction(
+                action_type=ActionType.SPEECH,
+                speech="我会从发言逻辑质疑p08。",
+                reason="按公开逻辑发言",
+            ), RetryInfo()
+
+    agent = Agent()
+
+    class Registry:
+        def get_agent(self, player_id):
+            return agent
+
+    result = agent_day_speech(
+        {
+            "game_state": gs,
+            "wolf_team_plan": {
+                "fake_seer": "w1",
+                "pusher": "w2",
+                "hooker": "w3",
+                "deep_cover": "w4",
+                "day_push_target": "p08",
+            },
+        },
+        _new_engine(),
+        Registry(),
+        "w3",
+    )
+
+    assert result["speech_text"] == "我会从发言逻辑质疑p08。"
+    assert agent.context.visible_world_state["wolf_team_plan"]["hooker"] == "w3"
 
 
 def test_free_discussion_routes_to_vote_after_last_normal_speech() -> None:
@@ -1045,8 +1319,8 @@ class TestWolfDiscussionLoop:
         })
 
         alive_wolves = [pid for pid, p in players.items() if p.role == "werewolf" and p.alive]
-        assert len(registry.discussion_calls) == len(alive_wolves), (
-            f"Expected {len(alive_wolves)} discussion calls, got {len(registry.discussion_calls)}"
+        assert len(registry.discussion_calls) == len(alive_wolves) * 3, (
+            f"Expected {len(alive_wolves) * 3} discussion calls, got {len(registry.discussion_calls)}"
         )
 
     def test_wolf_discussion_events_have_wolf_team_visibility(self) -> None:
@@ -1070,6 +1344,7 @@ class TestWolfDiscussionLoop:
                 f"wolf_discussion event missing visibility: {evt.payload}"
             )
             assert "wolf_id" in evt.payload, "wolf_discussion event must identify the speaker"
+            assert evt.payload["round"] in {1, 2, 3}
 
     def test_wolf_consensus_uses_all_wolves_votes(self) -> None:
         """wolf_consensus with registry collects votes from all alive wolves."""
@@ -2122,3 +2397,315 @@ class TestAntiStallPolicy:
         deaths = state["game_state"].deaths
         exile_deaths = [d for d in deaths if d.player_id == "p05" and d.reason == "exile"]
         assert len(exile_deaths) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Witch Poison Pressure Policy
+# ---------------------------------------------------------------------------
+
+
+class TestWitchPoisonPressureContext:
+    """Witch night context must include pressure targets when they exist."""
+
+    def test_witch_context_includes_poison_pressure_targets(self) -> None:
+        """When public state has unresolved black claim, witch sees pressure targets."""
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+
+        players: dict[str, PlayerState] = {}
+        for i in range(1, 13):
+            role = "werewolf" if i <= 4 else ("witch" if i == 9 else "villager")
+            players[f"p{i:02d}"] = PlayerState(id=f"p{i:02d}", role=role, alive=True)
+
+        gs = GameState(
+            game_id="test",
+            phase="night",
+            night_number=2,
+            players=players,
+            events=[
+                GameEvent(
+                    type="speech",
+                    payload={
+                        "speaker": "p05",
+                        "day_number": 1,
+                        "text": "我是预言家，p03查杀",
+                    },
+                ),
+                GameEvent(
+                    type="seer_check",
+                    payload={
+                        "seer_id": "p05",
+                        "target_id": "p03",
+                        "alignment": "wolf",
+                        "night_number": 1,
+                        "visibility": "seer_only",
+                    },
+                ),
+            ],
+        )
+        engine = RuleEngine.from_yaml(RULESET_PATH)
+
+        context = build_agent_context(
+            engine, gs, "p09", TaskType.NIGHT_ACTION,
+            legal_actions=[ActionType.NO_ACTION, ActionType.USE_POISON],
+            legal_targets=["p03"],
+        )
+
+        # Witch context must include poison_pressure_targets
+        assert "poison_pressure_targets" in context.visible_world_state
+        targets = context.visible_world_state["poison_pressure_targets"]
+        assert len(targets) >= 1
+        black_claim_targets = [
+            t for t in targets if t["pressure_type"] == "black_claim"
+        ]
+        assert len(black_claim_targets) == 1
+        assert black_claim_targets[0]["player_id"] == "p03"
+        assert black_claim_targets[0]["source"] == "p05"
+
+    def test_witch_context_no_pressure_targets_without_claims(self) -> None:
+        """When there are no public black claims, no pressure targets appear."""
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+
+        players: dict[str, PlayerState] = {}
+        for i in range(1, 13):
+            role = "werewolf" if i <= 4 else ("witch" if i == 9 else "villager")
+            players[f"p{i:02d}"] = PlayerState(id=f"p{i:02d}", role=role, alive=True)
+
+        gs = GameState(
+            game_id="test_no_pressure",
+            phase="night",
+            night_number=1,
+            players=players,
+            events=[],
+        )
+        engine = RuleEngine.from_yaml(RULESET_PATH)
+
+        context = build_agent_context(
+            engine, gs, "p09", TaskType.NIGHT_ACTION,
+            legal_actions=[ActionType.NO_ACTION, ActionType.USE_POISON],
+            legal_targets=["p03"],
+        )
+
+        assert "poison_pressure_targets" not in context.visible_world_state
+
+    def test_witch_context_no_pressure_when_poison_used(self) -> None:
+        """When poison is already used, no pressure targets are added."""
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+
+        players: dict[str, PlayerState] = {}
+        for i in range(1, 13):
+            role = "werewolf" if i <= 4 else ("witch" if i == 9 else "villager")
+            players[f"p{i:02d}"] = PlayerState(id=f"p{i:02d}", role=role, alive=True)
+
+        gs = GameState(
+            game_id="test_poison_used",
+            phase="night",
+            night_number=2,
+            players=players,
+            poison_used=True,
+            events=[
+                GameEvent(
+                    type="speech",
+                    payload={
+                        "speaker": "p05",
+                        "day_number": 1,
+                        "text": "p03查杀",
+                    },
+                ),
+            ],
+        )
+        engine = RuleEngine.from_yaml(RULESET_PATH)
+
+        context = build_agent_context(
+            engine, gs, "p09", TaskType.NIGHT_ACTION,
+            legal_actions=[ActionType.NO_ACTION],
+            legal_targets=[],
+        )
+
+        # Poison already used, so no pressure targets added
+        assert "poison_pressure_targets" not in context.visible_world_state
+
+    def test_witch_pressure_strategy_directive_in_night_witch(self) -> None:
+        """agent_night_witch adds strategy_directive when pressure targets exist."""
+        from werewolf_agent.runtime.agent_adapter import agent_night_witch
+
+        players = {
+            "w1": PlayerState(id="w1", role="werewolf"),
+            "w2": PlayerState(id="w2", role="werewolf"),
+            "w3": PlayerState(id="w3", role="werewolf"),
+            "w4": PlayerState(id="w4", role="werewolf"),
+            "v1": PlayerState(id="v1", role="villager"),
+            "v2": PlayerState(id="v2", role="villager"),
+            "v3": PlayerState(id="v3", role="villager"),
+            "witch": PlayerState(id="witch", role="witch"),
+            "seer": PlayerState(id="seer", role="seer"),
+            "hunter": PlayerState(id="hunter", role="hunter"),
+            "idiot": PlayerState(id="idiot", role="idiot"),
+            "hybrid": PlayerState(id="hybrid", role="hybrid"),
+        }
+        gs = GameState(
+            game_id="witch_pressure_directive",
+            players=players,
+            phase="night",
+            night_number=2,
+            events=[
+                GameEvent(
+                    type="speech",
+                    payload={
+                        "speaker": "seer",
+                        "day_number": 1,
+                        "text": "我是预言家，w1查杀",
+                    },
+                ),
+            ],
+        )
+        engine = _new_engine()
+
+        class CaptureWitchAgent:
+            """Agent that captures context and returns no_action."""
+            last_context: AgentContext | None = None
+
+            def act(self, context):
+                self.last_context = context
+                return (
+                    PlayerAction(
+                        action_type=ActionType.NO_ACTION,
+                        reason="saving poison",
+                    ),
+                    RetryInfo(),
+                )
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureWitchAgent()
+
+            def get_agent(self, player_id):
+                if player_id == "witch":
+                    return self.agent
+                return None
+
+        registry = CaptureRegistry()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": "v1",
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+
+        result = agent_night_witch(state, engine, registry)
+        assert result is not None
+        ctx = registry.agent.last_context
+        assert ctx is not None
+        # Strategy directive should mention pressure
+        assert "witch_pressure" in ctx.strategy_directive
+        assert "w1" in ctx.strategy_directive["witch_pressure"]
+        assert "required_evaluation" in ctx.strategy_directive
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Judge-Controlled Night And Day Broadcasts
+# ---------------------------------------------------------------------------
+
+
+class TestJudgeControlsNightRoleSequence:
+    """Night role sequence has judge broadcasts."""
+
+    def test_judge_controls_night_role_sequence(self):
+        """Event stream contains judge broadcasts before/after each night role stage."""
+        from werewolf_agent.runtime.graph import enter_night
+
+        gs = GameState(
+            game_id="test",
+            phase="setup",
+            players={f"p{i:02d}": PlayerState(
+                id=f"p{i:02d}",
+                role="werewolf" if i <= 4 else ("seer" if i == 5 else ("witch" if i == 9 else "villager")),
+                alive=True,
+            ) for i in range(1, 13)},
+        )
+
+        result = enter_night({"game_state": gs, "agent_registry": None})
+        gs = result["game_state"]
+
+        broadcasts = [e for e in gs.events if e.type == "judge_broadcast"]
+        phases = [b.payload.get("phase") for b in broadcasts]
+        assert "enter_night" in phases
+
+    def test_wolf_stages_have_broadcasts(self):
+        """Wolf discussion and consensus emit judge broadcasts."""
+        from werewolf_agent.runtime.graph import wolf_discussion
+
+        gs = GameState(
+            game_id="test",
+            phase="night",
+            night_number=1,
+            players={f"p{i:02d}": PlayerState(
+                id=f"p{i:02d}",
+                role="werewolf" if i <= 4 else "villager",
+                alive=True,
+            ) for i in range(1, 13)},
+        )
+
+        state = {"game_state": gs, "agent_registry": None}
+        result = wolf_discussion(state)
+        gs = result["game_state"]
+
+        broadcasts = [e for e in gs.events if e.type == "judge_broadcast"]
+        phases = [b.payload.get("phase") for b in broadcasts]
+        wolf_broadcasts = [p for p in phases if "wolf" in p]
+        assert len(wolf_broadcasts) >= 1
+
+
+class TestJudgeControlsDaySequence:
+    """Day flow broadcasts include all major transitions."""
+
+    def test_day_announce_has_broadcast(self):
+        from werewolf_agent.runtime.graph import announce_deaths
+
+        gs = GameState(
+            game_id="test",
+            phase="night",
+            night_number=1,
+            day_number=0,
+            players={f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)},
+        )
+        result = announce_deaths({"game_state": gs})
+        gs = result["game_state"]
+
+        broadcasts = [e for e in gs.events if e.type == "judge_broadcast"]
+        phases = [b.payload.get("phase") for b in broadcasts]
+        assert "day_announce" in phases
+
+    def test_vote_phase_has_broadcast(self):
+        """day_vote should emit a judge broadcast."""
+        from werewolf_agent.runtime.graph import day_vote
+
+        gs = GameState(
+            game_id="test",
+            phase="day",
+            day_number=2,
+            players={f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)},
+        )
+        state = {
+            "game_state": gs,
+            "agent_registry": None,
+            "exile_votes": {"p01": "p03"},
+            "exile_vote_day": 0,
+            "revote": False,
+        }
+        result = day_vote(state)
+        gs = result.get("game_state", gs)
+        broadcasts = [e for e in gs.events if e.type == "judge_broadcast"]
+        phases = [b.payload.get("phase") for b in broadcasts]
+        assert "vote_start" in phases

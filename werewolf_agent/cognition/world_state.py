@@ -8,6 +8,7 @@ belief updates, contradiction detection, and context assembly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
@@ -249,6 +250,98 @@ def _extract_speech(event: GameEvent, state: GameState) -> list[StructuredFact]:
             value=claim.get("value", ""),
             day=event.payload.get("day_number", 0),
         ))
+    if not claims:
+        facts.extend(_infer_claims_from_text(
+            speaker=speaker,
+            text=text,
+            day=event.payload.get("day_number", 0),
+        ))
+    return facts
+
+
+def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[StructuredFact]:
+    facts: list[StructuredFact] = []
+    role_patterns = {
+        "seer": ("我是预言家", "我跳预言家", "认预言家", "悍跳预言家"),
+        "witch": ("我是女巫", "我认女巫"),
+        "hunter": ("我是猎人", "我认猎人"),
+        "villager": ("我是村民", "我是民", "我认民"),
+        "werewolf": ("我是狼人", "我这狼队视角", "我们狼队", "狼队视角"),
+    }
+    for role, patterns in role_patterns.items():
+        if any(pattern in text for pattern in patterns):
+            facts.append(StructuredFact(
+                fact_type="claimed_role",
+                source_player=speaker,
+                value=role,
+                day=day,
+            ))
+
+    for match in re.finditer(r"(查验|验了|验人)?\s*(p\d{2})\s*(是|为)?\s*(狼人|查杀)", text):
+        facts.append(StructuredFact(
+            fact_type="claimed_suspect",
+            source_player=speaker,
+            target_player=match.group(2),
+            value="wolf",
+            day=day,
+        ))
+    for match in re.finditer(r"(保|金水|好人)\s*(p\d{2})|p\d{2}\s*(是|为)?\s*(金水|好人)", text):
+        target = next((group for group in match.groups() if group and re.fullmatch(r"p\d{2}", group)), None)
+        if target:
+            facts.append(StructuredFact(
+                fact_type="claimed_good",
+                source_player=speaker,
+                target_player=target,
+                value="good",
+                day=day,
+            ))
+
+    # --- Task 5: Seer claim contract extraction ---
+
+    # Seer check claim: 验p01查杀 / 查验p01是狼人 / 验p01狼
+    for match in re.finditer(r"(?:查验|验了?|验人)\s*(p\d{2})\s*(?:是|为)?\s*(狼人|查杀|狼|wolf)", text):
+        facts.append(StructuredFact(
+            fact_type="seer_check_claim",
+            source_player=speaker,
+            target_player=match.group(1),
+            value="wolf",
+            day=day,
+            metadata={"claim_type": "seer_wolf_check"},
+        ))
+
+    # Badge flow: 警徽流p05 p07
+    badge_match = re.findall(r"警徽流\s*(p\d{2}(?:\s*p\d{2})*)", text)
+    if badge_match:
+        for bf_str in badge_match:
+            targets = re.findall(r"p\d{2}", bf_str)
+            if targets:
+                facts.append(StructuredFact(
+                    fact_type="badge_flow_claim",
+                    source_player=speaker,
+                    target_player=targets[0],
+                    day=day,
+                    night=0,
+                    phase="",
+                    value="badge_flow",
+                    metadata={"badge_flow_order": targets},
+                ))
+
+    # Gold claim: p05是金水, 给p05发金水
+    gold_match = re.findall(r"(p\d{2})\s*(?:是金水|金水)", text)
+    if not gold_match:
+        gold_match = re.findall(r"给\s*(p\d{2})\s*(?:发)?金水", text)
+    for target in gold_match:
+        facts.append(StructuredFact(
+            fact_type="seer_check_claim",
+            source_player=speaker,
+            target_player=target,
+            day=day,
+            night=0,
+            phase="",
+            value="good",
+            metadata={"claim_type": "gold_claim"},
+        ))
+
     return facts
 
 

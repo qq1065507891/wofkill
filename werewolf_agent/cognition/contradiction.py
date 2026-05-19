@@ -52,6 +52,7 @@ class ContradictionEngine:
         alerts.extend(self._detect_stance_reversals(facts, current_day))
         alerts.extend(self._detect_vote_conflicts(facts, current_day))
         alerts.extend(self._detect_claim_conflicts(facts, current_day))
+        alerts.extend(self._detect_claim_contradictions(facts, current_day))
 
         return alerts
 
@@ -177,5 +178,62 @@ class ContradictionEngine:
                         {"role": role, "claimers": list(set(claimers))},
                     ),
                 ))
+
+        return alerts
+
+    def _detect_claim_contradictions(
+        self,
+        facts: list[StructuredFact],
+        current_day: int,
+    ) -> list[ContradictionAlert]:
+        """Detect players who contradict their own role claims.
+
+        For example, a player who claimed seer but later says "等预言家跳出来"
+        is contradicting their own claim.
+        """
+        alerts: list[ContradictionAlert] = []
+
+        # Build role claim map: player -> [(day, claimed_role)]
+        role_claims: dict[str, list[tuple[int, str]]] = {}
+        for f in facts:
+            if f.fact_type == "claimed_role" and f.source_player:
+                role_claims.setdefault(f.source_player, []).append((f.day, f.value))
+
+        # Detect seer claimant saying things that contradict being seer
+        contradiction_phrases = ("等预言家", "预言家在哪里", "等真预言家")
+        for player_id, claims in role_claims.items():
+            is_seer = any(role == "seer" for _, role in claims)
+            if not is_seer:
+                continue
+
+            claim_day = next((d for d, r in claims if r == "seer"), 0)
+
+            for f in facts:
+                if f.source_player != player_id:
+                    continue
+                # Check speech text for contradiction phrases
+                text = ""
+                if f.fact_type == "speech":
+                    text = f.metadata.get("text", f.value)
+                if not text:
+                    continue
+
+                for phrase in contradiction_phrases:
+                    if phrase in text and f.day > claim_day:
+                        alerts.append(ContradictionAlert(
+                            player_id=player_id,
+                            alert_type="claim_contradiction",
+                            priority="high",
+                            description=(
+                                f"{player_id} claimed seer on day {claim_day} "
+                                f"but says '{text}' on day {f.day}"
+                            ),
+                            evidence=(
+                                {"day": claim_day, "event": "claimed seer"},
+                                {"day": f.day, "event": text},
+                            ),
+                            day_range=(claim_day, f.day),
+                        ))
+                        break  # One contradiction per fact is enough
 
         return alerts

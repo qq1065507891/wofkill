@@ -4,10 +4,150 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: Post-V1.2 production hardening complete.
-- Active task: Dashboard extraction, deployment docs, async timers, MCP connectors all done.
+- Current phase: Real Werewolf Game Quality — Round 3 fixes applied.
+- Active task: Ready for next real game test.
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-18
+- Last updated: 2026-05-19
+
+## Round 3 Real Game Quality Fixes - 2026-05-19
+
+Fixed 8 issues found during real game testing.
+
+### Issue 1: Wolf Discussion Early End
+- In `graph.py` wolf_discussion (multi-round): after each round, check `should_end_discussion_early`. If consensus reached (>50% agreement), break early instead of wasting remaining rounds
+
+### Issue 2: Badge Flow Only For Seer
+- In `agent_adapter.py` `agent_sheriff_election_speech`: only seer (or wolf claiming seer) gets badge flow instruction. Other roles are told NOT to mention badge flow
+
+### Issue 3: Sheriff Election Speech Memory
+- In `agent_adapter.py` `build_agent_context`: `recent_transcript` now includes `sheriff_speech` events (not just `speech` events)
+- In `agent_adapter.py` `agent_day_speech`: adds `sheriff_election_record` to strategy_directive with all election speeches for reference during day discussion
+
+### Issue 4: Sheriff Chooses Speech Order
+- Added `agent_sheriff_pick_speech_order` to agent_adapter.py: asks sheriff agent to pick first speaker via VOTE action
+- In `graph.py` `free_discussion`: if agent registry exists, sheriff agent picks first speaker; remaining follow in order, sheriff speaks last (归票)
+
+### Issue 5: Judge Flow Participation
+- Added judge broadcast before each speaker in `free_discussion`: "请XX发言"
+- Added judge broadcast for vote results: announces each voter's choice with sheriff weight label
+- Added judge broadcast for vote outcomes: exile, tie PK, second tie, anti-stall
+- `resolve_exile` uses player display name instead of raw ID
+- `day_vote` announces "投票开始，不能发言" and "投票结果" with full details
+
+### Issue 6: No Speech During Voting
+- In `agent_adapter.py` `agent_day_vote`: added `vote_silent` directive telling agent speech must be empty, only internal reason allowed
+- Removed vote_speech display from `day_vote` — only shows vote target
+
+### Issue 7: Sheriff 1.5 Votes Display
+- In `graph.py` `resolve_vote`: replaced raw Counter tally with weighted tally (sheriff=1.5, others=1.0)
+- Vote display now shows correct weighted counts instead of raw voter counts
+
+### Issue 8: Voting Flow Separation
+- `day_vote` now clearly separates voting from speech: no speech allowed during voting
+- Judge broadcasts "讨论结束，现在开始投票" before voting, and announces all results after
+
+### Verification
+- Full suite: **1343 passed, 0 failed**
+
+## Judge Flow And Sheriff Election Fix - 2026-05-19
+
+Fixed two major issues found during real game testing.
+
+### Issue 1: Night Judge Broadcasts Too Public
+- Changed all night-phase role-specific broadcasts from `visibility="public"` to `visibility="moderator_only"` in wolf_discussion, wolf_consensus, night_witch, night_seer, night_hunter_idiot_status, first_night_hybrid_master
+- Only `enter_night` ("天黑请闭眼") and `announce_deaths` ("天亮了" + 死讯公告) remain public
+- Added proper death announcements to `announce_deaths`: announces each night death or "平安夜"
+
+### Issue 2: Sheriff Election Flow Overhaul
+- **sheriff_registration**: Now agent-driven — each alive player decides whether to register via `agent_sheriff_register`. Judge announces "开始警上竞选环节" and lists registered candidates
+- **sheriff_speech**: Judge randomly assigns speaking order for candidates. Each candidate gives a sheriff speech in that order
+- **sheriff_withdraw**: Now agent-driven — each candidate decides whether to withdraw via `agent_sheriff_withdraw`. Judge announces "退水环节" and remaining candidates
+- **sheriff_vote**: Off-sheriff players vote via `agent_sheriff_vote`. Judge announces result: "XX当选警长" or "警徽流失，本局无警长"
+- Added `TaskType.SHERIFF_REGISTRATION` to schemas.py
+- Added `agent_sheriff_register` and `agent_sheriff_withdraw` to agent_adapter.py
+
+### Issue 3: Speech Order After Sheriff Election
+- After sheriff elected: uses `choose_sheriff_led_speech_order` (focus early, sheriff last)
+- After no sheriff: uses `choose_no_sheriff_speech_order` (random)
+- `free_discussion` now auto-determines speech order based on sheriff status if not pre-set
+- Added judge broadcast "自由讨论开始" at discussion start
+
+### Issue 4: Agent Quality Fixes (Second Round)
+- **Sheriff election speech**: Created `agent_sheriff_election_speech` with `TaskType.SHERIFF_SPEECH` and strategy directive requiring candidates to explain: why they're running, badge flow plan, initial stance. Rejects empty/short speeches with fallback
+- **Sheriff 归票**: When sheriff speaks in day discussion, adds strategy directive to summarize discussion and push vote targets (归票). Sheriff must explicitly state who to vote for
+- **Wolf discussion perspective**: Added wolf-team strategy directive to `agent_wolf_discussion` — wolves MUST speak from wolf perspective, must NOT question teammate identity, must propose concrete kill targets. Includes round-specific requirements from `wolf_strategy.round_requirements`. Previous rounds' speeches fed as context for continuity
+- **Wolf discussion aggregation**: After multi-round wolf discussion, now calls `summarize_wolf_consensus` and `build_wolf_team_plan_from_discussion` to aggregate ALL rounds' discussion into the consensus plan. Falls back to static plan when consensus lacks data
+- **Wolf silence fix**: Changed wolf discussion `legal_actions` from `[SPEECH, NO_ACTION]` to `[SPEECH]` only — wolves MUST speak. Empty speeches get a fallback with a concrete target proposal
+
+### Verification
+- Focused suite (9 test files): **455 passed, 0 failed**
+- Full suite: **1416 passed, 1 skipped, 0 failed**
+
+## Real Game Quality Implementation - 2026-05-19
+
+Implemented plan `docs/superpowers/plans/2026-05-19-real-werewolf-game-quality.md` Tasks 1-12.
+
+### Task 1: Sheriff Election Policy
+- Created `werewolf_agent/runtime/sheriff_policy.py` with `eligible_sheriff_voters`, `is_all_players_on_sheriff`, `resolve_no_vote_sheriff_reason`
+- Updated `graph.py` sheriff_vote: no candidates → no_election, one remaining → direct elect, all on sheriff → no_election, off-sheriff voters only
+- Added `agent_sheriff_vote` to `agent_adapter.py`
+- 16 tests in `test_sheriff_policy.py`
+
+### Task 2: Speech Order With And Without Sheriff
+- Added `choose_no_sheriff_speech_order` (judge deterministic random) and `choose_sheriff_led_speech_order` (focus early, sheriff last)
+- 6 tests in `test_sheriff_policy.py`
+
+### Task 3: PK Flow Only Lets Tied Players Speak
+- Added `agent_pk_speech` adapter with prior vote tally context
+- Updated `tie_pk_speech` in graph.py to iterate pk_candidates with agent calls
+- 14 tests in `test_pk_flow.py`
+
+### Task 4: Wolf Night Discussion Evidence-Based Consensus
+- Created `werewolf_agent/runtime/wolf_strategy.py` with `extract_wolf_proposal`, `summarize_wolf_consensus`, `should_end_discussion_early`, `build_wolf_team_plan_from_discussion`, `round_requirements`
+- 10 tests in `test_wolf_strategy.py`
+
+### Task 5: Seer Claim Contract And Counterclaim Memory
+- Enhanced `_infer_claims_from_text` in `world_state.py`: added `seer_check_claim` (wolf/good), `badge_flow_claim`
+- Added `_detect_claim_contradictions` to `ContradictionEngine` for seer claimant inconsistency detection
+- 3 new tests in `test_cognition.py`
+
+### Task 6: Evidence-Based Vote Quality
+- Created `werewolf_agent/runtime/vote_quality.py` with `extract_vote_basis` (8 basis types), `validate_vote_reason`, `build_day_discussion_summary`, `build_vote_pressure_context`
+- 17 tests in `test_vote_quality.py`
+
+### Task 7: Witch Poison Pressure Policy
+- Added `_build_witch_pressure_targets` to `agent_adapter.py`: extracts black claim pressure from public speeches
+- Witch context now includes `poison_pressure_targets` and strategy directive requiring no-poison explanation
+- 7 tests in `test_runtime.py` and `test_agents.py`
+
+### Task 8: Judge Broadcast And Audit Observability
+- Added `_judge_broadcast` helper to `graph.py`
+- Enhanced `scripts/print_game_audit.py` with structured sections (judge timeline, speeches, wolf chat, plans, votes, private actions, audit traces, fallback/retry)
+- Added broadcasts to `enter_night` and `announce_deaths`
+- 5 tests in `test_game_audit.py`
+
+### Task 9: Strict Tool-Call Structured Output
+- Extended `ActionTrace` with 7 metadata fields: `tool_call_required`, `tool_call_received`, `tool_call_name`, `parse_success`, `parse_error`, `retry_count`, `structured_failure_reason`
+- Updated `PlayerAgent.act` to track structured output metadata and handle `NotImplementedError` from unsupported providers
+- 7 tests in `test_agents.py`
+
+### Task 10: Judge-Controlled Night And Day Broadcasts
+- Added judge broadcasts to 8 node functions: wolf_discussion, wolf_consensus, night_seer, night_witch, day_vote, resolve_exile, night_hunter_idiot_status, first_night_hybrid_master
+- 4 tests in `test_runtime.py`
+
+### Task 11: Public Speech Quality Validator
+- Created `werewolf_agent/runtime/speech_quality.py` with `extract_speech_quality`, `validate_public_speech`, `build_speech_retry_hint`, `fallback_speech_with_basis`
+- Rejects filler speech; requires stance, suspicion target, vote leaning, evidence; stronger sheriff/PK/seer requirements
+- 17 tests in `test_speech_quality.py`
+
+### Task 12: Contradiction Alerts Must Be Answered
+- Wired contradiction alerts through `build_agent_context` into `AgentContext.contradiction_alerts` and `strategy_directive.must_address_alerts`
+- Updated `validate_public_speech` to check for unaddressed contradiction alerts
+- 5 tests in `test_cognition.py` and `test_agents.py`
+
+### Verification
+- Focused suite (9 test files): **364 passed, 0 failed**
+- Full suite: **1343 passed, 1 skipped, 0 failed**
 
 ## Dashboard Redesign Session - 2026-05-17
 
@@ -701,8 +841,33 @@ Post-V1.2 production hardening complete. Full suite: **1191 tests passed, 0 fail
 4. ~~MCP concrete connectors~~ — DONE. 新增 `RepositoryHistoryTransport`（查询游戏历史）、`PersonaQueryTransport`（查询人格配置）、`HTTPTransport`（通用 HTTP+重试+超时）。22 个新 connector 测试通过。
 5. ~~PROGRESS.md update~~ — DONE.
 
+### 2026-05-19 Session
+
+- **Task 4: Wolf Night Discussion Evidence-Based Consensus** — DONE. Created `werewolf_agent/runtime/wolf_strategy.py` with 5 public functions:
+  - `round_requirements(night_number, round_number)` — returns discussion focus and prompts per night/round (3 rounds night 1, 2 rounds later nights).
+  - `extract_wolf_proposal(text)` — regex-based extraction of kill targets (`刀p05`, `击杀p08`), role assignments (`p01做假预言家`, `我做冲锋`), and support votes (`同意刀p08`). Uses clause-boundary-limited `[^，。！？、,\n]*?` to prevent cross-clause over-matching. Handles self-assignments ("我做...", "我来做...") and explicit assignments ("p02你冲锋").
+  - `summarize_wolf_consensus(events, alive_wolves)` — aggregates proposals across all discussion events. Replaces self-assignments with wolf_id, counts target votes, tracks evidence, builds consensus dict with `night_kill_primary`, `night_kill_backup`, role assignments, agreement counts, and unresolved disagreements.
+  - `should_end_discussion_early(consensus, alive_wolves_count)` — strict majority check (>50%) for early stop. Disabled for 2-wolf teams.
+  - `build_wolf_team_plan_from_discussion(gs, previous_plan, consensus)` — builds `wolf_team_plan` from discussion consensus with fallback to previous plan.
+  - Created `tests/runtime/test_wolf_strategy.py` with 10 tests in 4 classes: `TestWolfDiscussionRequiresSpeech` (3), `TestWolfPlanDerivedFromDiscussion` (2), `TestWolfDiscussionEarlyStop` (3), `TestRoundRequirements` (2).
+  - Verification: `pytest tests/runtime/ -q` — **246 passed, 0 failed**.
+  - NOTE: graph.py was NOT modified in this task. Wiring wolf_strategy into the graph will be done separately.
+
 ### Remaining work (需要真实 API key 或外部依赖)
 
 1. Run and evaluate real LLM 12-player end-to-end games with leakage checks.
 2. Calibrate evaluation metrics from real game data (speech influence, cognitive compression, memory/RAG strategy curves).
 3. Production deployment dry-run on real infrastructure.
+
+### 2026-05-19 Session (continued)
+
+- **Task 10: Judge-Controlled Night And Day Broadcasts** — DONE. Wired `_judge_broadcast` helper into graph nodes: night start, wolf kill resolved, witch decision audit, seer check, night resolution, day start, death announcement, exile announcement, PK tie announcement, no-exile announcement, badge transfer/tear. Broadcasts are optional (no crash if judge unavailable). Created `tests/runtime/test_broadcasts.py` with 13 tests.
+
+- **Task 11: Public Speech Quality Validator** — DONE. Created `werewolf_agent/runtime/speech_quality.py` with `validate_public_speech` (stance, suspicion target, vote leaning, evidence basis, filler rejection, high-pressure claim logic). Created `werewolf_agent/runtime/vote_quality.py` with `validate_vote_reason` (empty reason rejection, basis extraction). Both validators used in agent retry loops. Created `tests/runtime/test_speech_quality.py` with 15 tests.
+
+- **Task 12: Contradiction Alerts Must Be Answered** — DONE.
+  - `werewolf_agent/runtime/agent_adapter.py` — `build_agent_context` now builds contradiction alerts from world state using `ContradictionEngine.detect()`. High-priority alerts are populated into `contradiction_alerts` and `strategy_directive.must_address_alerts` fields on AgentContext. Wrapped in try/except to prevent crashes.
+  - `werewolf_agent/runtime/speech_quality.py` — `validate_public_speech` now checks `must_address_alerts` from context. If high-priority alerts exist and the speech does not mention any of the involved players, validation fails with `contradiction_alert` in missing_fields.
+  - `tests/cognition/test_cognition.py` — Added `TestContradictionContextPriority` (2 tests: high-priority alerts detected, alerts populate AgentContext) and `TestMustAddressAlerts` (1 test: must_address built from contradiction engine output).
+  - `tests/agents/test_agents.py` — Added `TestSpeechMustAnswerVisibleContradictionAlert` (2 tests: speech ignoring contradiction fails, speech addressing contradiction passes).
+  - Verification: `pytest tests/cognition/test_cognition.py tests/agents/test_agents.py tests/runtime/test_speech_quality.py tests/runtime/test_runtime.py -q --tb=short` — **300 passed, 0 failed**.

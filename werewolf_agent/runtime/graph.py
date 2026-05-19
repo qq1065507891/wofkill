@@ -29,10 +29,23 @@ from werewolf_agent.runtime.agent_adapter import (
     agent_hunter_shot,
     agent_night_seer,
     agent_night_witch,
+    agent_pk_speech,
+    agent_sheriff_election_speech,
+    agent_sheriff_pick_speech_order,
+    agent_sheriff_register,
+    agent_sheriff_vote,
+    agent_sheriff_withdraw,
     agent_wolf_consensus,
     agent_wolf_discussion,
 )
+from werewolf_agent.runtime.sheriff_policy import (
+    choose_no_sheriff_speech_order,
+    choose_sheriff_led_speech_order,
+    eligible_sheriff_voters,
+    is_all_players_on_sheriff,
+)
 from werewolf_agent.runtime.timers import timed_call
+from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
 
@@ -86,6 +99,8 @@ class RuntimeState(TypedDict, total=False):
     consecutive_no_exile_days: int
     # Per-call timeout (seconds) for agent provider calls; 0 = no timeout
     agent_call_timeout: float
+    wolf_discussion_round: int
+    wolf_team_plan: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +183,118 @@ def _call_agent(fn, state: RuntimeState, *args, timeout_override: float | None =
     return fn(*args)
 
 
+def _action_trace_event(
+    *,
+    player_id: str,
+    phase: str,
+    action_trace: dict[str, Any],
+) -> GameEvent:
+    return GameEvent(
+        type="action_trace_audit",
+        payload={
+            "player_id": player_id,
+            "phase": phase,
+            "visibility": "moderator_only",
+            "action_trace": action_trace,
+        },
+    )
+
+
+def _judge_broadcast(
+    *,
+    phase: str,
+    message: str,
+    gs: GameState,
+    day_number: int = 0,
+    night_number: int = 0,
+    extra_payload: dict[str, Any] | None = None,
+    visibility: str = "public",
+) -> tuple[GameState, GameEvent]:
+    """Create a judge broadcast event and append to game state."""
+    payload: dict[str, Any] = {
+        "phase": phase,
+        "message": message,
+        "day_number": day_number,
+        "night_number": night_number,
+        "visibility": visibility,
+    }
+    if extra_payload:
+        payload.update(extra_payload)
+    event = GameEvent(type="judge_broadcast", payload=payload)
+    gs = replace(gs, events=gs.events + [event])
+    return gs, event
+
+
+def _build_wolf_team_plan(
+    gs: GameState,
+    *,
+    previous_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    wolves = _alive_wolves(gs)
+    targets = _alive_non_wolves(gs)
+    if not wolves:
+        return {}
+
+    assignments = list(wolves)
+    roles = {
+        "fake_seer": assignments[0] if len(assignments) > 0 else None,
+        "pusher": assignments[1] if len(assignments) > 1 else None,
+        "hooker": assignments[2] if len(assignments) > 2 else None,
+        "deep_cover": assignments[3] if len(assignments) > 3 else None,
+    }
+    previous_plan = previous_plan or {}
+    primary = _first_alive_target(gs, previous_plan.get("night_kill_primary")) or (
+        targets[0] if targets else None
+    )
+    backup = _first_alive_target(gs, previous_plan.get("night_kill_backup")) or (
+        targets[1] if len(targets) > 1 else primary
+    )
+    day_push = _first_alive_target(gs, previous_plan.get("day_push_target")) or backup or primary
+
+    return {
+        "night_number": gs.night_number,
+        **roles,
+        "night_kill_primary": primary,
+        "night_kill_backup": backup,
+        "day_push_target": day_push,
+        "public_story": "警上制造预言家对立，冲锋位打抗推目标，倒钩位保留质疑队友空间，深水位做中立复盘。",
+        "hooking_intent": {
+            "player_id": roles.get("hooker"),
+            "policy": "可以轻踩或投票队友换取好人信任，但公开文本必须表现为独立逻辑判断。",
+        },
+    }
+
+
+def _first_alive_target(gs: GameState, player_id: str | None) -> str | None:
+    if player_id is None:
+        return None
+    player = gs.players.get(player_id)
+    if player and player.alive and player.role != "werewolf":
+        return player_id
+    return None
+
+
+def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
+    gs: GameState = state["game_state"]
+    plan = state.get("wolf_team_plan") or {}
+    for key in ("night_kill_primary", "night_kill_backup"):
+        target = _first_alive_target(gs, plan.get(key))
+        if target:
+            print(f"  [狼人决策] 按狼队计划击杀: {_player_display(state, target)}")
+            event = GameEvent(
+                type="wolf_kill_selected",
+                payload={
+                    "night_number": gs.night_number,
+                    "target_id": target,
+                    "reason": "wolf_team_plan",
+                    "plan_key": key,
+                },
+            )
+            gs = replace(gs, events=gs.events + [event])
+            return {"game_state": gs, "wolf_kill_target_id": target}
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Node functions
 # ---------------------------------------------------------------------------
@@ -201,6 +328,7 @@ def assign_roles(state: RuntimeState) -> dict[str, Any]:
 def enter_night(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     n = gs.night_number + 1
+    gs, _ = _judge_broadcast(phase="enter_night", message=f"第{n}夜开始，天黑请闭眼", gs=gs, night_number=n)
     gs = replace(gs, phase="night", night_number=n,
                  events=gs.events + [GameEvent(type="enter_night", payload={"night": n})])
     alive = [pid for pid, p in gs.players.items() if p.alive]
@@ -220,7 +348,7 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         events = []
         print(f"  [狼人密谈] 狼人: {[_player_display(state, w) for w in wolves]}")
         for wolf_id in wolves:
-            result = _call_agent(agent_wolf_discussion, state, state, engine, registry, wolf_id, timeout_override=120.0)
+            result = _call_agent(agent_wolf_discussion, state, state, engine, registry, wolf_id, timeout_override=AGENT_TIMEOUTS.wolf_discussion_per_player)
             speech_text = result.get("speech_text", "") if result else ""
             print(f"    {_player_display(state, wolf_id)}(狼人): {speech_text if speech_text else '(沉默)'}")
             payload = {
@@ -229,12 +357,16 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                 "text": speech_text,
                 "visibility": "werewolf_team_only",
             }
-            if result and result.get("action_trace"):
-                payload["action_trace"] = result["action_trace"]
             events.append(GameEvent(
                 type="wolf_discussion",
                 payload=payload,
             ))
+            if result and result.get("action_trace"):
+                events.append(_action_trace_event(
+                    player_id=wolf_id,
+                    phase="wolf_discussion",
+                    action_trace=result["action_trace"],
+                ))
         gs = replace(gs, events=gs.events + events)
         return {"game_state": gs}
 
@@ -280,7 +412,7 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry and not state.get("wolf_action"):
-        result = _call_agent(agent_wolf_consensus, state, state, engine, registry, timeout_override=120.0)
+        result = _call_agent(agent_wolf_consensus, state, state, engine, registry, timeout_override=AGENT_TIMEOUTS.wolf_consensus)
         if result is not None:
             action = result.get("wolf_action", "kill")
             target = result.get("wolf_kill_target_id")
@@ -368,11 +500,17 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
 def night_witch(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     engine: RuleEngine = state["engine"]
+    gs, _ = _judge_broadcast(
+        phase="witch_action",
+        message="女巫请睁眼",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
 
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry:
-        result = _call_agent(agent_night_witch, state, state, engine, registry, timeout_override=180.0)
+        result = _call_agent(agent_night_witch, state, state, engine, registry, timeout_override=AGENT_TIMEOUTS.witch)
         if result is not None:
             use_antidote = result.get("use_antidote", False)
             poison_target_id = result.get("poison_target_id")
@@ -410,11 +548,19 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
 
 def night_seer(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
+    gs: GameState = state["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="seer_action",
+        message="预言家请睁眼",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
+    state = {**state, "game_state": gs}
 
     # Try agent-driven decision first
     registry = state.get("agent_registry")
     if registry:
-        result = _call_agent(agent_night_seer, state, state, engine, registry, timeout_override=180.0)
+        result = _call_agent(agent_night_seer, state, state, engine, registry, timeout_override=AGENT_TIMEOUTS.seer)
         if result is not None:
             target = result.get("seer_target_id")
             if target:
@@ -429,6 +575,12 @@ def night_hunter_idiot_status(state: RuntimeState) -> dict[str, Any]:
     """First night only: confirm hunter and idiot are alive for moderator audit.
     Produces no public output; event is moderator/private visibility only."""
     gs: GameState = state["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="hunter_status",
+        message="猎人状态确认",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
     if gs.night_number != 1:
         return {}
     hunter_id = _find_role(gs, "hunter")
@@ -448,6 +600,12 @@ def night_hunter_idiot_status(state: RuntimeState) -> dict[str, Any]:
 
 def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="hybrid_master_choice",
+        message="混血儿选择主人",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
     if gs.night_number != 1 or gs.hybrid_master_id is not None:
         return {}
     engine: RuleEngine = state["engine"]
@@ -512,11 +670,39 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
 def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     d = gs.day_number + 1
+    gs, _ = _judge_broadcast(phase="day_announce", message=f"第{d}天天亮了", gs=gs, day_number=d)
     gs = replace(gs, phase="day", day_number=d,
                  events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
+
+    # Announce last night's deaths
+    night_deaths = [
+        death for death in gs.deaths
+        if death.timing == "night" and death.resolution_batch == f"night_{gs.night_number}"
+    ]
+    if night_deaths:
+        dead_names = "、".join(_player_display(state, death.player_id) for death in night_deaths)
+        gs, _ = _judge_broadcast(
+            phase="death_announce",
+            message=f"昨夜死亡: {dead_names}",
+            gs=gs, day_number=d,
+            visibility="public",
+        )
+    else:
+        gs, _ = _judge_broadcast(
+            phase="death_announce",
+            message="昨夜是平安夜，无人死亡",
+            gs=gs, day_number=d,
+            visibility="public",
+        )
+
     alive = [pid for pid, p in gs.players.items() if p.alive]
     print(f"\n{'='*60}")
     print(f"  【第{d}天】天亮了 (存活: {len(alive)}人: {alive})")
+    if night_deaths:
+        for death in night_deaths:
+            print(f"  [死讯] {_player_display(state, death.player_id)} 死亡 (原因: {death.reason})")
+    else:
+        print(f"  [死讯] 平安夜，无人死亡")
     print(f"{'='*60}")
     return {"game_state": gs, "revote": False}
 
@@ -539,40 +725,274 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
 # -- Sheriff election (first day only) --
 
 def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
+    """Judge announces sheriff election; each alive player chooses to register or not."""
     gs: GameState = state["game_state"]
-    candidates = state.get("sheriff_candidates", [])
-    if not candidates:
-        candidates = [pid for pid, p in gs.players.items() if p.alive]
+    engine: RuleEngine = state["engine"]
+    registry = state.get("agent_registry")
+
+    gs, _ = _judge_broadcast(
+        phase="sheriff_election",
+        message="开始警上竞选环节，请想要竞选警长的玩家举手报名",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+
+    candidates: list[str] = []
+    if registry:
+        for pid, p in gs.players.items():
+            if not p.alive:
+                continue
+            if _call_agent(agent_sheriff_register, state, state, engine, registry, pid):
+                candidates.append(pid)
+                print(f"  [上警报名] {_player_display(state, pid)} 报名上警")
+    else:
+        # Scripted fallback: all alive players register
+        candidates = state.get("sheriff_candidates", [])
+        if not candidates:
+            candidates = [pid for pid, p in gs.players.items() if p.alive]
+
+    if candidates:
+        names = ", ".join(_player_display(state, c) for c in candidates)
+        gs, _ = _judge_broadcast(
+            phase="sheriff_registered",
+            message=f"以下玩家报名上警: {names}",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+    else:
+        gs, _ = _judge_broadcast(
+            phase="sheriff_registered",
+            message="无人报名上警，警徽流失，本局无警长",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+
     gs = replace(gs, sheriff_candidates=candidates,
-                 events=gs.events + [GameEvent(type="sheriff_registered", payload={"candidates": candidates})])
+                 events=gs.events + [GameEvent(
+                     type="sheriff_registered",
+                     payload={"candidates": candidates},
+                 )])
     return {"game_state": gs, "sheriff_candidates": candidates}
 
 
 def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
+    """Sheriff candidates speak in random order assigned by the judge."""
     gs: GameState = state["game_state"]
-    gs = replace(gs, events=gs.events + [GameEvent(type="sheriff_speech", payload={})])
+    engine: RuleEngine = state["engine"]
+    registry = state.get("agent_registry")
+    candidates = list(gs.sheriff_candidates or state.get("sheriff_candidates", []))
+
+    if not candidates:
+        gs = replace(gs, events=gs.events + [GameEvent(type="sheriff_speech", payload={})])
+        return {"game_state": gs}
+
+    # Judge randomly assigns speaking order
+    import random as _random
+    seed = _stable_seed(gs.game_id, "sheriff_speech_order", gs.day_number)
+    rng = _random.Random(seed)
+    speech_order = list(candidates)
+    rng.shuffle(speech_order)
+
+    names = ", ".join(_player_display(state, p) for p in speech_order)
+    gs, _ = _judge_broadcast(
+        phase="sheriff_speech_start",
+        message=f"警上发言顺序: {names}",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+
+    events: list[GameEvent] = []
+    if registry:
+        for candidate_id in speech_order:
+            result = _call_agent(
+                agent_day_speech,
+                state,
+                state,
+                engine,
+                registry,
+                candidate_id,
+                timeout_override=AGENT_TIMEOUTS.day_speech,
+            )
+            speech_text = result.get("speech_text", "") if result else ""
+            print(f"  [警上发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
+            events.append(GameEvent(
+                type="sheriff_speech",
+                payload={
+                    "speaker": candidate_id,
+                    "day_number": gs.day_number,
+                    "text": speech_text,
+                },
+            ))
+            if result and result.get("action_trace"):
+                events.append(_action_trace_event(
+                    player_id=candidate_id,
+                    phase="sheriff_speech",
+                    action_trace=result["action_trace"],
+                ))
+    else:
+        events.append(GameEvent(type="sheriff_speech", payload={}))
+
+    gs = replace(gs, events=gs.events + events)
     return {"game_state": gs}
 
 
 def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
+    """Withdrawal phase: candidates choose to stay or withdraw."""
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
-    candidates = gs.sheriff_candidates
-    withdrawing = state.get("sheriff_withdrawing", [])
+    registry = state.get("agent_registry")
+    candidates = list(gs.sheriff_candidates or [])
+
+    if not candidates:
+        return {"game_state": gs, "sheriff_candidates": []}
+
+    gs, _ = _judge_broadcast(
+        phase="sheriff_withdraw_start",
+        message="退水环节开始，想要退出竞选的玩家可以退水",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+
+    withdrawing: list[str] = []
+    if registry:
+        for candidate_id in candidates:
+            if _call_agent(agent_sheriff_withdraw, state, state, engine, registry, candidate_id):
+                withdrawing.append(candidate_id)
+                print(f"  [退水] {_player_display(state, candidate_id)} 退出竞选")
+    else:
+        withdrawing = state.get("sheriff_withdrawing", [])
+
     gs, event = engine.sheriff_withdraw(gs, candidates=candidates, withdrawing=withdrawing)
     remaining = event.payload.get("remaining", candidates)
     gs = replace(gs, sheriff_candidates=remaining, events=gs.events + [event])
+
+    if remaining:
+        stayed = ", ".join(_player_display(state, c) for c in remaining)
+        gs, _ = _judge_broadcast(
+            phase="sheriff_withdraw_result",
+            message=f"退水结束，留在警上的玩家: {stayed}",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+    else:
+        gs, _ = _judge_broadcast(
+            phase="sheriff_withdraw_result",
+            message="全部候选人退水，警徽流失，本局无警长",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+
     return {"game_state": gs, "sheriff_candidates": remaining}
 
 
 def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
+    """Off-sheriff players vote for sheriff. Announces result."""
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
-    votes = state.get("sheriff_votes", {})
-    candidates = gs.sheriff_candidates
+    registry = state.get("agent_registry")
+    candidates = list(gs.sheriff_candidates or [])
+
+    # No candidates -> no sheriff
+    if not candidates:
+        event = GameEvent(type="sheriff_no_election", payload={"reason": "no_candidates"})
+        gs = replace(gs, events=gs.events + [event])
+        gs, _ = _judge_broadcast(
+            phase="sheriff_no_election",
+            message="无人竞选警长，警徽流失，本局无警长",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        return {"game_state": gs}
+
+    # One remaining -> elect directly without vote
+    if len(candidates) == 1:
+        winner = candidates[0]
+        gs = replace(
+            gs,
+            sheriff_id=winner,
+            sheriff_badge_state="active",
+            events=gs.events + [
+                GameEvent(type="sheriff_elected", payload={"sheriff_id": winner})
+            ],
+        )
+        gs, _ = _judge_broadcast(
+            phase="sheriff_elected",
+            message=f"{_player_display(state, winner)} 当选警长",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        print(f"  [警长选举] {_player_display(state, winner)} 当选警长")
+        # Set speech order for day discussion
+        speech_order = choose_sheriff_led_speech_order(gs, winner)
+        return {"game_state": gs, "speech_order": speech_order}
+
+    # All alive players are candidates -> no election
+    if is_all_players_on_sheriff(gs, candidates):
+        reason = "all_players_on_sheriff"
+        event = GameEvent(type="sheriff_no_election", payload={"reason": reason})
+        gs = replace(gs, events=gs.events + [event])
+        gs, _ = _judge_broadcast(
+            phase="sheriff_no_election",
+            message="全部玩家上警，无法投票，警徽流失，本局无警长",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        return {"game_state": gs}
+
+    # Normal vote by off-sheriff voters
+    voters = eligible_sheriff_voters(gs, candidates, [])
+    gs, _ = _judge_broadcast(
+        phase="sheriff_vote_start",
+        message="警下玩家开始投票选出警长",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+
+    votes: dict[str, str] = {}
+    if registry:
+        for voter_id in voters:
+            result = _call_agent(
+                agent_sheriff_vote,
+                state,
+                state,
+                engine,
+                registry,
+                voter_id,
+                candidates,
+            )
+            if result and result.get("vote_target"):
+                votes[voter_id] = result["vote_target"]
+                print(f"  [警长投票] {_player_display(state, voter_id)} 投票给 {_player_display(state, result['vote_target'])}")
+            else:
+                print(f"  [警长投票] {_player_display(state, voter_id)} 弃票")
+    else:
+        votes = state.get("sheriff_votes", {})
+
     gs, event = engine.resolve_sheriff_vote(gs, votes=votes, candidates=candidates)
     gs = replace(gs, events=gs.events + [event])
-    return {"game_state": gs}
+
+    # Announce result
+    elected_id = event.payload.get("sheriff_id")
+    if elected_id:
+        gs, _ = _judge_broadcast(
+            phase="sheriff_elected",
+            message=f"{_player_display(state, elected_id)} 当选警长",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        print(f"  [警长选举] {_player_display(state, elected_id)} 当选警长")
+        speech_order = choose_sheriff_led_speech_order(gs, elected_id)
+        return {"game_state": gs, "speech_order": speech_order}
+
+    # No election from vote tie
+    gs, _ = _judge_broadcast(
+        phase="sheriff_no_election",
+        message="投票未选出警长，警徽流失，本局无警长",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+    speech_order = choose_no_sheriff_speech_order(gs)
+    return {"game_state": gs, "speech_order": speech_order}
 
 
 # -- Day discussion & vote --
@@ -583,10 +1003,39 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
     speech_index = state.get("speech_index", 0)
     speaker_id = state.get("current_speaker_id")
 
-    # Auto-populate speech order from alive players when agent registry is present
+    # Announce discussion start on first entry (speech_index == 0)
+    if speech_index == 0 and not speaker_id:
+        if gs.sheriff_id and gs.sheriff_badge_state == "active":
+            gs, _ = _judge_broadcast(
+                phase="discussion_start",
+                message=f"请警长{_player_display(state, gs.sheriff_id)}安排发言顺序，开始自由讨论",
+                gs=gs, day_number=gs.day_number,
+                visibility="public",
+            )
+        else:
+            gs, _ = _judge_broadcast(
+                phase="discussion_start",
+                message="自由讨论开始，随机选择发言起点",
+                gs=gs, day_number=gs.day_number,
+                visibility="public",
+            )
+
+    # Auto-populate speech order based on sheriff status
     registry = state.get("agent_registry")
-    if not speech_order and registry:
-        speech_order = [pid for pid, p in gs.players.items() if p.alive]
+    if not speech_order:
+        if gs.sheriff_id and gs.sheriff_badge_state == "active":
+            # Sheriff agent picks first speaker; fallback to static order
+            agent_order = None
+            if registry:
+                engine: RuleEngine = state["engine"]
+                agent_order = _call_agent(
+                    agent_sheriff_pick_speech_order,
+                    state, state, engine, registry, gs.sheriff_id,
+                    timeout_override=AGENT_TIMEOUTS.day_speech,
+                )
+            speech_order = agent_order or choose_sheriff_led_speech_order(gs, gs.sheriff_id)
+        else:
+            speech_order = choose_no_sheriff_speech_order(gs)
 
     if speaker_id is None and speech_index < len(speech_order):
         speaker_id = speech_order[speech_index]
@@ -617,11 +1066,18 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         )])
         return {"game_state": gs, **advance_speaker()}
     if speaker_id:
+        # Judge announces current speaker
+        gs, _ = _judge_broadcast(
+            phase="speaker_turn",
+            message=f"请{_player_display(state, speaker_id)}发言",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
         speech_text = state.get("speech_text", "")
         action_trace = None
         if registry and not speech_text:
             engine: RuleEngine = state["engine"]
-            result = _call_agent(agent_day_speech, state, state, engine, registry, speaker_id, timeout_override=180.0)
+            result = _call_agent(agent_day_speech, state, state, engine, registry, speaker_id, timeout_override=AGENT_TIMEOUTS.day_speech)
             if result:
                 speech_text = result.get("speech_text", "")
                 action_trace = result.get("action_trace")
@@ -632,12 +1088,14 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
             "day_number": gs.day_number,
             "text": speech_text,
         }
+        events = [GameEvent(type="speech", payload=payload)]
         if action_trace:
-            payload["action_trace"] = action_trace
-        gs = replace(gs, events=gs.events + [GameEvent(
-            type="speech",
-            payload=payload,
-        )])
+            events.append(_action_trace_event(
+                player_id=speaker_id,
+                phase="speech",
+                action_trace=action_trace,
+            ))
+        gs = replace(gs, events=gs.events + events)
         return {"game_state": gs, **advance_speaker()}
     gs = replace(gs, events=gs.events + [GameEvent(type="free_discussion", payload={})])
     return {"game_state": gs}
@@ -645,6 +1103,12 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
 
 def day_vote(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="vote_start",
+        message="讨论结束，现在开始投票。所有人同时投票，投票时不能发言。",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
     same_vote_window = (
         state.get("exile_vote_day") == gs.day_number
         and state.get("exile_vote_revote") == state.get("revote", False)
@@ -662,22 +1126,31 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
         vote_traces: dict[str, Any] = {}
         for pid, player in gs.players.items():
             if player.alive:
-                result = _call_agent(agent_day_vote, state, state, engine, registry, pid, timeout_override=60.0)
+                result = _call_agent(agent_day_vote, state, state, engine, registry, pid, timeout_override=AGENT_TIMEOUTS.day_vote)
                 if result and result.get("vote_target"):
                     votes[pid] = result["vote_target"]
-                    vote_speech = result.get("vote_speech", "")
-                    vote_reason = result.get("vote_reason", "")
-                    display = f"    {_player_display(state, pid)} 投票给 {_player_display(state, result['vote_target'])}"
-                    if vote_speech:
-                        display += f"\n      发言: {vote_speech}"
-                    elif vote_reason:
-                        display += f"\n      理由: {vote_reason}"
-                    print(display)
+                    print(f"    {_player_display(state, pid)} → {_player_display(state, result['vote_target'])}")
                 else:
                     print(f"    {_player_display(state, pid)} 弃票")
                 if result and result.get("action_trace"):
                     vote_traces[pid] = result["action_trace"]
+
+        # Judge announces each vote publicly
+        sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
+        vote_lines = []
+        for voter_id, target_id in votes.items():
+            weight_label = " (警长1.5票)" if voter_id == sheriff_id else ""
+            vote_lines.append(f"{_player_display(state, voter_id)}{weight_label} 投票给 {_player_display(state, target_id)}")
+        if vote_lines:
+            gs, _ = _judge_broadcast(
+                phase="vote_result",
+                message="投票结果：\n" + "\n".join(vote_lines),
+                gs=gs, day_number=gs.day_number,
+                visibility="public",
+            )
+
         return {
+            "game_state": gs,
             "exile_votes": votes,
             "vote_action_traces": vote_traces,
             "exile_vote_day": gs.day_number,
@@ -685,6 +1158,7 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
             "revote": state.get("revote", False),
         }
     return {
+        "game_state": gs,
         "exile_votes": existing_votes,
         "exile_vote_day": gs.day_number,
         "exile_vote_revote": state.get("revote", False),
@@ -704,21 +1178,54 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         pk_candidates=state.get("pk_candidates"),
         rng_seed=f"{gs.game_id}-vote-d{gs.day_number}",
     )
-    # Log vote tally
-    from collections import Counter
+    # Log vote tally with weighted counts (sheriff = 1.5, others = 1)
     if votes:
-        tally = Counter(votes.values())
-        tally_text = "  投票统计: " + ", ".join(f"{t}:{c}票" for t, c in tally.most_common())
+        sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
+        weighted_tally: dict[str, float] = {}
+        for voter_id, target_id in votes.items():
+            weight = 1.5 if voter_id == sheriff_id else 1.0
+            weighted_tally[target_id] = weighted_tally.get(target_id, 0) + weight
+        tally_items = sorted(weighted_tally.items(), key=lambda x: -x[1])
+        tally_text = "  投票统计: " + ", ".join(
+            f"{_player_display(state, t)}:{v}票" for t, v in tally_items
+        )
     else:
         tally_text = "  投票统计: 无有效票"
     print(tally_text)
     if result.exiled_player_id:
+        gs, _ = _judge_broadcast(
+            phase="vote_result_announce",
+            message=f"投票结果：{_player_display(state, result.exiled_player_id)} 以最高票被放逐出局",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
         print(f"  [投票结果] {_player_display(state, result.exiled_player_id)} 被放逐 (原因: {result.reason})")
     elif result.reason == "first_tie_pk":
         print(f"  [投票结果] 首次平票，进入PK: {[_player_display(state, t) for t in (result.tied_player_ids or [])]}")
+    elif result.reason == "first_tie_pk":
+        tied_names = "、".join(_player_display(state, t) for t in (result.tied_player_ids or []))
+        gs, _ = _judge_broadcast(
+            phase="vote_tie_pk",
+            message=f"首次平票：{tied_names}进入PK发言",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        print(f"  [投票结果] 首次平票，进入PK: {[_player_display(state, t) for t in (result.tied_player_ids or [])]}")
     elif result.reason == "second_tie_no_exile":
+        gs, _ = _judge_broadcast(
+            phase="vote_second_tie",
+            message="二次平票，无人出局，直接进入黑夜",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
         print(f"  [投票结果] 二次平票，无人出局")
     elif result.reason == "anti_stall_empty_tally":
+        gs, _ = _judge_broadcast(
+            phase="vote_anti_stall",
+            message=f"防死循环强制放逐：{_player_display(state, result.exiled_player_id)}出局",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
         print(f"  [投票结果] 防死循环强制放逐: {_player_display(state, result.exiled_player_id)}")
     else:
         print(f"  [投票结果] {result.reason}")
@@ -728,13 +1235,15 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     }
     if result.tied_player_ids:
         payload["tied"] = result.tied_player_ids
-    if state.get("vote_action_traces"):
-        payload["action_traces"] = state.get("vote_action_traces")
+    vote_trace_events = [
+        _action_trace_event(player_id=pid, phase="vote", action_trace=trace)
+        for pid, trace in (state.get("vote_action_traces") or {}).items()
+    ]
     gs = replace(gs, votes=state.get("exile_votes", {}),
                  events=gs.events + [GameEvent(
                      type="vote_resolved",
                      payload=payload,
-                 )])
+                 )] + vote_trace_events)
     next_consecutive = (
         consecutive + 1 if result.reason == "second_tie_no_exile" else 0
     )
@@ -764,6 +1273,13 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
         return {"game_state": gs}
     exiled_role = gs.players.get(exiled_id, None)
     role_str = exiled_role.role if exiled_role else "?"
+    gs, _ = _judge_broadcast(
+        phase="exile",
+        message=f"{_player_display(state, exiled_id)}被放逐出局",
+        gs=gs, day_number=gs.day_number,
+        extra_payload={"exiled": exiled_id},
+        visibility="public",
+    )
     gs, events = engine.resolve_exile(gs, target_id=exiled_id)
     gs = replace(gs, events=gs.events + events)
     print(f"  [放逐] {_player_display(state, exiled_id)}({role_str}) 被放逐出局")
@@ -818,7 +1334,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         target = state.get("hunter_shot_target_id")
         registry = state.get("agent_registry")
         if target is None and registry:
-            target = _call_agent(agent_hunter_shot, state, state, engine, registry, death.player_id, timeout_override=120.0)
+            target = _call_agent(agent_hunter_shot, state, state, engine, registry, death.player_id, timeout_override=AGENT_TIMEOUTS.hunter_shot)
         if target:
             shot_death = Death(
                 player_id=target, reason="hunter_shot",
@@ -1026,8 +1542,44 @@ def resolve_self_destruct_node(state: RuntimeState) -> dict[str, Any]:
 
 
 def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
+    """After first exile tie, only PK candidates give speeches."""
     gs: GameState = state["game_state"]
-    gs = replace(gs, events=gs.events + [GameEvent(type="tie_pk_speech", payload={})])
+    pk_candidates = state.get("pk_candidates", [])
+    registry = state.get("agent_registry")
+    events: list[GameEvent] = []
+
+    if registry and pk_candidates:
+        engine: RuleEngine = state["engine"]
+        for candidate_id in pk_candidates:
+            result = _call_agent(
+                agent_pk_speech,
+                state,
+                state,
+                engine,
+                registry,
+                candidate_id,
+                timeout_override=AGENT_TIMEOUTS.day_speech,
+            )
+            speech_text = result.get("speech_text", "") if result else ""
+            print(f"  [PK发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
+            events.append(GameEvent(
+                type="tie_pk_speech",
+                payload={
+                    "speaker": candidate_id,
+                    "day_number": gs.day_number,
+                    "text": speech_text,
+                },
+            ))
+            if result and result.get("action_trace"):
+                events.append(_action_trace_event(
+                    player_id=candidate_id,
+                    phase="pk_speech",
+                    action_trace=result["action_trace"],
+                ))
+    else:
+        events.append(GameEvent(type="tie_pk_speech", payload={}))
+
+    gs = replace(gs, events=gs.events + events)
     return {"game_state": gs}
 
 
@@ -1039,6 +1591,180 @@ def tie_revote(state: RuntimeState) -> dict[str, Any]:
         "exile_vote_revote": True,
         "revote": True,
     }
+
+
+_legacy_wolf_consensus = wolf_consensus
+
+
+def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
+    """Run multi-round private wolf strategy and produce a team plan."""
+    gs: GameState = state["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="wolf_discussion_start",
+        message="狼人请睁眼，开始密谈",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
+    registry = state.get("agent_registry")
+
+    if not registry:
+        gs = replace(gs, events=gs.events + [GameEvent(type="wolf_discussion", payload={})])
+        return {"game_state": gs}
+
+    engine: RuleEngine = state["engine"]
+    wolves = _alive_wolves(gs)
+    events: list[GameEvent] = []
+    round_count = 3 if gs.night_number == 1 else 2
+    print(f"  [狼人密谈] 狼人: {[_player_display(state, w) for w in wolves]}，共{round_count}轮")
+    for round_number in range(1, round_count + 1):
+        round_state = dict(state)
+        round_state["wolf_discussion_round"] = round_number
+        for wolf_id in wolves:
+            round_state["game_state"] = gs  # Latest gs with accumulated speeches
+            result = _call_agent(
+                agent_wolf_discussion,
+                round_state,
+                round_state,
+                engine,
+                registry,
+                wolf_id,
+                timeout_override=AGENT_TIMEOUTS.wolf_discussion_per_player,
+            )
+            speech_text = result.get("speech_text", "") if result else ""
+            print(
+                f"    [第{round_number}轮] {_player_display(state, wolf_id)}(狼人): "
+                f"{speech_text if speech_text else '(沉默)'}"
+            )
+            disc_event = GameEvent(
+                type="wolf_discussion",
+                payload={
+                    "wolf_id": wolf_id,
+                    "round": round_number,
+                    "night_number": gs.night_number,
+                    "text": speech_text,
+                    "visibility": "werewolf_team_only",
+                },
+            )
+            # Immediately merge into gs so next wolf sees this speech
+            gs = replace(gs, events=gs.events + [disc_event])
+            events.append(disc_event)
+            if result and result.get("action_trace"):
+                trace_event = _action_trace_event(
+                    player_id=wolf_id,
+                    phase=f"wolf_discussion_round_{round_number}",
+                    action_trace=result["action_trace"],
+                )
+                gs = replace(gs, events=gs.events + [trace_event])
+                events.append(trace_event)
+
+        # Check if wolves reached consensus after this round — end early if so
+        if round_number < round_count:
+            from werewolf_agent.runtime.wolf_strategy import (
+                should_end_discussion_early,
+                summarize_wolf_consensus,
+            )
+            mid_consensus = summarize_wolf_consensus(gs.events, wolves)
+            if should_end_discussion_early(mid_consensus, len(wolves)):
+                print(f"  [狼人密谈] 第{round_number}轮已达成共识，提前结束讨论")
+                break
+
+    # Aggregate discussion into consensus plan, fallback to static plan
+    # (events already merged incrementally into gs)
+    from werewolf_agent.runtime.wolf_strategy import (
+        build_wolf_team_plan_from_discussion,
+        summarize_wolf_consensus,
+    )
+    consensus = summarize_wolf_consensus(gs.events, wolves)
+    plan = build_wolf_team_plan_from_discussion(
+        gs,
+        previous_plan=state.get("wolf_team_plan"),
+        consensus=consensus,
+    )
+
+    # Fallback to static plan when consensus lacks critical fields
+    static_plan = _build_wolf_team_plan(gs, previous_plan=state.get("wolf_team_plan"))
+    for key in ("night_kill_primary", "night_kill_backup", "day_push_target",
+                "fake_seer", "pusher", "hooker", "deep_cover", "public_story"):
+        if not plan.get(key) and static_plan.get(key):
+            plan[key] = static_plan[key]
+
+    # Log consensus summary
+    primary = plan.get("night_kill_primary")
+    backup = plan.get("night_kill_backup")
+    agreement = consensus.get("agreement_count", 0)
+    total = consensus.get("total_wolves", len(wolves))
+    if primary:
+        print(f"  [狼队共识] 主目标: {_player_display(state, primary)}, 备选: {_player_display(state, backup) if backup else '无'}, "
+              f"共识度: {agreement}/{total}")
+    else:
+        print(f"  [狼队共识] 未达成击杀共识 ({agreement}/{total} 同意)")
+
+    events.append(GameEvent(
+        type="wolf_team_plan",
+        payload={**plan, "visibility": "werewolf_team_only"},
+    ))
+    gs = replace(gs, events=gs.events + events[-1:])  # Add plan event
+    return {"game_state": gs, "wolf_team_plan": plan}
+
+
+def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
+    """Determine wolf night action, preferring the private team plan."""
+    gs: GameState = state["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="wolf_consensus",
+        message="狼人请统一刀人",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
+    state = {**state, "game_state": gs}
+    _timeout_contract = AGENT_TIMEOUTS.wolf_consensus
+    planned = _planned_wolf_kill(state)
+    if planned is not None and not state.get("wolf_action"):
+        return planned
+    return _legacy_wolf_consensus(state)
+
+
+def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
+    """Collect sheriff-election speeches from candidates."""
+    gs: GameState = state["game_state"]
+    registry = state.get("agent_registry")
+    candidates = list(gs.sheriff_candidates or state.get("sheriff_candidates", []))
+    events: list[GameEvent] = []
+
+    if registry:
+        engine: RuleEngine = state["engine"]
+        for candidate_id in candidates:
+            result = _call_agent(
+                agent_sheriff_election_speech,
+                state,
+                state,
+                engine,
+                registry,
+                candidate_id,
+                candidates,
+                timeout_override=AGENT_TIMEOUTS.day_speech,
+            )
+            speech_text = result.get("speech_text", "") if result else ""
+            print(f"  [警上发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
+            events.append(GameEvent(
+                type="sheriff_speech",
+                payload={
+                    "speaker": candidate_id,
+                    "day_number": gs.day_number,
+                    "text": speech_text,
+                },
+            ))
+            if result and result.get("action_trace"):
+                events.append(_action_trace_event(
+                    player_id=candidate_id,
+                    phase="sheriff_speech",
+                    action_trace=result["action_trace"],
+                ))
+    else:
+        events.append(GameEvent(type="sheriff_speech", payload={}))
+
+    gs = replace(gs, events=gs.events + events)
+    return {"game_state": gs}
 
 
 # ---------------------------------------------------------------------------

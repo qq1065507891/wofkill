@@ -18,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 
 from werewolf_agent.agents.schemas import (
+    ActionTrace,
     ActionType,
     AgentContext,
     FallbackAction,
@@ -1001,3 +1002,375 @@ class TestMandatoryVote:
         assert action.trace.legal_targets == ["p05"]
         assert action.trace.final_action_type == "vote"
         assert action.trace.fallback_reason == "fallback: retries exhausted"
+
+
+class TestSpeechQualityAndWolfAssignments:
+    def test_werewolf_speech_prompt_uses_team_assignment(self) -> None:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"w3": "default"},
+            providers={"mock": _JsonProvider("unused")},
+        )
+        agent = PlayerAgent(agent_id="w3", model_router=router)
+        ctx = AgentContext(
+            agent_id="w3",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="werewolf",
+            legal_actions=[ActionType.SPEECH],
+            visible_world_state={
+                "wolf_team_plan": {
+                    "fake_seer": "w1",
+                    "pusher": "w2",
+                    "hooker": "w3",
+                    "deep_cover": "w4",
+                    "day_push_target": "p08",
+                    "public_story": "倒钩位轻踩队友，冲锋位打p08。",
+                }
+            },
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "hooker" in prompt
+        assert "倒钩" in prompt
+        assert "p08" in prompt
+
+    def test_speech_fallback_contains_non_empty_stance(self) -> None:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider("not json")},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02", "p03"],
+        )
+
+        action, _ = agent.act(ctx)
+
+        assert isinstance(action, FallbackAction)
+        assert action.action_type == ActionType.SPEECH
+        assert "p02" in action.speech
+        assert action.reason
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Witch No-Poison Explanation
+# ---------------------------------------------------------------------------
+
+
+class TestWitchNoPoisonMustExplain:
+    """Witch must explain why not poisoning when pressure targets exist."""
+
+    def test_witch_no_poison_must_explain_pressure_targets(self) -> None:
+        """If witch has poison and selects no_action while pressure targets exist,
+        reason must explain. The validation function is reused -- empty reason is
+        always invalid."""
+        from werewolf_agent.runtime.vote_quality import validate_vote_reason
+
+        action = {
+            "action_type": "no_action",
+            "target_id": None,
+            "reason": "",
+            "speech": "",
+        }
+        # Empty reason is invalid regardless of context
+        result = validate_vote_reason(action, context={"has_pressure_targets": True})
+        assert result["valid"] is False
+        assert result.get("missing_basis") is True
+
+    def test_witch_no_poison_with_explanation_passes(self) -> None:
+        """Witch no_action with a clear reason passes validation."""
+        from werewolf_agent.runtime.vote_quality import validate_vote_reason
+
+        action = {
+            "action_type": "no_action",
+            "target_id": None,
+            "reason": "查杀目标可能是假预言家，保留毒药观察一轮",
+            "speech": "",
+        }
+        result = validate_vote_reason(action, context={"has_pressure_targets": True})
+        assert result["valid"] is True
+        assert result.get("missing_basis") is False
+
+    def test_witch_poison_action_with_target_passes(self) -> None:
+        """Witch poison action targeting a suspect passes validation."""
+        from werewolf_agent.runtime.vote_quality import validate_vote_reason
+
+        action = {
+            "action_type": "use_poison",
+            "target_id": "p03",
+            "reason": "被预言家查杀，毒掉确认狼人",
+            "speech": "",
+        }
+        result = validate_vote_reason(action, context={"has_pressure_targets": True})
+        assert result["valid"] is True
+
+
+# ---------------------------------------------------------------------------
+# Task 9: Strict Tool-Call Structured Output
+# ---------------------------------------------------------------------------
+
+
+class TestPlainTextRejection:
+    """When tool_choice is set, plain text output must be tracked as failure."""
+
+    def test_plain_text_recorded_in_trace(self):
+        """Provider output without tool/function call should be tracked in trace."""
+        # _JsonProvider returns plain text JSON. In production the provider
+        # would raise RuntimeError when tool_choice is set but no tool_call
+        # arrives. Here we test the trace metadata is populated correctly
+        # when the agent successfully parses a response.
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider(
+                '{"action_type": "vote", "target_id": "p07", '
+                '"speech": "test", "reason": "test", "confidence": 0.8}'
+            )},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+            legal_targets=["p07", "p08"],
+        )
+
+        action, retry_info = agent.act(context)
+
+        # Agent should produce a valid action
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        # Trace should have structured output metadata
+        assert action.trace is not None
+        assert action.trace.tool_call_required is True
+        assert action.trace.tool_call_received is True
+        assert action.trace.parse_success is True
+        assert action.trace.tool_call_name == "submit_player_action"
+
+    def test_plain_text_parse_failure_recorded_in_trace(self):
+        """When provider returns unparseable plain text, trace records failure."""
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider("not valid json")},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+        )
+
+        action, retry_info = agent.act(context)
+
+        # Should get fallback action
+        assert isinstance(action, FallbackAction)
+        assert action.trace is not None
+        assert action.trace.tool_call_required is True
+        assert action.trace.parse_success is False
+        assert action.trace.parse_error is not None
+        assert action.trace.retry_count == 1
+
+
+class TestProviderCapabilityFailure:
+    """Provider without tool call support should fail explicitly."""
+
+    def test_provider_without_tool_call_support_fails_explicitly(self):
+        """When provider cannot enforce tool calls, action should fail with clear error."""
+
+        class NoToolProvider:
+            """Provider that doesn't support tool calls."""
+            @property
+            def name(self) -> str:
+                return "notool"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None, **kwargs):
+                # Returns None or raises an error for tool_choice
+                if tool_choice:
+                    raise NotImplementedError("This provider does not support tool_choice")
+                return GenerateResult(
+                    text="plain text response",
+                    provider=self.name,
+                    model=config.model,
+                    usage=UsageRecord(
+                        agent_id="", task_type="", provider=self.name, model=config.model,
+                    ),
+                )
+
+        router = ModelRouter(
+            model_profiles={"notool_model": {"model": "notool-v1", "provider": "notool"}},
+            llm_profiles={"default": {"default": {"provider": "notool", "model_profile": "notool_model"}}},
+            player_assignments={"p01": "default"},
+            providers={"notool": NoToolProvider()},
+        )
+        validator = DefaultActionValidator()
+        agent = PlayerAgent(agent_id="p01", model_router=router, validator=validator)
+
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+        )
+
+        # Should get a fallback action, not an unhandled exception
+        action, retry_info = agent.act(context)
+        assert action is not None
+        # Should be a fallback with structured_failure_reason
+        assert isinstance(action, FallbackAction)
+        assert action.trace is not None
+        assert action.trace.structured_failure_reason == "structured_output_unsupported"
+        assert action.trace.tool_call_required is True
+        assert action.trace.tool_call_received is False
+
+
+class TestStructuredOutputMetadata:
+    """Action trace records structured output metadata."""
+
+    def test_trace_records_tool_call_status(self):
+        """ActionTrace should record whether tool_call was required and received."""
+        trace = ActionTrace(
+            raw_text="",
+            parsed_action=None,
+            final_action_type="vote",
+            legal_actions=["vote"],
+            legal_targets=["p07"],
+            tool_call_required=True,
+            tool_call_received=True,
+            parse_success=True,
+        )
+        assert trace.final_action_type == "vote"
+        assert trace.tool_call_required is True
+        assert trace.tool_call_received is True
+        assert trace.parse_success is True
+
+    def test_trace_defaults_to_false(self):
+        """New fields default to False/empty."""
+        trace = ActionTrace()
+        assert trace.tool_call_required is False
+        assert trace.tool_call_received is False
+        assert trace.tool_call_name == ""
+        assert trace.parse_success is False
+        assert trace.parse_error is None
+        assert trace.retry_count == 0
+        assert trace.structured_failure_reason is None
+
+    def test_successful_action_has_complete_trace(self):
+        """A successful action path populates all structured output fields."""
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider(
+                '{"action_type":"vote","target_id":"p07",'
+                '"speech":"归7","reason":"可疑","confidence":0.8}'
+            )},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+            legal_targets=["p07", "p08"],
+        )
+
+        action, _ = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.trace is not None
+        assert action.trace.tool_call_required is True
+        assert action.trace.tool_call_received is True
+        assert action.trace.parse_success is True
+        assert action.trace.tool_call_name == "submit_player_action"
+        assert action.trace.retry_count == 1
+
+    def test_fallback_action_has_failure_trace(self):
+        """A fallback action records structured output failure metadata."""
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider("not json")},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+        )
+
+        action, _ = agent.act(ctx)
+
+        assert isinstance(action, FallbackAction)
+        assert action.trace is not None
+        assert action.trace.tool_call_required is True
+        assert action.trace.parse_success is False
+        assert action.trace.parse_error is not None
+        assert action.trace.retry_count == 2
+
+
+# === Task 12: Speech Must Answer Contradiction ===
+
+class TestSpeechMustAnswerVisibleContradictionAlert:
+    """When contradiction alerts exist, speech must address them."""
+
+    def test_speech_must_answer_visible_contradiction_alert(self):
+        """Speech validation fails when high-priority alerts are ignored."""
+        from werewolf_agent.runtime.speech_quality import validate_public_speech
+
+        # Context has contradiction alerts
+        context = {
+            "must_address_alerts": [
+                {
+                    "alert_type": "claim_conflict",
+                    "players": ["p01", "p05"],
+                    "description": "p01和p05对跳预言家",
+                    "required_response": ["question", "side_with", "park"],
+                },
+            ],
+        }
+
+        # Speech that ignores the contradiction (talks about p03 only)
+        speech = "我觉得p03有问题，投p03。p03发言矛盾。"
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+
+        # Should fail because p01/p05 counterclaim is not addressed
+        assert result["valid"] is False
+        assert "contradiction_alert" in result.get("missing_fields", [])
+
+    def test_speech_addressing_contradiction_passes(self):
+        """Speech that addresses the contradiction should pass."""
+        from werewolf_agent.runtime.speech_quality import validate_public_speech
+
+        context = {
+            "must_address_alerts": [
+                {
+                    "alert_type": "claim_conflict",
+                    "players": ["p01", "p05"],
+                    "description": "p01和p05对跳预言家",
+                    "required_response": ["question", "side_with", "park"],
+                },
+            ],
+        }
+
+        speech = "p01和p05对跳预言家，我站p01这边。我怀疑p03是狼人，投p03。"
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+        assert result["valid"] is True

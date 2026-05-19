@@ -612,6 +612,41 @@ class TestContradictionEngine:
         assert len(claim_conflicts) == 1
         assert "seer" in claim_conflicts[0].description.lower()
 
+    def test_speech_claims_are_extracted_into_structured_facts(self):
+        from werewolf_agent.core.models import GameEvent, GameState
+        from werewolf_agent.cognition.world_state import extract_facts
+
+        event = GameEvent(
+            type="speech",
+            payload={
+                "speaker": "p08",
+                "day_number": 1,
+                "text": "我是预言家，昨晚查验p01是狼人，今天我会投p01。",
+            },
+        )
+
+        facts = extract_facts(event, GameState())
+
+        assert any(f.fact_type == "claimed_role" and f.value == "seer" for f in facts)
+        assert any(
+            f.fact_type == "claimed_suspect" and f.target_player == "p01" and f.value == "wolf"
+            for f in facts
+        )
+
+    def test_self_exposed_wolf_speech_creates_high_priority_claim_conflict(self):
+        from werewolf_agent.core.models import GameEvent, GameState
+        from werewolf_agent.cognition.world_state import extract_facts
+
+        facts = extract_facts(
+            GameEvent(
+                type="speech",
+                payload={"speaker": "p02", "day_number": 1, "text": "我这狼队视角看p08像预言家。"},
+            ),
+            GameState(),
+        )
+
+        assert any(f.fact_type == "claimed_role" and f.value == "werewolf" for f in facts)
+
     def test_no_false_positives(self):
         facts = [
             StructuredFact(fact_type="vote", source_player="p05", target_player="p01", day=1),
@@ -1079,3 +1114,186 @@ class TestVisibilityLeakComprehensive:
         assert "antidote_available" not in ctx.visible_world_state
         assert "master_id" not in ctx.visible_world_state
         assert "wolf_teammates" not in ctx.visible_world_state
+
+
+# ===================================================================
+# Task 5: Seer Claim Contract And Counterclaim Memory
+# ===================================================================
+
+class TestSeerClaimContractExtraction:
+    """Extract structured seer claim contracts from speech."""
+
+    def test_extracts_seer_claim_contract(self):
+        """Speech '我是预言家，昨晚验 p01 查杀，警徽流 p05 p07' extracts full contract."""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+        claims = _infer_claims_from_text(speaker="p03", text="我是预言家，昨晚验p01查杀，警徽流p05 p07", day=1)
+        # Should extract: claimed_role=seer, seer_check_claim target=p01 wolf, badge_flow_claim
+        claim_types = [c.fact_type for c in claims]
+        # Must have a role claim
+        assert "claimed_role" in claim_types
+        # Seer check result must be captured
+        seer_checks = [c for c in claims if c.fact_type == "seer_check_claim"]
+        assert len(seer_checks) >= 1
+        check = seer_checks[0]
+        assert check.target_player == "p01"
+        assert check.value in ("wolf", "查杀")
+
+    def test_extracts_badge_flow(self):
+        """警徽流 should be extracted as a separate fact."""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+        claims = _infer_claims_from_text(speaker="p03", text="我是预言家，警徽流p05 p07", day=1)
+        badge_facts = [c for c in claims if c.fact_type == "badge_flow_claim"]
+        assert len(badge_facts) >= 1
+        # The badge flow order should be in metadata
+        assert badge_facts[0].metadata.get("badge_flow_order") is not None
+
+    def test_gold_claim_extracted(self):
+        """金水 (gold claim) should be extracted."""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+        claims = _infer_claims_from_text(speaker="p03", text="我是预言家，p05是金水", day=1)
+        gold_claims = [c for c in claims if c.fact_type == "seer_check_claim" and c.value == "good"]
+        assert len(gold_claims) >= 1
+        assert gold_claims[0].target_player == "p05"
+
+
+class TestSeerClaimCommitment:
+    """Seer claim commitments persist and detect later contradictions."""
+
+    def test_seer_claim_commitment_detects_later_contradiction(self):
+        """If p01 claimed seer, later saying '等预言家跳出来' triggers contradiction."""
+        from werewolf_agent.cognition.world_state import StructuredWorldState, StructuredFact, _infer_claims_from_text
+
+        # Build world state with p01's seer claim
+        ws = StructuredWorldState()
+        claim_facts = _infer_claims_from_text(speaker="p01", text="我是预言家", day=1)
+        for f in claim_facts:
+            ws.append(f)
+
+        # Now p01 says "等预言家跳出来" which contradicts claiming seer
+        later_facts = _infer_claims_from_text(speaker="p01", text="等预言家跳出来我再发言", day=2)
+        for f in later_facts:
+            ws.append(f)
+
+        # Also add the raw speech fact so the contradiction engine can inspect text
+        ws.append(StructuredFact(
+            fact_type="speech",
+            source_player="p01",
+            value="等预言家跳出来我再发言",
+            day=2,
+            metadata={"text": "等预言家跳出来我再发言"},
+        ))
+
+        # Contradiction engine should detect this
+        from werewolf_agent.cognition.contradiction import ContradictionEngine
+        engine = ContradictionEngine()
+        alerts = engine.detect(ws.facts, current_day=2)
+
+        # Should find a claim-related contradiction for p01
+        p01_alerts = [a for a in alerts if a.player_id == "p01"]
+        assert len(p01_alerts) >= 1
+
+
+class TestCounterclaimDetection:
+    """Multiple players claiming seer creates counterclaim alert."""
+
+    def test_two_seer_claimants_creates_counterclaim(self):
+        """p01 and p05 both claim seer → claim_conflict alert."""
+        from werewolf_agent.cognition.contradiction import ContradictionEngine
+        from werewolf_agent.cognition.world_state import StructuredWorldState, StructuredFact
+
+        ws = StructuredWorldState()
+        ws.append(StructuredFact(
+            fact_type="claimed_role", source_player="p01", target_player="p01",
+            day=1, night=0, phase="sheriff_speech", value="seer", metadata={},
+        ))
+        ws.append(StructuredFact(
+            fact_type="claimed_role", source_player="p05", target_player="p05",
+            day=1, night=0, phase="sheriff_speech", value="seer", metadata={},
+        ))
+
+        engine = ContradictionEngine()
+        alerts = engine.detect(ws.facts, current_day=1)
+        claim_conflicts = [a for a in alerts if a.alert_type == "claim_conflict"]
+        assert len(claim_conflicts) >= 1
+        assert claim_conflicts[0].priority == "high"
+
+
+# === Task 12: Contradiction Alerts Must Be Answered ===
+
+class TestContradictionContextPriority:
+    """High-priority contradiction alerts reach next player context."""
+
+    def test_high_priority_contradiction_reaches_next_player_context(self):
+        """Self-exposure, claim conflict alerts are high priority and visible."""
+        from werewolf_agent.cognition.contradiction import ContradictionEngine
+        from werewolf_agent.cognition.world_state import StructuredWorldState, StructuredFact
+
+        ws = StructuredWorldState()
+        # p01 claims seer
+        ws.append(StructuredFact(
+            fact_type="claimed_role", source_player="p01", target_player="p01",
+            day=1, night=0, phase="sheriff_speech", value="seer", metadata={},
+        ))
+        # p05 also claims seer (counterclaim)
+        ws.append(StructuredFact(
+            fact_type="claimed_role", source_player="p05", target_player="p05",
+            day=1, night=0, phase="sheriff_speech", value="seer", metadata={},
+        ))
+
+        engine = ContradictionEngine()
+        alerts = engine.detect(ws.facts, current_day=1)
+
+        # Should have high-priority claim_conflict
+        high_priority = [a for a in alerts if a.priority == "high"]
+        assert len(high_priority) >= 1
+
+    def test_contradiction_alerts_available_in_context(self):
+        """AgentContext.contradiction_alerts field is populated."""
+        from werewolf_agent.agents.schemas import AgentContext, TaskType
+        ctx = AgentContext(
+            agent_id="p02",
+            task_type=TaskType.SPEECH,
+            contradiction_alerts=[
+                {"alert_type": "claim_conflict", "priority": "high", "players": ["p01", "p05"]},
+            ],
+        )
+        assert len(ctx.contradiction_alerts) == 1
+        assert ctx.contradiction_alerts[0]["priority"] == "high"
+
+
+class TestMustAddressAlerts:
+    """Context field must_address_alerts contains top alerts for response."""
+
+    def test_must_address_alerts_built_from_contradictions(self):
+        """Build must_address_alerts from contradiction engine output."""
+        from werewolf_agent.cognition.contradiction import ContradictionAlert
+
+        alerts = [
+            ContradictionAlert(
+                player_id="p01", alert_type="claim_conflict", priority="high",
+                description="p01 and p05 both claim seer",
+                evidence=({"role": "seer", "claimers": ["p01", "p05"]},),
+                day_range=(1, 1),
+            ),
+        ]
+
+        # Build must_address from high priority alerts
+        must_address = _build_must_address_alerts(alerts, viewer_id="p02")
+        assert len(must_address) >= 1
+        assert must_address[0]["alert_type"] == "claim_conflict"
+        assert "required_response" in must_address[0]
+
+
+def _build_must_address_alerts(alerts, viewer_id=None):
+    """Helper to build must_address_alerts from contradiction alerts."""
+    result = []
+    for alert in alerts:
+        if alert.priority == "high":
+            entry = {
+                "alert_type": alert.alert_type,
+                "players": [p for p in alert.player_id.split(",") if p],
+                "description": alert.description,
+                "required_response": ["question", "side_with", "park"],
+            }
+            result.append(entry)
+    return result

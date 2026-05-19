@@ -127,6 +127,8 @@ class AnthropicProvider(_BaseHttpProvider):
         response.raise_for_status()
         latency_ms = int((time.monotonic() - start) * 1000)
         data = response.json()
+        if tools and tool_choice and not _has_anthropic_tool_use(data):
+            raise RuntimeError("tool_use response required when tool_choice is specified")
         text = _extract_anthropic_text(data)
         usage = data.get("usage", {})
         return GenerateResult(
@@ -315,6 +317,8 @@ def _generate_openai_compatible(
     latency_ms = int((time.monotonic() - start) * 1000)
     data = response.json()
     message = data.get("choices", [{}])[0].get("message", {})
+    if tools and tool_choice and not message.get("tool_calls"):
+        raise RuntimeError("tool_call response required when tool_choice is specified")
     text = message.get("content", "") or _extract_openai_tool_text(message)
     usage = data.get("usage", {})
     return GenerateResult(
@@ -338,6 +342,10 @@ def _extract_anthropic_text(data: dict[str, Any]) -> str:
         elif item.get("type") == "tool_use":
             parts.append(json.dumps(item.get("input", {}), ensure_ascii=False))
     return "\n".join(part for part in parts if part)
+
+
+def _has_anthropic_tool_use(data: dict[str, Any]) -> bool:
+    return any(item.get("type") == "tool_use" for item in data.get("content", []))
 
 
 def _extract_openai_tool_text(message: dict[str, Any]) -> str:

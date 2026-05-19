@@ -42,6 +42,7 @@ class TaskType(str, Enum):
     DECEPTION = "deception"
     LAST_WORDS = "last_words"
     SHERIFF_SPEECH = "sheriff_speech"
+    SHERIFF_REGISTRATION = "sheriff_registration"
     DEFENSE_SPEECH = "defense_speech"
     REFLECTION = "reflection"
     WOLF_DISCUSSION = "wolf_discussion"
@@ -100,6 +101,14 @@ class ActionTrace(BaseModel):
     legal_targets: list[str] = Field(default_factory=list)
     retry: dict[str, Any] | None = None
     fallback_reason: str | None = None
+    # Task 9: Structured output metadata
+    tool_call_required: bool = False
+    tool_call_received: bool = False
+    tool_call_name: str = ""
+    parse_success: bool = False
+    parse_error: str | None = None
+    retry_count: int = 0
+    structured_failure_reason: str | None = None
 
 
 class PlayerAction(BaseModel):
@@ -168,6 +177,7 @@ class FallbackAction(BaseModel):
     """Fallback when retries are exhausted."""
     action_type: ActionType = ActionType.NO_ACTION
     target_id: str | None = None
+    speech: str = ""
     reason: str = "fallback: retries exhausted"
     trace: ActionTrace | None = None
 

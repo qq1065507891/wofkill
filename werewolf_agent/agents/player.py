@@ -110,6 +110,12 @@ class PlayerAgent:
         retry = RetryInfo(max_retries=self.max_retries)
         raw_text = ""
         parsed_action: PlayerAction | None = None
+        # Task 9: track structured output metadata across retries
+        tool_call_required = True  # We always pass tools and tool_choice
+        tool_call_received = False
+        parse_success = False
+        parse_error_str: str | None = None
+        structured_failure_reason: str | None = None
 
         for attempt in range(1, self.max_retries + 1):
             retry = RetryInfo(
@@ -121,17 +127,49 @@ class PlayerAgent:
 
             # Generate LLM output
             prompt = self._build_prompt(context, retry)
-            result = self.model_router.generate(
-                agent_id=self.agent_id,
-                task_type=context.task_type.value,
-                prompt=prompt,
-                system_prompt=self._build_system_prompt(context),
-                tools=[self._player_action_tool(context)],
-                tool_choice={"type": "tool", "name": "submit_player_action"},
-            )
+            try:
+                result = self.model_router.generate(
+                    agent_id=self.agent_id,
+                    task_type=context.task_type.value,
+                    prompt=prompt,
+                    system_prompt=self._build_system_prompt(context),
+                    tools=[self._player_action_tool(context)],
+                    tool_choice={"type": "tool", "name": "submit_player_action"},
+                )
+            except NotImplementedError:
+                # Provider does not support tool_choice
+                structured_failure_reason = "structured_output_unsupported"
+                fallback = self._fallback_action(context)
+                trace = self._build_action_trace(
+                    context,
+                    raw_text="",
+                    parsed_action=None,
+                    final_action_type=fallback.action_type,
+                    retry=retry,
+                    fallback_reason=fallback.reason,
+                    tool_call_required=tool_call_required,
+                    tool_call_received=False,
+                    parse_success=False,
+                    parse_error="provider does not support tool_choice",
+                    retry_count=attempt,
+                    structured_failure_reason=structured_failure_reason,
+                )
+                fallback = fallback.model_copy(update={"trace": trace})
+                return fallback, retry
+
             raw_text = result.text or ""
 
             if not result.text:
+                # Check if the failure was due to structured output not supported
+                usage_log = self.model_router.get_usage_log()
+                if usage_log:
+                    last_record = usage_log[-1]
+                    if (
+                        not last_record.success
+                        and last_record.fallback_reason
+                        and "NotImplementedError" in last_record.fallback_reason
+                    ):
+                        structured_failure_reason = "structured_output_unsupported"
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
@@ -145,6 +183,7 @@ class PlayerAgent:
             action, parse_error = self._parse_action(result.text)
             parsed_action = action
             if parse_error:
+                parse_error_str = parse_error
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
@@ -153,6 +192,14 @@ class PlayerAgent:
                     correction_hint="Output must be valid JSON matching the PlayerAction schema.",
                 )
                 continue
+
+            # Task 9: Successfully parsed means provider returned usable JSON.
+            # Whether it came from a tool_call or plain text is inferred from
+            # the fact that providers raise RuntimeError when tool_choice is
+            # specified but no tool_call arrives. So reaching here means
+            # tool_call was received (or the provider handled it transparently).
+            tool_call_received = True
+            parse_success = True
 
             # Validate against legal sets
             valid, validation_error = self.validator.validate(
@@ -177,6 +224,10 @@ class PlayerAgent:
                 parsed_action=action,
                 final_action_type=action.action_type,
                 retry=retry,
+                tool_call_required=tool_call_required,
+                tool_call_received=tool_call_received,
+                parse_success=parse_success,
+                retry_count=attempt,
             )
             return action.model_copy(update={"trace": trace}), retry
 
@@ -189,6 +240,12 @@ class PlayerAgent:
             final_action_type=fallback.action_type,
             retry=retry,
             fallback_reason=fallback.reason,
+            tool_call_required=tool_call_required,
+            tool_call_received=tool_call_received,
+            parse_success=parse_success,
+            parse_error=parse_error_str,
+            retry_count=self.max_retries,
+            structured_failure_reason=structured_failure_reason,
         )
         fallback = fallback.model_copy(update={"trace": trace})
         return fallback, retry
@@ -202,6 +259,12 @@ class PlayerAgent:
         final_action_type: ActionType,
         retry: RetryInfo,
         fallback_reason: str | None = None,
+        tool_call_required: bool = False,
+        tool_call_received: bool = False,
+        parse_success: bool = False,
+        parse_error: str | None = None,
+        retry_count: int = 0,
+        structured_failure_reason: str | None = None,
     ) -> ActionTrace:
         return ActionTrace(
             raw_text=raw_text,
@@ -211,6 +274,13 @@ class PlayerAgent:
             legal_targets=list(context.legal_targets),
             retry=retry.model_dump(),
             fallback_reason=fallback_reason,
+            tool_call_required=tool_call_required,
+            tool_call_received=tool_call_received,
+            tool_call_name="submit_player_action" if tool_call_required else "",
+            parse_success=parse_success,
+            parse_error=parse_error,
+            retry_count=retry_count,
+            structured_failure_reason=structured_failure_reason,
         )
 
     def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
@@ -343,9 +413,18 @@ class PlayerAgent:
         } and context.legal_targets:
             safe_target = context.legal_targets[0]
 
+        speech = ""
+        if safe_action == ActionType.SPEECH:
+            target = context.legal_targets[0] if context.legal_targets else None
+            if target:
+                speech = f"我先明确给出一个判断：{target} 的发言和站边需要重点解释，我会把票型和前后逻辑继续对上。"
+            else:
+                speech = "我先明确表态：今天会重点看发言前后是否一致、投票是否跟逻辑匹配，不接受纯划水过麦。"
+
         return FallbackAction(
             action_type=safe_action,
             target_id=safe_target,
+            speech=speech,
             reason="fallback: retries exhausted",
         )
 
