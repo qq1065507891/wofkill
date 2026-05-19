@@ -932,15 +932,33 @@ def agent_badge_decision(
         legal_actions=[ActionType.BADGE_TRANSFER, ActionType.BADGE_TEAR],
         legal_targets=alive_others,
     )
+    player_role = gs.players[sheriff_id].role if sheriff_id in gs.players else ""
+    role_hint = ""
+    if player_role == "werewolf":
+        role_hint = (
+            "你是狼人警长，移交必须为狼队利益服务：\n"
+            "   - 移交给狼队友：让狼队继续控制警徽和归票权。\n"
+            "   - 移交给被狼队深度迷惑的好人：利用他替狼队带节奏。\n"
+            "   - 撕毁：如果移交任何人都对狼队不利，撕掉不让好人拿到归票权。"
+        )
+    elif player_role == "seer":
+        role_hint = (
+            "你是预言家警长：移交给你验过的金水（被你验出好人的玩家）。"
+            "让金水拿到警徽，继续传递你的验人信息。"
+        )
+    else:
+        role_hint = (
+            "你是好人警长：移交给你最信任的明好人，"
+            "确保警徽不落入狼人手中。如果场上没有明确的明好人，可以撕毁。"
+        )
+
     strategy_directive = {
         "badge_decision": (
             "你是即将离场的警长，必须决定警徽去向：\n"
             "1) 移交（BADGE_TRANSFER）：选择一名存活玩家作为新警长。\n"
-            "   - 如果你是好人：移交给你最信任的明好人。\n"
-            "   - 如果你是预言家：移交给你验过的金水（被你验出好人的玩家）。\n"
-            "2) 撕毁（BADGE_TEAR）：撕毁警徽，本局不再有警长。"
-            "除非你确信撕毁对好人更有利，否则应该选择移交。\n"
-            "请做出对好人阵营最有利的决定。"
+            f"   {role_hint}\n"
+            "2) 撕毁（BADGE_TEAR）：撕毁警徽，本局不再有警长。\n"
+            "请根据你的身份和阵营做出最有利的决定。"
         ),
         "alive_players": alive_others,
     }
