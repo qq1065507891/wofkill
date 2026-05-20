@@ -143,6 +143,7 @@ class GameRunner:
             "seer_target_id": seer_target_id,
             "hybrid_master_target_id": None,
             "self_destruct_wolf_id": None,
+            "day_number_already_incremented": False,
             "exile_votes": {},
             "revote": False,
             "sheriff_candidates": [],

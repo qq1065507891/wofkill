@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from werewolf_agent.skills.schemas import (
     SkillDefinition,
+    SkillFaction,
     SkillInput,
     SkillName,
     SkillOutput,
@@ -26,6 +27,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="冒充神职角色，通过假查验或假身份获取信任和话语权",
         applicable_roles=["werewolf"],
         applicable_phases=["speech", "sheriff_speech", "pk_speech"],
+        faction=SkillFaction.WOLF,
         tags=["deception", "aggressive"],
     ),
     SkillDefinition(
@@ -34,6 +36,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="针对已经起跳的玩家进行身份对跳，争夺话语权",
         applicable_roles=["seer", "werewolf"],
         applicable_phases=["speech", "pk_speech"],
+        faction=SkillFaction.COMMON,
         tags=["confrontation", "identity_claim"],
     ),
     SkillDefinition(
@@ -42,6 +45,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="引导全场投票方向，集中票数归出目标玩家",
         applicable_roles=["seer", "werewolf", "villager", "hunter", "witch", "idiot", "hybrid"],
         applicable_phases=["speech", "vote"],
+        faction=SkillFaction.COMMON,
         tags=["leadership", "voting"],
     ),
     SkillDefinition(
@@ -50,6 +54,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="集中阵营力量冲票特定目标，多用于狼队协同冲票",
         applicable_roles=["werewolf"],
         applicable_phases=["vote"],
+        faction=SkillFaction.WOLF,
         tags=["coordination", "aggressive"],
     ),
     SkillDefinition(
@@ -58,6 +63,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="在好人阵营中建立可信度，通过适度攻击狼队友来获取信任",
         applicable_roles=["werewolf"],
         applicable_phases=["speech", "vote"],
+        faction=SkillFaction.WOLF,
         tags=["deception", "long_term"],
     ),
     SkillDefinition(
@@ -66,6 +72,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="通过发言和行为模式分析找出神职玩家",
         applicable_roles=["werewolf", "villager", "hybrid"],
         applicable_phases=["speech", "night_action"],
+        faction=SkillFaction.COMMON,
         tags=["analysis", "information"],
     ),
     SkillDefinition(
@@ -74,6 +81,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="隐藏自己的真实角色，避免被过早识别",
         applicable_roles=["seer", "witch", "hunter", "werewolf", "hybrid"],
         applicable_phases=["speech", "sheriff_speech"],
+        faction=SkillFaction.COMMON,
         tags=["stealth", "defense"],
     ),
     SkillDefinition(
@@ -82,6 +90,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="在被怀疑或被推票时进行有效防守和反驳",
         applicable_roles=["werewolf", "villager", "seer", "witch", "hunter", "idiot", "hybrid"],
         applicable_phases=["defense_speech", "pk_speech"],
+        faction=SkillFaction.COMMON,
         tags=["defense", "persuasion"],
     ),
     SkillDefinition(
@@ -90,6 +99,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="系统性分析可能的狼人分布，缩小嫌疑范围",
         applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid"],
         applicable_phases=["speech", "sheriff_speech"],
+        faction=SkillFaction.GOOD,
         tags=["analysis", "logic"],
     ),
     SkillDefinition(
@@ -98,6 +108,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="保护关键神职角色不被狼人发现或冲票",
         applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid"],
         applicable_phases=["speech", "vote"],
+        faction=SkillFaction.GOOD,
         tags=["protection", "team_play"],
     ),
     SkillDefinition(
@@ -106,6 +117,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="分析遗言内容，提取信息，判断发言者真实身份",
         applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid", "werewolf"],
         applicable_phases=["speech"],
+        faction=SkillFaction.COMMON,
         tags=["analysis", "information"],
     ),
     SkillDefinition(
@@ -114,6 +126,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         description="复盘本局关键判断，识别错误，提出改进建议",
         applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid", "werewolf"],
         applicable_phases=["review"],
+        faction=SkillFaction.UNIVERSAL,
         tags=["review", "improvement"],
     ),
 ]

@@ -405,6 +405,16 @@ def agent_night_witch(
         "speech字段留空（夜间行动不需要发言）。"
     )
 
+    # Special directive: witch is first-night wolf kill target
+    if wolf_kill_target_id == witch_id and not gs.poison_used:
+        witch_directive["first_night_killed"] = (
+            "你是女巫，第一夜就被狼人杀害了！你即将死亡，无法自救。"
+            "强烈建议使用毒药毒杀一名你怀疑是狼人的玩家。"
+            "理由：1) 你已确认死亡，毒药留着没有用；"
+            "2) 你的毒药命中可以帮好人阵营获取关键信息；"
+            "3) 你可以在遗言中公布身份和毒药目标，为好人提供信息。"
+        )
+
     # Add poison pressure targets if available
     poison_pressure = context.visible_world_state.get("poison_pressure_targets", [])
     if poison_pressure:
@@ -708,8 +718,21 @@ def agent_day_speech(
         wolf_team_plan=state.get("wolf_team_plan"),
     )
 
-    # Sheriff gets 归票 (vote push) directive
     strategy_directive = context.strategy_directive or {}
+
+    # Role-specific speech constraints
+    player_role = gs.players[speaker_id].role if speaker_id in gs.players else ""
+    if player_role == "witch":
+        strategy_directive["witch_speech_constraint"] = (
+            "你是女巫，你掌握的夜间信息（谁被刀、药水使用情况、救了谁、毒了谁）是你的核心优势。"
+            "不要轻易暴露这些信息——一旦公开，狼人会知道你的药水状态并针对性调整策略。"
+            "但在以下情况可以适度透露：1) 你即将死亡需要传递关键信息；"
+            "2) 场上好人阵营信息严重不足，需要你站出来带队；"
+            "3) 有人假冒女巫需要你自证身份。"
+            "透露时也要衡量利弊，不要在第一天就全部交底。"
+        )
+
+    # Sheriff gets 归票 (vote push) directive
     if gs.sheriff_id == speaker_id and gs.sheriff_badge_state == "active":
         alive_others = [pid for pid, p in gs.players.items() if p.alive and pid != speaker_id]
         strategy_directive["sheriff_vote_push"] = (
@@ -737,8 +760,11 @@ def agent_day_speech(
 
     action, retry_info = agent.act(context)
 
+    if action.action_type == ActionType.SELF_DESTRUCT:
+        return {"speech_text": "", "action_trace": {}, "self_destruct": True}
+
     speech_text = getattr(action, "speech", "") or ""
-    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
+    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}
 
 
 def agent_sheriff_pick_speech_order(
@@ -1065,10 +1091,13 @@ def agent_sheriff_vote(
     )
 
     action, retry_info = agent.act(context)
+    if action.action_type == ActionType.SELF_DESTRUCT:
+        return {"vote_target": None, "self_destruct": True}
     target = action.target_id if action.action_type == ActionType.SHERIFF_VOTE else None
     return {
         "vote_target": target,
         "action_trace": _action_trace_payload(action),
+        "self_destruct": False,
     }
 
 
@@ -1124,10 +1153,12 @@ def agent_sheriff_register(
 
     try:
         action, retry_info = agent.act(context)
-        return action.action_type == ActionType.SHERIFF_REGISTER
+        if action.action_type == ActionType.SELF_DESTRUCT:
+            return {"registered": False, "self_destruct": True}
+        return {"registered": action.action_type == ActionType.SHERIFF_REGISTER, "self_destruct": False}
     except Exception:
         logger.warning("Sheriff registration failed for %s", player_id, exc_info=True)
-        return False
+        return {"registered": False, "self_destruct": False}
 
 
 def agent_sheriff_withdraw(
@@ -1152,10 +1183,12 @@ def agent_sheriff_withdraw(
 
     try:
         action, retry_info = agent.act(context)
-        return action.action_type == ActionType.SHERIFF_WITHDRAW
+        if action.action_type == ActionType.SELF_DESTRUCT:
+            return {"withdrew": False, "self_destruct": True}
+        return {"withdrew": action.action_type == ActionType.SHERIFF_WITHDRAW, "self_destruct": False}
     except Exception:
         logger.warning("Sheriff withdrawal failed for %s", candidate_id, exc_info=True)
-        return False
+        return {"withdrew": False, "self_destruct": False}
 
 
 def agent_sheriff_election_speech(
@@ -1207,6 +1240,24 @@ def agent_sheriff_election_speech(
                 "要充分利用这一点，留下完整的警徽流，让好人信任你。"
             )
 
+    # Check if previous candidates have already spoken (for response/analysis)
+    prev_speeches = []
+    for e in gs.events:
+        if e.type == "sheriff_speech" and e.payload.get("text") and e.payload.get("speaker") != candidate_id:
+            prev_speeches.append({
+                "speaker": e.payload["speaker"],
+                "text": e.payload["text"],
+            })
+    prev_speech_instruction = ""
+    if prev_speeches:
+        prev_texts = "\n".join(f"  [{s['speaker']}]: {s['text']}" for s in prev_speeches)
+        prev_speech_instruction = (
+            f"\n\n【重要】在你之前，已经有候选人发言了。你必须回应和分析他们的发言：\n"
+            f"{prev_texts}\n"
+            "要求：引用具体内容进行分析，指出逻辑问题或表示认同/反对。"
+            "警上发言是辩论，不是各说各的！如果你不回应前面的发言，听众会认为你心虚或没有分析能力。"
+        )
+
     strategy_directive = {
         "sheriff_election_speech": (
             "你正在竞选警长，必须解释上警原因。发言必须包含："
@@ -1217,6 +1268,7 @@ def agent_sheriff_election_speech(
             "注意：只有预言家（或悍跳预言家）才能留警徽流，其他身份不要提警徽流。"
             "非预言家不要在警上冒充预言家抢警徽。"
             f"{seer_context}"
+            f"{prev_speech_instruction}"
         ),
         "other_candidates": other_candidates,
     }
@@ -1229,6 +1281,10 @@ def agent_sheriff_election_speech(
     context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     action, retry_info = agent.act(context)
+
+    if action.action_type == ActionType.SELF_DESTRUCT:
+        return {"speech_text": "", "action_trace": {}, "self_destruct": True}
+
     speech_text = getattr(action, "speech", "") or ""
 
     # Reject empty sheriff election speeches
@@ -1239,4 +1295,4 @@ def agent_sheriff_election_speech(
             f"希望大家支持我当选警长。"
         )
 
-    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
+    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}

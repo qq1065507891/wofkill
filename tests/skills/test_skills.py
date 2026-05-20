@@ -4,11 +4,12 @@ import pytest
 
 from werewolf_agent.skills.schemas import (
     SkillDefinition,
+    SkillFaction,
     SkillInput,
     SkillName,
     SkillOutput,
 )
-from werewolf_agent.skills.registry import SkillRegistry
+from werewolf_agent.skills.registry import SkillRegistry, faction_for_role
 from werewolf_agent.skills.werewolf_skills import (
     SKILL_DEFINITIONS,
     apply_skill,
@@ -271,3 +272,150 @@ class TestSkillRegistry:
         assert reg.count() == 12  # Overwrites existing HIDE_IDENTITY
         skill = reg.get(SkillName.HIDE_IDENTITY)
         assert skill.display_name == "测试自定义"
+
+
+# ---------------------------------------------------------------------------
+# Faction-based skill loading
+# ---------------------------------------------------------------------------
+
+class TestSkillFaction:
+
+    def test_all_skills_have_faction(self):
+        for skill in SKILL_DEFINITIONS:
+            assert skill.faction in (
+                SkillFaction.WOLF,
+                SkillFaction.GOOD,
+                SkillFaction.COMMON,
+                SkillFaction.UNIVERSAL,
+            )
+
+    def test_wolf_skills_are_wolf_faction(self):
+        wolf_skill_names = {SkillName.BOLD_CLAIM, SkillName.SWING_VOTE, SkillName.DEEP_HOOK}
+        for skill in SKILL_DEFINITIONS:
+            if skill.name in wolf_skill_names:
+                assert skill.faction == SkillFaction.WOLF, f"{skill.name} should be WOLF"
+
+    def test_good_skills_are_good_faction(self):
+        good_skill_names = {SkillName.WOLF_PIT_ANALYSIS, SkillName.PROTECT_POWER}
+        for skill in SKILL_DEFINITIONS:
+            if skill.name in good_skill_names:
+                assert skill.faction == SkillFaction.GOOD, f"{skill.name} should be GOOD"
+
+    def test_review_is_universal(self):
+        skill = next(s for s in SKILL_DEFINITIONS if s.name == SkillName.REVIEW_CORRECTION)
+        assert skill.faction == SkillFaction.UNIVERSAL
+
+    def test_by_faction_wolf(self):
+        reg = SkillRegistry()
+        wolf_skills = reg.by_faction(SkillFaction.WOLF)
+        assert len(wolf_skills) == 3
+        names = {s.name for s in wolf_skills}
+        assert names == {SkillName.BOLD_CLAIM, SkillName.SWING_VOTE, SkillName.DEEP_HOOK}
+
+    def test_by_faction_good(self):
+        reg = SkillRegistry()
+        good_skills = reg.by_faction(SkillFaction.GOOD)
+        assert len(good_skills) == 2
+        names = {s.name for s in good_skills}
+        assert names == {SkillName.WOLF_PIT_ANALYSIS, SkillName.PROTECT_POWER}
+
+    def test_by_faction_common(self):
+        reg = SkillRegistry()
+        common_skills = reg.by_faction(SkillFaction.COMMON)
+        assert len(common_skills) == 6
+        names = {s.name for s in common_skills}
+        assert SkillName.COUNTER_CLAIM in names
+        assert SkillName.PUSH_VOTE in names
+        assert SkillName.FIND_POWER in names
+        assert SkillName.HIDE_IDENTITY in names
+        assert SkillName.RESIST_PUSH in names
+        assert SkillName.LAST_WORDS_ANALYSIS in names
+
+    def test_by_faction_universal(self):
+        reg = SkillRegistry()
+        universal = reg.by_faction(SkillFaction.UNIVERSAL)
+        assert len(universal) == 1
+        assert universal[0].name == SkillName.REVIEW_CORRECTION
+
+    def test_faction_for_role(self):
+        assert faction_for_role("werewolf") == SkillFaction.WOLF
+        assert faction_for_role("villager") == SkillFaction.GOOD
+        assert faction_for_role("seer") == SkillFaction.GOOD
+        assert faction_for_role("witch") == SkillFaction.GOOD
+        assert faction_for_role("hunter") == SkillFaction.GOOD
+        assert faction_for_role("idiot") == SkillFaction.GOOD
+        assert faction_for_role("hybrid") == SkillFaction.GOOD
+
+
+class TestSkillsForRole:
+
+    def test_wolf_gets_wolf_plus_common_plus_universal(self):
+        reg = SkillRegistry()
+        skills = reg.skills_for_role("werewolf")
+        names = {s.name for s in skills}
+        # Wolf-only
+        assert SkillName.BOLD_CLAIM in names
+        assert SkillName.SWING_VOTE in names
+        assert SkillName.DEEP_HOOK in names
+        # Common
+        assert SkillName.COUNTER_CLAIM in names
+        assert SkillName.PUSH_VOTE in names
+        assert SkillName.FIND_POWER in names
+        assert SkillName.HIDE_IDENTITY in names
+        assert SkillName.RESIST_PUSH in names
+        assert SkillName.LAST_WORDS_ANALYSIS in names
+        # Universal
+        assert SkillName.REVIEW_CORRECTION in names
+        # Good-only must NOT be present
+        assert SkillName.WOLF_PIT_ANALYSIS not in names
+        assert SkillName.PROTECT_POWER not in names
+
+    def test_good_role_gets_good_plus_common_plus_universal(self):
+        reg = SkillRegistry()
+        for role in ["villager", "seer", "witch", "hunter", "idiot", "hybrid"]:
+            skills = reg.skills_for_role(role)
+            names = {s.name for s in skills}
+            # Good-only
+            assert SkillName.WOLF_PIT_ANALYSIS in names, f"{role} missing WOLF_PIT_ANALYSIS"
+            assert SkillName.PROTECT_POWER in names, f"{role} missing PROTECT_POWER"
+            # Common
+            assert SkillName.PUSH_VOTE in names
+            assert SkillName.RESIST_PUSH in names
+            assert SkillName.LAST_WORDS_ANALYSIS in names
+            assert SkillName.REVIEW_CORRECTION in names
+            # Wolf-only must NOT be present
+            assert SkillName.BOLD_CLAIM not in names
+            assert SkillName.SWING_VOTE not in names
+            assert SkillName.DEEP_HOOK not in names
+
+    def test_seer_has_counter_claim_but_villager_does_not(self):
+        reg = SkillRegistry()
+        seer_skills = reg.skills_for_role("seer")
+        villager_skills = reg.skills_for_role("villager")
+        seer_names = {s.name for s in seer_skills}
+        villager_names = {s.name for s in villager_skills}
+        assert SkillName.COUNTER_CLAIM in seer_names
+        assert SkillName.COUNTER_CLAIM not in villager_names
+        assert SkillName.HIDE_IDENTITY in seer_names
+        assert SkillName.HIDE_IDENTITY not in villager_names
+
+    def test_dispatch_for_role_werewolf_speech(self):
+        reg = SkillRegistry()
+        results = reg.dispatch_for_role(
+            "werewolf", "speech",
+            SkillInput(role="werewolf", phase="speech", day=1),
+        )
+        assert len(results) > 0
+        for r in results:
+            assert r.confidence >= 0.0
+
+    def test_dispatch_for_role_seer_excludes_wolf_skills(self):
+        reg = SkillRegistry()
+        results = reg.dispatch_for_role(
+            "seer", "speech",
+            SkillInput(role="seer", phase="speech", day=1),
+        )
+        result_names = {r.skill_name for r in results}
+        assert "bold_claim" not in result_names
+        assert "swing_vote" not in result_names
+        assert "deep_hook" not in result_names

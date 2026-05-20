@@ -804,11 +804,12 @@ def test_route_after_vote_tie() -> None:
     assert result == "tie_pk_speech"
 
 
-def test_route_after_announce_day1_sheriff() -> None:
+def test_route_after_announce_day1_now_goes_to_discussion() -> None:
     from werewolf_agent.runtime.graph import route_after_announce
     engine = _new_engine()
     gs = GameState(day_number=1)
-    assert route_after_announce({"game_state": gs, "engine": engine}) == "sheriff_registration"
+    # Sheriff election now happens BEFORE announce_deaths, so after announce → free_discussion
+    assert route_after_announce({"game_state": gs, "engine": engine}) == "free_discussion"
 
 
 def test_route_after_announce_day2_discussion() -> None:
@@ -2091,8 +2092,8 @@ class TestSheriffBadgeNightDeathRouting:
         result = route_after_hunter_shot({"game_state": gs, "engine": engine})
         assert result == "sheriff_badge_transfer"
 
-    def test_no_sheriff_death_routes_to_announce_deaths(self) -> None:
-        """When sheriff did not die at night, route goes to announce_deaths."""
+    def test_no_sheriff_death_routes_to_sheriff_first_day_on_night1(self) -> None:
+        """Night 1 with no sheriff death routes to sheriff_first_day_entry (sheriff before deaths)."""
         engine = _new_engine()
         players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=42)
         gs = GameState(
@@ -2102,7 +2103,7 @@ class TestSheriffBadgeNightDeathRouting:
             night_number=1,
         )
         result = route_after_resolve_night({"game_state": gs, "engine": engine})
-        assert result == "announce_deaths"
+        assert result == "sheriff_first_day_entry"
 
     def test_sheriff_alive_routes_to_announce_deaths(self) -> None:
         """When sheriff is still alive, route goes to announce_deaths."""

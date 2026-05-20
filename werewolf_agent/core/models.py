@@ -48,6 +48,7 @@ class GameState:
     winning_faction: str | None = None
     hybrid_result: str | None = None
     paused: bool = False
+    sheriff_interrupt_count: int = 0
 
 
 @dataclass(frozen=True)

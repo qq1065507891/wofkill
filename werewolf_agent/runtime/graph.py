@@ -98,6 +98,8 @@ class RuntimeState(TypedDict, total=False):
     agent_registry: Any  # AgentRegistry protocol, optional
     # Runtime flow-control timer; must not adjudicate RuleEngine truth
     runtime_timer: Any
+    # Day 1 sheriff-before-deaths flow control
+    day_number_already_incremented: bool
     # Anti-stall: consecutive days with no exile from vote
     consecutive_no_exile_days: int
     # Per-call timeout (seconds) for agent provider calls; 0 = no timeout
@@ -699,12 +701,42 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
 
 # -- Day nodes --
 
-def announce_deaths(state: RuntimeState) -> dict[str, Any]:
+def sheriff_first_day_entry(state: RuntimeState) -> dict[str, Any]:
+    """Day 1 (or resumed sheriff) entry: increment day, announce dawn WITHOUT deaths.
+    Sheriff election follows, then deaths are announced after election completes.
+    """
     gs: GameState = state["game_state"]
     d = gs.day_number + 1
-    gs, _ = _judge_broadcast(phase="day_announce", message=f"第{d}天天亮了", gs=gs, day_number=d)
+    gs, _ = _judge_broadcast(
+        phase="day_announce", message=f"第{d}天天亮了",
+        gs=gs, day_number=d,
+    )
     gs = replace(gs, phase="day", day_number=d,
                  events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
+    alive = [pid for pid, p in gs.players.items() if p.alive]
+    print(f"\n{'='*60}")
+    print(f"  【第{d}天】天亮了 (存活: {len(alive)}人: {alive})")
+    print(f"{'='*60}")
+    return {
+        "game_state": gs,
+        "day_number_already_incremented": True,
+        "revote": False,
+        "speech_index": 0,
+        "current_speaker_id": None,
+        "speech_order": [],
+    }
+
+
+def announce_deaths(state: RuntimeState) -> dict[str, Any]:
+    gs: GameState = state["game_state"]
+    # Only increment day if not already done by sheriff_first_day_entry
+    if not state.get("day_number_already_incremented"):
+        d = gs.day_number + 1
+        gs, _ = _judge_broadcast(phase="day_announce", message=f"第{d}天天亮了", gs=gs, day_number=d)
+        gs = replace(gs, phase="day", day_number=d,
+                     events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
+    else:
+        d = gs.day_number
 
     # Announce last night's deaths
     night_deaths = [
@@ -728,15 +760,37 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
         )
 
     alive = [pid for pid, p in gs.players.items() if p.alive]
-    print(f"\n{'='*60}")
-    print(f"  【第{d}天】天亮了 (存活: {len(alive)}人: {alive})")
+    if not state.get("day_number_already_incremented"):
+        print(f"\n{'='*60}")
+        print(f"  【第{d}天】天亮了 (存活: {len(alive)}人: {alive})")
     if night_deaths:
         for death in night_deaths:
             print(f"  [死讯] {_player_display(state, death.player_id)} 死亡 (原因: {death.reason})")
     else:
         print(f"  [死讯] 平安夜，无人死亡")
     print(f"{'='*60}")
-    return {"game_state": gs, "revote": False, "speech_index": 0, "current_speaker_id": None, "speech_order": []}
+    return {"game_state": gs, "revote": False, "speech_index": 0,
+            "current_speaker_id": None, "speech_order": []}
+
+
+def announce_deaths_with_badge_loss(state: RuntimeState) -> dict[str, Any]:
+    """Announce deaths AND declare badge permanently lost (after 2 sheriff interruptions)."""
+    result = announce_deaths(state)
+    gs: GameState = result["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="badge_permanently_lost",
+        message="本局警徽因竞选两度中断而永久流失，本局不再有警长",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+    gs = replace(gs, sheriff_badge_state="torn",
+                 events=gs.events + [GameEvent(
+                     type="badge_permanently_lost",
+                     payload={"reason": "sheriff_election_interrupted_twice"},
+                 )])
+    print(f"  [警徽] 本局警徽永久流失")
+    result["game_state"] = gs
+    return result
 
 
 def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
@@ -774,7 +828,10 @@ def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
         for pid, p in gs.players.items():
             if not p.alive:
                 continue
-            if _call_agent(agent_sheriff_register, state, state, engine, registry, pid):
+            result = _call_agent(agent_sheriff_register, state, state, engine, registry, pid)
+            if result and result.get("self_destruct"):
+                return {"game_state": gs, "self_destruct_wolf_id": pid}
+            if result and result.get("registered"):
                 candidates.append(pid)
                 print(f"  [上警报名] {_player_display(state, pid)} 报名上警")
     else:
@@ -845,6 +902,8 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                 candidate_id,
                 timeout_override=AGENT_TIMEOUTS.day_speech,
             )
+            if result and result.get("self_destruct"):
+                return {"game_state": gs, "self_destruct_wolf_id": candidate_id}
             speech_text = result.get("speech_text", "") if result else ""
             print(f"  [警上发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
             events.append(GameEvent(
@@ -888,7 +947,10 @@ def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
     withdrawing: list[str] = []
     if registry:
         for candidate_id in candidates:
-            if _call_agent(agent_sheriff_withdraw, state, state, engine, registry, candidate_id):
+            result = _call_agent(agent_sheriff_withdraw, state, state, engine, registry, candidate_id)
+            if result and result.get("self_destruct"):
+                return {"game_state": gs, "self_destruct_wolf_id": candidate_id}
+            if result and result.get("withdrew"):
                 withdrawing.append(candidate_id)
                 print(f"  [退水] {_player_display(state, candidate_id)} 退出竞选")
     else:
@@ -992,6 +1054,8 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
                 voter_id,
                 candidates,
             )
+            if result and result.get("self_destruct"):
+                return {"game_state": gs, "self_destruct_wolf_id": voter_id}
             if result and result.get("vote_target"):
                 votes[voter_id] = result["vote_target"]
                 print(f"  [警长投票] {_player_display(state, voter_id)} 投票给 {_player_display(state, result['vote_target'])}")
@@ -1110,6 +1174,8 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         if registry and not speech_text:
             engine: RuleEngine = state["engine"]
             result = _call_agent(agent_day_speech, state, state, engine, registry, speaker_id, timeout_override=AGENT_TIMEOUTS.day_speech)
+            if result and result.get("self_destruct"):
+                return {"game_state": gs, "self_destruct_wolf_id": speaker_id}
             if result:
                 speech_text = result.get("speech_text", "")
                 action_trace = result.get("action_trace")
@@ -1554,6 +1620,17 @@ def route_after_resolve_night(state: RuntimeState) -> str:
     # If sheriff died at night and game continues, route to badge transfer
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
+    # Badge permanently lost after 2 interruptions
+    if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
+        return "announce_deaths_with_badge_loss"
+    # Sheriff election needed: first night, or resumed after interruption
+    needs_sheriff = False
+    if gs.night_number == 1 and gs.sheriff_interrupt_count == 0 and gs.sheriff_id is None:
+        needs_sheriff = True
+    elif gs.sheriff_interrupt_count > 0 and gs.sheriff_interrupt_count < 2 and gs.sheriff_id is None:
+        needs_sheriff = True
+    if needs_sheriff:
+        return "sheriff_first_day_entry"
     return "announce_deaths"
 
 
@@ -1566,6 +1643,17 @@ def route_after_hunter_shot(state: RuntimeState) -> str:
     # If sheriff died at night and game continues, route to badge transfer
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
+    # Badge permanently lost after 2 interruptions
+    if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
+        return "announce_deaths_with_badge_loss"
+    # Sheriff election needed: first night, or resumed after interruption
+    needs_sheriff = False
+    if gs.night_number == 1 and gs.sheriff_interrupt_count == 0 and gs.sheriff_id is None:
+        needs_sheriff = True
+    elif gs.sheriff_interrupt_count > 0 and gs.sheriff_interrupt_count < 2 and gs.sheriff_id is None:
+        needs_sheriff = True
+    if needs_sheriff:
+        return "sheriff_first_day_entry"
     return "announce_deaths"
 
 
@@ -1617,14 +1705,35 @@ def route_victory(state: RuntimeState) -> str:
 
 
 def route_after_announce(state: RuntimeState) -> str:
-    gs: GameState = state["game_state"]
-    if gs.day_number == 1:
-        return "sheriff_registration"
     return "free_discussion"
 
 
 def route_after_sheriff_vote(state: RuntimeState) -> str:
-    return "free_discussion"
+    gs: GameState = state["game_state"]
+    wolf_id = state.get("self_destruct_wolf_id")
+    if wolf_id and wolf_id in gs.players and gs.players[wolf_id].alive and gs.players[wolf_id].role == "werewolf":
+        return "resolve_self_destruct"
+    return "announce_deaths"
+
+
+def _route_after_sheriff_phase(state: RuntimeState, default_next: str) -> str:
+    wolf_id = state.get("self_destruct_wolf_id")
+    gs: GameState = state["game_state"]
+    if wolf_id and wolf_id in gs.players and gs.players[wolf_id].alive and gs.players[wolf_id].role == "werewolf":
+        return "resolve_self_destruct"
+    return default_next
+
+
+def route_after_sheriff_registration(state: RuntimeState) -> str:
+    return _route_after_sheriff_phase(state, "sheriff_speech")
+
+
+def route_after_sheriff_speech(state: RuntimeState) -> str:
+    return _route_after_sheriff_phase(state, "sheriff_withdraw")
+
+
+def route_after_sheriff_withdraw(state: RuntimeState) -> str:
+    return _route_after_sheriff_phase(state, "sheriff_vote")
 
 
 def route_self_destruct_check(state: RuntimeState) -> str:
@@ -1645,8 +1754,20 @@ def resolve_self_destruct_node(state: RuntimeState) -> dict[str, Any]:
     wolf_id = state.get("self_destruct_wolf_id")
     if wolf_id:
         gs, events = engine.resolve_self_destruct(gs, wolf_id=wolf_id, day_number=gs.day_number)
+        # If sheriff election was in progress (no sheriff yet), track interruption
+        if gs.sheriff_id is None or gs.sheriff_badge_state == "none":
+            gs = replace(gs,
+                         sheriff_interrupt_count=gs.sheriff_interrupt_count + 1,
+                         sheriff_candidates=[])
+            count = gs.sheriff_interrupt_count
+            gs, _ = _judge_broadcast(
+                phase="sheriff_interrupted",
+                message=f"竞选过程中有人自爆，警长竞选中断（第{count}次中断）",
+                gs=gs, day_number=gs.day_number,
+                visibility="public",
+            )
         gs = replace(gs, events=gs.events + events)
-    return {"game_state": gs}
+    return {"game_state": gs, "self_destruct_wolf_id": None}
 
 
 def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
@@ -1854,24 +1975,28 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
             )
             speech_text = result.get("speech_text", "") if result else ""
             print(f"  [警上发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
-            events.append(GameEvent(
+            new_events: list[GameEvent] = []
+            speech_event = GameEvent(
                 type="sheriff_speech",
                 payload={
                     "speaker": candidate_id,
                     "day_number": gs.day_number,
                     "text": speech_text,
                 },
-            ))
+            )
+            new_events.append(speech_event)
             if result and result.get("action_trace"):
-                events.append(_action_trace_event(
+                new_events.append(_action_trace_event(
                     player_id=candidate_id,
                     phase="sheriff_speech",
                     action_trace=result["action_trace"],
                 ))
+            # Incrementally update gs so next candidate sees previous speeches
+            gs = replace(gs, events=gs.events + new_events)
+            state["game_state"] = gs
     else:
-        events.append(GameEvent(type="sheriff_speech", payload={}))
+        gs = replace(gs, events=gs.events + [GameEvent(type="sheriff_speech", payload={})])
 
-    gs = replace(gs, events=gs.events + events)
     return {"game_state": gs}
 
 
@@ -1907,7 +2032,9 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("night_hunter_idiot_status", night_hunter_idiot_status)
     graph.add_node("first_night_hybrid_master", first_night_hybrid_master)
     graph.add_node("resolve_night_node", resolve_night)
+    graph.add_node("sheriff_first_day_entry", sheriff_first_day_entry)
     graph.add_node("announce_deaths", announce_deaths)
+    graph.add_node("announce_deaths_with_badge_loss", announce_deaths_with_badge_loss)
     graph.add_node("night_death_last_words", night_death_last_words)
     graph.add_node("sheriff_registration", sheriff_registration)
     graph.add_node("sheriff_speech", sheriff_speech)
@@ -1943,22 +2070,39 @@ def _add_all_edges(graph: StateGraph) -> None:
         "resolve_hunter_shot": "resolve_hunter_shot",
         "check_victory": "check_victory",
         "sheriff_badge_transfer": "sheriff_badge_transfer",
+        "sheriff_first_day_entry": "sheriff_first_day_entry",
         "announce_deaths": "announce_deaths",
+        "announce_deaths_with_badge_loss": "announce_deaths_with_badge_loss",
     })
     graph.add_conditional_edges("resolve_hunter_shot", route_after_hunter_shot, {
         "check_victory": "check_victory",
         "sheriff_badge_transfer": "sheriff_badge_transfer",
+        "sheriff_first_day_entry": "sheriff_first_day_entry",
+        "announce_deaths": "announce_deaths",
+        "announce_deaths_with_badge_loss": "announce_deaths_with_badge_loss",
+    })
+    # Day 1 / resumed sheriff: entry → election → announce_deaths
+    graph.add_edge("sheriff_first_day_entry", "sheriff_registration")
+    graph.add_conditional_edges("sheriff_registration", route_after_sheriff_registration, {
+        "resolve_self_destruct": "resolve_self_destruct",
+        "sheriff_speech": "sheriff_speech",
+    })
+    graph.add_conditional_edges("sheriff_speech", route_after_sheriff_speech, {
+        "resolve_self_destruct": "resolve_self_destruct",
+        "sheriff_withdraw": "sheriff_withdraw",
+    })
+    graph.add_conditional_edges("sheriff_withdraw", route_after_sheriff_withdraw, {
+        "resolve_self_destruct": "resolve_self_destruct",
+        "sheriff_vote": "sheriff_vote",
+    })
+    graph.add_conditional_edges("sheriff_vote", route_after_sheriff_vote, {
+        "resolve_self_destruct": "resolve_self_destruct",
         "announce_deaths": "announce_deaths",
     })
+    # Day 2+ normal: announce_deaths → last_words → free_discussion
     graph.add_edge("announce_deaths", "night_death_last_words")
+    graph.add_edge("announce_deaths_with_badge_loss", "night_death_last_words")
     graph.add_conditional_edges("night_death_last_words", route_after_announce, {
-        "sheriff_registration": "sheriff_registration",
-        "free_discussion": "free_discussion",
-    })
-    graph.add_edge("sheriff_registration", "sheriff_speech")
-    graph.add_edge("sheriff_speech", "sheriff_withdraw")
-    graph.add_edge("sheriff_withdraw", "sheriff_vote")
-    graph.add_conditional_edges("sheriff_vote", route_after_sheriff_vote, {
         "free_discussion": "free_discussion",
     })
     graph.add_conditional_edges("free_discussion", route_self_destruct_check, {

@@ -11,6 +11,7 @@ from typing import Any
 
 from werewolf_agent.skills.schemas import (
     SkillDefinition,
+    SkillFaction,
     SkillInput,
     SkillName,
     SkillOutput,
@@ -19,6 +20,18 @@ from werewolf_agent.skills.werewolf_skills import (
     SKILL_DEFINITIONS,
     apply_skill,
 )
+
+
+# Roles that belong to the good faction
+_GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot", "hybrid"}
+_WOLF_ROLES = {"werewolf"}
+
+
+def faction_for_role(role: str) -> SkillFaction:
+    """Return the faction a role belongs to."""
+    if role in _WOLF_ROLES:
+        return SkillFaction.WOLF
+    return SkillFaction.GOOD
 
 
 class SkillRegistry:
@@ -73,6 +86,42 @@ class SkillRegistry:
 
     def by_tag(self, tag: str) -> list[SkillDefinition]:
         return [s for s in self._skills.values() if tag in s.tags]
+
+    def by_faction(self, faction: SkillFaction) -> list[SkillDefinition]:
+        return [s for s in self._skills.values() if s.faction == faction]
+
+    def skills_for_role(self, role: str) -> list[SkillDefinition]:
+        """Return skills available to a role based on its faction.
+
+        Loading rule:
+        - WOLF roles get: WOLF + COMMON + UNIVERSAL
+        - GOOD roles get: GOOD + COMMON + UNIVERSAL
+        """
+        role_faction = faction_for_role(role)
+        allowed = {SkillFaction.COMMON, SkillFaction.UNIVERSAL}
+        allowed.add(role_faction)
+        return [
+            s for s in self._skills.values()
+            if s.faction in allowed
+            and (not s.applicable_roles or role in s.applicable_roles)
+        ]
+
+    def dispatch_for_role(
+        self,
+        role: str,
+        phase: str,
+        skill_input: SkillInput,
+    ) -> list[SkillOutput]:
+        """Dispatch all faction-applicable skills for a role in a given phase."""
+        role_faction = faction_for_role(role)
+        allowed = {SkillFaction.COMMON, SkillFaction.UNIVERSAL}
+        allowed.add(role_faction)
+        skills = [
+            s for s in self._skills.values()
+            if s.faction in allowed
+            and s.is_applicable(role, phase)
+        ]
+        return [self.dispatch(s.name, skill_input) for s in skills]
 
     def names(self) -> list[str]:
         return [s.name.value for s in self._skills.values()]

@@ -31,6 +31,13 @@ class SkillName(str, Enum):
     REVIEW_CORRECTION = "review_correct" # 复盘纠错
 
 
+class SkillFaction(str, Enum):
+    WOLF = "wolf"
+    GOOD = "good"
+    COMMON = "common"
+    UNIVERSAL = "universal"
+
+
 class SkillPhase(str, Enum):
     SPEECH = "speech"
     VOTE = "vote"
@@ -81,6 +88,7 @@ class SkillDefinition:
     description: str
     applicable_roles: list[str] = field(default_factory=list)
     applicable_phases: list[str] = field(default_factory=list)
+    faction: SkillFaction = SkillFaction.COMMON
     tags: list[str] = field(default_factory=list)
 
     def is_applicable(self, role: str, phase: str) -> bool:
