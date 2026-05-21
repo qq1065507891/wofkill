@@ -111,6 +111,32 @@ def create_app(
         "dbg1": CallerRole.DEBUGGER,
     }
     _repo = repository
+    rag_service = None
+    try:
+        from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+        vector_store = None
+        vector_backend = os.environ.get("WEREWOLF_VECTOR_BACKEND", "").strip().lower()
+        if vector_backend:
+            try:
+                from werewolf_agent.rag.vector_store import create_vector_store
+
+                vector_store = create_vector_store(vector_backend)
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Vector store initialization failed; using RAG fallback: %s",
+                    exc,
+                )
+        rag_service = RAGKnowledgeService(repository=_repo, vector_store=vector_store)
+        rag_service.ensure_seeded()
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("RAG knowledge service initialization failed: %s", exc)
+    app.state.repository = _repo
+    app.state.rag_service = rag_service
 
     def _persist(state: GameState) -> None:
         games[state.game_id] = state
@@ -267,6 +293,7 @@ def create_app(
             use_agent_registry=os.environ.get("WEREWOLF_USE_LLM_AGENTS") == "1",
             model_config_path=os.environ.get("WEREWOLF_MODEL_CONFIG", "config/models.yaml"),
             repository=_repo,
+            rag_service=rag_service,
         ))
         # Override the runner's game_id to match the API game_id
         runner.reset_game_id(game_id)

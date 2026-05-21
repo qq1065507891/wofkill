@@ -78,6 +78,36 @@ class TestHighPressureSpeech:
         assert result["valid"] is False
 
 
+class TestPeaceNightWitchReasoning:
+    """Peace night reasoning must not misread public no-death as no wolf kill."""
+
+    def test_rejects_peace_night_means_witch_cannot_know_kill_target(self):
+        speech = (
+            "作为村民，我要问p05：昨晚平安夜，你到底救了谁？"
+            "如果你说不出具体是谁，你的女巫身份就是假的。"
+            "如果p11是真的预言家，他应该质疑这个矛盾，而不是急着给p05发金水。"
+            "我倾向投p05，因为平安夜根本没有人死，女巫不可能知道狼人刀了人。"
+        )
+
+        result = validate_public_speech(speech, phase="day_discussion", context={})
+
+        assert result["valid"] is False
+        assert "peace_night_witch_reasoning" in result["missing_fields"]
+        assert "平安夜不等于无人被刀" in result["hint"]
+
+    def test_accepts_reasonable_pressure_on_witch_claim(self):
+        speech = (
+            "我是好人阵营。平安夜可能是狼人空刀，也可能是女巫救人。"
+            "我怀疑p05不是因为平安夜本身，而是p05前后发言矛盾：先说用了药，"
+            "又不解释为什么暂时不公开银水。p05可以藏救人对象，但必须说明藏信息的收益。"
+            "我倾向投p05，除非p05能解释用药逻辑。"
+        )
+
+        result = validate_public_speech(speech, phase="day_discussion", context={})
+
+        assert result["valid"] is True
+
+
 class TestSpeechQualityExtraction:
     """extract_speech_quality identifies speech components."""
 

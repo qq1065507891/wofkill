@@ -422,6 +422,21 @@ class TestPlayerAgentRetryFallback:
         assert isinstance(action, PlayerAction)
         assert retry.attempt == 1
 
+    def test_wolf_examples_use_valid_private_intent_goals(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.NIGHT_ACTION,
+            own_role="werewolf",
+            legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
+            legal_targets=["p05"],
+        )
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "eliminate_villager" not in prompt
+        assert "frame_villager" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # Persona Router tests
@@ -747,13 +762,13 @@ class TestJudgeAgent:
     def test_broadcast_night_phase(self) -> None:
         judge = self._make_judge()
         b = judge.broadcast_phase("night", night_number=2)
-        assert "第 2 夜" in b.message
+        assert "N2 / 第二夜" in b.message
         assert b.broadcast_type == "night"
 
     def test_broadcast_day_phase(self) -> None:
         judge = self._make_judge()
         b = judge.broadcast_phase("day", day_number=3)
-        assert "第 3 天" in b.message
+        assert "D3 / 第三天" in b.message
 
     def test_broadcast_death_announcement_with_deaths(self) -> None:
         judge = self._make_judge()
@@ -965,6 +980,23 @@ class TestMandatoryVote:
         prompt = agent._build_system_prompt(ctx)
         assert "必须" in prompt
         assert "不能弃票" in prompt
+
+    def test_system_prompt_forbids_peace_night_witch_fallacy(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+        )
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "平安夜不等于无人被刀" in prompt
+        assert "不能用“平安夜没人死”反驳女巫知道刀口" in prompt
+        assert "不要跟风复述" in prompt
 
     def test_vote_pressure_from_strategy_directive(self) -> None:
         """strategy_directive with vote_pressure appears in prompt."""

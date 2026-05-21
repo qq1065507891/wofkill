@@ -157,6 +157,33 @@ class PostgresGameRepository:
             return None
         return row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
+    def save_rag_entries(self, entries: list[dict[str, Any]]) -> None:
+        conn = self._connect()
+        for entry in entries:
+            entry_id = entry.get("entry_id")
+            if not entry_id:
+                continue
+            conn.execute(
+                """
+                INSERT INTO rag_entries (entry_id, entry_json)
+                VALUES (%s, %s::jsonb)
+                ON CONFLICT (entry_id) DO UPDATE SET entry_json = EXCLUDED.entry_json
+                """,
+                (entry_id, json.dumps(entry, ensure_ascii=False)),
+            )
+        conn.commit()
+
+    def load_rag_entries(self) -> list[dict[str, Any]]:
+        rows = self._connect().execute(
+            "SELECT entry_json FROM rag_entries ORDER BY entry_id"
+        ).fetchall()
+        return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
+
+    def delete_rag_entry(self, entry_id: str) -> None:
+        conn = self._connect()
+        conn.execute("DELETE FROM rag_entries WHERE entry_id = %s", (entry_id,))
+        conn.commit()
+
     def list_games(self) -> list[GameState]:
         rows = self._connect().execute("SELECT state_json FROM games ORDER BY game_id").fetchall()
         states: list[GameState] = []
@@ -225,6 +252,12 @@ class PostgresGameRepository:
             CREATE TABLE IF NOT EXISTS config_snapshots (
                 game_id TEXT PRIMARY KEY REFERENCES games(game_id) ON DELETE CASCADE,
                 config_json JSONB NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS rag_entries (
+                entry_id TEXT PRIMARY KEY,
+                entry_json JSONB NOT NULL
             )
         """)
         conn.commit()

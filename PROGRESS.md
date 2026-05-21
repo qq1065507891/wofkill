@@ -5,9 +5,70 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: Real Werewolf Game Quality — Round 3 fixes applied.
-- Active task: Ready for next real game test.
+- Active task: RAG seed knowledge now syncs into repository/vector-backed service and is injected into live player contexts.
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-19
+- Last updated: 2026-05-20
+
+## RAG Vector/Seed Architecture Implementation - 2026-05-20
+
+Implemented the unified RAG knowledge path:
+
+- Added `RAGKnowledgeService` to coordinate curated code seeds, repository persistence, optional vector search, live-player visibility filtering, and prompt-safe salience items.
+- API startup now creates the service, upserts seed knowledge into the configured repository, optionally initializes `WEREWOLF_VECTOR_BACKEND`, and passes the service into `GameRunnerConfig`.
+- Runtime player context construction now uses the configured service when present, with the previous in-memory seed injector retained as a no-Docker fallback path.
+- PostgreSQL repository now implements `save_rag_entries`, `load_rag_entries`, and `delete_rag_entry`, matching the existing SQLite/memory RAG persistence contract.
+- Added regression coverage for seed fallback, repository seeding, vector indexing, vector-backed retrieval, live-context filtering, API startup wiring, and GameRunner state wiring.
+
+Verification:
+
+- `python -m pytest tests\rag\test_knowledge_service.py tests\rag\test_rag.py tests\rag\test_rag_hardening.py -q` passed.
+- `python -m pytest tests\runtime\test_runtime.py::TestWitchPoisonPressureContext tests\runtime\test_game_runner.py::test_game_runner_runtime_state_includes_rag_service tests\api\test_api.py::test_create_app_initializes_rag_service_from_env -q` passed.
+- `python -m pytest tests\storage\test_storage.py::TestRAGPersistence tests\storage\test_storage.py::TestPersistentMemoryCoordinator -q` passed with pytest temp root redirected into the workspace because the default Windows temp directory was permission-blocked.
+- `git diff --check` passed for the touched RAG/API/runtime/storage/test files.
+
+## Jingcheng Master RAG Seed Update - 2026-05-20
+
+Added four public high-quality `pre_witch_hunter_idiot_mixed` strategy cases from Jingcheng Master tournament sources:
+
+- 2025-07-09/10 villager fake-seer pressure case: villager pressure speech and good-side deception discipline.
+- 2025-04-15 wolf anti-prophet push case: wolf team continuation after successful anti-prophet push.
+- 2024-12-18 badge-loss review case: good-side reconstruction after wolf bombs interrupt sheriff flow.
+- 2026-02-27 wolf god-hunt coordination case: wolf night discussion after successful anti-prophet push.
+
+Changed files:
+
+- `werewolf_agent/rag/ingestion.py`
+- `tests/rag/test_rag.py`
+- `PROGRESS.md`
+
+Verification:
+
+- `python -m pytest tests\rag\test_rag.py::TestSeedData::test_jingcheng_master_pre_witch_hunter_idiot_mixed_cases_exist -q` passed.
+- `python -m pytest tests\rag\test_rag.py -q` passed.
+
+Follow-up structure update:
+
+- Expanded all four Jingcheng Master summaries into five sections: `警上`, `第一天`, `夜聊`, `投票`, `复盘结论`.
+- Added regression coverage requiring every `jingcheng_master` seed to include the five-section breakdown.
+- Where public sources do not provide full detail, summaries explicitly mark training focus instead of inventing exact speeches or vote counts.
+
+Verification:
+
+- `python -m pytest tests\rag\test_rag.py::TestSeedData::test_jingcheng_master_cases_have_phase_breakdown -q` passed.
+- `python -m pytest tests\rag\test_rag.py -q` passed.
+
+Runtime RAG injection update:
+
+- `build_agent_context()` now initializes an in-memory seed RAG injector from `create_seed_entries()`.
+- Live player contexts receive up to three safe `rag_hit` items in `salience_items`, filtered through `InjectionContext.LIVE_PLAYER`.
+- No Docker, SQLite, PostgreSQL, or pgvector is required for this seed knowledge path.
+- Manual sanity check for werewolf night discussion retrieved Jingcheng Master 260227, Jingcheng Master 250415, and wolf deep-hook strategy hints.
+
+Verification:
+
+- `python -m pytest tests\runtime\test_runtime.py::TestWitchPoisonPressureContext::test_build_agent_context_injects_rag_strategy_hints -q` passed.
+- `python -m pytest tests\agents\test_agents.py::TestMandatoryVote tests\runtime\test_runtime.py::TestWitchPoisonPressureContext -q` passed.
+- `python -m pytest tests\rag\test_rag.py -q` passed.
 
 ## Round 3 Real Game Quality Fixes - 2026-05-19
 

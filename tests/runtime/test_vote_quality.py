@@ -167,3 +167,32 @@ class TestVotePressureContext:
         ctx = build_vote_pressure_context(gs, voter_id="p01", pk_candidates=["p03", "p07"])
         assert "pk_candidates" in ctx
         assert ctx["pk_candidates"] == ["p03", "p07"]
+
+
+class TestVoteFallbackTarget:
+    """Fallback vote target selection should use public evidence when possible."""
+
+    def test_vote_fallback_does_not_always_pick_first_legal_target(self):
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 5)
+        }
+        gs = GameState(
+            game_id="g_vote",
+            day_number=1,
+            players=players,
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "p03",
+                    "day_number": 1,
+                    "text": "我刚才说我是预言家，但警徽流前后矛盾，逻辑不通。",
+                }),
+            ],
+        )
+
+        target = choose_vote_fallback_target(gs, "p01", ["p02", "p03", "p04"])
+
+        assert target == "p03"

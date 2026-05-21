@@ -11,6 +11,7 @@ from typing import Any
 
 from werewolf_agent.agents.schemas import AgentContext, JudgeBroadcast, TaskType
 from werewolf_agent.model_gateway.router import ModelRouter
+from werewolf_agent.runtime.timeline import phase_label
 
 
 class JudgeAgent:
@@ -39,8 +40,8 @@ class JudgeAgent:
     ) -> JudgeBroadcast:
         """Generate a phase transition broadcast."""
         templates: dict[str, str] = {
-            "night": f"天黑请闭眼。第 {night_number} 夜开始。",
-            "day": f"天亮了。第 {day_number} 天开始。",
+            "night": f"天黑请闭眼。{phase_label('night', night_number)} 开始。",
+            "day": f"天亮了。{phase_label('day', day_number)} 开始。",
             "wolf_discussion": "狼人请睁眼，讨论击杀目标。",
             "witch_turn": "女巫请睁眼。",
             "seer_turn": "预言家请睁眼。",
@@ -85,7 +86,7 @@ class JudgeAgent:
         if not deaths:
             return JudgeBroadcast(
                 broadcast_type="death_announcement",
-                message=f"第 {day_number} 天：昨夜是平安夜，无人倒牌。",
+                message=f"{phase_label('day', day_number)}：昨夜是平安夜，无人倒牌。",
                 phase="day",
                 day_number=day_number,
             )
@@ -95,7 +96,7 @@ class JudgeAgent:
             name = d.get("player_id", "???")
             dead_names.append(name)
 
-        msg = f"第 {day_number} 天：昨夜倒牌——{'、'.join(dead_names)}。"
+        msg = f"{phase_label('day', day_number)}：昨夜倒牌：{'、'.join(dead_names)}。"
         return JudgeBroadcast(
             broadcast_type="death_announcement",
             message=msg,

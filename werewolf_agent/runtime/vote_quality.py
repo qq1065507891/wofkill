@@ -7,7 +7,9 @@ stance_reversal, pk_speech, speech_quote.
 
 from __future__ import annotations
 
+import hashlib
 import re
+import random
 from typing import Any
 
 from werewolf_agent.core.models import GameState
@@ -154,3 +156,45 @@ def build_vote_pressure_context(
         }
 
     return context
+
+
+def choose_vote_fallback_target(
+    gs: GameState,
+    voter_id: str,
+    legal_targets: list[str],
+) -> str | None:
+    """Choose a deterministic fallback vote target from public evidence.
+
+    This is used only after an agent failed to produce a valid vote. It avoids
+    turning schema failures into a seat-order push by ranking legal targets by
+    concrete current-day speech evidence.
+    """
+    candidates = [target for target in legal_targets if target != voter_id]
+    if not candidates:
+        return None
+
+    scores = {target: 0 for target in candidates}
+    for event in gs.events:
+        if event.type != "speech" or event.payload.get("day_number") != gs.day_number:
+            continue
+        text = event.payload.get("text", "")
+        bases = extract_vote_basis(text)
+        if not bases:
+            continue
+        for target in candidates:
+            if target in text:
+                scores[target] += len(bases)
+
+    best_score = max(scores.values(), default=0)
+    if best_score > 0:
+        best_targets = [target for target, score in scores.items() if score == best_score]
+        return _stable_choice(gs, voter_id, best_targets)
+
+    return _stable_choice(gs, voter_id, candidates)
+
+
+def _stable_choice(gs: GameState, voter_id: str, candidates: list[str]) -> str:
+    seed_parts = [gs.game_id, gs.day_number, voter_id, *candidates]
+    raw = "|".join(str(part) for part in seed_parts).encode("utf-8")
+    seed = int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") & 0xFFFFFFFF
+    return random.Random(seed).choice(list(candidates))

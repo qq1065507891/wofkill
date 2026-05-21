@@ -443,6 +443,11 @@ class PlayerAgent:
             "【禁止事项】本局只有以下7种角色：狼人、村民、预言家、女巫、猎人、白痴、混血儿。"
             "绝对禁止提及守卫、恋人、丘比特、白狼王、熊、乌鸦、狐狸、盗贼、吹笛者等任何不存在的角色。"
             "没有守卫，不存在被守护的可能。没有平安夜是由守卫造成的。平安夜只有两种可能：狼人空刀，或女巫使用解药救人。",
+            "【平安夜与女巫规则硬约束】平安夜不等于无人被刀，只代表公开结果无人死亡。"
+            "除狼人外，普通玩家不知道狼人是否空刀；除女巫外，普通玩家不知道女巫是否救人。"
+            "不能用“平安夜没人死”反驳女巫知道刀口，也不能把“不公开救谁”直接等同于假女巫。"
+            "可以质疑跳女巫玩家是否用药、为什么暂不公开银水、以及发言前后是否矛盾。"
+            "不要跟风复述已有指控；每次发言必须给出独立证据、明确区分事实和推测。",
             f"你的玩家ID: {context.agent_id}",
             f"你的名字: {self.player_name}",
         ]
@@ -452,10 +457,10 @@ class PlayerAgent:
             role_rules = {
                 "hunter": "猎人规则：被狼人杀死或被放逐时可以开枪带走一人；被女巫毒杀时不能开枪。夜间无法自保。",
                 "idiot": "白痴规则：被放逐时亮出身份免死，但失去投票权且不能再被放逐；之后被狼人杀死才算真正死亡。夜间无法自保。",
-                "witch": "女巫规则：有一瓶解药和一瓶毒药，不能在同一夜同时使用。解药不能自救。第一夜大概率应该救人。",
+                "witch": "女巫规则：有一瓶解药和一瓶毒药，不能在同一夜同时使用。解药不能自救。N1 / 首夜大概率应该救人。",
                 "seer": "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。上警时必须留两夜警徽流。",
                 "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
-                "hybrid": "混血儿规则：第一夜选择一名主人，跟随主人阵营获胜。主人死亡后阵营不再改变。",
+                "hybrid": "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。主人死亡后阵营不再改变。",
             }
             if context.own_role in role_rules:
                 parts.append(role_rules[context.own_role])
@@ -514,7 +519,7 @@ class PlayerAgent:
                 f'"speech": "", '
                 f'"reason": "选择击杀目标", "confidence": 0.8, '
                 f'"private_intent": {{"true_role": "werewolf", '
-                f'"faction_goal": "eliminate_villager", "claimed_view": "我是好人", '
+                f'"faction_goal": "push_good_player_out", "claimed_view": "我是好人", '
                 f'"pressure_target": "{example_target}", "risk_flags": []}}}}'
             )
             parts.append("示例输出（狼人空刀场景）：")
@@ -523,7 +528,7 @@ class PlayerAgent:
                 '"speech": "", '
                 '"reason": "本轮空刀策略", "confidence": 0.6, '
                 '"private_intent": {"true_role": "werewolf", '
-                '"faction_goal": "frame_villager", "claimed_view": "我是好人", '
+                '"faction_goal": "confuse_good", "claimed_view": "我是好人", '
                 '"pressure_target": null, "risk_flags": []}}'
             )
         else:

@@ -9,4 +9,5 @@ htmlcov/
 .env
 .venv/
 venv/
+.worktrees/
 .claude/settings.local.json

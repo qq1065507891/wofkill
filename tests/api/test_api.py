@@ -11,6 +11,20 @@ from werewolf_agent.api.schemas import (
     ViewMode,
 )
 from werewolf_agent.core.models import GameState, PlayerState, GameEvent
+from werewolf_agent.storage.memory_store import InMemoryGameRepository
+
+
+def test_create_app_initializes_rag_service_from_env(monkeypatch):
+    monkeypatch.setenv("WEREWOLF_VECTOR_BACKEND", "local")
+
+    app = create_app(repository=InMemoryGameRepository())
+
+    assert hasattr(app.state, "rag_service")
+    assert app.state.rag_service is not None
+    assert any(
+        entry["entry_id"] == "seed_jingcheng_wolf_god_hunt_260227"
+        for entry in app.state.repository.load_rag_entries()
+    )
 
 
 def _make_client() -> TestClient:

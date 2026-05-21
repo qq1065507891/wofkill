@@ -69,6 +69,18 @@ _STANCE_PATTERNS = [
     r"狼人阵营", r"我站.*?边",
 ]
 
+_PEACE_NIGHT_WITCH_FALLACY_PATTERNS = [
+    r"平安夜.{0,20}(?:根本)?没有人死.{0,40}女巫.{0,20}(?:不可能|怎么|凭什么).{0,20}(?:知道|知道狼人刀|知道刀口)",
+    r"平安夜.{0,30}(?:根本)?没有人死.{0,40}(?:你|女巫).{0,20}怎么知道.{0,20}(?:狼人刀|刀了人|刀口)",
+    r"平安夜.{0,40}(?:救了谁|救谁).{0,40}(?:说不出|不知道|不说).{0,20}(?:就是|说明).{0,20}(?:假女巫|不是女巫)",
+    r"(?:说不出|不说|不知道).{0,12}(?:救了谁|救谁|银水).{0,20}(?:就是|说明).{0,20}(?:假女巫|不是女巫)",
+    r"预言家.{0,20}(?:应该|必须).{0,12}质疑.{0,30}(?:女巫|救了谁|平安夜).{0,30}(?:而不是|不该).{0,20}(?:发金水|给.*金水)",
+]
+
+
+def _has_peace_night_witch_fallacy(text: str) -> bool:
+    return any(re.search(pattern, text) for pattern in _PEACE_NIGHT_WITCH_FALLACY_PATTERNS)
+
 
 def extract_speech_quality(text: str, phase: str = "") -> dict[str, Any]:
     """Extract speech quality components from text.
@@ -155,6 +167,9 @@ def validate_public_speech(
     quality = extract_speech_quality(text, phase)
     missing = []
 
+    if _has_peace_night_witch_fallacy(text):
+        missing.append("peace_night_witch_reasoning")
+
     # Check stance (relaxed for some phases)
     if not quality["has_stance"] and phase not in ("pk_speech",):
         missing.append("stance")
@@ -224,6 +239,11 @@ def build_speech_retry_hint(missing_fields: list[str]) -> str:
         "vote_leaning": "需要表达投票倾向（如'我倾向投pXX'）",
         "evidence": "需要给出具体依据（如矛盾点、查杀、发言引用等）",
         "claim_logic": "在警上/PK阶段需要包含角色声明、对跳分析或攻击/防守论点",
+        "peace_night_witch_reasoning": (
+            "平安夜不等于无人被刀；可能是狼人空刀，也可能是女巫用解药救人。"
+            "不能用“平安夜没人死”反驳女巫知道刀口，也不能把“不公开救谁”直接等同于假女巫；"
+            "请改为询问是否用药、为什么暂不公开银水、以及发言前后是否矛盾"
+        ),
     }
     hints = [field_hints.get(f, f"缺少{f}") for f in missing_fields]
     return "发言不完整。" + "；".join(hints) + "。"

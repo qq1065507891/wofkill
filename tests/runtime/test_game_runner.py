@@ -11,6 +11,15 @@ from werewolf_agent.runtime.graph import RuntimeState, build_game_graph, _new_en
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 
 
+def test_game_runner_runtime_state_includes_rag_service() -> None:
+    service = object()
+    runner = GameRunner(GameRunnerConfig(seed=42, rag_service=service))
+
+    runtime_state = runner._build_runtime_state()
+
+    assert runtime_state["rag_service"] is service
+
+
 # ---------------------------------------------------------------------------
 # Config tests
 # ---------------------------------------------------------------------------
@@ -162,6 +171,60 @@ class TestGameRunnerScriptedGame:
         final = runner.run()
         assert final is not None
         assert len(final.players) == 12
+
+    def test_day_vote_does_not_reuse_previous_day_votes_without_same_window(self) -> None:
+        from werewolf_agent.runtime.graph import day_vote
+
+        gs = GameState(
+            game_id="g_vote_window",
+            phase="day",
+            day_number=2,
+            players={
+                "p01": PlayerState(id="p01", role="villager", alive=True),
+                "p02": PlayerState(id="p02", role="villager", alive=True),
+            },
+        )
+        state = {
+            "game_state": gs,
+            "exile_votes": {"p01": "p02"},
+            "exile_vote_day": 1,
+            "exile_vote_revote": False,
+            "revote": False,
+        }
+
+        result = day_vote(state)
+
+        assert result["exile_votes"] == {}
+        assert result["exile_vote_day"] == 2
+
+    def test_resolve_vote_clears_vote_window_after_exile(self) -> None:
+        from werewolf_agent.runtime.graph import resolve_vote
+
+        players = {
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="g_vote_clear",
+            phase="day",
+            day_number=1,
+            players=players,
+        )
+        state = {
+            "game_state": gs,
+            "engine": _new_engine(),
+            "exile_votes": {"p01": "p02"},
+            "vote_action_traces": {"p01": {"final_action_type": "vote"}},
+            "exile_vote_day": 1,
+            "exile_vote_revote": False,
+            "revote": False,
+        }
+
+        result = resolve_vote(state)
+
+        assert result["exile_votes"] == {}
+        assert result["vote_action_traces"] == {}
+        assert result["exile_vote_revote"] is False
 
 
 # ---------------------------------------------------------------------------

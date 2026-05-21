@@ -42,6 +42,7 @@ class GameRunnerConfig:
     ruleset_registry: Any = None  # RulesetRegistry, optional
     repository: Any = None  # GameRepository, optional
     memory_coordinator: Any = None  # PersistentMemoryCoordinator, optional
+    rag_service: Any = None  # RAGKnowledgeService, optional
 
     def __post_init__(self) -> None:
         if self.seed is None:
@@ -155,6 +156,8 @@ class GameRunner:
         }
         if self._agent_registry is not None:
             rt["agent_registry"] = self._agent_registry
+        if self._config.rag_service is not None:
+            rt["rag_service"] = self._config.rag_service
         if self._config.agent_call_timeout > 0:
             rt["agent_call_timeout"] = self._config.agent_call_timeout
         return rt

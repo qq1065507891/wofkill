@@ -205,7 +205,8 @@ def print_quality_audit(runner: GameRunner) -> None:
     for e in gs.events:
         if e.type == "action_trace_audit" and e.payload.get("phase") == "vote":
             trace = e.payload.get("action_trace", {})
-            reason = trace.get("parsed_action", {}).get("reason", "")
+            parsed_action = trace.get("parsed_action") or {}
+            reason = parsed_action.get("reason", "")
             if reason:
                 from werewolf_agent.runtime.vote_quality import extract_vote_basis
                 bases = extract_vote_basis(reason)

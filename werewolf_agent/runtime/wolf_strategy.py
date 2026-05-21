@@ -241,12 +241,27 @@ def build_wolf_team_plan_from_discussion(
     """
     if consensus is None:
         return previous_plan or {}
+    primary = consensus.get("night_kill_primary")
+    evidence = consensus.get("evidence_from_discussion", [])
+    agreement = consensus.get("agreement_count", 0)
+    total = consensus.get("total_wolves", 0)
+    primary_evidence = [
+        item for item in evidence
+        if item.get("target") == primary
+    ] if primary else []
+    if not primary or not primary_evidence:
+        evidence_quality = "none"
+    elif total and agreement > total / 2:
+        evidence_quality = "strong"
+    else:
+        evidence_quality = "weak"
 
     plan: dict[str, Any] = {
         "night_number": gs.night_number,
-        "night_kill_primary": consensus.get("night_kill_primary"),
-        "night_kill_backup": consensus.get("night_kill_backup"),
-        "evidence_from_discussion": consensus.get("evidence_from_discussion", []),
+        "night_kill_primary": primary,
+        "night_kill_backup": consensus.get("night_kill_backup") if evidence_quality != "none" else None,
+        "evidence_from_discussion": evidence,
+        "evidence_quality": evidence_quality,
         "unresolved_disagreements": consensus.get("unresolved_disagreements", []),
         "public_story": consensus.get("public_story", "执行讨论共识方案。"),
     }
@@ -259,8 +274,8 @@ def build_wolf_team_plan_from_discussion(
     # Day push target defaults to backup kill target
     plan["day_push_target"] = (
         consensus.get("day_push_target")
-        or consensus.get("night_kill_backup")
-        or previous.get("day_push_target")
+        or (consensus.get("night_kill_backup") if evidence_quality != "none" else None)
+        or (previous.get("day_push_target") if previous.get("evidence_quality") != "none" else None)
     )
 
     # Rush vote opportunity (informational only)

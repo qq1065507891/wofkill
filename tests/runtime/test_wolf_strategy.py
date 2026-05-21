@@ -110,6 +110,38 @@ class TestWolfPlanDerivedFromDiscussion:
         consensus = summarize_wolf_consensus(gs.events, alive_wolves)
         assert consensus.get("fake_seer") is not None
 
+    def test_wolf_plan_without_discussion_evidence_has_no_kill_target(self):
+        from werewolf_agent.runtime.wolf_strategy import build_wolf_team_plan_from_discussion
+
+        gs = _make_wolf_gs()
+        consensus = {
+            "night_kill_primary": None,
+            "night_kill_backup": None,
+            "evidence_from_discussion": [],
+            "agreement_count": 0,
+            "total_wolves": 4,
+        }
+
+        plan = build_wolf_team_plan_from_discussion(gs, consensus=consensus)
+
+        assert plan.get("night_kill_primary") is None
+        assert plan.get("night_kill_backup") is None
+        assert plan.get("evidence_quality") == "none"
+
+    def test_planned_wolf_kill_ignores_low_evidence_plan(self):
+        from werewolf_agent.runtime.graph import _planned_wolf_kill
+
+        gs = _make_wolf_gs()
+        state = {
+            "game_state": gs,
+            "wolf_team_plan": {
+                "night_kill_primary": "p05",
+                "evidence_quality": "none",
+            },
+        }
+
+        assert _planned_wolf_kill(state) is None
+
 
 class TestWolfDiscussionEarlyStop:
     """If majority agrees in round 1, later rounds can be skipped."""
