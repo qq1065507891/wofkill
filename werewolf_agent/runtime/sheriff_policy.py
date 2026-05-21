@@ -41,6 +41,22 @@ def eligible_sheriff_voters(
     ]
 
 
+def filter_sheriff_votes_to_eligible(
+    gs: GameState,
+    votes: dict[str, str],
+    *,
+    candidates: list[str],
+    withdrew: list[str] | None = None,
+) -> dict[str, str]:
+    """Keep only sheriff-election votes cast by off-sheriff alive players."""
+    eligible = set(eligible_sheriff_voters(gs, candidates, withdrew=withdrew))
+    return {
+        voter_id: target_id
+        for voter_id, target_id in votes.items()
+        if voter_id in eligible and target_id in candidates
+    }
+
+
 def is_all_players_on_sheriff(gs: GameState, candidates: list[str]) -> bool:
     """True if every alive player is a sheriff candidate."""
     candidate_set = set(candidates)

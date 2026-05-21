@@ -423,6 +423,87 @@ class TestSeedData:
             assert result is not None
         assert ingester.count() == len(entries)
 
+    def test_jingcheng_master_pre_witch_hunter_idiot_mixed_cases_exist(self):
+        entries = create_seed_entries()
+        ids = {entry.entry_id for entry in entries}
+
+        assert {
+            "seed_jingcheng_villager_fake_seer_250709",
+            "seed_jingcheng_wolf_antiprophet_push_250415",
+            "seed_jingcheng_review_double_bomb_badge_loss_241218",
+            "seed_jingcheng_wolf_god_hunt_260227",
+        }.issubset(ids)
+
+        jingcheng_entries = [
+            entry for entry in entries
+            if "jingcheng_master" in entry.metadata.tags
+        ]
+        assert len(jingcheng_entries) >= 4
+        for entry in jingcheng_entries:
+            assert entry.metadata.ruleset_id == "pre_witch_hunter_idiot_mixed"
+            assert entry.metadata.source.source_url
+            assert entry.metadata.review_status == ReviewStatus.APPROVED
+
+    def test_jingcheng_master_cases_have_phase_breakdown(self):
+        entries = [
+            entry for entry in create_seed_entries()
+            if "jingcheng_master" in entry.metadata.tags
+        ]
+        required_sections = ["警上：", "第一天：", "夜聊：", "投票：", "复盘结论："]
+
+        assert len(entries) >= 4
+        for entry in entries:
+            for section in required_sections:
+                assert section in entry.summary, f"{entry.entry_id} missing {section}"
+
+    def test_beginner_tutorial_seed_pack_exists(self):
+        entries = create_seed_entries()
+        ids = {entry.entry_id for entry in entries}
+
+        expected = {
+            "seed_tutorial_yumindao_seer_beginner_450",
+            "seed_tutorial_yumindao_witch_beginner_450",
+            "seed_tutorial_yumindao_hunter_idiot_civilian_488",
+            "seed_tutorial_yumindao_wolf_roles_883",
+            "seed_tutorial_yumindao_hybrid_beginner_488",
+        }
+        assert expected.issubset(ids)
+
+        tutorial_entries = [
+            entry for entry in entries
+            if "beginner_tutorial" in entry.metadata.tags
+        ]
+        assert len(tutorial_entries) >= 5
+        for entry in tutorial_entries:
+            assert entry.metadata.ruleset_id == "pre_witch_hunter_idiot_mixed"
+            assert entry.metadata.player_count == 12
+            assert entry.metadata.source.source_url
+            assert "13人" not in entry.metadata.source.source_title
+            assert entry.metadata.visibility_boundary != VisibilityBoundary.GOD_VIEW
+            text = f"{entry.title} {entry.summary} {' '.join(entry.key_decisions)}"
+            assert "实际身份" not in text
+            assert "胜负条件" not in text
+
+    def test_timeline_cold_start_seed_exists(self):
+        entries = create_seed_entries()
+        entry = next(
+            (
+                e for e in entries
+                if e.entry_id == "seed_timeline_first_night_before_day_one_01"
+            ),
+            None,
+        )
+
+        assert entry is not None
+        assert entry.metadata.ruleset_id == "pre_witch_hunter_idiot_mixed"
+        assert entry.metadata.player_count == 12
+        assert entry.metadata.role_perspective == "all"
+        assert entry.metadata.visibility_boundary != VisibilityBoundary.GOD_VIEW
+        text = f"{entry.title} {entry.summary} {' '.join(entry.key_decisions)}"
+        assert "N1 首夜 -> D1 第一天" in text
+        assert "首夜发生在第一天之前" in text
+        assert "第一天是首夜结算后的第一个白天" in text
+
 
 # ===================================================================
 # TestRetriever
@@ -505,6 +586,33 @@ class TestRetriever:
         retriever, _ = self._make_retriever()
         query = RAGQuery(quality_min=QualityGrade.HIGH_RANK_GAME)
         hits = retriever.retrieve(query)
+
+    def test_seer_counterclaim_vote_push_is_high_probability_hint(self):
+        retriever, entries = self._make_retriever()
+        entry = next(
+            (
+                e for e in entries
+                if e.entry_id == "seed_seer_counterclaim_vote_push_01"
+            ),
+            None,
+        )
+
+        assert entry is not None
+        text = f"{entry.title} {entry.summary} {' '.join(entry.key_decisions)}"
+        assert "悍跳" in text
+        assert "归票" in text
+        assert "高概率" in text
+        assert not any(word in text for word in ("必须归票悍跳位", "永远归票悍跳位", "一定归票悍跳位"))
+
+        hits = retriever.retrieve(RAGQuery(
+            role="seer",
+            phase="speech",
+            situation="预言家 对跳 悍跳位 归票",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            max_results=5,
+        ))
+
+        assert any(h.entry_id == "seed_seer_counterclaim_vote_push_01" for h in hits)
         for hit in hits:
             assert hit.quality_grade in (
                 QualityGrade.HIGH_RANK_GAME,

@@ -20,6 +20,12 @@ from werewolf_agent.cognition.strategy import StrategyPackage, StrategySelector
 from werewolf_agent.cognition.visibility import VisibilityPolicy
 from werewolf_agent.cognition.world_state import StructuredFact, StructuredWorldState, build_world_state
 from werewolf_agent.core.models import GameState
+from werewolf_agent.runtime.timeline import (
+    TIMELINE_ORDER_NOTE,
+    build_timeline_facts,
+    current_phase_label,
+    phase_label,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +216,17 @@ class LocalContextBuilder:
             "phase": game_state.phase,
             "day": game_state.day_number,
             "night": game_state.night_number,
+            "phase_label": current_phase_label(
+                game_state.phase,
+                day_number=game_state.day_number,
+                night_number=game_state.night_number,
+            ),
+            "timeline_note": TIMELINE_ORDER_NOTE,
+            "timeline_facts": build_timeline_facts(
+                game_state.phase,
+                day_number=game_state.day_number,
+                night_number=game_state.night_number,
+            ),
             "alive_players": [
                 pid for pid, p in game_state.players.items() if p.alive
             ],
@@ -314,10 +331,11 @@ class LocalContextBuilder:
 
     def _build_public_summary(self, game_state: GameState) -> str:
         parts: list[str] = []
+        parts.append(TIMELINE_ORDER_NOTE)
         if game_state.day_number > 0:
-            parts.append(f"第 {game_state.day_number} 天")
+            parts.append(phase_label("day", game_state.day_number))
         if game_state.night_number > 0:
-            parts.append(f"第 {game_state.night_number} 夜")
+            parts.append(phase_label("night", game_state.night_number))
         alive = sum(1 for p in game_state.players.values() if p.alive)
         parts.append(f"存活 {alive} 人")
         if game_state.sheriff_id:

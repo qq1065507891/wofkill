@@ -9,6 +9,7 @@ from werewolf_agent.runtime.sheriff_policy import (
     choose_no_sheriff_speech_order,
     choose_sheriff_led_speech_order,
     eligible_sheriff_voters,
+    filter_sheriff_votes_to_eligible,
     is_all_players_on_sheriff,
     resolve_no_vote_sheriff_reason,
 )
@@ -107,6 +108,26 @@ class TestEligibleVoters:
         voters = eligible_sheriff_voters(gs, candidates)
         assert "p04" not in voters
         assert len(voters) == 8
+
+    def test_invalid_sheriff_votes_from_candidates_and_withdrew_players_are_filtered(self):
+        """Only players who never went on sheriff can cast sheriff-election votes."""
+        candidates = ["p01", "p02"]
+        withdrew = ["p03"]
+        gs = _make_gs(alive_count=12, candidates=candidates)
+        votes = {
+            "p01": "p01",  # active candidate, invalid voter
+            "p03": "p01",  # withdrew from sheriff, invalid voter
+            "p04": "p02",  # off-sheriff voter, valid
+        }
+
+        filtered = filter_sheriff_votes_to_eligible(
+            gs,
+            votes,
+            candidates=candidates,
+            withdrew=withdrew,
+        )
+
+        assert filtered == {"p04": "p02"}
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from functools import lru_cache
 from typing import Any, Protocol
 
 from werewolf_agent.agents.player import PlayerAgent
@@ -22,6 +23,12 @@ from werewolf_agent.agents.schemas import (
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+from werewolf_agent.runtime.timeline import (
+    TIMELINE_ORDER_NOTE,
+    build_timeline_facts,
+    current_phase_label,
+    phase_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +50,105 @@ class SimpleAgentRegistry:
 
     def get_agent(self, player_id: str) -> PlayerAgent | None:
         return self._agents.get(player_id)
+
+
+@lru_cache(maxsize=1)
+def _default_rag_injector() -> Any | None:
+    """Build the local seed RAG injector.
+
+    This is intentionally local/in-memory. It does not require Docker,
+    SQLite, PostgreSQL, or pgvector; it reads the seed knowledge entries
+    packaged in `werewolf_agent.rag.ingestion`.
+    """
+    try:
+        from werewolf_agent.rag.ingestion import create_seed_entries
+        from werewolf_agent.rag.injector import RAGInjector
+        from werewolf_agent.rag.retriever import StrategyRetriever
+
+        return RAGInjector(StrategyRetriever(create_seed_entries()))
+    except Exception:
+        logger.debug("Seed RAG injector initialization failed", exc_info=True)
+        return None
+
+
+def _rag_phase_for_task(task_type: TaskType, phase: str) -> str:
+    if task_type in (TaskType.SHERIFF_SPEECH, TaskType.SHERIFF_REGISTRATION):
+        return "sheriff_speech"
+    if task_type == TaskType.WOLF_DISCUSSION:
+        return "night_discussion"
+    if task_type == TaskType.NIGHT_ACTION:
+        return "night_action"
+    if task_type in (TaskType.VOTE, TaskType.SPEECH, TaskType.PK_SPEECH):
+        return "speech"
+    if task_type == TaskType.DEFENSE_SPEECH:
+        return "defense_speech"
+    return phase or "general"
+
+
+def _inject_seed_rag_hints(
+    context: AgentContext,
+    *,
+    ruleset_id: str,
+    rag_service: Any | None = None,
+    game_id: str = "",
+) -> AgentContext:
+    if not context.own_role:
+        return context
+
+    try:
+        phase = _rag_phase_for_task(context.task_type, context.phase)
+        situation = " ".join([
+            context.task_type.value,
+            context.phase,
+            " ".join(action.value for action in context.legal_actions),
+        ]).strip()
+        if rag_service is not None:
+            from werewolf_agent.rag.schemas import RAGQuery
+
+            query = RAGQuery(
+                role=context.own_role,
+                phase=phase,
+                situation=situation,
+                ruleset_id=ruleset_id,
+                max_results=3,
+                viewer_role=context.own_role,
+            )
+            hits = rag_service.retrieve_live_hints(
+                query,
+                game_id=game_id,
+                player_id=context.agent_id,
+            )
+            items = rag_service.hits_to_context_items(hits, max_items=3)
+        else:
+            injector = _default_rag_injector()
+            if injector is None:
+                return context
+            from werewolf_agent.rag.injector import InjectionContext
+
+            query = injector.build_rag_query(
+                role=context.own_role,
+                phase=phase,
+                situation=situation,
+                ruleset_id=ruleset_id,
+                max_results=3,
+            )
+            hits = injector.inject(
+                query,
+                injection_context=InjectionContext.LIVE_PLAYER,
+                game_id=game_id,
+                player_id=context.agent_id,
+            )
+            items = injector.hits_to_context_items(hits, max_items=3)
+        if not items:
+            return context
+        existing = [
+            item for item in context.salience_items
+            if item.get("type") != "rag_hit"
+        ]
+        return context.model_copy(update={"salience_items": existing + items})
+    except Exception:
+        logger.debug("Seed RAG injection failed for %s", context.agent_id, exc_info=True)
+        return context
 
 
 def _action_trace_payload(action: Any) -> dict[str, Any] | None:
@@ -84,6 +190,36 @@ def _build_witch_pressure_targets(gs: GameState) -> list[dict[str, Any]]:
     return list(targets.values())
 
 
+def _public_seer_claimants(gs: GameState) -> set[str]:
+    """Return public players who have claimed seer in speeches."""
+    claimants: set[str] = set()
+    seer_markers = (
+        "我是预言家",
+        "我跳预言家",
+        "认预言家",
+        "悍跳预言家",
+        "claim seer",
+        "claimed seer",
+        "i am the seer",
+    )
+    for event in gs.events:
+        if event.type not in ("speech", "sheriff_speech"):
+            continue
+        speaker = event.payload.get("speaker")
+        if not speaker:
+            continue
+        claims = event.payload.get("claims") or []
+        for claim in claims:
+            if claim.get("type") == "role" and claim.get("value") == "seer":
+                claimants.add(speaker)
+                break
+        else:
+            text = str(event.payload.get("text", "")).lower()
+            if any(marker in text for marker in seer_markers):
+                claimants.add(speaker)
+    return claimants
+
+
 def build_agent_context(
     engine: RuleEngine,
     gs: GameState,
@@ -94,6 +230,7 @@ def build_agent_context(
     legal_targets: list[str] | None = None,
     wolf_kill_target_id: str | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
+    rag_service: Any | None = None,
 ) -> AgentContext:
     """Build AgentContext for a player from current game state.
 
@@ -113,6 +250,15 @@ def build_agent_context(
         "phase": gs.phase,
         "day": gs.day_number,
         "night": gs.night_number,
+        "phase_label": current_phase_label(
+            gs.phase, day_number=gs.day_number, night_number=gs.night_number
+        ),
+        "timeline_note": TIMELINE_ORDER_NOTE,
+        "timeline_facts": build_timeline_facts(
+            gs.phase,
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        ),
         "alive_players": [pid for pid, p in gs.players.items() if p.alive],
         "dead_players": [{"id": d.player_id, "reason": d.reason} for d in gs.deaths],
         "sheriff_id": gs.sheriff_id,
@@ -173,7 +319,11 @@ def build_agent_context(
     for e in gs.events:
         if e.type == "day_announce":
             day = e.payload.get("day", "?")
-            summary_parts.append(f"\n===== 第{day}天 =====")
+            try:
+                day_label = phase_label("day", int(day))
+            except (TypeError, ValueError):
+                day_label = f"D{day}"
+            summary_parts.append(f"\n===== {day_label} =====")
         elif e.type == "judge_broadcast" and e.payload.get("visibility") == "public":
             msg = e.payload.get("message", "")
             phase = e.payload.get("phase", "")
@@ -213,6 +363,15 @@ def build_agent_context(
         dropped = summary_parts.pop(0)
         total -= len(dropped)
     public_summary = "\n".join(summary_parts) if summary_parts else ""
+    if public_summary:
+        public_summary = f"{TIMELINE_ORDER_NOTE}\n{public_summary}"
+    else:
+        current_label = current_phase_label(
+            gs.phase, day_number=gs.day_number, night_number=gs.night_number
+        )
+        public_summary = TIMELINE_ORDER_NOTE
+        if current_label:
+            public_summary = f"{public_summary}\n当前时间点：{current_label}"
 
     # Build contradiction alerts and belief state from world state
     ctx_alerts: list[dict[str, Any]] = []
@@ -297,12 +456,12 @@ def build_agent_context(
     if legal_targets is None:
         legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != player_id]
 
-    return AgentContext(
+    context = AgentContext(
         agent_id=player_id,
         task_type=task_type,
         phase=gs.phase,
         day_number=gs.day_number,
-        night_number=gs.day_number,
+        night_number=gs.night_number,
         own_role=player.role,
         legal_actions=legal_actions,
         legal_targets=legal_targets,
@@ -312,6 +471,12 @@ def build_agent_context(
         contradiction_alerts=ctx_alerts,
         belief_state=belief_dict,
         strategy_directive=strategy_directive,
+    )
+    return _inject_seed_rag_hints(
+        context,
+        ruleset_id=gs.ruleset_id,
+        rag_service=rag_service,
+        game_id=gs.game_id,
     )
 
 
@@ -367,6 +532,7 @@ def agent_night_witch(
         legal_actions=legal_actions,
         legal_targets=legal_targets,
         wolf_kill_target_id=wolf_kill_target_id,
+        rag_service=state.get("rag_service"),
     )
 
     # Build witch strategy directive with clear action guidance
@@ -401,14 +567,14 @@ def agent_night_witch(
     witch_directive["witch_night_action"] += (
         "\n\n重要规则：不能在同一夜同时使用解药和毒药。"
         "解药不能自救。"
-        "第一夜大概率应该救人。"
+        "N1 / 首夜大概率应该救人。"
         "speech字段留空（夜间行动不需要发言）。"
     )
 
     # Special directive: witch is first-night wolf kill target
     if wolf_kill_target_id == witch_id and not gs.poison_used:
         witch_directive["first_night_killed"] = (
-            "你是女巫，第一夜就被狼人杀害了！你即将死亡，无法自救。"
+            "你是女巫，N1 / 首夜就被狼人杀害了！你即将死亡，无法自救。"
             "强烈建议使用毒药毒杀一名你怀疑是狼人的玩家。"
             "理由：1) 你已确认死亡，毒药留着没有用；"
             "2) 你的毒药命中可以帮好人阵营获取关键信息；"
@@ -458,6 +624,9 @@ def agent_night_seer(
         return None
 
     legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != seer_id]
+    counterclaiming_seers = _public_seer_claimants(gs) - {seer_id}
+    if counterclaiming_seers:
+        legal_targets = [pid for pid in legal_targets if pid not in counterclaiming_seers]
 
     # Build seer strategy: follow badge flow plan from election speech
     badge_flow_next = None
@@ -473,16 +642,19 @@ def agent_night_seer(
             break
 
     night_num = gs.night_number
+    night_label = phase_label("night", night_num)
     if night_num == 1:
         seer_guidance = (
-            "第一夜验人策略：选择你最怀疑的人，或者按照你上警时承诺的警徽流第一夜验人对象。"
+            f"{night_label} 验人策略：选择你最怀疑的人，或者按照你上警时承诺的警徽流首夜验人对象。"
             "如果上警时没有明确指定，优先验发言最少、最不透明的人。"
+            "不要查验对跳预言家的玩家；对跳位应通过白天发言、票型和放逐解决，夜晚验人用于开新视角。"
         )
     else:
         seer_guidance = (
-            f"第{night_num}夜验人策略：根据白天讨论中你最怀疑的人选择查验目标。"
+            f"{night_label} 验人策略：根据白天讨论中你最怀疑的人选择查验目标。"
             "优先验：1) 发言前后矛盾的人；2) 站边不明确的人；3) 被多人怀疑但你不确定的人。"
             "不要验你已经确认的好人。"
+            "不要查验对跳预言家的玩家；对跳位应通过白天发言、票型和放逐解决，夜晚验人用于开新视角。"
         )
 
     strategy_directive = {
@@ -495,15 +667,21 @@ def agent_night_seer(
         ),
     }
     if badge_flow_next:
+        if counterclaiming_seers:
+            badge_flow_next = [pid for pid in badge_flow_next if pid not in counterclaiming_seers]
+    if badge_flow_next:
         strategy_directive["badge_flow_plan"] = (
             f"你在警上承诺的警徽流计划中提到的验人对象: {badge_flow_next}，"
             "请优先按此计划验人以保持信息传递的一致性。"
         )
+    if counterclaiming_seers:
+        strategy_directive["excluded_counterclaiming_seers"] = sorted(counterclaiming_seers)
 
     context = build_agent_context(
         engine, gs, seer_id, TaskType.NIGHT_ACTION,
         legal_actions=[ActionType.CHECK_ALIGNMENT, ActionType.NO_ACTION],
         legal_targets=legal_targets,
+        rag_service=state.get("rag_service"),
     )
     context = context.model_copy(update={"strategy_directive": strategy_directive})
 
@@ -579,6 +757,7 @@ def _single_wolf_vote(
         legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
         legal_targets=legal_targets,
         wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
     )
 
     timeout = float(state.get("wolf_vote_timeout") or AGENT_TIMEOUTS.wolf_consensus)
@@ -670,6 +849,7 @@ def agent_wolf_discussion(
         engine, gs, wolf_id, TaskType.WOLF_DISCUSSION,
         legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
     )
 
     # Inject teammate transcript into recent_transcript for prompt visibility
@@ -716,9 +896,16 @@ def agent_day_speech(
         engine, gs, speaker_id, TaskType.SPEECH,
         legal_actions=[ActionType.SPEECH, ActionType.NO_ACTION],
         wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
     )
 
     strategy_directive = context.strategy_directive or {}
+    strategy_directive["anti_following_and_peace_night_rule"] = (
+        "不要跟风复述已有指控；如果质疑女巫或预言家，必须给出独立证据并区分事实和推测。"
+        "平安夜只代表公开无人死亡，不代表狼人没有刀人；不能用“平安夜没人死”反驳女巫知道刀口。"
+        "质疑跳女巫玩家时，应询问是否用药、为什么暂不公开银水、以及发言是否前后矛盾，"
+        "不要把“不说救谁”直接等同于假女巫。"
+    )
 
     # Role-specific speech constraints
     player_role = gs.players[speaker_id].role if speaker_id in gs.players else ""
@@ -788,6 +975,7 @@ def agent_sheriff_pick_speech_order(
         legal_actions=[ActionType.SPEECH],
         legal_targets=alive_players,
         wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
     )
     strategy_directive = {
         "choose_speech_order": (
@@ -837,6 +1025,7 @@ def agent_pk_speech(
         engine, gs, speaker_id, TaskType.PK_SPEECH,
         legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
     )
     # Add prior tally to visible state
     if prior_tally:
@@ -891,12 +1080,32 @@ def agent_day_vote(
         if consecutive_no_exile > 0:
             parts.append(f"已经连续{consecutive_no_exile}天无人出局，必须做出决定。")
         strategy_directive["vote_pressure"] = " ".join(parts)
+    try:
+        from werewolf_agent.runtime.vote_quality import (
+            build_day_discussion_summary,
+            build_vote_pressure_context,
+        )
+
+        strategy_directive["day_discussion_summary"] = build_day_discussion_summary(
+            gs, gs.day_number
+        )
+        strategy_directive["vote_pressure_context"] = build_vote_pressure_context(
+            gs, voter_id, pk_candidates=state.get("pk_candidates")
+        )
+        strategy_directive["anti_herd"] = (
+            "Do not mechanically follow a near-unanimous push unless it has "
+            "concrete evidence such as checks, counterclaims, vote records, "
+            "contradictions, or quoted speeches."
+        )
+    except Exception:
+        logger.debug("Vote quality context build failed, skipping", exc_info=True)
 
     context = build_agent_context(
         engine, gs, voter_id, TaskType.VOTE,
         legal_actions=legal_actions,
         legal_targets=legal_targets,
         wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
     )
     if strategy_directive:
         context = context.model_copy(update={"strategy_directive": strategy_directive})
@@ -905,9 +1114,11 @@ def agent_day_vote(
 
     target = action.target_id if action.action_type == ActionType.VOTE else None
     # Fallback: if agent returned wrong action type but has legal targets,
-    # pick the first one rather than abstaining silently
+    # pick an evidence-aware target rather than abstaining silently.
     if target is None and legal_targets:
-        target = legal_targets[0]
+        from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+
+        target = choose_vote_fallback_target(gs, voter_id, legal_targets)
     speech = getattr(action, "speech", "") or ""
     reason = getattr(action, "reason", "") or ""
     trace = getattr(action, "trace", None)
@@ -936,10 +1147,11 @@ def agent_hybrid_choose_master(
         engine, gs, hybrid_id, TaskType.NIGHT_ACTION,
         legal_actions=[ActionType.CHOOSE_MASTER],
         legal_targets=candidates,
+        rag_service=state.get("rag_service"),
     )
     strategy_directive = {
         "hybrid_master_choice": (
-            "你是混血儿，第一夜需要选择一名玩家作为你的主人。"
+            "你是混血儿，N1 / 首夜需要选择一名玩家作为你的主人。"
             "你不知道主人的身份和阵营，但你将跟随主人的阵营获胜。"
             "你可以自由选择任何玩家作为主人——可以根据直觉、位置、或任何你喜欢的理由。"
             "选择后不能更改。speech字段留空。"
@@ -971,6 +1183,7 @@ def agent_exile_last_words(
     context = build_agent_context(
         engine, gs, player_id, TaskType.LAST_WORDS,
         legal_actions=[ActionType.SPEECH],
+        rag_service=state.get("rag_service"),
     )
     strategy_directive = {
         "last_words": (
@@ -1007,6 +1220,7 @@ def agent_badge_decision(
         engine, gs, sheriff_id, TaskType.LAST_WORDS,
         legal_actions=[ActionType.BADGE_TRANSFER, ActionType.BADGE_TEAR],
         legal_targets=alive_others,
+        rag_service=state.get("rag_service"),
     )
     player_role = gs.players[sheriff_id].role if sheriff_id in gs.players else ""
     role_hint = ""
@@ -1063,6 +1277,7 @@ def agent_hunter_shot(
         engine, gs, hunter_id, TaskType.HUNTER_SHOT,
         legal_actions=[ActionType.HUNTER_SHOT, ActionType.NO_ACTION],
         legal_targets=legal_targets,
+        rag_service=state.get("rag_service"),
     )
 
     action, retry_info = agent.act(context)
@@ -1088,6 +1303,7 @@ def agent_sheriff_vote(
         engine, gs, voter_id, TaskType.VOTE,
         legal_actions=[ActionType.SHERIFF_VOTE, ActionType.NO_ACTION],
         legal_targets=candidates,
+        rag_service=state.get("rag_service"),
     )
 
     action, retry_info = agent.act(context)
@@ -1148,6 +1364,7 @@ def agent_sheriff_register(
     context = build_agent_context(
         engine, gs, player_id, TaskType.SHERIFF_REGISTRATION,
         legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+        rag_service=state.get("rag_service"),
     )
     context = context.model_copy(update={"strategy_directive": strategy_directive})
 
@@ -1179,6 +1396,7 @@ def agent_sheriff_withdraw(
     context = build_agent_context(
         engine, gs, candidate_id, TaskType.SHERIFF_SPEECH,
         legal_actions=[ActionType.SHERIFF_WITHDRAW, ActionType.NO_ACTION],
+        rag_service=state.get("rag_service"),
     )
 
     try:
@@ -1277,6 +1495,7 @@ def agent_sheriff_election_speech(
         engine, gs, candidate_id, TaskType.SHERIFF_SPEECH,
         legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
     )
     context = context.model_copy(update={"strategy_directive": strategy_directive})
 

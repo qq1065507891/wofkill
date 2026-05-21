@@ -45,10 +45,12 @@ from werewolf_agent.runtime.sheriff_policy import (
     choose_no_sheriff_speech_order,
     choose_sheriff_led_speech_order,
     eligible_sheriff_voters,
+    filter_sheriff_votes_to_eligible,
     is_all_players_on_sheriff,
 )
 from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+from werewolf_agent.runtime.timeline import detect_timeline_confusion, phase_label
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
 
@@ -96,6 +98,8 @@ class RuntimeState(TypedDict, total=False):
     hunter_shot_target_id: str | None
     # Agent registry: when provided, nodes delegate to PlayerAgent
     agent_registry: Any  # AgentRegistry protocol, optional
+    # RAG knowledge service: retrieves strategy hints for agent contexts
+    rag_service: Any
     # Runtime flow-control timer; must not adjudicate RuleEngine truth
     runtime_timer: Any
     # Day 1 sheriff-before-deaths flow control
@@ -194,6 +198,18 @@ def _action_trace_event(
     phase: str,
     action_trace: dict[str, Any],
 ) -> GameEvent:
+    audit_text_parts: list[str] = []
+    raw_text = action_trace.get("raw_text")
+    if raw_text:
+        audit_text_parts.append(str(raw_text))
+    parsed_action = action_trace.get("parsed_action") or {}
+    if isinstance(parsed_action, dict):
+        for key in ("reason", "speech_text", "private_reason"):
+            value = parsed_action.get(key)
+            if value:
+                audit_text_parts.append(str(value))
+    timeline_confusion = detect_timeline_confusion("\n".join(audit_text_parts))
+
     return GameEvent(
         type="action_trace_audit",
         payload={
@@ -201,6 +217,7 @@ def _action_trace_event(
             "phase": phase,
             "visibility": "moderator_only",
             "action_trace": action_trace,
+            "timeline_confusion": timeline_confusion,
         },
     )
 
@@ -223,6 +240,10 @@ def _judge_broadcast(
         "night_number": night_number,
         "visibility": visibility,
     }
+    if night_number > 0:
+        payload["phase_label"] = phase_label("night", night_number)
+    elif day_number > 0:
+        payload["phase_label"] = phase_label("day", day_number)
     if extra_payload:
         payload.update(extra_payload)
     event = GameEvent(type="judge_broadcast", payload=payload)
@@ -236,7 +257,6 @@ def _build_wolf_team_plan(
     previous_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     wolves = _alive_wolves(gs)
-    targets = _alive_non_wolves(gs)
     if not wolves:
         return {}
 
@@ -248,13 +268,10 @@ def _build_wolf_team_plan(
         "deep_cover": assignments[3] if len(assignments) > 3 else None,
     }
     previous_plan = previous_plan or {}
-    primary = _first_alive_target(gs, previous_plan.get("night_kill_primary")) or (
-        targets[0] if targets else None
-    )
-    backup = _first_alive_target(gs, previous_plan.get("night_kill_backup")) or (
-        targets[1] if len(targets) > 1 else primary
-    )
-    day_push = _first_alive_target(gs, previous_plan.get("day_push_target")) or backup or primary
+    can_reuse_previous = previous_plan.get("evidence_quality") not in (None, "none")
+    primary = _first_alive_target(gs, previous_plan.get("night_kill_primary")) if can_reuse_previous else None
+    backup = _first_alive_target(gs, previous_plan.get("night_kill_backup")) if can_reuse_previous else None
+    day_push = _first_alive_target(gs, previous_plan.get("day_push_target")) if can_reuse_previous else None
 
     return {
         "night_number": gs.night_number,
@@ -262,6 +279,8 @@ def _build_wolf_team_plan(
         "night_kill_primary": primary,
         "night_kill_backup": backup,
         "day_push_target": day_push,
+        "evidence_from_discussion": previous_plan.get("evidence_from_discussion", []),
+        "evidence_quality": previous_plan.get("evidence_quality", "none") if can_reuse_previous else "none",
         "public_story": "警上制造预言家对立，冲锋位打抗推目标，倒钩位保留质疑队友空间，深水位做中立复盘。",
         "hooking_intent": {
             "player_id": roles.get("hooker"),
@@ -282,9 +301,15 @@ def _first_alive_target(gs: GameState, player_id: str | None) -> str | None:
 def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     gs: GameState = state["game_state"]
     plan = state.get("wolf_team_plan") or {}
+    if plan.get("evidence_quality") == "none":
+        return None
+    evidence = plan.get("evidence_from_discussion") or []
     for key in ("night_kill_primary", "night_kill_backup"):
         target = _first_alive_target(gs, plan.get(key))
         if target:
+            has_target_evidence = any(item.get("target") == target for item in evidence)
+            if not has_target_evidence and plan.get("evidence_quality") != "strong":
+                continue
             print(f"  [狼人决策] 按狼队计划击杀: {_player_display(state, target)}")
             event = GameEvent(
                 type="wolf_kill_selected",
@@ -333,12 +358,13 @@ def assign_roles(state: RuntimeState) -> dict[str, Any]:
 def enter_night(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     n = gs.night_number + 1
-    gs, _ = _judge_broadcast(phase="enter_night", message=f"第{n}夜开始，天黑请闭眼", gs=gs, night_number=n)
+    label = phase_label("night", n)
+    gs, _ = _judge_broadcast(phase="enter_night", message=f"{label}：天黑请闭眼", gs=gs, night_number=n)
     gs = replace(gs, phase="night", night_number=n,
                  events=gs.events + [GameEvent(type="enter_night", payload={"night": n})])
     alive = [pid for pid, p in gs.players.items() if p.alive]
     print(f"\n{'='*60}")
-    print(f"  【第{n}夜】天黑请闭眼 (存活: {len(alive)}人)")
+    print(f"  【{label}】天黑请闭眼 (存活: {len(alive)}人)")
     print(f"{'='*60}")
     return {"game_state": gs}
 
@@ -707,15 +733,16 @@ def sheriff_first_day_entry(state: RuntimeState) -> dict[str, Any]:
     """
     gs: GameState = state["game_state"]
     d = gs.day_number + 1
+    label = phase_label("day", d)
     gs, _ = _judge_broadcast(
-        phase="day_announce", message=f"第{d}天天亮了",
+        phase="day_announce", message=f"{label}：天亮了",
         gs=gs, day_number=d,
     )
     gs = replace(gs, phase="day", day_number=d,
                  events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
     alive = [pid for pid, p in gs.players.items() if p.alive]
     print(f"\n{'='*60}")
-    print(f"  【第{d}天】天亮了 (存活: {len(alive)}人: {alive})")
+    print(f"  【{label}】天亮了 (存活: {len(alive)}人: {alive})")
     print(f"{'='*60}")
     return {
         "game_state": gs,
@@ -732,11 +759,13 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     # Only increment day if not already done by sheriff_first_day_entry
     if not state.get("day_number_already_incremented"):
         d = gs.day_number + 1
-        gs, _ = _judge_broadcast(phase="day_announce", message=f"第{d}天天亮了", gs=gs, day_number=d)
+        label = phase_label("day", d)
+        gs, _ = _judge_broadcast(phase="day_announce", message=f"{label}：天亮了", gs=gs, day_number=d)
         gs = replace(gs, phase="day", day_number=d,
                      events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
     else:
         d = gs.day_number
+        label = phase_label("day", d)
 
     # Announce last night's deaths
     night_deaths = [
@@ -762,7 +791,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     alive = [pid for pid, p in gs.players.items() if p.alive]
     if not state.get("day_number_already_incremented"):
         print(f"\n{'='*60}")
-        print(f"  【第{d}天】天亮了 (存活: {len(alive)}人: {alive})")
+        print(f"  【{label}】天亮了 (存活: {len(alive)}人: {alive})")
     if night_deaths:
         for death in night_deaths:
             print(f"  [死讯] {_player_display(state, death.player_id)} 死亡 (原因: {death.reason})")
@@ -976,7 +1005,11 @@ def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
             visibility="public",
         )
 
-    return {"game_state": gs, "sheriff_candidates": remaining}
+    return {
+        "game_state": gs,
+        "sheriff_candidates": remaining,
+        "sheriff_withdrawing": withdrawing,
+    }
 
 
 def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
@@ -1020,21 +1053,22 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
         speech_order = choose_sheriff_led_speech_order(gs, winner)
         return {"game_state": gs, "speech_order": speech_order}
 
-    # All alive players are candidates -> no election
+    # All alive players are candidates -> no sheriff vote, badge is lost.
     if is_all_players_on_sheriff(gs, candidates):
         reason = "all_players_on_sheriff"
         event = GameEvent(type="sheriff_no_election", payload={"reason": reason})
         gs = replace(gs, events=gs.events + [event])
         gs, _ = _judge_broadcast(
             phase="sheriff_no_election",
-            message="全部玩家上警，无法投票，警徽流失，本局无警长",
+            message="全员上警，警徽流失，本局无警长",
             gs=gs, day_number=gs.day_number,
             visibility="public",
         )
         return {"game_state": gs}
 
     # Normal vote by off-sheriff voters
-    voters = eligible_sheriff_voters(gs, candidates, [])
+    withdrew = list(state.get("sheriff_withdrawing", []))
+    voters = eligible_sheriff_voters(gs, candidates, withdrew)
     gs, _ = _judge_broadcast(
         phase="sheriff_vote_start",
         message="警下玩家开始投票选出警长",
@@ -1063,6 +1097,13 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
                 print(f"  [警长投票] {_player_display(state, voter_id)} 弃票")
     else:
         votes = state.get("sheriff_votes", {})
+
+    votes = filter_sheriff_votes_to_eligible(
+        gs,
+        votes,
+        candidates=candidates,
+        withdrew=withdrew,
+    )
 
     gs, event = engine.resolve_sheriff_vote(gs, votes=votes, candidates=candidates)
     gs = replace(gs, events=gs.events + [event])
@@ -1354,6 +1395,9 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         next_state["pk_candidates"] = result.tied_player_ids
     elif result.exiled_player_id is not None or result.reason == "second_tie_no_exile":
         next_state["pk_candidates"] = []
+        next_state["exile_votes"] = {}
+        next_state["vote_action_traces"] = {}
+        next_state["exile_vote_revote"] = False
     return next_state
 
 
@@ -1729,6 +1773,9 @@ def route_after_sheriff_registration(state: RuntimeState) -> str:
 
 
 def route_after_sheriff_speech(state: RuntimeState) -> str:
+    gs: GameState = state["game_state"]
+    if is_all_players_on_sheriff(gs, list(gs.sheriff_candidates or [])):
+        return _route_after_sheriff_phase(state, "announce_deaths")
     return _route_after_sheriff_phase(state, "sheriff_withdraw")
 
 
@@ -1959,10 +2006,48 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
     registry = state.get("agent_registry")
     candidates = list(gs.sheriff_candidates or state.get("sheriff_candidates", []))
     events: list[GameEvent] = []
+    if not candidates:
+        gs = replace(gs, events=gs.events + [GameEvent(type="sheriff_speech", payload={})])
+        return {"game_state": gs}
+
+    import random as _random
+    seed = _stable_seed(gs.game_id, "sheriff_speech_order", gs.day_number)
+    rng = _random.Random(seed)
+    speech_order = list(candidates)
+    rng.shuffle(speech_order)
+
+    names = ", ".join(_player_display(state, p) for p in speech_order)
+    first_speaker = speech_order[0] if speech_order else ""
+    if is_all_players_on_sheriff(gs, candidates):
+        no_election = GameEvent(
+            type="sheriff_no_election",
+            payload={"reason": "all_players_on_sheriff"},
+        )
+        gs = replace(gs, events=gs.events + [no_election])
+        gs, _ = _judge_broadcast(
+            phase="sheriff_all_players_registered",
+            message=(
+                "本局全员上警，警徽流失，本局无警长；"
+                f"现在由{_player_display(state, first_speaker)}开始发言。警上发言顺序: {names}"
+            ),
+            gs=gs,
+            day_number=gs.day_number,
+            extra_payload={"speech_order": speech_order},
+            visibility="public",
+        )
+    else:
+        gs, _ = _judge_broadcast(
+            phase="sheriff_speech_start",
+            message=f"警上发言顺序: {names}",
+            gs=gs,
+            day_number=gs.day_number,
+            extra_payload={"speech_order": speech_order},
+            visibility="public",
+        )
 
     if registry:
         engine: RuleEngine = state["engine"]
-        for candidate_id in candidates:
+        for candidate_id in speech_order:
             result = _call_agent(
                 agent_sheriff_election_speech,
                 state,
@@ -1995,7 +2080,12 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
             gs = replace(gs, events=gs.events + new_events)
             state["game_state"] = gs
     else:
-        gs = replace(gs, events=gs.events + [GameEvent(type="sheriff_speech", payload={})])
+        gs = replace(gs, events=gs.events + [
+            GameEvent(
+                type="sheriff_speech",
+                payload={"speech_order": speech_order},
+            )
+        ])
 
     return {"game_state": gs}
 
@@ -2090,6 +2180,7 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_conditional_edges("sheriff_speech", route_after_sheriff_speech, {
         "resolve_self_destruct": "resolve_self_destruct",
         "sheriff_withdraw": "sheriff_withdraw",
+        "announce_deaths": "announce_deaths",
     })
     graph.add_conditional_edges("sheriff_withdraw", route_after_sheriff_withdraw, {
         "resolve_self_destruct": "resolve_self_destruct",

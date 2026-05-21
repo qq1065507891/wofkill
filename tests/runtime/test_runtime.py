@@ -29,6 +29,7 @@ from werewolf_agent.runtime.graph import (
     route_after_hunter_shot,
     _sheriff_died_this_batch,
     _route_after_badge_transfer,
+    _action_trace_event,
 )
 from werewolf_agent.runtime.agent_adapter import _single_wolf_vote
 from werewolf_agent.runtime.replay import replay_from_events, extract_event_log
@@ -444,6 +445,50 @@ def test_free_discussion_keeps_action_trace_out_of_public_speech(monkeypatch) ->
     assert audit_event.payload["action_trace"] == private_trace
 
 
+def test_sheriff_vote_ignores_candidates_and_withdrew_voters() -> None:
+    from werewolf_agent.runtime.graph import sheriff_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="sheriff_vote_eligibility",
+        players=players,
+        day_number=1,
+        sheriff_candidates=["p01", "p02"],
+    )
+
+    result = sheriff_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "sheriff_withdrawing": ["p03"],
+        "sheriff_votes": {
+            "p01": "p01",  # candidate cannot vote
+            "p03": "p01",  # withdrew candidate still cannot vote
+            "p04": "p02",  # only valid off-sheriff vote
+        },
+    })
+
+    assert result["game_state"].sheriff_id == "p02"
+
+
+def test_action_trace_audit_flags_timeline_confusion() -> None:
+    event = _action_trace_event(
+        player_id="p01",
+        phase="speech",
+        action_trace={
+            "raw_text": "我认为第一天警上之后，晚上才进入首夜验人。",
+            "parsed_action": {"reason": "第一天之后才首夜"},
+        },
+    )
+
+    assert event.payload["timeline_confusion"]
+    assert event.payload["timeline_confusion"][0]["type"] == "first_night_after_first_day"
+
+
 def test_resolve_vote_keeps_action_traces_out_of_public_result() -> None:
     from werewolf_agent.runtime.graph import resolve_vote
 
@@ -517,12 +562,13 @@ def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monk
         "pusher",
         "hooker",
         "deep_cover",
-        "night_kill_primary",
-        "night_kill_backup",
-        "day_push_target",
         "public_story",
     ):
         assert plan[key]
+    assert plan["night_kill_primary"] is None
+    assert plan["night_kill_backup"] is None
+    assert plan["day_push_target"] is None
+    assert plan["evidence_quality"] == "none"
 
     assignments = [plan["fake_seer"], plan["pusher"], plan["hooker"], plan["deep_cover"]]
     assert sorted(assignments) == ["w1", "w2", "w3", "w4"]
@@ -578,6 +624,8 @@ def test_wolf_consensus_prefers_planned_primary_then_backup_target() -> None:
         "wolf_team_plan": {
             "night_kill_primary": "v1",
             "night_kill_backup": "v2",
+            "evidence_quality": "strong",
+            "evidence_from_discussion": [{"target": "v2"}],
         },
     })
 
@@ -622,7 +670,7 @@ def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypat
     speeches = [event for event in events if event.type == "sheriff_speech"]
     audits = [event for event in events if event.type == "action_trace_audit"]
 
-    assert [event.payload["speaker"] for event in speeches] == ["p01", "p02"]
+    assert sorted(event.payload["speaker"] for event in speeches) == ["p01", "p02"]
     assert all("action_trace" not in event.payload for event in speeches)
     assert len(audits) == 2
     assert all(event.payload["visibility"] == "moderator_only" for event in audits)
@@ -1299,6 +1347,108 @@ class _WolfMockAgent:
             target_id=None,
             reason="no matching action",
         ), RetryInfo(attempts=0, errors=[])
+
+
+class _CapturingSeerRegistry:
+    def __init__(self, seer_id: str) -> None:
+        self.seer_id = seer_id
+        self.context = None
+
+    def get_agent(self, player_id: str):
+        if player_id != self.seer_id:
+            return None
+        return self
+
+    def act(self, context):
+        from werewolf_agent.agents.schemas import ActionType, PlayerAction, RetryInfo
+
+        self.context = context
+        target = context.legal_targets[0] if context.legal_targets else None
+        return PlayerAction(
+            action_type=ActionType.CHECK_ALIGNMENT,
+            target_id=target,
+            speech="",
+            reason="check first legal target",
+            confidence=0.8,
+        ), RetryInfo()
+
+
+def test_seer_night_targets_exclude_counterclaiming_seers() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_night_seer
+
+    players = {
+        "seer": PlayerState(id="seer", role="seer"),
+        "fake": PlayerState(id="fake", role="werewolf"),
+        "p03": PlayerState(id="p03", role="villager"),
+        "p04": PlayerState(id="p04", role="villager"),
+    }
+    gs = GameState(
+        game_id="seer_counterclaim_filter",
+        players=players,
+        phase="night",
+        day_number=1,
+        night_number=2,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "fake",
+                    "day_number": 1,
+                    "text": "我是预言家，seer是假预言家。",
+                },
+            ),
+        ],
+    )
+    registry = _CapturingSeerRegistry("seer")
+
+    result = agent_night_seer({"game_state": gs, "engine": RuleEngine({})}, RuleEngine({}), registry)
+
+    assert result is not None
+    assert registry.context is not None
+    assert "fake" not in registry.context.legal_targets
+    assert result["seer_target_id"] != "fake"
+    assert "p03" in registry.context.legal_targets
+    assert "不要查验对跳预言家的玩家" in registry.context.strategy_directive["seer_night_check"]
+
+
+def test_all_players_on_sheriff_announces_no_sheriff_before_speeches() -> None:
+    from werewolf_agent.runtime.graph import route_after_sheriff_speech, sheriff_speech
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+        "p03": PlayerState(id="p03", role="villager"),
+    }
+    gs = GameState(
+        game_id="all_on_sheriff_vote",
+        players=players,
+        day_number=1,
+        phase="day",
+        sheriff_candidates=["p01", "p02", "p03"],
+    )
+
+    result = sheriff_speech({
+        "game_state": gs,
+        "engine": RuleEngine({}),
+    })
+
+    new_gs = result["game_state"]
+    broadcasts = [
+        event.payload
+        for event in new_gs.events
+        if event.type == "judge_broadcast"
+    ]
+    all_on_broadcast = next(
+        payload for payload in broadcasts
+        if payload.get("phase") == "sheriff_all_players_registered"
+    )
+    assert "全员上警" in all_on_broadcast["message"]
+    assert "警徽流失" in all_on_broadcast["message"]
+    assert "本局无警长" in all_on_broadcast["message"]
+    assert "由" in all_on_broadcast["message"] and "开始发言" in all_on_broadcast["message"]
+    assert all_on_broadcast["speech_order"][0] in players
+    assert new_gs.sheriff_id is None
+    assert route_after_sheriff_speech({"game_state": new_gs}) == "announce_deaths"
 
 
 class TestWolfDiscussionLoop:
@@ -2612,6 +2762,97 @@ class TestWitchPoisonPressureContext:
         assert "witch_pressure" in ctx.strategy_directive
         assert "w1" in ctx.strategy_directive["witch_pressure"]
         assert "required_evaluation" in ctx.strategy_directive
+
+    def test_build_agent_context_injects_rag_strategy_hints(self) -> None:
+        """Live agent context includes safe RAG strategy hints from seed knowledge."""
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+
+        players = {
+            "p01": PlayerState(id="p01", role="werewolf"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+            "p03": PlayerState(id="p03", role="werewolf"),
+            "p04": PlayerState(id="p04", role="werewolf"),
+            "p05": PlayerState(id="p05", role="seer"),
+            "p06": PlayerState(id="p06", role="witch"),
+            "p07": PlayerState(id="p07", role="hunter"),
+            "p08": PlayerState(id="p08", role="idiot"),
+            "p09": PlayerState(id="p09", role="hybrid"),
+            "p10": PlayerState(id="p10", role="villager"),
+            "p11": PlayerState(id="p11", role="villager"),
+            "p12": PlayerState(id="p12", role="villager"),
+        }
+        gs = GameState(
+            game_id="rag_context",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            players=players,
+            phase="night",
+            night_number=2,
+        )
+        context = build_agent_context(
+            _new_engine(),
+            gs,
+            "p01",
+            TaskType.WOLF_DISCUSSION,
+            legal_actions=[ActionType.SPEECH],
+        )
+
+        rag_items = [
+            item for item in context.salience_items
+            if item.get("type") == "rag_hit"
+        ]
+        assert rag_items
+        assert any("京城大师赛" in item["title"] for item in rag_items)
+        assert all(item["allowed_in_live"] is True for item in rag_items)
+
+    def test_build_agent_context_uses_passed_rag_service(self) -> None:
+        """Runtime can use a configured RAG service instead of seed fallback."""
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+
+        class FakeRAGService:
+            def __init__(self) -> None:
+                self.last_query = None
+                self.last_game_id = ""
+                self.last_player_id = ""
+
+            def retrieve_live_hints(self, query, *, game_id="", player_id=""):
+                self.last_query = query
+                self.last_game_id = game_id
+                self.last_player_id = player_id
+                return ["fake-hit"]
+
+            def hits_to_context_items(self, hits, max_items=3):
+                return [{
+                    "type": "rag_hit",
+                    "entry_id": "fake",
+                    "title": "fake",
+                    "allowed_in_live": True,
+                }]
+
+        players = {"p01": PlayerState(id="p01", role="werewolf")}
+        gs = GameState(
+            game_id="rag_service_context",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            players=players,
+            phase="night",
+            night_number=1,
+        )
+        service = FakeRAGService()
+
+        context = build_agent_context(
+            _new_engine(),
+            gs,
+            "p01",
+            TaskType.WOLF_DISCUSSION,
+            legal_actions=[ActionType.SPEECH],
+            rag_service=service,
+        )
+
+        assert service.last_query is not None
+        assert service.last_query.role == "werewolf"
+        assert service.last_query.phase == "night_discussion"
+        assert service.last_game_id == "rag_service_context"
+        assert service.last_player_id == "p01"
+        assert any(item["entry_id"] == "fake" for item in context.salience_items)
 
 
 # ---------------------------------------------------------------------------
