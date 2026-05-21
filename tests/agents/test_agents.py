@@ -400,6 +400,38 @@ class TestPlayerAgentRetryFallback:
         assert isinstance(action, FallbackAction)
         assert retry.error_code == "empty_response"
 
+    def test_provider_failure_empty_response_does_not_retry_three_model_calls(self) -> None:
+        class EmptyFailureRouter:
+            def __init__(self) -> None:
+                self.calls = 0
+                self._usage_log: list[UsageRecord] = []
+
+            def generate(self, *args, **kwargs):
+                self.calls += 1
+                self._usage_log.append(UsageRecord(
+                    agent_id="p01",
+                    task_type="speech",
+                    provider="minimax",
+                    model="MiniMax-M2.7",
+                    success=False,
+                    fallback_reason="primary_failed:ReadTimeout: The read operation timed out",
+                ))
+                return GenerateResult(text="", provider="minimax", model="MiniMax-M2.7")
+
+            def get_usage_log(self):
+                return list(self._usage_log)
+
+        router = EmptyFailureRouter()
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+
+        action, retry = agent.act(self._make_context())
+
+        assert isinstance(action, FallbackAction)
+        assert router.calls == 1
+        assert retry.error_code == "model_generation_failed"
+        assert action.trace is not None
+        assert action.trace.retry_count == 1
+
     def test_private_intent_in_valid_action(self) -> None:
         json_resp = (
             '{"action_type":"vote","target_id":"p07","speech":"归7",'

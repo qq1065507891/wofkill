@@ -517,6 +517,58 @@ def test_resolve_vote_keeps_action_traces_out_of_public_result() -> None:
     assert audit_event.payload["visibility"] == "moderator_only"
 
 
+def test_vote_action_trace_audit_exposes_structured_private_vote_thought_to_moderator_only(capsys) -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+    from werewolf_agent.runtime.public_ledger import build_public_ledger
+
+    engine = _new_engine()
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+    }
+    gs = GameState(game_id="vote_private_thought", players=players, day_number=1)
+    private_trace = {
+        "parsed_action": {
+            "reason": "公开理由：跟随查杀",
+            "private_reason": "心里想：p02的发言像倒钩狼，先投他试压力",
+            "standing_with_seer": "p03",
+            "suspect_reason": "p02警上站边摇摆，且投票理由跟风",
+            "not_voting_reason": "p04虽然发言短，但没有和悍跳线绑定",
+            "private_intent": {"true_role": "villager"},
+        },
+    }
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": engine,
+        "exile_votes": {"p01": "p02"},
+        "vote_action_traces": {"p01": private_trace},
+        "revote": False,
+    })
+
+    events = result["game_state"].events
+    vote_event = next(event for event in events if event.type == "vote_resolved")
+    audit_event = next(event for event in events if event.type == "action_trace_audit")
+
+    assert audit_event.payload["visibility"] == "moderator_only"
+    assert audit_event.payload["day_number"] == 1
+    assert audit_event.payload["private_vote_thought"] == {
+        "target": "p02",
+        "public_reason": "公开理由：跟随查杀",
+        "standing_with_seer": "p03",
+        "suspect_reason": "p02警上站边摇摆，且投票理由跟风",
+        "not_voting_reason": "p04虽然发言短，但没有和悍跳线绑定",
+        "private_reason": "心里想：p02的发言像倒钩狼，先投他试压力",
+    }
+    assert audit_event.payload["vote_target"] == "p02"
+    assert "private_vote_thought" not in vote_event.payload
+    assert "心里想" not in str(vote_event.payload)
+    assert "心里想" not in str(build_public_ledger(result["game_state"]))
+    output = capsys.readouterr().out
+    assert "[投票心理][仅主持人]" in output
+    assert "心里想：p02的发言像倒钩狼" in output
+
+
 def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monkeypatch) -> None:
     from werewolf_agent.runtime import graph as runtime_graph
 

@@ -222,6 +222,8 @@ def _action_trace_event(
     player_id: str,
     phase: str,
     action_trace: dict[str, Any],
+    day_number: int = 0,
+    night_number: int = 0,
 ) -> GameEvent:
     audit_text_parts: list[str] = []
     raw_text = action_trace.get("raw_text")
@@ -234,17 +236,43 @@ def _action_trace_event(
             if value:
                 audit_text_parts.append(str(value))
     timeline_confusion = detect_timeline_confusion("\n".join(audit_text_parts))
+    payload = {
+        "player_id": player_id,
+        "phase": phase,
+        "day_number": day_number,
+        "night_number": night_number,
+        "visibility": "moderator_only",
+        "action_trace": action_trace,
+        "timeline_confusion": timeline_confusion,
+    }
+    if phase == "vote":
+        payload.update(_private_vote_audit_payload(action_trace))
 
-    return GameEvent(
-        type="action_trace_audit",
-        payload={
-            "player_id": player_id,
-            "phase": phase,
-            "visibility": "moderator_only",
-            "action_trace": action_trace,
-            "timeline_confusion": timeline_confusion,
-        },
+    return GameEvent(type="action_trace_audit", payload=payload)
+
+
+def _private_vote_audit_payload(action_trace: dict[str, Any]) -> dict[str, Any]:
+    parsed = action_trace.get("parsed_action") or {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    target = (
+        parsed.get("target_id")
+        or parsed.get("target")
+        or action_trace.get("target_id")
+        or action_trace.get("target")
     )
+    thought = {
+        "target": target,
+        "public_reason": str(parsed.get("reason") or action_trace.get("reason") or "")[:300],
+        "standing_with_seer": str(parsed.get("standing_with_seer") or "")[:100],
+        "suspect_reason": str(parsed.get("suspect_reason") or "")[:300],
+        "not_voting_reason": str(parsed.get("not_voting_reason") or "")[:300],
+        "private_reason": str(parsed.get("private_reason") or "")[:500],
+    }
+    return {
+        "vote_target": target,
+        "private_vote_thought": thought,
+    }
 
 
 def _public_vote_reason(action_trace: dict[str, Any] | None) -> str:
@@ -253,6 +281,20 @@ def _public_vote_reason(action_trace: dict[str, Any] | None) -> str:
     parsed = action_trace.get("parsed_action") or {}
     reason = parsed.get("reason") or action_trace.get("reason") or ""
     return str(reason)[:200]
+
+
+def _with_vote_target_in_trace(
+    action_trace: dict[str, Any],
+    target_id: str,
+) -> dict[str, Any]:
+    parsed = action_trace.get("parsed_action")
+    if isinstance(parsed, dict):
+        return {
+            **action_trace,
+            "target_id": target_id,
+            "parsed_action": {**parsed, "target_id": parsed.get("target_id") or target_id},
+        }
+    return {**action_trace, "target_id": target_id}
 
 
 def _judge_broadcast(
@@ -434,6 +476,8 @@ def _legacy_single_round_wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                     player_id=wolf_id,
                     phase="wolf_discussion",
                     action_trace=result["action_trace"],
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
                 ))
     if has_agents:
         gs = replace(gs, events=gs.events + events)
@@ -992,6 +1036,8 @@ def _legacy_sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                     player_id=candidate_id,
                     phase="sheriff_speech",
                     action_trace=result["action_trace"],
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
                 ))
     if not has_agents:
         events.append(GameEvent(type="sheriff_speech", payload={}))
@@ -1278,6 +1324,8 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 player_id=speaker_id,
                 phase="speech",
                 action_trace=action_trace,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
             ))
         gs = replace(gs, events=gs.events + events)
         return {"game_state": gs, **advance_speaker()}
@@ -1438,10 +1486,26 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     }
     if result.tied_player_ids:
         payload["tied"] = result.tied_player_ids
-    vote_trace_events = [
-        _action_trace_event(player_id=pid, phase="vote", action_trace=trace)
-        for pid, trace in (state.get("vote_action_traces") or {}).items()
-    ]
+    vote_trace_events = []
+    for pid, trace in (state.get("vote_action_traces") or {}).items():
+        audit_event = _action_trace_event(
+            player_id=pid,
+            phase="vote",
+            action_trace=_with_vote_target_in_trace(trace, state.get("exile_votes", {}).get(pid, "")),
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        thought = audit_event.payload.get("private_vote_thought") or {}
+        if thought:
+            print(
+                f"  [投票心理][仅主持人] {_player_display(state, pid)} -> "
+                f"{_player_display(state, thought.get('target'))}: "
+                f"站边={thought.get('standing_with_seer') or '未明确'}；"
+                f"怀疑理由={thought.get('suspect_reason') or thought.get('public_reason') or '未说明'}；"
+                f"排除理由={thought.get('not_voting_reason') or '未说明'}；"
+                f"内心理由={thought.get('private_reason') or '未说明'}"
+            )
+        vote_trace_events.append(audit_event)
     gs = replace(gs, votes=state.get("exile_votes", {}),
                  events=gs.events + [GameEvent(
                      type="vote_resolved",
@@ -1917,6 +1981,8 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
                     player_id=candidate_id,
                     phase="pk_speech",
                     action_trace=result["action_trace"],
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
                 ))
     else:
         events.append(GameEvent(type="tie_pk_speech", payload={}))
@@ -1989,6 +2055,8 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                     player_id=wolf_id,
                     phase=f"wolf_discussion_round_{round_number}",
                     action_trace=result["action_trace"],
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
                 )
                 gs = replace(gs, events=gs.events + [trace_event])
                 events.append(trace_event)
@@ -2130,6 +2198,8 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                     player_id=candidate_id,
                     phase="sheriff_speech",
                     action_trace=result["action_trace"],
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
                 ))
             # Incrementally update gs so next candidate sees previous speeches
             gs = replace(gs, events=gs.events + new_events)

@@ -160,16 +160,36 @@ class PlayerAgent:
             raw_text = result.text or ""
 
             if not result.text:
-                # Check if the failure was due to structured output not supported
-                usage_log = self.model_router.get_usage_log()
-                if usage_log:
-                    last_record = usage_log[-1]
-                    if (
-                        not last_record.success
-                        and last_record.fallback_reason
-                        and "NotImplementedError" in last_record.fallback_reason
-                    ):
+                failure_reason = self._latest_generation_failure_reason()
+                if failure_reason:
+                    if "NotImplementedError" in failure_reason:
                         structured_failure_reason = "structured_output_unsupported"
+                    else:
+                        structured_failure_reason = "model_generation_failed"
+                    retry = RetryInfo(
+                        attempt=attempt,
+                        max_retries=self.max_retries,
+                        error_code="model_generation_failed",
+                        error_message=failure_reason,
+                        correction_hint="Provider generation failed; using fallback action.",
+                    )
+                    fallback = self._fallback_action(context)
+                    trace = self._build_action_trace(
+                        context,
+                        raw_text="",
+                        parsed_action=None,
+                        final_action_type=fallback.action_type,
+                        retry=retry,
+                        fallback_reason=fallback.reason,
+                        tool_call_required=tool_call_required,
+                        tool_call_received=False,
+                        parse_success=False,
+                        parse_error=failure_reason,
+                        retry_count=attempt,
+                        structured_failure_reason=structured_failure_reason,
+                    )
+                    fallback = fallback.model_copy(update={"trace": trace})
+                    return fallback, retry
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
@@ -249,6 +269,18 @@ class PlayerAgent:
         )
         fallback = fallback.model_copy(update={"trace": trace})
         return fallback, retry
+
+    def _latest_generation_failure_reason(self) -> str | None:
+        get_usage_log = getattr(self.model_router, "get_usage_log", None)
+        if get_usage_log is None:
+            return None
+        usage_log = get_usage_log()
+        if not usage_log:
+            return None
+        last_record = usage_log[-1]
+        if last_record.success or not last_record.fallback_reason:
+            return None
+        return str(last_record.fallback_reason)
 
     def _build_action_trace(
         self,
@@ -496,6 +528,14 @@ class PlayerAgent:
                 parts.append("重要：本轮投票必须选择一名玩家放逐，不能弃票！")
             if context.legal_actions == [ActionType.VOTE] and context.legal_targets:
                 parts.append("你必须投出选票，从可选目标中选择一人。")
+            parts.append(
+                "投票时必须先在心里完成判断，并在JSON中额外给出这些私有字段："
+                "standing_with_seer（你站边哪个预言家/逻辑线，没有则写空字符串）、"
+                "suspect_reason（为什么怀疑最终投票对象）、"
+                "not_voting_reason（为什么不投其他主要候选人）、"
+                "private_reason（完整内心活动：为什么投他、担心什么、最终如何决定）。"
+                "这些字段不会公开发言，只给主持人审计。"
+            )
         parts.append(
             "请严格输出以下格式的JSON（不要输出其他内容）: "
             '{"action_type": string, "target_id": string|null, '
@@ -541,8 +581,13 @@ class PlayerAgent:
                          '"pressure_target": "p05", "risk_flags": []}}')
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
-                         '"speech": "我投p05，他逻辑不通。", '
-                         '"reason": "发言可疑", "confidence": 0.8, '
+                         '"speech": "", '
+                         '"reason": "公开理由：p05发言可疑", '
+                         '"standing_with_seer": "p03", '
+                         '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
+                         '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
+                         '"private_reason": "心里活动：我更信p03的预言家线，p05像狼队抗推失败后的防守位，所以投p05。", '
+                         '"confidence": 0.8, '
                          '"private_intent": {"true_role": "seer", '
                          '"faction_goal": "find_wolves", "claimed_view": "我是预言家", '
                          '"pressure_target": "p05", "risk_flags": []}}')

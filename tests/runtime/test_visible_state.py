@@ -109,3 +109,121 @@ def test_agent_context_shares_same_public_ledger_across_roles() -> None:
     ]
     assert "今晚刀p01" not in str(villager_ledger)
     assert "alignment" not in str(villager_ledger)
+
+
+def test_agent_context_includes_only_viewers_private_memory() -> None:
+    engine = RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
+    gs = GameState(
+        game_id="private_memory",
+        phase="day",
+        day_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        },
+        events=[
+            GameEvent(type="action_trace_audit", payload={
+                "player_id": "p01",
+                "visibility": "moderator_only",
+                "private_vote_thought": {
+                    "target": "p02",
+                    "standing_with_seer": "p03",
+                    "suspect_reason": "p02的逻辑漏洞是没有解释自己为什么站边p03",
+                    "not_voting_reason": "p04这一点说得合理，暂时不投",
+                    "private_reason": "我心里更信p03，所以准备投p02",
+                },
+            }),
+            GameEvent(type="action_trace_audit", payload={
+                "player_id": "p02",
+                "visibility": "moderator_only",
+                "private_vote_thought": {
+                    "target": "p01",
+                    "suspect_reason": "p01秘密怀疑点",
+                    "private_reason": "我是狼，想抗推p01",
+                },
+            }),
+        ],
+    )
+
+    p01_context = build_agent_context(engine, gs, "p01", TaskType.SPEECH)
+    p02_context = build_agent_context(engine, gs, "p02", TaskType.SPEECH)
+
+    p01_memory = p01_context.visible_world_state["private_memory"]
+    p02_memory = p02_context.visible_world_state["private_memory"]
+    assert "p02的逻辑漏洞" in str(p01_memory)
+    assert "p04这一点说得合理" in str(p01_memory)
+    assert "p01秘密怀疑点" not in str(p01_memory)
+    assert "p01秘密怀疑点" in str(p02_memory)
+    assert "private_memory" not in str(p01_context.visible_world_state["public_ledger"])
+
+
+def test_agent_context_private_memory_keeps_heard_public_speech_points() -> None:
+    engine = RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
+    gs = GameState(
+        game_id="heard_public_points",
+        phase="day",
+        day_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        },
+        events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p02",
+                "day_number": 1,
+                "text": "完整原文唯一标记XYZ。p03的逻辑漏洞是没有解释警徽流。p04这一点说得合理。",
+            }),
+            GameEvent(type="speech", payload={
+                "speaker": "p02",
+                "day_number": 1,
+                "visibility": "werewolf_team_only",
+                "text": "秘密狼队逻辑漏洞",
+            }),
+        ],
+    )
+
+    context = build_agent_context(engine, gs, "p01", TaskType.SPEECH)
+
+    memory = context.visible_world_state["private_memory"]
+    assert "p03的逻辑漏洞是没有解释警徽流" in str(memory)
+    assert "p04这一点说得合理" in str(memory)
+    assert "完整原文唯一标记XYZ" not in context.public_summary
+    assert "完整原文唯一标记XYZ" not in str(memory)
+    assert "秘密狼队逻辑漏洞" not in str(memory)
+
+
+def test_agent_context_uses_private_memory_not_prior_day_full_speech_text() -> None:
+    engine = RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
+    gs = GameState(
+        game_id="prior_day_notes",
+        phase="day",
+        day_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        },
+        events=[
+            GameEvent(type="day_announce", payload={"day": 1}),
+            GameEvent(type="speech", payload={
+                "speaker": "p01",
+                "day_number": 1,
+                "text": "完整原文唯一标记ABC。p02的逻辑漏洞是没有解释自己为什么站边p03。",
+            }),
+            GameEvent(type="action_trace_audit", payload={
+                "player_id": "p01",
+                "visibility": "moderator_only",
+                "private_vote_thought": {
+                    "target": "p02",
+                    "suspect_reason": "p02的逻辑漏洞是没有解释自己为什么站边p03",
+                    "private_reason": "我记住这个漏洞，明天继续压p02",
+                },
+            }),
+        ],
+    )
+
+    context = build_agent_context(engine, gs, "p01", TaskType.SPEECH)
+
+    assert "完整原文唯一标记ABC" not in context.public_summary
+    assert "逻辑漏洞" not in context.public_summary
+    assert "逻辑漏洞" in str(context.visible_world_state["private_memory"])
+    assert "p02" in str(context.visible_world_state["private_memory"])

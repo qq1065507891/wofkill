@@ -27,6 +27,7 @@ from werewolf_agent.runtime.timeline import (
     current_phase_label,
     phase_label,
 )
+from werewolf_agent.runtime.private_memory import build_private_memory
 from werewolf_agent.runtime.visible_state import build_visible_player_state
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,9 @@ def build_agent_context(
 
     # Build simplified visible state
     visible: dict[str, Any] = build_visible_player_state(gs)
+    private_memory = build_private_memory(gs, player_id)
+    if private_memory:
+        visible["private_memory"] = private_memory
 
     # Role-specific private info
     if player.role == "werewolf":
@@ -254,12 +258,11 @@ def build_agent_context(
     # Build public summary: chronological timeline of key public events.
     # Strategy to stay within context budget (~2500 chars):
     #   - Structural events (deaths, votes, exiles): keep in full (compact)
-    #   - Speeches from previous days: truncate to SPEECH_SNIPPET_LEN chars
+    #   - Previous-day speech text is intentionally not replayed. Players keep
+    #     only their own private_memory notes across days.
     #   - If total exceeds SUMMARY_BUDGET, drop oldest lines first
     SUMMARY_BUDGET = 2500
-    SPEECH_SNIPPET_LEN = 120
     summary_parts: list[str] = []
-    current_day = gs.day_number
     for e in gs.events:
         if e.type == "day_announce":
             day = e.payload.get("day", "?")
@@ -275,17 +278,6 @@ def build_agent_context(
                          "vote_tie_pk", "vote_second_tie",
                          "sheriff_elected", "sheriff_no_election"):
                 summary_parts.append(f"[法官] {msg}")
-        elif e.type in ("speech", "sheriff_speech"):
-            speech_day = e.payload.get("day_number", 0)
-            # Include speeches from previous days only (current day in transcript)
-            if speech_day < current_day and speech_day > 0:
-                speaker = e.payload.get("speaker", "?")
-                text = e.payload.get("text", "")
-                if text:
-                    snippet = text[:SPEECH_SNIPPET_LEN]
-                    if len(text) > SPEECH_SNIPPET_LEN:
-                        snippet += "…"
-                    summary_parts.append(f"[{speaker}] {snippet}")
         elif e.type == "vote_resolved":
             exiled = e.payload.get("exiled")
             reason = e.payload.get("reason", "")
@@ -1009,7 +1001,9 @@ def agent_day_vote(
         "vote_silent": (
             "投票阶段不允许公开发言。speech字段必须留空。"
             "你只能内心选择要投谁，不能在投票时发表任何公开言论。"
-            "请在reason字段中写下你的内心理由（只有你自己能看到）。"
+            "请在reason字段中写下简短公开理由；同时在JSON中额外写"
+            "standing_with_seer、suspect_reason、not_voting_reason、private_reason。"
+            "这些字段是你的投票心理活动，只给主持人审计，不会公开给其他玩家。"
         ),
         "vote_strategy": (
             "投票原则：\n"
