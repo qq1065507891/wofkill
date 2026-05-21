@@ -11,3 +11,6 @@ htmlcov/
 venv/
 .worktrees/
 .claude/settings.local.json
+game_g_*.json
+game_stdout.log
+game_output.log

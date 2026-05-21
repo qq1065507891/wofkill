@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-from functools import lru_cache
 from typing import Any, Protocol
 
 from werewolf_agent.agents.player import PlayerAgent
@@ -25,10 +24,10 @@ from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
-    build_timeline_facts,
     current_phase_label,
     phase_label,
 )
+from werewolf_agent.runtime.visible_state import build_visible_player_state
 
 logger = logging.getLogger(__name__)
 
@@ -50,25 +49,6 @@ class SimpleAgentRegistry:
 
     def get_agent(self, player_id: str) -> PlayerAgent | None:
         return self._agents.get(player_id)
-
-
-@lru_cache(maxsize=1)
-def _default_rag_injector() -> Any | None:
-    """Build the local seed RAG injector.
-
-    This is intentionally local/in-memory. It does not require Docker,
-    SQLite, PostgreSQL, or pgvector; it reads the seed knowledge entries
-    packaged in `werewolf_agent.rag.ingestion`.
-    """
-    try:
-        from werewolf_agent.rag.ingestion import create_seed_entries
-        from werewolf_agent.rag.injector import RAGInjector
-        from werewolf_agent.rag.retriever import StrategyRetriever
-
-        return RAGInjector(StrategyRetriever(create_seed_entries()))
-    except Exception:
-        logger.debug("Seed RAG injector initialization failed", exc_info=True)
-        return None
 
 
 def _rag_phase_for_task(task_type: TaskType, phase: str) -> str:
@@ -102,43 +82,24 @@ def _inject_seed_rag_hints(
             context.phase,
             " ".join(action.value for action in context.legal_actions),
         ]).strip()
-        if rag_service is not None:
-            from werewolf_agent.rag.schemas import RAGQuery
+        if rag_service is None:
+            return context
+        from werewolf_agent.rag.schemas import RAGQuery
 
-            query = RAGQuery(
-                role=context.own_role,
-                phase=phase,
-                situation=situation,
-                ruleset_id=ruleset_id,
-                max_results=3,
-                viewer_role=context.own_role,
-            )
-            hits = rag_service.retrieve_live_hints(
-                query,
-                game_id=game_id,
-                player_id=context.agent_id,
-            )
-            items = rag_service.hits_to_context_items(hits, max_items=3)
-        else:
-            injector = _default_rag_injector()
-            if injector is None:
-                return context
-            from werewolf_agent.rag.injector import InjectionContext
-
-            query = injector.build_rag_query(
-                role=context.own_role,
-                phase=phase,
-                situation=situation,
-                ruleset_id=ruleset_id,
-                max_results=3,
-            )
-            hits = injector.inject(
-                query,
-                injection_context=InjectionContext.LIVE_PLAYER,
-                game_id=game_id,
-                player_id=context.agent_id,
-            )
-            items = injector.hits_to_context_items(hits, max_items=3)
+        query = RAGQuery(
+            role=context.own_role,
+            phase=phase,
+            situation=situation,
+            ruleset_id=ruleset_id,
+            max_results=3,
+            viewer_role=context.own_role,
+        )
+        hits = rag_service.retrieve_live_hints(
+            query,
+            game_id=game_id,
+            player_id=context.agent_id,
+        )
+        items = rag_service.hits_to_context_items(hits, max_items=3)
         if not items:
             return context
         existing = [
@@ -246,24 +207,7 @@ def build_agent_context(
         return AgentContext(agent_id=player_id, task_type=task_type)
 
     # Build simplified visible state
-    visible: dict[str, Any] = {
-        "phase": gs.phase,
-        "day": gs.day_number,
-        "night": gs.night_number,
-        "phase_label": current_phase_label(
-            gs.phase, day_number=gs.day_number, night_number=gs.night_number
-        ),
-        "timeline_note": TIMELINE_ORDER_NOTE,
-        "timeline_facts": build_timeline_facts(
-            gs.phase,
-            day_number=gs.day_number,
-            night_number=gs.night_number,
-        ),
-        "alive_players": [pid for pid, p in gs.players.items() if p.alive],
-        "dead_players": [{"id": d.player_id, "reason": d.reason} for d in gs.deaths],
-        "sheriff_id": gs.sheriff_id,
-        "badge_state": gs.sheriff_badge_state,
-    }
+    visible: dict[str, Any] = build_visible_player_state(gs)
 
     # Role-specific private info
     if player.role == "werewolf":
@@ -1508,10 +1452,17 @@ def agent_sheriff_election_speech(
 
     # Reject empty sheriff election speeches
     if not speech_text.strip() or len(speech_text.strip()) < 10:
-        speech_text = (
-            f"我上警是因为我需要通过警徽流传递关键信息。"
-            f"我的警徽流暂定先看{other_candidates[0] if other_candidates else '待定'}。"
-            f"希望大家支持我当选警长。"
-        )
+        if is_seer_or_claiming:
+            speech_text = (
+                f"我上警是因为我需要通过警徽流传递关键信息。"
+                f"我的警徽流暂定先看{other_candidates[0] if other_candidates else '待定'}。"
+                f"希望大家支持我当选警长。"
+            )
+        else:
+            speech_text = (
+                "我上警是想先给出自己的观察视角。"
+                f"我会重点听{other_candidates[0] if other_candidates else '后置位'}的发言，"
+                "看站边和逻辑是否前后一致。"
+            )
 
     return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}

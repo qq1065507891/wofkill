@@ -284,6 +284,8 @@ class AutoVectorStore:
 
     def __init__(self, dim: int = _EMBEDDING_DIM) -> None:
         self._store: LocalVectorStore | EmbeddingVectorStore | SiliconFlowVectorStore
+        import logging
+        logger = logging.getLogger("werewolf_agent.rag.vector_store")
 
         # Try SiliconFlow first (real embeddings via API)
         try:
@@ -295,8 +297,11 @@ class AutoVectorStore:
             self._store = SiliconFlowVectorStore(client)
             self._backend = "siliconflow"
             return
-        except (ImportError, EmbeddingClientError):
-            pass
+        except (ImportError, EmbeddingClientError) as exc:
+            logger.warning(
+                "SiliconFlow vector store initialization failed (%s); falling back to local/embedding store",
+                exc,
+            )
 
         # Fall back to hash-based embeddings (numpy-accelerated)
         try:
@@ -304,8 +309,11 @@ class AutoVectorStore:
             self._store = EmbeddingVectorStore(dim=dim)
             self._backend = "embedding"
             return
-        except ImportError:
-            pass
+        except ImportError as exc:
+            logger.warning(
+                "Numpy not available; falling back to TF-IDF/local store (%s)",
+                exc,
+            )
 
         # Final fallback: TF-IDF heuristic
         self._store = LocalVectorStore()
@@ -468,8 +476,14 @@ def create_vector_store(backend: str = "auto", *, initialize: bool = True) -> Ve
     if normalized == "embedding":
         return EmbeddingVectorStore()
     if normalized == "siliconflow":
-        from werewolf_agent.rag.embedding_client import SiliconFlowEmbeddingClient
-        return SiliconFlowVectorStore(SiliconFlowEmbeddingClient())
+        from werewolf_agent.rag.embedding_client import (
+            EmbeddingClientError,
+            SiliconFlowEmbeddingClient,
+        )
+        try:
+            return SiliconFlowVectorStore(SiliconFlowEmbeddingClient())
+        except EmbeddingClientError as exc:
+            raise VectorStoreConfigError(str(exc)) from exc
     if normalized == "qdrant":
         raise VectorStoreConfigError("Qdrant is not supported; use pgvector")
     if normalized == "pgvector":

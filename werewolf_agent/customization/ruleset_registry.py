@@ -51,15 +51,6 @@ class RulesetRegistry:
             return self._entries[ruleset_id]
         if ruleset_id == DEFAULT_RULESET_ID:
             return self._entries[DEFAULT_RULESET_ID]
-        if ruleset_id == "wolf_king_guard_demo":
-            return self.from_normalized(
-                {
-                    "ruleset_id": ruleset_id,
-                    "roles": {"wolf_king": {"count": 1}, "guard": {"count": 1}},
-                    "abilities": ["wolf_king_shot", "guard_protect"],
-                    "player_count": 2,
-                }
-            )
         raise ValueError(f"Unknown ruleset_id: {ruleset_id}")
 
     def from_normalized(self, normalized: dict[str, Any]) -> RulesetRegistryEntry:

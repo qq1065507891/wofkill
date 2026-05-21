@@ -271,11 +271,11 @@ def build_wolf_team_plan_from_discussion(
     for role in ("fake_seer", "pusher", "hooker", "deep_cover"):
         plan[role] = consensus.get(role) or previous.get(role)
 
-    # Day push target defaults to backup kill target
+    # Day push target must come from current discussion evidence. Previous
+    # targets are stale after a new private discussion starts.
     plan["day_push_target"] = (
         consensus.get("day_push_target")
         or (consensus.get("night_kill_backup") if evidence_quality != "none" else None)
-        or (previous.get("day_push_target") if previous.get("evidence_quality") != "none" else None)
     )
 
     # Rush vote opportunity (informational only)

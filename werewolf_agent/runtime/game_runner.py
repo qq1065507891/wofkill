@@ -43,6 +43,7 @@ class GameRunnerConfig:
     repository: Any = None  # GameRepository, optional
     memory_coordinator: Any = None  # PersistentMemoryCoordinator, optional
     rag_service: Any = None  # RAGKnowledgeService, optional
+    enable_default_rag_service: bool = True
 
     def __post_init__(self) -> None:
         if self.seed is None:
@@ -81,6 +82,9 @@ class GameRunner:
         # Memory restored from previous game (None if no coordinator/repository)
         self._restored_memory: Any = None
         self._restored_rag: list[Any] | None = None
+        self._rag_service: Any = config.rag_service
+        if self._rag_service is None and config.enable_default_rag_service:
+            self._rag_service = self._build_default_rag_service()
         self._agent_registry: SimpleAgentRegistry | None = self._build_agent_registry()
         # Attempt to restore memory from a previous snapshot at init
         self._restore_memory_if_configured()
@@ -156,11 +160,21 @@ class GameRunner:
         }
         if self._agent_registry is not None:
             rt["agent_registry"] = self._agent_registry
-        if self._config.rag_service is not None:
-            rt["rag_service"] = self._config.rag_service
+        if self._rag_service is not None:
+            rt["rag_service"] = self._rag_service
         if self._config.agent_call_timeout > 0:
             rt["agent_call_timeout"] = self._config.agent_call_timeout
         return rt
+
+    def _build_default_rag_service(self) -> Any | None:
+        """Build no-Docker seed RAG service for runtime wiring."""
+        try:
+            from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+            return RAGKnowledgeService()
+        except Exception:
+            logger.warning("Default RAG service initialization failed", exc_info=True)
+            return None
 
     def _build_agent_registry(self) -> SimpleAgentRegistry | None:
         """Build PlayerAgent registry when real agent mode is enabled."""

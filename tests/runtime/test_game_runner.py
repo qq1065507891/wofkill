@@ -20,6 +20,23 @@ def test_game_runner_runtime_state_includes_rag_service() -> None:
     assert runtime_state["rag_service"] is service
 
 
+def test_game_runner_runtime_state_creates_default_rag_service() -> None:
+    runner = GameRunner(GameRunnerConfig(seed=42))
+
+    runtime_state = runner._build_runtime_state()
+
+    assert runtime_state["rag_service"] is not None
+    assert runtime_state["rag_service"].__class__.__name__ == "RAGKnowledgeService"
+
+
+def test_game_runner_runtime_state_can_disable_default_rag_service() -> None:
+    runner = GameRunner(GameRunnerConfig(seed=42, enable_default_rag_service=False))
+
+    runtime_state = runner._build_runtime_state()
+
+    assert "rag_service" not in runtime_state
+
+
 # ---------------------------------------------------------------------------
 # Config tests
 # ---------------------------------------------------------------------------

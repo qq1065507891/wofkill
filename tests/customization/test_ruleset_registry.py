@@ -39,5 +39,19 @@ def test_unimplemented_roles_are_display_only() -> None:
 
 
 def test_game_runner_rejects_display_only_ruleset() -> None:
-    with pytest.raises(ValueError, match="display_only"):
-        GameRunner(GameRunnerConfig(ruleset_id="wolf_king_guard_demo"))
+    from werewolf_agent.customization.ruleset_registry import RulesetRegistry, RulesetRegistryEntry
+    from werewolf_agent.customization.compatibility import CompatibilityMatrix, RuleEngineCapabilities
+
+    registry = RulesetRegistry()
+    caps = RuleEngineCapabilities()
+    entry = RulesetRegistryEntry(
+        ruleset_id="mock_display_only",
+        status="display_only",
+        capabilities=caps,
+        compatibility=CompatibilityMatrix(status="display_only"),
+        path=None,
+    )
+    registry._entries["mock_display_only"] = entry
+
+    with pytest.raises(ValueError, match="is display_only"):
+        GameRunner(GameRunnerConfig(ruleset_id="mock_display_only", ruleset_registry=registry))

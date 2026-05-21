@@ -33,3 +33,14 @@ def test_quality_audit_handles_vote_trace_without_parsed_action(capsys) -> None:
     out = capsys.readouterr().out
     assert "Votes without basis" in out
     assert "Fallbacks:" in out
+
+
+def test_format_api_key_status_does_not_expose_key_material() -> None:
+    from scripts.run_real_game import _format_api_key_status
+
+    key = "sk-test-1234567890abcdef"
+
+    status = _format_api_key_status(key)
+
+    assert status == "configured"
+    assert key[:8] not in status

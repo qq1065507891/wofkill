@@ -484,25 +484,14 @@ class TestSeedData:
             assert "实际身份" not in text
             assert "胜负条件" not in text
 
-    def test_timeline_cold_start_seed_exists(self):
+    def test_timeline_rule_fact_is_not_stored_as_rag_seed(self):
         entries = create_seed_entries()
-        entry = next(
-            (
-                e for e in entries
-                if e.entry_id == "seed_timeline_first_night_before_day_one_01"
-            ),
-            None,
-        )
+        ids = {entry.entry_id for entry in entries}
 
-        assert entry is not None
-        assert entry.metadata.ruleset_id == "pre_witch_hunter_idiot_mixed"
-        assert entry.metadata.player_count == 12
-        assert entry.metadata.role_perspective == "all"
-        assert entry.metadata.visibility_boundary != VisibilityBoundary.GOD_VIEW
-        text = f"{entry.title} {entry.summary} {' '.join(entry.key_decisions)}"
-        assert "N1 首夜 -> D1 第一天" in text
-        assert "首夜发生在第一天之前" in text
-        assert "第一天是首夜结算后的第一个白天" in text
+        assert "seed_timeline_first_night_before_day_one_01" not in ids
+        for entry in entries:
+            text = f"{entry.title} {entry.summary} {' '.join(entry.key_decisions)}"
+            assert "首夜发生在第一天之前" not in text
 
 
 # ===================================================================

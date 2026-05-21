@@ -34,6 +34,10 @@ logger = logging.getLogger("real_game")
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
+def _format_api_key_status(api_key: str) -> str:
+    return "configured" if api_key else "missing"
+
+
 def _sep(title: str = "") -> None:
     line = "=" * 60
     if title:
@@ -331,7 +335,7 @@ def main() -> None:
 
     _sep("WEREWOLF AGENT - REAL LLM GAME")
     print(f"  API endpoint: {base_url}")
-    print(f"  API key:      {api_key[:20]}...")
+    print(f"  API key:      {_format_api_key_status(api_key)}")
     print(f"  Seed:         {args.seed or 'auto'}")
     print(f"  Max steps:    {args.max_steps}")
     print(f"  Timeout:      {'disabled' if args.no_timeout else f'{args.timeout}s'}")

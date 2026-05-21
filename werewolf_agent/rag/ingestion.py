@@ -160,39 +160,6 @@ def create_seed_entries() -> list[RAGEntry]:
     ingester = CaseIngester()
     entries: list[RAGEntry] = []
 
-    entries.append(RAGEntry(
-        entry_id="seed_timeline_first_night_before_day_one_01",
-        title="时间线基础纠偏：首夜在第一天之前",
-        summary=(
-            "12人预女猎白混的行动顺序应按 N1 首夜 -> D1 第一天 -> N2 第二夜 -> D2 第二天理解。"
-            "首夜发生在第一天之前；第一天是首夜结算后的第一个白天。"
-            "首夜阶段通常已经产生狼人刀口、预言家首验、女巫用药判断、混血儿选主人等信息，"
-            "所以第一天警上发言时不要说成“第一天之后才进入首夜”。"
-        ),
-        key_decisions=[
-            "看到 D1 / 第一天 时，默认 N1 / 首夜已经发生并结算。",
-            "首夜行动包括狼人刀人、预言家验人、女巫用药、混血儿选主人。",
-            "如果发言中出现“第一天之后才首夜”，应立刻修正为“首夜在第一天之前”。",
-        ],
-        metadata=CaseMetadata(
-            case_type=CaseType.ROLE_STRATEGY,
-            quality_grade=QualityGrade.RULE_DERIVED_SEED,
-            review_status=ReviewStatus.APPROVED,
-            reviewer="timeline_guard",
-            ruleset_id="pre_witch_hunter_idiot_mixed",
-            player_count=12,
-            phase="general",
-            role_perspective="all",
-            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
-            source=SourceMetadata(
-                source_type=SourceType.RULE_DERIVED,
-                source_title="项目内时间轴纠偏种子",
-                source_author="wofkill",
-            ),
-            tags=["timeline", "cold_start", "anti_confusion"],
-        ),
-    ))
-
     # Phase A: External high-end case (seed)
     entries.append(RAGEntry(
         entry_id="seed_ext_seer_claim_01",

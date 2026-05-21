@@ -389,6 +389,14 @@ class TestProductionVectorStoreBoundary:
         with pytest.raises(VectorStoreConfigError, match="PGVECTOR_DSN"):
             create_vector_store("pgvector")
 
+    def test_siliconflow_backend_requires_configuration(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from werewolf_agent.rag.vector_store import VectorStoreConfigError, create_vector_store
+
+        monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
+
+        with pytest.raises(VectorStoreConfigError, match="SILICONFLOW_API_KEY"):
+            create_vector_store("siliconflow")
+
     def test_qdrant_backend_is_not_supported(self) -> None:
         from werewolf_agent.rag.vector_store import VectorStoreConfigError, create_vector_store
 
