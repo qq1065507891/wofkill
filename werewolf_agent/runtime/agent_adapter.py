@@ -830,7 +830,7 @@ def agent_day_speech(
 
     context = build_agent_context(
         engine, gs, speaker_id, TaskType.SPEECH,
-        legal_actions=[ActionType.SPEECH, ActionType.NO_ACTION],
+        legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
     )

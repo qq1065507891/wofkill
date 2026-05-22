@@ -382,6 +382,10 @@ class TestPlayerAgentRetryFallback:
             "p08",
             None,
         ]
+        assert tool["input_schema"]["properties"]["target_id"]["type"] == [
+            "string",
+            "null",
+        ]
 
     def test_tool_call_schema_disallows_null_target_when_all_actions_require_target(self) -> None:
         agent = self._make_agent("unused")
@@ -399,6 +403,23 @@ class TestPlayerAgentRetryFallback:
 
         assert tool["input_schema"]["properties"]["action_type"]["enum"] == ["vote"]
         assert tool["input_schema"]["properties"]["target_id"]["enum"] == ["p07", "p08"]
+
+    def test_tool_call_schema_uses_plain_nullable_target_when_no_targets_are_legal(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SHERIFF_REGISTRATION,
+            phase="sheriff_election",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+            legal_targets=[],
+        )
+
+        target_schema = agent._player_action_tool(ctx)["input_schema"]["properties"]["target_id"]
+
+        assert target_schema["type"] == ["string", "null"]
+        assert "enum" not in target_schema
 
     def test_vote_tool_schema_includes_private_audit_fields(self) -> None:
         agent = self._make_agent("unused")
@@ -577,6 +598,98 @@ class TestPlayerAgentRetryFallback:
         assert action.private_intent.true_role == "werewolf"
         assert action.speech == "归7"  # Public speech doesn't contain private intent
 
+    def test_invalid_private_intent_risk_flags_do_not_fail_main_action(self) -> None:
+        json_resp = (
+            '{"action_type":"no_action","target_id":null,'
+            '"speech":"我不上警，先听警上发言。",'
+            '"reason":"村民没有额外信息，先观察警上格局","confidence":0.6,'
+            '"private_intent":{"true_role":"villager","faction_goal":"find_wolves",'
+            '"claimed_view":"普通村民","pressure_target":null,'
+            '"risk_flags":["未参与竞选可能被视为不敢发言"]}}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SHERIFF_REGISTRATION,
+            phase="sheriff_election",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.NO_ACTION
+        assert action.private_intent is not None
+        assert action.private_intent.risk_flags == []
+        assert retry.error_code is None
+
+    def test_extracts_nested_json_object_from_reasoning_text(self) -> None:
+        json_resp = (
+            "我先分析局势：当前没有公开信息，应该保守。\n"
+            "{\n"
+            '  "action_type": "speech",\n'
+            '  "target_id": null,\n'
+            '  "speech": "我是好人阵营。我怀疑p07，p07发言前后矛盾。我倾向投p07。",\n'
+            '  "reason": "补充明确对象和依据",\n'
+            '  "confidence": 0.7,\n'
+            '  "private_intent": {\n'
+            '    "true_role": "villager",\n'
+            '    "faction_goal": "find_wolves",\n'
+            '    "claimed_view": "好人视角",\n'
+            '    "pressure_target": "p07",\n'
+            '    "risk_flags": ["low_trust"]\n'
+            "  }\n"
+            "}\n"
+            "以上是我的行动。"
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.SPEECH
+        assert action.private_intent is not None
+        assert action.private_intent.pressure_target == "p07"
+        assert retry.error_code is None
+
+    def test_extracts_action_json_when_text_contains_other_braces(self) -> None:
+        json_resp = (
+            '调试信息: {"note": "not an action"}\n'
+            "我会输出行动，发言中可能引用符号{重点}。\n"
+            "{\n"
+            '  "action_type": "speech",\n'
+            '  "target_id": null,\n'
+            '  "speech": "我是好人阵营。我怀疑p07，p07发言前后矛盾。我倾向投p07。这里的{重点}是票型。",\n'
+            '  "reason": "补充明确对象和依据",\n'
+            '  "confidence": 0.7\n'
+            "}"
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert "{重点}" in action.speech
+        assert retry.error_code is None
+
     def test_code_fence_stripping(self) -> None:
         json_resp = '```json\n{"action_type":"vote","target_id":"p07","speech":"test","reason":"test","confidence":0.5}\n```'
         agent = self._make_agent(json_resp)
@@ -630,6 +743,25 @@ class TestPlayerAgentRetryFallback:
 
         assert "eliminate_villager" not in prompt
         assert "frame_villager" not in prompt
+
+    def test_sheriff_registration_prompt_prefers_tool_and_legal_examples(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SHERIFF_REGISTRATION,
+            phase="sheriff_election",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+        )
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "submit_player_action" in prompt
+        assert '"action_type": "sheriff_register"' in prompt
+        assert '"action_type": "no_action"' in prompt
+        assert "示例输出（投票场景）" not in prompt
+        assert "示例输出（发言场景）" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -721,26 +853,29 @@ class TestModelRouter:
     def test_resolve_config_for_known_agent(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         config, fallback = router.resolve_config("p01", "speech")
-        assert config.provider == "minimax"
+        assert config.provider != ""
         assert config.model != ""
 
     def test_resolve_config_task_specific(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         config, _ = router.resolve_config("p01", "reflection")
-        assert config.provider == "minimax"
+        assert config.provider != ""
+        assert config.model != ""
 
     def test_resolve_config_fallback_chain(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         _, fallback = router.resolve_config("p02", "speech")
-        assert fallback == "minimax"
+        assert fallback is not None
+        assert fallback != ""
 
     def test_generate_with_mock_provider(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         router.register_provider(MockProvider("minimax"))
         router.register_provider(MockProvider("glm"))
+        router.register_provider(MockProvider("openai"))
         result = router.generate("p01", "speech", "Test prompt")
         assert result.text != ""
-        assert result.provider in ("minimax", "glm", "mock")
+        assert result.provider in ("minimax", "glm", "openai", "mock")
 
     def test_generate_fallback_on_failure(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
@@ -755,7 +890,8 @@ class TestModelRouter:
 
     def test_failed_generation_records_exception_reason(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
-        router._providers["minimax"] = _FailProvider()
+        config, _ = router.resolve_config("p01", "speech")
+        router._providers[config.provider] = _FailProvider()
 
         result = router.generate("p01", "speech", "Test prompt")
         log = router.get_usage_log()
@@ -1005,7 +1141,11 @@ class TestModelRouter:
             "choices": [{"message": {"content": "hello"}}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 1},
         })
-        provider = OpenAIProvider(api_key="key", http_client=client)
+        provider = OpenAIProvider(
+            api_key="key",
+            base_url="https://api.openai.com",
+            http_client=client,
+        )
 
         result = provider.generate(
             "Say hello",
@@ -1017,6 +1157,25 @@ class TestModelRouter:
         assert client.calls[0]["url"].endswith("/v1/chat/completions")
         assert client.calls[0]["headers"]["Authorization"] == "Bearer key"
         assert client.calls[0]["json"]["messages"][0]["role"] == "system"
+
+    def test_openai_provider_preserves_compatible_base_url_path(self) -> None:
+        client = _FakeHttpClient({
+            "choices": [{"message": {"content": "hello"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        })
+        provider = OpenAIProvider(
+            api_key="key",
+            base_url="https://qianfan.baidubce.com/v2/coding",
+            http_client=client,
+        )
+
+        result = provider.generate(
+            "Say hello",
+            ModelConfig(provider="openai", model="deepseek-v3.2"),
+        )
+
+        assert result.text == "hello"
+        assert client.calls[0]["url"] == "https://qianfan.baidubce.com/v2/coding/chat/completions"
 
     def test_glm_provider_posts_chat_request(self) -> None:
         client = _FakeHttpClient({
@@ -1220,7 +1379,7 @@ class TestAgentIntegration:
         # Create agent and act
         json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"逻辑链完整","confidence":0.85}'
         # Override provider to return valid JSON
-        model_router._providers["minimax"] = _JsonProvider(json_resp)
+        model_router._providers[config.provider] = _JsonProvider(json_resp)
 
         agent = PlayerAgent(agent_id="p01", model_router=model_router)
         ctx = AgentContext(
@@ -1436,6 +1595,32 @@ class TestSpeechQualityAndWolfAssignments:
         assert "p03" in first.speech
         assert "p03" in second.speech
 
+    def test_wolf_discussion_fallback_keeps_werewolf_private_perspective(self) -> None:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p04": "default"},
+            providers={"mock": _JsonProvider("not json")},
+        )
+        agent = PlayerAgent(agent_id="p04", model_router=router, max_retries=1)
+        ctx = AgentContext(
+            agent_id="p04",
+            task_type=TaskType.WOLF_DISCUSSION,
+            phase="night",
+            night_number=1,
+            own_role="werewolf",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p01", "p02"],
+        )
+
+        action, _ = agent.act(ctx)
+
+        assert isinstance(action, FallbackAction)
+        assert action.action_type == ActionType.SPEECH
+        assert "好人阵营" not in action.speech
+        assert "狼队" in action.speech or "刀" in action.speech
+        assert "p01" in action.speech
+
     def test_parse_error_retry_hint_is_actionable(self) -> None:
         router = ModelRouter(
             model_profiles={},
@@ -1648,6 +1833,54 @@ class TestPlainTextRejection:
         assert action.trace.structured_failure_reason == "missing_tool_call"
         assert action.trace.parse_error == "missing required tool call: submit_player_action"
         assert action.trace.tool_call_received is False
+
+    def test_configured_text_tool_fallback_parses_plain_json(self):
+        """Some compatible gateways return JSON text instead of tool_calls."""
+
+        class TextJsonProvider:
+            @property
+            def name(self) -> str:
+                return "text_json"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                return GenerateResult(
+                    text='{"action_type":"speech","target_id":null,"speech":"我是好人阵营。我怀疑p02，他的站边没有说清楚，发言前后存在矛盾。我倾向投票p02，并继续对比他的票型。","reason":"补充视角","confidence":0.7}',
+                    provider=self.name,
+                    model=config.model,
+                    tool_call_required=bool(tool_choice),
+                    tool_call_received=False,
+                    text_fallback_used=True,
+                    structured_failure_reason="missing_tool_call",
+                )
+
+        router = ModelRouter(
+            model_profiles={
+                "text": {
+                    "model": "text-v1",
+                    "provider": "text_json",
+                    "allow_text_tool_fallback": True,
+                },
+            },
+            llm_profiles={"default": {"default": {"provider": "text_json", "model_profile": "text"}}},
+            player_assignments={"p01": "default"},
+            providers={"text_json": TextJsonProvider()},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02"],
+        )
+
+        action, retry_info = agent.act(context)
+
+        assert isinstance(action, PlayerAction)
+        assert "p02" in action.speech
+        assert action.trace is not None
+        assert action.trace.tool_call_received is False
+        assert action.trace.parse_success is True
+        assert retry_info.error_code is None
 
 
 class TestProviderCapabilityFailure:

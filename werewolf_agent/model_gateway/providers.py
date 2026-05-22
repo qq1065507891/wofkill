@@ -408,7 +408,7 @@ def _generate_openai_compatible(
         }
     start = time.monotonic()
     response = http_client.post(
-        f"{base_url}/v1/chat/completions",
+        _openai_chat_completions_url(base_url),
         headers={
             "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
@@ -441,6 +441,16 @@ def _generate_openai_compatible(
             completion_tokens=int(usage.get("completion_tokens", 0) or 0),
         ),
     )
+
+
+def _openai_chat_completions_url(base_url: str) -> str:
+    """Build a chat completions URL for OpenAI and OpenAI-compatible gateways."""
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/v1") or "/v" in normalized.rsplit("/", 1)[-1]:
+        return f"{normalized}/chat/completions"
+    if normalized != "https://api.openai.com" and "/" in normalized.removeprefix("https://").removeprefix("http://"):
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/v1/chat/completions"
 
 
 def _extract_anthropic_text(data: dict[str, Any]) -> str:

@@ -398,16 +398,23 @@ class TestRealRunConfiguration:
         assert any("WEREWOLF_STORAGE_BACKEND=postgres" in item for item in env)
         assert any("WEREWOLF_VECTOR_BACKEND=pgvector" in item for item in env)
 
-    def test_models_yaml_uses_minimax_m27_for_players_and_judge(self) -> None:
+    def test_models_yaml_routes_players_and_judge_to_supported_profiles(self) -> None:
         models_path = Path(__file__).parent.parent.parent / "config" / "models.yaml"
         data = yaml.safe_load(models_path.read_text(encoding="utf-8"))
 
-        for profile in data["model_profiles"].values():
-            assert profile["provider"] == "minimax"
-            assert profile["model"] == "MiniMax-M2.7"
+        supported_providers = {"minimax", "openai", "glm", "anthropic"}
+        for profile_id, profile in data["model_profiles"].items():
+            assert profile["provider"] in supported_providers, profile_id
+            assert profile["model"], profile_id
+            if profile["provider"] in {"minimax", "openai"}:
+                assert profile.get("allow_text_tool_fallback") is True, profile_id
 
         for player_id, assignment in data["players"].items():
-            assert assignment["llm_profile"] == "minimax_default", player_id
+            llm_profile_id = assignment["llm_profile"]
+            assert llm_profile_id in data["llm_profiles"], player_id
+            llm_profile = data["llm_profiles"][llm_profile_id]
+            default_model_profile = llm_profile["default"]["model_profile"]
+            assert default_model_profile in data["model_profiles"], player_id
 
     def test_provider_dotenv_loading_does_not_enable_postgres_app_storage(
         self,

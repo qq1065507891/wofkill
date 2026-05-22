@@ -2,6 +2,44 @@
 # Provider/model names are configuration only. API keys stay in .env.
 
 model_profiles:
+  # --- Baidu Coding Plan models (OpenAI-compatible) ---
+  baidu_deepseek_v3:
+    provider: openai
+    model: deepseek-v3.2
+    temperature: 0.5
+    max_tokens: 1024
+    top_p: 0.9
+    timeout: 60
+    allow_text_tool_fallback: true
+
+  baidu_minimax_m25:
+    provider: openai
+    model: minimax-m2.5
+    temperature: 0.5
+    max_tokens: 1024
+    top_p: 0.9
+    timeout: 60
+    allow_text_tool_fallback: true
+
+  baidu_glm5:
+    provider: openai
+    model: glm-5
+    temperature: 0.5
+    max_tokens: 1024
+    top_p: 0.9
+    timeout: 60
+    allow_text_tool_fallback: true
+
+  baidu_kimi_k25:
+    provider: openai
+    model: kimi-k2.5
+    temperature: 0.5
+    max_tokens: 1024
+    top_p: 0.9
+    timeout: 60
+    allow_text_tool_fallback: true
+
+  # --- MiniMax (Anthropic-compatible) ---
   minimax_m27_default:
     provider: minimax
     model: MiniMax-M2.7
@@ -9,6 +47,7 @@ model_profiles:
     max_tokens: 1024
     top_p: 0.9
     timeout: 60
+    allow_text_tool_fallback: true
 
   minimax_m27_reflection:
     provider: minimax
@@ -17,6 +56,7 @@ model_profiles:
     max_tokens: 2048
     top_p: 0.9
     timeout: 90
+    allow_text_tool_fallback: true
 
   minimax_m27_fast:
     provider: minimax
@@ -25,8 +65,43 @@ model_profiles:
     max_tokens: 768
     top_p: 0.95
     timeout: 45
+    allow_text_tool_fallback: true
 
 llm_profiles:
+  # --- Baidu Coding Plan profiles ---
+  baidu_deepseek:
+    default:
+      provider: openai
+      model_profile: baidu_deepseek_v3
+    fallback:
+      provider: minimax
+      model_profile: minimax_m27_fast
+
+  baidu_minimax:
+    default:
+      provider: openai
+      model_profile: baidu_minimax_m25
+    fallback:
+      provider: minimax
+      model_profile: minimax_m27_fast
+
+  baidu_glm:
+    default:
+      provider: openai
+      model_profile: baidu_glm5
+    fallback:
+      provider: minimax
+      model_profile: minimax_m27_fast
+
+  baidu_kimi:
+    default:
+      provider: openai
+      model_profile: baidu_kimi_k25
+    fallback:
+      provider: minimax
+      model_profile: minimax_m27_fast
+
+  # --- MiniMax profiles ---
   minimax_default:
     default:
       provider: minimax
@@ -94,10 +169,10 @@ llm_profiles:
 players:
   p01:
     persona_id: logic_leader
-    llm_profile: minimax_default
+    llm_profile: baidu_deepseek
   p02:
     persona_id: aggressive_bluffer
-    llm_profile: minimax_default
+    llm_profile: baidu_deepseek
   p03:
     persona_id: steady_sider
     llm_profile: minimax_default
@@ -106,7 +181,7 @@ players:
     llm_profile: minimax_default
   p05:
     persona_id: deep_hooker
-    llm_profile: minimax_default
+    llm_profile: baidu_minimax
   p06:
     persona_id: emotional_catalyst
     llm_profile: minimax_default
@@ -115,13 +190,13 @@ players:
     llm_profile: minimax_default
   p08:
     persona_id: review_learner
-    llm_profile: minimax_default
+    llm_profile: baidu_kimi
   p09:
     persona_id: quiet_observer
     llm_profile: minimax_default
   p10:
     persona_id: burst_visionary
-    llm_profile: minimax_default
+    llm_profile: baidu_glm
   p11:
     persona_id: structure_analyst
     llm_profile: minimax_default

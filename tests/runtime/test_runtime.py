@@ -884,6 +884,36 @@ def test_day_speech_passes_wolf_team_plan_to_werewolf_agent() -> None:
     assert agent.context.visible_world_state["wolf_team_plan"]["hooker"] == "w3"
 
 
+def test_day_speech_requires_speech_action_from_agent() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_day_speech
+
+    players = {"p01": PlayerState(id="p01", role="villager")}
+    gs = GameState(game_id="day_speech_requires_speech", players=players, day_number=1, phase="day")
+
+    class Agent:
+        def __init__(self):
+            self.context = None
+
+        def act(self, context):
+            self.context = context
+            return PlayerAction(
+                action_type=ActionType.SPEECH,
+                speech="我是好人阵营。我怀疑p02，p02发言前后矛盾。我倾向投p02。",
+                reason="按发言逻辑分析",
+            ), RetryInfo()
+
+    agent = Agent()
+
+    class Registry:
+        def get_agent(self, player_id):
+            return agent
+
+    result = agent_day_speech({"game_state": gs}, _new_engine(), Registry(), "p01")
+
+    assert result["speech_text"]
+    assert agent.context.legal_actions == [ActionType.SPEECH]
+
+
 def test_announce_deaths_resets_first_day_increment_marker() -> None:
     from werewolf_agent.runtime.graph import announce_deaths
 

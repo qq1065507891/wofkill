@@ -19,9 +19,11 @@ from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
     FallbackAction,
+    FactionGoal,
     PlayerAction,
     PrivateIntent,
     RetryInfo,
+    RiskFlag,
     TaskType,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
@@ -201,7 +203,11 @@ class PlayerAgent:
                 )
                 continue
 
-            if tool_call_required and not tool_call_received:
+            allow_text_tool_fallback = bool(
+                getattr(result, "allow_text_tool_fallback", False)
+                and getattr(result, "text_fallback_used", False)
+            )
+            if tool_call_required and not tool_call_received and not allow_text_tool_fallback:
                 structured_failure_reason = (
                     getattr(result, "structured_failure_reason", None)
                     or "missing_tool_call"
@@ -344,8 +350,6 @@ class PlayerAgent:
 
     def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
         """Parse LLM output into PlayerAction. Returns (action, error)."""
-        import re
-
         cleaned = text.strip()
 
         # Strip markdown code fences
@@ -357,21 +361,108 @@ class PlayerAgent:
         # Try direct parse first
         try:
             data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Extract first JSON object from surrounding text
-            match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError as e:
-                    return None, f"JSON parse error: {e}"
-            else:
+            return self._action_from_data(data)
+        except json.JSONDecodeError as direct_error:
+            candidates = self._extract_json_object_candidates(cleaned)
+            if not candidates:
                 return None, f"No JSON object found in output"
+            first_error: str | None = None
+            for candidate in candidates:
+                try:
+                    data = json.loads(candidate)
+                except json.JSONDecodeError as e:
+                    if first_error is None:
+                        first_error = f"JSON parse error: {e}"
+                    continue
+                action, parse_error = self._action_from_data(data)
+                if action is not None:
+                    return action, None
+                if first_error is None:
+                    first_error = parse_error
+            return None, first_error or f"JSON parse error: {direct_error}"
 
+    def _action_from_data(self, data: Any) -> tuple[PlayerAction | None, str | None]:
         try:
             return PlayerAction(**data), None
         except ValidationError as e:
+            sanitized = self._sanitize_optional_private_fields(data)
+            if sanitized != data:
+                try:
+                    return PlayerAction(**sanitized), None
+                except ValidationError:
+                    pass
             return None, f"Schema validation error: {e}"
+
+    def _extract_json_object_candidates(self, text: str) -> list[str]:
+        """Extract balanced JSON object candidates from mixed model text."""
+        candidates: list[str] = []
+        start: int | None = None
+        depth = 0
+        in_string = False
+        escape = False
+
+        for idx, ch in enumerate(text):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = idx
+                depth += 1
+                continue
+            if ch == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    candidates.append(text[start:idx + 1])
+                    start = None
+
+        action_candidates = [
+            candidate for candidate in candidates
+            if '"action_type"' in candidate or "'action_type'" in candidate
+        ]
+        return action_candidates or candidates
+
+    def _sanitize_optional_private_fields(self, data: Any) -> Any:
+        """Drop malformed optional audit fields without invalidating core action."""
+        if not isinstance(data, dict):
+            return data
+        private_intent = data.get("private_intent")
+        if not isinstance(private_intent, dict):
+            return data
+
+        sanitized = dict(data)
+        sanitized_intent = dict(private_intent)
+
+        valid_goals = {goal.value for goal in FactionGoal}
+        if sanitized_intent.get("faction_goal") not in valid_goals:
+            true_role = str(sanitized_intent.get("true_role") or sanitized.get("action_type") or "")
+            sanitized_intent["faction_goal"] = (
+                FactionGoal.CONFUSE_GOOD.value
+                if true_role == "werewolf"
+                else FactionGoal.FIND_WOLVES.value
+            )
+
+        valid_flags = {flag.value for flag in RiskFlag}
+        flags = sanitized_intent.get("risk_flags")
+        if isinstance(flags, list):
+            sanitized_intent["risk_flags"] = [
+                flag for flag in flags
+                if isinstance(flag, str) and flag in valid_flags
+            ]
+        else:
+            sanitized_intent["risk_flags"] = []
+
+        sanitized["private_intent"] = sanitized_intent
+        return sanitized
 
     def _player_action_tool(self, context: AgentContext) -> dict[str, Any]:
         action_values = [action.value for action in context.legal_actions]
@@ -380,16 +471,19 @@ class PlayerAgent:
         target_values: list[str | None] = list(context.legal_targets)
         if not self._all_legal_actions_require_target(context) and None not in target_values:
             target_values.append(None)
+        target_schema: dict[str, Any] = {
+            "type": ["string", "null"],
+            "description": "Target player id when required; null otherwise.",
+        }
+        if context.legal_targets:
+            target_schema["enum"] = target_values
         properties: dict[str, Any] = {
             "action_type": {
                 "type": "string",
                 "enum": action_values,
                 "description": "Must be one of the currently legal actions.",
             },
-            "target_id": {
-                "enum": target_values,
-                "description": "Target player id when required; null otherwise.",
-            },
+            "target_id": target_schema,
             "speech": {
                 "type": "string",
                 "description": "Public Chinese speech. Empty string for private night actions if no speech is needed.",
@@ -533,6 +627,32 @@ class PlayerAgent:
     def _fallback_speech(self, context: AgentContext) -> str:
         target = context.legal_targets[0] if context.legal_targets else None
         salt = sum(ord(ch) for ch in f"{context.agent_id}:{context.day_number}")
+        if context.task_type == TaskType.WOLF_DISCUSSION:
+            if target:
+                templates = [
+                    (
+                        "我是{agent_id}，狼队夜聊我建议优先刀{target}。"
+                        "这个位置如果是神职能压缩好人信息，如果是民也方便我们白天做抗推布局。"
+                    ),
+                    (
+                        "狼队视角我倾向先处理{target}。"
+                        "今晚需要统一刀口，明天白天再围绕票型和发言把压力转出去。"
+                    ),
+                    (
+                        "我建议本轮刀{target}，理由是这个位置后续容易被好人阵营认证。"
+                        "我们先统一行动，再安排明天谁冲锋、谁倒钩。"
+                    ),
+                ]
+                return templates[salt % len(templates)].format(
+                    agent_id=context.agent_id,
+                    target=target,
+                )
+            templates = [
+                "狼队夜聊我建议先统一刀口，再分配明天的冲锋位和倒钩位，避免白天发言互相打架。",
+                "狼队视角今晚先别分散意见，优先找神职或强势带队位，明天再顺着公共信息做推人路线。",
+                "我这里建议先整理每个人明天的站位：一人带节奏，一人补逻辑，一人适度倒钩保护团队。",
+            ]
+            return templates[salt % len(templates)]
         if target:
             templates = [
                 (
@@ -635,13 +755,9 @@ class PlayerAgent:
                 "这些字段不会公开发言，只给主持人审计。"
             )
         parts.append(
-            "请严格输出以下格式的JSON（不要输出其他内容）: "
-            '{"action_type": string, "target_id": string|null, '
-            '"speech": "中文发言内容", "reason": "中文原因说明", '
-            '"confidence": float, '
-            '"private_intent": {"true_role": string, "faction_goal": string, '
-            '"claimed_view": string, "pressure_target": string|null, '
-            '"risk_flags": [string]}}'
+            "请优先通过 submit_player_action 工具提交结构化行动。"
+            "如果当前模型无法调用工具，则只输出一个JSON对象，不要解释、不要Markdown。"
+            "字段必须包含 action_type、target_id、speech、reason、confidence。"
         )
         parts.append("重要：speech字段必须使用中文，这是你在游戏中的公开发言。")
         parts.append("")
@@ -669,6 +785,20 @@ class PlayerAgent:
                 '"faction_goal": "confuse_good", "claimed_view": "我是好人", '
                 '"pressure_target": null, "risk_flags": []}}'
             )
+        elif context.legal_actions and ActionType.SHERIFF_REGISTER in context.legal_actions:
+            parts.append("示例输出（上警报名场景）：")
+            parts.append(
+                '{"action_type": "sheriff_register", "target_id": null, '
+                '"speech": "我报名竞选警长。", '
+                '"reason": "希望参与警上发言并争取带队", "confidence": 0.6}'
+            )
+            if ActionType.NO_ACTION in context.legal_actions:
+                parts.append("示例输出（不上警场景）：")
+                parts.append(
+                    '{"action_type": "no_action", "target_id": null, '
+                    '"speech": "我不上警，先听警上发言再判断。", '
+                    '"reason": "当前信息不足，先观察警上格局", "confidence": 0.6}'
+                )
         else:
             parts.append("示例输出（发言场景）：")
             parts.append('{"action_type": "speech", "target_id": null, '

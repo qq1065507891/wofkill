@@ -32,6 +32,7 @@ class ModelConfig:
     max_tokens: int = 1024
     top_p: float = 0.9
     timeout: int = 30
+    allow_text_tool_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,7 @@ class GenerateResult:
     tool_call_name: str = ""
     text_fallback_used: bool = False
     structured_failure_reason: str | None = None
+    allow_text_tool_fallback: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +267,7 @@ class ModelRouter:
             max_tokens=model_profile.get("max_tokens", 1024),
             top_p=model_profile.get("top_p", 0.9),
             timeout=model_profile.get("timeout", 30),
+            allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
         )
 
         # Fallback config
@@ -305,6 +308,7 @@ class ModelRouter:
                 tool_choice=tool_choice,
             )
             _normalize_tool_metadata(result, tool_choice)
+            result.allow_text_tool_fallback = config.allow_text_tool_fallback
             if result.usage:
                 usage = UsageRecord(
                     agent_id=agent_id,
@@ -345,6 +349,7 @@ class ModelRouter:
                         tool_choice=tool_choice,
                     )
                     _normalize_tool_metadata(result, tool_choice)
+                    result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
                     if result.usage:
                         usage = UsageRecord(
                             agent_id=agent_id,
@@ -400,6 +405,7 @@ class ModelRouter:
             max_tokens=model_profile.get("max_tokens", 256),
             top_p=model_profile.get("top_p", 0.9),
             timeout=model_profile.get("timeout", 10),
+            allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
         )
 
     def _configured_provider_names(self) -> set[str]:
