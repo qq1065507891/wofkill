@@ -602,6 +602,81 @@ class TestPlayerAgentRetryFallback:
         assert "p09" in action.reason
         assert retry.error_code is None
 
+    def test_speech_intent_pipeline_assembles_speech_action(self) -> None:
+        json_resp = (
+            '{"intent":"question_target","target_id":"p07",'
+            '"speech":"我想追问p07，为什么你昨天站边p02，今天又回避p08的查验？这个变化需要解释。",'
+            '"reason":"围绕p07的站边变化施压","confidence":0.73}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07", "p08"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.SPEECH
+        assert action.target_id == "p07"
+        assert "p07" in action.speech
+        assert action.reason == "围绕p07的站边变化施压"
+        assert action.trace is not None
+        assert action.trace.parsed_action["intent"] == "question_target"
+        assert retry.error_code is None
+
+    def test_speech_intent_pipeline_repairs_mixed_text_json(self) -> None:
+        json_resp = (
+            "我先组织一下发言。"
+            '{"intent":"stand_with_seer","target_id":"p08",'
+            '"speech":"我目前更站边p08，因为他的查验和昨天票型能对上；p02需要解释警徽流和查杀逻辑。",'
+            '"reason":"表达站边并要求对跳方回应","confidence":0.68}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02", "p08"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.SPEECH
+        assert action.target_id == "p08"
+        assert "p08" in action.speech
+        assert retry.error_code is None
+
+    def test_speech_intent_pipeline_synthesizes_missing_speech(self) -> None:
+        json_resp = '{"intent":"question_target","target_id":"p05","confidence":0.52}'
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p05"],
+            salience_items=[
+                {"type": "seer_claim", "speaker": "p08", "target": "p05", "result": "werewolf"},
+            ],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.speech
+        assert action.speech != "(未发言)"
+        assert "p05" in action.speech
+        assert action.reason
+        assert retry.error_code is None
+
     def test_speech_tool_schema_omits_private_audit_fields(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
@@ -1039,6 +1114,26 @@ class TestPlayerAgentRetryFallback:
         assert "B = p06" in prompt
         assert '"choice"' in prompt
         assert "程序会把choice映射为target_id" in prompt
+
+    def test_speech_prompt_uses_intent_schema(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p05", "p08"],
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "发言意图枚举" in prompt
+        assert "question_target" in prompt
+        assert "stand_with_seer" in prompt
+        assert '"intent"' in prompt
+        assert '"speech"' in prompt
 
     def test_action_prompt_trims_long_context_for_json_stability(self) -> None:
         agent = self._make_agent("unused")

@@ -107,6 +107,20 @@ class PlayerAgent:
         ActionType.BADGE_TRANSFER,
         ActionType.SHERIFF_VOTE,
     }
+    _SPEECH_INTENT_TASKS = {
+        TaskType.SPEECH,
+        TaskType.SHERIFF_SPEECH,
+        TaskType.DEFENSE_SPEECH,
+        TaskType.PK_SPEECH,
+        TaskType.LAST_WORDS,
+    }
+    _SPEECH_INTENTS = {
+        "self_clear": "表水",
+        "question_target": "质疑/追问目标",
+        "stand_with_seer": "站边预言家或逻辑线",
+        "respond_pressure": "回应质疑",
+        "push_vote": "提出投票倾向",
+    }
 
     def __init__(
         self,
@@ -252,6 +266,13 @@ class PlayerAgent:
                 )
                 if parse_error and action is None:
                     action, parse_error = self._parse_action(result.text)
+            elif self._uses_speech_intent_pipeline(context):
+                action, parse_error = self._parse_action(result.text)
+                if parse_error and action is None:
+                    action, parse_error, choice_data = self._parse_speech_intent_action(
+                        result.text,
+                        context,
+                    )
             else:
                 action, parse_error = self._parse_action(result.text)
             parsed_action = action
@@ -481,6 +502,12 @@ class PlayerAgent:
             and bool(context.legal_targets)
         )
 
+    def _uses_speech_intent_pipeline(self, context: AgentContext) -> bool:
+        return (
+            context.task_type in self._SPEECH_INTENT_TASKS
+            and context.legal_actions == [ActionType.SPEECH]
+        )
+
     def _parse_choice_action(
         self,
         text: str,
@@ -509,6 +536,27 @@ class PlayerAgent:
             suspect_reason=repaired.get("suspect_reason", ""),
             not_voting_reason=repaired.get("not_voting_reason", ""),
             private_reason=repaired.get("private_reason", ""),
+        )
+        return action, None, repaired
+
+    def _parse_speech_intent_action(
+        self,
+        text: str,
+        context: AgentContext,
+    ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
+        data, parse_error = self._extract_decision_data(text)
+        if data is None:
+            return None, parse_error, None
+        if "intent" not in data and "speech" not in data:
+            return None, "Speech intent output must include intent or speech", data
+
+        repaired = self._repair_speech_intent_decision(data, context)
+        action = PlayerAction(
+            action_type=ActionType.SPEECH,
+            target_id=repaired["target_id"],
+            speech=repaired["speech"],
+            reason=repaired["reason"],
+            confidence=repaired["confidence"],
         )
         return action, None, repaired
 
@@ -605,6 +653,36 @@ class PlayerAgent:
             "confidence": confidence,
         }
 
+    def _repair_speech_intent_decision(
+        self,
+        data: dict[str, Any],
+        context: AgentContext,
+    ) -> dict[str, Any]:
+        intent = str(data.get("intent") or "").strip()
+        if intent not in self._SPEECH_INTENTS:
+            intent = self._infer_speech_intent(data, context)
+        target_id = self._speech_target_from_decision(data, context.legal_targets)
+        speech = self._clean_reason(data.get("speech"))
+        reason = self._clean_reason(data.get("reason"))
+        if not speech:
+            speech = self._synthesize_intent_speech(intent, target_id, context)
+        speech = self._ensure_speech_quality_components(speech, intent, target_id, context)
+        if not reason:
+            reason = self._speech_intent_reason(intent, target_id)
+        confidence = data.get("confidence", 0.5)
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.5
+        confidence = max(0.0, min(1.0, confidence))
+        return {
+            "intent": intent,
+            "target_id": target_id,
+            "speech": speech,
+            "reason": reason,
+            "confidence": confidence,
+        }
+
     def _vote_choice_map(self, context: AgentContext) -> dict[str, str]:
         letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         return {
@@ -686,6 +764,108 @@ class PlayerAgent:
                 clues.append(item_text[:80])
         basis = f"；依据：{'；'.join(clues[:2])}" if clues else ""
         return f"{target_id}{action_reasons.get(action, '作为当前合法目标')}较合适{basis}"
+
+    def _infer_speech_intent(self, data: dict[str, Any], context: AgentContext) -> str:
+        text = " ".join(str(value) for value in data.values())
+        if any(word in text for word in ("站边", "预言家", "查验")):
+            return "stand_with_seer"
+        if any(word in text for word in ("投", "归票", "出")):
+            return "push_vote"
+        if any(word in text for word in ("回应", "解释", "表水")):
+            return "respond_pressure"
+        if context.legal_targets:
+            return "question_target"
+        return "self_clear"
+
+    def _speech_target_from_decision(
+        self,
+        data: dict[str, Any],
+        legal_targets: list[str],
+    ) -> str | None:
+        target = data.get("target_id")
+        if isinstance(target, str) and target in legal_targets:
+            return target
+        haystack = " ".join(str(value) for value in data.values())
+        for candidate in legal_targets:
+            if candidate in haystack:
+                return candidate
+        return legal_targets[0] if len(legal_targets) == 1 else None
+
+    def _synthesize_intent_speech(
+        self,
+        intent: str,
+        target_id: str | None,
+        context: AgentContext,
+    ) -> str:
+        target = target_id or (context.legal_targets[0] if context.legal_targets else "")
+        clue = self._context_clues(context)
+        basis = f"结合{clue}，" if clue else ""
+        if intent == "stand_with_seer":
+            return (
+                f"{basis}我现在需要明确站边和逻辑线。"
+                f"{('我更倾向相信' + target + '这边的信息，') if target else ''}"
+                "接下来会继续核对查验、票型和发言是否能互相印证。"
+            )
+        if intent == "respond_pressure":
+            return (
+                f"{basis}我先回应当前压力：我的判断不是跟票，"
+                "而是基于发言前后、票型变化和关键事件来排顺序。"
+            )
+        if intent == "push_vote":
+            if target:
+                return (
+                    f"{basis}我这轮会把投票压力先放到{target}。"
+                    f"{target}需要解释自己的站边、票型和对关键事件的回应。"
+                )
+            return f"{basis}我这轮会明确给出投票倾向，不接受继续模糊站边。"
+        if intent == "question_target" and target:
+            return (
+                f"{basis}我想追问{target}：你的站边、票型和关键发言需要正面解释。"
+                "如果解释仍然空泛，我会继续把你放在重点怀疑位。"
+            )
+        return (
+            f"{basis}我先把自己的视角说清楚：我会按查验、死亡、票型和发言一致性来判断，"
+            "不会只跟随场上声音。"
+        )
+
+    def _ensure_speech_quality_components(
+        self,
+        speech: str,
+        intent: str,
+        target_id: str | None,
+        context: AgentContext,
+    ) -> str:
+        target = self._speech_pressure_target(intent, target_id, context)
+        additions: list[str] = []
+        if not re.search(r"好人|我是.*?(?:村民|预言家|女巫|猎人)", speech):
+            additions.append("我是好人视角。")
+        if target and not re.search(r"(?:怀疑\s*p\d{2}|p\d{2}\s*有问题|投\s*p\d{2})", speech):
+            additions.append(f"我怀疑{target}有问题。")
+        if target and not re.search(r"(?:投|投票|归票|倾向).*?p\d{2}", speech):
+            additions.append(f"我倾向投{target}。")
+        if not re.search(r"矛盾|前后不一|不合理|查杀|查验|警徽流|对跳|票数|之前说|刚才说", speech):
+            additions.append("依据是查验、票型和前后发言矛盾需要继续对上。")
+        if additions:
+            return speech.rstrip("。") + "。" + "".join(additions)
+        return speech
+
+    def _speech_pressure_target(
+        self,
+        intent: str,
+        target_id: str | None,
+        context: AgentContext,
+    ) -> str | None:
+        if intent == "stand_with_seer" and target_id:
+            for candidate in context.legal_targets:
+                if candidate != target_id:
+                    return candidate
+        return target_id or (context.legal_targets[0] if context.legal_targets else None)
+
+    def _speech_intent_reason(self, intent: str, target_id: str | None) -> str:
+        intent_label = self._SPEECH_INTENTS.get(intent, "补充发言")
+        if target_id:
+            return f"按发言意图“{intent_label}”围绕{target_id}组织公开发言"
+        return f"按发言意图“{intent_label}”组织公开发言"
 
     def _infer_standing_with_seer(self, context: AgentContext) -> str:
         for item in context.salience_items:
@@ -1240,6 +1420,8 @@ class PlayerAgent:
 
         if self._uses_choice_pipeline(context):
             parts.append(self._format_choice_prompt(context))
+        elif self._uses_speech_intent_pipeline(context):
+            parts.append(self._format_speech_intent_prompt(context))
 
         parts.append(self._strict_output_contract(context))
         return "\n".join(parts)
@@ -1314,5 +1496,23 @@ class PlayerAgent:
             "只需要输出choice决策JSON，程序会把choice映射为target_id并组装PlayerAction。",
             "示例：",
             example,
+        ])
+        return "\n".join(lines)
+
+    def _format_speech_intent_prompt(self, context: AgentContext) -> str:
+        lines = ["发言意图枚举（先选intent，再写speech；不要输出分析过程）："]
+        for intent, label in self._SPEECH_INTENTS.items():
+            lines.append(f"- {intent}: {label}")
+        if context.legal_targets:
+            lines.append(f"可围绕的目标玩家: {context.legal_targets}")
+        lines.extend([
+            "发言阶段只需要输出intent决策JSON，程序会组装为speech行动。",
+            "speech必须是公开发言正文，不能留空，不能写“未发言”。",
+            "示例：",
+            (
+                '{"intent":"question_target","target_id":"p05",'
+                '"speech":"我想追问p05，你的站边和投票理由需要讲清楚。",'
+                '"reason":"围绕可疑目标施压","confidence":0.7}'
+            ),
         ])
         return "\n".join(lines)
