@@ -526,6 +526,82 @@ class TestPlayerAgentRetryFallback:
         assert action.private_reason
         assert retry.error_code is None
 
+    def test_target_choice_pipeline_assembles_wolf_kill(self) -> None:
+        json_resp = '{"choice":"B","reason":"p08像预言家，夜里优先刀掉","confidence":0.76}'
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p02",
+            task_type=TaskType.NIGHT_ACTION,
+            phase="night",
+            night_number=2,
+            own_role="werewolf",
+            legal_actions=[ActionType.WOLF_KILL],
+            legal_targets=["p06", "p08"],
+            salience_items=[
+                {"type": "seer_claim", "speaker": "p08", "target": "p05", "result": "werewolf"},
+            ],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.WOLF_KILL
+        assert action.target_id == "p08"
+        assert action.reason == "p08像预言家，夜里优先刀掉"
+        assert action.trace is not None
+        assert action.trace.parsed_action["choice"] == "B"
+        assert retry.error_code is None
+
+    def test_target_choice_pipeline_repairs_mixed_text_for_seer_check(self) -> None:
+        json_resp = (
+            "我会查验更关键的位置。"
+            '{"choice":"A","reason":"p04站边摇摆，查验收益最高","confidence":0.69}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p08",
+            task_type=TaskType.NIGHT_ACTION,
+            phase="night",
+            night_number=2,
+            own_role="seer",
+            legal_actions=[ActionType.CHECK_ALIGNMENT],
+            legal_targets=["p04", "p06"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.CHECK_ALIGNMENT
+        assert action.target_id == "p04"
+        assert action.reason == "p04站边摇摆，查验收益最高"
+        assert retry.error_code is None
+
+    def test_target_choice_pipeline_repairs_missing_reason_for_poison(self) -> None:
+        json_resp = '{"choice":"A"}'
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p12",
+            task_type=TaskType.NIGHT_ACTION,
+            phase="night",
+            night_number=3,
+            own_role="witch",
+            legal_actions=[ActionType.USE_POISON],
+            legal_targets=["p09"],
+            salience_items=[
+                {"type": "seer_claim", "speaker": "p08", "target": "p09", "result": "werewolf"},
+            ],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.USE_POISON
+        assert action.target_id == "p09"
+        assert action.reason
+        assert action.reason != "未说明"
+        assert "p09" in action.reason
+        assert retry.error_code is None
+
     def test_speech_tool_schema_omits_private_audit_fields(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
@@ -943,6 +1019,26 @@ class TestPlayerAgentRetryFallback:
         assert "B = p07" in prompt
         assert '"choice"' in prompt
         assert "不要直接编写target_id" in prompt
+
+    def test_target_action_prompt_uses_choice_schema(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p08",
+            task_type=TaskType.NIGHT_ACTION,
+            phase="night",
+            night_number=2,
+            own_role="seer",
+            legal_actions=[ActionType.CHECK_ALIGNMENT],
+            legal_targets=["p04", "p06"],
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "目标候选枚举" in prompt
+        assert "A = p04" in prompt
+        assert "B = p06" in prompt
+        assert '"choice"' in prompt
+        assert "程序会把choice映射为target_id" in prompt
 
     def test_action_prompt_trims_long_context_for_json_stability(self) -> None:
         agent = self._make_agent("unused")
