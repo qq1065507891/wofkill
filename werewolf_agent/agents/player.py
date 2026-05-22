@@ -232,8 +232,18 @@ class PlayerAgent:
                 )
                 continue
 
-            # Parse JSON
-            action, parse_error = self._parse_action(result.text)
+            # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
+            # the program maps that choice back into a legal PlayerAction.
+            vote_choice_data: dict[str, Any] | None = None
+            if self._uses_vote_choice_pipeline(context):
+                action, parse_error, vote_choice_data = self._parse_vote_choice_action(
+                    result.text,
+                    context,
+                )
+                if parse_error and action is None:
+                    action, parse_error = self._parse_action(result.text)
+            else:
+                action, parse_error = self._parse_action(result.text)
             parsed_action = action
             if parse_error:
                 parse_error_str = parse_error
@@ -281,7 +291,7 @@ class PlayerAgent:
             trace = self._build_action_trace(
                 context,
                 raw_text=raw_text,
-                parsed_action=action,
+                parsed_action=vote_choice_data or action,
                 final_action_type=action.action_type,
                 retry=retry,
                 tool_call_required=tool_call_required,
@@ -327,7 +337,7 @@ class PlayerAgent:
         context: AgentContext,
         *,
         raw_text: str,
-        parsed_action: PlayerAction | None,
+        parsed_action: PlayerAction | dict[str, Any] | None,
         final_action_type: ActionType,
         retry: RetryInfo,
         fallback_reason: str | None = None,
@@ -340,7 +350,11 @@ class PlayerAgent:
     ) -> ActionTrace:
         return ActionTrace(
             raw_text=raw_text,
-            parsed_action=parsed_action.model_dump(exclude={"trace"}) if parsed_action else None,
+            parsed_action=(
+                parsed_action.model_dump(exclude={"trace"})
+                if isinstance(parsed_action, PlayerAction)
+                else parsed_action
+            ),
             final_action_type=final_action_type.value,
             legal_actions=[action.value for action in context.legal_actions],
             legal_targets=list(context.legal_targets),
@@ -449,6 +463,183 @@ class PlayerAgent:
             else:
                 data[key] = value
         return data if "action_type" in data else None
+
+    def _uses_vote_choice_pipeline(self, context: AgentContext) -> bool:
+        return (
+            context.task_type == TaskType.VOTE
+            and context.legal_actions == [ActionType.VOTE]
+            and bool(context.legal_targets)
+        )
+
+    def _parse_vote_choice_action(
+        self,
+        text: str,
+        context: AgentContext,
+    ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
+        data, parse_error = self._extract_decision_data(text)
+        if data is None:
+            return None, parse_error, None
+        if "choice" not in data and "target_id" not in data:
+            return None, "Vote choice output must include choice or target_id", data
+
+        repaired = self._repair_vote_decision(data, context)
+        if repaired is None:
+            return None, "Could not map vote choice to legal target", data
+
+        action = PlayerAction(
+            action_type=ActionType.VOTE,
+            target_id=repaired["target_id"],
+            speech="",
+            reason=repaired["reason"],
+            confidence=repaired["confidence"],
+            standing_with_seer=repaired["standing_with_seer"],
+            suspect_reason=repaired["suspect_reason"],
+            not_voting_reason=repaired["not_voting_reason"],
+            private_reason=repaired["private_reason"],
+        )
+        return action, None, repaired
+
+    def _extract_decision_data(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = [line for line in lines if not line.strip().startswith("```")]
+            cleaned = "\n".join(lines).strip()
+
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, dict):
+                return self._normalize_action_data(data), None
+            return None, "Decision JSON must be an object"
+        except json.JSONDecodeError as direct_error:
+            parameter_data = self._extract_parameter_tag_action(cleaned)
+            if parameter_data is not None:
+                return self._normalize_action_data(parameter_data), None
+            candidates = self._extract_json_object_candidates(cleaned)
+            for candidate in candidates:
+                try:
+                    data = json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(data, dict):
+                    return self._normalize_action_data(data), None
+            return None, f"No JSON object found in output: {direct_error}"
+
+    def _repair_vote_decision(
+        self,
+        data: dict[str, Any],
+        context: AgentContext,
+    ) -> dict[str, Any] | None:
+        choice_map = self._vote_choice_map(context)
+        target_id = self._target_from_vote_decision(data, choice_map, context.legal_targets)
+        if target_id is None:
+            return None
+
+        summary = self._vote_candidate_summary(context, target_id)
+        reason = self._clean_reason(data.get("reason")) or summary
+        suspect_reason = self._clean_reason(data.get("suspect_reason")) or summary
+        standing = self._clean_reason(data.get("standing_with_seer")) or self._infer_standing_with_seer(context)
+        not_voting = self._clean_reason(data.get("not_voting_reason")) or self._default_not_voting_reason(
+            context,
+            target_id,
+        )
+        private_reason = self._clean_reason(data.get("private_reason")) or (
+            f"结构化投票修复：在合法候选中选择{target_id}。依据：{reason}"
+        )
+        confidence = data.get("confidence", 0.5)
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.5
+        confidence = max(0.0, min(1.0, confidence))
+
+        return {
+            "choice": self._choice_for_target(choice_map, target_id),
+            "target_id": target_id,
+            "reason": reason,
+            "standing_with_seer": standing,
+            "suspect_reason": suspect_reason,
+            "not_voting_reason": not_voting,
+            "private_reason": private_reason,
+            "confidence": confidence,
+        }
+
+    def _vote_choice_map(self, context: AgentContext) -> dict[str, str]:
+        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        return {
+            letters[idx]: target
+            for idx, target in enumerate(context.legal_targets[:len(letters)])
+        }
+
+    def _target_from_vote_decision(
+        self,
+        data: dict[str, Any],
+        choice_map: dict[str, str],
+        legal_targets: list[str],
+    ) -> str | None:
+        choice = str(data.get("choice") or "").strip().upper()
+        if choice in choice_map:
+            return choice_map[choice]
+        target = data.get("target_id")
+        if isinstance(target, str) and target in legal_targets:
+            return target
+        haystack = " ".join(str(value) for value in data.values())
+        for candidate in legal_targets:
+            if candidate in haystack:
+                return candidate
+        if len(legal_targets) == 1:
+            return legal_targets[0]
+        return None
+
+    def _choice_for_target(self, choice_map: dict[str, str], target_id: str) -> str:
+        for choice, mapped_target in choice_map.items():
+            if mapped_target == target_id:
+                return choice
+        return ""
+
+    def _clean_reason(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text or text in {"未说明", "无", "none", "null"}:
+            return ""
+        return text
+
+    def _vote_candidate_summary(self, context: AgentContext, target_id: str) -> str:
+        clues: list[str] = []
+        for item in context.salience_items:
+            if not isinstance(item, dict):
+                continue
+            target = item.get("target") or item.get("target_id") or item.get("player_id")
+            if target != target_id:
+                continue
+            item_type = item.get("type") or item.get("event")
+            if item_type == "seer_claim":
+                speaker = item.get("speaker") or item.get("seer_id")
+                result = item.get("result") or item.get("alignment")
+                if speaker and result:
+                    clues.append(f"{speaker}报{target_id}为{result}")
+            elif item_type in {"vote_resolved", "vote"}:
+                clues.append(f"{target_id}出现在关键票型中")
+            elif item_type in {"player_died", "death"}:
+                clues.append(f"{target_id}关联死亡事件")
+        if clues:
+            return "；".join(clues[:2])
+        return f"{target_id}是当前合法投票候选，需要基于发言、票型和站边继续施压"
+
+    def _infer_standing_with_seer(self, context: AgentContext) -> str:
+        for item in context.salience_items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type") or item.get("event")
+            speaker = item.get("speaker") or item.get("seer_id")
+            if item_type == "seer_claim" and speaker:
+                return str(speaker)
+        return ""
+
+    def _default_not_voting_reason(self, context: AgentContext, target_id: str) -> str:
+        others = [target for target in context.legal_targets if target != target_id]
+        if not others:
+            return "本轮只有一个合法投票目标，没有其他可排除候选。"
+        return f"暂不投{', '.join(others[:4])}，因为当前可见线索优先指向{target_id}。"
 
     def _extract_json_object_candidates(self, text: str) -> list[str]:
         """Extract balanced JSON object candidates from mixed model text."""
@@ -985,6 +1176,9 @@ class PlayerAgent:
             parts.append(f"\n纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）: {retry.correction_hint}")
             parts.append(f"错误信息: {retry.error_message}")
 
+        if self._uses_vote_choice_pipeline(context):
+            parts.append(self._format_vote_choice_prompt(context))
+
         parts.append(self._strict_output_contract(context))
         return "\n".join(parts)
 
@@ -1030,4 +1224,22 @@ class PlayerAgent:
                 "not_voting_reason、private_reason，不能写“未说明”。"
             )
         lines.append("现在提交行动。")
+        return "\n".join(lines)
+
+    def _format_vote_choice_prompt(self, context: AgentContext) -> str:
+        lines = ["投票候选枚举（必须从中选择一个choice，不要直接编写target_id）："]
+        for choice, target_id in self._vote_choice_map(context).items():
+            lines.append(f"{choice} = {target_id}，摘要：{self._vote_candidate_summary(context, target_id)}")
+        lines.extend([
+            "投票阶段只需要输出choice决策JSON，程序会把choice映射为target_id并组装PlayerAction。",
+            "示例：",
+            (
+                '{"choice":"A","reason":"投票公开理由",'
+                '"standing_with_seer":"站边的预言家或逻辑线",'
+                '"suspect_reason":"为什么怀疑该候选",'
+                '"not_voting_reason":"为什么不投其他候选",'
+                '"private_reason":"完整内心理由",'
+                '"confidence":0.7}'
+            ),
+        ])
         return "\n".join(lines)

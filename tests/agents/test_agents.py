@@ -437,6 +437,95 @@ class TestPlayerAgentRetryFallback:
         assert "not_voting_reason" in props
         assert "private_reason" in props
 
+    def test_mandatory_vote_uses_choice_pipeline_and_assembles_action(self) -> None:
+        json_resp = (
+            '{"choice":"B","reason":"p08查杀p07后，p07回避核心问题",'
+            '"standing_with_seer":"p08",'
+            '"suspect_reason":"p07没有正面回应查杀逻辑",'
+            '"not_voting_reason":"p08有查验信息，p06暂时没有明确狼面",'
+            '"private_reason":"我更信p08的预言家线，所以投p07",'
+            '"confidence":0.82}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p06", "p07"],
+            salience_items=[
+                {"type": "seer_claim", "speaker": "p08", "target": "p07", "result": "werewolf"},
+            ],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p07"
+        assert action.reason == "p08查杀p07后，p07回避核心问题"
+        assert action.standing_with_seer == "p08"
+        assert action.suspect_reason == "p07没有正面回应查杀逻辑"
+        assert action.not_voting_reason
+        assert action.private_reason
+        assert action.trace is not None
+        assert action.trace.parsed_action["choice"] == "B"
+        assert retry.error_code is None
+
+    def test_vote_choice_pipeline_repairs_mixed_text_json(self) -> None:
+        json_resp = (
+            "我先分析一下局势。"
+            '{"choice":"A","reason":"p06连续两轮站边摇摆",'
+            '"standing_with_seer":"",'
+            '"suspect_reason":"p06票型和发言不一致",'
+            '"not_voting_reason":"p07被查杀但已有回应，p08是报查验者",'
+            '"private_reason":"先投票型更差的p06",'
+            '"confidence":0.66}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p06", "p07", "p08"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.target_id == "p06"
+        assert action.reason == "p06连续两轮站边摇摆"
+        assert retry.error_code is None
+
+    def test_vote_choice_pipeline_repairs_missing_reason_from_brief(self) -> None:
+        json_resp = '{"choice":"A","confidence":0.51}'
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p05"],
+            salience_items=[
+                {"type": "seer_claim", "speaker": "p08", "target": "p05", "result": "werewolf"},
+            ],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.target_id == "p05"
+        assert action.reason
+        assert action.reason != "未说明"
+        assert "p05" in action.reason
+        assert action.suspect_reason
+        assert action.not_voting_reason
+        assert action.private_reason
+        assert retry.error_code is None
+
     def test_speech_tool_schema_omits_private_audit_fields(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
@@ -831,6 +920,29 @@ class TestPlayerAgentRetryFallback:
         assert "最终输出协议" in prompt
         assert "不要输出分析过程" in prompt
         assert prompt.rstrip().endswith("现在提交行动。")
+
+    def test_mandatory_vote_prompt_uses_choice_schema(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p06", "p07"],
+            salience_items=[
+                {"type": "seer_claim", "speaker": "p08", "target": "p07", "result": "werewolf"},
+            ],
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "投票候选枚举" in prompt
+        assert "A = p06" in prompt
+        assert "B = p07" in prompt
+        assert '"choice"' in prompt
+        assert "不要直接编写target_id" in prompt
 
     def test_action_prompt_trims_long_context_for_json_stability(self) -> None:
         agent = self._make_agent("unused")
