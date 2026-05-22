@@ -68,6 +68,51 @@ def test_render_audit_report_includes_player_raw_output_and_judge_events() -> No
     assert "Provider thinking blocks were not persisted" in report
 
 
+def test_render_audit_report_flags_rule_order_anomalies() -> None:
+    game = {
+        "game_id": "g_anomaly",
+        "events": [
+            {
+                "type": "player_died",
+                "payload": {
+                    "player_id": "p02",
+                    "reason": "exile",
+                    "triggered_skills": ["hunter_shot"],
+                },
+            },
+            {
+                "type": "wolf_discussion",
+                "payload": {"wolf_id": "p03", "text": "继续刀人"},
+            },
+            {
+                "type": "wolf_kill_selected",
+                "payload": {"target_id": "p10", "killer_id": "p03"},
+            },
+            {
+                "type": "player_died",
+                "payload": {
+                    "player_id": "p03",
+                    "reason": "hunter_shot",
+                    "source_player_id": "p02",
+                },
+            },
+            {
+                "type": "speech",
+                "payload": {
+                    "speaker": "p08",
+                    "text": "p02声称自己是狼人（Day 1公开记录），所以必须出。",
+                },
+            },
+        ],
+    }
+
+    report = render_audit_report(game)
+
+    assert "## Rule-Order Anomalies" in report
+    assert "hunter_shot death after wolf action" in report
+    assert "unsupported public-record role claim" in report
+
+
 class TestJudgePhaseBroadcasts:
     """Game events include judge-visible broadcasts for all major phases."""
 

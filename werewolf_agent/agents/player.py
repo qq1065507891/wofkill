@@ -123,6 +123,7 @@ class PlayerAgent:
                 max_retries=self.max_retries,
                 error_code=retry.error_code,
                 error_message=retry.error_message,
+                correction_hint=retry.correction_hint,
             )
 
             # Generate LLM output
@@ -159,6 +160,7 @@ class PlayerAgent:
 
             raw_text = result.text or ""
 
+            tool_call_received = bool(getattr(result, "tool_call_received", False))
             if not result.text:
                 failure_reason = self._latest_generation_failure_reason()
                 if failure_reason:
@@ -199,6 +201,24 @@ class PlayerAgent:
                 )
                 continue
 
+            if tool_call_required and not tool_call_received:
+                structured_failure_reason = (
+                    getattr(result, "structured_failure_reason", None)
+                    or "missing_tool_call"
+                )
+                parse_error_str = "missing required tool call: submit_player_action"
+                retry = RetryInfo(
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error_code=structured_failure_reason,
+                    error_message=parse_error_str,
+                    correction_hint=(
+                        "必须通过 submit_player_action 工具调用提交结构化参数；"
+                        "不要把JSON写在普通文本内容里。"
+                    ),
+                )
+                continue
+
             # Parse JSON
             action, parse_error = self._parse_action(result.text)
             parsed_action = action
@@ -209,16 +229,13 @@ class PlayerAgent:
                     max_retries=self.max_retries,
                     error_code="parse_error",
                     error_message=parse_error,
-                    correction_hint="Output must be valid JSON matching the PlayerAction schema.",
+                    correction_hint=(
+                        "只输出JSON，不要解释、不要Markdown代码块。必须包含action_type、target_id、speech、"
+                        "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
+                    ),
                 )
                 continue
 
-            # Task 9: Successfully parsed means provider returned usable JSON.
-            # Whether it came from a tool_call or plain text is inferred from
-            # the fact that providers raise RuntimeError when tool_choice is
-            # specified but no tool_call arrives. So reaching here means
-            # tool_call was received (or the provider handled it transparently).
-            tool_call_received = True
             parse_success = True
 
             # Validate against legal sets
@@ -234,6 +251,16 @@ class PlayerAgent:
                     error_message=validation_error,
                     correction_hint=f"Legal actions: {[a.value for a in context.legal_actions]}. "
                                     f"Legal targets: {context.legal_targets}",
+                )
+                continue
+            speech_quality_error = self._speech_quality_error(context, action)
+            if speech_quality_error:
+                retry = RetryInfo(
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error_code="speech_quality",
+                    error_message=speech_quality_error,
+                    correction_hint=speech_quality_error,
                 )
                 continue
 
@@ -353,75 +380,122 @@ class PlayerAgent:
         target_values: list[str | None] = list(context.legal_targets)
         if not self._all_legal_actions_require_target(context) and None not in target_values:
             target_values.append(None)
+        properties: dict[str, Any] = {
+            "action_type": {
+                "type": "string",
+                "enum": action_values,
+                "description": "Must be one of the currently legal actions.",
+            },
+            "target_id": {
+                "enum": target_values,
+                "description": "Target player id when required; null otherwise.",
+            },
+            "speech": {
+                "type": "string",
+                "description": "Public Chinese speech. Empty string for private night actions if no speech is needed.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Short Chinese reason for the action.",
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+            },
+        }
+        if context.task_type == TaskType.VOTE:
+            properties.update(self._vote_audit_tool_properties())
+        elif context.task_type == TaskType.WOLF_DISCUSSION:
+            properties["private_intent"] = {
+                "type": ["object", "null"],
+                "additionalProperties": False,
+                "properties": {
+                    "true_role": {"type": "string"},
+                    "faction_goal": {
+                        "type": "string",
+                        "enum": [
+                            "push_good_player_out",
+                            "protect_teammate",
+                            "find_wolves",
+                            "survive",
+                            "help_master_faction",
+                            "confuse_good",
+                            "deep_hook",
+                            "aggressive_push",
+                        ],
+                    },
+                    "claimed_view": {"type": "string"},
+                    "pressure_target": {"enum": target_values},
+                    "risk_flags": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "avoid_night_kill_leak",
+                                "avoid_teammate_exposure",
+                                "high_visibility",
+                                "low_trust",
+                                "suspected",
+                            ],
+                        },
+                    },
+                },
+                "required": ["true_role", "faction_goal", "claimed_view"],
+            }
         return {
             "name": "submit_player_action",
             "description": "Submit exactly one legal Werewolf player action.",
             "input_schema": {
                 "type": "object",
                 "additionalProperties": False,
-                "properties": {
-                    "action_type": {
-                        "type": "string",
-                        "enum": action_values,
-                        "description": "Must be one of the currently legal actions.",
-                    },
-                    "target_id": {
-                        "enum": target_values,
-                        "description": "Target player id when required; null otherwise.",
-                    },
-                    "speech": {
-                        "type": "string",
-                        "description": "Public Chinese speech. Empty string for private night actions if no speech is needed.",
-                    },
-                    "reason": {
-                        "type": "string",
-                        "description": "Short Chinese reason for the action.",
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1,
-                    },
-                    "private_intent": {
-                        "type": ["object", "null"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "true_role": {"type": "string"},
-                            "faction_goal": {
-                                "type": "string",
-                                "enum": [
-                                    "push_good_player_out",
-                                    "protect_teammate",
-                                    "find_wolves",
-                                    "survive",
-                                    "help_master_faction",
-                                    "confuse_good",
-                                    "deep_hook",
-                                    "aggressive_push",
-                                ],
-                            },
-                            "claimed_view": {"type": "string"},
-                            "pressure_target": {"enum": target_values},
-                            "risk_flags": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "enum": [
-                                        "avoid_night_kill_leak",
-                                        "avoid_teammate_exposure",
-                                        "high_visibility",
-                                        "low_trust",
-                                        "suspected",
-                                    ],
-                                },
-                            },
-                        },
-                        "required": ["true_role", "faction_goal", "claimed_view"],
-                    },
-                },
+                "properties": properties,
                 "required": ["action_type", "target_id", "speech", "reason", "confidence"],
             },
         }
+
+    def _vote_audit_tool_properties(self) -> dict[str, Any]:
+        return {
+            "standing_with_seer": {
+                "type": "string",
+                "description": "Private moderator-only vote audit: seer or logic line you stand with; empty if none.",
+            },
+            "suspect_reason": {
+                "type": "string",
+                "description": "Private moderator-only vote audit: why the final vote target is suspicious.",
+            },
+            "not_voting_reason": {
+                "type": "string",
+                "description": "Private moderator-only vote audit: why you are not voting other major candidates.",
+            },
+            "private_reason": {
+                "type": "string",
+                "description": "Private moderator-only vote audit: full reasoning for the moderator; never public speech.",
+            },
+        }
+
+    def _speech_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:
+        if context.task_type != TaskType.SPEECH or action.action_type != ActionType.SPEECH:
+            return None
+        try:
+            from werewolf_agent.runtime.speech_quality import validate_public_speech
+
+            result = validate_public_speech(
+                action.speech,
+                phase="day_discussion",
+                context={
+                    "recent_transcript": list(context.recent_transcript),
+                    "public_summary": context.public_summary,
+                    "must_address_alerts": context.strategy_directive.get("must_address_alerts", [])
+                    if context.strategy_directive else [],
+                },
+            )
+        except Exception:
+            logger.debug("Speech quality validation failed unexpectedly", exc_info=True)
+            return None
+        if result.get("valid"):
+            return None
+        return str(result.get("hint") or "发言质量不足，请补充立场、怀疑对象、投票倾向和依据。")
 
     def _all_legal_actions_require_target(self, context: AgentContext) -> bool:
         return bool(context.legal_actions) and all(
@@ -447,11 +521,7 @@ class PlayerAgent:
 
         speech = ""
         if safe_action == ActionType.SPEECH:
-            target = context.legal_targets[0] if context.legal_targets else None
-            if target:
-                speech = f"我先明确给出一个判断：{target} 的发言和站边需要重点解释，我会把票型和前后逻辑继续对上。"
-            else:
-                speech = "我先明确表态：今天会重点看发言前后是否一致、投票是否跟逻辑匹配，不接受纯划水过麦。"
+            speech = self._fallback_speech(context)
 
         return FallbackAction(
             action_type=safe_action,
@@ -459,6 +529,32 @@ class PlayerAgent:
             speech=speech,
             reason="fallback: retries exhausted",
         )
+
+    def _fallback_speech(self, context: AgentContext) -> str:
+        target = context.legal_targets[0] if context.legal_targets else None
+        salt = sum(ord(ch) for ch in f"{context.agent_id}:{context.day_number}")
+        if target:
+            templates = [
+                (
+                    "我是好人阵营。现在我优先质疑{target}，他的发言和站边需要给出更清楚解释。"
+                    "我会把票型、前后逻辑和他对关键事件的回应继续对上。"
+                ),
+                (
+                    "我是好人阵营。{target}目前没有把自己的判断链说完整，"
+                    "这里容易成为狼队抗推或带票的位置，我倾向继续压他发言。"
+                ),
+                (
+                    "我是好人阵营。今天我先盯{target}，重点看他对投票结果和前面发言矛盾的解释。"
+                    "如果解释不出来，我会把票往这个位置考虑。"
+                ),
+            ]
+            return templates[salt % len(templates)].format(target=target)
+        templates = [
+            "我是好人阵营。今天我会重点看发言前后是否一致、投票是否跟逻辑匹配，不接受纯划水过麦。",
+            "我是好人阵营。现在信息还不够一锤定音，但每个人都要交代自己的站边和投票理由。",
+            "我是好人阵营。后续我会优先跟进票型变化和谁在回避关键问题，不能只靠情绪归票。",
+        ]
+        return templates[salt % len(templates)]
 
     # Role name mapping for Chinese prompts
     _ROLE_NAMES = {
@@ -480,6 +576,8 @@ class PlayerAgent:
             "不能用“平安夜没人死”反驳女巫知道刀口，也不能把“不公开救谁”直接等同于假女巫。"
             "可以质疑跳女巫玩家是否用药、为什么暂不公开银水、以及发言前后是否矛盾。"
             "不要跟风复述已有指控；每次发言必须给出独立证据、明确区分事实和推测。",
+            "【公开记录引用约束】只有游戏概况、可见状态、关键事件、近期发言中明确出现的信息，才能称为公开记录。"
+            "不要编造某玩家曾经说过的话、声称过的身份、投票理由或查验结论；不确定时必须写成推测或质疑。",
             f"你的玩家ID: {context.agent_id}",
             f"你的名字: {self.player_name}",
         ]

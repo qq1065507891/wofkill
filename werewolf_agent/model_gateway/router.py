@@ -56,6 +56,11 @@ class GenerateResult:
     provider: str
     model: str
     usage: UsageRecord | None = None
+    tool_call_required: bool = False
+    tool_call_received: bool = False
+    tool_call_name: str = ""
+    text_fallback_used: bool = False
+    structured_failure_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +186,59 @@ class ModelRouter:
     def provider_names(self) -> list[str]:
         return list(self._providers.keys())
 
+    def probe_tool_call_support(self, agent_id: str, task_type: str) -> dict[str, Any]:
+        """Probe whether the resolved provider returns an actual tool call."""
+        config, _fallback_provider = self.resolve_config(agent_id, task_type)
+        provider = self._providers.get(config.provider)
+        if provider is None:
+            provider = MockProvider(config.provider)
+            self._providers[config.provider] = provider
+        tool = {
+            "name": "submit_player_action",
+            "description": "Probe structured action tool-call support.",
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "action_type": {"type": "string", "enum": ["no_action"]},
+                    "target_id": {"enum": [None]},
+                    "speech": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "required": ["action_type", "target_id", "speech", "reason", "confidence"],
+            },
+        }
+        try:
+            result = _call_provider_generate(
+                provider,
+                "Call submit_player_action with no_action probe arguments.",
+                config,
+                "You are checking tool-call support. Use the tool.",
+                tools=[tool],
+                tool_choice={"type": "tool", "name": "submit_player_action"},
+            )
+            _normalize_tool_metadata(result, {"type": "tool", "name": "submit_player_action"})
+        except Exception as exc:
+            return {
+                "supported": False,
+                "provider": config.provider,
+                "model": config.model,
+                "failure_reason": _format_exception(exc),
+                "tool_call_received": False,
+                "text_fallback_used": False,
+            }
+        supported = bool(result.tool_call_received) and not result.structured_failure_reason
+        return {
+            "supported": supported,
+            "provider": result.provider,
+            "model": result.model,
+            "failure_reason": result.structured_failure_reason,
+            "tool_call_received": result.tool_call_received,
+            "tool_call_name": result.tool_call_name,
+            "text_fallback_used": result.text_fallback_used,
+        }
+
     def resolve_config(
         self, agent_id: str, task_type: str
     ) -> tuple[ModelConfig, str | None]:
@@ -246,6 +304,7 @@ class ModelRouter:
                 tools=tools,
                 tool_choice=tool_choice,
             )
+            _normalize_tool_metadata(result, tool_choice)
             if result.usage:
                 usage = UsageRecord(
                     agent_id=agent_id,
@@ -285,6 +344,7 @@ class ModelRouter:
                         tools=tools,
                         tool_choice=tool_choice,
                     )
+                    _normalize_tool_metadata(result, tool_choice)
                     if result.usage:
                         usage = UsageRecord(
                             agent_id=agent_id,
@@ -413,3 +473,18 @@ def _call_provider_generate(
             tool_choice=tool_choice,
         )
     return provider.generate(prompt, config, system_prompt)
+
+
+def _normalize_tool_metadata(
+    result: GenerateResult,
+    tool_choice: dict[str, Any] | None,
+) -> None:
+    if not tool_choice:
+        return
+    result.tool_call_required = True
+    if not result.tool_call_name:
+        result.tool_call_name = str(tool_choice.get("name") or "")
+    if not result.tool_call_received:
+        result.text_fallback_used = bool(result.text)
+        if result.structured_failure_reason is None:
+            result.structured_failure_reason = "missing_tool_call"

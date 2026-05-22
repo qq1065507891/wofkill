@@ -123,6 +123,18 @@ class PlayerAction(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Confidence in this action"
     )
     private_intent: PrivateIntent | None = None
+    standing_with_seer: str = Field(
+        default="", description="Private vote audit: seer or logic line the agent stands with"
+    )
+    suspect_reason: str = Field(
+        default="", description="Private vote audit: why the final vote target is suspicious"
+    )
+    not_voting_reason: str = Field(
+        default="", description="Private vote audit: why other major candidates were not selected"
+    )
+    private_reason: str = Field(
+        default="", description="Private vote audit: full non-public reasoning for moderator audit"
+    )
     trace: ActionTrace | None = None
 
     @model_validator(mode="after")

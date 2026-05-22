@@ -6,6 +6,7 @@ Every node calls RuleEngine for rule decisions. No natural language adjudication
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from dataclasses import replace
 from typing import Any, Literal, TypedDict
@@ -92,7 +93,7 @@ class RuntimeState(TypedDict, total=False):
     sheriff_votes: dict[str, str]
     sheriff_withdrawing: list[str]
     # Badge decision after sheriff death
-    badge_decision: str  # "transfer" or "tear"
+    badge_decision: str | None  # "transfer", "tear", or None to ask the agent
     badge_target_id: str | None
     # Hunter shot
     hunter_shot_target_id: str | None
@@ -1419,11 +1420,13 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         rng_seed=f"{gs.game_id}-vote-d{gs.day_number}",
     )
     # Log vote tally with weighted counts (sheriff = 1.5, others = 1)
+    sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
+    weighted_tally: dict[str, float] = {}
+    vote_weights: dict[str, float] = {}
     if votes:
-        sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
-        weighted_tally: dict[str, float] = {}
         for voter_id, target_id in votes.items():
             weight = 1.5 if voter_id == sheriff_id else 1.0
+            vote_weights[voter_id] = weight
             weighted_tally[target_id] = weighted_tally.get(target_id, 0) + weight
         tally_items = sorted(weighted_tally.items(), key=lambda x: -x[1])
         tally_text = "  投票统计: " + ", ".join(
@@ -1473,6 +1476,10 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         "exiled": result.exiled_player_id,
         "reason": result.reason,
         "day_number": gs.day_number,
+        "sheriff_id": sheriff_id,
+        "sheriff_vote_weight": 1.5 if sheriff_id else 1.0,
+        "weighted_tally": weighted_tally,
+        "vote_weights": vote_weights,
         "votes": [
             {
                 "voter": voter_id,
@@ -1650,6 +1657,8 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 death.player_id,
                 timeout_override=AGENT_TIMEOUTS.hunter_shot,
             )
+        if target is None:
+            target = _hunter_shot_target_from_last_words(gs, death.player_id)
         if target:
             shot_death = Death(
                 player_id=target, reason="hunter_shot",
@@ -1660,6 +1669,28 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         break
 
     return {"game_state": gs}
+
+
+def _hunter_shot_target_from_last_words(gs: GameState, hunter_id: str) -> str | None:
+    """Extract an explicit hunter-shot target from the hunter's last words."""
+    alive_targets = {
+        pid for pid, player in gs.players.items()
+        if player.alive and pid != hunter_id
+    }
+    if not alive_targets:
+        return None
+    for event in reversed(gs.events):
+        if event.type not in {"exile_last_words", "night_death_last_words"}:
+            continue
+        payload = event.payload or {}
+        if payload.get("speaker") != hunter_id:
+            continue
+        text = str(payload.get("text") or "")
+        for match in re.finditer(r"(?:带走|开枪(?:带走|打)?|枪(?:带走|打)?|选择带走)\s*(p\d{2}|[A-Za-z]\w*)", text):
+            candidate = match.group(1)
+            if candidate in alive_targets:
+                return candidate
+    return None
 
 
 def check_victory(state: RuntimeState) -> dict[str, Any]:
@@ -1821,6 +1852,8 @@ def route_after_hunter_shot(state: RuntimeState) -> str:
     # If sheriff died at night and game continues, route to badge transfer
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
+    if gs.phase != "night":
+        return "check_victory"
     # Badge permanently lost after 2 interruptions
     if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
         return "announce_deaths_with_badge_loss"
@@ -1853,6 +1886,20 @@ def route_after_exile(state: RuntimeState) -> str:
 
 
 def route_after_post_exile(state: RuntimeState) -> str:
+    gs: GameState = state["game_state"]
+    for death in gs.deaths:
+        if "hunter_shot" not in (death.triggered_skills or []):
+            continue
+        if death.player_id not in gs.players:
+            continue
+        if gs.players[death.player_id].alive:
+            continue
+        already_shot = any(
+            d.source_player_id == death.player_id and d.reason == "hunter_shot"
+            for d in gs.deaths
+        )
+        if not already_shot:
+            return "resolve_hunter_shot"
     return "check_victory"
 
 
@@ -2337,7 +2384,10 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_edge("tie_revote", "day_vote")
     graph.add_edge("resolve_exile", "exile_last_words")
     graph.add_edge("exile_last_words", "post_exile_skills")
-    graph.add_edge("post_exile_skills", "check_victory")
+    graph.add_conditional_edges("post_exile_skills", route_after_post_exile, {
+        "resolve_hunter_shot": "resolve_hunter_shot",
+        "check_victory": "check_victory",
+    })
     graph.add_conditional_edges("check_victory", route_victory, {
         "finish_game": "finish_game",
         "sheriff_badge_transfer": "sheriff_badge_transfer",

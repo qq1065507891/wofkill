@@ -108,6 +108,43 @@ class TestPeaceNightWitchReasoning:
         assert result["valid"] is True
 
 
+class TestPublicRecordGrounding:
+    """Public-record claims must be backed by actual transcript text."""
+
+    def test_rejects_unsupported_public_role_claim(self):
+        speech = (
+            "我是好人阵营。我怀疑p02，因为p02声称自己是狼人（Day 1公开记录）。"
+            "这个发言矛盾很大，我倾向投p02。"
+        )
+        context = {
+            "recent_transcript": [
+                {"speaker": "p02", "text": "我是好人，今天先看票型。"},
+            ],
+            "public_summary": "D1 投票结果：p05 被放逐",
+        }
+
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+
+        assert result["valid"] is False
+        assert "public_record_grounding" in result["missing_fields"]
+        assert "公开记录" in result["hint"]
+
+    def test_accepts_supported_public_role_claim(self):
+        speech = (
+            "我是好人阵营。我怀疑p02，因为p02刚才说我是狼人，"
+            "这和他的站边矛盾，我倾向投p02。"
+        )
+        context = {
+            "recent_transcript": [
+                {"speaker": "p02", "text": "我是狼人，这局我摊牌了。"},
+            ],
+        }
+
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+
+        assert result["valid"] is True
+
+
 class TestSpeechQualityExtraction:
     """extract_speech_quality identifies speech components."""
 

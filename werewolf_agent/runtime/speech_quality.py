@@ -77,9 +77,54 @@ _PEACE_NIGHT_WITCH_FALLACY_PATTERNS = [
     r"预言家.{0,20}(?:应该|必须).{0,12}质疑.{0,30}(?:女巫|救了谁|平安夜).{0,30}(?:而不是|不该).{0,20}(?:发金水|给.*金水)",
 ]
 
+_ROLE_CLAIM_PATTERNS = [
+    re.compile(
+        r"(p\d{2}).{0,12}(?:声称自己是|说自己是|自称|认|跳)(狼人|预言家|女巫|猎人|白痴|村民|民)"
+    ),
+]
+
+_ROLE_EVIDENCE_MARKERS = {
+    "狼人": ("我是狼人", "认狼", "狼队视角", "我们狼队"),
+    "预言家": ("我是预言家", "我跳预言家", "认预言家", "悍跳预言家"),
+    "女巫": ("我是女巫", "我认女巫", "跳女巫"),
+    "猎人": ("我是猎人", "我认猎人", "跳猎人"),
+    "白痴": ("我是白痴", "我认白痴", "跳白痴"),
+    "村民": ("我是村民", "我是民", "我认民"),
+    "民": ("我是村民", "我是民", "我认民"),
+}
+
 
 def _has_peace_night_witch_fallacy(text: str) -> bool:
     return any(re.search(pattern, text) for pattern in _PEACE_NIGHT_WITCH_FALLACY_PATTERNS)
+
+
+def _context_public_texts(context: dict[str, Any]) -> list[tuple[str, str]]:
+    public_texts: list[tuple[str, str]] = []
+    for item in context.get("recent_transcript", []) or []:
+        if isinstance(item, dict):
+            public_texts.append((str(item.get("speaker", "")), str(item.get("text", ""))))
+    public_summary = context.get("public_summary", "")
+    if public_summary:
+        public_texts.append(("", str(public_summary)))
+    return public_texts
+
+
+def _has_unsupported_public_record_claim(text: str, context: dict[str, Any]) -> bool:
+    """Return True when a speech cites a public role claim not in public text."""
+    public_texts = _context_public_texts(context)
+    if not public_texts:
+        return False
+    for pattern in _ROLE_CLAIM_PATTERNS:
+        for match in pattern.finditer(text):
+            player_id, role = match.group(1), match.group(2)
+            markers = _ROLE_EVIDENCE_MARKERS.get(role, (role,))
+            supported = any(
+                (not speaker or speaker == player_id) and any(marker in public_text for marker in markers)
+                for speaker, public_text in public_texts
+            )
+            if not supported:
+                return True
+    return False
 
 
 def extract_speech_quality(text: str, phase: str = "") -> dict[str, Any]:
@@ -169,6 +214,8 @@ def validate_public_speech(
 
     if _has_peace_night_witch_fallacy(text):
         missing.append("peace_night_witch_reasoning")
+    if _has_unsupported_public_record_claim(text, context):
+        missing.append("public_record_grounding")
 
     # Check stance (relaxed for some phases)
     if not quality["has_stance"] and phase not in ("pk_speech",):
@@ -243,6 +290,10 @@ def build_speech_retry_hint(missing_fields: list[str]) -> str:
             "平安夜不等于无人被刀；可能是狼人空刀，也可能是女巫用解药救人。"
             "不能用“平安夜没人死”反驳女巫知道刀口，也不能把“不公开救谁”直接等同于假女巫；"
             "请改为询问是否用药、为什么暂不公开银水、以及发言前后是否矛盾"
+        ),
+        "public_record_grounding": (
+            "引用公开记录时，必须能在游戏概况或近期发言中找到对应原文；"
+            "不要把推测写成“公开记录”，无法确认时改成“我推测/我质疑”"
         ),
     }
     hints = [field_hints.get(f, f"缺少{f}") for f in missing_fields]

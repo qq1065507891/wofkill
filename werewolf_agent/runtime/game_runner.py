@@ -44,6 +44,7 @@ class GameRunnerConfig:
     memory_coordinator: Any = None  # PersistentMemoryCoordinator, optional
     rag_service: Any = None  # RAGKnowledgeService, optional
     enable_default_rag_service: bool = True
+    probe_tool_call_support: bool = False
 
     def __post_init__(self) -> None:
         if self.seed is None:
@@ -154,7 +155,7 @@ class GameRunner:
             "sheriff_candidates": [],
             "sheriff_votes": {},
             "sheriff_withdrawing": [],
-            "badge_decision": "tear",
+            "badge_decision": None,
             "badge_target_id": None,
             "hunter_shot_target_id": None,
         }
@@ -182,6 +183,10 @@ class GameRunner:
             return None
         model_config_path = self._config.model_config_path or "config/models.yaml"
         router = ModelRouter.from_yaml(model_config_path, register_env_providers=True)
+        if self._config.probe_tool_call_support:
+            probe = router.probe_tool_call_support("p01", "speech")
+            if not probe.get("supported"):
+                raise RuntimeError(f"tool call probe failed: {probe}")
         # Load persona config for player names
         persona_map = self._load_persona_names()
         registry = SimpleAgentRegistry()

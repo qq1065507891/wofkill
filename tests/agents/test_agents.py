@@ -233,13 +233,46 @@ class _JsonProvider:
     def name(self) -> str:
         return "json_provider"
 
-    def generate(self, prompt, config, system_prompt=None):
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
         return GenerateResult(
             text=self._response,
             provider=self.name,
             model=config.model,
+            tool_call_required=bool(tool_choice),
+            tool_call_received=bool(tool_choice),
+            tool_call_name=(tool_choice or {}).get("name", ""),
             usage=UsageRecord(
                 agent_id="test", task_type="vote",
+                provider=self.name, model=config.model,
+            ),
+        )
+
+
+class _SequenceJsonProvider:
+    """Provider that returns a sequence of structured tool-call payloads."""
+
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return "sequence_json_provider"
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        self.calls += 1
+        self.prompts.append(prompt)
+        response = self._responses[min(self.calls - 1, len(self._responses) - 1)]
+        return GenerateResult(
+            text=response,
+            provider=self.name,
+            model=config.model,
+            tool_call_required=bool(tool_choice),
+            tool_call_received=bool(tool_choice),
+            tool_call_name=(tool_choice or {}).get("name", ""),
+            usage=UsageRecord(
+                agent_id="test", task_type="speech",
                 provider=self.name, model=config.model,
             ),
         )
@@ -367,6 +400,103 @@ class TestPlayerAgentRetryFallback:
         assert tool["input_schema"]["properties"]["action_type"]["enum"] == ["vote"]
         assert tool["input_schema"]["properties"]["target_id"]["enum"] == ["p07", "p08"]
 
+    def test_vote_tool_schema_includes_private_audit_fields(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+        )
+
+        props = agent._player_action_tool(ctx)["input_schema"]["properties"]
+
+        assert "standing_with_seer" in props
+        assert "suspect_reason" in props
+        assert "not_voting_reason" in props
+        assert "private_reason" in props
+
+    def test_speech_tool_schema_omits_private_audit_fields(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+        )
+
+        props = agent._player_action_tool(ctx)["input_schema"]["properties"]
+
+        assert "private_intent" not in props
+        assert "standing_with_seer" not in props
+        assert "suspect_reason" not in props
+        assert "not_voting_reason" not in props
+        assert "private_reason" not in props
+
+    def test_night_action_tool_schema_omits_private_intent(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.NIGHT_ACTION,
+            legal_actions=[ActionType.CHECK_ALIGNMENT],
+            legal_targets=["p07"],
+        )
+
+        props = agent._player_action_tool(ctx)["input_schema"]["properties"]
+
+        assert "private_intent" not in props
+        assert "action_type" in props
+        assert "target_id" in props
+        assert "reason" in props
+
+    def test_vote_audit_fields_are_preserved_in_trace(self) -> None:
+        json_resp = (
+            '{"action_type":"vote","target_id":"p07","speech":"","reason":"投7",'
+            '"confidence":0.8,"standing_with_seer":"p03",'
+            '"suspect_reason":"p07站边摇摆",'
+            '"not_voting_reason":"p08证据不足",'
+            '"private_reason":"我更信p03，所以投p07"}'
+        )
+        agent = self._make_agent(json_resp)
+
+        action, _ = agent.act(self._make_context())
+
+        assert isinstance(action, PlayerAction)
+        assert action.trace is not None
+        assert action.trace.parsed_action["standing_with_seer"] == "p03"
+        assert action.trace.parsed_action["suspect_reason"] == "p07站边摇摆"
+
+    def test_weak_day_speech_retries_with_quality_hint(self) -> None:
+        provider = _SequenceJsonProvider([
+            '{"action_type":"speech","target_id":null,"speech":"再观察一下，先听后面",'
+            '"reason":"先观察","confidence":0.4}',
+            '{"action_type":"speech","target_id":null,'
+            '"speech":"我是好人阵营。我怀疑p07，p07发言前后矛盾，票型也不合理。我倾向投p07。",'
+            '"reason":"补充明确对象和依据","confidence":0.7}',
+        ])
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert provider.calls == 2
+        assert retry.attempt == 2
+        assert action.speech.startswith("我是好人阵营")
+        assert "发言过于空洞" in provider.prompts[1]
+
     def test_invalid_json_triggers_retry(self) -> None:
         agent = self._make_agent("not json at all")
         action, retry = agent.act(self._make_context())
@@ -452,6 +582,38 @@ class TestPlayerAgentRetryFallback:
         agent = self._make_agent(json_resp)
         action, retry = agent.act(self._make_context())
         assert isinstance(action, PlayerAction)
+        assert retry.attempt == 1
+
+    def test_minimax_tool_wrapper_parameters_parse(self) -> None:
+        json_resp = (
+            '<minimax:tool_call name="submit_player_action">'
+            '<parameters>{"action_type":"vote","target_id":"p07",'
+            '"speech":"归票p07","reason":"p07发言矛盾","confidence":0.72}'
+            '</parameters></minimax:tool_call>'
+        )
+        agent = self._make_agent(json_resp)
+
+        action, retry = agent.act(self._make_context())
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p07"
+        assert retry.attempt == 1
+
+    def test_invoke_tool_wrapper_arguments_parse(self) -> None:
+        json_resp = (
+            '<invoke name="submit_player_action">'
+            '<tool_input>{"action_type":"vote","target_id":"p08",'
+            '"speech":"我倾向投p08","reason":"p08票型不合理","confidence":0.66}'
+            '</tool_input></invoke>'
+        )
+        agent = self._make_agent(json_resp)
+
+        action, retry = agent.act(self._make_context())
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p08"
         assert retry.attempt == 1
 
     def test_wolf_examples_use_valid_private_intent_goals(self) -> None:
@@ -604,6 +766,98 @@ class TestModelRouter:
         assert "primary_failed" in log[-1].fallback_reason
         assert "RuntimeError" in log[-1].fallback_reason
 
+    def test_router_marks_missing_tool_call_for_legacy_provider(self) -> None:
+        class LegacyProvider:
+            @property
+            def name(self) -> str:
+                return "legacy"
+
+            def generate(self, prompt, config, system_prompt=None):
+                return GenerateResult(
+                    text='{"action_type":"vote"}',
+                    provider=self.name,
+                    model=config.model,
+                )
+
+        router = ModelRouter(
+            model_profiles={"legacy_model": {"model": "legacy-v1", "provider": "legacy"}},
+            llm_profiles={"default": {"default": {"provider": "legacy", "model_profile": "legacy_model"}}},
+            player_assignments={"p01": "default"},
+            providers={"legacy": LegacyProvider()},
+        )
+
+        result = router.generate(
+            "p01",
+            "vote",
+            "Choose",
+            tools=[{"name": "submit_player_action", "input_schema": {"type": "object"}}],
+            tool_choice={"type": "tool", "name": "submit_player_action"},
+        )
+
+        assert result.tool_call_required is True
+        assert result.tool_call_received is False
+        assert result.text_fallback_used is True
+        assert result.structured_failure_reason == "missing_tool_call"
+
+    def test_probe_tool_call_support_detects_supported_provider(self) -> None:
+        class ToolProbeProvider:
+            @property
+            def name(self) -> str:
+                return "tool_probe"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                return GenerateResult(
+                    text='{"action_type":"no_action","target_id":null,"speech":"","reason":"probe","confidence":0.5}',
+                    provider=self.name,
+                    model=config.model,
+                    tool_call_required=bool(tool_choice),
+                    tool_call_received=True,
+                    tool_call_name=(tool_choice or {}).get("name", ""),
+                )
+
+        router = ModelRouter(
+            model_profiles={"probe_model": {"model": "probe-v1", "provider": "tool_probe"}},
+            llm_profiles={"default": {"default": {"provider": "tool_probe", "model_profile": "probe_model"}}},
+            player_assignments={"p01": "default"},
+            providers={"tool_probe": ToolProbeProvider()},
+        )
+
+        result = router.probe_tool_call_support("p01", "speech")
+
+        assert result["supported"] is True
+        assert result["provider"] == "tool_probe"
+        assert result["tool_call_received"] is True
+
+    def test_probe_tool_call_support_detects_text_fallback_provider(self) -> None:
+        class TextProbeProvider:
+            @property
+            def name(self) -> str:
+                return "text_probe"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                return GenerateResult(
+                    text='{"action_type":"no_action"}',
+                    provider=self.name,
+                    model=config.model,
+                    tool_call_required=bool(tool_choice),
+                    tool_call_received=False,
+                    text_fallback_used=True,
+                    structured_failure_reason="missing_tool_call",
+                )
+
+        router = ModelRouter(
+            model_profiles={"probe_model": {"model": "probe-v1", "provider": "text_probe"}},
+            llm_profiles={"default": {"default": {"provider": "text_probe", "model_profile": "probe_model"}}},
+            player_assignments={"p01": "default"},
+            providers={"text_probe": TextProbeProvider()},
+        )
+
+        result = router.probe_tool_call_support("p01", "speech")
+
+        assert result["supported"] is False
+        assert result["failure_reason"] == "missing_tool_call"
+        assert result["text_fallback_used"] is True
+
     def test_usage_logging(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
         router.register_provider(MockProvider("anthropic"))
@@ -645,9 +899,11 @@ class TestModelRouter:
 
     def test_create_provider_from_env_returns_none_without_key(self, monkeypatch, tmp_path) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.chdir(tmp_path)
 
         assert create_provider_from_env("anthropic") is None
+        assert create_provider_from_env("minimax") is None
 
     def test_anthropic_provider_posts_messages_request(self) -> None:
         client = _FakeHttpClient({
@@ -720,9 +976,8 @@ class TestModelRouter:
             "name": "submit_player_action",
         }
 
-    def test_anthropic_provider_falls_through_when_tool_call_missing(self) -> None:
-        """When model returns text instead of tool_use despite tool_choice,
-        the provider should fall through to text parsing instead of raising."""
+    def test_anthropic_provider_marks_missing_tool_call(self) -> None:
+        """When model returns text instead of tool_use despite tool_choice, mark it explicitly."""
         client = _FakeHttpClient({
             "content": [{"type": "text", "text": "{\"action_type\":\"vote\"}"}],
             "usage": {"input_tokens": 4, "output_tokens": 2},
@@ -739,8 +994,11 @@ class TestModelRouter:
             }],
             tool_choice={"type": "tool", "name": "submit_player_action"},
         )
-        # Should return the text content for JSON parsing fallback
         assert result.text == '{"action_type":"vote"}'
+        assert result.tool_call_required is True
+        assert result.tool_call_received is False
+        assert result.text_fallback_used is True
+        assert result.structured_failure_reason == "missing_tool_call"
 
     def test_openai_provider_posts_chat_request(self) -> None:
         client = _FakeHttpClient({
@@ -775,6 +1033,30 @@ class TestModelRouter:
         assert result.text == "hello"
         assert "bigmodel.cn" in client.calls[0]["url"]
         assert client.calls[0]["headers"]["Authorization"] == "Bearer key"
+
+    def test_openai_provider_marks_missing_tool_call(self) -> None:
+        client = _FakeHttpClient({
+            "choices": [{"message": {"content": "{\"action_type\":\"vote\"}"}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        })
+        provider = OpenAIProvider(api_key="key", http_client=client)
+
+        result = provider.generate(
+            "Choose an action",
+            ModelConfig(provider="openai", model="gpt-test"),
+            tools=[{
+                "name": "submit_player_action",
+                "description": "Submit one player action.",
+                "input_schema": {"type": "object"},
+            }],
+            tool_choice={"type": "tool", "name": "submit_player_action"},
+        )
+
+        assert result.text == '{"action_type":"vote"}'
+        assert result.tool_call_required is True
+        assert result.tool_call_received is False
+        assert result.text_fallback_used is True
+        assert result.structured_failure_reason == "missing_tool_call"
 
 
 # ---------------------------------------------------------------------------
@@ -1129,6 +1411,77 @@ class TestSpeechQualityAndWolfAssignments:
         assert "p02" in action.speech
         assert action.reason
 
+    def test_speech_fallback_varies_by_player_and_day(self) -> None:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default", "p02": "default"},
+            providers={"mock": _JsonProvider("not json")},
+        )
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p03", "p04"],
+        )
+        first, _ = PlayerAgent(agent_id="p01", model_router=router, max_retries=1).act(ctx)
+        second, _ = PlayerAgent(agent_id="p02", model_router=router, max_retries=1).act(
+            ctx.model_copy(update={"agent_id": "p02", "day_number": 3})
+        )
+
+        assert first.speech != second.speech
+        assert "p03" in first.speech
+        assert "p03" in second.speech
+
+    def test_parse_error_retry_hint_is_actionable(self) -> None:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider("not json")},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p03"],
+        )
+
+        _action, retry = agent.act(ctx)
+
+        assert "只输出JSON" in retry.correction_hint
+        assert "action_type" in retry.correction_hint
+
+    def test_prompt_requires_public_record_grounding(self) -> None:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": _JsonProvider("unused")},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02", "p03"],
+        )
+
+        system_prompt = agent._build_system_prompt(ctx)
+
+        assert "公开记录" in system_prompt
+        assert "不要编造" in system_prompt
+
 
 # ---------------------------------------------------------------------------
 # Task 7: Witch No-Poison Explanation
@@ -1253,6 +1606,48 @@ class TestPlainTextRejection:
         assert action.trace.parse_success is False
         assert action.trace.parse_error is not None
         assert action.trace.retry_count == 1
+
+    def test_missing_tool_call_does_not_parse_text_json(self):
+        """If tool_choice was required but no tool call arrived, do not treat text JSON as success."""
+
+        class TextOnlyProvider:
+            @property
+            def name(self) -> str:
+                return "text_only"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                return GenerateResult(
+                    text='{"action_type":"vote","target_id":"p07","speech":"","reason":"x","confidence":0.8}',
+                    provider=self.name,
+                    model=config.model,
+                    tool_call_required=bool(tool_choice),
+                    tool_call_received=False,
+                    text_fallback_used=True,
+                    structured_failure_reason="missing_tool_call",
+                )
+
+        router = ModelRouter(
+            model_profiles={"text": {"model": "text-v1", "provider": "text_only"}},
+            llm_profiles={"default": {"default": {"provider": "text_only", "model_profile": "text"}}},
+            player_assignments={"p01": "default"},
+            providers={"text_only": TextOnlyProvider()},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+        )
+
+        action, retry_info = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert retry_info.error_code == "missing_tool_call"
+        assert action.trace is not None
+        assert action.trace.structured_failure_reason == "missing_tool_call"
+        assert action.trace.parse_error == "missing required tool call: submit_player_action"
+        assert action.trace.tool_call_received is False
 
 
 class TestProviderCapabilityFailure:

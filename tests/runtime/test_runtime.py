@@ -27,6 +27,7 @@ from werewolf_agent.runtime.graph import (
     wolf_consensus,
     route_after_resolve_night,
     route_after_hunter_shot,
+    route_after_post_exile,
     _sheriff_died_this_batch,
     _route_after_badge_transfer,
     _action_trace_event,
@@ -515,6 +516,36 @@ def test_resolve_vote_keeps_action_traces_out_of_public_result() -> None:
     assert "action_traces" not in vote_event.payload
     assert audit_event.payload["phase"] == "vote"
     assert audit_event.payload["visibility"] == "moderator_only"
+
+
+def test_resolve_vote_records_sheriff_weighted_tally() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="villager"),
+        "p03": PlayerState(id="p03", role="werewolf"),
+    }
+    gs = GameState(
+        game_id="sheriff_weighted_vote",
+        players=players,
+        sheriff_id="p01",
+        sheriff_badge_state="active",
+        day_number=2,
+    )
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "exile_votes": {"p01": "p03", "p02": "p02"},
+        "revote": False,
+    })
+
+    vote_event = next(event for event in result["game_state"].events if event.type == "vote_resolved")
+    assert vote_event.payload["sheriff_id"] == "p01"
+    assert vote_event.payload["sheriff_vote_weight"] == 1.5
+    assert vote_event.payload["weighted_tally"] == {"p03": 1.5, "p02": 1.0}
+    assert vote_event.payload["vote_weights"] == {"p01": 1.5, "p02": 1.0}
 
 
 def test_vote_action_trace_audit_exposes_structured_private_vote_thought_to_moderator_only(capsys) -> None:
@@ -1422,6 +1453,124 @@ class TestHunterShotTiming:
         assert not replayed.players["v1"].alive
         shot_deaths = [d for d in replayed.deaths if d.reason == "hunter_shot"]
         assert len(shot_deaths) == 1
+
+
+class TestHunterShotOrdering:
+    """Hunter shots triggered by exile must resolve before the next night."""
+
+    def test_route_after_post_exile_routes_pending_hunter_shot_before_victory(self) -> None:
+        engine = _new_engine()
+        hunter_death = Death(
+            player_id="hunter",
+            reason="exile",
+            timing="day_vote",
+            resolution_batch="day_4_vote",
+            triggered_skills=["hunter_shot"],
+        )
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "villager": PlayerState(id="villager", role="villager", alive=True),
+            "idiot": PlayerState(id="idiot", role="idiot", alive=True),
+        }
+        gs = GameState(
+            game_id="hunter_order",
+            players=players,
+            deaths=[hunter_death],
+            day_number=4,
+            phase="day",
+            events=[
+                GameEvent(type="player_died", payload={
+                    "player_id": "hunter",
+                    "reason": "exile",
+                    "timing": "day_vote",
+                    "resolution_batch": "day_4_vote",
+                    "triggered_skills": ["hunter_shot"],
+                }),
+            ],
+        )
+
+        assert route_after_post_exile({"game_state": gs, "engine": engine}) == "resolve_hunter_shot"
+
+    def test_daytime_hunter_shot_returns_to_victory_check_not_night_announcement(self) -> None:
+        engine = _new_engine()
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=False),
+            "villager": PlayerState(id="villager", role="villager", alive=True),
+            "idiot": PlayerState(id="idiot", role="idiot", alive=True),
+        }
+        gs = GameState(
+            game_id="hunter_day_route",
+            players=players,
+            deaths=[
+                Death(
+                    player_id="hunter",
+                    reason="exile",
+                    timing="day_vote",
+                    resolution_batch="day_4_vote",
+                    triggered_skills=["hunter_shot"],
+                ),
+                Death(
+                    player_id="wolf",
+                    reason="hunter_shot",
+                    timing="day_vote",
+                    resolution_batch="day_4_vote",
+                    source_player_id="hunter",
+                ),
+            ],
+            day_number=4,
+            phase="day",
+        )
+
+        assert route_after_hunter_shot({"game_state": gs, "engine": engine}) == "check_victory"
+
+    def test_resolve_hunter_shot_uses_target_declared_in_exile_last_words(self) -> None:
+        from werewolf_agent.runtime.graph import resolve_hunter_shot
+
+        engine = _new_engine()
+        hunter_death = Death(
+            player_id="hunter",
+            reason="exile",
+            timing="day_vote",
+            resolution_batch="day_3_vote",
+            triggered_skills=["hunter_shot"],
+        )
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "villager": PlayerState(id="villager", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="hunter_last_words_target",
+            players=players,
+            deaths=[hunter_death],
+            day_number=3,
+            phase="day",
+            events=[
+                GameEvent(
+                    type="exile_last_words",
+                    payload={
+                        "speaker": "hunter",
+                        "day_number": 3,
+                        "text": "我是猎人，被放逐出局时可以开枪。我选择带走wolf。",
+                    },
+                )
+            ],
+        )
+
+        result = resolve_hunter_shot({
+            "game_state": gs,
+            "engine": engine,
+            "hunter_shot_target_id": None,
+        })
+
+        new_state = result["game_state"]
+        assert not new_state.players["wolf"].alive
+        shot_deaths = [d for d in new_state.deaths if d.reason == "hunter_shot"]
+        assert len(shot_deaths) == 1
+        assert shot_deaths[0].player_id == "wolf"
+        assert shot_deaths[0].source_player_id == "hunter"
 
 
 # ---------------------------------------------------------------------------

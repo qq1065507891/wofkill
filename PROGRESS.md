@@ -931,4 +931,26 @@ Post-V1.2 production hardening complete. Full suite: **1191 tests passed, 0 fail
   - `werewolf_agent/runtime/speech_quality.py` — `validate_public_speech` now checks `must_address_alerts` from context. If high-priority alerts exist and the speech does not mention any of the involved players, validation fails with `contradiction_alert` in missing_fields.
   - `tests/cognition/test_cognition.py` — Added `TestContradictionContextPriority` (2 tests: high-priority alerts detected, alerts populate AgentContext) and `TestMustAddressAlerts` (1 test: must_address built from contradiction engine output).
   - `tests/agents/test_agents.py` — Added `TestSpeechMustAnswerVisibleContradictionAlert` (2 tests: speech ignoring contradiction fails, speech addressing contradiction passes).
-  - Verification: `pytest tests/cognition/test_cognition.py tests/agents/test_agents.py tests/runtime/test_speech_quality.py tests/runtime/test_runtime.py -q --tb=short` — **300 passed, 0 failed**.
+- Verification: `pytest tests/cognition/test_cognition.py tests/agents/test_agents.py tests/runtime/test_speech_quality.py tests/runtime/test_runtime.py -q --tb=short` — **300 passed, 0 failed**.
+
+### 2026-05-21 Session
+
+- **Game Record Quality Fixes** — DONE. Fixed defects found in `game_g_4056969886.json`:
+  - `werewolf_agent/runtime/graph.py` — post-exile hunter shots now route to `resolve_hunter_shot` before victory/night transitions; day hunter-shot resolution returns to victory checks instead of night death announcement flow.
+  - `werewolf_agent/agents/player.py` — missing required tool calls are classified as `missing_tool_call` instead of parsing text JSON as success; retry hints preserve correction details; speech and night-action tool schemas are narrower; speech quality validation is wired into retries; fallback speech is deterministic but player/day varied.
+  - `werewolf_agent/agents/schemas.py` — vote audit fields are represented in `PlayerAction` traces so prompt/schema expectations no longer conflict.
+  - `werewolf_agent/model_gateway/router.py` and `providers.py` — structured generation metadata tracks tool-call receipt, text fallback, and failure reason; router can probe provider tool-call support; env provider registration skips MiniMax/Anthropic when API keys are missing.
+  - `werewolf_agent/runtime/game_runner.py` — optional startup probe can reject providers that do not return tool calls.
+  - `werewolf_agent/runtime/speech_quality.py` — public-record role claims must be grounded in public transcript/summary; retry hints explain unsupported public-record claims.
+  - `scripts/print_game_audit.py` — audit reports now include `Rule-Order Anomalies` for delayed hunter-shot deaths, dead wolves acting, and unsupported public-record role claims.
+- Tests added/expanded in `tests/runtime/test_runtime.py`, `tests/runtime/test_game_runner.py`, `tests/runtime/test_speech_quality.py`, `tests/agents/test_agents.py`, and `tests/test_game_audit.py`.
+- Verification:
+  - `python -m pytest tests/agents/test_agents.py tests/runtime/test_game_runner.py tests/runtime/test_runtime.py::TestHunterShotOrdering tests/runtime/test_speech_quality.py tests/test_game_audit.py -q --basetemp=.pytest-tmp` — **passed**.
+  - `python -m pytest tests -q --basetemp=.pytest-tmp` — **passed, 1 skipped**.
+- Remaining external validation: `python scripts/run_real_game.py --max-steps 180` still requires real `.env` LLM credentials and network access; run it only in an environment where API use is intended.
+- **Follow-up rule fixes after latest game review** — DONE.
+  - Merged the `game-record-quality-fixes` worktree diff back into the root workspace.
+  - `werewolf_agent/runtime/game_runner.py` — `badge_decision` now defaults to `None`, so a dying sheriff is asked for badge transfer/tear instead of silently tearing the badge from the initial runtime state.
+  - `werewolf_agent/runtime/graph.py` — `vote_resolved` now records `sheriff_id`, `sheriff_vote_weight`, `weighted_tally`, and `vote_weights` while preserving the existing public `votes` schema.
+  - `werewolf_agent/runtime/graph.py` — daytime hunter shot resolution can use an explicit target declared in the hunter's last words, preventing "hunter says take pXX but pXX remains alive" when no separate target was supplied.
+  - Verification: `python -m pytest tests -q --basetemp=.pytest-tmp` — **passed, 1 skipped**.

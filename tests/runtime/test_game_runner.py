@@ -37,6 +37,15 @@ def test_game_runner_runtime_state_can_disable_default_rag_service() -> None:
     assert "rag_service" not in runtime_state
 
 
+def test_game_runner_runtime_state_does_not_force_badge_tear() -> None:
+    runner = GameRunner(GameRunnerConfig(seed=42))
+
+    runtime_state = runner._build_runtime_state()
+
+    assert runtime_state["badge_decision"] is None
+    assert runtime_state["badge_target_id"] is None
+
+
 # ---------------------------------------------------------------------------
 # Config tests
 # ---------------------------------------------------------------------------
@@ -107,6 +116,47 @@ class TestGameRunnerConstructor:
         assert registry is not None
         assert registry.get_agent("p01") is not None
         assert registry.get_agent("judge") is None
+
+    def test_probe_tool_call_support_rejects_text_fallback_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from werewolf_agent.model_gateway.router import GenerateResult
+
+        class TextFallbackProvider:
+            @property
+            def name(self) -> str:
+                return "mock"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                return GenerateResult(
+                    text='{"action_type":"no_action"}',
+                    provider=self.name,
+                    model=config.model,
+                    tool_call_required=bool(tool_choice),
+                    tool_call_received=False,
+                    text_fallback_used=True,
+                    structured_failure_reason="missing_tool_call",
+                )
+
+        class ProbeRouter:
+            @classmethod
+            def from_yaml(cls, path, register_env_providers=False):
+                from werewolf_agent.model_gateway.router import ModelRouter
+
+                return ModelRouter(
+                    model_profiles={"mock_model": {"model": "mock", "provider": "mock"}},
+                    llm_profiles={"default": {"default": {"provider": "mock", "model_profile": "mock_model"}}},
+                    player_assignments={"p01": "default"},
+                    providers={"mock": TextFallbackProvider()},
+                )
+
+        monkeypatch.setattr("werewolf_agent.runtime.game_runner.ModelRouter", ProbeRouter)
+        cfg = GameRunnerConfig(
+            seed=99,
+            use_agent_registry=True,
+            probe_tool_call_support=True,
+        )
+
+        with pytest.raises(RuntimeError, match="tool call probe failed"):
+            GameRunner(cfg)
 
 
 # ---------------------------------------------------------------------------

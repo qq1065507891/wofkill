@@ -129,16 +129,20 @@ class AnthropicProvider(_BaseHttpProvider):
         response.raise_for_status()
         latency_ms = int((time.monotonic() - start) * 1000)
         data = response.json()
-        if tools and tool_choice and not _has_anthropic_tool_use(data):
-            # Model did not return tool_use despite tool_choice — fall through
-            # to text parsing instead of raising, so non-compliant models still work
-            pass
+        tool_call_received = _has_anthropic_tool_use(data)
         text = _extract_anthropic_text(data)
         usage = data.get("usage", {})
         return GenerateResult(
             text=text,
             provider=self.name,
             model=config.model,
+            tool_call_required=bool(tool_choice),
+            tool_call_received=tool_call_received,
+            tool_call_name=_anthropic_tool_name(data) or (tool_choice or {}).get("name", ""),
+            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text),
+            structured_failure_reason=(
+                "missing_tool_call" if tools and tool_choice and not tool_call_received else None
+            ),
             usage=self._usage(
                 model=config.model,
                 latency_ms=latency_ms,
@@ -304,12 +308,20 @@ class MiniMaxProvider(_BaseHttpProvider):
         data = response.json()
 
         # Extract text: prefer tool_use input, fall back to plain text
+        tool_call_received = _has_anthropic_tool_use(data)
         text = _extract_anthropic_text(data)
         usage = data.get("usage", {})
         return GenerateResult(
             text=text,
             provider=self.name,
             model=config.model,
+            tool_call_required=bool(tool_choice),
+            tool_call_received=tool_call_received,
+            tool_call_name=_anthropic_tool_name(data) or (tool_choice or {}).get("name", ""),
+            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text),
+            structured_failure_reason=(
+                "missing_tool_call" if tools and tool_choice and not tool_call_received else None
+            ),
             usage=self._usage(
                 model=config.model,
                 latency_ms=latency_ms,
@@ -329,7 +341,9 @@ def create_provider_from_env(provider_name: str):
         return OpenAIProvider()
     if normalized == "glm" and os.getenv("GLM_API_KEY"):
         return GLMProvider()
-    if normalized == "minimax":
+    if normalized == "minimax" and (
+        os.getenv("MINIMAX_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    ):
         return MiniMaxProvider()
     return None
 
@@ -406,16 +420,20 @@ def _generate_openai_compatible(
     latency_ms = int((time.monotonic() - start) * 1000)
     data = response.json()
     message = data.get("choices", [{}])[0].get("message", {})
-    if tools and tool_choice and not message.get("tool_calls"):
-        # Model did not return tool_calls despite tool_choice — fall through
-        # to text parsing instead of raising, so non-compliant models still work
-        pass
+    tool_call_received = bool(message.get("tool_calls"))
     text = message.get("content", "") or _extract_openai_tool_text(message)
     usage = data.get("usage", {})
     return GenerateResult(
         text=text,
         provider=provider.name,
         model=config.model,
+        tool_call_required=bool(tool_choice),
+        tool_call_received=tool_call_received,
+        tool_call_name=_openai_tool_name(message) or (tool_choice or {}).get("name", ""),
+        text_fallback_used=bool(tools and tool_choice and not tool_call_received and text),
+        structured_failure_reason=(
+            "missing_tool_call" if tools and tool_choice and not tool_call_received else None
+        ),
         usage=provider._usage(
             model=config.model,
             latency_ms=latency_ms,
@@ -439,6 +457,13 @@ def _has_anthropic_tool_use(data: dict[str, Any]) -> bool:
     return any(item.get("type") == "tool_use" for item in data.get("content", []))
 
 
+def _anthropic_tool_name(data: dict[str, Any]) -> str:
+    for item in data.get("content", []):
+        if item.get("type") == "tool_use":
+            return str(item.get("name", ""))
+    return ""
+
+
 def _extract_openai_tool_text(message: dict[str, Any]) -> str:
     calls = message.get("tool_calls") or []
     for call in calls:
@@ -446,4 +471,14 @@ def _extract_openai_tool_text(message: dict[str, Any]) -> str:
         arguments = function.get("arguments")
         if arguments:
             return str(arguments)
+    return ""
+
+
+def _openai_tool_name(message: dict[str, Any]) -> str:
+    calls = message.get("tool_calls") or []
+    for call in calls:
+        function = call.get("function") or {}
+        name = function.get("name")
+        if name:
+            return str(name)
     return ""

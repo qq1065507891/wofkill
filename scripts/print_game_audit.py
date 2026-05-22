@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,16 @@ def render_audit_report(game: dict[str, Any]) -> str:
         lines.append("```")
         lines.append("")
 
+    anomalies = _find_rule_order_anomalies(events)
+    if anomalies:
+        lines.append("## Rule-Order Anomalies")
+        lines.append("")
+        for anomaly in anomalies:
+            lines.append(
+                f"- Event {anomaly['event_index']}: {anomaly['kind']} - {anomaly['detail']}"
+            )
+        lines.append("")
+
     lines.append("## Player Model Outputs")
     lines.append("")
     lines.append(
@@ -143,6 +154,92 @@ def render_audit_report(game: dict[str, Any]) -> str:
         lines.append("_No player action traces found._")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _find_rule_order_anomalies(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    anomalies: list[dict[str, Any]] = []
+    dead_players: set[str] = set()
+    pending_hunter_shooter: str | None = None
+    public_speeches: list[tuple[str, str]] = []
+
+    for index, event in enumerate(events, start=1):
+        event_type = event.get("type", "?")
+        payload = event.get("payload") or {}
+
+        actor = _event_actor(event_type, payload)
+        if actor and actor in dead_players and event_type in {"wolf_discussion", "wolf_kill_selected"}:
+            anomalies.append({
+                "event_index": index,
+                "kind": "dead player wolf action",
+                "detail": f"{actor} acted in {event_type} after death",
+            })
+
+        if pending_hunter_shooter and event_type in {"wolf_discussion", "wolf_kill_selected"}:
+            anomalies.append({
+                "event_index": index,
+                "kind": "hunter_shot death after wolf action",
+                "detail": f"{event_type} occurred before {pending_hunter_shooter}'s hunter shot resolved",
+            })
+
+        if event_type == "speech":
+            speaker = str(payload.get("speaker") or payload.get("player_id") or "")
+            text = str(payload.get("text") or "")
+            if _unsupported_public_record_role_claim(text, public_speeches):
+                anomalies.append({
+                    "event_index": index,
+                    "kind": "unsupported public-record role claim",
+                    "detail": text,
+                })
+            if speaker and text:
+                public_speeches.append((speaker, text))
+
+        if event_type == "player_died":
+            player_id = str(payload.get("player_id") or "")
+            reason = str(payload.get("reason") or "")
+            if reason == "hunter_shot":
+                pending_hunter_shooter = None
+            if player_id:
+                dead_players.add(player_id)
+                if "hunter_shot" in (payload.get("triggered_skills") or []):
+                    pending_hunter_shooter = player_id
+
+    return anomalies
+
+
+def _event_actor(event_type: str, payload: dict[str, Any]) -> str:
+    if event_type == "wolf_discussion":
+        return str(payload.get("wolf_id") or payload.get("player_id") or "")
+    if event_type == "wolf_kill_selected":
+        return str(payload.get("killer_id") or payload.get("wolf_id") or payload.get("player_id") or "")
+    return ""
+
+
+_PUBLIC_RECORD_ROLE_CLAIM = re.compile(
+    r"(p\d{2}).{0,12}(?:声称自己是|说自己是|自称|认|跳)(狼人|预言家|女巫|猎人|白痴|村民|民).{0,16}公开记录"
+)
+
+_ROLE_MARKERS = {
+    "狼人": ("我是狼人", "认狼", "狼队视角", "我们狼队"),
+    "预言家": ("我是预言家", "我跳预言家", "认预言家", "悍跳预言家"),
+    "女巫": ("我是女巫", "我认女巫", "跳女巫"),
+    "猎人": ("我是猎人", "我认猎人", "跳猎人"),
+    "白痴": ("我是白痴", "我认白痴", "跳白痴"),
+    "村民": ("我是村民", "我是民", "我认民"),
+    "民": ("我是村民", "我是民", "我认民"),
+}
+
+
+def _unsupported_public_record_role_claim(text: str, public_speeches: list[tuple[str, str]]) -> bool:
+    for match in _PUBLIC_RECORD_ROLE_CLAIM.finditer(text):
+        player_id, role = match.group(1), match.group(2)
+        markers = _ROLE_MARKERS.get(role, (role,))
+        supported = any(
+            speaker == player_id and any(marker in speech for marker in markers)
+            for speaker, speech in public_speeches
+        )
+        if not supported:
+            return True
+    return False
 
 
 def _iter_action_traces(event: dict[str, Any]):
