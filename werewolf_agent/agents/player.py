@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from html import unescape
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -363,6 +365,13 @@ class PlayerAgent:
             data = json.loads(cleaned)
             return self._action_from_data(data)
         except json.JSONDecodeError as direct_error:
+            parameter_data = self._extract_parameter_tag_action(cleaned)
+            if parameter_data is not None:
+                action, parse_error = self._action_from_data(parameter_data)
+                if action is not None:
+                    return action, None
+                return None, parse_error
+
             candidates = self._extract_json_object_candidates(cleaned)
             if not candidates:
                 return None, f"No JSON object found in output"
@@ -382,6 +391,7 @@ class PlayerAgent:
             return None, first_error or f"JSON parse error: {direct_error}"
 
     def _action_from_data(self, data: Any) -> tuple[PlayerAction | None, str | None]:
+        data = self._normalize_action_data(data)
         try:
             return PlayerAction(**data), None
         except ValidationError as e:
@@ -392,6 +402,48 @@ class PlayerAgent:
                 except ValidationError:
                     pass
             return None, f"Schema validation error: {e}"
+
+    def _normalize_action_data(self, data: Any) -> Any:
+        """Normalize provider quirks before schema validation."""
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if isinstance(normalized.get("target_id"), str) and normalized["target_id"].strip().lower() in {
+            "",
+            "null",
+            "none",
+        }:
+            normalized["target_id"] = None
+        if "confidence" in normalized and isinstance(normalized["confidence"], str):
+            try:
+                normalized["confidence"] = float(normalized["confidence"].strip())
+            except ValueError:
+                pass
+        return normalized
+
+    def _extract_parameter_tag_action(self, text: str) -> dict[str, Any] | None:
+        """Extract MiniMax-style <parameter name="...">value</parameter> tool payloads."""
+        pairs = re.findall(
+            r"<parameter\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</parameter>",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not pairs:
+            return None
+
+        data: dict[str, Any] = {}
+        for key, raw_value in pairs:
+            value = unescape(raw_value.strip())
+            if value.lower() in {"null", "none"}:
+                data[key] = None
+            elif key == "confidence":
+                try:
+                    data[key] = float(value)
+                except ValueError:
+                    data[key] = value
+            else:
+                data[key] = value
+        return data if "action_type" in data else None
 
     def _extract_json_object_candidates(self, text: str) -> list[str]:
         """Extract balanced JSON object candidates from mixed model text."""
@@ -616,13 +668,69 @@ class PlayerAgent:
         speech = ""
         if safe_action == ActionType.SPEECH:
             speech = self._fallback_speech(context)
+        reason = self._fallback_reason(context, safe_action, safe_target)
 
         return FallbackAction(
             action_type=safe_action,
             target_id=safe_target,
             speech=speech,
-            reason="fallback: retries exhausted",
+            reason=reason,
         )
+
+    def _fallback_reason(
+        self,
+        context: AgentContext,
+        action_type: ActionType,
+        target_id: str | None,
+    ) -> str:
+        """Provide an audit-friendly fallback reason instead of an empty/default vote reason."""
+        if action_type in {ActionType.VOTE, ActionType.SHERIFF_VOTE} and target_id:
+            clues = self._context_clues(context)
+            if clues:
+                return f"fallback: 结构化输出失败，按当前可见线索优先选择{target_id}；依据：{clues}"
+            return f"fallback: 结构化输出失败，按合法候选顺序选择{target_id}，后续需要补充站边和排除理由"
+        if action_type in {
+            ActionType.WOLF_KILL,
+            ActionType.USE_POISON,
+            ActionType.CHECK_ALIGNMENT,
+            ActionType.CHOOSE_MASTER,
+            ActionType.HUNTER_SHOT,
+            ActionType.BADGE_TRANSFER,
+        } and target_id:
+            return f"fallback: 结构化输出失败，按当前合法目标选择{target_id}"
+        return "fallback: retries exhausted"
+
+    def _context_clues(self, context: AgentContext) -> str:
+        clues: list[str] = []
+        sheriff_id = context.visible_world_state.get("sheriff_id")
+        if sheriff_id:
+            clues.append(f"当前警长是{sheriff_id}")
+        for item in context.salience_items[:3]:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type") or item.get("event")
+            if item_type == "seer_claim":
+                speaker = item.get("speaker") or item.get("seer_id")
+                target = item.get("target") or item.get("target_id")
+                result = item.get("result") or item.get("alignment")
+                if speaker and target and result:
+                    clues.append(f"{speaker}报{target}为{result}")
+            elif item_type in {"player_died", "death"}:
+                player = item.get("player_id") or item.get("target_id")
+                reason = item.get("reason")
+                if player:
+                    clues.append(f"{player}死亡" + (f"({reason})" if reason else ""))
+            elif item_type == "vote_resolved":
+                exiled = item.get("exiled")
+                if exiled:
+                    clues.append(f"上一轮放逐{exiled}")
+        if context.recent_transcript:
+            last = context.recent_transcript[-1]
+            speaker = last.get("speaker")
+            text = str(last.get("text") or "").strip()
+            if speaker and text:
+                clues.append(f"{speaker}最近发言：{text[:24]}")
+        return "；".join(clues[:3])
 
     def _fallback_speech(self, context: AgentContext) -> str:
         target = context.legal_targets[0] if context.legal_targets else None
@@ -654,25 +762,35 @@ class PlayerAgent:
             ]
             return templates[salt % len(templates)]
         if target:
+            clues = self._context_clues(context)
+            if clues:
+                return (
+                    f"我这轮先把视角压到{target}身上。依据是{clues}，"
+                    f"我需要{target}正面回应自己的站边、票型和关键事件解释；"
+                    "如果回应仍然空泛，我会把投票优先放在这里。"
+                )
             templates = [
                 (
-                    "我是好人阵营。现在我优先质疑{target}，他的发言和站边需要给出更清楚解释。"
-                    "我会把票型、前后逻辑和他对关键事件的回应继续对上。"
+                    "我这轮先重点听{target}的解释。"
+                    "{target}需要交代站边、投票依据和不投其他人的理由；"
+                    "如果这些信息补不出来，我会把他作为优先投票对象。"
                 ),
                 (
-                    "我是好人阵营。{target}目前没有把自己的判断链说完整，"
-                    "这里容易成为狼队抗推或带票的位置，我倾向继续压他发言。"
+                    "我会先追问{target}的视角来源。"
+                    "{target}需要把怀疑对象、站边逻辑和票型判断讲清楚，"
+                    "否则这个位置容易成为今天的主要焦点。"
                 ),
                 (
-                    "我是好人阵营。今天我先盯{target}，重点看他对投票结果和前面发言矛盾的解释。"
-                    "如果解释不出来，我会把票往这个位置考虑。"
+                    "今天我先把{target}放进重点观察位。"
+                    "我需要听到他对关键发言和投票选择的正面解释，"
+                    "如果继续回避，我会考虑把票压过去。"
                 ),
             ]
             return templates[salt % len(templates)].format(target=target)
         templates = [
-            "我是好人阵营。今天我会重点看发言前后是否一致、投票是否跟逻辑匹配，不接受纯划水过麦。",
-            "我是好人阵营。现在信息还不够一锤定音，但每个人都要交代自己的站边和投票理由。",
-            "我是好人阵营。后续我会优先跟进票型变化和谁在回避关键问题，不能只靠情绪归票。",
+            "我这轮会重点看发言前后是否一致、投票是否跟逻辑匹配，不接受纯划水过麦。",
+            "现在信息还不够一锤定音，但每个人都要交代自己的站边和投票理由。",
+            "后续我会优先跟进票型变化和谁在回避关键问题，不能只靠情绪归票。",
         ]
         return templates[salt % len(templates)]
 

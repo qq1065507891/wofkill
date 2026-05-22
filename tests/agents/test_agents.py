@@ -729,6 +729,56 @@ class TestPlayerAgentRetryFallback:
         assert action.target_id == "p08"
         assert retry.attempt == 1
 
+    def test_minimax_parameter_tags_parse(self) -> None:
+        json_resp = (
+            '<minimax:tool_call>'
+            '<invoke name="submit_player_action">'
+            '<parameter name="action_type">vote</parameter>'
+            '<parameter name="target_id">p07</parameter>'
+            '<parameter name="speech"></parameter>'
+            '<parameter name="reason">p07发言回避关键问题</parameter>'
+            '<parameter name="confidence">0.71</parameter>'
+            '<parameter name="standing_with_seer">p08</parameter>'
+            '<parameter name="suspect_reason">p07没有回应查杀逻辑</parameter>'
+            '<parameter name="not_voting_reason">p08有查验信息，p06发言更自洽</parameter>'
+            '<parameter name="private_reason">综合查验和发言，投p07更合理</parameter>'
+            '</invoke>'
+            '</minimax:tool_call>'
+        )
+        agent = self._make_agent(json_resp)
+
+        action, retry = agent.act(self._make_context())
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p07"
+        assert action.reason == "p07发言回避关键问题"
+        assert action.confidence == 0.71
+        assert retry.attempt == 1
+
+    def test_string_null_target_normalizes_to_none(self) -> None:
+        json_resp = (
+            '{"action_type":"no_action","target_id":"null",'
+            '"speech":"我不上警，先听警上发言再判断。",'
+            '"reason":"当前信息不足，先观察警上格局","confidence":0.63}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SHERIFF_REGISTRATION,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+            legal_targets=[],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.target_id is None
+        assert retry.error_code is None
+
     def test_wolf_examples_use_valid_private_intent_goals(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
@@ -1508,7 +1558,59 @@ class TestMandatoryVote:
         assert action.trace.legal_actions == ["vote"]
         assert action.trace.legal_targets == ["p05"]
         assert action.trace.final_action_type == "vote"
-        assert action.trace.fallback_reason == "fallback: retries exhausted"
+        assert action.trace.fallback_reason is not None
+        assert action.trace.fallback_reason.startswith("fallback:")
+
+    def test_vote_fallback_has_audit_reason(self) -> None:
+        agent = self._make_agent("not json")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02", "p04"],
+            visible_world_state={"sheriff_id": "p09"},
+            salience_items=[
+                {"type": "seer_claim", "speaker": "p08", "target": "p02", "result": "werewolf"},
+            ],
+        )
+
+        action, _ = agent.act(ctx)
+
+        assert isinstance(action, FallbackAction)
+        assert action.target_id == "p02"
+        assert action.reason
+        assert action.reason != "fallback: retries exhausted"
+        assert "p02" in action.reason
+
+    def test_speech_fallback_uses_context_not_generic_good_template(self) -> None:
+        agent = self._make_agent("")
+        ctx = AgentContext(
+            agent_id="p06",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=3,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02"],
+            visible_world_state={"sheriff_id": "p09"},
+            salience_items=[
+                {"type": "player_died", "player_id": "p08", "reason": "wolf_kill"},
+                {"type": "vote_resolved", "exiled": "p01"},
+            ],
+            recent_transcript=[
+                {"speaker": "p09", "text": "我建议今天重点看p02的身份。"},
+            ],
+        )
+
+        action, _ = agent.act(ctx)
+
+        assert isinstance(action, FallbackAction)
+        assert action.speech
+        assert not action.speech.startswith("我是好人阵营。")
+        assert "p02" in action.speech
 
 
 class TestSpeechQualityAndWolfAssignments:
