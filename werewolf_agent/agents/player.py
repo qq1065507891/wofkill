@@ -93,6 +93,11 @@ class PlayerAgent:
     6. Fallback to safe action after max retries
     """
 
+    _MAX_JSON_CONTEXT_CHARS = 1800
+    _MAX_TRANSCRIPT_ITEMS = 4
+    _MAX_TRANSCRIPT_TEXT_CHARS = 220
+    _MAX_SALIENCE_ITEMS = 4
+
     def __init__(
         self,
         agent_id: str,
@@ -944,29 +949,85 @@ class PlayerAgent:
         parts: list[str] = []
 
         if context.public_summary:
-            parts.append(f"游戏概况:\n{context.public_summary}")
+            parts.append(f"游戏概况:\n{self._truncate_text(context.public_summary, self._MAX_JSON_CONTEXT_CHARS)}")
 
         if context.visible_world_state:
-            parts.append(f"可见状态: {json.dumps(context.visible_world_state, ensure_ascii=False)}")
+            parts.append(
+                "可见状态: "
+                + self._compact_json_for_prompt(context.visible_world_state, self._MAX_JSON_CONTEXT_CHARS)
+            )
 
         if context.salience_items:
-            parts.append(f"关键事件: {json.dumps(context.salience_items[:5], ensure_ascii=False)}")
+            parts.append(
+                "关键事件: "
+                + self._compact_json_for_prompt(
+                    context.salience_items[:self._MAX_SALIENCE_ITEMS],
+                    self._MAX_JSON_CONTEXT_CHARS,
+                )
+            )
 
         if context.strategy_directive:
-            parts.append(f"策略建议: {json.dumps(context.strategy_directive, ensure_ascii=False)}")
+            parts.append(
+                "策略建议: "
+                + self._compact_json_for_prompt(context.strategy_directive, self._MAX_JSON_CONTEXT_CHARS)
+            )
 
         if context.persona_snapshot:
-            parts.append(f"人格设定: {json.dumps(context.persona_snapshot, ensure_ascii=False)}")
+            parts.append(
+                "人格设定: "
+                + self._compact_json_for_prompt(context.persona_snapshot, self._MAX_JSON_CONTEXT_CHARS)
+            )
 
         if context.recent_transcript:
-            parts.append(f"近期发言:\n" + "\n".join(
-                f"  [{t.get('speaker', '?')}] {t.get('text', '')}"
-                for t in context.recent_transcript[-6:]
-            ))
+            parts.append("近期发言:\n" + self._format_recent_transcript(context.recent_transcript))
 
         if retry.correction_hint:
             parts.append(f"\n纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）: {retry.correction_hint}")
             parts.append(f"错误信息: {retry.error_message}")
 
-        parts.append("\n请输出你的行动JSON:")
+        parts.append(self._strict_output_contract(context))
         return "\n".join(parts)
+
+    def _compact_json_for_prompt(self, value: Any, max_chars: int) -> str:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return self._truncate_text(text, max_chars)
+
+    def _truncate_text(self, text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + f"...（已截断，原长度{len(text)}）"
+
+    def _format_recent_transcript(self, transcript: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for item in transcript[-self._MAX_TRANSCRIPT_ITEMS:]:
+            speaker = item.get("speaker", "?")
+            text = self._truncate_text(
+                str(item.get("text", "")),
+                self._MAX_TRANSCRIPT_TEXT_CHARS,
+            )
+            lines.append(f"  [{speaker}] {text}")
+        return "\n".join(lines)
+
+    def _strict_output_contract(self, context: AgentContext) -> str:
+        legal_actions = [action.value for action in context.legal_actions]
+        legal_targets = list(context.legal_targets)
+        lines = [
+            "",
+            "最终输出协议（必须遵守）：",
+            "1. 首选 submit_player_action 工具调用提交结构化参数。",
+            "2. 如果当前模型无法工具调用，只输出一个JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
+            "3. JSON必须以{开头、以}结尾，且只能有一个对象。",
+            "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
+            "5. 必填字段：action_type、target_id、speech、reason、confidence。",
+        ]
+        if legal_actions:
+            lines.append(f"6. action_type只能取：{legal_actions}。")
+        if legal_targets:
+            lines.append(f"7. target_id只能取这些玩家之一或null：{legal_targets}。")
+        if ActionType.VOTE in context.legal_actions:
+            lines.append(
+                "8. 投票还必须包含standing_with_seer、suspect_reason、"
+                "not_voting_reason、private_reason，不能写“未说明”。"
+            )
+        lines.append("现在提交行动。")
+        return "\n".join(lines)

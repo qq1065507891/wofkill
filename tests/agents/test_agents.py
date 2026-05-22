@@ -813,6 +813,52 @@ class TestPlayerAgentRetryFallback:
         assert "示例输出（投票场景）" not in prompt
         assert "示例输出（发言场景）" not in prompt
 
+    def test_action_prompt_ends_with_strict_output_contract(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02"],
+            recent_transcript=[{"speaker": "p02", "text": "我觉得p01可疑。"}],
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "最终输出协议" in prompt
+        assert "不要输出分析过程" in prompt
+        assert prompt.rstrip().endswith("现在提交行动。")
+
+    def test_action_prompt_trims_long_context_for_json_stability(self) -> None:
+        agent = self._make_agent("unused")
+        long_text = "甲" * 500
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            visible_world_state={"huge": "乙" * 3000},
+            salience_items=[{"type": "event", "idx": i, "detail": "丙" * 200} for i in range(8)],
+            recent_transcript=[
+                {"speaker": f"p{i:02d}", "text": long_text + str(i)}
+                for i in range(8)
+            ],
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "p00" not in prompt
+        assert "p03" not in prompt
+        assert "p04" in prompt
+        assert "p07" in prompt
+        assert long_text not in prompt
+        assert "已截断" in prompt
+        assert '"idx": 4' not in prompt
 
 # ---------------------------------------------------------------------------
 # Persona Router tests
