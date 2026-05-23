@@ -66,7 +66,7 @@ _EVIDENCE_PATTERNS = [
 # Stance indicators
 _STANCE_PATTERNS = [
     r"好人", r"我是.*?(?:好人|村民|预言家|女巫|猎人)",
-    r"狼人阵营", r"我站.*?边",
+    r"狼人阵营", r"我是p\d{2}视角", r"我站.*?边",
 ]
 
 _PEACE_NIGHT_WITCH_FALLACY_PATTERNS = [

@@ -1444,8 +1444,6 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         )
         print(f"  [投票结果] {_player_display(state, result.exiled_player_id)} 被放逐 (原因: {result.reason})")
     elif result.reason == "first_tie_pk":
-        print(f"  [投票结果] 首次平票，进入PK: {[_player_display(state, t) for t in (result.tied_player_ids or [])]}")
-    elif result.reason == "first_tie_pk":
         tied_names = "、".join(_player_display(state, t) for t in (result.tied_player_ids or []))
         gs, _ = _judge_broadcast(
             phase="vote_tie_pk",

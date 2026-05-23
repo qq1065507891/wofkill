@@ -176,10 +176,18 @@ class LocalContextBuilder:
         budget.remaining = max(0, budget.total_budget - budget.used)
 
         # Trim if over budget
-        if budget.remaining < 0:
+        if budget.used > budget.total_budget:
             salience_items, transcript = self._trim_to_budget(
                 salience_items, transcript, budget,
             )
+            budget.salience_tokens = self._estimate_tokens(json.dumps(salience_items, ensure_ascii=False))
+            budget.transcript_tokens = self._estimate_tokens(
+                "\n".join(t.get("text", "") for t in transcript)
+            )
+            if budget.used > budget.total_budget:
+                belief_dict = {}
+                budget.belief_tokens = self._estimate_tokens("{}")
+            budget.remaining = max(0, budget.total_budget - budget.used)
 
         context = AgentContext(
             agent_id=viewer_id,
@@ -319,7 +327,10 @@ class LocalContextBuilder:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Trim context to fit within budget, prioritizing salience over transcript."""
         # First trim transcript to 3 entries
-        transcript = transcript[-3:]
+        transcript = [
+            {**item, "text": str(item.get("text", ""))[:120]}
+            for item in transcript[-3:]
+        ]
         # Then trim salience to high-priority only
         salience_items = [s for s in salience_items if s.get("bucket") == "high"]
         return salience_items, transcript

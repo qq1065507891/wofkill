@@ -677,6 +677,30 @@ class TestPlayerAgentRetryFallback:
         assert action.reason
         assert retry.error_code is None
 
+    def test_werewolf_speech_intent_quality_does_not_force_good_stance(self) -> None:
+        json_resp = (
+            '{"intent":"question_target","target_id":"p05",'
+            '"speech":"我想追问p05，你昨天的站边和今天的投票目标没有对上。",'
+            '"reason":"继续给p05压力","confidence":0.62}'
+        )
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p04",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="werewolf",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p05"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert "我是好人视角" not in action.speech
+        assert "我是p04视角" in action.speech
+        assert retry.error_code is None
+
     def test_speech_tool_schema_omits_private_audit_fields(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
@@ -757,6 +781,37 @@ class TestPlayerAgentRetryFallback:
         assert retry.attempt == 2
         assert action.speech.startswith("我是好人阵营")
         assert "发言过于空洞" in provider.prompts[1]
+
+    def test_weak_sheriff_speech_retries_with_high_pressure_hint(self) -> None:
+        provider = _SequenceJsonProvider([
+            '{"action_type":"speech","target_id":null,"speech":"我竞选警长，大家听我发言。",'
+            '"reason":"争取警徽","confidence":0.5}',
+            '{"action_type":"speech","target_id":"p07",'
+            '"speech":"我是预言家视角。我怀疑p07，p07发言前后矛盾，且警徽流安排不合理。我倾向投p07，并会对比他的票型。",'
+            '"reason":"警上补充角色逻辑和攻击点","confidence":0.75}',
+        ])
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SHERIFF_SPEECH,
+            phase="sheriff_speech",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert provider.calls == 2
+        assert retry.attempt == 2
+        assert "警徽流" in action.speech
+        assert "在警上/PK阶段需要包含" in provider.prompts[1]
 
     def test_invalid_json_triggers_retry(self) -> None:
         agent = self._make_agent("not json at all")
@@ -1094,6 +1149,11 @@ class TestPlayerAgentRetryFallback:
         assert "B = p07" in prompt
         assert '"choice"' in prompt
         assert "不要直接编写target_id" in prompt
+        assert "必填字段：action_type、target_id、speech、reason、confidence" not in prompt
+        assert (
+            "最终输出字段：choice、reason、standing_with_seer、suspect_reason、"
+            "not_voting_reason、private_reason、confidence"
+        ) in prompt
 
     def test_target_action_prompt_uses_choice_schema(self) -> None:
         agent = self._make_agent("unused")
@@ -1114,6 +1174,8 @@ class TestPlayerAgentRetryFallback:
         assert "B = p06" in prompt
         assert '"choice"' in prompt
         assert "程序会把choice映射为target_id" in prompt
+        assert "必填字段：action_type、target_id、speech、reason、confidence" not in prompt
+        assert "最终输出字段：choice、reason、confidence" in prompt
 
     def test_speech_prompt_uses_intent_schema(self) -> None:
         agent = self._make_agent("unused")
@@ -1134,6 +1196,8 @@ class TestPlayerAgentRetryFallback:
         assert "stand_with_seer" in prompt
         assert '"intent"' in prompt
         assert '"speech"' in prompt
+        assert "必填字段：action_type、target_id、speech、reason、confidence" not in prompt
+        assert "最终输出字段：intent、target_id、speech、reason、confidence" in prompt
 
     def test_action_prompt_trims_long_context_for_json_stability(self) -> None:
         agent = self._make_agent("unused")

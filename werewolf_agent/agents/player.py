@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from enum import Enum
 from html import unescape
 from typing import Any, Protocol
 
@@ -31,6 +32,12 @@ from werewolf_agent.agents.schemas import (
 from werewolf_agent.model_gateway.router import ModelRouter
 
 logger = logging.getLogger(__name__)
+
+
+class OutputMode(str, Enum):
+    FULL_ACTION = "full_action"
+    TARGET_CHOICE = "target_choice"
+    SPEECH_INTENT = "speech_intent"
 
 
 class ActionValidator(Protocol):
@@ -259,14 +266,15 @@ class PlayerAgent:
             # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
             # the program maps that choice back into a legal PlayerAction.
             choice_data: dict[str, Any] | None = None
-            if self._uses_choice_pipeline(context):
+            output_mode = self._select_output_mode(context)
+            if output_mode == OutputMode.TARGET_CHOICE:
                 action, parse_error, choice_data = self._parse_choice_action(
                     result.text,
                     context,
                 )
                 if parse_error and action is None:
                     action, parse_error = self._parse_action(result.text)
-            elif self._uses_speech_intent_pipeline(context):
+            elif output_mode == OutputMode.SPEECH_INTENT:
                 action, parse_error = self._parse_action(result.text)
                 if parse_error and action is None:
                     action, parse_error, choice_data = self._parse_speech_intent_action(
@@ -507,6 +515,13 @@ class PlayerAgent:
             context.task_type in self._SPEECH_INTENT_TASKS
             and context.legal_actions == [ActionType.SPEECH]
         )
+
+    def _select_output_mode(self, context: AgentContext) -> OutputMode:
+        if self._uses_choice_pipeline(context):
+            return OutputMode.TARGET_CHOICE
+        if self._uses_speech_intent_pipeline(context):
+            return OutputMode.SPEECH_INTENT
+        return OutputMode.FULL_ACTION
 
     def _parse_choice_action(
         self,
@@ -837,8 +852,11 @@ class PlayerAgent:
     ) -> str:
         target = self._speech_pressure_target(intent, target_id, context)
         additions: list[str] = []
-        if not re.search(r"好人|我是.*?(?:村民|预言家|女巫|猎人)", speech):
-            additions.append("我是好人视角。")
+        if not re.search(r"好人|我是.*?(?:村民|预言家|女巫|猎人|p\d{2})", speech):
+            if context.own_role in {"werewolf", "hybrid"}:
+                additions.append(f"我是{context.agent_id}视角。")
+            else:
+                additions.append("我是好人视角。")
         if target and not re.search(r"(?:怀疑\s*p\d{2}|p\d{2}\s*有问题|投\s*p\d{2})", speech):
             additions.append(f"我怀疑{target}有问题。")
         if target and not re.search(r"(?:投|投票|归票|倾向).*?p\d{2}", speech):
@@ -1059,14 +1077,15 @@ class PlayerAgent:
         }
 
     def _speech_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:
-        if context.task_type != TaskType.SPEECH or action.action_type != ActionType.SPEECH:
+        quality_phase = self._speech_quality_phase(context.task_type)
+        if quality_phase is None or action.action_type != ActionType.SPEECH:
             return None
         try:
             from werewolf_agent.runtime.speech_quality import validate_public_speech
 
             result = validate_public_speech(
                 action.speech,
-                phase="day_discussion",
+                phase=quality_phase,
                 context={
                     "recent_transcript": list(context.recent_transcript),
                     "public_summary": context.public_summary,
@@ -1080,6 +1099,15 @@ class PlayerAgent:
         if result.get("valid"):
             return None
         return str(result.get("hint") or "发言质量不足，请补充立场、怀疑对象、投票倾向和依据。")
+
+    def _speech_quality_phase(self, task_type: TaskType) -> str | None:
+        phase_by_task = {
+            TaskType.SPEECH: "day_discussion",
+            TaskType.SHERIFF_SPEECH: "sheriff_speech",
+            TaskType.DEFENSE_SPEECH: "pk_speech",
+            TaskType.PK_SPEECH: "pk_speech",
+        }
+        return phase_by_task.get(task_type)
 
     def _all_legal_actions_require_target(self, context: AgentContext) -> bool:
         return bool(context.legal_actions) and all(
@@ -1418,12 +1446,13 @@ class PlayerAgent:
             parts.append(f"\n纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）: {retry.correction_hint}")
             parts.append(f"错误信息: {retry.error_message}")
 
-        if self._uses_choice_pipeline(context):
+        output_mode = self._select_output_mode(context)
+        if output_mode == OutputMode.TARGET_CHOICE:
             parts.append(self._format_choice_prompt(context))
-        elif self._uses_speech_intent_pipeline(context):
+        elif output_mode == OutputMode.SPEECH_INTENT:
             parts.append(self._format_speech_intent_prompt(context))
 
-        parts.append(self._strict_output_contract(context))
+        parts.append(self._strict_output_contract(context, output_mode))
         return "\n".join(parts)
 
     def _compact_json_for_prompt(self, value: Any, max_chars: int) -> str:
@@ -1446,9 +1475,45 @@ class PlayerAgent:
             lines.append(f"  [{speaker}] {text}")
         return "\n".join(lines)
 
-    def _strict_output_contract(self, context: AgentContext) -> str:
+    def _strict_output_contract(self, context: AgentContext, output_mode: OutputMode | None = None) -> str:
         legal_actions = [action.value for action in context.legal_actions]
         legal_targets = list(context.legal_targets)
+        output_mode = output_mode or self._select_output_mode(context)
+        if output_mode == OutputMode.TARGET_CHOICE:
+            output_fields = "choice、reason、confidence"
+            if context.legal_actions == [ActionType.VOTE]:
+                output_fields = (
+                    "choice、reason、standing_with_seer、suspect_reason、"
+                    "not_voting_reason、private_reason、confidence"
+                )
+            lines = [
+                "",
+                "最终输出协议（必须遵守）：",
+                "1. 只输出一个choice决策JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
+                "2. JSON必须以{开头、以}结尾，且只能有一个对象。",
+                f"3. 最终输出字段：{output_fields}。",
+                "4. choice只能取上方候选枚举中的字母，不要直接编写target_id。",
+            ]
+            if context.legal_actions == [ActionType.VOTE]:
+                lines.append(
+                    "5. 投票还必须包含standing_with_seer、suspect_reason、"
+                    "not_voting_reason、private_reason，不能写“未说明”。"
+                )
+            lines.append("现在提交行动。")
+            return "\n".join(lines)
+        if output_mode == OutputMode.SPEECH_INTENT:
+            lines = [
+                "",
+                "最终输出协议（必须遵守）：",
+                "1. 只输出一个发言意图JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
+                "2. JSON必须以{开头、以}结尾，且只能有一个对象。",
+                "3. 最终输出字段：intent、target_id、speech、reason、confidence。",
+                "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
+            ]
+            if legal_targets:
+                lines.append(f"5. target_id只能取这些玩家之一或null：{legal_targets}。")
+            lines.append("现在提交行动。")
+            return "\n".join(lines)
         lines = [
             "",
             "最终输出协议（必须遵守）：",

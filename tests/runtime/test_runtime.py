@@ -548,6 +548,32 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
     assert vote_event.payload["vote_weights"] == {"p01": 1.5, "p02": 1.0}
 
 
+def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="villager"),
+        "p03": PlayerState(id="p03", role="werewolf"),
+        "p04": PlayerState(id="p04", role="villager"),
+    }
+    gs = GameState(game_id="first_tie_pk", players=players, day_number=2)
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "exile_votes": {"p01": "p03", "p02": "p04"},
+        "revote": False,
+    })
+
+    broadcasts = [
+        event for event in result["game_state"].events
+        if event.type == "judge_broadcast" and event.payload.get("phase") == "vote_tie_pk"
+    ]
+    assert broadcasts
+    assert result["pk_candidates"] == ["p03", "p04"]
+
+
 def test_vote_action_trace_audit_exposes_structured_private_vote_thought_to_moderator_only(capsys) -> None:
     from werewolf_agent.runtime.graph import resolve_vote
     from werewolf_agent.runtime.public_ledger import build_public_ledger

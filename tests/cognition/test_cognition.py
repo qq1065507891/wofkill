@@ -893,6 +893,36 @@ class TestLocalContextBuilder:
         assert budget.used <= 4096
         assert budget.remaining >= 0
 
+    def test_over_budget_context_trims_salience_and_transcript(self):
+        builder = self._make_builder(budget=1000)
+        events = []
+        for idx in range(8):
+            events.append(GameEvent(
+                type="speech",
+                payload={
+                    "speaker": f"p{idx + 1:02d}",
+                    "text": "这是很长的发言内容" * 80,
+                    "phase": "speech",
+                    "day_number": 1,
+                },
+            ))
+        state = _make_state(events=events)
+
+        ctx, budget = builder.build(
+            game_state=state,
+            viewer_id="p05",
+            viewer_role="villager",
+            task_type=TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=[],
+            current_phase="speech",
+        )
+
+        assert budget.used <= budget.total_budget
+        assert len(ctx.recent_transcript) <= 3
+        assert all(item.get("bucket") == "high" for item in ctx.salience_items)
+        assert all(len(item.get("text", "")) <= 120 for item in ctx.recent_transcript)
+
     def test_context_no_moderator_full(self):
         builder = self._make_builder()
         state = _make_state()
