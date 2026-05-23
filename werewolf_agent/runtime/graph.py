@@ -622,6 +622,8 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
 
 def night_witch(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
+    if _find_role(gs, "witch") is None:
+        return {"game_state": gs, "use_antidote": False, "poison_target_id": None}
     gs, _ = _judge_broadcast(
         phase="witch_wake",
         message="女巫请睁眼",
@@ -692,6 +694,8 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
 
 def night_seer(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
+    if _find_role(gs, "seer") is None:
+        return {"game_state": gs, "seer_target_id": None}
     gs, _ = _judge_broadcast(
         phase="seer_wake",
         message="预言家请睁眼",

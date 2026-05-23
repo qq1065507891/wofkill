@@ -3388,6 +3388,61 @@ class TestJudgeControlsNightRoleSequence:
         phases = [b.payload.get("phase") for b in broadcasts]
         assert "enter_night" in phases
 
+    def test_night_witch_skips_when_witch_dead(self):
+        """Dead witch must not receive wake/choose/sleep broadcasts or actions."""
+        from werewolf_agent.runtime.graph import night_witch
+
+        gs = GameState(
+            game_id="dead_witch",
+            phase="night",
+            night_number=3,
+            players={
+                "witch": PlayerState(id="witch", role="witch", alive=False),
+                "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+                "villager": PlayerState(id="villager", role="villager", alive=True),
+            },
+        )
+
+        result = night_witch({"game_state": gs, "engine": _new_engine()})
+
+        phases = [
+            event.payload.get("phase")
+            for event in result["game_state"].events
+            if event.type == "judge_broadcast"
+        ]
+        assert "witch_wake" not in phases
+        assert "witch_choose" not in phases
+        assert "witch_sleep" not in phases
+        assert result["use_antidote"] is False
+        assert result["poison_target_id"] is None
+
+    def test_night_seer_skips_when_seer_dead(self):
+        """Dead seer must not receive wake/choose/sleep broadcasts or actions."""
+        from werewolf_agent.runtime.graph import night_seer
+
+        gs = GameState(
+            game_id="dead_seer",
+            phase="night",
+            night_number=3,
+            players={
+                "seer": PlayerState(id="seer", role="seer", alive=False),
+                "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+                "villager": PlayerState(id="villager", role="villager", alive=True),
+            },
+        )
+
+        result = night_seer({"game_state": gs, "engine": _new_engine()})
+
+        phases = [
+            event.payload.get("phase")
+            for event in result["game_state"].events
+            if event.type == "judge_broadcast"
+        ]
+        assert "seer_wake" not in phases
+        assert "seer_choose" not in phases
+        assert "seer_sleep" not in phases
+        assert result["seer_target_id"] is None
+
     def test_wolf_stages_have_broadcasts(self):
         """Wolf discussion and consensus emit judge broadcasts."""
         from werewolf_agent.runtime.graph import wolf_consensus, wolf_discussion
