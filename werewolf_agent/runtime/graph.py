@@ -411,6 +411,13 @@ def setup_game(state: RuntimeState) -> dict[str, Any]:
     if gs is None:
         gs = GameState(ruleset_id="pre_witch_hunter_idiot_mixed", game_id=uuid.uuid4().hex[:8])
     gs = replace(gs, phase="setup")
+    if not any(e.type == "judge_broadcast" and e.payload.get("phase") == "game_start" for e in gs.events):
+        gs, _ = _judge_broadcast(
+            phase="game_start",
+            message="游戏开始，请所有玩家确认身份，准备进入首夜",
+            gs=gs,
+            visibility="public",
+        )
     return {"game_state": gs, "engine": engine}
 
 
@@ -616,11 +623,18 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
 def night_witch(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     gs, _ = _judge_broadcast(
-        phase="witch_action",
+        phase="witch_wake",
         message="女巫请睁眼",
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
     )
+    gs, _ = _judge_broadcast(
+        phase="witch_choose",
+        message="女巫请选择是否使用解药或毒药",
+        gs=gs, night_number=gs.night_number,
+        visibility="witch_private",
+    )
+    state = {**state, "game_state": gs}
 
     # Try agent-driven decision first
     result = _dispatch_agent(
@@ -656,20 +670,39 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
             },
         )
         gs = replace(gs, events=gs.events + [audit])
+        gs, _ = _judge_broadcast(
+            phase="witch_sleep",
+            message="女巫请闭眼",
+            gs=gs, night_number=gs.night_number,
+            visibility="moderator_only",
+        )
         return {"game_state": gs, **result}
 
     # Scripted fallback
+    gs, _ = _judge_broadcast(
+        phase="witch_sleep",
+        message="女巫请闭眼",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
     return {"use_antidote": state.get("use_antidote", False),
-            "poison_target_id": state.get("poison_target_id")}
+            "poison_target_id": state.get("poison_target_id"),
+            "game_state": gs}
 
 
 def night_seer(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     gs, _ = _judge_broadcast(
-        phase="seer_action",
+        phase="seer_wake",
         message="预言家请睁眼",
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
+    )
+    gs, _ = _judge_broadcast(
+        phase="seer_choose",
+        message="预言家请选择你要查验的玩家",
+        gs=gs, night_number=gs.night_number,
+        visibility="seer_private",
     )
     state = {**state, "game_state": gs}
 
@@ -683,10 +716,10 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
         target = result.get("seer_target_id")
         if target:
             print(f"  [预言家] 查验目标: {_player_display(state, target)}")
-        return result
+        return {"game_state": gs, **result}
 
     # Scripted fallback
-    return {"seer_target_id": state.get("seer_target_id")}
+    return {"seer_target_id": state.get("seer_target_id"), "game_state": gs}
 
 
 def night_hunter_idiot_status(state: RuntimeState) -> dict[str, Any]:
@@ -736,10 +769,16 @@ def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
         return {}
 
     gs, _ = _judge_broadcast(
-        phase="hybrid_master_choice",
+        phase="hybrid_wake",
         message=f"混血儿{_player_display(state, hybrid_id)}请睁眼，选择你的主人",
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
+    )
+    gs, _ = _judge_broadcast(
+        phase="hybrid_choose",
+        message="混血儿请选择你的主人",
+        gs=gs, night_number=gs.night_number,
+        visibility="hybrid_private",
     )
     print(f"  [法官] 混血儿{_player_display(state, hybrid_id)}请睁眼，选择你的主人")
 
@@ -767,6 +806,12 @@ def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
         return {}
     gs, event = engine.choose_master(gs, hybrid_id=hybrid_id, master_id=master_target)
     gs = replace(gs, events=gs.events + [event])
+    gs, _ = _judge_broadcast(
+        phase="hybrid_sleep",
+        message="混血儿请闭眼",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
     master_role = gs.players[master_target].role if master_target in gs.players else "?"
     print(f"  [混血儿] {_player_display(state, hybrid_id)} 选择了 {_player_display(state, master_target)}({master_role}) 作为主人")
     return {"game_state": gs}
@@ -793,6 +838,10 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
     if events:
         gs = replace(gs, events=gs.events + events)
     # Log night resolution events
+    seer_woke = any(
+        event.type == "judge_broadcast" and event.payload.get("phase") == "seer_wake"
+        for event in gs.events
+    )
     for ev in events:
         if ev.type == "wolf_kill":
             target = ev.payload.get("player_id", "?")
@@ -806,9 +855,24 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
         elif ev.type == "seer_check":
             target = ev.payload.get("target_id", "?")
             alignment = ev.payload.get("alignment", "?")
+            gs, _ = _judge_broadcast(
+                phase="seer_result",
+                message=f"他的身份是{'好人' if alignment == 'good' else '狼人'}",
+                gs=gs,
+                night_number=gs.night_number,
+                visibility="seer_private",
+            )
             print(f"  [夜晚结算] 预言家查验 {_player_display(state, target)}: {'好人' if alignment == 'good' else '狼人'}")
         elif ev.type == "no_death":
             print(f"  [夜晚结算] 平安夜，无人死亡")
+    if seer_woke:
+        gs, _ = _judge_broadcast(
+            phase="seer_sleep",
+            message="预言家请闭眼",
+            gs=gs,
+            night_number=gs.night_number,
+            visibility="moderator_only",
+        )
     return {"game_state": gs}
 
 
@@ -2050,14 +2114,26 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
     """Run multi-round private wolf strategy and produce a team plan."""
     gs: GameState = state["game_state"]
     gs, _ = _judge_broadcast(
+        phase="wolf_wake",
+        message="狼人请睁眼",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
+    gs, _ = _judge_broadcast(
         phase="wolf_discussion_start",
-        message="狼人请睁眼，开始密谈",
+        message="狼人开始讨论今晚的行动",
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
     )
     registry = state.get("agent_registry")
 
     if not registry:
+        gs, _ = _judge_broadcast(
+            phase="wolf_discussion_end",
+            message="狼人讨论完毕",
+            gs=gs, night_number=gs.night_number,
+            visibility="moderator_only",
+        )
         gs = replace(gs, events=gs.events + [GameEvent(type="wolf_discussion", payload={})])
         return {"game_state": gs}
 
@@ -2152,6 +2228,12 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         payload={**plan, "visibility": "werewolf_team_only"},
     ))
     gs = replace(gs, events=gs.events + events[-1:])  # Add plan event
+    gs, _ = _judge_broadcast(
+        phase="wolf_discussion_end",
+        message="狼人讨论完毕",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
     return {"game_state": gs, "wolf_team_plan": plan}
 
 
@@ -2159,8 +2241,8 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     """Determine wolf night action, preferring the private team plan."""
     gs: GameState = state["game_state"]
     gs, _ = _judge_broadcast(
-        phase="wolf_consensus",
-        message="狼人请统一刀人",
+        phase="wolf_kill_choice",
+        message="狼人请统一选择今晚的行动",
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
     )
@@ -2168,8 +2250,18 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     _timeout_contract = AGENT_TIMEOUTS.wolf_consensus
     planned = _planned_wolf_kill(state)
     if planned is not None and not state.get("wolf_action"):
-        return planned
-    return _legacy_wolf_consensus(state)
+        result = planned
+    else:
+        result = _legacy_wolf_consensus(state)
+    result_gs = result.get("game_state", gs)
+    result_gs, _ = _judge_broadcast(
+        phase="wolf_sleep",
+        message="狼人请闭眼",
+        gs=result_gs,
+        night_number=result_gs.night_number,
+        visibility="moderator_only",
+    )
+    return {**result, "game_state": result_gs}
 
 
 def sheriff_speech(state: RuntimeState) -> dict[str, Any]:

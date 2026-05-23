@@ -225,7 +225,10 @@ def print_quality_audit(runner: GameRunner) -> None:
     # Judge broadcasts
     broadcasts = [e for e in gs.events if e.type == "judge_broadcast"]
     phases = {e.payload.get("phase") for e in broadcasts}
-    expected = {"enter_night", "day_announce", "wolf_discussion_start", "seer_action", "witch_action", "vote_start"}
+    expected = {
+        "enter_night", "day_announce", "wolf_discussion_start",
+        "wolf_kill_choice", "seer_wake", "witch_wake", "vote_start",
+    }
     missing_broadcasts = expected - phases
     print(f"  Judge broadcasts:    {len(broadcasts)} ({len(phases)} unique phases)")
     if missing_broadcasts:

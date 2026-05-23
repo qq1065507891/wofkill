@@ -120,10 +120,10 @@ class TestJudgePhaseBroadcasts:
         """Create a game state with judge broadcast events."""
         events = [
             GameEvent(type="judge_broadcast", payload={"phase": "enter_night", "message": "天黑请闭眼", "night_number": 1}),
-            GameEvent(type="judge_broadcast", payload={"phase": "wolf_discussion", "message": "狼人请睁眼", "night_number": 1}),
-            GameEvent(type="judge_broadcast", payload={"phase": "wolf_consensus", "message": "狼人请统一刀人", "night_number": 1}),
-            GameEvent(type="judge_broadcast", payload={"phase": "seer_action", "message": "预言家请睁眼", "night_number": 1}),
-            GameEvent(type="judge_broadcast", payload={"phase": "witch_action", "message": "女巫请睁眼", "night_number": 1}),
+            GameEvent(type="judge_broadcast", payload={"phase": "wolf_discussion_start", "message": "狼人请睁眼", "night_number": 1}),
+            GameEvent(type="judge_broadcast", payload={"phase": "wolf_kill_choice", "message": "狼人请统一刀人", "night_number": 1}),
+            GameEvent(type="judge_broadcast", payload={"phase": "seer_wake", "message": "预言家请睁眼", "night_number": 1}),
+            GameEvent(type="judge_broadcast", payload={"phase": "witch_wake", "message": "女巫请睁眼", "night_number": 1}),
             GameEvent(type="judge_broadcast", payload={"phase": "day_announce", "message": "天亮了", "day_number": 1}),
             GameEvent(type="judge_broadcast", payload={"phase": "sheriff_election", "message": "开始选警"}),
             GameEvent(type="judge_broadcast", payload={"phase": "speech_order", "message": "发言顺序确定"}),
@@ -136,8 +136,8 @@ class TestJudgePhaseBroadcasts:
         gs = self._make_gs_with_broadcasts()
         broadcasts = [e for e in gs.events if e.type == "judge_broadcast"]
         phases = {e.payload["phase"] for e in broadcasts}
-        expected = {"enter_night", "wolf_discussion", "wolf_consensus", "seer_action",
-                    "witch_action", "day_announce", "sheriff_election", "speech_order",
+        expected = {"enter_night", "wolf_discussion_start", "wolf_kill_choice", "seer_wake",
+                    "witch_wake", "day_announce", "sheriff_election", "speech_order",
                     "vote", "exile"}
         assert expected.issubset(phases)
 
