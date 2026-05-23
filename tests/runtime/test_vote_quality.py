@@ -4,6 +4,7 @@ import pytest
 from werewolf_agent.runtime.vote_quality import (
     extract_vote_basis,
     validate_vote_reason,
+    validate_structured_vote_action,
     build_day_discussion_summary,
     build_vote_pressure_context,
 )
@@ -78,6 +79,45 @@ class TestVoteBasisValidator:
         }
         result = validate_vote_reason(action, context={"has_contradictions": True})
         assert result["valid"] is True
+
+    def test_structured_vote_rejects_unexplained_fields(self):
+        action = {
+            "action_type": "vote",
+            "target_id": "p03",
+            "reason": "未说明",
+            "speech": "",
+            "seer_stance": "undecided",
+            "vote_basis": "fallback",
+            "standing_with_seer": "",
+            "suspect_reason": "未说明",
+            "not_voting_reason": "未说明",
+            "private_reason": "未说明",
+        }
+
+        result = validate_structured_vote_action(action)
+
+        assert result["valid"] is False
+        assert result["error_code"] == "vote_quality"
+        assert "投票理由" in result["hint"]
+
+    def test_structured_vote_accepts_seer_stance_and_vote_basis(self):
+        action = {
+            "action_type": "vote",
+            "target_id": "p07",
+            "reason": "p08查杀p07，p07没有回应核心问题",
+            "speech": "",
+            "seer_stance": "trust",
+            "vote_basis": "seer_check",
+            "standing_with_seer": "p08",
+            "suspect_reason": "p07被p08查杀后没有回应查杀逻辑",
+            "not_voting_reason": "p06发言虽弱，但没有查验压力",
+            "private_reason": "我更信p08的预言家线，所以投p07。",
+        }
+
+        result = validate_structured_vote_action(action)
+
+        assert result["valid"] is True
+        assert result["detected_bases"] == ["seer_check"]
 
 
 class TestExtractVoteBasis:

@@ -374,6 +374,50 @@ class TestPKRevoteRestrictsTargets:
         assert "p03" not in captured_context.legal_targets
         assert "p07" in captured_context.legal_targets
 
+    def test_agent_day_vote_requires_structured_vote_quality(self):
+        """Real day vote context must require seer stance, vote basis, and concrete reasons."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+        from werewolf_agent.agents.schemas import PlayerAction, ActionType, RetryInfo
+
+        gs = _make_gs_with_tie()
+        engine = RuleEngine.from_yaml(RULESET_PATH)
+        captured_context = None
+
+        class Agent:
+            def act(self, context):
+                nonlocal captured_context
+                captured_context = context
+                return PlayerAction(
+                    action_type=ActionType.VOTE,
+                    target_id="p03",
+                    reason="p03发言前后矛盾",
+                    seer_stance="undecided",
+                    vote_basis="speech_logic",
+                    suspect_reason="p03发言前后矛盾",
+                    not_voting_reason="p07暂时没有同等强的矛盾点",
+                    private_reason="我暂不站边预言家，先按发言矛盾投p03。",
+                ), RetryInfo()
+
+        class Registry:
+            def get_agent(self, player_id):
+                return Agent()
+
+        agent_day_vote(
+            {"game_state": gs},
+            engine,
+            Registry(),
+            "p01",
+        )
+
+        assert captured_context is not None
+        assert captured_context.strategy_directive["require_vote_quality"] is True
+        assert captured_context.strategy_directive["vote_structured_contract"]["seer_stance"] == [
+            "trust",
+            "distrust",
+            "undecided",
+            "no_claim",
+        ]
+
     def test_agent_day_vote_revote_restricts_targets_to_pk_candidates(self):
         """When revote=True and pk_candidates set, agent_day_vote only offers pk candidates."""
         from werewolf_agent.runtime.agent_adapter import agent_day_vote

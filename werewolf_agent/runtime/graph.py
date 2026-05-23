@@ -1670,22 +1670,9 @@ def exile_last_words(state: RuntimeState) -> dict[str, Any]:
 
 
 def post_exile_skills(state: RuntimeState) -> dict[str, Any]:
-    engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
-    # Check if hunter died and can shoot
-    for death in gs.deaths:
-        if death.player_id in gs.players:
-            player = gs.players[death.player_id]
-            if player.role == "hunter" and not player.alive:
-                if engine.can_hunter_shoot(gs, hunter_id=death.player_id, death_reason=death.reason):
-                    target = state.get("hunter_shot_target_id")
-                    if target:
-                        shot_death = Death(
-                            player_id=target, reason="hunter_shot",
-                            timing="post_exile", resolution_batch=death.resolution_batch,
-                            source_player_id=death.player_id,
-                        )
-                        gs = engine.apply_death(gs, shot_death)
+    # Skill effects are resolved by their dedicated nodes so broadcasts,
+    # agent choices, and audit events cannot be skipped.
     return {"game_state": gs}
 
 
@@ -1710,7 +1697,18 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         if already_shot:
             continue
 
-        # Get target: scripted, then agent
+        gs, _ = _judge_broadcast(
+            phase="hunter_shot_prompt",
+            message=f"猎人{_player_display(state, death.player_id)}发动技能，请选择是否开枪",
+            gs=gs,
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+            visibility="public",
+            extra_payload={"hunter_id": death.player_id},
+        )
+        print(f"  [猎人开枪] 请{_player_display(state, death.player_id)}选择是否开枪")
+
+        # Get target: scripted, then agent, then explicit last-words declaration.
         target = state.get("hunter_shot_target_id")
         if target is None:
             target = _dispatch_agent(
@@ -1721,13 +1719,46 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
             )
         if target is None:
             target = _hunter_shot_target_from_last_words(gs, death.player_id)
-        if target:
+        if target and target in gs.players and gs.players[target].alive and target != death.player_id:
+            gs, _ = _judge_broadcast(
+                phase="hunter_shot_choice",
+                message=f"猎人{_player_display(state, death.player_id)}选择带走{_player_display(state, target)}",
+                gs=gs,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+                visibility="public",
+                extra_payload={"hunter_id": death.player_id, "target_id": target},
+            )
+            print(
+                f"  [猎人开枪] {_player_display(state, death.player_id)} "
+                f"选择带走{_player_display(state, target)}"
+            )
             shot_death = Death(
                 player_id=target, reason="hunter_shot",
                 timing=death.timing, resolution_batch=death.resolution_batch,
                 source_player_id=death.player_id,
             )
             gs = engine.apply_death(gs, shot_death)
+        else:
+            gs, _ = _judge_broadcast(
+                phase="hunter_shot_decline",
+                message=f"猎人{_player_display(state, death.player_id)}选择不开枪",
+                gs=gs,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+                visibility="public",
+                extra_payload={"hunter_id": death.player_id},
+            )
+            print(f"  [猎人开枪] {_player_display(state, death.player_id)} 选择不开枪")
+            gs = replace(gs, events=gs.events + [GameEvent(
+                type="hunter_shot_declined",
+                payload={
+                    "hunter_id": death.player_id,
+                    "day_number": gs.day_number,
+                    "night_number": gs.night_number,
+                    "resolution_batch": death.resolution_batch,
+                },
+            )])
         break
 
     return {"game_state": gs}

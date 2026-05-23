@@ -11,14 +11,27 @@ import hashlib
 import re
 import random
 from typing import Any
+from enum import Enum
 
 from werewolf_agent.core.models import GameState
+
+VOTE_BASIS_VALUES = {
+    "seer_check",
+    "seer_siding",
+    "speech_logic",
+    "vote_pattern",
+    "pressure_test",
+    "anti_herd",
+    "fallback",
+}
+SEER_STANCE_VALUES = {"trust", "distrust", "undecided", "no_claim"}
+_UNEXPLAINED_VALUES = {"", "未说明", "无", "没有", "none", "null", "n/a"}
 
 
 # Basis detection patterns (Chinese)
 _BASIS_PATTERNS: list[tuple[str, list[str]]] = [
     ("seer_check", [
-        r"查杀", r"验[了过]?", r"查验", r"预言家.*?(?:查|验)",
+        r"查杀", r"验[了过]?", r"查验", r"预言家.*?(?:查|验)", r"报.*?为",
         r"(?:是|为)狼", r"金水",
     ]),
     ("counterclaim", [
@@ -101,6 +114,89 @@ def validate_vote_reason(
             "立场变化、PK发言、或之前发言引用。"
         ),
     }
+
+
+def normalize_vote_basis(detected_bases: list[str]) -> str:
+    """Map text evidence detectors to the public vote-basis enum."""
+    for basis in detected_bases:
+        if basis == "seer_check":
+            return "seer_check"
+        if basis in {"counterclaim", "badge_flow"}:
+            return "seer_siding"
+        if basis == "vote_tally":
+            return "vote_pattern"
+        if basis == "pk_speech":
+            return "pressure_test"
+        if basis in {"contradiction", "stance_reversal", "speech_quote"}:
+            return "speech_logic"
+    return "fallback"
+
+
+def validate_structured_vote_action(
+    action: dict[str, Any],
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate the full structured vote contract used in real games."""
+    required_reason_fields = [
+        ("reason", "投票理由"),
+        ("suspect_reason", "怀疑理由"),
+        ("not_voting_reason", "排除理由"),
+        ("private_reason", "内心理由"),
+    ]
+    for field_name, label in required_reason_fields:
+        value = str(action.get(field_name) or "").strip().lower()
+        if value in _UNEXPLAINED_VALUES:
+            return {
+                "valid": False,
+                "error_code": "vote_quality",
+                "missing_field": field_name,
+                "detected_bases": [],
+                "hint": f"{label}不能为未说明；必须给出具体玩家、事件或逻辑依据。",
+            }
+
+    seer_stance = _string_value(action.get("seer_stance"))
+    if seer_stance not in SEER_STANCE_VALUES:
+        return {
+            "valid": False,
+            "error_code": "vote_quality",
+            "missing_field": "seer_stance",
+            "detected_bases": [],
+            "hint": "seer_stance必须是trust、distrust、undecided、no_claim之一。",
+        }
+
+    vote_basis = _string_value(action.get("vote_basis"))
+    if vote_basis not in VOTE_BASIS_VALUES:
+        return {
+            "valid": False,
+            "error_code": "vote_quality",
+            "missing_field": "vote_basis",
+            "detected_bases": [],
+            "hint": (
+                "vote_basis必须是seer_check、seer_siding、speech_logic、"
+                "vote_pattern、pressure_test、anti_herd、fallback之一。"
+            ),
+        }
+
+    reason_result = validate_vote_reason(action, context)
+    if not reason_result["valid"] and vote_basis == "fallback":
+        return {
+            **reason_result,
+            "error_code": "vote_quality",
+        }
+
+    return {
+        "valid": True,
+        "error_code": None,
+        "missing_field": None,
+        "detected_bases": reason_result["detected_bases"],
+        "hint": "",
+    }
+
+
+def _string_value(value: Any) -> str:
+    if isinstance(value, Enum):
+        return str(value.value).strip()
+    return str(value or "").strip()
 
 
 def build_day_discussion_summary(

@@ -1431,8 +1431,12 @@ class TestHunterShotTiming:
         )
 
     def test_hunter_exiled_can_shoot_in_post_exile(self) -> None:
-        """Hunter killed by exile must be able to shoot in post_exile_skills."""
-        from werewolf_agent.runtime.graph import post_exile_skills
+        """Hunter killed by exile must route to resolve_hunter_shot before victory."""
+        from werewolf_agent.runtime.graph import (
+            post_exile_skills,
+            resolve_hunter_shot,
+            route_after_post_exile,
+        )
         engine = _new_engine()
         players = {
             "w1": PlayerState(id="w1", role="werewolf"),
@@ -1455,12 +1459,19 @@ class TestHunterShotTiming:
             "hunter_shot_target_id": "v1",
         })
 
-        # v1 should be dead from hunter shot
-        assert result["game_state"].players["v1"].alive is False, (
-            "Hunter shot target should be dead after post_exile_skills"
-        )
-        shot_deaths = [d for d in result["game_state"].deaths if d.reason == "hunter_shot"]
-        assert len(shot_deaths) >= 1, "hunter_shot death should be recorded"
+        pending_state = result["game_state"]
+        assert pending_state.players["v1"].alive is True
+        assert route_after_post_exile({"game_state": pending_state, "engine": engine}) == "resolve_hunter_shot"
+
+        shot_result = resolve_hunter_shot({
+            "game_state": pending_state,
+            "engine": engine,
+            "hunter_shot_target_id": "v1",
+        })
+
+        assert shot_result["game_state"].players["v1"].alive is False
+        shot_deaths = [d for d in shot_result["game_state"].deaths if d.reason == "hunter_shot"]
+        assert len(shot_deaths) == 1, "hunter_shot death should be recorded"
 
     def test_hunter_poisoned_cannot_shoot(self) -> None:
         """Hunter killed by witch poison must NOT be able to shoot."""
@@ -1553,6 +1564,40 @@ class TestHunterShotOrdering:
 
         assert route_after_post_exile({"game_state": gs, "engine": engine}) == "resolve_hunter_shot"
 
+    def test_post_exile_skills_does_not_resolve_scripted_hunter_shot_silently(self) -> None:
+        from werewolf_agent.runtime.graph import post_exile_skills
+
+        engine = _new_engine()
+        hunter_death = Death(
+            player_id="hunter",
+            reason="exile",
+            timing="day_vote",
+            resolution_batch="day_4_vote",
+            triggered_skills=["hunter_shot"],
+        )
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "villager": PlayerState(id="villager", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="hunter_post_exile_pending",
+            players=players,
+            deaths=[hunter_death],
+            day_number=4,
+            phase="day",
+        )
+
+        result = post_exile_skills({
+            "game_state": gs,
+            "engine": engine,
+            "hunter_shot_target_id": "wolf",
+        })
+
+        new_state = result["game_state"]
+        assert new_state.players["wolf"].alive is True
+        assert route_after_post_exile({"game_state": new_state, "engine": engine}) == "resolve_hunter_shot"
+
     def test_daytime_hunter_shot_returns_to_victory_check_not_night_announcement(self) -> None:
         engine = _new_engine()
         players = {
@@ -1632,6 +1677,50 @@ class TestHunterShotOrdering:
         assert len(shot_deaths) == 1
         assert shot_deaths[0].player_id == "wolf"
         assert shot_deaths[0].source_player_id == "hunter"
+
+    def test_resolve_hunter_shot_records_decline_when_no_target(self) -> None:
+        from werewolf_agent.runtime.graph import resolve_hunter_shot
+
+        engine = _new_engine()
+        hunter_death = Death(
+            player_id="hunter",
+            reason="exile",
+            timing="day_vote",
+            resolution_batch="day_3_vote",
+            triggered_skills=["hunter_shot"],
+        )
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "villager": PlayerState(id="villager", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="hunter_declines_shot",
+            players=players,
+            deaths=[hunter_death],
+            day_number=3,
+            phase="day",
+        )
+
+        result = resolve_hunter_shot({
+            "game_state": gs,
+            "engine": engine,
+            "agent_registry": _HunterMockRegistry(shot_target=None),
+            "hunter_shot_target_id": None,
+        })
+
+        new_state = result["game_state"]
+        assert new_state.players["wolf"].alive is True
+        assert any(
+            event.type == "judge_broadcast"
+            and event.payload.get("phase") == "hunter_shot_prompt"
+            for event in new_state.events
+        )
+        assert any(
+            event.type == "hunter_shot_declined"
+            and event.payload["hunter_id"] == "hunter"
+            for event in new_state.events
+        )
 
 
 # ---------------------------------------------------------------------------

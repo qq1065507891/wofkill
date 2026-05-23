@@ -35,6 +35,23 @@ class ActionType(str, Enum):
     SPEECH = "speech"
 
 
+class SeerStance(str, Enum):
+    TRUST = "trust"
+    DISTRUST = "distrust"
+    UNDECIDED = "undecided"
+    NO_CLAIM = "no_claim"
+
+
+class VoteBasis(str, Enum):
+    SEER_CHECK = "seer_check"
+    SEER_SIDING = "seer_siding"
+    SPEECH_LOGIC = "speech_logic"
+    VOTE_PATTERN = "vote_pattern"
+    PRESSURE_TEST = "pressure_test"
+    ANTI_HERD = "anti_herd"
+    FALLBACK = "fallback"
+
+
 class TaskType(str, Enum):
     SPEECH = "speech"
     VOTE = "vote"
@@ -123,6 +140,14 @@ class PlayerAction(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Confidence in this action"
     )
     private_intent: PrivateIntent | None = None
+    seer_stance: SeerStance = Field(
+        default=SeerStance.UNDECIDED,
+        description="Vote audit enum: trust, distrust, undecided, or no_claim.",
+    )
+    vote_basis: VoteBasis = Field(
+        default=VoteBasis.FALLBACK,
+        description="Vote audit enum: primary structured basis for this vote.",
+    )
     standing_with_seer: str = Field(
         default="", description="Private vote audit: seer or logic line the agent stands with"
     )

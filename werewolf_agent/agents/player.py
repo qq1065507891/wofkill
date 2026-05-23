@@ -27,7 +27,9 @@ from werewolf_agent.agents.schemas import (
     PrivateIntent,
     RetryInfo,
     RiskFlag,
+    SeerStance,
     TaskType,
+    VoteBasis,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
 
@@ -325,6 +327,16 @@ class PlayerAgent:
                     correction_hint=speech_quality_error,
                 )
                 continue
+            vote_quality_error = self._vote_quality_error(context, action)
+            if vote_quality_error:
+                retry = RetryInfo(
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    error_code="vote_quality",
+                    error_message=vote_quality_error,
+                    correction_hint=vote_quality_error,
+                )
+                continue
 
             # Private intent is stored but never written to public timeline
             trace = self._build_action_trace(
@@ -547,6 +559,8 @@ class PlayerAgent:
             speech="",
             reason=repaired["reason"],
             confidence=repaired["confidence"],
+            seer_stance=repaired.get("seer_stance", SeerStance.UNDECIDED.value),
+            vote_basis=repaired.get("vote_basis", VoteBasis.FALLBACK.value),
             standing_with_seer=repaired.get("standing_with_seer", ""),
             suspect_reason=repaired.get("suspect_reason", ""),
             not_voting_reason=repaired.get("not_voting_reason", ""),
@@ -622,6 +636,18 @@ class PlayerAgent:
         private_reason = self._clean_reason(data.get("private_reason")) or (
             f"结构化投票修复：在合法候选中选择{target_id}。依据：{reason}"
         )
+        vote_basis = self._clean_enum_value(
+            data.get("vote_basis"),
+            {basis.value for basis in VoteBasis},
+        )
+        if vote_basis is None:
+            vote_basis = self._infer_vote_basis(reason, suspect_reason, private_reason)
+        seer_stance = self._clean_enum_value(
+            data.get("seer_stance"),
+            {stance.value for stance in SeerStance},
+        )
+        if seer_stance is None:
+            seer_stance = self._infer_seer_stance(context, standing)
         confidence = data.get("confidence", 0.5)
         try:
             confidence = float(confidence)
@@ -633,6 +659,8 @@ class PlayerAgent:
             "choice": self._choice_for_target(choice_map, target_id),
             "target_id": target_id,
             "reason": reason,
+            "seer_stance": seer_stance,
+            "vote_basis": vote_basis,
             "standing_with_seer": standing,
             "suspect_reason": suspect_reason,
             "not_voting_reason": not_voting,
@@ -895,6 +923,36 @@ class PlayerAgent:
                 return str(speaker)
         return ""
 
+    def _infer_seer_stance(self, context: AgentContext, standing_with_seer: str) -> str:
+        if standing_with_seer:
+            return SeerStance.TRUST.value
+        for item in context.salience_items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type") or item.get("event")
+            if item_type == "seer_claim":
+                return SeerStance.UNDECIDED.value
+        return SeerStance.NO_CLAIM.value
+
+    def _infer_vote_basis(self, *texts: str) -> str:
+        try:
+            from werewolf_agent.runtime.vote_quality import (
+                extract_vote_basis,
+                normalize_vote_basis,
+            )
+
+            detected = extract_vote_basis(" ".join(text for text in texts if text))
+            return normalize_vote_basis(detected)
+        except Exception:
+            logger.debug("Vote basis inference failed", exc_info=True)
+            return VoteBasis.FALLBACK.value
+
+    def _clean_enum_value(self, value: Any, allowed: set[str]) -> str | None:
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned if cleaned in allowed else None
+
     def _default_not_voting_reason(self, context: AgentContext, target_id: str) -> str:
         others = [target for target in context.legal_targets if target != target_id]
         if not others:
@@ -1045,6 +1103,16 @@ class PlayerAgent:
                 },
                 "required": ["true_role", "faction_goal", "claimed_view"],
             }
+        required = ["action_type", "target_id", "speech", "reason", "confidence"]
+        if context.task_type == TaskType.VOTE:
+            required.extend([
+                "seer_stance",
+                "vote_basis",
+                "standing_with_seer",
+                "suspect_reason",
+                "not_voting_reason",
+                "private_reason",
+            ])
         return {
             "name": "submit_player_action",
             "description": "Submit exactly one legal Werewolf player action.",
@@ -1052,12 +1120,22 @@ class PlayerAgent:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": properties,
-                "required": ["action_type", "target_id", "speech", "reason", "confidence"],
+                "required": required,
             },
         }
 
     def _vote_audit_tool_properties(self) -> dict[str, Any]:
         return {
+            "seer_stance": {
+                "type": "string",
+                "enum": [stance.value for stance in SeerStance],
+                "description": "Vote stance enum about seer logic: trust, distrust, undecided, or no_claim.",
+            },
+            "vote_basis": {
+                "type": "string",
+                "enum": [basis.value for basis in VoteBasis],
+                "description": "Primary vote basis enum.",
+            },
             "standing_with_seer": {
                 "type": "string",
                 "description": "Private moderator-only vote audit: seer or logic line you stand with; empty if none.",
@@ -1108,6 +1186,31 @@ class PlayerAgent:
             TaskType.PK_SPEECH: "pk_speech",
         }
         return phase_by_task.get(task_type)
+
+    def _vote_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:
+        if (
+            context.task_type != TaskType.VOTE
+            or action.action_type != ActionType.VOTE
+            or not context.strategy_directive.get("require_vote_quality")
+        ):
+            return None
+        try:
+            from werewolf_agent.runtime.vote_quality import validate_structured_vote_action
+
+            result = validate_structured_vote_action(
+                action.model_dump(exclude={"trace"}),
+                context={
+                    "strategy_directive": context.strategy_directive,
+                    "salience_items": list(context.salience_items),
+                    "recent_transcript": list(context.recent_transcript),
+                },
+            )
+        except Exception:
+            logger.debug("Vote quality validation failed unexpectedly", exc_info=True)
+            return None
+        if result.get("valid"):
+            return None
+        return str(result.get("hint") or "投票必须包含预言家立场、投票基点和具体理由。")
 
     def _all_legal_actions_require_target(self, context: AgentContext) -> bool:
         return bool(context.legal_actions) and all(
@@ -1332,6 +1435,8 @@ class PlayerAgent:
                 parts.append("你必须投出选票，从可选目标中选择一人。")
             parts.append(
                 "投票时必须先在心里完成判断，并在JSON中额外给出这些私有字段："
+                "seer_stance（枚举：trust/distrust/undecided/no_claim）、"
+                "vote_basis（枚举：seer_check/seer_siding/speech_logic/vote_pattern/pressure_test/anti_herd/fallback）、"
                 "standing_with_seer（你站边哪个预言家/逻辑线，没有则写空字符串）、"
                 "suspect_reason（为什么怀疑最终投票对象）、"
                 "not_voting_reason（为什么不投其他主要候选人）、"
@@ -1395,6 +1500,8 @@ class PlayerAgent:
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '
                          '"reason": "公开理由：p05发言可疑", '
+                         '"seer_stance": "trust", '
+                         '"vote_basis": "seer_check", '
                          '"standing_with_seer": "p03", '
                          '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
                          '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
@@ -1483,7 +1590,7 @@ class PlayerAgent:
             output_fields = "choice、reason、confidence"
             if context.legal_actions == [ActionType.VOTE]:
                 output_fields = (
-                    "choice、reason、standing_with_seer、suspect_reason、"
+                    "choice、reason、seer_stance、vote_basis、standing_with_seer、suspect_reason、"
                     "not_voting_reason、private_reason、confidence"
                 )
             lines = [
@@ -1496,8 +1603,8 @@ class PlayerAgent:
             ]
             if context.legal_actions == [ActionType.VOTE]:
                 lines.append(
-                    "5. 投票还必须包含standing_with_seer、suspect_reason、"
-                    "not_voting_reason、private_reason，不能写“未说明”。"
+                    "5. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
+                    "suspect_reason、not_voting_reason、private_reason，理由字段不能写“未说明”。"
                 )
             lines.append("现在提交行动。")
             return "\n".join(lines)
@@ -1529,8 +1636,8 @@ class PlayerAgent:
             lines.append(f"7. target_id只能取这些玩家之一或null：{legal_targets}。")
         if ActionType.VOTE in context.legal_actions:
             lines.append(
-                "8. 投票还必须包含standing_with_seer、suspect_reason、"
-                "not_voting_reason、private_reason，不能写“未说明”。"
+                "8. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
+                "suspect_reason、not_voting_reason、private_reason，理由字段不能写“未说明”。"
             )
         lines.append("现在提交行动。")
         return "\n".join(lines)
@@ -1549,6 +1656,8 @@ class PlayerAgent:
         if is_vote:
             example = (
                 '{"choice":"A","reason":"投票公开理由",'
+                '"seer_stance":"trust",'
+                '"vote_basis":"seer_check",'
                 '"standing_with_seer":"站边的预言家或逻辑线",'
                 '"suspect_reason":"为什么怀疑该候选",'
                 '"not_voting_reason":"为什么不投其他候选",'

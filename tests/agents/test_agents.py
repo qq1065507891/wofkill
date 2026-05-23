@@ -436,10 +436,22 @@ class TestPlayerAgentRetryFallback:
         assert "suspect_reason" in props
         assert "not_voting_reason" in props
         assert "private_reason" in props
+        assert props["seer_stance"]["enum"] == ["trust", "distrust", "undecided", "no_claim"]
+        assert props["vote_basis"]["enum"] == [
+            "seer_check",
+            "seer_siding",
+            "speech_logic",
+            "vote_pattern",
+            "pressure_test",
+            "anti_herd",
+            "fallback",
+        ]
 
     def test_mandatory_vote_uses_choice_pipeline_and_assembles_action(self) -> None:
         json_resp = (
             '{"choice":"B","reason":"p08查杀p07后，p07回避核心问题",'
+            '"seer_stance":"trust",'
+            '"vote_basis":"seer_check",'
             '"standing_with_seer":"p08",'
             '"suspect_reason":"p07没有正面回应查杀逻辑",'
             '"not_voting_reason":"p08有查验信息，p06暂时没有明确狼面",'
@@ -466,6 +478,8 @@ class TestPlayerAgentRetryFallback:
         assert action.action_type == ActionType.VOTE
         assert action.target_id == "p07"
         assert action.reason == "p08查杀p07后，p07回避核心问题"
+        assert action.seer_stance == "trust"
+        assert action.vote_basis == "seer_check"
         assert action.standing_with_seer == "p08"
         assert action.suspect_reason == "p07没有正面回应查杀逻辑"
         assert action.not_voting_reason
@@ -524,7 +538,52 @@ class TestPlayerAgentRetryFallback:
         assert action.suspect_reason
         assert action.not_voting_reason
         assert action.private_reason
+        assert action.seer_stance == "trust"
+        assert action.vote_basis == "seer_check"
         assert retry.error_code is None
+
+    def test_vote_quality_retries_unexplained_vote_when_required(self) -> None:
+        bad_resp = (
+            '{"choice":"A","reason":"未说明",'
+            '"seer_stance":"undecided","vote_basis":"fallback",'
+            '"standing_with_seer":"","suspect_reason":"未说明",'
+            '"not_voting_reason":"未说明","private_reason":"未说明",'
+            '"confidence":0.5}'
+        )
+        good_resp = (
+            '{"choice":"A","reason":"p08查杀p07，p07没有回应查杀逻辑",'
+            '"seer_stance":"trust","vote_basis":"seer_check",'
+            '"standing_with_seer":"p08",'
+            '"suspect_reason":"p07被查杀后没有回应核心问题",'
+            '"not_voting_reason":"p06没有查验压力，暂不投",'
+            '"private_reason":"我更信p08的预言家线，所以投p07",'
+            '"confidence":0.8}'
+        )
+        provider = _SequenceJsonProvider([bad_resp, good_resp])
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+            strategy_directive={"require_vote_quality": True},
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.target_id == "p07"
+        assert action.seer_stance == "trust"
+        assert action.vote_basis == "seer_check"
+        assert retry.attempt == 2
+        assert provider.calls == 2
 
     def test_target_choice_pipeline_assembles_wolf_kill(self) -> None:
         json_resp = '{"choice":"B","reason":"p08像预言家，夜里优先刀掉","confidence":0.76}'
@@ -1151,7 +1210,7 @@ class TestPlayerAgentRetryFallback:
         assert "不要直接编写target_id" in prompt
         assert "必填字段：action_type、target_id、speech、reason、confidence" not in prompt
         assert (
-            "最终输出字段：choice、reason、standing_with_seer、suspect_reason、"
+            "最终输出字段：choice、reason、seer_stance、vote_basis、standing_with_seer、suspect_reason、"
             "not_voting_reason、private_reason、confidence"
         ) in prompt
 

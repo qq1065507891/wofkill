@@ -998,11 +998,25 @@ def agent_day_vote(
     # Pass consecutive no-exile info as strategy directive
     consecutive_no_exile = state.get("consecutive_no_exile_days", 0)
     strategy_directive: dict[str, Any] = {
+        "require_vote_quality": True,
+        "vote_structured_contract": {
+            "seer_stance": ["trust", "distrust", "undecided", "no_claim"],
+            "vote_basis": [
+                "seer_check",
+                "seer_siding",
+                "speech_logic",
+                "vote_pattern",
+                "pressure_test",
+                "anti_herd",
+                "fallback",
+            ],
+        },
         "vote_silent": (
             "投票阶段不允许公开发言。speech字段必须留空。"
             "你只能内心选择要投谁，不能在投票时发表任何公开言论。"
             "请在reason字段中写下简短公开理由；同时在JSON中额外写"
-            "standing_with_seer、suspect_reason、not_voting_reason、private_reason。"
+            "seer_stance、vote_basis、standing_with_seer、suspect_reason、"
+            "not_voting_reason、private_reason。"
             "这些字段是你的投票心理活动，只给主持人审计，不会公开给其他玩家。"
         ),
         "vote_strategy": (
