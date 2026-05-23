@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 import uuid
 from dataclasses import replace
 from typing import Any, Literal, TypedDict
@@ -207,6 +208,7 @@ def _dispatch_agent(
     if not registry:
         return None
     engine = state["engine"]
+    time.sleep(1.0)
     return _call_agent(
         fn,
         state,

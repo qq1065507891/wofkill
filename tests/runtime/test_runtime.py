@@ -304,6 +304,38 @@ def test_single_wolf_vote_uses_global_agent_timeout(monkeypatch) -> None:
     assert result["wolf_kill_target_id"] == "p02"
 
 
+def test_dispatch_agent_waits_before_player_request(monkeypatch) -> None:
+    from werewolf_agent.runtime import graph as runtime_graph
+
+    waits: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    def fake_agent_adapter(state, engine, registry, player_id):
+        return {"ok": player_id}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(runtime_graph.time, "sleep", fake_sleep)
+
+    result = runtime_graph._dispatch_agent(
+        {
+            "game_state": GameState(game_id="wait_before_request"),
+            "engine": _new_engine(),
+            "agent_registry": Registry(),
+            "agent_call_timeout": 0,
+        },
+        fake_agent_adapter,
+        "p01",
+    )
+
+    assert result == {"ok": "p01"}
+    assert waits == [1.0]
+
+
 def test_free_discussion_speech_timeout_records_event() -> None:
     gs = GameState(game_id="speech_timeout", day_number=1)
 
