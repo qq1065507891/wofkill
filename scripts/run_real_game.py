@@ -308,7 +308,18 @@ def save_game_log(runner: GameRunner, elapsed: float) -> Path:
         "day_number": gs.day_number,
         "night_number": gs.night_number,
         "players": {pid: {"role": p.role, "alive": p.alive} for pid, p in gs.players.items()},
-        "deaths": [{"player_id": d.player_id, "reason": d.reason} for d in gs.deaths],
+        "deaths": [
+            {
+                "player_id": d.player_id,
+                "reason": d.reason,
+                "timing": d.timing,
+                "resolution_batch": d.resolution_batch,
+                "source_player_id": d.source_player_id,
+                "can_leave_last_words": d.can_leave_last_words,
+                "triggered_skills": list(d.triggered_skills),
+            }
+            for d in gs.deaths
+        ],
         "events": [{"type": e.type, "payload": e.payload} for e in gs.events],
         "elapsed_seconds": round(elapsed, 1),
         "steps": runner.step_count,

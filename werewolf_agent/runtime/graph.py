@@ -280,7 +280,12 @@ def _public_vote_reason(action_trace: dict[str, Any] | None) -> str:
     if not action_trace:
         return ""
     parsed = action_trace.get("parsed_action") or {}
-    reason = parsed.get("reason") or action_trace.get("reason") or ""
+    reason = (
+        parsed.get("reason")
+        or action_trace.get("reason")
+        or action_trace.get("fallback_reason")
+        or ""
+    )
     return str(reason)[:200]
 
 

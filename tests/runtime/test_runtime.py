@@ -826,6 +826,42 @@ def test_resolve_vote_records_vote_reasons_for_public_ledger() -> None:
     assert "private_intent" not in str(vote_event.payload)
 
 
+def test_resolve_vote_uses_fallback_reason_for_public_ledger() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p08": PlayerState(id="p08", role="werewolf"),
+    }
+    gs = GameState(game_id="vote_fallback_reason", players=players, day_number=2)
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "exile_votes": {"p01": "p08"},
+        "vote_action_traces": {
+            "p01": {
+                "parsed_action": None,
+                "fallback_reason": "fallback: 结构化输出失败，按当前可见线索选择p08",
+            },
+        },
+        "revote": False,
+    })
+
+    vote_event = [
+        event for event in result["game_state"].events
+        if event.type == "vote_resolved"
+    ][0]
+
+    assert vote_event.payload["votes"] == [
+        {
+            "voter": "p01",
+            "target": "p08",
+            "reason": "fallback: 结构化输出失败，按当前可见线索选择p08",
+        },
+    ]
+
+
 def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypatch) -> None:
     from werewolf_agent.runtime import graph as runtime_graph
 
