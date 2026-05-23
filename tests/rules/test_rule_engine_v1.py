@@ -476,6 +476,19 @@ def test_vote_cannot_target_revealed_idiot() -> None:
     assert result.exiled_player_id == "w1"
 
 
+def test_self_votes_do_not_count_in_exile_vote() -> None:
+    engine = make_engine()
+    state = make_state()
+
+    result = engine.resolve_vote(
+        state,
+        votes={"v1": "v1", "v2": "w1"},
+        revote=False,
+    )
+
+    assert result.exiled_player_id == "w1"
+
+
 @pytest.mark.parametrize(
     ("death_reason", "timing", "night_number", "expected"),
     [

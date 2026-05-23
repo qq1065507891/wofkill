@@ -493,6 +493,8 @@ class RuleEngine:
             voter = state.players.get(voter_id)
             if voter is None or not voter.alive or not voter.vote_enabled:
                 continue
+            if target_id == voter_id:
+                continue
             if target_id not in legal_targets:
                 continue
             weight = 3 if voter_id == state.sheriff_id and state.sheriff_badge_state == "active" else 2

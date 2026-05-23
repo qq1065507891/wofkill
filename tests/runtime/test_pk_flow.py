@@ -341,6 +341,39 @@ class TestAgentPKSpeechAdapter:
 class TestPKRevoteRestrictsTargets:
     """During PK revote, agent_day_vote must restrict legal targets to pk_candidates."""
 
+    def test_agent_day_vote_excludes_voter_from_targets(self):
+        """Normal day vote context must not offer the voter as a legal target."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+        from werewolf_agent.agents.schemas import PlayerAction, ActionType, RetryInfo
+
+        gs = _make_gs_with_tie()
+        engine = RuleEngine.from_yaml(RULESET_PATH)
+        captured_context = None
+
+        class Agent:
+            def act(self, context):
+                nonlocal captured_context
+                captured_context = context
+                return PlayerAction(
+                    action_type=ActionType.VOTE,
+                    target_id="p03",
+                ), RetryInfo()
+
+        class Registry:
+            def get_agent(self, player_id):
+                return Agent()
+
+        agent_day_vote(
+            {"game_state": gs},
+            engine,
+            Registry(),
+            "p03",
+        )
+
+        assert captured_context is not None
+        assert "p03" not in captured_context.legal_targets
+        assert "p07" in captured_context.legal_targets
+
     def test_agent_day_vote_revote_restricts_targets_to_pk_candidates(self):
         """When revote=True and pk_candidates set, agent_day_vote only offers pk candidates."""
         from werewolf_agent.runtime.agent_adapter import agent_day_vote
@@ -376,3 +409,39 @@ class TestPKRevoteRestrictsTargets:
 
         assert captured_context is not None
         assert set(captured_context.legal_targets) == {"p03", "p07"}
+
+    def test_agent_day_vote_revote_excludes_voter_from_pk_targets(self):
+        """A PK candidate can vote only for the other PK target, never themselves."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+        from werewolf_agent.agents.schemas import PlayerAction, ActionType, RetryInfo
+
+        gs = _make_gs_with_tie()
+        engine = RuleEngine.from_yaml(RULESET_PATH)
+        captured_context = None
+
+        class Agent:
+            def act(self, context):
+                nonlocal captured_context
+                captured_context = context
+                return PlayerAction(
+                    action_type=ActionType.VOTE,
+                    target_id="p07",
+                ), RetryInfo()
+
+        class Registry:
+            def get_agent(self, player_id):
+                return Agent()
+
+        agent_day_vote(
+            {
+                "game_state": gs,
+                "revote": True,
+                "pk_candidates": ["p03", "p07"],
+            },
+            engine,
+            Registry(),
+            "p03",
+        )
+
+        assert captured_context is not None
+        assert captured_context.legal_targets == ["p07"]

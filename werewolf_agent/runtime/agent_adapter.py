@@ -990,7 +990,7 @@ def agent_day_vote(
     if allow_abstain:
         legal_actions.append(ActionType.NO_ACTION)
 
-    legal_targets = engine.legal_exile_targets(gs)
+    legal_targets = [pid for pid in engine.legal_exile_targets(gs) if pid != voter_id]
     if state.get("revote") and state.get("pk_candidates"):
         pk_candidates = set(state.get("pk_candidates") or [])
         legal_targets = [pid for pid in legal_targets if pid in pk_candidates]
