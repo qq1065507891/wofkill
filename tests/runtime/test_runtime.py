@@ -1053,6 +1053,128 @@ def test_free_discussion_routes_to_vote_after_last_normal_speech() -> None:
     assert route_self_destruct_check(result) == "day_vote"
 
 
+def test_free_discussion_announces_speech_order_and_discussion_end() -> None:
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="villager"),
+    }
+    gs = GameState(game_id="day_broadcasts", players=players, day_number=2, phase="day")
+
+    first = free_discussion({
+        "game_state": gs,
+        "speech_order": ["p01", "p02"],
+        "speech_index": 0,
+        "speech_text": "first speech",
+    })
+    second = free_discussion({
+        **first,
+        "speech_text": "second speech",
+    })
+
+    broadcasts = [
+        e.payload for e in second["game_state"].events
+        if e.type == "judge_broadcast"
+    ]
+    phases = [payload["phase"] for payload in broadcasts]
+
+    assert "discussion_start" in phases
+    assert "speech_order" in phases
+    assert phases.count("speaker_turn") == 2
+    assert phases[-1] == "discussion_end"
+    speech_order = next(payload for payload in broadcasts if payload["phase"] == "speech_order")
+    assert speech_order["speech_order"] == ["p01", "p02"]
+
+
+def test_day_vote_announces_vote_collection_and_end() -> None:
+    from werewolf_agent.runtime.graph import day_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+    }
+    gs = GameState(game_id="vote_broadcasts", players=players, day_number=2, phase="day")
+
+    result = day_vote({
+        "game_state": gs,
+        "agent_registry": None,
+        "exile_votes": {"p01": "p02"},
+        "exile_vote_day": 2,
+        "exile_vote_revote": False,
+        "revote": False,
+    })
+
+    phases = [
+        e.payload.get("phase")
+        for e in result["game_state"].events
+        if e.type == "judge_broadcast"
+    ]
+
+    assert phases == ["vote_start", "vote_collect", "vote_end", "vote_result"]
+
+
+def test_night_death_last_words_has_public_broadcast() -> None:
+    from werewolf_agent.runtime.graph import night_death_last_words
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=False),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="night_last_words_broadcast",
+        players=players,
+        day_number=2,
+        night_number=2,
+        deaths=[Death(
+            player_id="p01",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_2",
+            can_leave_last_words=True,
+        )],
+    )
+
+    result = night_death_last_words({"game_state": gs, "engine": _new_engine()})
+
+    broadcasts = [
+        e.payload for e in result["game_state"].events
+        if e.type == "judge_broadcast"
+    ]
+    assert broadcasts[-1]["phase"] == "night_death_last_words"
+    assert broadcasts[-1]["players"] == ["p01"]
+    assert broadcasts[-1]["visibility"] == "public"
+
+
+def test_night_death_last_words_broadcasts_skip_when_no_eligible_players() -> None:
+    from werewolf_agent.runtime.graph import night_death_last_words
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=False),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="night_last_words_skip_broadcast",
+        players=players,
+        day_number=3,
+        night_number=2,
+        deaths=[Death(
+            player_id="p01",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_2",
+            can_leave_last_words=False,
+        )],
+    )
+
+    result = night_death_last_words({"game_state": gs, "engine": _new_engine()})
+
+    broadcasts = [
+        e.payload for e in result["game_state"].events
+        if e.type == "judge_broadcast"
+    ]
+    assert broadcasts[-1]["phase"] == "night_death_last_words"
+    assert broadcasts[-1]["players"] == []
+
+
 def test_resolve_night_node_kills_target() -> None:
     from werewolf_agent.runtime.graph import resolve_night
     engine = _new_engine()

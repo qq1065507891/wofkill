@@ -988,10 +988,23 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
     eligible = []
     for death in gs.deaths:
-        if death.timing == "night" and engine.can_leave_last_words(
+        can_leave = death.can_leave_last_words
+        if can_leave is None:
+            can_leave = engine.can_leave_last_words(
             death_reason=death.reason, timing=death.timing, night_number=gs.night_number
-        ):
+            )
+        if death.timing == "night" and can_leave:
             eligible.append(death.player_id)
+    names = "、".join(_player_display(state, pid) for pid in eligible)
+    message = f"请昨夜死亡玩家发表遗言: {names}" if eligible else "昨夜死亡玩家无遗言，遗言环节结束"
+    gs, _ = _judge_broadcast(
+        phase="night_death_last_words",
+        message=message,
+        gs=gs,
+        day_number=gs.day_number,
+        visibility="public",
+        extra_payload={"players": eligible},
+    )
     gs = replace(gs, events=gs.events + [GameEvent(
         type="night_death_last_words", payload={"players": eligible}
     )])
@@ -1335,6 +1348,17 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         else:
             speech_order = choose_no_sheriff_speech_order(gs)
 
+    if speech_index == 0 and not speaker_id:
+        order_names = "、".join(_player_display(state, pid) for pid in speech_order)
+        gs, _ = _judge_broadcast(
+            phase="speech_order",
+            message=f"本轮发言顺序: {order_names}",
+            gs=gs,
+            day_number=gs.day_number,
+            visibility="public",
+            extra_payload={"speech_order": speech_order},
+        )
+
     if speaker_id is None and speech_index < len(speech_order):
         speaker_id = speech_order[speech_index]
 
@@ -1402,7 +1426,16 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 night_number=gs.night_number,
             ))
         gs = replace(gs, events=gs.events + events)
-        return {"game_state": gs, **advance_speaker()}
+        advanced = advance_speaker()
+        if advanced["current_speaker_id"] is None:
+            gs, _ = _judge_broadcast(
+                phase="discussion_end",
+                message="所有玩家发言完毕，自由讨论结束",
+                gs=gs,
+                day_number=gs.day_number,
+                visibility="public",
+            )
+        return {"game_state": gs, **advanced}
     gs = replace(gs, events=gs.events + [GameEvent(type="free_discussion", payload={})])
     return {"game_state": gs}
 
@@ -1413,6 +1446,13 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
         phase="vote_start",
         message="讨论结束，现在开始投票。所有人同时投票，投票时不能发言。",
         gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+    gs, _ = _judge_broadcast(
+        phase="vote_collect",
+        message="请所有仍在场玩家同时投票",
+        gs=gs,
+        day_number=gs.day_number,
         visibility="public",
     )
     same_vote_window = (
@@ -1449,20 +1489,7 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
                         vote_traces[pid] = result["action_trace"]
 
         if has_agents:
-            # Judge announces each vote publicly
-            sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
-            vote_lines = []
-            for voter_id, target_id in votes.items():
-                weight_label = " (警长1.5票)" if voter_id == sheriff_id else ""
-                vote_lines.append(f"{_player_display(state, voter_id)}{weight_label} 投票给 {_player_display(state, target_id)}")
-            if vote_lines:
-                gs, _ = _judge_broadcast(
-                    phase="vote_result",
-                    message="投票结果：\n" + "\n".join(vote_lines),
-                    gs=gs, day_number=gs.day_number,
-                    visibility="public",
-                )
-
+            gs = _broadcast_vote_details(state, gs, votes)
             return {
                 "game_state": gs,
                 "exile_votes": votes,
@@ -1471,6 +1498,8 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
                 "exile_vote_revote": state.get("revote", False),
                 "revote": state.get("revote", False),
             }
+    if existing_votes:
+        gs = _broadcast_vote_details(state, gs, existing_votes)
     return {
         "game_state": gs,
         "exile_votes": existing_votes,
@@ -1478,6 +1507,40 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
         "exile_vote_revote": state.get("revote", False),
         "revote": state.get("revote", False),
     }
+
+
+def _broadcast_vote_details(
+    state: RuntimeState,
+    gs: GameState,
+    votes: dict[str, str],
+) -> GameState:
+    gs, _ = _judge_broadcast(
+        phase="vote_end",
+        message="投票结束，开始统计票型",
+        gs=gs,
+        day_number=gs.day_number,
+        visibility="public",
+    )
+    sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
+    vote_lines = []
+    for voter_id, target_id in votes.items():
+        weight_label = " (警长1.5票)" if voter_id == sheriff_id else ""
+        vote_lines.append(
+            f"{_player_display(state, voter_id)}{weight_label} 投票给 {_player_display(state, target_id)}"
+        )
+    message = "投票结果："
+    if vote_lines:
+        message += "\n" + "\n".join(vote_lines)
+    else:
+        message += "无有效票"
+    gs, _ = _judge_broadcast(
+        phase="vote_result",
+        message=message,
+        gs=gs,
+        day_number=gs.day_number,
+        visibility="public",
+    )
+    return gs
 
 
 def resolve_vote(state: RuntimeState) -> dict[str, Any]:
