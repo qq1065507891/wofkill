@@ -2228,7 +2228,9 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                 should_end_discussion_early,
                 summarize_wolf_consensus,
             )
-            mid_consensus = summarize_wolf_consensus(gs.events, wolves)
+            mid_consensus = summarize_wolf_consensus(
+                gs.events, wolves, night_number=gs.night_number
+            )
             if should_end_discussion_early(mid_consensus, len(wolves)):
                 print(f"  [狼人密谈] 第{round_number}轮已达成共识，提前结束讨论")
                 break
@@ -2239,7 +2241,7 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         build_wolf_team_plan_from_discussion,
         summarize_wolf_consensus,
     )
-    consensus = summarize_wolf_consensus(gs.events, wolves)
+    consensus = summarize_wolf_consensus(gs.events, wolves, night_number=gs.night_number)
     plan = build_wolf_team_plan_from_discussion(
         gs,
         previous_plan=state.get("wolf_team_plan"),

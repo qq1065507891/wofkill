@@ -126,6 +126,7 @@ def extract_wolf_proposal(text: str) -> dict[str, Any]:
 def summarize_wolf_consensus(
     events: list[GameEvent],
     alive_wolves: list[str],
+    night_number: int | None = None,
 ) -> dict[str, Any]:
     """Build consensus summary from wolf discussion events.
 
@@ -136,6 +137,7 @@ def summarize_wolf_consensus(
     discussion_events = [
         e for e in events
         if e.type == "wolf_discussion" and e.payload.get("wolf_id") in alive_wolves
+        and (night_number is None or e.payload.get("night_number") == night_number)
     ]
 
     # Track proposals per wolf

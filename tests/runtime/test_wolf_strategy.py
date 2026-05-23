@@ -110,6 +110,42 @@ class TestWolfPlanDerivedFromDiscussion:
         consensus = summarize_wolf_consensus(gs.events, alive_wolves)
         assert consensus.get("fake_seer") is not None
 
+    def test_consensus_for_current_night_ignores_stale_discussion_targets(self):
+        from werewolf_agent.runtime.wolf_strategy import summarize_wolf_consensus
+
+        alive_wolves = [f"p{i:02d}" for i in range(1, 5)]
+        events = [GameEvent(type="enter_night", payload={"night": 1})]
+        for wolf_id in alive_wolves:
+            events.append(GameEvent(
+                type="wolf_discussion",
+                payload={
+                    "wolf_id": wolf_id,
+                    "round": 1,
+                    "night_number": 1,
+                    "text": "同意刀p04，首夜先统一刀口。",
+                    "visibility": "werewolf_team_only",
+                },
+            ))
+        events.append(GameEvent(type="enter_night", payload={"night": 2}))
+        for wolf_id in alive_wolves:
+            events.append(GameEvent(
+                type="wolf_discussion",
+                payload={
+                    "wolf_id": wolf_id,
+                    "round": 1,
+                    "night_number": 2,
+                    "text": "同意刀p06女巫，今晚必须处理这个神职。",
+                    "visibility": "werewolf_team_only",
+                },
+            ))
+
+        consensus = summarize_wolf_consensus(events, alive_wolves, night_number=2)
+
+        assert consensus.get("night_kill_primary") == "p06"
+        assert {
+            item["target"] for item in consensus["evidence_from_discussion"]
+        } == {"p06"}
+
     def test_wolf_plan_without_discussion_evidence_has_no_kill_target(self):
         from werewolf_agent.runtime.wolf_strategy import build_wolf_team_plan_from_discussion
 
