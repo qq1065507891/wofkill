@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from werewolf_agent.core.models import GameState, GameEvent
-from scripts.print_game_audit import render_audit_report
+from scripts.print_game_audit import find_boundary_violations, render_audit_report
 
 
 def test_render_audit_report_includes_player_raw_output_and_judge_events() -> None:
@@ -111,6 +111,127 @@ def test_render_audit_report_flags_rule_order_anomalies() -> None:
     assert "## Rule-Order Anomalies" in report
     assert "hunter_shot death after wolf action" in report
     assert "unsupported public-record role claim" in report
+
+
+def test_boundary_audit_flags_core_game_record_invariants() -> None:
+    game = {
+        "players": {
+            "p01": {"role": "witch", "alive": False},
+            "p02": {"role": "hunter", "alive": False},
+            "p03": {"role": "villager", "alive": True},
+        },
+        "deaths": [
+            {"player_id": "p01", "reason": "exile"},
+        ],
+        "events": [
+            {
+                "type": "player_died",
+                "payload": {
+                    "player_id": "p01",
+                    "reason": "exile",
+                    "triggered_skills": [],
+                },
+            },
+            {
+                "type": "judge_broadcast",
+                "payload": {"phase": "witch_wake"},
+            },
+            {
+                "type": "player_died",
+                "payload": {
+                    "player_id": "p02",
+                    "reason": "exile",
+                    "triggered_skills": ["hunter_shot"],
+                },
+            },
+            {
+                "type": "vote_resolved",
+                "payload": {
+                    "votes": [
+                        {"voter": "p03", "target": "p03", "reason": ""},
+                    ],
+                },
+            },
+        ],
+    }
+
+    kinds = {item["kind"] for item in find_boundary_violations(game)}
+
+    assert "dead_role_broadcast" in kinds
+    assert "pending_hunter_shot" in kinds
+    assert "empty_vote_reason" in kinds
+    assert "self_vote" in kinds
+    assert "incomplete_death_export" in kinds
+
+
+def test_boundary_audit_accepts_closed_loop_record() -> None:
+    game = {
+        "players": {
+            "p01": {"role": "hunter", "alive": False},
+            "p02": {"role": "werewolf", "alive": False},
+            "p03": {"role": "villager", "alive": True},
+        },
+        "deaths": [
+            {
+                "player_id": "p01",
+                "reason": "exile",
+                "timing": "day_vote",
+                "resolution_batch": "day_2_vote",
+                "source_player_id": None,
+                "can_leave_last_words": True,
+                "triggered_skills": ["hunter_shot"],
+            },
+            {
+                "player_id": "p02",
+                "reason": "hunter_shot",
+                "timing": "day_vote",
+                "resolution_batch": "day_2_vote",
+                "source_player_id": "p01",
+                "can_leave_last_words": False,
+                "triggered_skills": [],
+            },
+        ],
+        "events": [
+            {
+                "type": "player_died",
+                "payload": {
+                    "player_id": "p01",
+                    "reason": "exile",
+                    "triggered_skills": ["hunter_shot"],
+                },
+            },
+            {
+                "type": "judge_broadcast",
+                "payload": {"phase": "hunter_shot_prompt", "hunter_id": "p01"},
+            },
+            {
+                "type": "judge_broadcast",
+                "payload": {
+                    "phase": "hunter_shot_choice",
+                    "hunter_id": "p01",
+                    "target_id": "p02",
+                },
+            },
+            {
+                "type": "player_died",
+                "payload": {
+                    "player_id": "p02",
+                    "reason": "hunter_shot",
+                    "source_player_id": "p01",
+                },
+            },
+            {
+                "type": "vote_resolved",
+                "payload": {
+                    "votes": [
+                        {"voter": "p03", "target": "p02", "reason": "p02's claim conflicts with the vote record"},
+                    ],
+                },
+            },
+        ],
+    }
+
+    assert find_boundary_violations(game) == []
 
 
 class TestJudgePhaseBroadcasts:

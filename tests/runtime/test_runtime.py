@@ -862,6 +862,41 @@ def test_resolve_vote_uses_fallback_reason_for_public_ledger() -> None:
     ]
 
 
+def test_agent_day_vote_excludes_voter_from_legal_targets() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_day_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    gs = GameState(game_id="vote_no_self_target", players=players, day_number=1)
+
+    class Agent:
+        def __init__(self) -> None:
+            self.context = None
+
+        def act(self, context):
+            self.context = context
+            return PlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p02",
+                reason="p02 has the weakest public logic",
+            ), RetryInfo()
+
+    agent = Agent()
+
+    class Registry:
+        def get_agent(self, player_id):
+            return agent
+
+    result = agent_day_vote({"game_state": gs}, _new_engine(), Registry(), "p01")
+
+    assert result["vote_target"] == "p02"
+    assert agent.context.legal_targets == ["p02", "p03"]
+    assert "p01" not in agent.context.legal_targets
+
+
 def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypatch) -> None:
     from werewolf_agent.runtime import graph as runtime_graph
 

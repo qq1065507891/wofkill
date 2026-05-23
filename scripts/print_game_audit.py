@@ -95,6 +95,120 @@ def audit_game(data: dict):
     print(f"{'='*60}")
 
 
+def find_boundary_violations(game: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return machine-checkable game-record boundary violations."""
+    violations: list[dict[str, Any]] = []
+    events = game.get("events") or []
+    players = game.get("players") or {}
+    player_roles = {
+        str(player_id): str((info or {}).get("role") or "")
+        for player_id, info in players.items()
+        if isinstance(info, dict)
+    }
+
+    required_death_fields = {
+        "player_id",
+        "reason",
+        "timing",
+        "resolution_batch",
+        "source_player_id",
+        "can_leave_last_words",
+        "triggered_skills",
+    }
+    for index, death in enumerate(game.get("deaths") or [], start=1):
+        if not isinstance(death, dict):
+            continue
+        missing = sorted(required_death_fields - set(death))
+        if missing:
+            violations.append({
+                "kind": "incomplete_death_export",
+                "event_index": index,
+                "detail": f"death for {death.get('player_id') or '?'} missing {', '.join(missing)}",
+            })
+
+    dead_roles: set[str] = set()
+    pending_hunters: dict[str, dict[str, Any]] = {}
+    role_wake_phases = {
+        "witch": {"witch_wake", "witch_choose"},
+        "seer": {"seer_wake", "seer_choose"},
+    }
+
+    for event_index, event in enumerate(events, start=1):
+        event_type = str(event.get("type") or "")
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        if event_type == "player_died":
+            player_id = str(payload.get("player_id") or "")
+            reason = str(payload.get("reason") or "")
+            if player_id:
+                role = player_roles.get(player_id, "")
+                if role:
+                    dead_roles.add(role)
+                if "hunter_shot" in (payload.get("triggered_skills") or []):
+                    pending_hunters[player_id] = {
+                        "death_event_index": event_index,
+                        "prompted": False,
+                        "resolved": False,
+                    }
+            if reason == "hunter_shot":
+                shooter = str(payload.get("source_player_id") or "")
+                if shooter in pending_hunters:
+                    pending_hunters[shooter]["resolved"] = True
+
+        if event_type == "judge_broadcast":
+            phase = str(payload.get("phase") or "")
+            for role, phases in role_wake_phases.items():
+                if role in dead_roles and phase in phases:
+                    violations.append({
+                        "kind": "dead_role_broadcast",
+                        "event_index": event_index,
+                        "detail": f"{phase} broadcast after {role} died",
+                    })
+
+            hunter_id = str(payload.get("hunter_id") or "")
+            if phase == "hunter_shot_prompt" and hunter_id in pending_hunters:
+                pending_hunters[hunter_id]["prompted"] = True
+            if phase in {"hunter_shot_choice", "hunter_shot_decline"} and hunter_id in pending_hunters:
+                pending_hunters[hunter_id]["resolved"] = True
+
+        if event_type == "hunter_shot_declined":
+            hunter_id = str(payload.get("hunter_id") or "")
+            if hunter_id in pending_hunters:
+                pending_hunters[hunter_id]["resolved"] = True
+
+        if event_type == "vote_resolved":
+            for vote_index, vote in enumerate(payload.get("votes") or [], start=1):
+                if not isinstance(vote, dict):
+                    continue
+                voter = str(vote.get("voter") or vote.get("voter_id") or "")
+                target = str(vote.get("target") or vote.get("target_id") or "")
+                reason = str(vote.get("reason") or "").strip()
+                if voter and target and voter == target:
+                    violations.append({
+                        "kind": "self_vote",
+                        "event_index": event_index,
+                        "detail": f"{voter} voted for self at vote #{vote_index}",
+                    })
+                if target and not reason:
+                    violations.append({
+                        "kind": "empty_vote_reason",
+                        "event_index": event_index,
+                        "detail": f"{voter or '?'} voted {target} without reason",
+                    })
+
+    for hunter_id, pending in sorted(pending_hunters.items()):
+        if not pending["prompted"] or not pending["resolved"]:
+            violations.append({
+                "kind": "pending_hunter_shot",
+                "event_index": pending["death_event_index"],
+                "detail": f"{hunter_id} triggered hunter_shot without prompt and resolution",
+            })
+
+    return violations
+
+
 def render_audit_report(game: dict[str, Any]) -> str:
     """Return a Markdown audit report for a saved game log."""
     lines: list[str] = []
