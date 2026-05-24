@@ -14,6 +14,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -21,14 +22,30 @@ sys.path.insert(0, str(ROOT))
 from werewolf_agent.model_gateway.providers import load_local_dotenv
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 
+
+class _GameIdFilter(logging.Filter):
+    """Inject game_id into every log record for structured logging."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.game_id: str = ""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.game_id = self.game_id  # type: ignore[attr-defined]
+        return True
+
+
+_game_id_filter = _GameIdFilter()
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s [%(game_id)s]: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(ROOT / "game_stdout.log", encoding="utf-8"),
     ],
 )
+logging.getLogger().addFilter(_game_id_filter)
 logger = logging.getLogger("real_game")
 
 
@@ -298,9 +315,56 @@ def check_leakage(runner: GameRunner) -> None:
 
 # ── save game log ────────────────────────────────────────────────────────
 
+def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
+    """Compute structured quality metrics for a completed game."""
+    gs = runner.state
+    traces = [e for e in gs.events if e.type == "action_trace_audit"]
+    fallback_count = sum(
+        1 for e in traces
+        if e.payload.get("action_trace", {}).get("fallback_reason")
+    )
+    structured_fail = sum(
+        1 for e in traces
+        if e.payload.get("action_trace", {}).get("structured_failure_reason")
+    )
+    total = len(traces)
+    fallback_rate = fallback_count / total if total > 0 else 0.0
+    speeches = [e for e in gs.events if e.type == "speech"]
+    non_empty_speeches = sum(1 for e in speeches if e.payload.get("text", "").strip())
+    speech_rate = non_empty_speeches / len(speeches) if speeches else 0.0
+    phases_seen = {e.payload.get("phase") for e in gs.events if e.type == "judge_broadcast"}
+    has_winner = bool(gs.winning_faction)
+
+    return {
+        "fallback_rate": round(fallback_rate, 3),
+        "fallback_count": fallback_count,
+        "structured_fail_count": structured_fail,
+        "total_action_traces": total,
+        "speech_count": len(speeches),
+        "non_empty_speech_count": non_empty_speeches,
+        "speech_fill_rate": round(speech_rate, 3),
+        "phases_seen": len(phases_seen),
+        "has_winner": has_winner,
+        "steps": runner.step_count,
+    }
+
+
 def save_game_log(runner: GameRunner, elapsed: float) -> Path:
     gs = runner.state
-    log_path = ROOT / f"game_{runner.game_id}.json"
+    quality = compute_game_quality_score(runner)
+    is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_action_traces"] > 5
+
+    if is_low_quality:
+        low_q_dir = ROOT / "low_quality_games"
+        low_q_dir.mkdir(exist_ok=True)
+        log_path = low_q_dir / f"game_{runner.game_id}.json"
+        logger.warning(
+            "Low quality game (fallback_rate=%.1f%%, %d traces) — saved to %s",
+            quality["fallback_rate"] * 100, quality["total_action_traces"], log_path,
+        )
+    else:
+        log_path = ROOT / f"game_{runner.game_id}.json"
+
     log_data = {
         "game_id": gs.game_id,
         "winning_faction": gs.winning_faction,
@@ -323,6 +387,7 @@ def save_game_log(runner: GameRunner, elapsed: float) -> Path:
         "events": [{"type": e.type, "payload": e.payload} for e in gs.events],
         "elapsed_seconds": round(elapsed, 1),
         "steps": runner.step_count,
+        "quality_score": quality,
     }
     log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
     return log_path
@@ -390,6 +455,7 @@ def main() -> None:
     )
 
     runner = GameRunner(config)
+    _game_id_filter.game_id = runner.game_id
     print(f"  Game ID: {runner.game_id}")
     n_agents = len(runner._agent_registry._agents) if runner._agent_registry else 0
     print(f"  Agents:  {n_agents}")
@@ -404,6 +470,14 @@ def main() -> None:
     print_pace_report(runner)
     print_quality_audit(runner)
     check_leakage(runner)
+
+    quality = compute_game_quality_score(runner)
+    gs = runner.state
+    logger.info(
+        "GAME_COMPLETE winner=%s day=%d night=%d steps=%d elapsed=%.1f fallback_rate=%.3f",
+        gs.winning_faction, gs.day_number, gs.night_number,
+        runner.step_count, elapsed, quality["fallback_rate"],
+    )
 
     log_path = save_game_log(runner, elapsed)
     print(f"\n  Game log: {log_path}")

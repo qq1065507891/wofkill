@@ -8,11 +8,12 @@ from werewolf_agent.runtime import graph
 def test_phase_timeout_table_matches_real_game_contract() -> None:
     from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 
-    assert AGENT_TIMEOUTS.wolf_discussion_per_player == 120.0
-    assert AGENT_TIMEOUTS.wolf_consensus == 120.0
+    assert AGENT_TIMEOUTS.wolf_discussion_per_player == 180.0
+    assert AGENT_TIMEOUTS.wolf_discussion_total == 600.0
+    assert AGENT_TIMEOUTS.wolf_consensus == 180.0
     assert AGENT_TIMEOUTS.seer == 180.0
     assert AGENT_TIMEOUTS.witch == 180.0
-    assert AGENT_TIMEOUTS.day_speech == 180.0
+    assert AGENT_TIMEOUTS.day_speech == 240.0
     assert AGENT_TIMEOUTS.day_vote == 180.0
     assert AGENT_TIMEOUTS.hunter_shot == 120.0
 

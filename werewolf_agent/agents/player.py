@@ -1232,7 +1232,17 @@ class PlayerAgent:
             ActionType.HUNTER_SHOT, ActionType.BADGE_TRANSFER,
             ActionType.SHERIFF_VOTE,
         } and context.legal_targets:
-            safe_target = context.legal_targets[0]
+            # For vote actions, exclude self and use evidence-based fallback
+            if safe_action == ActionType.VOTE:
+                non_self = [t for t in context.legal_targets if t != context.agent_id]
+                if non_self:
+                    fb = context.strategy_directive.get("_vote_fallback_target") if context.strategy_directive else None
+                    if fb and fb in non_self:
+                        safe_target = fb
+                    else:
+                        safe_target = non_self[0]
+            else:
+                safe_target = context.legal_targets[0]
 
         speech = ""
         if safe_action == ActionType.SPEECH:

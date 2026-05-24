@@ -6,6 +6,7 @@ Every node calls RuleEngine for rule decisions. No natural language adjudication
 from __future__ import annotations
 
 import hashlib
+import random
 import re
 import time
 import uuid
@@ -208,7 +209,7 @@ def _dispatch_agent(
     if not registry:
         return None
     engine = state["engine"]
-    time.sleep(1.0)
+    time.sleep(random.uniform(0.5, 1.5))
     return _call_agent(
         fn,
         state,
@@ -1473,7 +1474,7 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
     has_agents = False
     if not existing_votes:
         for pid, player in gs.players.items():
-            if player.alive:
+            if player.alive and player.vote_enabled:
                 result = _dispatch_agent(
                     state,
                     agent_day_vote,
@@ -1785,8 +1786,9 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         # Get target: scripted, then agent, then explicit last-words declaration.
         target = state.get("hunter_shot_target_id")
         if target is None:
+            shot_state = {**state, "hunter_death_reason": death.reason}
             target = _dispatch_agent(
-                state,
+                shot_state,
                 agent_hunter_shot,
                 death.player_id,
                 timeout_override=AGENT_TIMEOUTS.hunter_shot,
@@ -2247,7 +2249,13 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
     events: list[GameEvent] = []
     round_count = 3 if gs.night_number == 1 else 2
     print(f"  [狼人密谈] 狼人: {[_player_display(state, w) for w in wolves]}，共{round_count}轮")
+    discussion_start = time.monotonic()
     for round_number in range(1, round_count + 1):
+        # Check total discussion timeout
+        elapsed = time.monotonic() - discussion_start
+        if elapsed >= AGENT_TIMEOUTS.wolf_discussion_total:
+            print(f"  [狼人密谈] 讨论总超时({elapsed:.0f}s/{AGENT_TIMEOUTS.wolf_discussion_total:.0f}s)，跳过剩余轮次")
+            break
         round_state = dict(state)
         round_state["wolf_discussion_round"] = round_number
         for wolf_id in wolves:

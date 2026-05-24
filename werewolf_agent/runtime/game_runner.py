@@ -238,7 +238,7 @@ class GameRunner:
                 self._state = output["game_state"]
         return node_name
 
-    def run(self, max_steps: int = 500) -> GameState:
+    def run(self, max_steps: int = 1000) -> GameState:
         """Execute the full game graph until END or max_steps reached.
 
         Uses LangGraph stream mode to process nodes one at a time,
@@ -254,6 +254,8 @@ class GameRunner:
             return self._state
 
         initial = self._build_runtime_state()
+        last_phase_snapshot: tuple[str, int, int] | None = None
+        stuck_count = 0
 
         try:
             for chunk in self._graph.stream(
@@ -267,9 +269,28 @@ class GameRunner:
                     self._save_memory_snapshot()
                     self._persist_if_configured()
                     return self._state
+                # Detect stuck state: same phase+day+night for many steps
+                snapshot = (self._state.phase, self._state.day_number, self._state.night_number)
+                if snapshot == last_phase_snapshot:
+                    stuck_count += 1
+                    if stuck_count >= 50:
+                        logger.warning(
+                            "Game stuck detected at step %d: phase=%s day=%d night=%d — forcing finish",
+                            self._step_count, self._state.phase,
+                            self._state.day_number, self._state.night_number,
+                        )
+                        break
+                else:
+                    stuck_count = 0
+                    last_phase_snapshot = snapshot
         except Exception as exc:
             import traceback
-            logger.warning("Graph execution error in run() at step %d: %s\n%s", self._step_count, exc, traceback.format_exc())
+            logger.warning(
+                "Graph execution error in run() at step %d (phase=%s, day=%d, night=%d): %s\n%s",
+                self._step_count, self._state.phase,
+                self._state.day_number, self._state.night_number,
+                exc, traceback.format_exc(),
+            )
 
         self._finished = self._state.phase == "finished" or self._state.winning_faction is not None
         if self._finished:
@@ -279,7 +300,7 @@ class GameRunner:
 
     def run_scripted(
         self,
-        max_steps: int = 500,
+        max_steps: int = 1000,
         *,
         wolf_kill_target_id: str | None = None,
         use_antidote: bool = False,
@@ -332,7 +353,7 @@ class GameRunner:
         self._persist_if_configured()
         return self._state
 
-    def run_step(self, max_steps: int = 500) -> GameState:
+    def run_step(self, max_steps: int = 1000) -> GameState:
         """Advance the game by one graph node.
 
         Uses a persistent stream generator that is kept alive between calls.

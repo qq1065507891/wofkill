@@ -118,6 +118,112 @@ def _action_trace_payload(action: Any) -> dict[str, Any] | None:
     return trace.model_dump() if trace else None
 
 
+def _estimate_witch_save_value(
+    gs: GameState,
+    target_id: str | None,
+) -> dict[str, Any]:
+    """Estimate the strategic value of saving the wolf-kill target.
+
+    Returns structured decision data — the LLM still makes the final call.
+    On N1 there is no public info, so we provide a probability framework
+    and explicit trade-offs instead of a numeric score.
+    On N2+ we score the target based on observable behavior.
+    """
+    if target_id is None:
+        return {"actionable": False, "reason": "no_wolf_kill"}
+
+    non_wolf_alive = sum(
+        1 for p in gs.players.values() if p.alive and p.role != "werewolf"
+    )
+    power_roles_alive = sum(
+        1 for p in gs.players.values()
+        if p.alive and p.role in ("seer", "hunter", "idiot", "hybrid")
+    )
+
+    # N1: no public information, use probability framework
+    if gs.night_number == 1 and gs.day_number == 0:
+        return {
+            "actionable": True,
+            "night": 1,
+            "public_info_available": False,
+            "probability_framework": {
+                "p_seer": round(1 / max(non_wolf_alive, 1), 3),
+                "p_power_role": round(power_roles_alive / max(non_wolf_alive, 1), 3),
+                "p_villager": round(
+                    max(non_wolf_alive - power_roles_alive, 0) / max(non_wolf_alive, 1), 3
+                ),
+            },
+            "trade_off": {
+                "save_now": "首夜盲救，被杀者有约{:.0f}%概率是神职，价值较高；但也有{:.0f}%概率是普通村民".format(
+                    power_roles_alive / max(non_wolf_alive, 1) * 100,
+                    max(non_wolf_alive - power_roles_alive, 0) / max(non_wolf_alive, 1) * 100,
+                ),
+                "save_later": "保留解药，在后续有信息（警长选举、预言家验人、发言分析）时精准救人，价值更高",
+                "risk_no_save": "如果不救而恰好被杀者是预言家，好人方将失去最重要的信息源",
+            },
+        }
+
+    # N2+: score target based on observable public behavior
+    score = 0
+    signals: list[str] = []
+
+    # Was target the sheriff or sheriff candidate?
+    if gs.sheriff_id == target_id and gs.sheriff_badge_state == "active":
+        score += 8
+        signals.append("is_sheriff")
+    for e in gs.events:
+        if e.type == "sheriff_registration" and e.payload.get("player_id") == target_id:
+            score += 3
+            signals.append("ran_for_sheriff")
+            break
+
+    # Did target claim seer or power role in public speech?
+    for e in gs.events:
+        if e.type != "speech" or e.payload.get("speaker") != target_id:
+            continue
+        text = e.payload.get("text", "")
+        if "预言家" in text or "seer" in text.lower():
+            score += 6
+            signals.append("claimed_seer_in_speech")
+            break
+        if "猎人" in text or "白痴" in text:
+            score += 2
+            signals.append("claimed_power_role")
+
+    # Did anyone else confirm target as good (seer check result)?
+    for e in gs.events:
+        if e.type == "speech":
+            text = e.payload.get("text", "")
+            if target_id in text and ("金水" in text or "好人" in text):
+                score += 3
+                signals.append("confirmed_good_by_seer_claim")
+                break
+
+    # How many speeches did target give? (active participants are usually power roles)
+    speech_count = sum(
+        1 for e in gs.events
+        if e.type == "speech" and e.payload.get("speaker") == target_id
+    )
+    if speech_count >= 2:
+        score += 1
+        signals.append(f"active_speaker({speech_count}_speeches)")
+
+    return {
+        "actionable": True,
+        "night": gs.night_number,
+        "public_info_available": True,
+        "target_id": target_id,
+        "save_value_score": score,
+        "signals": signals,
+        "interpretation": (
+            f"目标公开行为分析：得分{score}分。"
+            + ("高价值目标，强烈建议救人。" if score >= 6 else
+              "中等价值目标，需综合判断。" if score >= 3 else
+              "低价值目标，可考虑保留解药。")
+        ),
+    }
+
+
 def _build_witch_pressure_targets(gs: GameState) -> list[dict[str, Any]]:
     """Build poison pressure targets from public state.
 
@@ -180,6 +286,731 @@ def _public_seer_claimants(gs: GameState) -> set[str]:
             if any(marker in text for marker in seer_markers):
                 claimants.add(speaker)
     return claimants
+
+
+def _evaluate_seer_check_value(
+    gs: GameState,
+    seer_id: str,
+    legal_targets: list[str],
+) -> dict[str, Any] | None:
+    """Score unchecked targets by information value for the seer."""
+    if not legal_targets:
+        return None
+
+    scores: dict[str, dict[str, Any]] = {}
+    for pid in legal_targets:
+        sig: list[str] = []
+        value = 0
+
+        # High-value: was accused of being wolf in public speech
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            text = str(e.payload.get("text", ""))
+            speaker = e.payload.get("speaker", "")
+            if speaker == seer_id:
+                continue
+            if pid in text and ("狼" in text or "可疑" in text or "查杀" in text):
+                sig.append(f"public_suspect_by_{speaker}")
+                value += 3
+                break
+
+        # High-value: claimed a power role — verify authenticity
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") != pid:
+                continue
+            text = str(e.payload.get("text", ""))
+            claims = e.payload.get("claims") or []
+            for claim in claims:
+                if claim.get("type") == "role" and claim.get("value") in (
+                    "seer", "witch", "hunter",
+                ):
+                    sig.append(f"claimed_{claim['value']}")
+                    value += 5
+                    break
+            if "女巫" in text or "我是猎人" in text:
+                sig.append("claimed_power_in_text")
+                value += 4
+            break
+
+        # Medium: ran for sheriff (potential power role or wolf)
+        for e in gs.events:
+            if e.type == "sheriff_registration" and e.payload.get("player_id") == pid:
+                sig.append("ran_for_sheriff")
+                value += 2
+                break
+
+        # Medium: unclear stance — not clearly aligned with any seer claimant
+        seer_claimants = _public_seer_claimants(gs)
+        if seer_claimants:
+            supported_a_seer = False
+            for e in gs.events:
+                if e.type not in ("speech", "sheriff_speech"):
+                    continue
+                if e.payload.get("speaker") != pid:
+                    continue
+                text = str(e.payload.get("text", ""))
+                if any(sc in text for sc in seer_claimants):
+                    supported_a_seer = True
+                    break
+            if not supported_a_seer:
+                sig.append("unclear_stance")
+                value += 3
+
+        # Low: active speaker (more data available for LLM to judge)
+        speech_count = sum(
+            1 for e in gs.events
+            if e.type in ("speech", "sheriff_speech")
+            and e.payload.get("speaker") == pid
+        )
+        if speech_count == 0:
+            sig.append("silent_player")
+            value += 2
+
+        scores[pid] = {"value": value, "signals": sig}
+
+    # Sort by value descending
+    ranked = sorted(scores.items(), key=lambda x: x[1]["value"], reverse=True)
+    return {
+        "description": "未验玩家的信息价值评估（分数越高越值得验）",
+        "ranked_targets": [
+            {"target": t, "value": d["value"], "signals": d["signals"]}
+            for t, d in ranked
+        ],
+        "recommendation": (
+            f"建议优先查验: {ranked[0][0]}（价值分={ranked[0][1]['value']}，"
+            f"信号: {', '.join(ranked[0][1]['signals']) or '无特殊信号'}）"
+            if ranked else "无可用验人目标"
+        ),
+    }
+
+
+def _build_seer_day_speech_directive(
+    gs: GameState,
+    seer_id: str,
+) -> dict[str, Any]:
+    """Build structured day speech directives for the seer."""
+    parts: dict[str, Any] = {}
+
+    # Collect check results this seer has obtained
+    check_results: list[dict[str, Any]] = []
+    for e in gs.events:
+        if e.type == "seer_check" and e.payload.get("seer_id") == seer_id:
+            check_results.append({
+                "target": e.payload["target_id"],
+                "alignment": e.payload["alignment"],
+                "night": e.payload["night_number"],
+            })
+
+    # Determine which results have been publicly reported
+    reported: set[str] = set()
+    for e in gs.events:
+        if e.type not in ("speech", "sheriff_speech"):
+            continue
+        if e.payload.get("speaker") != seer_id:
+            continue
+        text = str(e.payload.get("text", ""))
+        for cr in check_results:
+            if cr["target"] in text:
+                reported.add(f"N{cr['night']}:{cr['target']}")
+
+    unreported = [
+        cr for cr in check_results
+        if f"N{cr['night']}:{cr['target']}" not in reported
+    ]
+
+    # Counterclaim context
+    counterclaiming_seers = _public_seer_claimants(gs) - {seer_id}
+
+    # Build reporting guidance
+    reporting_parts: list[str] = [
+        "你是预言家。你的白天发言需要传递验人信息，带领好人阵营。核心原则：",
+    ]
+
+    if unreported:
+        wolf_checks = [cr for cr in unreported if cr["alignment"] == "wolf"]
+        good_checks = [cr for cr in unreported if cr["alignment"] == "good"]
+
+        if wolf_checks:
+            wc = wolf_checks[0]
+            reporting_parts.append(
+                f"【查杀未报】你在N{wc['night']}验出 {wc['target']} 是狼人，"
+                "这个查杀必须在本轮发言中报出！查杀是你的最强武器。"
+            )
+        if good_checks:
+            gc = good_checks[0]
+            reporting_parts.append(
+                f"【金水未报】你在N{gc['night']}验出 {gc['target']} 是好人。"
+                "可以选择在发言中报出金水（增加好人阵营信息），"
+                "但不必一次全部报出——保留部分验人信息可以作为后续发言的证据。"
+            )
+
+        parts["unreported_checks"] = [
+            {"target": cr["target"], "alignment": cr["alignment"], "night": cr["night"]}
+            for cr in unreported
+        ]
+
+    if counterclaiming_seers:
+        reporting_parts.append(
+            f"【对跳局面】有玩家对跳预言家: {sorted(counterclaiming_seers)}。"
+            "你必须坚定立场，用你的验人信息和逻辑链证明自己才是真预言家："
+            "1) 报出你的验人结果和验人逻辑链；"
+            "2) 分析对跳预言家的发言漏洞；"
+            "3) 强调你的警徽流是否被遵守。"
+        )
+    else:
+        reporting_parts.append(
+            "场上没有对跳预言家，你的身份可信度很高。"
+            "集中传递验人信息，归票推狼。"
+        )
+
+    reporting_parts.append(
+        "\n报验人的标准格式：'我在第X夜验了[玩家]，结果是[好人/狼人]。'"
+    )
+    reporting_parts.append(
+        "注意：混血儿验出是'好人'，但可能属于狼人阵营，注意这个盲区。"
+    )
+
+    parts["seer_speech_directive"] = "\n".join(reporting_parts)
+
+    # Include all check results for reference
+    if check_results:
+        parts["my_check_history"] = [
+            {"target": cr["target"], "alignment": cr["alignment"],
+             "night": cr["night"], "reported": f"N{cr['night']}:{cr['target']}" in reported}
+            for cr in check_results
+        ]
+
+    return parts
+
+
+def _build_hunter_day_speech_directive(
+    gs: GameState,
+    hunter_id: str,
+) -> str:
+    """Build day speech directive for the hunter."""
+    # Check if hunter identity has been publicly revealed
+    identity_exposed = False
+    for e in gs.events:
+        if e.type not in ("speech", "sheriff_speech"):
+            continue
+        text = str(e.payload.get("text", ""))
+        speaker = e.payload.get("speaker", "")
+        if speaker == hunter_id and ("猎人" in text or "我是猎人" in text):
+            identity_exposed = True
+            break
+        # Someone else identified the hunter
+        if hunter_id in text and "猎人" in text and speaker != hunter_id:
+            identity_exposed = True
+            break
+
+    if identity_exposed:
+        return (
+            "你是猎人，且你的身份已经公开。\n"
+            "身份公开后的策略：\n"
+            "1) 利用'我有枪'的威慑力，给狼人施加压力\n"
+            "2) 明确表达你的怀疑和站边，让狼人忌惮开枪带走他们\n"
+            "3) 不要虚张声势说你会带走某人——如果你被毒杀将无法开枪\n"
+            "4) 如果预言家已死，你可以主动承担信息整理和归票的职责"
+        )
+
+    return (
+        "你是猎人，但你的身份尚未公开。\n"
+        "猎人发言策略（核心：隐藏身份）：\n"
+        "1) 不要暴露自己是猎人！狼人知道你是猎人后会避免刀你、改让女巫毒杀来禁枪\n"
+        "2) 像普通村民一样发言，参与讨论、表达站边、分析逻辑\n"
+        "3) 注意观察谁发言矛盾、站边模糊——这些是你未来可能的枪击目标\n"
+        "4) 如果预言家验了你且报了金水，可以帮预言家站边增强好人阵营凝聚力\n"
+        "5) 不需要刻意低调到完全沉默，正常参与讨论即可"
+    )
+
+
+def _build_hybrid_day_speech_directive(
+    gs: GameState,
+    hybrid_id: str,
+) -> dict[str, Any]:
+    """Build day speech directive for the hybrid."""
+    parts: dict[str, Any] = {}
+
+    # Core rules reminder
+    parts["hybrid_speech_directive"] = (
+        "你是混血儿。你的胜利条件是跟随主人的原始阵营获胜。"
+        f"你的主人是 {gs.hybrid_master_id}，你不知道主人的身份和阵营。\n\n"
+        "发言核心原则：\n"
+        "1) 绝对不要暴露你的混血儿身份——一旦暴露，好人阵营会怀疑你（尤其如果主人是狼），"
+        "狼人也会利用你\n"
+        "2) 表现得像一个普通村民——参与讨论、表达站边、分析逻辑\n"
+        "3) 观察你的主人的行为：主人站哪边、投谁、发什么言——"
+        "如果主人帮好人阵营，你倾向好人；如果主人帮狼人，你要暗中配合\n"
+        "4) 不要刻意跟随主人的每一个观点——那会暴露你们的关系\n"
+        "5) 在不暴露身份的前提下，尽量确保你的投票方向对主人阵营有利"
+    )
+
+    # Master behavior analysis (if enough days have passed)
+    if gs.day_number >= 2 and gs.hybrid_master_id:
+        master_speeches: list[str] = []
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") != gs.hybrid_master_id:
+                continue
+            master_speeches.append(str(e.payload.get("text", ""))[:100])
+
+        if master_speeches:
+            parts["master_behavior_summary"] = (
+                f"主人 {gs.hybrid_master_id} 的历史发言摘要（前3条）：\n"
+                + "\n".join(f"  - {s}" for s in master_speeches[:3])
+                + "\n\n根据这些发言，判断主人更可能属于哪个阵营，调整你的站边方向。"
+            )
+
+    return parts
+
+
+def _build_villager_day_speech_directive(
+    gs: GameState,
+    villager_id: str,
+) -> dict[str, Any]:
+    """Build day speech directive for villager/idiot — pure analysis, no private info."""
+    parts: dict[str, Any] = {}
+
+    # Collect public information for analysis
+    seer_claimants = _public_seer_claimants(gs)
+    vote_history = _collect_public_vote_history(gs)
+    death_order = _collect_death_order(gs)
+
+    # Build seer claim analysis if there are competing claims
+    seer_analysis = ""
+    if len(seer_claimants) >= 2:
+        seer_analysis = (
+            "\n\n【对跳预言家分析】场上有多个预言家声明，你需要独立判断：\n"
+            "1) 验人逻辑链：谁的验人报告与死亡、投票数据吻合？\n"
+            "2) 警徽流一致性：谁在遵守自己的警徽流承诺？\n"
+            "3) 发言质量：谁的发言有实质信息，谁只是在泛泛而谈？\n"
+            "4) 站边分析：谁在帮好人说话，谁在帮狼人打掩护？\n"
+            f"对跳预言家: {sorted(seer_claimants)}"
+        )
+    elif len(seer_claimants) == 1:
+        seer_analysis = (
+            f"\n\n【单边预言家】场上只有一个预言家声明: {sorted(seer_claimants)}，"
+            "单边预言家可信度较高，但仍需关注其验人逻辑是否合理。"
+        )
+
+    # Build vote pattern analysis
+    vote_analysis = ""
+    if vote_history:
+        vote_analysis = "\n\n【投票数据参考】" + vote_history
+
+    # Build death order analysis
+    death_analysis = ""
+    if death_order:
+        death_analysis = "\n\n【死亡顺序】" + death_order
+
+    role_label = "白痴" if gs.players.get(villager_id, None) and gs.players[villager_id].role == "idiot" else "普通村民"
+    parts["villager_speech_directive"] = (
+        f"你是{role_label}，没有夜间技能和私有信息，你的核心价值是逻辑分析能力。\n\n"
+        "发言策略：\n"
+        "1) 不要复述别人的观点——提出你自己的分析和判断\n"
+        "2) 引用具体的发言内容和投票数据来支撑你的论点\n"
+        "3) 如果你有独立的怀疑对象，说明理由；不要无证据跟风\n"
+        "4) 不要冒充任何角色——你没有信息来支撑冒充\n"
+        "5) 如果预言家已死或被怀疑，好人阵营需要你站出来做逻辑整理"
+        f"{seer_analysis}{vote_analysis}{death_analysis}"
+    )
+
+    return parts
+
+
+def _collect_public_vote_history(gs: GameState) -> str:
+    """Collect public vote history for villager analysis."""
+    lines: list[str] = []
+    for e in gs.events:
+        if e.type != "vote_resolved":
+            continue
+        exiled = e.payload.get("exiled")
+        tied = e.payload.get("tied", [])
+        votes = e.payload.get("votes", {})
+        day = e.payload.get("day_number", "?")
+        if exiled:
+            # Collect who voted for the exiled player
+            supporters = [v for v, t in votes.items() if t == exiled]
+            lines.append(f"D{day}: {exiled}被放逐（投TA的: {', '.join(supporters)}）")
+        elif tied:
+            lines.append(f"D{day}: 平票PK {', '.join(tied)}，无人出局")
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
+def _collect_death_order(gs: GameState) -> str:
+    """Collect public death order for villager analysis."""
+    lines: list[str] = []
+    for d in gs.deaths:
+        reason_label = {"wolf_kill": "狼杀", "exile": "放逐", "witch_poison": "毒杀",
+                        "hunter_shot": "猎人开枪"}.get(d.reason, d.reason)
+        lines.append(f"{d.player_id}({reason_label})")
+    if not lines:
+        return ""
+    return " → ".join(lines)
+
+
+def _build_idiot_day_speech_directive(
+    gs: GameState,
+    idiot_id: str,
+) -> dict[str, Any]:
+    """Build day speech directive for the idiot — context-aware before/after reveal."""
+    parts: dict[str, Any] = {}
+    player = gs.players.get(idiot_id)
+    revealed = player.revealed_idiot if player else False
+
+    # Reuse villager analysis framework
+    villager_parts = _build_villager_day_speech_directive(gs, idiot_id)
+    # Extract the analysis sections appended to the villager directive
+    villager_text = villager_parts.get("villager_speech_directive", "")
+    # Everything after the core strategy is analysis data (seer claims, votes, deaths)
+    analysis_sections = ""
+    for marker in ("【对跳预言家分析】", "【单边预言家】", "【投票数据参考】", "【死亡顺序】"):
+        idx = villager_text.find(marker)
+        if idx != -1:
+            analysis_sections += "\n" + villager_text[idx:]
+
+    if revealed:
+        parts["idiot_speech_directive"] = (
+            "你是白痴，已经翻牌亮明身份。你当前状态：\n"
+            "- 仍然存活，可以发言\n"
+            "- 已经失去投票权（无法参与投票）\n"
+            "- 免疫放逐（不会再被投出局）\n"
+            "- 唯一的死法是被狼人夜间击杀\n\n"
+            "亮牌后策略：\n"
+            "1) 你不怕被投票，大胆发言传递你的分析和判断\n"
+            "2) 整理场上的关键信息：预言家验人、投票数据、逻辑矛盾\n"
+            "3) 明确表态你怀疑谁、信任谁——你不用担心被投\n"
+            "4) 不要虚张声势说你有什么特殊信息——你只是普通好人\n"
+            "5) 你的发言仍然需要逻辑和证据支撑，否则存活玩家不会采信"
+            f"{analysis_sections}"
+        )
+    else:
+        parts["idiot_speech_directive"] = (
+            "你是白痴，但尚未翻牌。你的特殊规则：\n"
+            "- 如果被投票放逐，你会翻牌自证身份并存活\n"
+            "- 但翻牌后你会失去投票权，严重削弱好人阵营的力量\n"
+            "- 翻牌后你唯一的死法是被狼人夜杀\n\n"
+            "翻牌前策略（核心：避免被投）：\n"
+            "1) 发言保持温和理性，不要太激进或攻击性太强\n"
+            "2) 有理有据地表达观点，但避免成为焦点\n"
+            "3) 不要站边太极端——容易被反推\n"
+            "4) 不要冒充任何角色\n"
+            "5) 如果有人攻击你，冷静回应而非激烈对抗"
+            f"{analysis_sections}"
+        )
+
+    return parts
+
+
+def _evaluate_wolf_kill_target(
+    gs: GameState,
+    wolf_id: str,
+    legal_targets: list[str],
+) -> dict[str, Any] | None:
+    """Score potential kill targets by threat level for the wolf team."""
+    if not legal_targets:
+        return None
+
+    alive_teammates = [
+        w for w, p in gs.players.items()
+        if p.alive and p.role == "werewolf" and w != wolf_id
+    ]
+
+    scores: dict[str, dict[str, Any]] = {}
+    for pid in legal_targets:
+        sig: list[str] = []
+        value = 0
+
+        # Claimed seer and produced wolf-check results — biggest threat
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") != pid:
+                continue
+            text = str(e.payload.get("text", ""))
+            if "预言家" in text or "seer" in text.lower():
+                sig.append("claimed_seer")
+                value += 6
+                break
+
+        # Seer check results pointing at wolves — actively hurting wolf team
+        seer_check_wolf_from_pid = False
+        for e in gs.events:
+            if e.type == "seer_check" and e.payload.get("alignment") == "wolf":
+                if e.payload.get("seer_id") == pid:
+                    seer_check_wolf_from_pid = True
+                    sig.append("seer_check_wolf_reporter")
+                    value += 10
+                    break
+        if not seer_check_wolf_from_pid:
+            # Check if player publicly reported a wolf-check in speech
+            for e in gs.events:
+                if e.type not in ("speech", "sheriff_speech"):
+                    continue
+                if e.payload.get("speaker") != pid:
+                    continue
+                text = str(e.payload.get("text", ""))
+                if "查杀" in text or "验出狼" in text:
+                    sig.append("publicly_reported_wolf_check")
+                    value += 8
+                    break
+
+        # Is sheriff — leadership + vote bonus
+        if gs.sheriff_id == pid and gs.sheriff_badge_state == "active":
+            sig.append("is_sheriff")
+            value += 8
+
+        # Claimed power role (witch, hunter) — ability threat
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") != pid:
+                continue
+            text = str(e.payload.get("text", ""))
+            if "女巫" in text or "猎人" in text:
+                sig.append("claimed_power_role")
+                value += 4
+                break
+
+        # Active analyst — speeches that pointed at wolves
+        wolf_mentions = 0
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") != pid:
+                continue
+            text = str(e.payload.get("text", ""))
+            for w in alive_teammates:
+                if w in text and ("狼" in text or "可疑" in text):
+                    wolf_mentions += 1
+        if wolf_mentions >= 2:
+            sig.append(f"analyst_accused_{wolf_mentions}_wolves")
+            value += 5
+        elif wolf_mentions == 1:
+            sig.append("accused_teammate")
+            value += 2
+
+        # Ran for sheriff — potentially important role
+        for e in gs.events:
+            if e.type == "sheriff_registration" and e.payload.get("player_id") == pid:
+                sig.append("ran_for_sheriff")
+                value += 2
+                break
+
+        scores[pid] = {"value": value, "signals": sig}
+
+    ranked = sorted(scores.items(), key=lambda x: x[1]["value"], reverse=True)
+    top_value = ranked[0][1]["value"] if ranked else 0
+
+    return {
+        "description": "击杀目标威胁评估（分数越高对狼队威胁越大，越应优先击杀）",
+        "ranked_targets": [
+            {"target": t, "value": d["value"], "signals": d["signals"]}
+            for t, d in ranked
+        ],
+        "recommendation": (
+            f"建议击杀: {ranked[0][0]}（威胁分={ranked[0][1]['value']}，"
+            f"信号: {', '.join(ranked[0][1]['signals']) or '无特殊信号'}）"
+            if ranked and top_value > 0 else
+            "无明确高威胁目标，可自由选择"
+        ),
+    }
+
+
+def _get_wolf_role_assignment(
+    wolf_team_plan: dict[str, Any] | None,
+    wolf_id: str,
+) -> str:
+    """Determine this wolf's role assignment from the team plan."""
+    if not wolf_team_plan:
+        return "unassigned"
+    for role in ("fake_seer", "pusher", "hooker", "deep_cover"):
+        if wolf_team_plan.get(role) == wolf_id:
+            return role
+    return "unassigned"
+
+
+_WOLF_ROLE_STRATEGY = {
+    "fake_seer": (
+        "你是悍跳狼（假预言家）。白天发言策略：\n"
+        "1) 跳预言家，报出你的'验人结果'。必须像真预言家一样有验人逻辑链\n"
+        "2) 如果场上有真预言家跳了，你必须对跳——质疑真预言家的验人逻辑和警徽流\n"
+        "3) 报验人的标准格式：'我在第X夜验了[玩家]，结果是[好人/狼人]'\n"
+        "4) 你可以报一个好人做金水来拉拢，或者报一个好人查杀来推人\n"
+        "5) 不要暴露你的队友——你'验出'的好人可以是你的队友（假金水）\n"
+        "6) 如果真预言家验出了狼（你的队友），你必须质疑该验人结果的可信度\n"
+        "7) 不要慌张——对跳预言家是正常游戏行为，保持自信和逻辑连贯"
+    ),
+    "pusher": (
+        "你是冲锋狼。白天发言策略：\n"
+        "1) 你是狼队的攻击手——主动带节奏、推人、制造混乱\n"
+        "2) 集中火力推团队的白天目标（day_push_target），用具体的'证据'指控\n"
+        "3) 可以质疑预言家的验人结果，为悍跳狼队友站台\n"
+        "4) 发言要有攻击性但不要无脑——每个指控都需要'理由'\n"
+        "5) 如果悍跳狼被质疑，你要主动为其辩护或转移话题\n"
+        "6) 不要直接暴露和队友的配合关系——表现得像独立判断"
+    ),
+    "hooker": (
+        "你是倒钩狼。白天发言策略：\n"
+        "1) 核心任务：获取好人信任。你的价值在于'被信任后的背叛'\n"
+        "2) 可以轻踩队友（质疑悍跳狼的验人、指出冲锋狼的漏洞）来换取信任\n"
+        "3) 踩队友时必须用独立逻辑——'我觉得X的验人时间线不对'而不是'他是狼'\n"
+        "4) 投票时可以跟好人走（投队友）来加深信任\n"
+        "5) 不要太早暴露——N1/D1尽量低调，D2+再开始'独立分析'\n"
+        "6) 关键时刻（4-5人残局）你可以突然跳出来带节奏推好人"
+    ),
+    "deep_cover": (
+        "你是深水狼。白天发言策略：\n"
+        "1) 核心任务：像普通村民一样存活到最后。完全隐藏身份\n"
+        "2) 表现得像一个有分析能力的普通好人——参与讨论、表达站边、分析逻辑\n"
+        "3) 不要太出色引人注目，也不要太沉默被怀疑\n"
+        "4) 可以帮真预言家站边（如果真预言家已经暴露），增强你的好人面\n"
+        "5) 不要主动为队友辩护——那会暴露你们的关系\n"
+        "6) 如果队友被推，表现得'意外'并附和好人的推人逻辑\n"
+        "7) 你的目标是活到最后阶段（3-4人残局），那时你的1票就能决定胜负"
+    ),
+    "unassigned": (
+        "你是狼人，但没有特定角色分工。白天发言策略：\n"
+        "1) 表现得像一个普通好人——参与讨论、表达站边\n"
+        "2) 不要暴露队友，不要暴露自己\n"
+        "3) 观察场上局势，配合队友的节奏\n"
+        "4) 投票时注意不要和队友完全一致"
+    ),
+}
+
+
+def _build_wolf_day_speech_directive(
+    gs: GameState,
+    wolf_id: str,
+    wolf_team_plan: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build day speech directive for a werewolf with role-aware strategy."""
+    parts: dict[str, Any] = {}
+
+    assignment = _get_wolf_role_assignment(wolf_team_plan, wolf_id)
+    parts["wolf_speech_directive"] = _WOLF_ROLE_STRATEGY.get(
+        assignment, _WOLF_ROLE_STRATEGY["unassigned"],
+    )
+
+    # Universal wolf speech constraints
+    parts["wolf_universal_rules"] = (
+        "你是狼人。以下规则对所有狼人角色通用：\n"
+        "1) 绝对不要提到你的队友是狼人——队友是你的'好人朋友'\n"
+        "2) 不要在发言中使用狼人视角的词汇（'我们狼人'、'刀了谁'等）\n"
+        "3) 不要完美配合队友——好人间也有分歧，太过一致会暴露\n"
+        "4) 如果有人指控你的队友，用独立逻辑回应而非本能保护\n"
+        "5) 如果你被预言家验出狼人，你需要做出回应：质疑预言家身份、"
+        "指出验人逻辑漏洞、或声称被冤枉"
+    )
+
+    # Day push target from team plan
+    if wolf_team_plan:
+        push_target = wolf_team_plan.get("day_push_target")
+        if push_target and push_target in gs.players and gs.players[push_target].alive:
+            parts["wolf_day_push_target"] = (
+                f"狼队白天推人目标: {push_target}。在发言中引导其他玩家怀疑该目标，"
+                "但不要直接说'投TA'——用分析和质疑的方式引导。"
+            )
+
+        # Inform about fake seer identity for coordination
+        fake_seer = wolf_team_plan.get("fake_seer")
+        if fake_seer and fake_seer != wolf_id:
+            parts["wolf_fake_seer_teammate"] = (
+                f"你的队友 {fake_seer} 是悍跳狼（假预言家），在白天会跳预言家。"
+                "你的发言要配合TA的叙事——如果TA报了验人，你要像好人对真预言家一样回应。"
+            )
+            if assignment == "pusher":
+                parts["wolf_fake_seer_teammate"] += (
+                    "主动为TA的验人结果站台、质疑对跳预言家。"
+                )
+            elif assignment == "hooker":
+                parts["wolf_fake_seer_teammate"] += (
+                    "你可以轻踩TA来获取信任，但不要太用力。"
+                )
+            elif assignment == "deep_cover":
+                parts["wolf_fake_seer_teammate"] += (
+                    "表现得像一个中立的好人来判断谁更像真预言家。"
+                )
+
+    # Counterclaim context: if a real seer has publicly checked a wolf teammate
+    wolf_teammates = [
+        pid for pid, p in gs.players.items()
+        if p.alive and p.role == "werewolf" and pid != wolf_id
+    ]
+    teammate_checked = []
+    for e in gs.events:
+        if e.type == "seer_check" and e.payload.get("alignment") == "wolf":
+            target = e.payload.get("target_id", "")
+            if target in wolf_teammates:
+                teammate_checked.append({
+                    "target": target,
+                    "seer": e.payload.get("seer_id", ""),
+                    "night": e.payload.get("night_number", ""),
+                })
+    if teammate_checked:
+        parts["wolf_teammate_exposed"] = (
+            f"警告：你的队友被真预言家验出狼人了！"
+            f"被验队友: {', '.join(t['target'] + '(被' + t['seer'] + '验出)' for t in teammate_checked)}。"
+            "应对策略：质疑该预言家的身份和验人逻辑，或直接对跳。"
+        )
+
+    return parts
+
+
+def _build_wolf_vote_strategy(
+    gs: GameState,
+    voter_id: str,
+    wolf_team_plan: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build vote strategy for a werewolf."""
+    assignment = _get_wolf_role_assignment(wolf_team_plan, voter_id)
+    parts: dict[str, Any] = {}
+
+    # Base strategy
+    parts["wolf_vote_strategy"] = (
+        "你是狼人，你的投票目标是帮助狼队推走好人，同时隐藏身份。\n"
+        "核心原则：\n"
+        "1) 优先投狼队的推人目标\n"
+        "2) 不要和所有队友投同一人——至少要有1-2人投不同目标\n"
+        "3) 投票理由要像好人一样基于公开信息分析\n"
+        "4) 不要在投票理由中暴露夜间信息"
+    )
+
+    # Role-specific vote behavior
+    if assignment == "hooker":
+        parts["wolf_vote_role_hint"] = (
+            "你是倒钩狼，投票策略：可以投你的狼人队友（如果有人推TA），"
+            "这能增强你的好人面。但不要每轮都投队友。"
+        )
+    elif assignment == "deep_cover":
+        parts["wolf_vote_role_hint"] = (
+            "你是深水狼，投票策略：跟随主流好人票型投票，"
+            "不要做那个唯一投不同目标的人。"
+        )
+    elif assignment == "fake_seer":
+        parts["wolf_vote_role_hint"] = (
+            "你是悍跳狼，投票策略：投票给对跳预言家或TA的支持者，"
+            "强化你的'预言家'人设。"
+        )
+    elif assignment == "pusher":
+        parts["wolf_vote_role_hint"] = (
+            "你是冲锋狼，投票策略：带头投推人目标，"
+            "在投票理由中用'分析'和'证据'来带动其他好人跟票。"
+        )
+
+    # Day push target
+    if wolf_team_plan:
+        push_target = wolf_team_plan.get("day_push_target")
+        if push_target and push_target in gs.players and gs.players[push_target].alive:
+            parts["wolf_vote_target"] = f"狼队推人目标: {push_target}"
+
+    return parts
 
 
 def build_agent_context(
@@ -503,9 +1334,35 @@ def agent_night_witch(
     witch_directive["witch_night_action"] += (
         "\n\n重要规则：不能在同一夜同时使用解药和毒药。"
         "解药不能自救。"
-        "N1 / 首夜大概率应该救人。"
-        "speech字段留空（夜间行动不需要发言）。"
     )
+
+    # Structured target value assessment — LLM reasons over data, not vague text
+    save_value = _estimate_witch_save_value(gs, wolf_kill_target_id)
+    witch_directive["save_value_assessment"] = save_value
+    if save_value.get("actionable"):
+        if save_value.get("public_info_available"):
+            # N2+: explicit score + interpretation
+            score = save_value.get("save_value_score", 0)
+            interp = save_value.get("interpretation", "")
+            signals = "、".join(save_value.get("signals", []))
+            witch_directive["witch_strategy_hint"] = (
+                f"被杀者价值评估：得分{score}分（信号：{signals}）。{interp}"
+            )
+        else:
+            # N1: probability framework + trade-off
+            pf = save_value.get("probability_framework", {})
+            trade = save_value.get("trade_off", {})
+            p_power = pf.get("p_power_role", 0)
+            witch_directive["witch_strategy_hint"] = (
+                f"首夜无公开信息。被杀者是神职的概率约{p_power:.0%}，是村民的概率约{pf.get('p_villager', 0):.0%}。"
+                f"权衡：{trade.get('save_now', '')} | {trade.get('save_later', '')} | {trade.get('risk_no_save', '')}"
+            )
+    else:
+        witch_directive["witch_strategy_hint"] = ""
+    if not gs.poison_used:
+        witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
+
+    witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
 
     # Special directive: witch is first-night wolf kill target
     if wolf_kill_target_id == witch_id and not gs.poison_used:
@@ -564,18 +1421,27 @@ def agent_night_seer(
     if counterclaiming_seers:
         legal_targets = [pid for pid in legal_targets if pid not in counterclaiming_seers]
 
+    # Exclude already-checked targets (no value in re-checking known alignments)
+    checked_ids: set[str] = set()
+    for e in gs.events:
+        if e.type == "seer_check" and e.payload.get("seer_id") == seer_id:
+            checked_ids.add(e.payload["target_id"])
+    if checked_ids:
+        legal_targets = [pid for pid in legal_targets if pid not in checked_ids]
+
     # Build seer strategy: follow badge flow plan from election speech
     badge_flow_next = None
     for e in gs.events:
         if e.type == "sheriff_speech" and e.payload.get("speaker") == seer_id:
-            # Try to extract badge flow targets from the speech text
             text = e.payload.get("text", "")
-            # Simple extraction: find player IDs mentioned near "验" or "警徽流"
             import re
             mentioned = re.findall(r'p\d+', text)
             if mentioned:
                 badge_flow_next = [pid for pid in mentioned if pid in legal_targets]
             break
+
+    # Structured check-value assessment for each unchecked target
+    check_value = _evaluate_seer_check_value(gs, seer_id, legal_targets)
 
     night_num = gs.night_number
     night_label = phase_label("night", night_num)
@@ -589,7 +1455,6 @@ def agent_night_seer(
         seer_guidance = (
             f"{night_label} 验人策略：根据白天讨论中你最怀疑的人选择查验目标。"
             "优先验：1) 发言前后矛盾的人；2) 站边不明确的人；3) 被多人怀疑但你不确定的人。"
-            "不要验你已经确认的好人。"
             "不要查验对跳预言家的玩家；对跳位应通过白天发言、票型和放逐解决，夜晚验人用于开新视角。"
         )
 
@@ -599,9 +1464,13 @@ def agent_night_seer(
             "验人结果（好人/狼人）将在明天白天得知。"
             f"\n\n{seer_guidance}"
             "\n\n注意：本局没有守卫，预言家无法被守护，必须谨慎选择。"
+            "\n\n【重要】本局存在混血儿角色，你的验人技能对混血儿显示'好人'，"
+            "但混血儿可能在狼人阵营（取决于其主人阵营）。验出'好人'不代表100%安全。"
             "speech字段留空（夜间行动不需要发言）。"
         ),
     }
+    if check_value:
+        strategy_directive["check_value_assessment"] = check_value
     if badge_flow_next:
         if counterclaiming_seers:
             badge_flow_next = [pid for pid in badge_flow_next if pid not in counterclaiming_seers]
@@ -688,13 +1557,34 @@ def _single_wolf_vote(
         return None
 
     legal_targets = [pid for pid, p in gs.players.items() if p.alive and p.role != "werewolf"]
+
+    # Kill target value assessment
+    kill_assessment = _evaluate_wolf_kill_target(gs, wolf_id, legal_targets)
+    wolf_plan = state.get("wolf_team_plan")
+    strategy_directive: dict[str, Any] = {
+        "wolf_kill_instruction": (
+            "你是狼人，现在是夜间击杀阶段。选择今晚要击杀的目标。\n"
+            "击杀策略：优先击杀对狼队威胁最大的玩家（已跳预言家、持警徽、分析能力强的）。\n"
+            "如果狼队讨论已确定目标，按讨论共识执行。\n"
+            "speech字段留空（夜间行动不需要发言）。"
+        ),
+    }
+    if kill_assessment:
+        strategy_directive["kill_value_assessment"] = kill_assessment
+    if wolf_plan and wolf_plan.get("night_kill_primary"):
+        strategy_directive["wolf_plan_target"] = (
+            f"狼队讨论确定的主目标: {wolf_plan['night_kill_primary']}"
+            + (f"，备选: {wolf_plan['night_kill_backup']}" if wolf_plan.get("night_kill_backup") else "")
+        )
+
     context = build_agent_context(
         engine, gs, wolf_id, TaskType.WOLF_DISCUSSION,
         legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
         legal_targets=legal_targets,
-        wolf_team_plan=state.get("wolf_team_plan"),
+        wolf_team_plan=wolf_plan,
         rag_service=state.get("rag_service"),
     )
+    context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     timeout = float(state.get("wolf_vote_timeout") or AGENT_TIMEOUTS.wolf_consensus)
     if timeout > 0:
@@ -845,7 +1735,19 @@ def agent_day_speech(
 
     # Role-specific speech constraints
     player_role = gs.players[speaker_id].role if speaker_id in gs.players else ""
-    if player_role == "witch":
+    if player_role == "werewolf":
+        wolf_parts = _build_wolf_day_speech_directive(
+            gs, speaker_id, state.get("wolf_team_plan"),
+        )
+        strategy_directive.update(wolf_parts)
+    elif player_role == "seer":
+        seer_speech_parts = _build_seer_day_speech_directive(gs, speaker_id)
+        strategy_directive.update(seer_speech_parts)
+    elif player_role == "hunter":
+        strategy_directive["hunter_speech_directive"] = _build_hunter_day_speech_directive(gs, speaker_id)
+    elif player_role == "hybrid":
+        strategy_directive["hybrid_speech_directive"] = _build_hybrid_day_speech_directive(gs, speaker_id)
+    elif player_role == "witch":
         strategy_directive["witch_speech_constraint"] = (
             "你是女巫，你掌握的夜间信息（谁被刀、药水使用情况、救了谁、毒了谁）是你的核心优势。"
             "不要轻易暴露这些信息——一旦公开，狼人会知道你的药水状态并针对性调整策略。"
@@ -854,6 +1756,10 @@ def agent_day_speech(
             "3) 有人假冒女巫需要你自证身份。"
             "透露时也要衡量利弊，不要在第一天就全部交底。"
         )
+    elif player_role == "idiot":
+        strategy_directive.update(_build_idiot_day_speech_directive(gs, speaker_id))
+    elif player_role == "villager":
+        strategy_directive.update(_build_villager_day_speech_directive(gs, speaker_id))
 
     # Sheriff gets 归票 (vote push) directive
     if gs.sheriff_id == speaker_id and gs.sheriff_badge_state == "active":
@@ -1052,6 +1958,48 @@ def agent_day_vote(
     except Exception:
         logger.debug("Vote quality context build failed, skipping", exc_info=True)
 
+    # Role-specific vote strategy
+    voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
+    if voter_role == "werewolf":
+        wolf_vote_parts = _build_wolf_vote_strategy(
+            gs, voter_id, state.get("wolf_team_plan"),
+        )
+        strategy_directive.update(wolf_vote_parts)
+    elif voter_role == "hybrid" and gs.hybrid_master_id:
+        strategy_directive["hybrid_vote_strategy"] = (
+            f"你是混血儿，主人是 {gs.hybrid_master_id}。投票策略：\n"
+            "1) 观察主人投谁——如果主人投了某人，考虑也投该方向（对主人阵营有利）\n"
+            "2) 不要每轮都跟主人投一样的人，那会暴露你们的关系\n"
+            "3) 如果主人投的人你确实认为可疑，正常投票即可\n"
+            "4) 如果主人被投了——你需要判断主人被放逐是否对主人阵营不利，"
+            "考虑是否投别人来稀释票数\n"
+            "5) 绝对不要在投票理由中暴露你的混血儿身份"
+        )
+    elif voter_role in ("villager", "idiot"):
+        seer_claimants = _public_seer_claimants(gs)
+        strategy_directive["villager_vote_strategy"] = (
+            "你是普通好人（无私有信息），投票策略必须基于公开信息独立判断：\n"
+            "1) 先判断预言家真假：\n"
+            "   - 单边预言家（无对跳）：可信度高，可以跟其查杀走\n"
+            f"   - 对跳预言家 {sorted(seer_claimants) if seer_claimants else '（暂无）'}："
+            "谁的验人逻辑链更完整？谁的发言有实质信息？谁在遵守警徽流？\n"
+            "2) 不要无条件跟任何人的票——先用你自己的分析判断谁更像狼\n"
+            "3) 关注票型数据：谁在保谁、谁在投谁——狼人倾向于抱团投票\n"
+            "4) 如果场上没有查杀，投发言逻辑最混乱、站边最模糊的人\n"
+            "5) 不要投自己——这没有任何价值"
+        )
+
+    # Pre-compute evidence-based fallback target for structured failure
+    non_self_legal = [t for t in legal_targets if t != voter_id]
+    if non_self_legal:
+        try:
+            from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+            fb = choose_vote_fallback_target(gs, voter_id, non_self_legal)
+            if fb:
+                strategy_directive["_vote_fallback_target"] = fb
+        except Exception:
+            pass
+
     context = build_agent_context(
         engine, gs, voter_id, TaskType.VOTE,
         legal_actions=legal_actions,
@@ -1082,6 +2030,85 @@ def agent_day_vote(
     }
 
 
+def _evaluate_hybrid_master_candidates(
+    gs: GameState,
+    hybrid_id: str,
+    candidates: list[str],
+) -> dict[str, Any]:
+    """Evaluate master candidates for the hybrid on N1.
+
+    The hybrid doesn't know any player's role, so scoring is based on
+    observable public signals from the sheriff election and speeches.
+    """
+    scores: dict[str, dict[str, Any]] = {}
+    for pid in candidates:
+        sig: list[str] = []
+        value = 0
+
+        # Registered for sheriff election — likely power role or confident player
+        for e in gs.events:
+            if e.type == "sheriff_registration" and e.payload.get("player_id") == pid:
+                sig.append("ran_for_sheriff")
+                value += 3
+                break
+
+        # Gave a substantive sheriff speech — engaged and likely experienced
+        for e in gs.events:
+            if e.type == "sheriff_speech" and e.payload.get("speaker") == pid:
+                text = str(e.payload.get("text", ""))
+                if len(text) > 50:
+                    sig.append("substantive_sheriff_speech")
+                    value += 2
+                break
+
+        # Claimed a power role in speech — could be real or fake, but either way influential
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") != pid:
+                continue
+            claims = e.payload.get("claims") or []
+            for claim in claims:
+                if claim.get("type") == "role":
+                    sig.append(f"claimed_{claim['value']}")
+                    value += 4
+                    break
+            break
+
+        # Position-based: prefer players in middle positions (less likely to be
+        # first-night wolf targets in a positional meta)
+        scores[pid] = {"value": value, "signals": sig}
+
+    ranked = sorted(scores.items(), key=lambda x: x[1]["value"], reverse=True)
+    total_candidates = len(candidates)
+    # Probability breakdown for the hybrid
+    god_count = 4  # seer + witch + hunter + idiot
+    wolf_count = 4
+    villager_count = 3
+
+    return {
+        "description": "主人候选评估（分数越高，玩家影响力越大，对混血儿越有价值）",
+        "probability_framework": {
+            "p_good_faction": f"~{(god_count + villager_count) / total_candidates:.0%}（7/11 好人阵营）",
+            "p_wolf_faction": f"~{wolf_count / total_candidates:.0%}（4/11 狼人阵营）",
+            "note": "你不知道主人阵营，选到好人和狼人的概率都有，策略需要灵活适应",
+        },
+        "ranked_candidates": [
+            {"target": t, "value": d["value"], "signals": d["signals"]}
+            for t, d in ranked
+        ],
+        "strategy_guidance": (
+            "选主人策略考量：\n"
+            "1) 选择影响力大的玩家（上警、发言积极、声称神职）——无论主人是好人还是狼人，"
+            "影响力大的主人意味着你的胜利条件更容易实现\n"
+            "2) 避免选择自己——你不能选自己\n"
+            "3) 不要过于纠结概率——7:4 的好人:狼人比例下，你更大概率是好人阵营，"
+            "但游戏进程会告诉你主人的真正阵营\n"
+            "4) 选定后无法更改，请在考虑后做出决定"
+        ),
+    }
+
+
 def agent_hybrid_choose_master(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -1095,20 +2122,25 @@ def agent_hybrid_choose_master(
         return None
 
     candidates = [pid for pid, p in gs.players.items() if p.alive and pid != hybrid_id]
+
+    master_assessment = _evaluate_hybrid_master_candidates(gs, hybrid_id, candidates)
+
+    strategy_directive = {
+        "hybrid_master_choice": (
+            "你是混血儿，N1 / 首夜需要选择一名玩家作为你的主人。"
+            "你不知道主人的身份和阵营，但你将跟随主人的原始阵营获胜。"
+            "如果主人是好人阵营，你跟好人赢；如果主人是狼人阵营，你跟狼人赢。"
+            "选择后不能更改。speech字段留空。"
+        ),
+        "master_assessment": master_assessment,
+    }
+
     context = build_agent_context(
         engine, gs, hybrid_id, TaskType.NIGHT_ACTION,
         legal_actions=[ActionType.CHOOSE_MASTER],
         legal_targets=candidates,
         rag_service=state.get("rag_service"),
     )
-    strategy_directive = {
-        "hybrid_master_choice": (
-            "你是混血儿，N1 / 首夜需要选择一名玩家作为你的主人。"
-            "你不知道主人的身份和阵营，但你将跟随主人的阵营获胜。"
-            "你可以自由选择任何玩家作为主人——可以根据直觉、位置、或任何你喜欢的理由。"
-            "选择后不能更改。speech字段留空。"
-        ),
-    }
     context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     action, retry_info = agent.act(context)
@@ -1148,6 +2180,17 @@ def agent_exile_last_words(
             "遗言必须简短有力。"
         ),
     }
+    if player_role == "hunter":
+        alive_others = [pid for pid, p in gs.players.items() if p.alive and pid != player_id]
+        strategy_directive["hunter_last_words"] = (
+            "你是猎人，被放逐出局。你有权开枪带走一名玩家。\n"
+            "遗言中建议：\n"
+            "1) 声明猎人身份和开枪意图\n"
+            "2) 明确说出你要带走的目标：用'带走{玩家ID}'的格式（如'带走p03'）\n"
+            "3) 解释你选择该目标的理由（发言矛盾、站边不明、被查杀等）\n"
+            "4) 如果没有明确目标，可以声明'我选择不开枪'\n"
+            f"当前存活玩家（不含你）: {alive_others}"
+        )
     context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     action, retry_info = agent.act(context)
@@ -1212,6 +2255,124 @@ def agent_badge_decision(
     return {"badge_decision": "tear", "badge_target_id": None}
 
 
+def _evaluate_hunter_shot_target(
+    gs: GameState,
+    hunter_id: str,
+    legal_targets: list[str],
+    death_reason: str,
+) -> dict[str, Any] | None:
+    """Score potential shot targets by evidence strength for the hunter."""
+    if not legal_targets:
+        return None
+
+    scores: dict[str, dict[str, Any]] = {}
+    for pid in legal_targets:
+        sig: list[str] = []
+        value = 0
+
+        # Seer check: wolf alignment is strongest signal (+10)
+        for e in gs.events:
+            if e.type == "seer_check" and e.payload.get("alignment") == "wolf":
+                if e.payload.get("target_id") == pid:
+                    sig.append(f"seer_check_wolf_N{e.payload.get('night_number', '?')}")
+                    value += 10
+                    break
+
+        # Counterclaiming seer: high-value target (+6)
+        counterclaiming_seers = _public_seer_claimants(gs)
+        if pid in counterclaiming_seers:
+            sig.append("counterclaiming_seer")
+            value += 6
+
+        # Publicly accused of being wolf (+4)
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            text = str(e.payload.get("text", ""))
+            speaker = e.payload.get("speaker", "")
+            if speaker == hunter_id or speaker == pid:
+                continue
+            if pid in text and ("狼" in text or "查杀" in text or "可疑" in text):
+                sig.append(f"public_suspect_by_{speaker}")
+                value += 4
+                break
+
+        # Voted to exile the hunter (+3)
+        for e in gs.events:
+            if e.type != "vote_resolved":
+                continue
+            voter_map = e.payload.get("votes", {})
+            if voter_map.get(pid) == hunter_id:
+                sig.append("voted_exile_hunter")
+                value += 3
+                break
+
+        # Contradiction alerts (+3)
+        try:
+            from werewolf_agent.cognition.world_state import build_world_state
+            from werewolf_agent.cognition.contradiction import ContradictionEngine
+            world_state = build_world_state(gs)
+            engine = ContradictionEngine()
+            alerts = engine.detect(world_state.facts, gs.day_number)
+            for alert in alerts:
+                if pid in str(alert):
+                    sig.append(f"contradiction_{alert.alert_type}")
+                    value += 3
+                    break
+        except Exception:
+            pass
+
+        # Claimed a power role (+2)
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") != pid:
+                continue
+            claims = e.payload.get("claims") or []
+            for claim in claims:
+                if claim.get("type") == "role" and claim.get("value") in (
+                    "seer", "witch", "hunter",
+                ):
+                    sig.append(f"claimed_{claim['value']}")
+                    value += 2
+                    break
+            break
+
+        scores[pid] = {"value": value, "signals": sig}
+
+    ranked = sorted(scores.items(), key=lambda x: x[1]["value"], reverse=True)
+    top_value = ranked[0][1]["value"] if ranked else 0
+    has_seer_check_wolf = any(
+        "seer_check_wolf" in s
+        for _, d in ranked
+        for s in d["signals"]
+    )
+
+    if has_seer_check_wolf:
+        advisory = "有明确查杀目标，强烈建议开枪带走该玩家。"
+    elif top_value >= 6:
+        advisory = "有较高嫌疑目标，建议开枪。"
+    elif top_value >= 3:
+        advisory = "有一定嫌疑目标，可以开枪，但也可以选择不开枪。"
+    else:
+        advisory = "无明显高价值目标，建议不开枪（NO_ACTION），避免误伤好人。"
+
+    return {
+        "description": "猎人开枪目标价值评估（分数越高越值得开枪）",
+        "death_reason": death_reason,
+        "ranked_targets": [
+            {"target": t, "value": d["value"], "signals": d["signals"]}
+            for t, d in ranked
+        ],
+        "recommendation": (
+            f"建议开枪带走: {ranked[0][0]}（价值分={ranked[0][1]['value']}，"
+            f"信号: {', '.join(ranked[0][1]['signals']) or '无特殊信号'}）"
+            if ranked else "无可用开枪目标"
+        ),
+        "shoot_advisory": advisory,
+    }
+
+
 def agent_hunter_shot(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -1224,13 +2385,36 @@ def agent_hunter_shot(
     if agent is None:
         return None
 
+    death_reason = state.get("hunter_death_reason", "unknown")
     legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != hunter_id]
+
+    # Evaluate shot target value
+    shot_assessment = _evaluate_hunter_shot_target(
+        gs, hunter_id, legal_targets, death_reason,
+    )
+
+    death_label = {"wolf_kill": "被狼人袭击", "exile": "被投票放逐"}.get(
+        death_reason, f"因{death_reason}"
+    )
+    strategy_directive: dict[str, Any] = {
+        "hunter_shot_directive": (
+            f"你是猎人，{death_label}导致死亡。你现在可以开枪带走一名玩家。\n"
+            "开枪是一次性的：选错目标会帮狼人减少好人数量，必须谨慎。\n"
+            "如果场上没有明确狼人目标，选择不开枪（NO_ACTION）比乱枪更好。\n"
+            "注意：本局没有守卫，如果你被女巫毒杀（而非被狼杀或放逐），你无法开枪。\n"
+            "speech字段留空。"
+        ),
+    }
+    if shot_assessment:
+        strategy_directive["shot_value_assessment"] = shot_assessment
+
     context = build_agent_context(
         engine, gs, hunter_id, TaskType.HUNTER_SHOT,
         legal_actions=[ActionType.HUNTER_SHOT, ActionType.NO_ACTION],
         legal_targets=legal_targets,
         rag_service=state.get("rag_service"),
     )
+    context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     action, retry_info = agent.act(context)
     if action.action_type == ActionType.HUNTER_SHOT and action.target_id:

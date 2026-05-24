@@ -263,13 +263,15 @@ def choose_vote_fallback_target(
 
     This is used only after an agent failed to produce a valid vote. It avoids
     turning schema failures into a seat-order push by ranking legal targets by
-    concrete current-day speech evidence.
+    concrete current-day speech evidence, seer checks, and contradictions.
     """
     candidates = [target for target in legal_targets if target != voter_id]
     if not candidates:
         return None
 
     scores = {target: 0 for target in candidates}
+
+    # Speech evidence (same-day mentions with vote basis)
     for event in gs.events:
         if event.type != "speech" or event.payload.get("day_number") != gs.day_number:
             continue
@@ -280,6 +282,28 @@ def choose_vote_fallback_target(
         for target in candidates:
             if target in text:
                 scores[target] += len(bases)
+
+    # Public seer check results: "wolf" alignment gets heavy weight
+    for event in gs.events:
+        if event.type != "seer_check":
+            continue
+        alignment = event.payload.get("alignment", "")
+        target = event.payload.get("target_id", "")
+        if target in candidates and alignment == "wolf":
+            scores[target] += 10
+
+    # Contradiction alerts: players caught in contradictions get weight
+    try:
+        from werewolf_agent.cognition.world_state import build_world_state
+        from werewolf_agent.cognition.contradiction import ContradictionEngine
+        ws = build_world_state(gs)
+        engine = ContradictionEngine()
+        alerts = engine.detect(ws.facts, gs.day_number)
+        for alert in alerts:
+            if alert.player_id in candidates:
+                scores[alert.player_id] += 3
+    except Exception:
+        pass
 
     best_score = max(scores.values(), default=0)
     if best_score > 0:

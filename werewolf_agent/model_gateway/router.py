@@ -33,6 +33,7 @@ class ModelConfig:
     top_p: float = 0.9
     timeout: int = 30
     allow_text_tool_fallback: bool = False
+    retry_count: int = 2
 
 
 @dataclass(frozen=True)
@@ -268,6 +269,7 @@ class ModelRouter:
             top_p=model_profile.get("top_p", 0.9),
             timeout=model_profile.get("timeout", 30),
             allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
+            retry_count=int(model_profile.get("retry_count", 2)),
         )
 
         # Fallback config
@@ -298,47 +300,63 @@ class ModelRouter:
         primary_error: Exception | None = None
         fallback_error: Exception | None = None
 
-        try:
-            result = _call_provider_generate(
-                provider,
-                prompt,
-                config,
-                system_prompt,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
-            _normalize_tool_metadata(result, tool_choice)
-            result.allow_text_tool_fallback = config.allow_text_tool_fallback
-            if result.usage:
-                usage = UsageRecord(
-                    agent_id=agent_id,
-                    task_type=task_type,
-                    provider=result.provider,
-                    model=result.model,
-                    prompt_tokens=result.usage.prompt_tokens,
-                    completion_tokens=result.usage.completion_tokens,
-                    latency_ms=result.usage.latency_ms,
-                    success=True,
+        max_retries = getattr(config, "retry_count", 2) or 0
+        for attempt in range(max_retries + 1):
+            try:
+                result = _call_provider_generate(
+                    provider,
+                    prompt,
+                    config,
+                    system_prompt,
+                    tools=tools,
+                    tool_choice=tool_choice,
                 )
-                self._usage_log.append(usage)
-            return result
-        except Exception as exc:
-            primary_error = exc
-            logger.warning(
-                "Model generation failed for agent=%s task=%s provider=%s model=%s: %s",
-                agent_id,
-                task_type,
-                config.provider,
-                config.model,
-                _format_exception(exc),
-            )
-            # Try fallback
-            if fallback_provider and fallback_provider in self._providers:
-                fb_provider = self._providers[fallback_provider]
-                fallback_model_profile = self._resolve_fallback_model(llm_profile_id=self._player_assignments.get(agent_id, ""))
-                fb_config = fallback_model_profile or ModelConfig(
-                    provider=fallback_provider, model="fallback"
+                result.allow_text_tool_fallback = config.allow_text_tool_fallback
+                _normalize_tool_metadata(result, tool_choice)
+                if result.usage:
+                    usage = UsageRecord(
+                        agent_id=agent_id,
+                        task_type=task_type,
+                        provider=result.provider,
+                        model=result.model,
+                        prompt_tokens=result.usage.prompt_tokens,
+                        completion_tokens=result.usage.completion_tokens,
+                        latency_ms=result.usage.latency_ms,
+                        success=True,
+                    )
+                    self._usage_log.append(usage)
+                return result
+            except Exception as exc:
+                primary_error = exc
+                if attempt < max_retries and _is_retryable_exception(exc):
+                    delay = _retry_delay_for_exception(exc, attempt)
+                    logger.warning(
+                        "Retryable error for agent=%s task=%s provider=%s (attempt %d/%d, retry in %.1fs): %s",
+                        agent_id, task_type, config.provider,
+                        attempt + 1, max_retries + 1, delay,
+                        _format_exception(exc),
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning(
+                    "Model generation failed for agent=%s task=%s provider=%s model=%s: %s",
+                    agent_id,
+                    task_type,
+                    config.provider,
+                    config.model,
+                    _format_exception(exc),
                 )
+                break
+
+        # Try fallback
+        if fallback_provider and fallback_provider in self._providers:
+            fb_provider = self._providers[fallback_provider]
+            fallback_model_profile = self._resolve_fallback_model(llm_profile_id=self._player_assignments.get(agent_id, ""))
+            fb_config = fallback_model_profile or ModelConfig(
+                provider=fallback_provider, model="fallback"
+            )
+            fb_max_retries = getattr(fb_config, "retry_count", 1) or 0
+            for fb_attempt in range(fb_max_retries + 1):
                 try:
                     result = _call_provider_generate(
                         fb_provider,
@@ -348,8 +366,8 @@ class ModelRouter:
                         tools=tools,
                         tool_choice=tool_choice,
                     )
-                    _normalize_tool_metadata(result, tool_choice)
                     result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
+                    _normalize_tool_metadata(result, tool_choice)
                     if result.usage:
                         usage = UsageRecord(
                             agent_id=agent_id,
@@ -366,6 +384,16 @@ class ModelRouter:
                     return result
                 except Exception as exc:
                     fallback_error = exc
+                    if fb_attempt < fb_max_retries and _is_retryable_exception(exc):
+                        delay = _retry_delay_for_exception(exc, fb_attempt)
+                        logger.warning(
+                            "Retryable fallback error for agent=%s task=%s (attempt %d/%d, retry in %.1fs): %s",
+                            agent_id, task_type,
+                            fb_attempt + 1, fb_max_retries + 1, delay,
+                            _format_exception(exc),
+                        )
+                        time.sleep(delay)
+                        continue
                     logger.warning(
                         "Fallback model generation failed for agent=%s task=%s provider=%s model=%s: %s",
                         agent_id,
@@ -374,19 +402,20 @@ class ModelRouter:
                         fb_config.model,
                         _format_exception(exc),
                     )
+                    break
 
-            # Record failure
-            failure_reason = _failure_reason(primary_error, fallback_error)
-            self._usage_log.append(UsageRecord(
-                agent_id=agent_id,
-                task_type=task_type,
-                provider=config.provider,
-                model=config.model,
-                fallback_reason=failure_reason,
-                success=False,
-            ))
-            return GenerateResult(
-                text="",
+        # Record failure
+        failure_reason = _failure_reason(primary_error, fallback_error)
+        self._usage_log.append(UsageRecord(
+            agent_id=agent_id,
+            task_type=task_type,
+            provider=config.provider,
+            model=config.model,
+            fallback_reason=failure_reason,
+            success=False,
+        ))
+        return GenerateResult(
+            text="",
                 provider=config.provider,
                 model=config.model,
             )
@@ -406,6 +435,7 @@ class ModelRouter:
             top_p=model_profile.get("top_p", 0.9),
             timeout=model_profile.get("timeout", 10),
             allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
+            retry_count=int(model_profile.get("retry_count", 1)),
         )
 
     def _configured_provider_names(self) -> set[str]:
@@ -487,6 +517,15 @@ def _normalize_tool_metadata(
 ) -> None:
     if not tool_choice:
         return
+    # If provider already signaled text fallback is acceptable, don't
+    # override it — some providers (MiniMax, certain Baidu models) cannot
+    # reliably produce tool_use blocks even when tool_choice is sent.
+    if result.allow_text_tool_fallback and result.text:
+        result.tool_call_required = True
+        if not result.tool_call_name:
+            result.tool_call_name = str(tool_choice.get("name") or "")
+        result.text_fallback_used = True
+        return
     result.tool_call_required = True
     if not result.tool_call_name:
         result.tool_call_name = str(tool_choice.get("name") or "")
@@ -494,3 +533,43 @@ def _normalize_tool_metadata(
         result.text_fallback_used = bool(result.text)
         if result.structured_failure_reason is None:
             result.structured_failure_reason = "missing_tool_call"
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    """Check if an exception is transient and worth retrying."""
+    exc_str = type(exc).__name__.lower()
+    if "connect" in exc_str or "timeout" in exc_str:
+        return True
+    # httpx exceptions
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code >= 500 or exc.response.status_code == 429
+    except ImportError:
+        pass
+    # Generic checks via string matching for provider-agnostic errors
+    msg = str(exc).lower()
+    if "429" in msg or "too many requests" in msg:
+        return True
+    if "503" in msg or "service unavailable" in msg:
+        return True
+    if "529" in msg or "overloaded" in msg:
+        return True
+    return False
+
+
+def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
+    """Compute retry delay: exponential backoff with 429 Retry-After support."""
+    base = 2.0
+    # Check for Retry-After header on 429
+    try:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+            retry_after = exc.response.headers.get("retry-after")
+            if retry_after:
+                return min(float(retry_after), 30.0)
+    except (ImportError, ValueError, TypeError):
+        pass
+    return min(base ** attempt, 30.0)
