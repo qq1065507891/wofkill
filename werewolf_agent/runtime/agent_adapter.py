@@ -1300,7 +1300,7 @@ def build_agent_context(
         if world_state is not None:
             strategy_directive = _inject_skill_output(
                 strategy_directive, gs, player_id,
-                world_state, belief_state, alerts, gs.phase,
+                world_state, belief_state, alerts, task_type.value,
                 legal_targets=legal_targets,
             )
     except Exception:

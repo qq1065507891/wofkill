@@ -46,6 +46,8 @@ class SkillPhase(str, Enum):
     DEFENSE = "defense_speech"
     PK_SPEECH = "pk_speech"
     REVIEW = "review"
+    WOLF_DISCUSSION = "wolf_discussion"
+    SHERIFF_REGISTRATION = "sheriff_registration"
 
 
 # ---------------------------------------------------------------------------
