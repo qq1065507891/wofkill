@@ -1097,11 +1097,24 @@ def _inject_skill_output(
         # Skip deep_hook for fake_seer/pusher wolves
         if o.skill_name == "deep_hook" and wolf_role and wolf_role in ("fake_seer", "pusher"):
             continue
+        # Skip swing_vote for hooker wolves (conflicts with deep-hook mission)
+        if o.skill_name == "swing_vote" and wolf_role == "hooker":
+            continue
         parts.append(o.prompt_injectable)
 
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
     return strategy_directive
+
+
+def _merge_strategy_directive(
+    context: Any,
+    new_directive: dict[str, Any],
+) -> Any:
+    """Merge new directive into existing context strategy_directive, preserving skill_tactical_advice."""
+    existing = context.strategy_directive or {}
+    merged = {**existing, **new_directive}
+    return context.model_copy(update={"strategy_directive": merged})
 
 
 def build_agent_context(
@@ -1319,13 +1332,12 @@ def build_agent_context(
 
     # -- Skill-based tactical advice --
     try:
-        if world_state is not None:
-            strategy_directive = _inject_skill_output(
-                strategy_directive, gs, player_id,
-                world_state, belief_state, alerts, task_type.value,
-                legal_targets=legal_targets,
-                wolf_team_plan=wolf_team_plan,
-            )
+        strategy_directive = _inject_skill_output(
+            strategy_directive, gs, player_id,
+            world_state, belief_state, alerts, task_type.value,
+            legal_targets=legal_targets,
+            wolf_team_plan=wolf_team_plan,
+        )
     except Exception:
         logger.debug("Skill injection failed, skipping", exc_info=True)
 
@@ -1490,7 +1502,7 @@ def agent_night_witch(
         witch_directive["witch_pressure"] = f"存在毒药压力目标: {pressure_desc}"
         witch_directive["required_evaluation"] = "如果选择不用毒药，必须在reason中解释为什么不用。"
 
-    context = context.model_copy(update={"strategy_directive": witch_directive})
+    context = _merge_strategy_directive(context, witch_directive)
 
     action, retry_info = agent.act(context)
 
@@ -1594,7 +1606,7 @@ def agent_night_seer(
         legal_targets=legal_targets,
         rag_service=state.get("rag_service"),
     )
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
 
@@ -1690,7 +1702,7 @@ def _single_wolf_vote(
         wolf_team_plan=wolf_plan,
         rag_service=state.get("rag_service"),
     )
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     timeout = float(state.get("wolf_vote_timeout") or AGENT_TIMEOUTS.wolf_consensus)
     if timeout > 0:
@@ -1904,7 +1916,7 @@ def agent_day_speech(
             + "\n".join(speech_summaries)
         )
 
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
 
@@ -1955,7 +1967,7 @@ def agent_sheriff_pick_speech_order(
         ),
         "alive_players": alive_players,
     }
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     # Use VOTE action to pick a target (first speaker)
     context = context.model_copy(update={
@@ -2137,7 +2149,7 @@ def agent_day_vote(
         rag_service=state.get("rag_service"),
     )
     if strategy_directive:
-        context = context.model_copy(update={"strategy_directive": strategy_directive})
+        context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
 
@@ -2270,7 +2282,7 @@ def agent_hybrid_choose_master(
         legal_targets=candidates,
         rag_service=state.get("rag_service"),
     )
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
     master_target_id = action.target_id if action.action_type == ActionType.CHOOSE_MASTER else None
@@ -2320,7 +2332,7 @@ def agent_exile_last_words(
             "4) 如果没有明确目标，可以声明'我选择不开枪'\n"
             f"当前存活玩家（不含你）: {alive_others}"
         )
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
     speech_text = getattr(action, "speech", "") or ""
@@ -2376,7 +2388,7 @@ def agent_badge_decision(
         ),
         "alive_players": alive_others,
     }
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
     if action.action_type == ActionType.BADGE_TRANSFER and action.target_id:
@@ -2543,7 +2555,7 @@ def agent_hunter_shot(
         legal_targets=legal_targets,
         rag_service=state.get("rag_service"),
     )
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
     if action.action_type == ActionType.HUNTER_SHOT and action.target_id:
@@ -2588,7 +2600,7 @@ def agent_sheriff_vote(
                 "如果场上有多个候选人，你应该分散投票，表现得像一个独立判断的好人。"
             )
     if strategy_directive:
-        context = context.model_copy(update={"strategy_directive": strategy_directive})
+        context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
     if action.action_type == ActionType.SELF_DESTRUCT:
@@ -2650,7 +2662,7 @@ def agent_sheriff_register(
         legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
         rag_service=state.get("rag_service"),
     )
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     try:
         action, retry_info = agent.act(context)
@@ -2831,7 +2843,7 @@ def agent_sheriff_election_speech(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
     )
-    context = context.model_copy(update={"strategy_directive": strategy_directive})
+    context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
 

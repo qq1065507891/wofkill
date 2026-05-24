@@ -29,7 +29,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="悍跳",
         description="冒充神职角色，通过假查验或假身份获取信任和话语权",
         applicable_roles=["werewolf"],
-        applicable_phases=["speech", "sheriff_speech", "pk_speech", "wolf_discussion"],
+        applicable_phases=["speech", "sheriff_speech", "pk_speech", "wolf_discussion", "last_words"],
         faction=SkillFaction.WOLF,
         tags=["deception", "aggressive"],
     ),
@@ -65,7 +65,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="倒钩",
         description="在好人阵营中建立可信度，通过适度攻击狼队友来获取信任",
         applicable_roles=["werewolf"],
-        applicable_phases=["speech", "vote", "wolf_discussion"],
+        applicable_phases=["speech", "vote", "wolf_discussion", "last_words"],
         faction=SkillFaction.WOLF,
         tags=["deception", "long_term"],
     ),
@@ -74,7 +74,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="找神",
         description="通过发言和行为模式分析找出神职玩家",
         applicable_roles=["werewolf", "villager", "hybrid"],
-        applicable_phases=["speech", "night_action", "wolf_discussion"],
+        applicable_phases=["speech", "night_action", "wolf_discussion", "hunter_shot"],
         faction=SkillFaction.COMMON,
         tags=["analysis", "information"],
     ),
@@ -92,7 +92,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="抗推",
         description="在被怀疑或被推票时进行有效防守和反驳",
         applicable_roles=["werewolf", "villager", "seer", "witch", "hunter", "idiot", "hybrid"],
-        applicable_phases=["defense_speech", "pk_speech"],
+        applicable_phases=["defense_speech", "pk_speech", "last_words"],
         faction=SkillFaction.COMMON,
         tags=["defense", "persuasion"],
     ),
@@ -101,7 +101,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="盘狼坑",
         description="系统性分析可能的狼人分布，缩小嫌疑范围",
         applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid"],
-        applicable_phases=["speech", "sheriff_speech"],
+        applicable_phases=["speech", "sheriff_speech", "hunter_shot"],
         faction=SkillFaction.GOOD,
         tags=["analysis", "logic"],
     ),
@@ -119,7 +119,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="遗言分析",
         description="分析遗言内容，提取信息，判断发言者真实身份",
         applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid", "werewolf"],
-        applicable_phases=["speech"],
+        applicable_phases=["speech", "last_words"],
         faction=SkillFaction.COMMON,
         tags=["analysis", "information"],
     ),
@@ -208,9 +208,11 @@ def _seer_checks_on_target(ws: Any, target_id: str) -> list[dict[str, Any]]:
 
 def _alerts_for_player(alerts: list[Any], player_id: str) -> list[Any]:
     """Filter contradiction alerts that mention the player."""
+    if not player_id:
+        return []
     return [
         a for a in alerts
-        if player_id in a.player_id
+        if player_id == a.player_id or ("," in a.player_id and player_id in a.player_id.split(","))
     ]
 
 
@@ -408,7 +410,7 @@ def _counter_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutp
             f"建议集中攻击以下疑点，质疑其预言家身份的真实性。"
         )
         conf = 0.65
-        speech = [f"指出{target}验人时间线的矛盾", "对比{target}前后不一致的发言", "建立自己的完整时间线"]
+        speech = [f"指出{target}验人时间线的矛盾", f"对比{target}前后不一致的发言", "建立自己的完整时间线"]
     else:
         prompt = (
             f"对跳分析：{target} 的发言和验人时间线较一致，直接对跳风险较高。"
@@ -941,12 +943,14 @@ def _wolf_pit_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     # From seer checks
     if ws is not None:
-        for f in ws.facts_of_type("seer_check_claim"):
-            target = f.target_player
-            if target and "wolf" in f.value.lower() or (target and "狼" in f.value):
-                suspects.append((target, f"被{f.source_player}查杀"))
-            elif target and ("good" in f.value.lower() or "金水" in f.value):
-                excluded.append((target, f"被{f.source_player}发金水"))
+        for fact_type in ("seer_check_claim", "seer_check"):
+            for f in ws.facts_of_type(fact_type):
+                target = f.target_player
+                val = (f.value or "").lower()
+                if target and ("wolf" in val or "狼" in (f.value or "")):
+                    suspects.append((target, f"被{f.source_player}查杀"))
+                elif target and ("good" in val or "金水" in (f.value or "")):
+                    excluded.append((target, f"被{f.source_player}发金水"))
 
     # Deduplicate
     suspect_ids = set()
@@ -1102,7 +1106,7 @@ def _last_words_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     ]
 
     # Check for contradictions in dead player's statements
-    dead_alerts = _alerts_for_player(alerts, dead_player or "")
+    dead_alerts = _alerts_for_player(alerts, dead_player) if dead_player else []
 
     claims: list[str] = []
     if ws is not None:
@@ -1165,7 +1169,7 @@ def _review_correction_dynamic(inp: SkillInput, skill: SkillDefinition) -> Skill
     deaths_by_exile = 0
     if ws is not None:
         for f in ws.facts_of_type("player_died"):
-            reason = f.metadata.get("reason", "")
+            reason = f.value or ""
             if "wolf" in reason:
                 deaths_by_wolf += 1
             elif "exile" in reason:
