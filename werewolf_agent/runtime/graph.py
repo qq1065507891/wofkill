@@ -1414,6 +1414,18 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 action_trace = result.get("action_trace")
         player_role = gs.players[speaker_id].role if speaker_id in gs.players else "?"
         print(f"  [{_player_display(state, speaker_id)}({player_role})]: {speech_text if speech_text else '(未发言)'}")
+        if not speech_text.strip():
+            # Skip empty speeches — no event added to timeline
+            advanced = advance_speaker()
+            if advanced["current_speaker_id"] is None:
+                gs, _ = _judge_broadcast(
+                    phase="discussion_end",
+                    message="所有玩家发言完毕，自由讨论结束",
+                    gs=gs,
+                    day_number=gs.day_number,
+                    visibility="public",
+                )
+            return {"game_state": gs, **advanced}
         payload = {
             "speaker": speaker_id,
             "day_number": gs.day_number,
@@ -1815,6 +1827,16 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 source_player_id=death.player_id,
             )
             gs = engine.apply_death(gs, shot_death)
+            # Emit public hunter_shot event for agent_adapter visibility
+            gs = replace(gs, events=gs.events + [GameEvent(
+                type="hunter_shot_public",
+                payload={
+                    "hunter_id": death.player_id,
+                    "target_id": target,
+                    "day_number": gs.day_number,
+                    "night_number": gs.night_number,
+                },
+            )])
         else:
             gs, _ = _judge_broadcast(
                 phase="hunter_shot_decline",
@@ -2321,11 +2343,16 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         consensus=consensus,
     )
 
-    # Fallback to static plan when consensus lacks critical fields
+    # Fallback to static plan when consensus lacks critical fields (dedup)
     static_plan = _build_wolf_team_plan(gs, previous_plan=state.get("wolf_team_plan"))
+    used_wolves = {plan[r] for r in ("fake_seer", "pusher", "hooker", "deep_cover") if plan.get(r)}
     for key in ("fake_seer", "pusher", "hooker", "deep_cover", "public_story"):
         if not plan.get(key) and static_plan.get(key):
+            if key != "public_story" and static_plan[key] in used_wolves:
+                continue
             plan[key] = static_plan[key]
+            if key != "public_story":
+                used_wolves.add(static_plan[key])
 
     # Log consensus summary
     primary = plan.get("night_kill_primary")

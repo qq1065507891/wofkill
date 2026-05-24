@@ -266,6 +266,15 @@ def choose_vote_fallback_target(
     concrete current-day speech evidence, seer checks, and contradictions.
     """
     candidates = [target for target in legal_targets if target != voter_id]
+
+    # Exclude wolf teammates when the voter is a werewolf
+    voter = gs.players.get(voter_id)
+    if voter and voter.role == "werewolf":
+        candidates = [
+            c for c in candidates
+            if gs.players.get(c) is None or gs.players[c].role != "werewolf"
+        ]
+
     if not candidates:
         return None
 

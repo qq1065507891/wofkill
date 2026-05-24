@@ -1793,6 +1793,16 @@ def agent_day_speech(
         return {"speech_text": "", "action_trace": {}, "self_destruct": True}
 
     speech_text = getattr(action, "speech", "") or ""
+
+    # Reject empty day speeches — provide fallback
+    if not speech_text.strip():
+        alive_others = [pid for pid, p in gs.players.items() if p.alive and pid != speaker_id]
+        target_hint = alive_others[0] if alive_others else ""
+        speech_text = (
+            f"我是{speaker_id}，我认为目前场上信息不够明确。"
+            f"我关注{target_hint}的发言，需要更多信息来判断。"
+        )
+
     return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}
 
 
@@ -1897,6 +1907,10 @@ def agent_day_vote(
         legal_actions.append(ActionType.NO_ACTION)
 
     legal_targets = [pid for pid in engine.legal_exile_targets(gs) if pid != voter_id]
+    voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
+    if voter_role == "werewolf":
+        legal_targets = [pid for pid in legal_targets
+                         if gs.players.get(pid) is None or gs.players[pid].role != "werewolf"]
     if state.get("revote") and state.get("pk_candidates"):
         pk_candidates = set(state.get("pk_candidates") or [])
         legal_targets = [pid for pid in legal_targets if pid in pk_candidates]
@@ -1958,8 +1972,7 @@ def agent_day_vote(
     except Exception:
         logger.debug("Vote quality context build failed, skipping", exc_info=True)
 
-    # Role-specific vote strategy
-    voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
+    # Role-specific vote strategy (voter_role computed above for legal_targets filtering)
     if voter_role == "werewolf":
         wolf_vote_parts = _build_wolf_vote_strategy(
             gs, voter_id, state.get("wolf_team_plan"),

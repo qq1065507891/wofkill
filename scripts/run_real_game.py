@@ -22,30 +22,14 @@ sys.path.insert(0, str(ROOT))
 from werewolf_agent.model_gateway.providers import load_local_dotenv
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 
-
-class _GameIdFilter(logging.Filter):
-    """Inject game_id into every log record for structured logging."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.game_id: str = ""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.game_id = self.game_id  # type: ignore[attr-defined]
-        return True
-
-
-_game_id_filter = _GameIdFilter()
-
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s [%(game_id)s]: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(ROOT / "game_stdout.log", encoding="utf-8"),
     ],
 )
-logging.getLogger().addFilter(_game_id_filter)
 logger = logging.getLogger("real_game")
 
 
@@ -455,7 +439,6 @@ def main() -> None:
     )
 
     runner = GameRunner(config)
-    _game_id_filter.game_id = runner.game_id
     print(f"  Game ID: {runner.game_id}")
     n_agents = len(runner._agent_registry._agents) if runner._agent_registry else 0
     print(f"  Agents:  {n_agents}")

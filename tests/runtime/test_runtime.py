@@ -5006,3 +5006,119 @@ class TestWolfStrategyDirectives:
         result = _build_wolf_day_speech_directive(gs, "w1", None)
         assert "wolf_speech_directive" in result
         assert "没有特定角色分工" in result["wolf_speech_directive"]
+
+
+# ── Game log issue fix tests ──────────────────────────────────────────────
+
+class TestWolfPlanDedup:
+    """F1: Wolf role assignment deduplication."""
+
+    def test_consensus_no_duplicate_roles(self) -> None:
+        """Same wolf proposed for two roles should only get the first."""
+        from werewolf_agent.runtime.wolf_strategy import summarize_wolf_consensus
+        events = [
+            GameEvent(type="wolf_discussion", payload={
+                "wolf_id": "p01", "round": 1, "night_number": 1,
+                "text": "我做假预言家，p01也做倒钩",
+            }),
+            GameEvent(type="wolf_discussion", payload={
+                "wolf_id": "p02", "round": 2, "night_number": 1,
+                "text": "同意p01做假预言家",
+            }),
+        ]
+        result = summarize_wolf_consensus(events, ["p01", "p02"], night_number=1)
+        # p01 should be fake_seer only, not also hooker
+        assert result.get("fake_seer") == "p01"
+        assert result.get("hooker") != "p01"
+
+    def test_plan_dedup_on_merge(self) -> None:
+        """build_wolf_team_plan_from_discussion should not assign same wolf twice."""
+        from werewolf_agent.runtime.wolf_strategy import build_wolf_team_plan_from_discussion
+        gs = GameState(game_id="dedup_test", phase="night", night_number=1)
+        consensus = {"fake_seer": "p01", "hooker": "p01", "evidence_quality": "strong"}
+        plan = build_wolf_team_plan_from_discussion(gs, previous_plan=None, consensus=consensus)
+        assigned = [plan.get(r) for r in ("fake_seer", "pusher", "hooker", "deep_cover") if plan.get(r)]
+        assert len(assigned) == len(set(assigned)), f"Duplicate assignment: {assigned}"
+
+
+class TestEmptySpeechGuard:
+    """F2: Empty speech fallback."""
+
+    def test_agent_day_speech_fallback_on_empty(self) -> None:
+        """agent_day_speech should produce non-empty speech even when agent returns empty."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_speech
+        from unittest.mock import MagicMock
+
+        players = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        # Override a few roles
+        players["p01"] = PlayerState(id="p01", role="werewolf", alive=True)
+        players["p02"] = PlayerState(id="p02", role="werewolf", alive=True)
+        players["p03"] = PlayerState(id="p03", role="werewolf", alive=True)
+        players["p04"] = PlayerState(id="p04", role="werewolf", alive=True)
+        gs = GameState(game_id="empty_speech_test", players=players, phase="day", day_number=1)
+
+        # Create a mock agent that returns empty speech
+        mock_action = MagicMock()
+        mock_action.action_type = ActionType.SPEECH
+        mock_action.speech = ""
+        mock_agent = MagicMock()
+        mock_agent.act.return_value = (mock_action, None)
+
+        registry = MagicMock()
+        registry.get_agent.return_value = mock_agent
+
+        engine = _new_engine()
+        state = {"game_state": gs, "engine": engine, "agent_registry": registry}
+
+        result = agent_day_speech(state, engine, registry, "p05")
+        assert result is not None
+        assert result["speech_text"].strip(), "Speech should not be empty after fallback guard"
+
+
+class TestWolfFallbackVoteNoTeammate:
+    """F3: Wolf fallback vote should not target teammates."""
+
+    def test_choose_vote_fallback_excludes_wolf_teammates(self) -> None:
+        from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+        players = {
+            "w1": PlayerState(id="w1", role="werewolf", alive=True),
+            "w2": PlayerState(id="w2", role="werewolf", alive=True),
+            "v1": PlayerState(id="v1", role="villager", alive=True),
+            "v2": PlayerState(id="v2", role="villager", alive=True),
+        }
+        gs = GameState(game_id="wolf_vote_test", players=players, phase="day", day_number=1)
+        result = choose_vote_fallback_target(gs, "w1", ["w2", "v1", "v2"])
+        assert result != "w2", "Wolf fallback vote should not target teammate"
+        assert result in ("v1", "v2")
+
+
+class TestHunterShotPublicEvent:
+    """F4: hunter_shot_public event should be emitted."""
+
+    def test_hunter_shot_emits_public_event(self) -> None:
+        from werewolf_agent.runtime.graph import resolve_hunter_shot
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)
+        }
+        players["p01"] = PlayerState(id="p01", role="werewolf", alive=True)
+        players["p02"] = PlayerState(id="p02", role="werewolf", alive=True)
+        players["p03"] = PlayerState(id="p03", role="werewolf", alive=True)
+        players["p04"] = PlayerState(id="p04", role="werewolf", alive=True)
+        players["p05"] = PlayerState(id="p05", role="hunter", alive=False)
+        gs = GameState(game_id="hunter_event_test", players=players, phase="day", day_number=1)
+        # Add a hunter death
+        death = Death(
+            player_id="p05", reason="exile", timing="day_vote",
+            resolution_batch="day_1_vote", can_leave_last_words=True,
+            triggered_skills=["hunter_shot"],
+        )
+        state = {
+            "game_state": replace(gs, deaths=[death]),
+            "engine": _new_engine(),
+            "agent_registry": None,
+            "hunter_shot_target_id": "p01",
+        }
+        result = resolve_hunter_shot(state)
+        new_gs = result.get("game_state", gs)
+        event_types = [e.type for e in new_gs.events]
+        assert "hunter_shot_public" in event_types, f"Missing hunter_shot_public event. Got: {event_types}"

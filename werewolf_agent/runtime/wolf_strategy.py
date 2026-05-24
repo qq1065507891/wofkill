@@ -143,6 +143,7 @@ def summarize_wolf_consensus(
     # Track proposals per wolf
     target_votes: dict[str, int] = {}
     role_assignments: dict[str, str] = {}  # role_name -> wolf_id
+    assigned_wolves: set[str] = set()
     evidence: list[dict[str, Any]] = []
 
     for event in discussion_events:
@@ -169,11 +170,12 @@ def summarize_wolf_consensus(
                 "text_snippet": text[:80],
             })
 
-        # Track role assignments (last proposal wins per role)
+        # Track role assignments (last proposal wins per role, dedup by wolf)
         if proposal.get("role_assignment"):
             for role, assignee in proposal["role_assignment"].items():
-                if assignee != "self":
+                if assignee != "self" and assignee not in assigned_wolves:
                     role_assignments[role] = assignee
+                    assigned_wolves.add(assignee)
 
     # Determine consensus target (most votes)
     primary_target = None
@@ -268,10 +270,16 @@ def build_wolf_team_plan_from_discussion(
         "public_story": consensus.get("public_story", "执行讨论共识方案。"),
     }
 
-    # Role assignments from consensus, fallback to previous plan
+    # Role assignments from consensus, fallback to previous plan (dedup)
     previous = previous_plan or {}
+    used_wolves: set[str] = set()
     for role in ("fake_seer", "pusher", "hooker", "deep_cover"):
-        plan[role] = consensus.get(role) or previous.get(role)
+        candidate = consensus.get(role) or previous.get(role)
+        if candidate and candidate not in used_wolves:
+            plan[role] = candidate
+            used_wolves.add(candidate)
+        else:
+            plan[role] = None
 
     # Day push target must come from current discussion evidence. Previous
     # targets are stale after a new private discussion starts.
