@@ -63,6 +63,11 @@ class SkillInput:
     legal_targets: list[str] = field(default_factory=list)
     day: int = 0
     extra: dict[str, Any] = field(default_factory=dict)
+    game_state: Any | None = None
+    world_state: Any | None = None
+    belief_state: Any | None = None
+    contradiction_alerts: list[Any] = field(default_factory=list)
+    player_id: str = ""
 
 
 @dataclass
@@ -75,6 +80,7 @@ class SkillOutput:
     confidence: float = 0.5
     reasoning: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    prompt_injectable: str = ""
 
 
 # ---------------------------------------------------------------------------

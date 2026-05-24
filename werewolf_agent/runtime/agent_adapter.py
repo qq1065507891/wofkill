@@ -1009,7 +1009,8 @@ def _build_wolf_vote_strategy(
         "1) 优先投狼队的推人目标\n"
         "2) 不要和所有队友投同一人——至少要有1-2人投不同目标\n"
         "3) 投票理由要像好人一样基于公开信息分析\n"
-        "4) 不要在投票理由中暴露夜间信息"
+        "4) 不要在投票理由中暴露夜间信息\n"
+        "5) 除非是倒钩策略需要，否则不要投你的狼人队友"
     )
 
     # Role-specific vote behavior
@@ -1041,6 +1042,44 @@ def _build_wolf_vote_strategy(
             parts["wolf_vote_target"] = f"狼队推人目标: {push_target}"
 
     return parts
+
+
+def _inject_skill_output(
+    strategy_directive: dict[str, Any],
+    gs: GameState,
+    player_id: str,
+    world_state: Any,
+    belief_state: Any,
+    contradiction_alerts: list[Any],
+    phase: str,
+    legal_targets: list[str] | None = None,
+) -> dict[str, Any]:
+    """Dispatch applicable skills and inject tactical advice into strategy_directive."""
+    from werewolf_agent.skills.registry import SkillRegistry
+    from werewolf_agent.skills.schemas import SkillInput
+
+    player = gs.players.get(player_id)
+    if not player or not player.alive:
+        return strategy_directive
+
+    registry = SkillRegistry()
+    skill_input = SkillInput(
+        role=player.role,
+        phase=phase,
+        day=gs.day_number,
+        game_state=gs,
+        world_state=world_state,
+        belief_state=belief_state,
+        contradiction_alerts=contradiction_alerts,
+        player_id=player_id,
+        legal_targets=legal_targets or [],
+    )
+
+    outputs = registry.dispatch_for_role(player.role, phase, skill_input)
+    parts = [o.prompt_injectable for o in outputs if o.prompt_injectable and o.confidence >= 0.4]
+    if parts:
+        strategy_directive["skill_tactical_advice"] = "\n".join(parts)
+    return strategy_directive
 
 
 def build_agent_context(
@@ -1175,6 +1214,9 @@ def build_agent_context(
     must_address: list[dict[str, Any]] = []
     strategy_directive: dict[str, Any] = {}
     belief_dict: dict[str, Any] = {}
+    world_state = None
+    belief_state = None
+    alerts: list[Any] = []
     try:
         from werewolf_agent.cognition.world_state import build_world_state
         from werewolf_agent.cognition.contradiction import ContradictionEngine
@@ -1252,6 +1294,17 @@ def build_agent_context(
         legal_actions = []
     if legal_targets is None:
         legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != player_id]
+
+    # -- Skill-based tactical advice --
+    try:
+        if world_state is not None:
+            strategy_directive = _inject_skill_output(
+                strategy_directive, gs, player_id,
+                world_state, belief_state, alerts, gs.phase,
+                legal_targets=legal_targets,
+            )
+    except Exception:
+        logger.debug("Skill injection failed, skipping", exc_info=True)
 
     context = AgentContext(
         agent_id=player_id,
@@ -1951,9 +2004,6 @@ def agent_day_vote(
 
     legal_targets = [pid for pid in engine.legal_exile_targets(gs) if pid != voter_id]
     voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
-    if voter_role == "werewolf":
-        legal_targets = [pid for pid in legal_targets
-                         if gs.players.get(pid) is None or gs.players[pid].role != "werewolf"]
     if state.get("revote") and state.get("pk_candidates"):
         pk_candidates = set(state.get("pk_candidates") or [])
         legal_targets = [pid for pid in legal_targets if pid in pk_candidates]

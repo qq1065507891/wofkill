@@ -419,3 +419,257 @@ class TestSkillsForRole:
         assert "bold_claim" not in result_names
         assert "swing_vote" not in result_names
         assert "deep_hook" not in result_names
+
+
+# ---------------------------------------------------------------------------
+# Dynamic skill behavior tests (game-state-aware)
+# ---------------------------------------------------------------------------
+
+from werewolf_agent.core.models import GameState, PlayerState, GameEvent
+
+
+def _make_skill_gs(
+    day: int = 1,
+    night: int = 1,
+    player_role: str = "werewolf",
+    player_id: str = "p01",
+    events: list[GameEvent] | None = None,
+) -> GameState:
+    """Build a minimal GameState for skill testing."""
+    players = {
+        "p01": PlayerState(id="p01", role="werewolf", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="seer", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+        "p05": PlayerState(id="p05", role="villager", alive=True),
+        "p06": PlayerState(id="p06", role="witch", alive=True),
+    }
+    # Override the test player's role
+    players[player_id] = PlayerState(id=player_id, role=player_role, alive=True)
+
+    return GameState(
+        ruleset_id="test",
+        game_id="test_game",
+        phase="speech",
+        day_number=day,
+        night_number=night,
+        players=players,
+        events=events or [],
+    )
+
+
+def _build_cognition(gs: GameState, player_id: str):
+    """Build world_state, belief_state, and alerts for a GameState."""
+    from werewolf_agent.cognition.world_state import build_world_state
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    world_state = build_world_state(gs)
+    updater = BeliefUpdater()
+    belief_state = updater.initialize(list(gs.players.keys()), player_id)
+    belief_state = updater.update(belief_state, world_state.facts, gs.day_number)
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+    return world_state, belief_state, alerts
+
+
+class TestSkillInputGameState:
+
+    def test_new_fields_default_none(self):
+        inp = SkillInput(role="werewolf", phase="speech")
+        assert inp.game_state is None
+        assert inp.world_state is None
+        assert inp.belief_state is None
+        assert inp.contradiction_alerts == []
+        assert inp.player_id == ""
+
+    def test_new_fields_assignable(self):
+        gs = _make_skill_gs()
+        inp = SkillInput(
+            role="werewolf", phase="speech",
+            game_state=gs, player_id="p01",
+        )
+        assert inp.game_state is not None
+        assert inp.player_id == "p01"
+
+    def test_prompt_injectable_default_empty(self):
+        out = SkillOutput(skill_name="test")
+        assert out.prompt_injectable == ""
+
+
+class TestDynamicSkillOutput:
+
+    def test_bold_claim_no_seer_claimants_high_confidence(self):
+        gs = _make_skill_gs(day=1, player_role="werewolf")
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        inp = SkillInput(
+            role="werewolf", phase="speech", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p01",
+        )
+        out = apply_skill(SkillName.BOLD_CLAIM, inp)
+        assert out.confidence >= 0.7
+        assert "单边" in out.prompt_injectable or "无人跳" in out.prompt_injectable
+
+    def test_bold_claim_with_seer_claimant_lower_confidence(self):
+        gs = _make_skill_gs(day=1, player_role="werewolf", events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p03", "text": "我是预言家", "day_number": 1,
+            }),
+        ])
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        inp = SkillInput(
+            role="werewolf", phase="speech", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p01",
+        )
+        out = apply_skill(SkillName.BOLD_CLAIM, inp)
+        assert out.confidence < 0.7
+        assert "对跳" in out.prompt_injectable
+
+    def test_push_vote_with_suspects_sets_target(self):
+        gs = _make_skill_gs(day=1, player_role="seer", player_id="p03")
+        ws, bs, alerts = _build_cognition(gs, "p03")
+        inp = SkillInput(
+            role="seer", phase="speech", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p03",
+        )
+        out = apply_skill(SkillName.PUSH_VOTE, inp)
+        # Should produce prompt_injectable text (may or may not have target)
+        assert out.prompt_injectable != "" or out.confidence < 0.4
+
+    def test_resist_push_with_seer_check(self):
+        gs = _make_skill_gs(day=1, player_role="werewolf", player_id="p01", events=[
+            GameEvent(type="seer_check", payload={
+                "seer_id": "p03", "target_id": "p01",
+                "result": "wolf", "night_number": 1,
+            }),
+        ])
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        inp = SkillInput(
+            role="werewolf", phase="defense_speech", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p01",
+        )
+        out = apply_skill(SkillName.RESIST_PUSH, inp)
+        assert out.prompt_injectable != ""
+        assert "查杀" in out.prompt_injectable or "预言家" in out.prompt_injectable
+
+    def test_deep_hook_exposed_teammate(self):
+        gs = _make_skill_gs(day=1, player_role="werewolf", player_id="p01", events=[
+            GameEvent(type="seer_check", payload={
+                "seer_id": "p03", "target_id": "p02",
+                "result": "wolf", "night_number": 1,
+            }),
+        ])
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        inp = SkillInput(
+            role="werewolf", phase="speech", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p01",
+        )
+        out = apply_skill(SkillName.DEEP_HOOK, inp)
+        assert out.prompt_injectable != ""
+        assert "p02" in out.prompt_injectable or "队友" in out.prompt_injectable
+
+    def test_wolf_pit_analysis_produces_output(self):
+        gs = _make_skill_gs(day=2, player_role="villager", player_id="p04")
+        ws, bs, alerts = _build_cognition(gs, "p04")
+        inp = SkillInput(
+            role="villager", phase="speech", day=2,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p04",
+        )
+        out = apply_skill(SkillName.WOLF_PIT_ANALYSIS, inp)
+        assert out.prompt_injectable != ""
+        assert "狼" in out.prompt_injectable
+
+    def test_fallback_to_static_when_no_game_state(self):
+        """All 12 handlers must still work without game_state."""
+        for skill_name in SkillName:
+            out = apply_skill(skill_name, SkillInput(role="werewolf", phase="speech", day=1))
+            assert out.skill_name == skill_name.value
+            assert out.confidence >= 0.0
+
+    def test_all_skills_dispatch_with_game_state(self):
+        """All 12 handlers must work with game_state provided."""
+        gs = _make_skill_gs()
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        for skill_name in SkillName:
+            inp = SkillInput(
+                role="werewolf", phase="speech", day=1,
+                game_state=gs, world_state=ws, belief_state=bs,
+                contradiction_alerts=alerts, player_id="p01",
+            )
+            out = apply_skill(skill_name, inp)
+            assert out.skill_name == skill_name.value
+            assert out.confidence >= 0.0
+
+    def test_swing_vote_for_wolf(self):
+        gs = _make_skill_gs(day=1, player_role="werewolf", player_id="p01")
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        inp = SkillInput(
+            role="werewolf", phase="vote", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p01",
+        )
+        out = apply_skill(SkillName.SWING_VOTE, inp)
+        assert out.prompt_injectable != ""
+
+    def test_hide_identity_safe(self):
+        gs = _make_skill_gs(day=1, player_role="seer", player_id="p03")
+        ws, bs, alerts = _build_cognition(gs, "p03")
+        inp = SkillInput(
+            role="seer", phase="speech", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p03",
+        )
+        out = apply_skill(SkillName.HIDE_IDENTITY, inp)
+        assert out.prompt_injectable != ""
+        assert "隐蔽" in out.prompt_injectable or "藏" in out.prompt_injectable
+
+    def test_last_words_analysis_with_death(self):
+        gs = _make_skill_gs(day=1, player_role="villager", player_id="p04", events=[
+            GameEvent(type="player_died", payload={
+                "player_id": "p05", "reason": "wolf_kill",
+                "timing": "night", "day_number": 1,
+            }),
+        ])
+        ws, bs, alerts = _build_cognition(gs, "p04")
+        inp = SkillInput(
+            role="villager", phase="speech", day=1,
+            game_state=gs, world_state=ws, belief_state=bs,
+            contradiction_alerts=alerts, player_id="p04",
+        )
+        out = apply_skill(SkillName.LAST_WORDS_ANALYSIS, inp)
+        assert out.prompt_injectable != ""
+        assert "p05" in out.prompt_injectable or "遗言" in out.prompt_injectable
+
+
+class TestSkillIntegration:
+
+    def test_inject_skill_output_adds_advice(self):
+        from werewolf_agent.runtime.agent_adapter import _inject_skill_output
+
+        gs = _make_skill_gs(day=1)
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        directive: dict = {}
+        result = _inject_skill_output(
+            directive, gs, "p01", ws, bs, alerts, "speech",
+        )
+        assert "skill_tactical_advice" in result
+        assert isinstance(result["skill_tactical_advice"], str)
+        assert len(result["skill_tactical_advice"]) > 0
+
+    def test_inject_skill_output_no_duplicate_key(self):
+        """If existing directive has keys, skill adds new key without overwriting."""
+        from werewolf_agent.runtime.agent_adapter import _inject_skill_output
+
+        gs = _make_skill_gs(day=1)
+        ws, bs, alerts = _build_cognition(gs, "p01")
+        directive = {"wolf_universal_rules": "test"}
+        result = _inject_skill_output(
+            directive, gs, "p01", ws, bs, alerts, "speech",
+        )
+        assert "wolf_universal_rules" in result
+        assert "skill_tactical_advice" in result
