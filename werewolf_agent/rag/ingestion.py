@@ -793,6 +793,382 @@ def create_seed_entries() -> list[RAGEntry]:
         ),
     ))
 
+    # ── Phase A supplement: foundational game knowledge ──────────────────
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_seer_night1_blind",
+        title="基础常识：首夜验人是盲选，被验者无需有特殊表现",
+        summary=(
+            "预言家第一夜验人时，场上没有任何人发言过，预言家没有任何信息可以判断验谁。"
+            "首夜验谁本质上是随机选择或直觉，被验者不需要有任何'特殊表现'来证明自己值得被验。"
+            "因此，质疑'预言家为什么验我'是缺乏逻辑基础的——首夜任何人都可能被验。"
+            "正确的质疑方向应该是：预言家的整体行为（警徽流是否兑现、验人时间线是否合理、"
+            "发言是否有验人逻辑链），而不是'被验者是否值得被验'。"
+        ),
+        key_decisions=[
+            "首夜验人是盲选，被验者无需证明自己值得被验",
+            "质疑预言家应从预言家自身行为出发，不是被验者表现",
+            "金水可能是真验也可能是悍跳狼拉票策略",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="sheriff_speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="狼人杀基础常识：首夜验人与金水逻辑",
+                source_author="community_guide",
+            ),
+            tags=["seer", "foundation", "night1", "blind_check", "gold_water", "logic"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_gold_water_strategy",
+        title="基础常识：金水的战略意义——拉票而非证明被验者价值",
+        summary=(
+            "金水（预言家声明某人是好人）的战略意义是拉拢该玩家的信任，获得他的警长投票支持，"
+            "而不是反映被验者的'价值'或'表现'。悍跳狼经常给沉默或中立的玩家发金水，"
+            "因为这类玩家容易被拉拢。被发金水的玩家应该思考：发金水的人是否是真预言家？"
+            "发金水的时机和动机是否合理？而不是质疑'我为什么被验'。"
+        ),
+        key_decisions=[
+            "金水是拉票策略，不是对被验者表现的认可",
+            "悍跳狼倾向给中立玩家发金水来拉票",
+            "被发金水应分析发金水者的动机，而非自己的表现",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="sheriff_speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="金水逻辑与拉票策略",
+                source_author="community_guide",
+            ),
+            tags=["gold_water", "foundation", "strategy", "sheriff_vote", "logic"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_speech_originality",
+        title="基础常识：警上发言要独立分析，禁止复读前人观点",
+        summary=(
+            "警上发言最忌讳的就是复述前人已说过的内容。每个玩家应该有自己的分析角度："
+            "可以关注不同玩家的发言质量、逻辑链条、站边动机。"
+            "如果前面已经有人分析了某个玩家的发言漏洞，你不需要重复同样的分析，"
+            "而应该补充新的观察角度或分析其他尚未被关注的玩家。"
+            "发言模板化（如反复说'我需要XX正面回应站边票型'）会降低你的好人面。"
+        ),
+        key_decisions=[
+            "每个发言者必须有独特的分析角度",
+            "禁止复述前人已说内容，应补充新角度",
+            "避免模板化句式，展现独立思考能力",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="sheriff_speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="警上发言质量要求",
+                source_author="community_guide",
+            ),
+            tags=["speech", "foundation", "originality", "sheriff_speech", "quality"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_peace_night",
+        title="基础常识：平安夜代表女巫用银水救了人，不是狼人没刀",
+        summary=(
+            "平安夜（无人死亡）只代表公开结果无人死亡，不等于狼人没有选择击杀目标。"
+            "在预女猎白混板子中，女巫首夜大概率用银水救被刀者，所以D1平安夜很常见。"
+            "不能用平安夜没人死来反驳女巫声称的刀口信息——女巫知道谁被刀是正常的。"
+            "质疑女巫应该从她的发言是否前后矛盾、药水使用逻辑是否合理出发，"
+            "而不是用'没人死所以你在说谎'这种站不住脚的逻辑。"
+        ),
+        key_decisions=[
+            "平安夜=狼人刀了人但女巫救了，不代表狼人没行动",
+            "女巫知道刀口信息是正常的，不能以此质疑女巫",
+            "质疑女巫应从发言矛盾和用药逻辑出发，不是没人死你在骗人",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="平安夜与女巫银水逻辑",
+                source_author="community_guide",
+            ),
+            tags=["witch", "foundation", "peace_night", "silver_water", "logic"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_vote_record_hardest_info",
+        title="基础常识：投票记录是最硬的公开信息，发言可以造假投票不能",
+        summary=(
+            "在狼人杀中，每个玩家的投票选择是公开且不可撤回的硬信息。"
+            "发言可以编造、情感可以表演，但投票记录是客观事实。"
+            "分析投票数据是找狼的核心手段：谁投了谁、票型是否和发言矛盾、"
+            "是否有人在关键时刻改票或弃票。如果一个人嘴上说怀疑A却投了B，"
+            "这就是关键矛盾点。好人的投票应该和发言立场一致，不一致的人值得深挖。"
+        ),
+        key_decisions=[
+            "投票记录是硬信息，发言可以造假——优先看票型",
+            "发言立场和投票不一致的人最可疑",
+            "关键投票轮次的票型比普通轮次更有分析价值",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="投票数据分析方法",
+                source_author="community_guide",
+            ),
+            tags=["vote", "foundation", "analysis", "vote_pattern", "logic"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_counterclaim_analysis",
+        title="基础常识：对跳预言家判断框架——验人时间线+警徽流兑现+站边一致性",
+        summary=(
+            "当场上出现两个预言家时，好人判断真假的核心框架："
+            "1) 验人时间线：谁先起跳？先起跳的一般更可信。验人的心路历程是否合理？"
+            "2) 警徽流兑现：之前声明的验人计划是否兑现？验人结果是否和死亡/投票数据吻合？"
+            "3) 站边一致性：支持TA的玩家是好人还是狼人倾向？如果支持者都被找出是狼，TA大概率是悍跳。"
+            "4) 发言质量：真预言家的发言通常更从容、有信息增量；悍跳狼容易过度防御或攻击性过强。"
+            "不要单凭一个维度站边——综合四个维度才能做出可靠判断。"
+        ),
+        key_decisions=[
+            "判断真假预言家要综合验人时间线、警徽流兑现、站边一致性和发言质量",
+            "先起跳不一定是真的，但后起跳需要解释为什么一开始不跳",
+            "支持者阵营分析是关键：如果支持A预言家的都是狼人，A大概率是悍跳",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="sheriff_speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="对跳预言家分析框架",
+                source_author="community_guide",
+            ),
+            tags=["seer", "counterclaim", "foundation", "analysis", "sheriff_speech"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_silver_water_likely_good",
+        title="基础常识：银水被救者大概率好人——狼人通常不刀自己队友",
+        summary=(
+            "女巫用银水（解药）救的人是被狼人刀杀的人。由于狼人通常不会刀自己的队友，"
+            "所以被刀的人大概率是好人阵营。这就是银水=大概率好人的逻辑基础。"
+            "但注意这不是铁证：理论上狼人可能刀队友做局，但这是极低概率的非常规打法。"
+            "在正常对局中，银水身份可以作为较强的正面参考，但不应该盲信。"
+        ),
+        key_decisions=[
+            "银水被救者大概率好人，因为狼人通常不刀队友",
+            "银水可以作为较强正面参考但不是铁证",
+            "理论上存在狼人刀队友做局的极端情况，但极罕见",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="银水身份推断逻辑",
+                source_author="community_guide",
+            ),
+            tags=["witch", "silver_water", "foundation", "identity_inference", "logic"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_hunter_no_shot_means_poison",
+        title="基础常识：猎人不一定开枪——被毒杀时不能开枪",
+        summary=(
+            "猎人被狼人刀杀或被放逐时可以开枪带走一人，但被女巫毒杀时不能开枪。"
+            "所以如果猎人死了但没有开枪，可能的原因是：被女巫毒杀了。"
+            "这个信息可以用来反推女巫的毒药使用情况。"
+            "另外，猎人可以选择不开枪（保留信息或没有明确目标），所以不开枪不一定是被毒，"
+            "但被毒一定不能开枪。好人在分析时应考虑这两种可能性。"
+        ),
+        key_decisions=[
+            "猎人被毒杀时不能开枪，这是规则硬限制",
+            "猎人死了没开枪可能是被毒，也可能是自愿不开枪",
+            "分析猎人是否开枪可以反推女巫毒药使用情况",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="猎人开枪规则与推断",
+                source_author="community_guide",
+            ),
+            tags=["hunter", "foundation", "poison", "shot", "deduction"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_hybrid_check_good",
+        title="基础常识：预言家查验混血儿结果为好人，不反映主人阵营",
+        summary=(
+            "混血儿在规则上属于好人阵营的外围——预言家查验混血儿的结果永远是好人。"
+            "这意味着混血儿被验为好人不能证明其主人是好人阵营。"
+            "混血儿可能选择了狼人主人，但查验结果仍然是好人。"
+            "好人在分析混血儿的立场时，不能因为混血儿被验为好人就完全信任TA，"
+            "应该观察混血儿的实际站边和行为是否和好人利益一致。"
+        ),
+        key_decisions=[
+            "混血儿被预言家查验永远显示为好人，不反映主人阵营",
+            "被验为好人的混血儿仍可能追随狼人主人",
+            "分析混血儿应看实际行为和站边，不只看查验结果",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="混血儿查验结果与阵营推断",
+                source_author="community_guide",
+            ),
+            tags=["hybrid", "seer", "foundation", "check_result", "faction"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_sheriff_vote_weight",
+        title="基础常识：警长票1.5倍权重是投票策略的核心考量",
+        summary=(
+            "警长的投票权重是1.5倍（实际规则：警长3票，普通玩家2票）。"
+            "这意味着警长归票的能力很强——如果警长归票某人，需要更多反对票才能抵消。"
+            "竞选警长时应该考虑：谁当警长更可能归对票？谁拿到1.5票权会帮助好人？"
+            "狼人拿到警长的话，1.5票可以帮狼队推走好人。"
+            "所以警长投票阶段，不要凭感觉投，要想清楚谁的1.5票对你阵营最有利。"
+        ),
+        key_decisions=[
+            "警长1.5票权重对投票结果影响巨大",
+            "竞选时思考：谁当警长对好人/狼人更有利",
+            "狼人拿到警长会用1.5票推走好人，所以要谨慎投票",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="sheriff_speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="警长投票权重与策略",
+                source_author="community_guide",
+            ),
+            tags=["sheriff", "foundation", "vote_weight", "strategy", "sheriff_speech"],
+        ),
+    ))
+
+    entries.append(RAGEntry(
+        entry_id="seed_foundation_withdraw_tactics",
+        title="基础常识：退水是获取信息不担责任的战术，退水后变警下投票",
+        summary=(
+            "上警（注册竞选警长）后可以退水（退出竞选）。退水的战术价值是："
+            "1) 在警上发言获取信息（听其他候选人的发言），然后退水不承担警长责任。"
+            "2) 退水后变成警下玩家，可以参与警长投票——而留在警上的候选人不能投票。"
+            "3) 退水发言也是公开信息，其他玩家可以从中获取分析素材。"
+            "好人退水后作为投票者，可以根据所有警上发言的质量决定投谁当警长，"
+            "这比留在警上被动等待更有灵活性。"
+        ),
+        key_decisions=[
+            "退水=获取信息+获得投票权，是常见的灵活战术",
+            "退水后变为警下玩家，可以投票选警长",
+            "留在警上的候选人不能投票，只有退水/未上警的人能投票",
+        ],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="seed_validator",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="sheriff_speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+                source_title="退水战术与警上流程",
+                source_author="community_guide",
+            ),
+            tags=["sheriff", "withdraw", "foundation", "tactics", "sheriff_speech"],
+        ),
+    ))
+
     # Ingest all seeds
     for entry in entries:
         ingester.ingest(entry)

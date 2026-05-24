@@ -638,6 +638,15 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
     )
+    wolf_target = state.get("wolf_kill_target_id")
+    if wolf_target:
+        gs, _ = _judge_broadcast(
+            phase="witch_kill_info",
+            message=f"今晚{_player_display(state, wolf_target)}被狼人杀害了",
+            gs=gs, night_number=gs.night_number,
+            visibility="witch_private",
+            extra_payload={"wolf_kill_target_id": wolf_target},
+        )
     gs, _ = _judge_broadcast(
         phase="witch_choose",
         message="女巫请选择是否使用解药或毒药",
@@ -1259,6 +1268,7 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
 
     votes: dict[str, str] = {}
     has_agents = False
+    vote_records: list[dict[str, Any]] = []
     for voter_id in voters:
         result = _dispatch_agent(
             state,
@@ -1272,8 +1282,10 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
                 return {"game_state": gs, "self_destruct_wolf_id": voter_id}
             if result.get("vote_target"):
                 votes[voter_id] = result["vote_target"]
+                vote_records.append({"voter": voter_id, "target": result["vote_target"]})
                 print(f"  [警长投票] {_player_display(state, voter_id)} 投票给 {_player_display(state, result['vote_target'])}")
             else:
+                vote_records.append({"voter": voter_id, "target": None})
                 print(f"  [警长投票] {_player_display(state, voter_id)} 弃票")
     if not has_agents:
         votes = state.get("sheriff_votes", {})
@@ -1287,6 +1299,13 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
 
     gs, event = engine.resolve_sheriff_vote(gs, votes=votes, candidates=candidates)
     gs = replace(gs, events=gs.events + [event])
+
+    # Record individual sheriff votes for game log visibility
+    if vote_records:
+        gs = replace(gs, events=gs.events + [GameEvent(
+            type="sheriff_vote_record",
+            payload={"votes": vote_records, "candidates": candidates},
+        )])
 
     # Announce result
     elected_id = event.payload.get("sheriff_id")
@@ -1325,14 +1344,14 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         if gs.sheriff_id and gs.sheriff_badge_state == "active":
             gs, _ = _judge_broadcast(
                 phase="discussion_start",
-                message=f"请警长{_player_display(state, gs.sheriff_id)}安排发言顺序，开始自由讨论",
+                message=f"请警长{_player_display(state, gs.sheriff_id)}指定发言顺序，开始自由讨论",
                 gs=gs, day_number=gs.day_number,
                 visibility="public",
             )
         else:
             gs, _ = _judge_broadcast(
                 phase="discussion_start",
-                message="自由讨论开始，随机选择发言起点",
+                message="本局无警长，由法官随机指定发言顺序，开始自由讨论",
                 gs=gs, day_number=gs.day_number,
                 visibility="public",
             )
@@ -1712,6 +1731,13 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
     for ev in events:
         if ev.type == "idiot_reveal":
             print(f"  [白痴亮牌] {_player_display(state, exiled_id)} 是白痴，不会被放逐")
+            gs, _ = _judge_broadcast(
+                phase="idiot_reveal",
+                message=f"{_player_display(state, exiled_id)}亮出白痴身份，不会被放逐，但失去投票权",
+                gs=gs, day_number=gs.day_number,
+                extra_payload={"player_id": exiled_id},
+                visibility="public",
+            )
     return {"game_state": gs}
 
 
@@ -1827,6 +1853,14 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 source_player_id=death.player_id,
             )
             gs = engine.apply_death(gs, shot_death)
+            # Public death announcement for shot player
+            gs, _ = _judge_broadcast(
+                phase="hunter_shot_death",
+                message=f"{_player_display(state, target)}被猎人开枪射杀，死亡",
+                gs=gs, day_number=gs.day_number, night_number=gs.night_number,
+                extra_payload={"target_id": target, "hunter_id": death.player_id},
+                visibility="public",
+            )
             # Emit public hunter_shot event for agent_adapter visibility
             gs = replace(gs, events=gs.events + [GameEvent(
                 type="hunter_shot_public",
@@ -1893,9 +1927,26 @@ def check_victory(state: RuntimeState) -> dict[str, Any]:
 
     if result.winner is not None:
         wf = result.winner
+        faction_label = "好人阵营" if wf == "good" else "狼人阵营"
         print(f"\n{'='*60}")
-        print(f"  【游戏结束】胜利方: {'好人阵营' if wf == 'good' else '狼人阵营'} ({result.reason})")
+        print(f"  【游戏结束】胜利方: {faction_label} ({result.reason})")
         print(f"{'='*60}")
+
+        # Public victory announcement
+        identity_reveal = ", ".join(
+            f"{pid}({p.role})" for pid, p in gs.players.items()
+        )
+        gs, _ = _judge_broadcast(
+            phase="victory_announce",
+            message=f"游戏结束，{faction_label}获胜！({result.reason})",
+            gs=gs, day_number=gs.day_number,
+            extra_payload={
+                "winner": wf,
+                "reason": result.reason,
+                "identities": identity_reveal,
+            },
+            visibility="public",
+        )
         hr = None
         if wf == "good" and gs.hybrid_master_faction == "good":
             hr = "win"
@@ -1984,6 +2035,20 @@ def sheriff_badge_transfer(state: RuntimeState) -> dict[str, Any]:
 
 def finish_game(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
+
+    # Final identity reveal broadcast
+    identity_lines = []
+    for pid, p in gs.players.items():
+        status = "存活" if p.alive else "死亡"
+        identity_lines.append(f"{pid}({p.role}, {status})")
+    gs, _ = _judge_broadcast(
+        phase="game_end_reveal",
+        message="游戏结束，公布所有玩家身份：" + "；".join(identity_lines),
+        gs=gs, day_number=gs.day_number,
+        extra_payload={"identities": {pid: p.role for pid, p in gs.players.items()}},
+        visibility="public",
+    )
+
     gs = replace(gs, phase="finished",
                  events=gs.events + [GameEvent(type="game_finished", payload={})])
     return {"game_state": gs}
@@ -2196,6 +2261,15 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
     registry = state.get("agent_registry")
     events: list[GameEvent] = []
 
+    # Judge announces PK speech phase
+    pk_names = [_player_display(state, c) for c in pk_candidates]
+    gs, _ = _judge_broadcast(
+        phase="pk_speech_start",
+        message=f"首次平票，{', '.join(pk_names)}进入PK发言环节，请依次发言",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+
     if registry and pk_candidates:
         for candidate_id in pk_candidates:
             result = _dispatch_agent(
@@ -2231,7 +2305,14 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
 
 def tie_revote(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
+    gs, _ = _judge_broadcast(
+        phase="pk_revote_start",
+        message="PK发言结束，请重新投票",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
     return {
+        "game_state": gs,
         "exile_votes": {},
         "exile_vote_day": gs.day_number,
         "exile_vote_revote": True,
@@ -2444,7 +2525,7 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
     else:
         gs, _ = _judge_broadcast(
             phase="sheriff_speech_start",
-            message=f"警上发言顺序: {names}",
+            message=f"由法官随机指定警上发言顺序: {names}",
             gs=gs,
             day_number=gs.day_number,
             extra_payload={"speech_order": speech_order},

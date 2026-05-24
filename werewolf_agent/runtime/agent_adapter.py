@@ -630,11 +630,14 @@ def _collect_public_vote_history(gs: GameState) -> str:
             continue
         exiled = e.payload.get("exiled")
         tied = e.payload.get("tied", [])
-        votes = e.payload.get("votes", {})
+        votes = e.payload.get("votes", [])
         day = e.payload.get("day_number", "?")
         if exiled:
-            # Collect who voted for the exiled player
-            supporters = [v for v, t in votes.items() if t == exiled]
+            # votes is a list of {"voter": ..., "target": ..., "reason": ...}
+            supporters = [
+                v.get("voter", "") for v in votes
+                if isinstance(v, dict) and v.get("target") == exiled
+            ]
             lines.append(f"D{day}: {exiled}被放逐（投TA的: {', '.join(supporters)}）")
         elif tied:
             lines.append(f"D{day}: 平票PK {', '.join(tied)}，无人出局")
@@ -836,6 +839,17 @@ def _get_wolf_role_assignment(
     return "unassigned"
 
 
+def _has_publicly_claimed_seer(gs: GameState, player_id: str) -> bool:
+    """Check if a player has publicly claimed seer in any speech event."""
+    seer_keywords = ("预言家", "查杀", "金水", "验了", "查验")
+    for e in gs.events:
+        if e.type in ("sheriff_speech", "speech") and e.payload.get("speaker") == player_id:
+            text = e.payload.get("text", "")
+            if any(kw in text for kw in seer_keywords):
+                return True
+    return False
+
+
 _WOLF_ROLE_STRATEGY = {
     "fake_seer": (
         "你是悍跳狼（假预言家）。白天发言策略：\n"
@@ -906,7 +920,10 @@ def _build_wolf_day_speech_directive(
         "3) 不要完美配合队友——好人间也有分歧，太过一致会暴露\n"
         "4) 如果有人指控你的队友，用独立逻辑回应而非本能保护\n"
         "5) 如果你被预言家验出狼人，你需要做出回应：质疑预言家身份、"
-        "指出验人逻辑漏洞、或声称被冤枉"
+        "指出验人逻辑漏洞、或声称被冤枉\n"
+        "6) 【严禁信息穿越】你不能使用你作为狼人的未来信息。"
+        "如果某个队友计划跳预言家但还没发言，你不能提前站边或透露TA的身份。"
+        "你必须表现得像一个不知道谁是预言家的普通好人，等TA发言后才能站边。"
     )
 
     # Day push target from team plan
@@ -921,21 +938,34 @@ def _build_wolf_day_speech_directive(
         # Inform about fake seer identity for coordination
         fake_seer = wolf_team_plan.get("fake_seer")
         if fake_seer and fake_seer != wolf_id:
-            parts["wolf_fake_seer_teammate"] = (
-                f"你的队友 {fake_seer} 是悍跳狼（假预言家），在白天会跳预言家。"
-                "你的发言要配合TA的叙事——如果TA报了验人，你要像好人对真预言家一样回应。"
-            )
-            if assignment == "pusher":
-                parts["wolf_fake_seer_teammate"] += (
-                    "主动为TA的验人结果站台、质疑对跳预言家。"
+            if _has_publicly_claimed_seer(gs, fake_seer):
+                # Teammate has already spoken — coordinate normally
+                parts["wolf_fake_seer_teammate"] = (
+                    f"你的队友 {fake_seer} 是悍跳狼（假预言家），已公开跳预言家。"
+                    "你的发言要配合TA的叙事——如果TA报了验人，你要像好人对真预言家一样回应。"
                 )
-            elif assignment == "hooker":
-                parts["wolf_fake_seer_teammate"] += (
-                    "你可以轻踩TA来获取信任，但不要太用力。"
-                )
-            elif assignment == "deep_cover":
-                parts["wolf_fake_seer_teammate"] += (
-                    "表现得像一个中立的好人来判断谁更像真预言家。"
+                if assignment == "pusher":
+                    parts["wolf_fake_seer_teammate"] += (
+                        "主动为TA的验人结果站台、质疑对跳预言家。"
+                    )
+                elif assignment == "hooker":
+                    parts["wolf_fake_seer_teammate"] += (
+                        "你可以轻踩TA来获取信任，但不要太用力。"
+                    )
+                elif assignment == "deep_cover":
+                    parts["wolf_fake_seer_teammate"] += (
+                        "表现得像一个中立的好人来判断谁更像真预言家。"
+                    )
+            else:
+                # Teammate hasn't claimed yet — strict anti-reveal constraint
+                parts["wolf_fake_seer_teammate"] = (
+                    f"【严禁信息穿越】你的队友计划悍跳预言家，但TA尚未在公开场合跳预言家。"
+                    "在你的发言中绝不能：\n"
+                    "- 站边TA的预言家身份（'我站边XX的预言家'之类）\n"
+                    "- 透露TA会跳预言家\n"
+                    "- 以任何方式暗示你已知道谁是预言家\n"
+                    "你必须表现得像一个对场上信息不确定的普通好人。"
+                    "等TA自己发言后，在后续的发言轮次中你才能像好人一样'分析站边'。"
                 )
 
     # Counterclaim context: if a real seer has publicly checked a wolf teammate
@@ -1656,7 +1686,9 @@ def agent_wolf_discussion(
     discussion_instruction = (
         "这是狼队密谈，只有狼人队友能看到。你必须以狼人视角发言，讨论狼队策略。"
         "禁止假装好人视角发言，禁止质疑或试探队友身份——你清楚知道谁是队友。"
-        "必须发言，不能沉默。必须提出具体的击杀目标或战术建议。"
+        "必须发言，不能沉默。必须提出具体的击杀目标或战术建议。\n"
+        "注意用词：被放逐或已死的队友是'队友'或'悍跳狼'，不要叫TA'预言家'。"
+        "即使TA白天冒充了预言家，在狼队内部你们应该用真实身份称呼。"
     )
     if has_teammate_input:
         discussion_instruction += (
@@ -1728,9 +1760,15 @@ def agent_day_speech(
     strategy_directive = context.strategy_directive or {}
     strategy_directive["anti_following_and_peace_night_rule"] = (
         "不要跟风复述已有指控；如果质疑女巫或预言家，必须给出独立证据并区分事实和推测。"
-        "平安夜只代表公开无人死亡，不代表狼人没有刀人；不能用“平安夜没人死”反驳女巫知道刀口。"
-        "质疑跳女巫玩家时，应询问是否用药、为什么暂不公开银水、以及发言是否前后矛盾，"
-        "不要把“不说救谁”直接等同于假女巫。"
+        "平安夜只代表公开无人死亡，不代表狼人没有刀人。"
+        "质疑跳女巫玩家时，应询问是否用药、为什么暂不公开银水、以及发言是否前后矛盾。"
+    )
+    strategy_directive["speech_originality"] = (
+        "【发言原创性要求】\n"
+        "- 禁止复述其他玩家已经说过的观点——你可以表示同意或反对，但必须补充自己的理由\n"
+        "- 禁止使用模板化句式（如'我需要XX正面回应站边、票型'等重复套话）\n"
+        "- 你的发言应该展现你独特的思考角度和分析能力\n"
+        "- 如果前面已经有人分析了某个玩家，你应换个角度或分析不同的玩家"
     )
 
     # Role-specific speech constraints
@@ -1780,9 +1818,14 @@ def agent_day_speech(
                 "text": e.payload.get("text", ""),
             })
     if sheriff_speeches:
+        # Truncate long speeches to prevent copying/repeating
+        speech_summaries = []
+        for s in sheriff_speeches:
+            snippet = s["text"][:80] + ("..." if len(s["text"]) > 80 else "")
+            speech_summaries.append(f"  [{s['speaker']}]: {snippet}")
         strategy_directive["sheriff_election_record"] = (
-            "以下是警上竞选环节各候选人的发言，请参考这些信息进行讨论：\n"
-            + "\n".join(f"  [{s['speaker']}]: {s['text']}" for s in sheriff_speeches)
+            "以下是警上竞选环节各候选人发言的摘要：\n"
+            + "\n".join(speech_summaries)
         )
 
     context = context.model_copy(update={"strategy_directive": strategy_directive})
@@ -2452,8 +2495,27 @@ def agent_sheriff_vote(
         engine, gs, voter_id, TaskType.VOTE,
         legal_actions=[ActionType.SHERIFF_VOTE, ActionType.NO_ACTION],
         legal_targets=candidates,
+        wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
     )
+
+    # Wolf strategy for sheriff voting
+    strategy_directive = context.strategy_directive or {}
+    voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
+    if voter_role == "werewolf":
+        wolf_teammates = [
+            pid for pid, p in gs.players.items()
+            if p.alive and p.role == "werewolf" and pid != voter_id
+        ]
+        teammate_candidates = [c for c in candidates if c in wolf_teammates]
+        if teammate_candidates:
+            strategy_directive["wolf_sheriff_vote"] = (
+                f"你是狼人。你的队友 {', '.join(teammate_candidates)} 也在候选人中。"
+                "投票时不要明显全部投给队友——这样会暴露你们的关系。"
+                "如果场上有多个候选人，你应该分散投票，表现得像一个独立判断的好人。"
+            )
+    if strategy_directive:
+        context = context.model_copy(update={"strategy_directive": strategy_directive})
 
     action, retry_info = agent.act(context)
     if action.action_type == ActionType.SELF_DESTRUCT:
@@ -2617,12 +2679,18 @@ def agent_sheriff_election_speech(
             })
     prev_speech_instruction = ""
     if prev_speeches:
-        prev_texts = "\n".join(f"  [{s['speaker']}]: {s['text']}" for s in prev_speeches)
+        # Only include summary of previous speeches, not full text, to avoid copying
+        prev_summaries = []
+        for s in prev_speeches[-3:]:
+            snippet = s["text"][:60] + ("..." if len(s["text"]) > 60 else "")
+            prev_summaries.append(f"  [{s['speaker']}]: {snippet}")
+        prev_texts = "\n".join(prev_summaries)
         prev_speech_instruction = (
-            f"\n\n【重要】在你之前，已经有候选人发言了。你必须回应和分析他们的发言：\n"
+            f"\n\n【前人发言摘要】在你之前已经有候选人发言了：\n"
             f"{prev_texts}\n"
-            "要求：引用具体内容进行分析，指出逻辑问题或表示认同/反对。"
-            "警上发言是辩论，不是各说各的！如果你不回应前面的发言，听众会认为你心虚或没有分析能力。"
+            "你可以对其中你不同意的观点进行反驳，或补充自己的独立判断。"
+            "但【严禁照搬/复述前人发言原文】——你有自己的判断角度。"
+            "如果前人已经指出了某个问题，你不需要再重复，而是给出新的分析方向。"
         )
 
     strategy_directive = {
@@ -2633,12 +2701,56 @@ def agent_sheriff_election_speech(
             "3) 你对场上局势的初步判断。"
             "不能只说'我来上警'之类空洞的话，必须有实质内容。"
             "注意：只有预言家（或悍跳预言家）才能留警徽流，其他身份不要提警徽流。"
-            "非预言家不要在警上冒充预言家抢警徽。"
+            "非预言家不要在警上冒充预言家抢警徽。\n"
+            "【发言质量要求】\n"
+            "- 每个玩家的发言必须有独特的分析角度，不能和前人雷同\n"
+            "- 禁止使用模板化句式（'我需要XX正面回应站边、票型'等）\n"
+            "- 你的发言应该展现你独立思考的能力，不是复述别人的观点\n"
             f"{seer_context}"
             f"{prev_speech_instruction}"
         ),
         "other_candidates": other_candidates,
     }
+
+    # Role-specific speech differentiation
+    if player_role == "idiot":
+        strategy_directive["role_speech_hint"] = (
+            "你是白痴，警上发言重点：观察所有人的发言逻辑，"
+            "找出逻辑漏洞或矛盾点，展示你的分析能力。"
+        )
+    elif player_role == "hunter":
+        strategy_directive["role_speech_hint"] = (
+            "你是猎人，警上发言重点：关注谁在发言中暴露了信息不对称，"
+            "谁的逻辑前后矛盾。你不需要暴露身份。"
+        )
+    elif player_role == "witch":
+        strategy_directive["role_speech_hint"] = (
+            "你是女巫，警上发言重点：基于你的夜间信息，"
+            "引导讨论方向，但不要暴露你知道的具体信息。"
+        )
+    elif player_role == "villager":
+        strategy_directive["role_speech_hint"] = (
+            "你是村民，警上发言重点：用逻辑分析场上信息，"
+            "找出预言家真假的判断依据，展示你作为好人的价值。"
+        )
+    elif player_role == "hybrid":
+        strategy_directive["role_speech_hint"] = (
+            "你是混血儿，警上发言重点：观察场上局势，"
+            "在不确定主人阵营前保持中立分析。"
+        )
+
+    # Wolf anti-reveal: don't expose fake seer teammate before they speak
+    if player_role == "werewolf":
+        wolf_plan = state.get("wolf_team_plan")
+        if wolf_plan and wolf_plan.get("fake_seer"):
+            fake_seer_id = wolf_plan["fake_seer"]
+            if fake_seer_id != candidate_id and not _has_publicly_claimed_seer(gs, fake_seer_id):
+                strategy_directive["wolf_no_reveal_seer"] = (
+                    f"【严禁信息穿越】你的队友计划跳预言家但尚未在警上发言。"
+                    "在你的警上发言中绝不能站边TA或透露TA会跳预言家。"
+                    "你必须表现得像一个不知道谁是预言家的普通好人。"
+                    "等TA自己发言后，在后续讨论中你才能像好人一样站边。"
+                )
 
     context = build_agent_context(
         engine, gs, candidate_id, TaskType.SHERIFF_SPEECH,

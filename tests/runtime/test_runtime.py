@@ -4979,11 +4979,23 @@ class TestWolfStrategyDirectives:
 
     def test_wolf_speech_knows_fake_seer_teammate(self) -> None:
         from werewolf_agent.runtime.agent_adapter import _build_wolf_day_speech_directive
+        # When fake seer has NOT spoken yet → anti-reveal constraint
         gs = self._make_wolf_gs()
         plan = {"fake_seer": "w2", "pusher": "w1"}
         result = _build_wolf_day_speech_directive(gs, "w1", plan)
         assert "wolf_fake_seer_teammate" in result
-        assert "w2" in result["wolf_fake_seer_teammate"]
+        assert "严禁信息穿越" in result["wolf_fake_seer_teammate"]
+
+        # When fake seer HAS publicly claimed → coordination allowed
+        gs2 = self._make_wolf_gs(events=[
+            GameEvent(type="speech", payload={
+                "speaker": "w2", "text": "我是预言家，查杀了v1", "day_number": 1,
+            }),
+        ])
+        result2 = _build_wolf_day_speech_directive(gs2, "w1", plan)
+        assert "wolf_fake_seer_teammate" in result2
+        assert "w2" in result2["wolf_fake_seer_teammate"]
+        assert "已公开跳预言家" in result2["wolf_fake_seer_teammate"]
 
     def test_single_wolf_vote_seer_is_highest_threat(self) -> None:
         from werewolf_agent.runtime.agent_adapter import _evaluate_wolf_kill_target
