@@ -1053,6 +1053,7 @@ def _inject_skill_output(
     contradiction_alerts: list[Any],
     phase: str,
     legal_targets: list[str] | None = None,
+    wolf_team_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Dispatch applicable skills and inject tactical advice into strategy_directive."""
     from werewolf_agent.skills.registry import SkillRegistry
@@ -1073,10 +1074,31 @@ def _inject_skill_output(
         contradiction_alerts=contradiction_alerts,
         player_id=player_id,
         legal_targets=legal_targets or [],
+        extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
     )
 
     outputs = registry.dispatch_for_role(player.role, phase, skill_input)
-    parts = [o.prompt_injectable for o in outputs if o.prompt_injectable and o.confidence >= 0.4]
+
+    # Filter skills that conflict with wolf team role assignment
+    wolf_role = None
+    if wolf_team_plan and player.role == "werewolf":
+        for role_key in ("fake_seer", "pusher", "hooker", "deep_cover"):
+            if wolf_team_plan.get(role_key) == player_id:
+                wolf_role = role_key
+                break
+
+    parts = []
+    for o in outputs:
+        if not o.prompt_injectable or o.confidence < 0.4:
+            continue
+        # Skip bold_claim for non-fake_seer wolves
+        if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
+            continue
+        # Skip deep_hook for fake_seer/pusher wolves
+        if o.skill_name == "deep_hook" and wolf_role and wolf_role in ("fake_seer", "pusher"):
+            continue
+        parts.append(o.prompt_injectable)
+
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
     return strategy_directive
@@ -1302,6 +1324,7 @@ def build_agent_context(
                 strategy_directive, gs, player_id,
                 world_state, belief_state, alerts, task_type.value,
                 legal_targets=legal_targets,
+                wolf_team_plan=wolf_team_plan,
             )
     except Exception:
         logger.debug("Skill injection failed, skipping", exc_info=True)

@@ -306,6 +306,19 @@ def _bold_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     day = gs.day_number
     seer_count = _count_seer_claimants(ws)
     wolves = _alive_wolves(gs)
+
+    # If wolf_team_plan assigns a different wolf as fake_seer, skip bold claim advice
+    wolf_plan = inp.extra.get("wolf_team_plan") if inp.extra else None
+    if wolf_plan and wolf_plan.get("fake_seer") and wolf_plan["fake_seer"] != inp.player_id:
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="speech",
+            confidence=0.3,
+            reasoning=f"队友 {wolf_plan['fake_seer']} 负责悍跳，你不需要悍跳",
+            prompt_injectable=f"悍跳建议：你的队友 {wolf_plan['fake_seer']} 负责悍跳预言家，"
+                              f"你不需要悍跳。配合TA的预言家身份进行站边和推人。",
+        )
+
     risks: list[str] = ["悍跳风险：如果对跳方是真预言家，可信度会大幅下降"]
 
     if day > 2:
@@ -381,9 +394,8 @@ def _counter_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutp
         return SkillOutput(
             skill_name=skill.name.value,
             recommended_action="speech",
-            confidence=0.6,
+            confidence=0.35,
             reasoning="场上无人跳预言家，无需对跳",
-            prompt_injectable="场上无人跳预言家，可考虑先观察或自行起跳。",
         )
 
     target = claimants[0]
@@ -590,6 +602,23 @@ def _deep_hook_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     wolves = _alive_wolves(gs)
     exposed = _wolf_teammates_exposed(ws, wolves)
+
+    # If wolf role assignment is pusher or fake_seer, deep hook doesn't apply
+    wolf_plan = inp.extra.get("wolf_team_plan") if inp.extra else None
+    if wolf_plan:
+        my_role_key = None
+        for key in ("fake_seer", "pusher", "hooker", "deep_cover"):
+            if wolf_plan.get(key) == inp.player_id:
+                my_role_key = key
+                break
+        if my_role_key in ("fake_seer", "pusher"):
+            return SkillOutput(
+                skill_name=skill.name.value,
+                recommended_action="speech",
+                confidence=0.3,
+                reasoning=f"你是{my_role_key}，不需要倒钩策略",
+                prompt_injectable="倒钩建议：你的角色分工是冲锋/悍跳，不需要倒钩。专注于你的主要任务。",
+            )
 
     day = gs.day_number
     risks = ["倒钩策略需要长期维持一致性", "过度攻击队友可能被识别"]
