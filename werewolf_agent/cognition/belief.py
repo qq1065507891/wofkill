@@ -112,6 +112,8 @@ class BeliefUpdater:
             return self._apply_vote(state, fact)
         if fact.fact_type == "speech":
             return self._apply_speech_signal(state, fact)
+        if fact.fact_type == "seer_check_claim":
+            return self._apply_seer_claim(state, fact)
         return state
 
     def _apply_death(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
@@ -185,4 +187,19 @@ class BeliefUpdater:
         text_len = len(fact.value)
         if text_len > 200:
             state.beliefs[pid].trust = min(1.0, state.beliefs[pid].trust + 0.02)
+        return state
+
+    def _apply_seer_claim(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
+        """公开查杀声明：目标 faction_lean 偏狼，声明者信任微增。"""
+        target = fact.target_player
+        source = fact.source_player
+        val = (fact.value or "").lower()
+        if "wolf" in val or "狼" in val:
+            if target and target in state.beliefs:
+                state.beliefs[target].faction_lean = "wolf_lean"
+            if source and source in state.beliefs:
+                state.beliefs[source].trust = min(1.0, state.beliefs[source].trust + 0.02)
+        elif "good" in val or "好人" in val or "金水" in val:
+            if target and target in state.beliefs:
+                state.beliefs[target].faction_lean = "good_lean"
         return state

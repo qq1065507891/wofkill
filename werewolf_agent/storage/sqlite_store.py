@@ -103,8 +103,6 @@ CREATE TABLE IF NOT EXISTS custom_configs (
 """
 
 
-_SCHEMA_VERSION = "1"
-
 
 class SqliteGameRepository:
     """SQLite implementation of GameRepository."""
@@ -192,155 +190,171 @@ class SqliteGameRepository:
     # -- Model usage -------------------------------------------------------
 
     def save_model_usage(self, game_id: str, record: dict[str, Any]) -> None:
-        self._conn.execute(
-            "INSERT INTO model_usage (game_id, record_json) VALUES (?, ?)",
-            (game_id, json.dumps(record, ensure_ascii=False)),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO model_usage (game_id, record_json) VALUES (?, ?)",
+                (game_id, json.dumps(record, ensure_ascii=False)),
+            )
+            self._conn.commit()
 
     def load_model_usage(self, game_id: str) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT record_json FROM model_usage WHERE game_id = ? ORDER BY id",
-            (game_id,),
-        ).fetchall()
-        return [json.loads(r[0]) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT record_json FROM model_usage WHERE game_id = ? ORDER BY id",
+                (game_id,),
+            ).fetchall()
+            return [json.loads(r[0]) for r in rows]
 
     # -- Evaluation --------------------------------------------------------
 
     def save_evaluation(self, game_id: str, result: dict[str, Any]) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO evaluations (game_id, result_json) VALUES (?, ?)",
-            (game_id, json.dumps(result, ensure_ascii=False)),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO evaluations (game_id, result_json) VALUES (?, ?)",
+                (game_id, json.dumps(result, ensure_ascii=False)),
+            )
+            self._conn.commit()
 
     def load_evaluation(self, game_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT result_json FROM evaluations WHERE game_id = ?",
-            (game_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return json.loads(row[0])
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT result_json FROM evaluations WHERE game_id = ?",
+                (game_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0])
 
     # -- Config snapshots --------------------------------------------------
 
     def save_config_snapshot(self, game_id: str, config: dict[str, Any]) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO config_snapshots (game_id, config_json) VALUES (?, ?)",
-            (game_id, json.dumps(config, ensure_ascii=False)),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO config_snapshots (game_id, config_json) VALUES (?, ?)",
+                (game_id, json.dumps(config, ensure_ascii=False)),
+            )
+            self._conn.commit()
 
     def load_config_snapshot(self, game_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT config_json FROM config_snapshots WHERE game_id = ?",
-            (game_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return json.loads(row[0])
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT config_json FROM config_snapshots WHERE game_id = ?",
+                (game_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0])
 
     # -- Customization configs --------------------------------------------
 
     def save_custom_config(self, record: dict[str, Any]) -> None:
-        self._conn.execute(
-            """
-            INSERT OR REPLACE INTO custom_configs
-                (config_id, config_type, record_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                record["config_id"],
-                record["config_type"],
-                json.dumps(record, ensure_ascii=False),
-                record.get("created_at", ""),
-                record.get("updated_at", ""),
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO custom_configs
+                    (config_id, config_type, record_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    record["config_id"],
+                    record["config_type"],
+                    json.dumps(record, ensure_ascii=False),
+                    record.get("created_at", ""),
+                    record.get("updated_at", ""),
+                ),
+            )
+            self._conn.commit()
 
     def load_custom_config(self, config_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT record_json FROM custom_configs WHERE config_id = ?",
-            (config_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return json.loads(row[0])
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT record_json FROM custom_configs WHERE config_id = ?",
+                (config_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0])
 
     def list_custom_configs(self, config_type: str | None = None) -> list[dict[str, Any]]:
-        if config_type is None:
-            rows = self._conn.execute(
-                "SELECT record_json FROM custom_configs ORDER BY created_at, config_id"
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT record_json FROM custom_configs WHERE config_type = ? ORDER BY created_at, config_id",
-                (config_type,),
-            ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        with self._lock:
+            if config_type is None:
+                rows = self._conn.execute(
+                    "SELECT record_json FROM custom_configs ORDER BY created_at, config_id"
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT record_json FROM custom_configs WHERE config_type = ? ORDER BY created_at, config_id",
+                    (config_type,),
+                ).fetchall()
+            return [json.loads(row[0]) for row in rows]
 
     # -- List / Delete -----------------------------------------------------
 
     def list_games(self) -> list[GameState]:
-        rows = self._conn.execute(
-            "SELECT state_json FROM games"
-        ).fetchall()
-        return [_deserialize_game_state(r[0]) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT state_json FROM games"
+            ).fetchall()
+            return [_deserialize_game_state(r[0]) for r in rows]
 
     def delete_game(self, game_id: str) -> None:
-        self._conn.execute("DELETE FROM games WHERE game_id = ?", (game_id,))
-        # ON DELETE CASCADE handles related tables
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM games WHERE game_id = ?", (game_id,))
+            self._conn.commit()
 
     # -- RAG entries ---------------------------------------------------------
 
     def save_rag_entries(self, entries: list[dict[str, Any]]) -> None:
         """Persist RAG entries (list of serialized RAGEntry dicts)."""
-        for entry in entries:
-            entry_id = entry.get("entry_id", "")
-            self._conn.execute(
-                "INSERT OR REPLACE INTO rag_entries (entry_id, entry_json) VALUES (?, ?)",
-                (entry_id, json.dumps(entry, ensure_ascii=False)),
-            )
-        self._conn.commit()
+        with self._lock:
+            for entry in entries:
+                entry_id = entry.get("entry_id", "")
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO rag_entries (entry_id, entry_json) VALUES (?, ?)",
+                    (entry_id, json.dumps(entry, ensure_ascii=False)),
+                )
+            self._conn.commit()
 
     def load_rag_entries(self) -> list[dict[str, Any]]:
         """Load all persisted RAG entries."""
-        rows = self._conn.execute(
-            "SELECT entry_json FROM rag_entries"
-        ).fetchall()
-        return [json.loads(r[0]) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT entry_json FROM rag_entries"
+            ).fetchall()
+            return [json.loads(r[0]) for r in rows]
 
     def delete_rag_entry(self, entry_id: str) -> None:
-        self._conn.execute("DELETE FROM rag_entries WHERE entry_id = ?", (entry_id,))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM rag_entries WHERE entry_id = ?", (entry_id,))
+            self._conn.commit()
 
     # -- Memory snapshots ----------------------------------------------------
 
     def save_memory_snapshot(self, snapshot_id: str, data: dict[str, Any]) -> None:
         """Persist a MemoryStore snapshot."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO memory_snapshots (snapshot_id, snapshot_json) VALUES (?, ?)",
-            (snapshot_id, json.dumps(data, ensure_ascii=False)),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO memory_snapshots (snapshot_id, snapshot_json) VALUES (?, ?)",
+                (snapshot_id, json.dumps(data, ensure_ascii=False)),
+            )
+            self._conn.commit()
 
     def load_memory_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
         """Load a MemoryStore snapshot by ID."""
-        row = self._conn.execute(
-            "SELECT snapshot_json FROM memory_snapshots WHERE snapshot_id = ?",
-            (snapshot_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return json.loads(row[0])
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT snapshot_json FROM memory_snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0])
 
     def list_memory_snapshots(self) -> list[dict[str, Any]]:
         """List all memory snapshot metadata."""
-        rows = self._conn.execute(
-            "SELECT snapshot_id, created_at FROM memory_snapshots ORDER BY created_at DESC"
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT snapshot_id, created_at FROM memory_snapshots ORDER BY created_at DESC"
         ).fetchall()
         return [{"snapshot_id": r[0], "created_at": r[1]} for r in rows]
 

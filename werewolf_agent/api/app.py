@@ -325,7 +325,8 @@ def create_app(
         )
         # Sync runner state with API state
         runner._state = state
-        runners[game_id] = runner
+        with _runners_lock:
+            runners[game_id] = runner
         _persist(state)
         return GameActionResponse(
             game_id=game_id, action="start", success=True,
@@ -366,8 +367,9 @@ def create_app(
             "game_id": game_id, "phase": state.phase,
         })
         state = replace(state, paused=True, events=state.events + [event])
-        if game_id in runners:
-            runners[game_id]._state = state
+        with _runners_lock:
+            if game_id in runners:
+                runners[game_id]._state = state
         _persist(state)
         return GameActionResponse(
             game_id=game_id, action="pause", success=True,
@@ -383,8 +385,9 @@ def create_app(
             "game_id": game_id, "phase": state.phase,
         })
         state = replace(state, paused=False, events=state.events + [event])
-        if game_id in runners:
-            runners[game_id]._state = state
+        with _runners_lock:
+            if game_id in runners:
+                runners[game_id]._state = state
         _persist(state)
         return GameActionResponse(
             game_id=game_id, action="resume", success=True,
@@ -593,7 +596,8 @@ def create_app(
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ) -> dict:
-        all_game_ids = list(games.keys())
+        with _games_lock:
+            all_game_ids = list(games.keys())
         page = all_game_ids[offset:offset + limit]
         return {"game_ids": page, "total": len(all_game_ids)}
 
@@ -731,7 +735,12 @@ def _build_locked_config_snapshot(req: CreateGameRequest) -> dict:
         "ruleset_hash": hashlib.sha256(ruleset_content.encode("utf-8")).hexdigest(),
         "profile_pack_id": req.profile_pack_id,
         "profile_pack_version": "runtime-current",
-        "profile_pack_hash": hashlib.sha256(req.profile_pack_id.encode("utf-8")).hexdigest(),
+        "profile_pack_hash": hashlib.sha256((
+            (Path("config/persona_packs") / f"{req.profile_pack_id}.yaml")
+            .read_text(encoding="utf-8")
+            if (Path("config/persona_packs") / f"{req.profile_pack_id}.yaml").exists()
+            else req.profile_pack_id
+        ).encode("utf-8")).hexdigest(),
         "model_config_hash": "",
         "persona_adapter_version": 1,
         "rag_config_hash": "",

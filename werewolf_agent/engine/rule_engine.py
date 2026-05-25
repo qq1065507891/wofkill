@@ -723,7 +723,16 @@ class RuleEngine:
             if player.alive and not player.exile_immune:
                 # Idiot reveal: survive, lose vote, no death record
                 if player.role == "idiot" and not player.revealed_idiot:
-                    updated = replace(player, revealed_idiot=True, vote_enabled=False)
+                    idiot_cfg = self.ruleset.raw["roles"]["idiot"]["abilities"]
+                    after = idiot_cfg["state_after_reveal"]
+                    updated = replace(
+                        player,
+                        alive=after["alive"],
+                        revealed_idiot=after["revealed_idiot"],
+                        vote_enabled=not after["vote_disabled"],
+                        badge_eligible=not after["badge_ineligible"],
+                        exile_immune=after["exile_immune"],
+                    )
                     new_players = {**state.players, pid: updated}
                     return replace(
                         state,

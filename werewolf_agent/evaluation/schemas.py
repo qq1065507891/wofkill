@@ -128,7 +128,7 @@ class GameResult:
         result["action_records"] = []
         result["leakage_records"] = []
         result["cost_records"] = []
-        result["cognition_snapshots"] = []
+        result["cognition_snapshots"] = {}
         return result
 
 
