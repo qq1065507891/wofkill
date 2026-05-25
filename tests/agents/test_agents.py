@@ -1558,6 +1558,9 @@ class TestModelRouter:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.chdir(tmp_path)
+        # Clear any cached .env overrides
+        from werewolf_agent.model_gateway.providers import _ENV_OVERRIDES
+        _ENV_OVERRIDES.clear()
 
         assert create_provider_from_env("anthropic") is None
         assert create_provider_from_env("minimax") is None

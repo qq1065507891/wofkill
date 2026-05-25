@@ -47,7 +47,7 @@ _HIGH_PRIORITY_TYPES: set[str] = {
 _PHASE_RELEVANCE: dict[str, set[str]] = {
     "wolf_discussion_and_kill": {"wolf_kill_target", "wolf_discussion"},
     "vote": {"vote", "claimed_suspect", "claimed_claim"},
-    "speech": {"speech", "claimed_role", "claimed_suspect", "claimed_badge_flow"},
+    "speech": {"speech", "claimed_role", "claimed_suspect", "badge_flow_claim"},
     "seer_check": {"seer_check"},
     "witch_action": {"witch_antidote_used", "witch_poison_used"},
     "sheriff_registration": {"sheriff_registered", "sheriff_withdraw"},

@@ -190,7 +190,7 @@ class LocalToolExecutor:
     ) -> dict[str, Any]:
         """Write review entry. Validates that game has ended.
 
-        Review is appended to state.events for audit trail.
+        Review is logged via ToolCallLogger for audit trail.
         Persistent storage is handled by MemoryStore / PersistentMemoryCoordinator
         at game end.
         """
@@ -204,11 +204,6 @@ class LocalToolExecutor:
             "review_text": review_text,
             "game_id": state.game_id,
         }
-        if hasattr(state, 'events'):
-            state.events.append(GameEvent(
-                type="review",
-                payload=review_event,
-            ))
         return {
             "player_id": player_id,
             "review_text": review_text,

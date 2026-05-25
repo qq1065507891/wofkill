@@ -249,11 +249,10 @@ class LocalContextBuilder:
         elif viewer_role == "hybrid" and game_state.hybrid_master_id:
             state["master_id"] = game_state.hybrid_master_id
         elif viewer_role == "seer":
-            # Seer's own check results are in the events
-            check_results = []
-            for e in game_state.events:
-                if e.type == "seer_check" and e.payload.get("seer_id") == viewer_id:
-                    check_results.append(e.payload)
+            check_results = [
+                e.payload for e in game_state.events
+                if e.type == "seer_check"
+            ]
             state["check_results"] = check_results
         elif viewer_role == "witch":
             state["antidote_available"] = not game_state.antidote_used
