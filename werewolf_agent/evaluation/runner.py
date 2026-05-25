@@ -62,7 +62,7 @@ class BatchRunner:
         if self._config.seed_set:
             return list(self._config.seed_set)
 
-        base_hash = int(hashlib.md5(self._config.batch_id.encode()).hexdigest(), 16)
+        base_hash = int(hashlib.sha256(self._config.batch_id.encode()).hexdigest(), 16)
         rng = random.Random(base_hash)
         return [rng.randint(0, 2**31 - 1) for _ in range(self._config.num_games)]
 

@@ -628,8 +628,9 @@ class TestContradictionEngine:
         facts = extract_facts(event, GameState())
 
         assert any(f.fact_type == "claimed_role" and f.value == "seer" for f in facts)
+        # "查验p01是狼人" 被 seer_check_claim 精确捕获，不再生成重复的 claimed_suspect
         assert any(
-            f.fact_type == "claimed_suspect" and f.target_player == "p01" and f.value == "wolf"
+            f.fact_type == "seer_check_claim" and f.target_player == "p01" and f.value == "wolf"
             for f in facts
         )
 
@@ -1125,7 +1126,7 @@ class TestVisibilityLeakComprehensive:
     def test_no_forbidden_night_info_in_public(self):
         pipeline = CognitivePipeline()
         events = [
-            GameEvent(type="seer_check", payload={"seer_id": "p08", "target_id": "p01", "result": "werewolf"}),
+            GameEvent(type="seer_check", payload={"target_id": "p01", "alignment": "werewolf", "night_number": 1}),
             GameEvent(type="witch_antidote_used", payload={"target_id": "p05"}),
             GameEvent(type="witch_poison_used", payload={"target_id": "p06"}),
             GameEvent(type="hybrid_master_chosen", payload={"hybrid_id": "p12", "master_id": "p05"}),

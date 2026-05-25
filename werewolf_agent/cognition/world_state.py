@@ -277,28 +277,8 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
                 day=day,
             ))
 
-    for match in re.finditer(r"(查验|验了|验人)?\s*(p\d{2})\s*(是|为)?\s*(狼人|查杀)", text):
-        facts.append(StructuredFact(
-            fact_type="claimed_suspect",
-            source_player=speaker,
-            target_player=match.group(2),
-            value="wolf",
-            day=day,
-        ))
-    for match in re.finditer(r"(保|金水|好人)\s*(p\d{2})|p\d{2}\s*(是|为)?\s*(金水|好人)", text):
-        target = next((group for group in match.groups() if group and re.fullmatch(r"p\d{2}", group)), None)
-        if target:
-            facts.append(StructuredFact(
-                fact_type="claimed_good",
-                source_player=speaker,
-                target_player=target,
-                value="good",
-                day=day,
-            ))
-
-    # --- Task 5: Seer claim contract extraction ---
-
-    # Seer check claim: 验p01查杀 / 查验p01是狼人 / 验p01狼
+    # --- H-6: 先收集 seer_check_claim 匹配的 span，避免后续重复匹配 ---
+    seer_spans: list[tuple[int, int]] = []
     for match in re.finditer(r"(?:查验|验了?|验人)\s*(p\d{2})\s*(?:是|为)?\s*(狼人|查杀|狼|wolf)", text):
         facts.append(StructuredFact(
             fact_type="seer_check_claim",
@@ -308,6 +288,30 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
             day=day,
             metadata={"claim_type": "seer_wolf_check"},
         ))
+        seer_spans.append(match.span())
+
+    for match in re.finditer(r"(查验|验了|验人)?\s*(p\d{2})\s*(是|为)?\s*(狼人|查杀)", text):
+        # 跳过已被 seer_check_claim 覆盖的区间
+        if any(match.start() >= s and match.end() <= e for s, e in seer_spans):
+            continue
+        facts.append(StructuredFact(
+            fact_type="claimed_suspect",
+            source_player=speaker,
+            target_player=match.group(2),
+            value="wolf",
+            day=day,
+        ))
+    # --- H-7: 右侧分支 p\d{2} 也放入捕获组 ---
+    for match in re.finditer(r"(保|金水|好人)\s*(p\d{2})|(p\d{2})\s*(是|为)?\s*(金水|好人)", text):
+        target = next((group for group in match.groups() if group and re.fullmatch(r"p\d{2}", group)), None)
+        if target:
+            facts.append(StructuredFact(
+                fact_type="claimed_good",
+                source_player=speaker,
+                target_player=target,
+                value="good",
+                day=day,
+            ))
 
     # Badge flow: 警徽流p05 p07
     badge_match = re.findall(r"警徽流\s*(p\d{2}(?:\s*p\d{2})*)", text)

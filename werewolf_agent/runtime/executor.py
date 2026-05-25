@@ -143,3 +143,12 @@ class LocalRuntimeExecutor:
         )
         with self._guard:
             self._statuses[game_id] = status
+
+    def _cleanup_game(self, game_id: str) -> None:
+        """清理已完成的游戏条目，释放内存。"""
+        with self._guard:
+            status = self._statuses.get(game_id)
+            if status and status.state in ("finished", "error"):
+                self._statuses.pop(game_id, None)
+                self._locks.pop(game_id, None)
+                self._threads.pop(game_id, None)

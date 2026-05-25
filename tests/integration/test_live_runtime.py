@@ -163,7 +163,7 @@ def _build_registry(engine: RuleEngine) -> SimpleAgentRegistry:
     provider = _DeterministicMockProvider()
     router = ModelRouter(
         model_profiles={}, llm_profiles={}, player_assignments={},
-        providers={"live_mock": provider},
+        providers={"mock": provider},
     )
     registry = SimpleAgentRegistry()
     for i in range(1, 13):

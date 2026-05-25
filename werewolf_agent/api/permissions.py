@@ -111,7 +111,7 @@ class PermissionChecker:
             if requested_view == ViewMode.PUBLIC:
                 return ViewMode.PUBLIC
 
-        return requested_view
+        raise PermissionDenied(f"Unknown role/view combination: {requested_view}")
 
     def check_private_state(
         self,

@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# 合法的角色值，用于校验 token 中的角色声明
+_VALID_ROLES = {"player_agent", "spectator", "moderator", "debugger"}
+
 
 @dataclass
 class AuthConfig:
@@ -29,9 +32,15 @@ class AuthConfig:
 
     def __post_init__(self):
         if not self.secret_key:
-            self.secret_key = os.environ.get(
-                "WEREWOLF_AUTH_SECRET", "wofkill-dev-key-change-me",
+            self.secret_key = os.environ.get("WEREWOLF_AUTH_SECRET", "")
+        if not self.secret_key:
+            import logging
+            logging.getLogger(__name__).warning(
+                "WEREWOLF_AUTH_SECRET not set — generating ephemeral key. "
+                "Set it for production use."
             )
+            import secrets
+            object.__setattr__(self, "secret_key", secrets.token_hex(32))
         if self.config_path:
             self._load_from_file()
 
@@ -64,6 +73,7 @@ class AuthManager:
         self._config = config or AuthConfig()
         self._sessions: dict[str, SessionToken] = {}
         self._revoked: set[str] = set()
+        self._revoked_expiry: dict[str, float] = {}
 
     @property
     def config(self) -> AuthConfig:
@@ -102,6 +112,7 @@ class AuthManager:
 
     def validate_session(self, token_str: str) -> str | None:
         """Validate a session token and return the role, or ``None``."""
+        self._cleanup_expired_revocations()
         # Check revocation list first.
         if token_str in self._revoked:
             return None
@@ -120,6 +131,9 @@ class AuthManager:
                     hashlib.sha256,
                 ).hexdigest()
                 if hmac.compare_digest(sig, expected) and float(exp_str) > time.time():
+                    # 校验 token 中的角色是否合法
+                    if role not in _VALID_ROLES:
+                        return None
                     return role
             return None
         if sess.expires_at < time.time():
@@ -131,3 +145,12 @@ class AuthManager:
         """Revoke a session token."""
         self._sessions.pop(token_str, None)
         self._revoked.add(token_str)
+        self._revoked_expiry[token_str] = time.time() + self._config.token_ttl_seconds
+
+    def _cleanup_expired_revocations(self) -> None:
+        """Remove expired entries from revoked set."""
+        now = time.time()
+        expired = [t for t, exp in self._revoked_expiry.items() if exp < now]
+        for t in expired:
+            self._revoked.discard(t)
+            del self._revoked_expiry[t]

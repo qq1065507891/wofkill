@@ -106,9 +106,7 @@ def extract_wolf_proposal(text: str) -> dict[str, Any]:
     for pattern, role_name in self_role_patterns:
         m = re.search(pattern, text)
         if m:
-            # Normalize "fake_seer_pusher" back to "pusher"
-            normalized = "pusher" if role_name == "fake_seer_pusher" else role_name
-            role_map[normalized] = "self"
+            role_map[role_name] = "self"
 
     if role_map:
         result["role_assignment"] = role_map
@@ -226,11 +224,13 @@ def should_end_discussion_early(
 
     Requires strict majority (>50%) agreement on kill target AND roles assigned.
     """
-    if alive_wolves_count <= 2:
-        return False  # Need discussion with 2 wolves
+    if alive_wolves_count <= 1:
+        return True  # 单狼无需讨论
 
     agreement = consensus.get("agreement_count", 0)
-    # Strict majority: more than half
+    # 2 狼需要完全一致，>2 狼需要严格多数
+    if alive_wolves_count == 2:
+        return agreement >= 2
     return agreement > alive_wolves_count / 2
 
 

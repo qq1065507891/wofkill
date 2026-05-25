@@ -29,6 +29,8 @@ class ProductionStorageConfig:
 
     def validate(self) -> None:
         backend = self.backend.lower().strip()
+        if backend not in ("sqlite", "postgres"):
+            raise ProductionStorageConfigError(f"Unknown storage backend: {self.backend!r}")
         if backend == "postgres":
             dsn = self.postgres_dsn or os.getenv("POSTGRES_DSN", "")
             if not dsn:

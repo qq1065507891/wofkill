@@ -983,7 +983,7 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="good",
             event_log=[
-                {"type": "seer_check", "payload": {"seer_id": "player_08", "target_id": "player_01", "alignment": "wolf"}},
+                {"type": "seer_check", "payload": {"target_id": "player_01", "alignment": "wolf"}},
             ],
             deaths=[
                 {"player_id": "player_01", "reason": "exile", "timing": "day_vote", "resolution_batch": "day_1"},
@@ -1062,7 +1062,7 @@ class TestMetricProvenance:
             winning_faction="good",
             event_log=[
                 {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
-                {"type": "seer_check", "payload": {"seer_id": "player_08", "target_id": "player_01", "alignment": "wolf"}},
+                {"type": "seer_check", "payload": {"target_id": "player_01", "alignment": "wolf"}},
             ],
             action_records=[
                 ActionRecord(player_id="player_05", action_type="vote", target_id="player_01"),

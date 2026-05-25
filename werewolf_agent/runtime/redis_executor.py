@@ -47,9 +47,7 @@ class RedisRuntimeExecutor:
         """
         key = f"{self.LOCK_KEY_PREFIX}{game_id}"
         try:
-            acquired = self.client.setnx(key, "1")
-            if acquired:
-                self.client.expire(key, ttl)
+            acquired = self.client.set(key, "1", nx=True, ex=ttl)
             return bool(acquired)
         except Exception:
             logger.warning("Redis unavailable during acquire_lock for game %s", game_id)

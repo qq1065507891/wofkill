@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import random
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -23,7 +24,6 @@ from werewolf_agent.core.models import (
 
 
 def _stable_seed_val(*parts: object) -> int:
-    import hashlib
     raw = "|".join(str(part) for part in parts).encode("utf-8")
     return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") & 0xFFFFFFFF
 
@@ -94,6 +94,8 @@ class RuleEngine:
     ) -> tuple[GameState, GameEvent]:
         if state.hybrid_master_id is not None:
             raise ValueError("Hybrid has already chosen a master")
+        if not state.players[master_id].alive:
+            raise ValueError("Hybrid cannot choose a dead player as master")
         master = state.players[master_id]
         master_faction = self.ruleset.raw["roles"][master.role]["faction"]
         if master_faction == "special_bound_to_master":
@@ -218,6 +220,8 @@ class RuleEngine:
 
     def apply_death(self, state: GameState, death: Death) -> GameState:
         target = state.players[death.player_id]
+        if not target.alive:
+            return state
         can_leave_last_words = death.can_leave_last_words
         if can_leave_last_words is None:
             night_number = state.night_number
@@ -262,14 +266,6 @@ class RuleEngine:
 
     # -- Night resolution --
 
-    @dataclass(frozen=True)
-    class NightInput:
-        wolf_kill_target_id: str | None = None
-        use_antidote: bool = False
-        poison_target_id: str | None = None
-        seer_target_id: str | None = None
-        hybrid_master_target_id: str | None = None
-
     def resolve_night(
         self,
         state: GameState,
@@ -302,7 +298,16 @@ class RuleEngine:
                     (pid for pid, p in state.players.items() if p.role == "witch" and p.alive),
                     None,
                 )
-                if witch_id is not None and wolf_kill_target_id != witch_id:
+                witch_cfg = self.ruleset.raw["roles"]["witch"]
+                antidote_cfg = witch_cfg.get("abilities", witch_cfg).get("antidote", {})
+                can_self_save = antidote_cfg.get("can_self_save", False)
+                can_save_first_night = antidote_cfg.get("can_self_save_first_night", False)
+                can_save = (
+                    wolf_kill_target_id != witch_id
+                    or can_self_save
+                    or (can_save_first_night and night_number == 1)
+                )
+                if witch_id is not None and can_save:
                     saved_by_antidote = True
                     antidote_used = True
                     events.append(GameEvent(
@@ -313,7 +318,7 @@ class RuleEngine:
                 deaths.append(wolf_death)
 
         # 3. Witch poison
-        if poison_target_id is not None and not poison_used and not use_antidote:
+        if poison_target_id is not None and not poison_used and not saved_by_antidote:
             self._validate_alive_target(state, poison_target_id, "poison_target")
             poison_used = True
             deaths.append(Death(
@@ -345,7 +350,6 @@ class RuleEngine:
                 events.append(GameEvent(
                     type="seer_check",
                     payload={
-                        "seer_id": seer_id,
                         "target_id": seer_target_id,
                         "alignment": alignment_result.alignment,
                         "night_number": night_number,
@@ -399,7 +403,9 @@ class RuleEngine:
         if not villagers_alive:
             hybrid = next((p for p in players.values() if p.role == "hybrid"), None)
             master_faction = state.hybrid_master_faction
-            if master_faction == "good":
+            if master_faction is None:
+                pass  # Hybrid hasn't chosen master yet; cannot determine slaughter
+            elif master_faction == "good":
                 if hybrid and not hybrid.alive:
                     return VictoryResult(winner="werewolf", reason="slaughter_villagers")
             else:
@@ -471,6 +477,8 @@ class RuleEngine:
 
     def speech_order_policy(self, state: GameState) -> str:
         cfg = self.ruleset.raw["day_flow"]["speech"]
+        if state.sheriff_badge_state == "active":
+            return cfg.get("sheriff_order_policy", "random_start")
         if state.sheriff_badge_state == "torn":
             return cfg["torn_badge_order_policy"]
         return cfg["no_sheriff_order_policy"]
@@ -489,11 +497,12 @@ class RuleEngine:
     ) -> VoteResult:
         tally: dict[str, int] = {}
         legal_targets = set(self.legal_exile_targets(state))
+        vote_cfg = self.ruleset.raw["day_flow"]["vote"]
         for voter_id, target_id in votes.items():
             voter = state.players.get(voter_id)
             if voter is None or not voter.alive or not voter.vote_enabled:
                 continue
-            if target_id == voter_id:
+            if not vote_cfg.get("allow_self_vote", False) and target_id == voter_id:
                 continue
             if target_id not in legal_targets:
                 continue
@@ -558,19 +567,9 @@ class RuleEngine:
         """Deterministic tie-break for anti-stall: sheriff vote then seeded random."""
         # 1. If active sheriff voted for one of the tied candidates, exile that one
         if state.sheriff_id and state.sheriff_badge_state == "active":
-            for ev in reversed(state.events):
-                if ev.type == "vote_resolved":
-                    break
-            # Check if sheriff cast a vote for a tied candidate
-            last_votes = {}
-            for ev2 in state.events:
-                if ev2.type == "speech" and ev2.payload.get("speaker") == state.sheriff_id:
-                    text = ev2.payload.get("text", "")
-                    for candidate in tied:
-                        if candidate in text:
-                            last_votes[state.sheriff_id] = candidate
-            sheriff_vote = last_votes.get(state.sheriff_id)
-            if sheriff_vote in tied:
+            # 直接从 state.votes 字典读取警长投票，而非从 speech 文本解析
+            sheriff_vote = state.votes.get(state.sheriff_id)
+            if sheriff_vote and sheriff_vote in tied:
                 return VoteResult(
                     exiled_player_id=sheriff_vote,
                     next_phase="resolve_exile",
@@ -623,6 +622,12 @@ class RuleEngine:
             sections.add("own_private_state")
             if viewer_id in state.private_intents:
                 sections.add(f"{viewer_id}.private_intent")
+            # 角色级可见性：根据 viewer 角色添加对应私有区域
+            viewer = state.players.get(viewer_id)
+            if viewer:
+                role_private = self.ruleset.raw["information_visibility"].get("private", {})
+                role_sections = role_private.get(viewer.role, [])
+                sections.update(role_sections)
             sections -= forbidden
         elif view_mode == "moderator_full":
             sections.add("moderator_full")
@@ -716,6 +721,15 @@ class RuleEngine:
             pid = payload["player_id"]
             player = state.players[pid]
             if player.alive and not player.exile_immune:
+                # Idiot reveal: survive, lose vote, no death record
+                if player.role == "idiot" and not player.revealed_idiot:
+                    updated = replace(player, revealed_idiot=True, vote_enabled=False)
+                    new_players = {**state.players, pid: updated}
+                    return replace(
+                        state,
+                        players=new_players,
+                        events=state.events + [event],
+                    )
                 updated = replace(player, alive=False)
                 new_players = {**state.players, pid: updated}
                 death = Death(

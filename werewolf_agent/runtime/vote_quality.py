@@ -292,14 +292,18 @@ def choose_vote_fallback_target(
             if target in text:
                 scores[target] += len(bases)
 
-    # Public seer check results: "wolf" alignment gets heavy weight
-    for event in gs.events:
-        if event.type != "seer_check":
-            continue
-        alignment = event.payload.get("alignment", "")
-        target = event.payload.get("target_id", "")
-        if target in candidates and alignment == "wolf":
-            scores[target] += 10
+    # Public seer check claims: "wolf" alignment gets heavy weight
+    # 仅使用公开的查杀声明，不直接读取 seer_check 私有事件
+    try:
+        from werewolf_agent.cognition.world_state import build_world_state
+        _ws = build_world_state(gs)
+        for f in _ws.facts_of_type("seer_check_claim"):
+            val = (f.value or "").lower()
+            target = f.target_player
+            if target in candidates and ("wolf" in val or "狼" in (f.value or "")):
+                scores[target] += 10
+    except Exception:
+        pass
 
     # Contradiction alerts: players caught in contradictions get weight
     try:

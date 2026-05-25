@@ -919,7 +919,8 @@ def test_resolve_night_produces_seer_check_event() -> None:
     seer_checks = [e for e in events if e.type == "seer_check"]
     assert len(seer_checks) == 1, f"Expected 1 seer_check event, got {len(seer_checks)}"
     check = seer_checks[0]
-    assert check.payload["seer_id"] == "seer"
+    # seer_id 不再包含在 payload 中（H-5：防止通过事件泄漏预言家身份）
+    assert "seer_id" not in check.payload
     assert check.payload["target_id"] == "w1"
     assert check.payload["alignment"] == "werewolf"
     assert check.payload["night_number"] == 1
@@ -1029,7 +1030,6 @@ def test_reduce_event_seer_check_appends_without_mutating_state() -> None:
     event = GameEvent(
         type="seer_check",
         payload={
-            "seer_id": "seer",
             "target_id": "w1",
             "alignment": "werewolf",
             "night_number": 1,

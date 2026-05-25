@@ -34,7 +34,6 @@ from werewolf_agent.runtime.visible_state import (
 class PromptBudgetReport:
     """Token budget tracking for the local context."""
     total_budget: int = 4096
-    identity_tokens: int = 0
     visible_state_tokens: int = 0
     salience_tokens: int = 0
     belief_tokens: int = 0
@@ -46,7 +45,7 @@ class PromptBudgetReport:
     @property
     def used(self) -> int:
         return (
-            self.identity_tokens + self.visible_state_tokens +
+            self.visible_state_tokens +
             self.salience_tokens + self.belief_tokens +
             self.contradiction_tokens + self.strategy_tokens +
             self.transcript_tokens
@@ -132,11 +131,30 @@ class LocalContextBuilder:
         persona_style = ""
         if persona_snapshot:
             persona_style = persona_snapshot.get("speech_style", "")
+        # --- 判断是否被多数人怀疑（低信任占比过高） ---
         is_suspected = False
         teammate_exiled = False
         if belief_state:
-            own_belief = belief_state.beliefs.get(viewer_id)
-            # Check if any player has low trust in us (simplified)
+            low_trust_count = sum(
+                1 for pid, b in belief_state.beliefs.items()
+                if pid != viewer_id and b.trust < 0.35
+            )
+            alive_others = sum(1 for pid in belief_state.beliefs if pid != viewer_id)
+            if alive_others > 0 and low_trust_count / alive_others > 0.5:
+                is_suspected = True
+
+        # --- 狼人视角：队友是否被放逐 ---
+        if viewer_role == "werewolf":
+            for f in visible_facts:
+                if f.fact_type == "player_exiled" and f.target_player:
+                    exiled_role = (
+                        game_state.players[f.target_player].role
+                        if f.target_player in game_state.players else ""
+                    )
+                    if exiled_role == "werewolf":
+                        teammate_exiled = True
+                        break
+
         strategy = self._strategy.select(
             role=viewer_role,
             persona_style=persona_style,
@@ -177,8 +195,10 @@ class LocalContextBuilder:
 
         # Trim if over budget
         if budget.used > budget.total_budget:
-            salience_items, transcript = self._trim_to_budget(
+            salience_items, transcript, contradiction_alerts, strategy_directive = self._trim_to_budget(
                 salience_items, transcript, budget,
+                contradiction_alerts=contradiction_alerts,
+                strategy_directive=strategy_directive,
             )
             budget.salience_tokens = self._estimate_tokens(json.dumps(salience_items, ensure_ascii=False))
             budget.transcript_tokens = self._estimate_tokens(
@@ -224,7 +244,7 @@ class LocalContextBuilder:
         if viewer_role == "werewolf":
             state["wolf_teammates"] = [
                 pid for pid, p in game_state.players.items()
-                if p.alive and p.role == "werewolf" and pid != viewer_id
+                if p.role == "werewolf" and pid != viewer_id
             ]
         elif viewer_role == "hybrid" and game_state.hybrid_master_id:
             state["master_id"] = game_state.hybrid_master_id
@@ -316,15 +336,17 @@ class LocalContextBuilder:
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
-        """Rough token estimation: ~1.5 chars per token for Chinese text."""
-        return max(1, len(text) // 2)
+        """粗略 token 估算：中文文本约 1.4 字符/token。"""
+        return max(1, int(len(text) * 0.7))
 
     def _trim_to_budget(
         self,
         salience_items: list[dict[str, Any]],
         transcript: list[dict[str, Any]],
         budget: PromptBudgetReport,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        contradiction_alerts: list[dict[str, Any]] | None = None,
+        strategy_directive: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Trim context to fit within budget, prioritizing salience over transcript."""
         # First trim transcript to 3 entries
         transcript = [
@@ -333,4 +355,13 @@ class LocalContextBuilder:
         ]
         # Then trim salience to high-priority only
         salience_items = [s for s in salience_items if s.get("bucket") == "high"]
-        return salience_items, transcript
+        # 裁剪 contradiction_alerts（保留前 N 条）
+        if contradiction_alerts is not None and len(contradiction_alerts) > 3:
+            contradiction_alerts = contradiction_alerts[:3]
+        # 截断 strategy_directive 的值
+        if strategy_directive is not None:
+            for key in list(strategy_directive.keys()):
+                val = strategy_directive[key]
+                if isinstance(val, str) and len(val) > 300:
+                    strategy_directive[key] = val[:300]
+        return salience_items, transcript, contradiction_alerts or [], strategy_directive or {}

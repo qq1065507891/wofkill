@@ -225,7 +225,7 @@ def _build_registry(engine: RuleEngine) -> SimpleAgentRegistry:
         model_profiles={},
         llm_profiles={},
         player_assignments={},
-        providers={"det_mock": provider},
+        providers={"mock": provider},
     )
     registry = SimpleAgentRegistry()
     for i in range(1, 13):
@@ -483,4 +483,5 @@ class TestLiveGameFlow:
         all_events = extract_event_log(gs)
         seer_checks = [e for e in all_events if e.type == "seer_check"]
         assert len(seer_checks) >= 1, "Moderator must see seer_check in audit"
-        assert seer_checks[0].payload["seer_id"] == seer_id
+        # seer_id 不再包含在 payload 中（H-5：防止通过事件泄漏预言家身份）
+        assert "seer_id" not in seer_checks[0].payload

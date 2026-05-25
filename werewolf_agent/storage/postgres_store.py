@@ -22,7 +22,7 @@ class PostgresGameRepository:
         self._dsn = dsn
         self._conn: Any | None = None
         if initialize:
-            self._connect()
+            self._ensure_connection()
             self._ensure_schema()
 
     def close(self) -> None:
@@ -31,7 +31,7 @@ class PostgresGameRepository:
             self._conn = None
 
     def save_game(self, state: GameState) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute(
             """
             INSERT INTO games (game_id, state_json)
@@ -43,7 +43,7 @@ class PostgresGameRepository:
         conn.commit()
 
     def load_game(self, game_id: str) -> GameState | None:
-        row = self._connect().execute(
+        row = self._ensure_connection().execute(
             "SELECT state_json FROM games WHERE game_id = %s",
             (game_id,),
         ).fetchone()
@@ -55,7 +55,7 @@ class PostgresGameRepository:
         return _deserialize_game_state(raw)
 
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         current = conn.execute(
             "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = %s",
             (game_id,),
@@ -71,7 +71,7 @@ class PostgresGameRepository:
         conn.commit()
 
     def load_events(self, game_id: str) -> list[GameEvent]:
-        rows = self._connect().execute(
+        rows = self._ensure_connection().execute(
             "SELECT event_type, payload_json FROM events WHERE game_id = %s ORDER BY seq",
             (game_id,),
         ).fetchall()
@@ -81,7 +81,7 @@ class PostgresGameRepository:
         ]
 
     def save_deaths(self, game_id: str, deaths: list[Death]) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute("DELETE FROM deaths WHERE game_id = %s", (game_id,))
         for death in deaths:
             conn.execute(
@@ -94,14 +94,14 @@ class PostgresGameRepository:
         conn.commit()
 
     def load_deaths(self, game_id: str) -> list[Death]:
-        rows = self._connect().execute(
+        rows = self._ensure_connection().execute(
             "SELECT death_json FROM deaths WHERE game_id = %s",
             (game_id,),
         ).fetchall()
         return [Death(**(row[0] if isinstance(row[0], dict) else json.loads(row[0]))) for row in rows]
 
     def save_model_usage(self, game_id: str, record: dict[str, Any]) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute(
             "INSERT INTO model_usage (game_id, record_json) VALUES (%s, %s::jsonb)",
             (game_id, json.dumps(record, ensure_ascii=False)),
@@ -109,14 +109,14 @@ class PostgresGameRepository:
         conn.commit()
 
     def load_model_usage(self, game_id: str) -> list[dict[str, Any]]:
-        rows = self._connect().execute(
+        rows = self._ensure_connection().execute(
             "SELECT record_json FROM model_usage WHERE game_id = %s ORDER BY id",
             (game_id,),
         ).fetchall()
         return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
 
     def save_evaluation(self, game_id: str, result: dict[str, Any]) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute(
             """
             INSERT INTO evaluations (game_id, result_json)
@@ -128,7 +128,7 @@ class PostgresGameRepository:
         conn.commit()
 
     def load_evaluation(self, game_id: str) -> dict[str, Any] | None:
-        row = self._connect().execute(
+        row = self._ensure_connection().execute(
             "SELECT result_json FROM evaluations WHERE game_id = %s",
             (game_id,),
         ).fetchone()
@@ -137,7 +137,7 @@ class PostgresGameRepository:
         return row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
     def save_config_snapshot(self, game_id: str, config: dict[str, Any]) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute(
             """
             INSERT INTO config_snapshots (game_id, config_json)
@@ -149,7 +149,7 @@ class PostgresGameRepository:
         conn.commit()
 
     def load_config_snapshot(self, game_id: str) -> dict[str, Any] | None:
-        row = self._connect().execute(
+        row = self._ensure_connection().execute(
             "SELECT config_json FROM config_snapshots WHERE game_id = %s",
             (game_id,),
         ).fetchone()
@@ -158,7 +158,7 @@ class PostgresGameRepository:
         return row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
     def save_rag_entries(self, entries: list[dict[str, Any]]) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         for entry in entries:
             entry_id = entry.get("entry_id")
             if not entry_id:
@@ -174,18 +174,18 @@ class PostgresGameRepository:
         conn.commit()
 
     def load_rag_entries(self) -> list[dict[str, Any]]:
-        rows = self._connect().execute(
+        rows = self._ensure_connection().execute(
             "SELECT entry_json FROM rag_entries ORDER BY entry_id"
         ).fetchall()
         return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
 
     def delete_rag_entry(self, entry_id: str) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute("DELETE FROM rag_entries WHERE entry_id = %s", (entry_id,))
         conn.commit()
 
     def list_games(self) -> list[GameState]:
-        rows = self._connect().execute("SELECT state_json FROM games ORDER BY game_id").fetchall()
+        rows = self._ensure_connection().execute("SELECT state_json FROM games ORDER BY game_id").fetchall()
         states: list[GameState] = []
         for row in rows:
             raw = row[0]
@@ -195,22 +195,37 @@ class PostgresGameRepository:
         return states
 
     def delete_game(self, game_id: str) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute("DELETE FROM games WHERE game_id = %s", (game_id,))
         conn.commit()
 
     def _connect(self) -> Any:
         if self._conn is not None:
             return self._conn
+        self._conn = self._new_connection()
+        return self._conn
+
+    def _ensure_connection(self) -> Any:
+        """Return existing connection or establish a new one.
+
+        Reconnects if the stored connection was previously marked dead
+        (self._conn is None). Lightweight probe is deferred to the caller;
+        if a query fails with a connection error, the caller should set
+        self._conn = None and retry.
+        """
+        if self._conn is None:
+            self._conn = self._new_connection()
+        return self._conn
+
+    def _new_connection(self) -> Any:
         try:
             import psycopg
         except ImportError as exc:
             raise RuntimeError("psycopg is required for postgres storage") from exc
-        self._conn = psycopg.connect(self._dsn)
-        return self._conn
+        return psycopg.connect(self._dsn)
 
     def _ensure_schema(self) -> None:
-        conn = self._connect()
+        conn = self._ensure_connection()
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS games (

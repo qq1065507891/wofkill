@@ -194,8 +194,8 @@ class ModelRouter:
         config, _fallback_provider = self.resolve_config(agent_id, task_type)
         provider = self._providers.get(config.provider)
         if provider is None:
-            provider = MockProvider(config.provider)
-            self._providers[config.provider] = provider
+            raise RuntimeError(f"Provider '{config.provider}' not found. Available: {list(self._providers.keys())}")
+
         tool = {
             "name": "submit_player_action",
             "description": "Probe structured action tool-call support.",
@@ -294,8 +294,7 @@ class ModelRouter:
 
         provider = self._providers.get(config.provider)
         if provider is None:
-            provider = MockProvider(config.provider)
-            self._providers[config.provider] = provider
+            raise RuntimeError(f"Provider '{config.provider}' not found. Available: {list(self._providers.keys())}")
 
         primary_error: Exception | None = None
         fallback_error: Exception | None = None
@@ -325,6 +324,8 @@ class ModelRouter:
                         success=True,
                     )
                     self._usage_log.append(usage)
+                    if len(self._usage_log) > 10000:
+                        self._usage_log = self._usage_log[-5000:]
                 return result
             except Exception as exc:
                 primary_error = exc
@@ -336,6 +337,7 @@ class ModelRouter:
                         attempt + 1, max_retries + 1, delay,
                         _format_exception(exc),
                     )
+                    # Rate-limit backoff: wait before retrying
                     time.sleep(delay)
                     continue
                 logger.warning(
@@ -381,6 +383,8 @@ class ModelRouter:
                             success=True,
                         )
                         self._usage_log.append(usage)
+                        if len(self._usage_log) > 10000:
+                            self._usage_log = self._usage_log[-5000:]
                     return result
                 except Exception as exc:
                     fallback_error = exc
@@ -392,6 +396,7 @@ class ModelRouter:
                             fb_attempt + 1, fb_max_retries + 1, delay,
                             _format_exception(exc),
                         )
+                        # Rate-limit backoff: wait before retrying
                         time.sleep(delay)
                         continue
                     logger.warning(
@@ -414,11 +419,13 @@ class ModelRouter:
             fallback_reason=failure_reason,
             success=False,
         ))
+        if len(self._usage_log) > 10000:
+            self._usage_log = self._usage_log[-5000:]
         return GenerateResult(
             text="",
-                provider=config.provider,
-                model=config.model,
-            )
+            provider=config.provider,
+            model=config.model,
+        )
 
     def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:
         llm_profile = self._llm_profiles.get(llm_profile_id, {})

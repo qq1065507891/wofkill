@@ -145,17 +145,17 @@ class TestDashboardPermissions:
 
 
 class TestDashboardAPI:
-    def test_list_games_returns_array(self, client: TestClient) -> None:
+    def test_list_games_returns_dict(self, client: TestClient) -> None:
         resp = client.get("/games")
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        assert isinstance(resp.json(), dict) and "game_ids" in resp.json()
 
     def test_game_list_after_create(self, client: TestClient) -> None:
-        _create_and_start_game(client)
+        game_id = _create_and_start_game(client)
         resp = client.get("/games")
         games = resp.json()
-        assert len(games) >= 1
-        assert any(g.get("ruleset_id") == "pre_witch_hunter_idiot_mixed" for g in games)
+        assert len(games["game_ids"]) >= 1
+        assert game_id in games["game_ids"]
 
     def test_public_state_structure(self, client: TestClient) -> None:
         game_id = _create_and_start_game(client)

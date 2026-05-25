@@ -7,6 +7,7 @@ and experiment analysis.
 
 from __future__ import annotations
 
+import collections
 from typing import Any
 
 from werewolf_agent.tools.schemas import (
@@ -22,14 +23,12 @@ class ToolCallLogger:
     """Records and queries tool call history."""
 
     def __init__(self, max_entries: int = 10000) -> None:
-        self._entries: list[ToolCallLogEntry] = []
+        self._entries: collections.deque[ToolCallLogEntry] = collections.deque(maxlen=max_entries)
         self._max_entries = max_entries
 
     def log(self, call: ToolCall, result: ToolResult, duration_ms: float = 0.0) -> None:
         entry = ToolCallLogEntry(call=call, result=result, duration_ms=duration_ms)
         self._entries.append(entry)
-        if len(self._entries) > self._max_entries:
-            self._entries = self._entries[-self._max_entries:]
 
     def all_entries(self) -> list[ToolCallLogEntry]:
         return list(self._entries)

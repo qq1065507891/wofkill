@@ -539,10 +539,11 @@ class TestDynamicSkillOutput:
         assert out.prompt_injectable != "" or out.confidence < 0.4
 
     def test_resist_push_with_seer_check(self):
+        # 使用公开的查杀声明 speech，不使用私有 seer_check 事件
         gs = _make_skill_gs(day=1, player_role="werewolf", player_id="p01", events=[
-            GameEvent(type="seer_check", payload={
-                "seer_id": "p03", "target_id": "p01",
-                "result": "wolf", "night_number": 1,
+            GameEvent(type="speech", payload={
+                "speaker": "p03", "text": "我查验了p01是狼人",
+                "day_number": 1,
             }),
         ])
         ws, bs, alerts = _build_cognition(gs, "p01")
@@ -556,10 +557,11 @@ class TestDynamicSkillOutput:
         assert "查杀" in out.prompt_injectable or "预言家" in out.prompt_injectable
 
     def test_deep_hook_exposed_teammate(self):
+        # 使用公开的查杀声明 speech，不使用私有 seer_check 事件
         gs = _make_skill_gs(day=1, player_role="werewolf", player_id="p01", events=[
-            GameEvent(type="seer_check", payload={
-                "seer_id": "p03", "target_id": "p02",
-                "result": "wolf", "night_number": 1,
+            GameEvent(type="speech", payload={
+                "speaker": "p03", "text": "我查验了p02是狼人",
+                "day_number": 1,
             }),
         ])
         ws, bs, alerts = _build_cognition(gs, "p01")
@@ -654,7 +656,7 @@ class TestSkillIntegration:
         gs = _make_skill_gs(day=1)
         ws, bs, alerts = _build_cognition(gs, "p01")
         directive: dict = {}
-        result = _inject_skill_output(
+        result, tool_analyses = _inject_skill_output(
             directive, gs, "p01", ws, bs, alerts, "speech",
         )
         assert "skill_tactical_advice" in result
@@ -668,8 +670,74 @@ class TestSkillIntegration:
         gs = _make_skill_gs(day=1)
         ws, bs, alerts = _build_cognition(gs, "p01")
         directive = {"wolf_universal_rules": "test"}
-        result = _inject_skill_output(
+        result, _ = _inject_skill_output(
             directive, gs, "p01", ws, bs, alerts, "speech",
         )
         assert "wolf_universal_rules" in result
         assert "skill_tactical_advice" in result
+
+
+# ---------------------------------------------------------------------------
+# Skill tool integration (on-demand LLM-callable tools)
+# ---------------------------------------------------------------------------
+
+class TestSkillToolDefinitions:
+
+    def test_agent_context_accepts_skill_fields(self):
+        from werewolf_agent.agents.schemas import AgentContext, TaskType
+
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            skill_tools=[{"name": "skill_analyze_wolf_pit"}],
+            skill_analyses={"skill_analyze_wolf_pit": "分析结果"},
+        )
+        assert len(ctx.skill_tools) == 1
+        assert ctx.skill_analyses["skill_analyze_wolf_pit"] == "分析结果"
+
+    def test_skill_fields_default_empty(self):
+        from werewolf_agent.agents.schemas import AgentContext, TaskType
+
+        ctx = AgentContext(agent_id="p01", task_type=TaskType.VOTE)
+        assert ctx.skill_tools == []
+        assert ctx.skill_analyses == {}
+
+    def test_build_skill_tool_defs_for_context(self):
+        from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
+
+        # Villager in speech phase should get wolf_pit and find_power
+        tools = _build_skill_tool_defs(role="villager", phase="speech")
+        tool_names = [t["name"] for t in tools]
+        assert "skill_analyze_wolf_pit" in tool_names
+        assert "skill_find_power_roles" in tool_names
+
+    def test_build_skill_tool_defs_seer_role(self):
+        from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
+
+        # seer is GOOD faction → gets wolf_pit; find_power now includes seer
+        tools = _build_skill_tool_defs(role="seer", phase="speech")
+        tool_names = [t["name"] for t in tools]
+        assert "skill_analyze_wolf_pit" in tool_names
+        assert "skill_find_power_roles" in tool_names
+
+    def test_build_skill_tool_defs_empty_for_unrelated_phase(self):
+        from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
+
+        tools = _build_skill_tool_defs(role="werewolf", phase="night_action")
+        tool_names = [t["name"] for t in tools]
+        # last_words is not applicable at night
+        assert "skill_analyze_last_words" not in tool_names
+
+    def test_tool_skills_excluded_from_prompt_injection(self):
+        """Tool skills should NOT appear in skill_tactical_advice."""
+        from werewolf_agent.runtime.agent_adapter import _inject_skill_output
+
+        gs = _make_skill_gs(day=1)
+        ws, bs, alerts = _build_cognition(gs, "p04")
+        result, _ = _inject_skill_output(
+            {}, gs, "p04", ws, bs, alerts, "speech",
+        )
+        advice = result.get("skill_tactical_advice", "")
+        # wolf_pit/find_power/last_words should NOT be in injected advice
+        assert "盘狼坑" not in advice
+        assert "找神" not in advice

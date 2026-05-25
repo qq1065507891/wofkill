@@ -28,7 +28,20 @@ class CustomConfigRecord:
 
 @dataclass
 class InMemoryCustomizationRepository:
-    records: dict[str, CustomConfigRecord] = field(default_factory=dict)
+    """内存中的自定义配置仓库，使用私有 _records 字典存储。"""
+    _records: dict[str, CustomConfigRecord] = field(default_factory=dict)
+
+    @property
+    def records(self) -> dict[str, CustomConfigRecord]:
+        """只读访问内部记录。"""
+        return dict(self._records)
+
+    def list_records(self, config_type: str | None = None) -> list[CustomConfigRecord]:
+        """列出所有配置记录，可选按 config_type 过滤。"""
+        result = list(self._records.values())
+        if config_type is not None:
+            result = [r for r in result if r.config_type == config_type]
+        return result
 
     def save(
         self,
@@ -62,5 +75,5 @@ class InMemoryCustomizationRepository:
             created_at=now,
             updated_at=now,
         )
-        self.records[config_id] = record
+        self._records[config_id] = record
         return record

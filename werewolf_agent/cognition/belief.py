@@ -37,6 +37,7 @@ class BeliefState:
     """Complete belief state for one agent's perspective."""
     viewer_id: str
     beliefs: dict[str, PlayerBelief] = field(default_factory=dict)
+    confirmed_wolves: set[str] = field(default_factory=set)
     global_assessment: str = ""
     last_updated_day: int = 0
 
@@ -51,16 +52,6 @@ _CLAIM_ROLE_BOOST: dict[str, dict[str, float]] = {
     "werewolf": {"werewolf": 0.4},
 }
 
-# Death reveals role info
-_DEATH_REASON_FACTION: dict[str, str] = {
-    "wolf_kill": "good_lean",
-    "witch_poison": "unknown",
-    "exile": "unknown",
-    "self_destruct": "wolf_confirmed",
-    "hunter_shot": "unknown",
-}
-
-
 class BeliefUpdater:
     """Updates belief state from structured facts.
 
@@ -72,6 +63,8 @@ class BeliefUpdater:
         self._role_names = all_role_names or [
             "villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid",
         ]
+        if not self._role_names:
+            raise ValueError("all_role_names must not be empty")
 
     def initialize(self, player_ids: list[str], viewer_id: str) -> BeliefState:
         """Create initial uniform belief state."""
@@ -92,7 +85,10 @@ class BeliefUpdater:
         facts: list[StructuredFact],
         current_day: int,
     ) -> BeliefState:
-        """Update beliefs from a list of visible facts."""
+        """Update beliefs from a list of visible facts.
+
+        注意：此方法原地修改 belief_state。
+        """
         for fact in facts:
             belief_state = self._apply_fact(belief_state, fact)
         belief_state.last_updated_day = current_day
@@ -128,6 +124,8 @@ class BeliefUpdater:
     def _apply_self_destruct(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
         """Self-destruct confirms werewolf."""
         pid = fact.source_player
+        if pid:
+            state.confirmed_wolves.add(pid)
         if pid and pid in state.beliefs:
             del state.beliefs[pid]
         return state
@@ -165,17 +163,15 @@ class BeliefUpdater:
         return state
 
     def _apply_vote(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
-        """Voting pattern gives faction lean hints."""
+        """投票给已确认狼人时增加投票者的好人倾向。"""
         voter = fact.source_player
         target = fact.target_player
         if not voter or voter not in state.beliefs:
             return state
 
-        # Voting for a self-destructed player (confirmed wolf) suggests good lean
-        # This is a simplified heuristic; Contradiction Engine handles deeper analysis
-        belief = state.beliefs[voter]
-        if target and target not in state.beliefs:
-            # Target is dead (removed from beliefs = likely dead)
+        # 只有投票给已确认狼人时才增加信任
+        if target and target in state.confirmed_wolves:
+            belief = state.beliefs[voter]
             belief.trust = min(1.0, belief.trust + 0.05)
         return state
 

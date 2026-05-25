@@ -109,6 +109,19 @@ PROMPT_INJECTION_MARKERS = (
     "powershell",
 )
 
+# Unicode 同形字符检测：零宽字符和混淆字符
+_UNICODE_SUSPICIOUS_RANGES = (
+    "​",  # 零宽空格
+    "‌",  # 零宽非连接符
+    "‍",  # 零宽连接符
+    "﻿",  # BOM / 零宽不换行空格
+    "‪",  # 从左到右嵌入
+    "‫",  # 从右到左嵌入
+    "‬",  # 弹出方向格式
+    "‭",  # 从左到右覆盖
+    "‮",  # 从右到左覆盖
+)
+
 
 def validate_ruleset_yaml(text: str) -> ValidationResult:
     """Parse and validate a custom ruleset YAML document as plain data."""
@@ -208,8 +221,8 @@ def validate_ruleset_yaml(text: str) -> ValidationResult:
     )
 
 
-def validate_persona_pack_yaml(text: str) -> ValidationResult:
-    """Parse and validate a user-facing 12-player persona pack."""
+def validate_persona_pack_yaml(text: str, *, expected_player_count: int = 12) -> ValidationResult:
+    """Parse and validate a user-facing persona pack."""
 
     errors: list[ValidationIssue] = []
     try:
@@ -238,8 +251,8 @@ def validate_persona_pack_yaml(text: str) -> ValidationResult:
         errors.append(ValidationIssue(field="players", message="players must be a list"))
         players = []
 
-    if len(players) != 12:
-        errors.append(ValidationIssue(field="players", message="persona pack must contain exactly 12 players"))
+    if len(players) != expected_player_count:
+        errors.append(ValidationIssue(field="players", message=f"persona pack must contain exactly {expected_player_count} players"))
 
     seen_seats: set[int] = set()
     normalized_players: list[dict[str, Any]] = []
@@ -256,7 +269,7 @@ def validate_persona_pack_yaml(text: str) -> ValidationResult:
             errors.append(ValidationIssue(field=f"{field_prefix}.{field}", message=f"unknown field: {field}"))
 
         seat = _int_or_none(player.get("seat"))
-        if seat is None or seat < 1 or seat > 12:
+        if seat is None or seat < 1 or seat > expected_player_count:
             errors.append(ValidationIssue(field=f"{field_prefix}.seat", message="seat must be between 1 and 12"))
         elif seat in seen_seats:
             errors.append(ValidationIssue(field=f"{field_prefix}.seat", message=f"duplicate seat: {seat}"))
@@ -380,6 +393,17 @@ def _scan_text(path: str, value: Any, errors: list[ValidationIssue]) -> None:
                         field=path or "text",
                         message="uploaded text contains a forbidden instruction or executable marker",
                         code="forbidden_text",
+                    )
+                )
+                return
+        # Unicode 同形字符注入检测
+        for suspicious_char in _UNICODE_SUSPICIOUS_RANGES:
+            if suspicious_char in value:
+                errors.append(
+                    ValidationIssue(
+                        field=path or "text",
+                        message="uploaded text contains suspicious Unicode characters (zero-width or bidirectional override)",
+                        code="unicode_injection",
                     )
                 )
                 return

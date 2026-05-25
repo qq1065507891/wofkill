@@ -45,16 +45,18 @@ class TestRedisExecutorLock:
 
     def test_acquire_lock_succeeds(self) -> None:
         executor, mock_client = _make_executor()
-        mock_client.setnx.return_value = True
+        mock_client.set.return_value = True
 
         result = executor.acquire_lock("game-1")
 
         assert result is True
-        mock_client.setnx.assert_called_once_with("werewolf:lock:game-1", "1")
+        mock_client.set.assert_called_once_with(
+            "werewolf:lock:game-1", "1", nx=True, ex=executor.LOCK_TTL_SECONDS,
+        )
 
     def test_acquire_lock_fails_when_held(self) -> None:
         executor, mock_client = _make_executor()
-        mock_client.setnx.return_value = False
+        mock_client.set.return_value = False
 
         result = executor.acquire_lock("game-1")
 
@@ -69,11 +71,13 @@ class TestRedisExecutorLock:
 
     def test_lock_has_ttl(self) -> None:
         executor, mock_client = _make_executor()
-        mock_client.setnx.return_value = True
+        mock_client.set.return_value = True
 
         executor.acquire_lock("game-1", ttl=600)
 
-        mock_client.expire.assert_called_once_with("werewolf:lock:game-1", 600)
+        mock_client.set.assert_called_once_with(
+            "werewolf:lock:game-1", "1", nx=True, ex=600,
+        )
 
     def test_refresh_lock(self) -> None:
         executor, mock_client = _make_executor()
@@ -156,7 +160,7 @@ class TestRedisExecutorErrors:
 
     def test_redis_unavailable_returns_false_on_lock(self) -> None:
         executor, mock_client = _make_executor()
-        mock_client.setnx.side_effect = Exception("Connection refused")
+        mock_client.set.side_effect = Exception("Connection refused")
 
         result = executor.acquire_lock("game-1")
 

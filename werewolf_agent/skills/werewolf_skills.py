@@ -29,7 +29,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="悍跳",
         description="冒充神职角色，通过假查验或假身份获取信任和话语权",
         applicable_roles=["werewolf"],
-        applicable_phases=["speech", "sheriff_speech", "pk_speech", "wolf_discussion", "last_words"],
+        applicable_phases=["speech", "sheriff_speech", "pk_speech", "wolf_discussion"],
         faction=SkillFaction.WOLF,
         tags=["deception", "aggressive"],
     ),
@@ -73,7 +73,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         name=SkillName.FIND_POWER,
         display_name="找神",
         description="通过发言和行为模式分析找出神职玩家",
-        applicable_roles=["werewolf", "villager", "hybrid"],
+        applicable_roles=["werewolf", "villager", "seer", "witch", "hybrid"],
         applicable_phases=["speech", "night_action", "wolf_discussion", "hunter_shot"],
         faction=SkillFaction.COMMON,
         tags=["analysis", "information"],
@@ -101,7 +101,7 @@ SKILL_DEFINITIONS: list[SkillDefinition] = [
         display_name="盘狼坑",
         description="系统性分析可能的狼人分布，缩小嫌疑范围",
         applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid"],
-        applicable_phases=["speech", "sheriff_speech", "hunter_shot"],
+        applicable_phases=["speech", "sheriff_speech", "pk_speech", "hunter_shot"],
         faction=SkillFaction.GOOD,
         tags=["analysis", "logic"],
     ),
@@ -200,9 +200,6 @@ def _seer_checks_on_target(ws: Any, target_id: str) -> list[dict[str, Any]]:
     for f in ws.facts_of_type("seer_check_claim"):
         if f.target_player == target_id:
             results.append({"source": f.source_player, "value": f.value, "day": f.day})
-    for f in ws.facts_of_type("seer_check"):
-        if f.target_player == target_id:
-            results.append({"source": f.source_player, "value": f.value, "day": f.day or f.night})
     return results
 
 
@@ -292,13 +289,16 @@ def _bold_claim_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     risks = ["悍跳风险：如果对跳方是真预言家，可信度会大幅下降"]
     if inp.day > 2:
         risks.append("晚期悍跳风险更高：已发言轮次多，矛盾点容易被抓")
+    conf = 0.6 if inp.day <= 1 else 0.3
+    prompt = "悍跳建议：尽早跳预言家并报出假查验结果。构建完整的时间线和警徽流。" if conf >= 0.5 else "晚期悍跳风险极高，不建议此时悍跳。"
     return SkillOutput(
         skill_name=skill.name.value,
         recommended_action="claim_role",
         speech_structure=["报查验结果", "声明警徽流", "攻击对立面逻辑"],
         risk_alerts=risks,
-        confidence=0.6 if inp.day <= 1 else 0.3,
+        confidence=conf,
         reasoning="悍跳需要前期执行，后期风险增大",
+        prompt_injectable=prompt,
     )
 
 
@@ -355,9 +355,16 @@ def _bold_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     if len(wolves) <= 2:
         risks.append(f"存活狼人仅{len(wolves)}人，悍跳失败代价极高")
 
+    # Suggest a fake check target (alive non-wolf player)
+    fake_target = None
+    non_wolves = _alive_non_wolves(gs)
+    if non_wolves and seer_count <= 1:
+        fake_target = non_wolves[0]
+
     return SkillOutput(
         skill_name=skill.name.value,
         recommended_action="claim_role" if seer_count <= 1 else "speech",
+        recommended_target=fake_target,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=conf,
@@ -384,6 +391,7 @@ def _counter_claim_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risk_alerts=risks,
         confidence=0.55,
         reasoning="对跳需要充分的逻辑支撑和时间线一致性",
+        prompt_injectable="对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。",
     )
 
 
@@ -417,7 +425,7 @@ def _counter_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutp
             f"建议从侧面寻找漏洞：验人动机、警徽流合理性、站边逻辑。"
         )
         conf = 0.45
-        speech = [f"质疑{target}的验人动机", "分析{target}的警徽流是否合理", "找侧面漏洞而非正面硬刚"]
+        speech = [f"质疑{target}的验人动机", f"分析{target}的警徽流是否合理", "找侧面漏洞而非正面硬刚"]
 
     risks = [f"对跳 {target} 需要完整的假验人记录，任何时间线断裂都会暴露"]
 
@@ -450,6 +458,7 @@ def _push_vote_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=["归票错误目标可能导致好人损失"],
         confidence=0.6,
         reasoning="归票需要有充分的逻辑依据和说服力",
+        prompt_injectable="归票建议：根据发言逻辑和验人信息，选择嫌疑最大的人归票。陈述理由时需要有理有据，号召全场跟随。",
     )
 
 
@@ -519,9 +528,11 @@ def _swing_vote_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     return SkillOutput(
         skill_name=skill.name.value,
         recommended_action="vote",
+        speech_structure=["在狼讨论中提出冲票目标", "分析目标的投票压力", "协调队友分散或集中票"],
         risk_alerts=risks,
         confidence=0.5,
         reasoning="冲票需要考虑投票链暴露风险",
+        prompt_injectable="冲票建议：选择场上已有投票压力的好人作为冲票目标。与队友协调投票方向，避免投票链暴露狼人身份。",
     )
 
 
@@ -540,13 +551,19 @@ def _swing_vote_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         )
 
     # Find non-wolf with most vote pressure
-    pressure: dict[str, int] = {pid: 0 for pid in non_wolves}
+    # Weight by game phase: later phases have more settled opinions, so
+    # votes and suspect claims carry more weight.
+    day = gs.day_number
+    vote_weight = 1.0 + min(day * 0.3, 1.5)    # 1.0 → 2.5 over 5 days
+    suspect_weight = 1.5 + min(day * 0.3, 1.5)  # 1.5 → 3.0 over 5 days
+
+    pressure: dict[str, float] = {pid: 0.0 for pid in non_wolves}
     for f in (ws.facts_of_type("vote") if ws else []):
         if f.target_player in pressure:
-            pressure[f.target_player] += 1
+            pressure[f.target_player] += vote_weight
     for f in (ws.facts_of_type("claimed_suspect") if ws else []):
         if f.target_player in pressure:
-            pressure[f.target_player] += 2
+            pressure[f.target_player] += suspect_weight
 
     best_target = max(non_wolves, key=lambda p: pressure.get(p, 0))
     best_pressure = pressure.get(best_target, 0)
@@ -561,7 +578,7 @@ def _swing_vote_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             f"冲票建议：集中狼队票数冲 {best_target}。"
             f"理由：{best_target} 已有{best_pressure}个怀疑信号，冲票成功率高。"
         )
-        conf = 0.5 + min(0.2, best_pressure * 0.05)
+        conf = 0.5 + min(0.2, best_pressure * 0.04)
     else:
         prompt = "冲票建议：当前无明确冲票目标，建议分散投票避免暴露。"
         conf = 0.35
@@ -594,6 +611,7 @@ def _deep_hook_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=["倒钩策略需要长期维持一致性", "过度攻击队友可能被识别"],
         confidence=0.55,
         reasoning="倒钩核心是在好人阵营中建立长期可信度",
+        prompt_injectable="倒钩建议：伪装成好人，站边好人逻辑线，适度攻击被怀疑的队友来建立信任。注意保持发言一致性，不要前后矛盾。",
     )
 
 
@@ -652,9 +670,13 @@ def _deep_hook_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risks.append("已过Day 3，倒钩需更加谨慎——好人的分析会越来越细")
         conf = max(0.4, conf - 0.1)
 
+    # Suggest a target to attack (exposed teammate if applicable)
+    hook_target = exposed[0]["teammate"] if exposed else None
+
     return SkillOutput(
         skill_name=skill.name.value,
         recommended_action="speech",
+        recommended_target=hook_target,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=conf,
@@ -679,6 +701,7 @@ def _find_power_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
         confidence=0.5,
         reasoning="找神需要综合多个信号源进行推断",
+        prompt_injectable="找神建议：关注发言中信息量异常的玩家（可能知道夜晚信息）、投票倾向保守的玩家、以及试图保护某些位置的玩家，这些可能是神职。",
     )
 
 
@@ -761,6 +784,7 @@ def _hide_identity_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risk_alerts=risks,
         confidence=0.6,
         reasoning="藏身份需要在隐匿和发挥作用之间找到平衡",
+        prompt_injectable="藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。如果被质疑，适度释放信息自证但不要全露底牌。",
     )
 
 
@@ -835,6 +859,7 @@ def _resist_push_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=["过度防御可能加深怀疑", "攻击质疑者会适得其反"],
         confidence=0.55,
         reasoning="抗推需要冷静的逻辑反驳，而非情绪对抗",
+        prompt_injectable="抗推建议：冷静反驳质疑，针对关键指控逐一回应。如果被查杀，质疑预言家身份；如果仅被怀疑，补充自己的逻辑线和站边理由。",
     )
 
 
@@ -916,6 +941,7 @@ def _wolf_pit_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         speech_structure=["列出嫌疑人", "分析各嫌疑人证据", "排除法缩小范围"],
         confidence=0.5,
         reasoning="盘狼坑需要系统性分析所有嫌疑人的行为链",
+        prompt_injectable="盘狼坑建议：系统性分析所有嫌疑人的行为链。从发言矛盾、投票链异常、验人冲突等维度排查，用排除法缩小狼坑范围。",
     )
 
 
@@ -928,7 +954,7 @@ def _wolf_pit_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     suspects: list[tuple[str, str]] = []   # (player, reason)
     excluded: list[tuple[str, str]] = []   # (player, reason)
 
-    total_wolves = sum(1 for p in gs.players.values() if p.role == "werewolf")
+    alive_count = sum(1 for p in gs.players.values() if p.alive)
 
     # From belief state
     if bs is not None:
@@ -943,7 +969,7 @@ def _wolf_pit_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     # From seer checks
     if ws is not None:
-        for fact_type in ("seer_check_claim", "seer_check"):
+        for fact_type in ("seer_check_claim",):
             for f in ws.facts_of_type(fact_type):
                 target = f.target_player
                 val = (f.value or "").lower()
@@ -971,9 +997,9 @@ def _wolf_pit_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     exclude_lines = [f"{pid}({reason})" for pid, reason in unique_excluded[:5]]
 
     prompt = (
-        f"盘狼坑分析：场上{total_wolves}狼中，"
-        f"嫌疑区：{'；'.join(suspect_lines) if suspect_lines else '暂无明确嫌疑人'}。"
-        f"排除区：{'；'.join(exclude_lines) if exclude_lines else '暂无排除'}。"
+        f"盘狼坑分析：当前存活{alive_count}人中，"
+        f"嫌疑区({len(unique_suspects)}人)：{'；'.join(suspect_lines) if suspect_lines else '暂无明确嫌疑人'}。"
+        f"排除区({len(unique_excluded)}人)：{'；'.join(exclude_lines) if exclude_lines else '暂无排除'}。"
         f"需要继续关注投票链和发言一致性来缩小范围。"
     )
 
@@ -1004,6 +1030,7 @@ def _protect_power_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risk_alerts=["过度保护某个玩家反而暴露其身份"],
         confidence=0.5,
         reasoning="保护强神需要隐蔽的引导而非明显的保护行为",
+        prompt_injectable="保护强神建议：如果推测某玩家是神职且被推，用'我觉得他的逻辑没问题'等方式引导怀疑方向远离，不要直接说'保护他'。",
     )
 
 
@@ -1019,20 +1046,30 @@ def _protect_power_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutp
             top_role, prob = belief.top_role_guess()
             if top_role in power_roles and prob > 0.3:
                 votes_on = _vote_targets_for_player(ws, pid)
-                if votes_on:
+                # Also check social pressure: claimed_suspect against this player
+                suspect_pressure = 0
+                if ws is not None:
+                    for f in ws.facts_of_type("claimed_suspect"):
+                        if f.target_player == pid:
+                            suspect_pressure += 1
+                if votes_on or suspect_pressure > 0:
                     at_risk.append({
                         "player": pid,
                         "likely_role": top_role,
                         "votes": len(votes_on),
+                        "suspect_claims": suspect_pressure,
                     })
 
     risks = ["过度保护某个玩家反而暴露其身份"]
 
     if at_risk:
         target = at_risk[0]
+        pressure_desc = f"{target['votes']}票"
+        if target["suspect_claims"] > 0:
+            pressure_desc += f"、{target['suspect_claims']}次被公开怀疑"
         prompt = (
             f"保护强神建议：疑似{target['likely_role']}的 {target['player']} "
-            f"正被推票（{target['votes']}票）。"
+            f"正被施压（{pressure_desc}）。"
             f"建议发言引导怀疑方向远离TA：提出其他嫌疑人、质疑推票逻辑。"
             f"注意保护要隐蔽，不要让狼队察觉你在保人。"
         )
@@ -1072,20 +1109,20 @@ def _last_words_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
         confidence=0.55,
         reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
+        prompt_injectable="遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。",
     )
 
 
 def _last_words_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     ws = inp.world_state
     alerts = inp.contradiction_alerts
+    gs = inp.game_state
 
     if ws is None:
         return _last_words_static(inp, skill)
 
     # Find recent deaths
-    recent_deaths = []
-    for f in ws.facts_of_type("player_died"):
-        recent_deaths.append(f)
+    recent_deaths = list(ws.facts_of_type("player_died"))
 
     if not recent_deaths:
         return SkillOutput(
@@ -1096,40 +1133,61 @@ def _last_words_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             prompt_injectable="遗言分析：当前无遗言可分析。",
         )
 
-    last_death = recent_deaths[-1]
-    dead_player = last_death.target_player
+    # Analyze all deaths, prioritizing the most recent
+    all_prompts: list[str] = []
+    has_contradiction = False
+    last_dead_player = None
 
-    # Find last speech of dead player
-    last_speech_facts = [
-        f for f in ws.facts_of_type("speech")
-        if f.source_player == dead_player
-    ]
+    for death in reversed(recent_deaths):
+        dead_player = death.target_player
+        if dead_player is None:
+            continue
+        if last_dead_player is None:
+            last_dead_player = dead_player
 
-    # Check for contradictions in dead player's statements
-    dead_alerts = _alerts_for_player(alerts, dead_player) if dead_player else []
+        # Find last speech of dead player
+        speech_count = sum(
+            1 for f in ws.facts_of_type("speech")
+            if f.source_player == dead_player
+        )
 
-    claims: list[str] = []
-    if ws is not None:
-        for f in ws.facts_of_type("claimed_role"):
-            if f.source_player == dead_player:
-                claims.append(f"{f.value}(Day{f.day})")
+        # Check for contradictions
+        dead_alerts = _alerts_for_player(alerts, dead_player)
+        if dead_alerts:
+            has_contradiction = True
 
-    prompt_parts = [f"遗言分析：{dead_player} 的遗言关键信息："]
-    if claims:
-        prompt_parts.append(f"身份声明：{', '.join(claims)}。")
-    if dead_alerts:
-        prompt_parts.append(f"发言存在矛盾：{'; '.join(a.description for a in dead_alerts[:2])}。")
-    if last_speech_facts:
-        prompt_parts.append(f"有{len(last_speech_facts)}条发言记录可供分析。")
-    prompt_parts.append("需要结合已知信息判断遗言内容的真实性和意图。")
+        # Collect claims
+        claims = [
+            f"{f.value}(Day{f.day})"
+            for f in ws.facts_of_type("claimed_role")
+            if f.source_player == dead_player
+        ]
 
-    prompt = "".join(prompt_parts)
-    has_contradiction = len(dead_alerts) > 0
+        parts = [f"{dead_player}的遗言："]
+        if claims:
+            parts.append(f"身份声明：{', '.join(claims)}。")
+        if dead_alerts:
+            parts.append(f"发言矛盾：{'; '.join(a.description for a in dead_alerts[:2])}。")
+        if speech_count:
+            parts.append(f"有{speech_count}条发言记录。")
+        all_prompts.append("".join(parts))
+
+    if not all_prompts:
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="analyze",
+            confidence=0.3,
+            reasoning="无有效遗言数据",
+            prompt_injectable="遗言分析：无有效遗言可分析。",
+        )
+
+    prompt = f"遗言分析（{len(all_prompts)}人死亡）：\n" + "\n".join(all_prompts)
+    prompt += "\n需要结合已知信息判断遗言内容的真实性和意图。"
 
     return SkillOutput(
         skill_name=skill.name.value,
         recommended_action="analyze",
-        recommended_target=dead_player,
+        recommended_target=last_dead_player,
         speech_structure=["提取遗言关键信息", "对比已知信息一致性", "评估可信度"],
         risk_alerts=["遗言可能是狼人的误导"] if has_contradiction else [],
         confidence=0.55 if not has_contradiction else 0.65,
@@ -1154,6 +1212,7 @@ def _review_correction_static(inp: SkillInput, skill: SkillDefinition) -> SkillO
         speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
         confidence=0.7,
         reasoning="复盘纠错以事实为基础，系统性地回顾决策过程",
+        prompt_injectable="复盘建议：回顾每个Day的站边选择和投票决策。找出判断失误的关键节点，分析误判原因（信息不足？逻辑链断裂？被误导？），总结改进方向。",
     )
 
 
@@ -1162,33 +1221,79 @@ def _review_correction_dynamic(inp: SkillInput, skill: SkillDefinition) -> Skill
     gs = inp.game_state
 
     winner = gs.winning_faction or "unknown"
-    total_events = len(gs.events) if gs.events else 0
     day = gs.day_number
+    my_id = inp.player_id
 
+    # Count deaths by cause
     deaths_by_wolf = 0
     deaths_by_exile = 0
+    exiled_players: list[str] = []
+    wolf_killed_players: list[str] = []
     if ws is not None:
         for f in ws.facts_of_type("player_died"):
             reason = f.value or ""
             if "wolf" in reason:
                 deaths_by_wolf += 1
+                if f.target_player:
+                    wolf_killed_players.append(f.target_player)
             elif "exile" in reason:
                 deaths_by_exile += 1
+                if f.target_player:
+                    exiled_players.append(f.target_player)
 
-    prompt = (
-        f"复盘分析：游戏进行到Day {day}，共{total_events}个事件。"
-        f"狼刀死亡{deaths_by_wolf}人，放逐{deaths_by_exile}人。"
-        f"{'获胜方：' + winner if winner != 'unknown' else '游戏尚未结束'}。"
-        f"关键判断点：回顾每个Day的投票决策和站边选择，识别错误和原因，总结改进方向。"
-    )
+    # Analyze my vote accuracy: did I vote for wolves or good players?
+    my_votes: list[str] = []
+    if ws is not None:
+        for f in ws.facts_of_type("vote"):
+            if f.source_player == my_id and f.target_player:
+                my_votes.append(f.target_player)
+
+    # Check seer check accuracy if applicable
+    seer_checks: list[str] = []
+    if ws is not None:
+        for fact_type in ("seer_check_claim",):
+            for f in ws.facts_of_type(fact_type):
+                if f.source_player == my_id and f.target_player:
+                    val = f.value or ""
+                    seer_checks.append(f"{f.target_player}={val}")
+
+    # Build analysis
+    parts: list[str] = []
+    parts.append(f"复盘分析：游戏进行到Day {day}，狼刀{deaths_by_wolf}人，放逐{deaths_by_exile}人。")
+    if winner != "unknown":
+        parts.append(f"获胜方：{winner}。")
+
+    if my_votes:
+        parts.append(f"你共投出{len(my_votes)}票，投票目标：{'、'.join(my_votes[:6])}。")
+        # Check if any vote hit a wolf (cross-reference with actual roles)
+        wolf_ids = {pid for pid, p in gs.players.items() if p.role == "werewolf"}
+        correct_votes = sum(1 for t in my_votes if t in wolf_ids)
+        if correct_votes > 0:
+            parts.append(f"其中{correct_votes}票命中狼人，投票准确率{correct_votes / len(my_votes):.0%}。")
+        else:
+            parts.append("所有投票均未命中狼人，需要反思站边和判断逻辑。")
+
+    if seer_checks:
+        parts.append(f"验人记录：{'、'.join(seer_checks[:4])}。")
+
+    if exiled_players:
+        parts.append(f"被放逐玩家：{'、'.join(exiled_players[:6])}。")
+    if wolf_killed_players:
+        parts.append(f"被狼刀玩家：{'、'.join(wolf_killed_players[:6])}。")
+
+    parts.append("改进方向：检查站边选择是否正确、是否被狼人发言误导、投票链是否暴露了信息。")
+
+    conf = 0.7
+    if my_votes and correct_votes == 0:
+        conf = 0.8  # High confidence in review when votes were all wrong
 
     return SkillOutput(
         skill_name=skill.name.value,
         recommended_action="review",
         speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
-        confidence=0.7,
-        reasoning="动态分析：基于完整游戏时间线进行复盘",
-        prompt_injectable=prompt,
+        confidence=conf,
+        reasoning="动态分析：基于投票准确率和事件时间线进行复盘",
+        prompt_injectable="\n".join(parts),
     )
 
 

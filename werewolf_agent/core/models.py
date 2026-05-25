@@ -46,6 +46,15 @@ class GameState:
     deaths: list[Death] = field(default_factory=list)
     events: list[GameEvent] = field(default_factory=list)
     winning_faction: str | None = None
+
+    def __post_init__(self) -> None:
+        # 防御性浅拷贝：防止外部可变容器被意外修改
+        object.__setattr__(self, "players", dict(self.players) if self.players else {})
+        object.__setattr__(self, "events", list(self.events) if self.events else [])
+        object.__setattr__(self, "deaths", list(self.deaths) if self.deaths else [])
+        object.__setattr__(self, "votes", dict(self.votes) if self.votes else {})
+        object.__setattr__(self, "private_intents", dict(self.private_intents) if self.private_intents else {})
+        object.__setattr__(self, "sheriff_candidates", list(self.sheriff_candidates) if self.sheriff_candidates else [])
     hybrid_result: str | None = None
     paused: bool = False
     sheriff_interrupt_count: int = 0

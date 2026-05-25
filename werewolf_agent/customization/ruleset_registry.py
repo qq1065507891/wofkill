@@ -47,9 +47,11 @@ class RulesetRegistry:
         self._register_builtin_entries()
 
     def get(self, ruleset_id: str) -> RulesetRegistryEntry:
-        if ruleset_id in self._entries:
-            return self._entries[ruleset_id]
-        if ruleset_id == DEFAULT_RULESET_ID:
+        # 先精确匹配，再回退默认
+        entry = self._entries.get(ruleset_id)
+        if entry is not None:
+            return entry
+        if ruleset_id == DEFAULT_RULESET_ID and DEFAULT_RULESET_ID in self._entries:
             return self._entries[DEFAULT_RULESET_ID]
         raise ValueError(f"Unknown ruleset_id: {ruleset_id}")
 

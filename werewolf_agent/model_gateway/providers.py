@@ -348,6 +348,9 @@ def create_provider_from_env(provider_name: str):
     return None
 
 
+_ENV_OVERRIDES: dict[str, str] = {}
+
+
 def load_local_dotenv(
     path: str | Path = ".env",
     *,
@@ -368,7 +371,7 @@ def load_local_dotenv(
             continue
         value = value.strip().strip('"').strip("'")
         if key and value:
-            os.environ[key] = value
+            _ENV_OVERRIDES[key] = value
 
 
 def _generate_openai_compatible(

@@ -60,7 +60,7 @@ class CreateGameRequest(BaseModel):
 
 class GameActionRequest(BaseModel):
     caller_id: str = ""
-    caller_role: CallerRole = CallerRole.MODERATOR
+    caller_role: CallerRole = CallerRole.SPECTATOR
 
 
 class PrivateStateRequest(BaseModel):
@@ -79,13 +79,13 @@ class TimelineRequest(BaseModel):
 
 class ReplayRequest(BaseModel):
     caller_id: str = ""
-    caller_role: CallerRole = CallerRole.MODERATOR
+    caller_role: CallerRole = CallerRole.SPECTATOR
     view_mode: ViewMode = ViewMode.MODERATOR_FULL
 
 
 class EvaluationRequest(BaseModel):
     caller_id: str = ""
-    caller_role: CallerRole = CallerRole.MODERATOR
+    caller_role: CallerRole = CallerRole.SPECTATOR
     view_mode: ViewMode = ViewMode.MODERATOR_FULL
 
 

@@ -1032,73 +1032,7 @@ def create_seed_entries() -> list[RAGEntry]:
         ),
     ))
 
-    entries.append(RAGEntry(
-        entry_id="seed_foundation_hunter_no_shot_means_poison",
-        title="基础常识：猎人不一定开枪——被毒杀时不能开枪",
-        summary=(
-            "猎人被狼人刀杀或被放逐时可以开枪带走一人，但被女巫毒杀时不能开枪。"
-            "所以如果猎人死了但没有开枪，可能的原因是：被女巫毒杀了。"
-            "这个信息可以用来反推女巫的毒药使用情况。"
-            "另外，猎人可以选择不开枪（保留信息或没有明确目标），所以不开枪不一定是被毒，"
-            "但被毒一定不能开枪。好人在分析时应考虑这两种可能性。"
-        ),
-        key_decisions=[
-            "猎人被毒杀时不能开枪，这是规则硬限制",
-            "猎人死了没开枪可能是被毒，也可能是自愿不开枪",
-            "分析猎人是否开枪可以反推女巫毒药使用情况",
-        ],
-        metadata=CaseMetadata(
-            case_type=CaseType.ROLE_STRATEGY,
-            quality_grade=QualityGrade.EXPERT_REVIEW,
-            review_status=ReviewStatus.APPROVED,
-            reviewer="seed_validator",
-            ruleset_id="pre_witch_hunter_idiot_mixed",
-            player_count=12,
-            phase="speech",
-            role_perspective="any",
-            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
-            source=SourceMetadata(
-                source_type=SourceType.EXPERT_COMMENTARY,
-                source_title="猎人开枪规则与推断",
-                source_author="community_guide",
-            ),
-            tags=["hunter", "foundation", "poison", "shot", "deduction"],
-        ),
-    ))
 
-    entries.append(RAGEntry(
-        entry_id="seed_foundation_hybrid_check_good",
-        title="基础常识：预言家查验混血儿结果为好人，不反映主人阵营",
-        summary=(
-            "混血儿在规则上属于好人阵营的外围——预言家查验混血儿的结果永远是好人。"
-            "这意味着混血儿被验为好人不能证明其主人是好人阵营。"
-            "混血儿可能选择了狼人主人，但查验结果仍然是好人。"
-            "好人在分析混血儿的立场时，不能因为混血儿被验为好人就完全信任TA，"
-            "应该观察混血儿的实际站边和行为是否和好人利益一致。"
-        ),
-        key_decisions=[
-            "混血儿被预言家查验永远显示为好人，不反映主人阵营",
-            "被验为好人的混血儿仍可能追随狼人主人",
-            "分析混血儿应看实际行为和站边，不只看查验结果",
-        ],
-        metadata=CaseMetadata(
-            case_type=CaseType.ROLE_STRATEGY,
-            quality_grade=QualityGrade.EXPERT_REVIEW,
-            review_status=ReviewStatus.APPROVED,
-            reviewer="seed_validator",
-            ruleset_id="pre_witch_hunter_idiot_mixed",
-            player_count=12,
-            phase="speech",
-            role_perspective="any",
-            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
-            source=SourceMetadata(
-                source_type=SourceType.EXPERT_COMMENTARY,
-                source_title="混血儿查验结果与阵营推断",
-                source_author="community_guide",
-            ),
-            tags=["hybrid", "seer", "foundation", "check_result", "faction"],
-        ),
-    ))
 
     entries.append(RAGEntry(
         entry_id="seed_foundation_sheriff_vote_weight",

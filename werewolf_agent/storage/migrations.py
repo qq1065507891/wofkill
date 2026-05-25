@@ -98,10 +98,18 @@ class MigrationManager:
             return 0
 
     def apply_all(self) -> None:
+        """按版本号顺序应用所有未执行的迁移。
+
+        每条迁移的 SQL 被拆分为独立语句逐条执行，确保事务语义正确。
+        不使用 executescript（它会隐式 commit，破坏事务边界）。
+        """
         current = self.current_version()
         for migration in MIGRATIONS:
             if migration.version > current:
-                self._conn.executescript(migration.sql)
+                # 将多语句 SQL 拆分后逐条执行，保持单个事务
+                statements = [s.strip() for s in migration.sql.split(";") if s.strip()]
+                for stmt in statements:
+                    self._conn.execute(stmt)
                 self._conn.execute(
                     "INSERT INTO schema_version (version, description) VALUES (?, ?)",
                     (migration.version, migration.description),
@@ -110,3 +118,9 @@ class MigrationManager:
 
     def close(self) -> None:
         self._conn.close()
+
+    def __enter__(self) -> "MigrationManager":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()

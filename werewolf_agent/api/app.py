@@ -15,10 +15,14 @@ Design doc §12.1 endpoints:
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from typing import Any, TYPE_CHECKING
 from dataclasses import asdict, replace
-from uuid import uuid4
+import threading
+import uuid
+
+logger = logging.getLogger(__name__)
 
 from pathlib import Path
 
@@ -106,6 +110,8 @@ def create_app(
     customization_repo = InMemoryCustomizationRepository()
     games: dict[str, GameState] = {}
     runners: dict[str, GameRunner] = {}
+    _games_lock = threading.Lock()
+    _runners_lock = threading.Lock()
     authorized_callers: dict[str, CallerRole] = {
         "mod1": CallerRole.MODERATOR,
         "dbg1": CallerRole.DEBUGGER,
@@ -139,7 +145,8 @@ def create_app(
     app.state.rag_service = rag_service
 
     def _persist(state: GameState) -> None:
-        games[state.game_id] = state
+        with _games_lock:
+            games[state.game_id] = state
         if _repo is not None:
             _repo.save_game(state)
 
@@ -252,7 +259,7 @@ def create_app(
     def create_game(req: CreateGameRequest) -> GameCreateResponse:
         if req.experience_mode == "human_seat" and (req.human_seat is None or req.human_seat < 1 or req.human_seat > 12):
             raise HTTPException(400, "human_seat must be between 1 and 12 when experience_mode is human_seat")
-        game_id = req.seed is not None and f"game_{req.seed}" or str(uuid4())[:8]
+        game_id = req.seed is not None and f"game_{req.seed}" or str(uuid.uuid4())[:8]
         game_id = f"g_{game_id}" if not game_id.startswith("g_") else game_id
         config_snapshot = _build_locked_config_snapshot(req)
         state = GameState(
@@ -261,7 +268,8 @@ def create_app(
             phase="setup",
             events=[GameEvent(type="config_snapshot_locked", payload={"config_snapshot": config_snapshot})],
         )
-        games[game_id] = state
+        with _games_lock:
+            games[game_id] = state
         if _repo is not None:
             _repo.save_game(state)
             _repo.save_config_snapshot(game_id, config_snapshot)
@@ -341,7 +349,8 @@ def create_app(
         if not result.success:
             raise HTTPException(500, result.message or "Step execution failed")
         # Sync API state with runner state
-        games[game_id] = runner.state
+        with _games_lock:
+            games[game_id] = runner.state
         _persist(runner.state)
         return GameActionResponse(
             game_id=game_id, action="step", success=True,
@@ -579,17 +588,14 @@ def create_app(
             },
         }
 
-    @app.get("/games", response_model=list[GameInfo])
-    def list_games() -> list[GameInfo]:
-        return [
-            GameInfo(
-                game_id=gid,
-                ruleset_id=s.ruleset_id,
-                status="active" if s.winning_faction is None else "ended",
-                player_count=len(s.players),
-            )
-            for gid, s in games.items()
-        ]
+    @app.get("/games")
+    async def list_games(
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+    ) -> dict:
+        all_game_ids = list(games.keys())
+        page = all_game_ids[offset:offset + limit]
+        return {"game_ids": page, "total": len(all_game_ids)}
 
     # Dashboard
     _dashboard_path = Path(__file__).parent.parent / "ui" / "static" / "dashboard.html"
@@ -638,6 +644,14 @@ def _resolve_caller_role(
         if caller_id and authorized_callers.get(caller_id) == requested_role:
             return requested_role
         raise HTTPException(403, "Elevated caller role is not authorized")
+    # PLAYER_AGENT / SPECTATOR 角色通过 query 参数直接传入，无 session_token
+    # 时记录警告日志，便于审计追踪
+    logger.warning(
+        "Legacy query-param auth without session_token: "
+        "caller_id=%s, caller_role=%s — no cryptographic verification performed",
+        caller_id,
+        requested_role.value,
+    )
     return requested_role
 
 
@@ -708,10 +722,13 @@ def _load_marketplace(path: str) -> dict:
 
 def _build_locked_config_snapshot(req: CreateGameRequest) -> dict:
     seed = req.seed if req.seed is not None else 0
+    # Hash actual ruleset content, not just the ID
+    ruleset_path = Path("config/rulesets") / f"{req.ruleset_id}.yaml"
+    ruleset_content = ruleset_path.read_text(encoding="utf-8") if ruleset_path.exists() else req.ruleset_id
     return {
         "ruleset_id": req.ruleset_id,
         "ruleset_version": "runtime-current",
-        "ruleset_hash": hashlib.sha256(req.ruleset_id.encode("utf-8")).hexdigest(),
+        "ruleset_hash": hashlib.sha256(ruleset_content.encode("utf-8")).hexdigest(),
         "profile_pack_id": req.profile_pack_id,
         "profile_pack_version": "runtime-current",
         "profile_pack_hash": hashlib.sha256(req.profile_pack_id.encode("utf-8")).hexdigest(),

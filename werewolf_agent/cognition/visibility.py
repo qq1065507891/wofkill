@@ -68,10 +68,12 @@ _FACT_VISIBILITY_MAP: dict[str, str] = {
     "badge_torn": "public",
     "speech": "public",
     "vote": "public",
-    "claimed_claim": "public",
+    "claimed_claim": "public",  # 来自 salience.py 中 vote bucket 的通用声称类型
     "claimed_role": "public",
     "claimed_suspect": "public",
-    "claimed_badge_flow": "public",
+    "claimed_good": "public",
+    "seer_check_claim": "public",
+    "badge_flow_claim": "public",
 
     # Wolf team private
     "wolf_kill_target": "wolf_team",
@@ -209,10 +211,15 @@ class VisibilityPolicy:
         visible_set = set(report.visible_indices)
         leaks: list[str] = []
 
+        fact_to_idx: dict[tuple[str, ...], int] = {}
+        for idx, fact in enumerate(world_state.facts):
+            key = (fact.fact_type, fact.source_player or "", fact.target_player or "", fact.value, fact.day)
+            fact_to_idx[key] = idx
         for fact in context_facts:
-            if fact not in world_state.facts:
+            key = (fact.fact_type, fact.source_player or "", fact.target_player or "", fact.value, fact.day)
+            if key not in fact_to_idx:
                 continue
-            idx = world_state.facts.index(fact)
+            idx = fact_to_idx[key]
             if idx not in visible_set:
                 label = report.fact_labels[idx]
                 leaks.append(

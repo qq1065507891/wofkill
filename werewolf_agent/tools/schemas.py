@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 
 # ---------------------------------------------------------------------------
@@ -83,18 +83,19 @@ class ToolCallLogEntry:
 # MCP provider protocol
 # ---------------------------------------------------------------------------
 
-class MCPProvider:
-    """Protocol for external MCP tool providers.
+@runtime_checkable
+class MCPProvider(Protocol):
+    """外部 MCP 工具提供者的协议接口。
 
-    MCP results must set is_suggestion=True and source_annotation.
-    MCP providers never own game state truth.
+    MCP 结果必须设置 is_suggestion=True 和 source_annotation。
+    MCP 提供者永远不拥有游戏状态真相。
     """
 
     name: str
     description: str
 
-    def call(self, tool_name: str, params: dict[str, Any]) -> ToolResult:
-        raise NotImplementedError
+    def list_tools(self) -> list[dict[str, Any]]: ...
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
 
 # ---------------------------------------------------------------------------

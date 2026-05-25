@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from werewolf_agent.core.models import GameState, PlayerState
+from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.tools.schemas import (
     InternalToolName,
     ToolCall,
@@ -94,7 +94,7 @@ class LocalToolExecutor:
                 p.id for p in state.players.values() if p.alive
             ],
             "dead_players": [
-                {"id": p.id, "role": p.role}
+                {"id": p.id, "role": "idiot"}
                 for p in state.players.values()
                 if not p.alive and p.revealed_idiot
             ],
@@ -188,12 +188,27 @@ class LocalToolExecutor:
     def _write_review(
         self, call: ToolCall, state: GameState,
     ) -> dict[str, Any]:
-        """Write review entry. Validates that game has ended."""
+        """Write review entry. Validates that game has ended.
+
+        Review is appended to state.events for audit trail.
+        Persistent storage is handled by MemoryStore / PersistentMemoryCoordinator
+        at game end.
+        """
         if state.winning_faction is None:
             return {"error": "Cannot write review: game not ended"}
 
         player_id = call.params.get("player_id", "")
         review_text = call.params.get("review_text", "")
+        review_event = {
+            "player_id": player_id,
+            "review_text": review_text,
+            "game_id": state.game_id,
+        }
+        if hasattr(state, 'events'):
+            state.events.append(GameEvent(
+                type="review",
+                payload=review_event,
+            ))
         return {
             "player_id": player_id,
             "review_text": review_text,

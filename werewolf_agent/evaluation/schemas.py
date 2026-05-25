@@ -21,7 +21,8 @@ class ActionVerdict(str, Enum):
     LEGAL = "legal"
     ILLEGAL = "illegal"
     RETRY_RECOVERED = "retry_recovered"
-    FALBACK = "fallback"
+    FALBACK = "fallback"  # deprecated alias, will be removed in V2
+    FALLBACK = "fallback"
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,8 @@ class GameResult:
     strategy_config_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        """转换为可序列化字典。"""
+        result = {
             "game_id": self.game_id,
             "initial_seed": self.initial_seed,
             "ruleset_id": self.ruleset_id,
@@ -123,6 +125,11 @@ class GameResult:
             "rag_config_snapshot": dict(self.rag_config_snapshot),
             "strategy_config_snapshot": dict(self.strategy_config_snapshot),
         }
+        result["action_records"] = []
+        result["leakage_records"] = []
+        result["cost_records"] = []
+        result["cognition_snapshots"] = []
+        return result
 
 
 # ---------------------------------------------------------------------------

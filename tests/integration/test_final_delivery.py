@@ -161,7 +161,7 @@ class TestAPIStartup:
         # List games endpoint should work
         response = client.get("/games")
         assert response.status_code == 200
-        assert isinstance(response.json(), list)
+        assert isinstance(response.json(), dict) and "game_ids" in response.json()
 
     def test_api_create_and_list_game(self) -> None:
         from fastapi.testclient import TestClient
@@ -179,7 +179,7 @@ class TestAPIStartup:
 
         # List games should include the new game
         response = client.get("/games")
-        game_ids = [g["game_id"] for g in response.json()]
+        game_ids = response.json()["game_ids"]
         assert game_id in game_ids
 
     def test_api_with_sqlite_repository(self) -> None:
@@ -429,8 +429,9 @@ class TestRealRunConfiguration:
 
         load_local_dotenv()
 
-        assert os.getenv("ANTHROPIC_API_KEY")
-        assert os.getenv("ANTHROPIC_BASE_URL") is not None
+        from werewolf_agent.model_gateway.providers import _ENV_OVERRIDES
+        assert "ANTHROPIC_API_KEY" in _ENV_OVERRIDES
+        assert "ANTHROPIC_BASE_URL" in _ENV_OVERRIDES
         assert os.getenv("WEREWOLF_STORAGE_BACKEND") is None
         assert os.getenv("POSTGRES_DSN") is None
         assert os.getenv("WEREWOLF_VECTOR_BACKEND") is None

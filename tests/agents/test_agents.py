@@ -1401,14 +1401,13 @@ class TestModelRouter:
 
     def test_generate_fallback_on_failure(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
-        router.register_provider(_FailProvider())
-        router.register_provider(MockProvider("glm"))
+        # Register failing provider as the primary (openai) and mock as fallback (minimax)
+        router._providers["openai"] = _FailProvider()
+        router.register_provider(MockProvider("minimax"))
 
         result = router.generate("p02", "speech", "Test prompt")
-        # Should fall back to glm provider since anthropic fails
-        # (p02 uses local_wolf which has fallback to glm)
-        # Fail provider raises, so it should try fallback
-        assert result.text != "" or result.provider == "anthropic"
+        # p02 uses openai as primary (fails) → fallback to minimax
+        assert result.text != "" or result.provider in ("openai", "minimax")
 
     def test_failed_generation_records_exception_reason(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
@@ -1518,7 +1517,7 @@ class TestModelRouter:
 
     def test_usage_logging(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
-        router.register_provider(MockProvider("anthropic"))
+        router.register_provider(MockProvider("openai"))
         router.generate("p01", "speech", "Test prompt")
         log = router.get_usage_log()
         assert len(log) >= 1

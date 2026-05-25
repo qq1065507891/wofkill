@@ -64,7 +64,7 @@ def build_private_memory(game_state: GameState, player_id: str) -> dict[str, lis
             continue
         if event.payload.get("visibility") in PRIVATE_VISIBILITIES:
             continue
-        _add_own_speech_notes(memory, event)
+        _add_own_speech_notes(memory, event, player_id)
     return {key: value[-12:] for key, value in memory.items() if value}
 
 
@@ -132,8 +132,14 @@ def _private_vote_thought_from_trace(trace: Any) -> dict[str, Any]:
 def _add_own_speech_notes(
     memory: dict[str, list[dict[str, Any]]],
     event: GameEvent,
+    player_id: str = "",
 ) -> None:
+    """提取发言中的逻辑漏洞、合理点、站边记录。"""
     speaker = event.payload.get("speaker", "")
+    # 跳过私密频道发言（如狼队频道），只处理公开发言
+    visibility = event.payload.get("visibility", "")
+    if visibility == "werewolf_team_only" and player_id and speaker != player_id:
+        return
     day = event.payload.get("day_number", 0)
     text = str(event.payload.get("text", ""))
     for sentence in _split_sentences(text):

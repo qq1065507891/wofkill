@@ -113,10 +113,10 @@ def _compute_weight(
     return min(max(weight, 0.0), 1.0), reasons
 
 
-def _bucket(weight: float) -> str:
-    if weight >= 0.7:
+def _bucket(weight: float, high: float = 0.7, medium: float = 0.4) -> str:
+    if weight >= high:
         return "high"
-    if weight >= 0.4:
+    if weight >= medium:
         return "medium"
     return "low"
 
@@ -149,7 +149,7 @@ class SalienceEngine:
             weight, reasons = _compute_weight(
                 fact, current_day, current_phase, viewer_role,
             )
-            bucket = _bucket(weight)
+            bucket = _bucket(weight, self.high_threshold, self.medium_threshold)
             salient.append(SalientFact(
                 fact=fact,
                 weight=weight,

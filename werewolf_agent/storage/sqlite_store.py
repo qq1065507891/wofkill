@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict, replace
+import threading
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
@@ -102,11 +103,15 @@ CREATE TABLE IF NOT EXISTS custom_configs (
 """
 
 
+_SCHEMA_VERSION = "1"
+
+
 class SqliteGameRepository:
     """SQLite implementation of GameRepository."""
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
+        self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -114,68 +119,75 @@ class SqliteGameRepository:
         self._conn.commit()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # -- Game state --------------------------------------------------------
 
     def save_game(self, state: GameState) -> None:
-        data = _serialize_game_state(state)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO games (game_id, state_json) VALUES (?, ?)",
-            (state.game_id, data),
-        )
-        self._conn.commit()
+        with self._lock:
+            data = _serialize_game_state(state)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO games (game_id, state_json) VALUES (?, ?)",
+                (state.game_id, data),
+            )
+            self._conn.commit()
 
     def load_game(self, game_id: str) -> GameState | None:
-        row = self._conn.execute(
-            "SELECT state_json FROM games WHERE game_id = ?",
-            (game_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return _deserialize_game_state(row[0])
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT state_json FROM games WHERE game_id = ?",
+                (game_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return _deserialize_game_state(row[0])
 
     # -- Events -----------------------------------------------------------
 
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
-        current_max = self._conn.execute(
-            "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
-            (game_id,),
-        ).fetchone()[0]
-        for i, event in enumerate(events):
-            self._conn.execute(
-                "INSERT INTO events (game_id, seq, event_type, payload_json) VALUES (?, ?, ?, ?)",
-                (game_id, current_max + i + 1, event.type, json.dumps(event.payload, ensure_ascii=False)),
-            )
-        self._conn.commit()
+        with self._lock:
+            current_max = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
+                (game_id,),
+            ).fetchone()[0]
+            for i, event in enumerate(events):
+                self._conn.execute(
+                    "INSERT INTO events (game_id, seq, event_type, payload_json) VALUES (?, ?, ?, ?)",
+                    (game_id, current_max + i + 1, event.type, json.dumps(event.payload, ensure_ascii=False)),
+                )
+            self._conn.commit()
 
     def load_events(self, game_id: str) -> list[GameEvent]:
-        rows = self._conn.execute(
-            "SELECT event_type, payload_json FROM events WHERE game_id = ? ORDER BY seq",
-            (game_id,),
-        ).fetchall()
-        return [
-            GameEvent(type=r[0], payload=json.loads(r[1]))
-            for r in rows
-        ]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT event_type, payload_json FROM events WHERE game_id = ? ORDER BY seq",
+                (game_id,),
+            ).fetchall()
+            return [
+                GameEvent(type=r[0], payload=json.loads(r[1]))
+                for r in rows
+            ]
 
     # -- Deaths -----------------------------------------------------------
 
     def save_deaths(self, game_id: str, deaths: list[Death]) -> None:
-        self._conn.execute("DELETE FROM deaths WHERE game_id = ?", (game_id,))
-        for death in deaths:
-            self._conn.execute(
-                "INSERT INTO deaths (game_id, player_id, death_json) VALUES (?, ?, ?)",
-                (game_id, death.player_id, json.dumps(asdict(death), ensure_ascii=False)),
-            )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("DELETE FROM deaths WHERE game_id = ?", (game_id,))
+            for death in deaths:
+                self._conn.execute(
+                    "INSERT INTO deaths (game_id, player_id, death_json) VALUES (?, ?, ?)",
+                    (game_id, death.player_id, json.dumps(asdict(death), ensure_ascii=False)),
+                )
+            self._conn.commit()
 
     def load_deaths(self, game_id: str) -> list[Death]:
-        rows = self._conn.execute(
-            "SELECT death_json FROM deaths WHERE game_id = ?",
-            (game_id,),
-        ).fetchall()
-        return [Death(**json.loads(r[0])) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT death_json FROM deaths WHERE game_id = ?",
+                (game_id,),
+            ).fetchall()
+            return [Death(**json.loads(r[0])) for r in rows]
 
     # -- Model usage -------------------------------------------------------
 

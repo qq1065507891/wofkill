@@ -111,6 +111,7 @@ class RepositoryHistoryTransport:
 
 
 class PersonaQueryTransport:
+    _cache_ttl: float = 300.0  # 缓存 TTL（秒）
     """Queries persona configuration from YAML files.
 
     Supported tools:
@@ -124,14 +125,20 @@ class PersonaQueryTransport:
     def __init__(self, config_path: str | Path) -> None:
         self._config_path = Path(config_path)
         self._data: dict[str, Any] | None = None
+        self._cache_time: float = 0.0
 
     def _load(self) -> dict[str, Any]:
         if self._data is not None:
-            return self._data
+            # Check cache expiration
+            if (time.monotonic() - self._cache_time) > self._cache_ttl:
+                self._data = None
+            else:
+                return self._data
         if not self._config_path.exists():
             return {}
         import yaml
         self._data = yaml.safe_load(self._config_path.read_text(encoding="utf-8")) or {}
+        self._cache_time = time.monotonic()
         return self._data
 
     def call(self, tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -166,6 +173,17 @@ class PersonaQueryTransport:
 
 
 class HTTPTransport:
+
+    def close(self) -> None:
+        """关闭 HTTP 传输连接。"""
+        if hasattr(self, '_client') and self._client is not None:
+            self._client.close()
+
+    def __enter__(self) -> "HTTPTransport":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
     """Generic HTTP transport for external MCP services.
 
     Sends tool calls as POST requests to a configured base URL.

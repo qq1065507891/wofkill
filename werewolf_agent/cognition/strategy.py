@@ -111,7 +111,6 @@ class StrategySelector:
         role: str,
         faction_goal: str = "",
         persona_style: str = "",
-        belief_snapshot: dict[str, Any] | None = None,
         is_suspected: bool = False,
         teammate_just_exiled: bool = False,
     ) -> StrategyPackage:

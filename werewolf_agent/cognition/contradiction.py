@@ -214,7 +214,7 @@ class ContradictionEngine:
                 # Check speech text for contradiction phrases
                 text = ""
                 if f.fact_type == "speech":
-                    text = f.metadata.get("text", f.value)
+                    text = f.value
                 if not text:
                     continue
 

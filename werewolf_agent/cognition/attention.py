@@ -6,8 +6,6 @@ passes through. Adds role-specific filtering for information density.
 
 from __future__ import annotations
 
-from typing import Any
-
 from werewolf_agent.cognition.visibility import VisibilityPolicy
 from werewolf_agent.cognition.world_state import StructuredFact, StructuredWorldState
 

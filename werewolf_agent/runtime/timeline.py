@@ -118,6 +118,7 @@ def detect_timeline_confusion(text: str) -> list[dict[str, str]]:
     return findings
 
 
+# 仅用于游戏内有限的数字范围（1-19）
 def _chinese_ordinal(number: int) -> str:
     numerals = {
         0: "零",

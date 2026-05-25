@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from werewolf_agent.api.app import create_app
+from werewolf_agent.api.auth import AuthManager, AuthConfig
 from werewolf_agent.api.permissions import PermissionChecker, PermissionDenied
 from werewolf_agent.api.schemas import (
     AuditEvent,
@@ -13,11 +14,15 @@ from werewolf_agent.api.schemas import (
 from werewolf_agent.core.models import GameState, PlayerState, GameEvent
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 
+# 测试用的固定密钥，避免依赖 WEREWOLF_AUTH_SECRET 环境变量
+_TEST_SECRET = "test-secret-key-for-unit-tests-only"
+_test_auth = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
+
 
 def test_create_app_initializes_rag_service_from_env(monkeypatch):
     monkeypatch.setenv("WEREWOLF_VECTOR_BACKEND", "local")
 
-    app = create_app(repository=InMemoryGameRepository())
+    app = create_app(repository=InMemoryGameRepository(), auth_manager=_test_auth)
 
     assert hasattr(app.state, "rag_service")
     assert app.state.rag_service is not None
@@ -28,7 +33,7 @@ def test_create_app_initializes_rag_service_from_env(monkeypatch):
 
 
 def _make_client() -> TestClient:
-    app = create_app()
+    app = create_app(auth_manager=_test_auth)
     client = TestClient(app)
     # Create and start a game
     resp = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed"})
@@ -182,7 +187,7 @@ class TestAPIEndpoints:
         client, _ = _make_client()
         resp = client.get("/games")
         assert resp.status_code == 200
-        assert len(resp.json()) >= 1
+        assert len(resp.json()["game_ids"]) >= 1
 
     def test_start_game(self):
         client, game_id = _make_client()

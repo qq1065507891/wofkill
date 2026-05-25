@@ -583,12 +583,18 @@ class MetricsAggregator:
     # -----------------------------------------------------------------------
 
     def _compute_growth_curve(self, snap: MetricsSnapshot) -> None:
+        """计算指标随游戏进行的增长曲线。
+
+        使用单趟扫描维护累计统计，避免 O(n^2) 的切片操作。
+        """
         if len(self._results) < 2:
             return
 
         points: list[GrowthPoint] = []
         cumulative_good_wins = 0
         cumulative_wolf_wins = 0
+        # 单趟累计：player_id -> (wins, games)
+        player_cumulative: dict[str, tuple[int, int]] = {}
 
         for i, result in enumerate(self._results, 1):
             if result.winning_faction == "good":
@@ -607,22 +613,18 @@ class MetricsAggregator:
                 value=cumulative_wolf_wins / i,
             ))
 
-            # Per-player cumulative win rate
+            # 单趟累计各玩家胜率，不回溯切片
             for pid in result.player_roles:
-                player_wins_so_far = sum(
-                    1 for r in self._results[:i]
-                    if pid in r.player_factions
-                    and r.player_factions[pid] == r.winning_faction
-                )
-                player_games_so_far = sum(
-                    1 for r in self._results[:i]
-                    if pid in r.player_factions
-                )
-                if player_games_so_far:
+                prev_wins, prev_games = player_cumulative.get(pid, (0, 0))
+                faction = result.player_factions.get(pid, "")
+                cur_wins = prev_wins + (1 if faction == result.winning_faction else 0)
+                cur_games = prev_games + 1
+                player_cumulative[pid] = (cur_wins, cur_games)
+                if cur_games:
                     points.append(GrowthPoint(
                         game_number=i,
                         metric_name=f"player_{pid}_win_rate",
-                        value=player_wins_so_far / player_games_so_far,
+                        value=cur_wins / cur_games,
                     ))
 
         snap.growth_curve = points

@@ -158,8 +158,11 @@ class PlayerAgent:
         parse_success = False
         parse_error_str: str | None = None
         structured_failure_reason: str | None = None
+        skill_tools_consumed = False
 
-        for attempt in range(1, self.max_retries + 1):
+        attempt = 0
+        while attempt < self.max_retries:
+            attempt += 1
             retry = RetryInfo(
                 attempt=attempt,
                 max_retries=self.max_retries,
@@ -167,6 +170,16 @@ class PlayerAgent:
                 error_message=retry.error_message,
                 correction_hint=retry.correction_hint,
             )
+
+            # Build tool list: always include submit_player_action; optionally
+            # include skill analysis tools for the LLM to call on-demand.
+            tools = [self._player_action_tool(context)]
+            has_skill_tools = bool(context.skill_tools) and not skill_tools_consumed
+            if has_skill_tools:
+                tools.extend(context.skill_tools)
+                tool_choice_val: dict[str, Any] = {"type": "auto"}
+            else:
+                tool_choice_val = {"type": "tool", "name": "submit_player_action"}
 
             # Generate LLM output
             prompt = self._build_prompt(context, retry)
@@ -176,8 +189,8 @@ class PlayerAgent:
                     task_type=context.task_type.value,
                     prompt=prompt,
                     system_prompt=self._build_system_prompt(context),
-                    tools=[self._player_action_tool(context)],
-                    tool_choice={"type": "tool", "name": "submit_player_action"},
+                    tools=tools,
+                    tool_choice=tool_choice_val,
                 )
             except NotImplementedError:
                 # Provider does not support tool_choice
@@ -203,6 +216,26 @@ class PlayerAgent:
             raw_text = result.text or ""
 
             tool_call_received = bool(getattr(result, "tool_call_received", False))
+
+            # Detect on-demand skill tool call (LLM requested tactical analysis)
+            called_tool = getattr(result, "tool_call_name", "") or ""
+            if called_tool and called_tool in context.skill_analyses:
+                skill_tools_consumed = True
+                analysis = context.skill_analyses.get(called_tool, "")
+                if analysis:
+                    hint = (
+                        f"【技能分析结果】\n{analysis}\n\n"
+                        "请基于以上分析，通过 submit_player_action 提交你的行动。"
+                    )
+                else:
+                    hint = "技能分析暂无结果，请直接通过 submit_player_action 提交你的行动。"
+                retry = RetryInfo(
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    correction_hint=hint,
+                )
+                attempt -= 1  # skill tool 调用不消耗重试次数
+                continue
             if not result.text:
                 failure_reason = self._latest_generation_failure_reason()
                 if failure_reason:

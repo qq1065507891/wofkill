@@ -23,8 +23,6 @@ from werewolf_agent.runtime.agent_adapter import SimpleAgentRegistry
 from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.model_gateway.router import ModelRouter
 
-RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
-
 logger = logging.getLogger(__name__)
 
 
@@ -67,7 +65,7 @@ class GameRunner:
 
     def __init__(self, config: GameRunnerConfig) -> None:
         self._config = config
-        self._game_id = f"g_{config.seed or uuid.uuid4().hex[:8]}"
+        self._game_id = f"g_{config.seed if config.seed is not None else uuid.uuid4().hex[:8]}"
         self._ruleset_registry: RulesetRegistry = config.ruleset_registry or RulesetRegistry()
         self._ruleset_entry = self._ruleset_registry.require_playable(config.ruleset_id)
         self._engine = RuleEngine.from_yaml(self._ruleset_entry.path)

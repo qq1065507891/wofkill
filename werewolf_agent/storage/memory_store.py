@@ -80,12 +80,20 @@ class InMemoryGameRepository:
         return list(self._games.values())
 
     def delete_game(self, game_id: str) -> None:
+        """删除游戏及其所有关联数据，包括自定义配置。"""
         self._games.pop(game_id, None)
         self._events.pop(game_id, None)
         self._deaths.pop(game_id, None)
         self._usage.pop(game_id, None)
         self._evaluations.pop(game_id, None)
         self._configs.pop(game_id, None)
+        # 清理与该游戏关联的自定义配置
+        keys_to_remove = [
+            k for k, v in self._custom_configs.items()
+            if v.get("game_id") == game_id
+        ]
+        for k in keys_to_remove:
+            self._custom_configs.pop(k, None)
 
     # -- RAG entries ---------------------------------------------------------
 

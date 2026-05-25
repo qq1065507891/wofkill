@@ -86,6 +86,7 @@ def timed_call(
     """Run *fn* in a thread with a *timeout* in seconds.
 
     Returns the function result, or *fallback* if the call times out or raises.
+    注意：超时后工作线程仍在运行，此函数是"尽力超时"语义。
     """
     result_box: list[T | None] = [fallback]
     error_box: list[BaseException | None] = [None]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Protocol
 
 from werewolf_agent.agents.player import PlayerAgent
@@ -21,6 +22,7 @@ from werewolf_agent.agents.schemas import (
 )
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.skills.schemas import SkillName
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
@@ -395,9 +397,10 @@ def _build_seer_day_speech_directive(
     parts: dict[str, Any] = {}
 
     # Collect check results this seer has obtained
+    # seer_check 事件不包含 seer_id，此函数仅由预言家调用，所有结果均属于该预言家
     check_results: list[dict[str, Any]] = []
     for e in gs.events:
-        if e.type == "seer_check" and e.payload.get("seer_id") == seer_id:
+        if e.type == "seer_check":
             check_results.append({
                 "target": e.payload["target_id"],
                 "alignment": e.payload["alignment"],
@@ -742,15 +745,19 @@ def _evaluate_wolf_kill_target(
                 value += 6
                 break
 
-        # Seer check results pointing at wolves — actively hurting wolf team
+        # 公开查杀声明中指向狼人 — 威胁评估基于公开信息
         seer_check_wolf_from_pid = False
-        for e in gs.events:
-            if e.type == "seer_check" and e.payload.get("alignment") == "wolf":
-                if e.payload.get("seer_id") == pid:
+        try:
+            from werewolf_agent.cognition.world_state import build_world_state
+            _ws = build_world_state(gs)
+            for f in _ws.facts_of_type("seer_check_claim"):
+                if f.source_player == pid and ("wolf" in (f.value or "").lower() or "狼" in (f.value or "")):
                     seer_check_wolf_from_pid = True
                     sig.append("seer_check_wolf_reporter")
                     value += 10
                     break
+        except Exception:
+            pass
         if not seer_check_wolf_from_pid:
             # Check if player publicly reported a wolf-check in speech
             for e in gs.events:
@@ -974,15 +981,20 @@ def _build_wolf_day_speech_directive(
         if p.alive and p.role == "werewolf" and pid != wolf_id
     ]
     teammate_checked = []
-    for e in gs.events:
-        if e.type == "seer_check" and e.payload.get("alignment") == "wolf":
-            target = e.payload.get("target_id", "")
-            if target in wolf_teammates:
+    # 使用公开查杀声明，不直接读取 seer_check 私有事件
+    try:
+        from werewolf_agent.cognition.world_state import build_world_state
+        _ws = build_world_state(gs)
+        for f in _ws.facts_of_type("seer_check_claim"):
+            val = (f.value or "").lower()
+            if ("wolf" in val or "狼" in (f.value or "")) and f.target_player in wolf_teammates:
                 teammate_checked.append({
-                    "target": target,
-                    "seer": e.payload.get("seer_id", ""),
-                    "night": e.payload.get("night_number", ""),
+                    "target": f.target_player,
+                    "seer": f.source_player,
+                    "night": f.day or f.night if hasattr(f, 'night') else "",
                 })
+    except Exception:
+        pass
     if teammate_checked:
         parts["wolf_teammate_exposed"] = (
             f"警告：你的队友被真预言家验出狼人了！"
@@ -1054,14 +1066,17 @@ def _inject_skill_output(
     phase: str,
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Dispatch applicable skills and inject tactical advice into strategy_directive."""
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Dispatch applicable skills once; inject non-tool advice, collect tool analyses.
+
+    Returns (updated strategy_directive, tool_analyses).
+    """
     from werewolf_agent.skills.registry import SkillRegistry
     from werewolf_agent.skills.schemas import SkillInput
 
     player = gs.players.get(player_id)
     if not player or not player.alive:
-        return strategy_directive
+        return strategy_directive, {}
 
     registry = SkillRegistry()
     skill_input = SkillInput(
@@ -1087,9 +1102,17 @@ def _inject_skill_output(
                 wolf_role = role_key
                 break
 
-    parts = []
+    parts: list[str] = []
+    tool_analyses: dict[str, str] = {}
+
     for o in outputs:
         if not o.prompt_injectable or o.confidence < 0.4:
+            continue
+        # Collect tool skill outputs for on-demand LLM access
+        if o.skill_name in _TOOL_SKILL_NAMES:
+            tool_def = _SKILL_TOOL_DEFS.get(o.skill_name)
+            if tool_def:
+                tool_analyses[tool_def["name"]] = o.prompt_injectable
             continue
         # Skip bold_claim for non-fake_seer wolves
         if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
@@ -1104,7 +1127,56 @@ def _inject_skill_output(
 
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
-    return strategy_directive
+    return strategy_directive, tool_analyses
+
+
+# Skill names exposed as on-demand LLM tools (not injected as prompt text).
+_TOOL_SKILL_NAMES: set[str] = {
+    SkillName.WOLF_PIT_ANALYSIS.value,
+    SkillName.FIND_POWER.value,
+    SkillName.LAST_WORDS_ANALYSIS.value,
+}
+
+# Tool definitions for each on-demand skill (module-level constant).
+_SKILL_TOOL_DEFS: dict[str, dict[str, Any]] = {
+    SkillName.WOLF_PIT_ANALYSIS.value: {
+        "name": "skill_analyze_wolf_pit",
+        "description": (
+            "分析当前狼坑（嫌疑区和排除区）。基于验人信息、投票模式、发言矛盾等给出完整分析。"
+            "调用后会返回详细分析结果供你参考。"
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    SkillName.FIND_POWER.value: {
+        "name": "skill_find_power_roles",
+        "description": (
+            "分析场上哪些玩家可能是神职（预言家、女巫、猎人等）。"
+            "基于发言、行为模式和已知信息推断。"
+            "调用后返回推测结果供你参考。"
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    SkillName.LAST_WORDS_ANALYSIS.value: {
+        "name": "skill_analyze_last_words",
+        "description": (
+            "分析刚出局玩家的遗言。提取关键信息、判断可信度、与已知信息对比。"
+            "调用后返回分析结果供你参考。"
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+}
+
+
+def _build_skill_tool_defs(role: str, phase: str) -> list[dict[str, Any]]:
+    """Build LLM-callable skill tool definitions for applicable on-demand skills."""
+    from werewolf_agent.skills.registry import SkillRegistry
+
+    registry = SkillRegistry()
+    return [
+        _SKILL_TOOL_DEFS[s.name.value]
+        for s in registry.all_skills()
+        if s.name.value in _TOOL_SKILL_NAMES and s.is_applicable(role, phase)
+    ]
 
 
 def _merge_strategy_directive(
@@ -1157,9 +1229,10 @@ def build_agent_context(
         if wolf_team_plan:
             visible["wolf_team_plan"] = wolf_team_plan
     elif player.role == "seer":
+        # 预言家可见自己的验人结果（seer_check 不含 seer_id，所有结果均属预言家）
         check_results = []
         for e in gs.events:
-            if e.type == "seer_check" and e.payload.get("seer_id") == player_id:
+            if e.type == "seer_check":
                 check_results.append({
                     "target_id": e.payload["target_id"],
                     "alignment": e.payload["alignment"],
@@ -1262,11 +1335,13 @@ def build_agent_context(
         # -- Belief update: who do I suspect / trust --
         updater = BeliefUpdater()
         belief_state = updater.initialize(list(gs.players.keys()), player_id)
-        # Only feed facts visible to this player (exclude werewolf-team-only events)
-        visible_facts = [
-            f for f in world_state.facts
-            if f.fact_type not in ("wolf_kill_selected", "witch_kill_target")
-        ]
+        # 使用 VisibilityPolicy 过滤，仅传入该玩家可见的事实
+        from werewolf_agent.cognition.visibility import VisibilityPolicy
+        _vis_policy = VisibilityPolicy()
+        _player_role = gs.players[player_id].role if player_id in gs.players else "villager"
+        visible_facts = _vis_policy.filter_visible_facts(
+            world_state, player_id, _player_role
+        )
         belief_state = updater.update(belief_state, visible_facts, gs.day_number)
 
         # Build structured belief summary for agent prompt
@@ -1330,14 +1405,17 @@ def build_agent_context(
     if legal_targets is None:
         legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != player_id]
 
-    # -- Skill-based tactical advice --
+    # -- Skill-based tactical advice + on-demand tool analyses (single dispatch) --
+    skill_tools: list[dict[str, Any]] = []
+    skill_analyses: dict[str, str] = {}
     try:
-        strategy_directive = _inject_skill_output(
+        strategy_directive, skill_analyses = _inject_skill_output(
             strategy_directive, gs, player_id,
             world_state, belief_state, alerts, task_type.value,
             legal_targets=legal_targets,
             wolf_team_plan=wolf_team_plan,
         )
+        skill_tools = _build_skill_tool_defs(player.role, task_type.value)
     except Exception:
         logger.debug("Skill injection failed, skipping", exc_info=True)
 
@@ -1356,6 +1434,8 @@ def build_agent_context(
         contradiction_alerts=ctx_alerts,
         belief_state=belief_dict,
         strategy_directive=strategy_directive,
+        skill_tools=skill_tools,
+        skill_analyses=skill_analyses,
     )
     return _inject_seed_rag_hints(
         context,
@@ -1540,9 +1620,10 @@ def agent_night_seer(
         legal_targets = [pid for pid in legal_targets if pid not in counterclaiming_seers]
 
     # Exclude already-checked targets (no value in re-checking known alignments)
+    # 预言家自身策略：seer_check 不含 seer_id，所有结果均属该预言家
     checked_ids: set[str] = set()
     for e in gs.events:
-        if e.type == "seer_check" and e.payload.get("seer_id") == seer_id:
+        if e.type == "seer_check":
             checked_ids.add(e.payload["target_id"])
     if checked_ids:
         legal_targets = [pid for pid in legal_targets if pid not in checked_ids]
@@ -1552,7 +1633,6 @@ def agent_night_seer(
     for e in gs.events:
         if e.type == "sheriff_speech" and e.payload.get("speaker") == seer_id:
             text = e.payload.get("text", "")
-            import re
             mentioned = re.findall(r'p\d+', text)
             if mentioned:
                 badge_flow_next = [pid for pid in mentioned if pid in legal_targets]
@@ -2411,13 +2491,21 @@ def _evaluate_hunter_shot_target(
         sig: list[str] = []
         value = 0
 
-        # Seer check: wolf alignment is strongest signal (+10)
-        for e in gs.events:
-            if e.type == "seer_check" and e.payload.get("alignment") == "wolf":
-                if e.payload.get("target_id") == pid:
-                    sig.append(f"seer_check_wolf_N{e.payload.get('night_number', '?')}")
+        # 公开查杀声明：狼人阵营是最强信号 (+10)
+        # 使用 seer_check_claim 公开信息，不直接读取 seer_check 私有事件
+        _wolf_check_found = False
+        try:
+            from werewolf_agent.cognition.world_state import build_world_state
+            _ws = build_world_state(gs)
+            for f in _ws.facts_of_type("seer_check_claim"):
+                val = (f.value or "").lower()
+                if f.target_player == pid and ("wolf" in val or "狼" in (f.value or "")):
+                    sig.append(f"seer_check_wolf_claim_{f.source_player}")
                     value += 10
+                    _wolf_check_found = True
                     break
+        except Exception:
+            pass
 
         # Counterclaiming seer: high-value target (+6)
         counterclaiming_seers = _public_seer_claimants(gs)
@@ -2618,10 +2706,10 @@ def agent_sheriff_register(
     engine: RuleEngine,
     registry: AgentRegistry,
     player_id: str,
-) -> bool:
+) -> dict[str, Any] | bool:
     """Ask a player whether they want to register for sheriff election.
 
-    Returns True if the player registers, False otherwise.
+    Returns dict with registration result and self_destruct flag.
     """
     gs: GameState = state["game_state"]
     agent = registry.get_agent(player_id)
@@ -2679,10 +2767,10 @@ def agent_sheriff_withdraw(
     engine: RuleEngine,
     registry: AgentRegistry,
     candidate_id: str,
-) -> bool:
+) -> dict[str, Any] | bool:
     """Ask a sheriff candidate whether they want to withdraw.
 
-    Returns True if the candidate withdraws, False if they stay.
+    Returns dict with withdrawal result and self_destruct flag.
     """
     gs: GameState = state["game_state"]
     agent = registry.get_agent(candidate_id)

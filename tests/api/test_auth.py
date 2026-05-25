@@ -4,25 +4,35 @@ import time
 
 from werewolf_agent.api.auth import AuthManager, AuthConfig
 
+# 测试用的固定密钥，避免依赖环境变量
+_TEST_SECRET = "test-secret-key-for-unit-tests-only"
+
 
 # ---------------------------------------------------------------------------
 # AuthConfig unit tests
 # ---------------------------------------------------------------------------
 
 def test_auth_config_loads_defaults():
-    cfg = AuthConfig()
+    cfg = AuthConfig(secret_key=_TEST_SECRET)
     assert cfg.mode == "local"
     assert cfg.local_users  # has default users
     assert "mod1" in cfg.local_users
     assert "dbg1" in cfg.local_users
-    assert cfg.secret_key  # non-empty default
+    assert cfg.secret_key == _TEST_SECRET
 
 
-def test_auth_config_env_override():
-    """AuthConfig reads WEREWOLF_AUTH_SECRET env var when secret_key not set."""
+def test_auth_config_generates_ephemeral_key_without_secret():
+    """AuthConfig 未设置 secret_key 时生成临时 key 并打印 WARNING。"""
     cfg = AuthConfig()
-    # Default key is the fallback
-    assert cfg.secret_key == "wofkill-dev-key-change-me"
+    assert cfg.secret_key != ""
+    assert len(cfg.secret_key) >= 32
+
+
+def test_auth_config_env_override(monkeypatch):
+    """AuthConfig 可以通过环境变量 WEREWOLF_AUTH_SECRET 设置密钥。"""
+    monkeypatch.setenv("WEREWOLF_AUTH_SECRET", "env-secret-value")
+    cfg = AuthConfig()
+    assert cfg.secret_key == "env-secret-value"
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +40,7 @@ def test_auth_config_env_override():
 # ---------------------------------------------------------------------------
 
 def test_auth_manager_local_mode():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     token = mgr.create_session("mod1", "moderator")
     assert token is not None
     role = mgr.validate_session(token)
@@ -38,31 +48,31 @@ def test_auth_manager_local_mode():
 
 
 def test_auth_manager_debugger_role():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     token = mgr.create_session("dbg1", "debugger")
     assert mgr.validate_session(token) == "debugger"
 
 
 def test_auth_manager_spectator_role():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     token = mgr.create_session("spectator", "spectator")
     assert mgr.validate_session(token) == "spectator"
 
 
 def test_auth_manager_rejects_unknown_user():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     with pytest.raises(PermissionError):
         mgr.create_session("hacker", "moderator")
 
 
 def test_auth_manager_rejects_wrong_role():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     with pytest.raises(PermissionError):
         mgr.create_session("mod1", "debugger")
 
 
 def test_auth_manager_expired_token():
-    mgr = AuthManager(AuthConfig(mode="local", token_ttl_seconds=0))
+    mgr = AuthManager(AuthConfig(mode="local", token_ttl_seconds=0, secret_key=_TEST_SECRET))
     token = mgr.create_session("mod1", "moderator")
     time.sleep(0.1)
     role = mgr.validate_session(token)
@@ -70,30 +80,30 @@ def test_auth_manager_expired_token():
 
 
 def test_auth_manager_revoke():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     token = mgr.create_session("mod1", "moderator")
     mgr.revoke_session(token)
     assert mgr.validate_session(token) is None
 
 
 def test_auth_manager_revoke_nonexistent():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     # Should not raise
     mgr.revoke_session("nonexistent-token")
 
 
 def test_auth_manager_validate_invalid_token():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     assert mgr.validate_session("invalid.token.here") is None
 
 
 def test_auth_manager_validate_empty_token():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     assert mgr.validate_session("") is None
 
 
 def test_auth_manager_token_structure():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     token = mgr.create_session("mod1", "moderator")
     parts = token.split(".")
     assert len(parts) == 4
@@ -102,7 +112,7 @@ def test_auth_manager_token_structure():
 
 
 def test_auth_manager_different_users_different_tokens():
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     t1 = mgr.create_session("mod1", "moderator")
     t2 = mgr.create_session("dbg1", "debugger")
     assert t1 != t2
@@ -110,7 +120,7 @@ def test_auth_manager_different_users_different_tokens():
 
 def test_auth_manager_same_user_new_token_invalidates_old():
     """Creating a new session does NOT invalidate the old one in-memory."""
-    mgr = AuthManager(AuthConfig(mode="local"))
+    mgr = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     t1 = mgr.create_session("mod1", "moderator")
     t2 = mgr.create_session("mod1", "moderator")
     # Both tokens remain valid because sessions are stored by token string
@@ -122,11 +132,21 @@ def test_auth_manager_same_user_new_token_invalidates_old():
 # Integration tests via FastAPI TestClient
 # ---------------------------------------------------------------------------
 
-def test_login_endpoint():
+def _make_test_app(**kwargs):
+    """创建使用测试密钥的 app，避免依赖 WEREWOLF_AUTH_SECRET 环境变量。"""
     from werewolf_agent.api.app import create_app
+    from werewolf_agent.api.auth import AuthManager, AuthConfig
+
+    auth_mgr = kwargs.pop("auth_manager", None) or AuthManager(
+        AuthConfig(mode="local", secret_key=_TEST_SECRET)
+    )
+    return create_app(auth_manager=auth_mgr, **kwargs)
+
+
+def test_login_endpoint():
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
     resp = client.post("/auth/login?caller_id=mod1&role=moderator")
     assert resp.status_code == 200
@@ -137,20 +157,18 @@ def test_login_endpoint():
 
 
 def test_login_rejects_unknown():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
     resp = client.post("/auth/login?caller_id=hacker&role=moderator")
     assert resp.status_code == 403
 
 
 def test_login_rejects_wrong_role():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
     resp = client.post("/auth/login?caller_id=mod1&role=debugger")
     assert resp.status_code == 403
@@ -158,10 +176,9 @@ def test_login_rejects_wrong_role():
 
 def test_session_token_on_replay_endpoint():
     """Elevated endpoint accepts session_token as alternative to caller_id."""
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
 
     # Create a game so replay won't 404
@@ -184,10 +201,9 @@ def test_session_token_on_replay_endpoint():
 
 
 def test_session_token_on_evaluation_endpoint():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
 
     game_resp = client.post("/games", json={
@@ -207,10 +223,9 @@ def test_session_token_on_evaluation_endpoint():
 
 
 def test_session_token_on_cognitive_diff_endpoint():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
 
     game_resp = client.post("/games", json={
@@ -230,10 +245,9 @@ def test_session_token_on_cognitive_diff_endpoint():
 
 
 def test_session_token_on_private_state_endpoint():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
 
     game_resp = client.post("/games", json={
@@ -255,10 +269,9 @@ def test_session_token_on_private_state_endpoint():
 
 
 def test_invalid_session_token_rejected():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
 
     game_resp = client.post("/games", json={
@@ -276,13 +289,12 @@ def test_invalid_session_token_rejected():
 
 
 def test_expired_session_token_rejected():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
     from werewolf_agent.api.auth import AuthManager, AuthConfig
 
     # Create app with a very short TTL
-    auth_mgr = AuthManager(AuthConfig(mode="local", token_ttl_seconds=0))
-    app = create_app(auth_manager=auth_mgr)
+    auth_mgr = AuthManager(AuthConfig(mode="local", token_ttl_seconds=0, secret_key=_TEST_SECRET))
+    app = _make_test_app(auth_manager=auth_mgr)
     client = TestClient(app)
 
     game_resp = client.post("/games", json={
@@ -309,10 +321,9 @@ def test_expired_session_token_rejected():
 
 def test_legacy_caller_id_still_works():
     """Existing tests use caller_id=mod1 & caller_role=moderator without tokens."""
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
 
     game_resp = client.post("/games", json={
@@ -329,10 +340,9 @@ def test_legacy_caller_id_still_works():
 
 
 def test_legacy_debugger_still_works():
-    from werewolf_agent.api.app import create_app
     from fastapi.testclient import TestClient
 
-    app = create_app()
+    app = _make_test_app()
     client = TestClient(app)
 
     game_resp = client.post("/games", json={
