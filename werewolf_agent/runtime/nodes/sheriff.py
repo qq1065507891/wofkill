@@ -390,19 +390,21 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
 
 
 def sheriff_endorse(state: RuntimeState) -> dict[str, Any]:
-    """Sheriff gives formal endorsement / guipiao before voting.
+    """Sheriff gives private endorsement before voting (归票).
 
-    Design doc §6.2 node 18: sheriff announces who should be voted out.
-    Only runs when sheriff exists and badge is active.
+    Design doc §6.2 node 18, §3.7: sheriff privately decides who to push.
+    Private reasoning is recorded as moderator-only audit; only the
+    endorsed target is announced publicly.
     """
     gs: GameState = state["game_state"]
     sheriff_id = gs.sheriff_id
     if not sheriff_id or gs.sheriff_badge_state != "active":
         return {}
 
+    # Judge announces transition to vote phase with sheriff endorsement
     gs, _ = _judge_broadcast(
-        phase="sheriff_endorse",
-        message=f"请警长{_player_display(state, sheriff_id)}进行归票",
+        phase="vote_start",
+        message="讨论结束，现在开始放逐投票。请警长进行归票。",
         gs=gs, day_number=gs.day_number,
         visibility="public",
     )
@@ -413,22 +415,53 @@ def sheriff_endorse(state: RuntimeState) -> dict[str, Any]:
         sheriff_id,
         timeout_override=120,
     )
+
     if result:
-        speech_text = result.get("speech_text", "")
         endorse_target = result.get("endorse_target", "")
+        private_reason = result.get("private_reason", "")
+        action_trace = result.get("action_trace")
+
+        # Private audit: sheriff's internal reasoning (moderator only)
+        if action_trace:
+            from werewolf_agent.runtime.nodes._shared import _action_trace_event
+            gs = replace(gs, events=gs.events + [_action_trace_event(
+                player_id=sheriff_id,
+                phase="sheriff_endorse",
+                action_trace=action_trace,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )])
+
+        # Public: announce endorsed target
+        if endorse_target and endorse_target in gs.players:
+            gs, _ = _judge_broadcast(
+                phase="sheriff_endorse_result",
+                message=f"警长{_player_display(state, sheriff_id)}归票{_player_display(state, endorse_target)}",
+                gs=gs, day_number=gs.day_number,
+                visibility="public",
+                extra_payload={"sheriff_id": sheriff_id, "endorse_target": endorse_target},
+            )
+            logger.debug(
+                f"  [警长归票] {_player_display(state, sheriff_id)} → "
+                f"{_player_display(state, endorse_target)}"
+            )
+        else:
+            gs, _ = _judge_broadcast(
+                phase="sheriff_endorse_result",
+                message=f"警长{_player_display(state, sheriff_id)}选择不归票",
+                gs=gs, day_number=gs.day_number,
+                visibility="public",
+            )
+
         gs = replace(gs, events=gs.events + [GameEvent(
             type="sheriff_endorse",
             payload={
                 "speaker": sheriff_id,
                 "day_number": gs.day_number,
-                "text": speech_text,
                 "endorse_target": endorse_target,
+                "visibility": "public",
             },
         )])
-        logger.debug(
-            f"  [警长归票] {_player_display(state, sheriff_id)}: "
-            f"{speech_text[:80] if speech_text else '(无)'}"
-        )
     else:
         gs = replace(gs, events=gs.events + [GameEvent(
             type="sheriff_endorse",
@@ -444,51 +477,85 @@ def _sheriff_endorse_adapter(
     registry: Any,
     sheriff_id: str,
 ) -> dict[str, Any]:
-    """Adapter: ask sheriff agent to give endorsement before vote."""
+    """Adapter: sheriff privately decides endorsement target.
+
+    Uses VOTE action so the sheriff's private reasoning stays in
+    private_intent and action_trace — never visible to other players.
+    """
     agent = registry.get_agent(sheriff_id)
     if agent is None:
         return {}
 
     from werewolf_agent.agents.schemas import ActionType, TaskType
     gs: GameState = state["game_state"]
-    legal_actions = [ActionType.SPEECH]
+
+    alive_others = [
+        pid for pid, p in gs.players.items()
+        if p.alive and pid != sheriff_id
+    ]
+    legal_actions = [ActionType.VOTE]
+
     context = None
     try:
         from werewolf_agent.runtime.agent_adapter import build_agent_context
         context = build_agent_context(
-            engine, gs, sheriff_id, TaskType.SPEECH,
+            engine, gs, sheriff_id, TaskType.VOTE,
             legal_actions=legal_actions,
         )
     except Exception:
         pass
 
     system_prompt = (
-        "你是警长，现在是归票环节。请总结今天的讨论，明确指出你认为应该投票出局的玩家。"
+        "你是警长。现在所有玩家已经发言完毕，即将开始放逐投票。"
+        "作为警长，你需要归票——选择你认为应该被投票放逐的玩家。"
+        "这是你的私人决策，你的内心理由不会让其他玩家看到。"
+        "但你的归票目标会被法官公开宣布。"
     )
-    prompt = "请给出你的归票发言。"
+    prompt = (
+        f"合法归票目标: {', '.join(alive_others)}\n"
+        f"请选择你要归票的玩家。输出你的内心理由（不公开）。"
+    )
     if context:
         prompt = (
             f"Visible state: {context.visible_state_summary}\n"
-            f"请给出你的归票发言，明确指出投票目标。"
+            f"合法归票目标: {', '.join(alive_others)}\n"
+            f"请选择归票目标，内心理由不公开。"
         )
 
     try:
         action = agent.act(
             prompt=prompt,
             system_prompt=system_prompt,
-            task_type=TaskType.SPEECH,
+            task_type=TaskType.VOTE,
             legal_actions=legal_actions,
         )
-        speech_text = (action.speech_text or "").strip()
-        if speech_text and len(speech_text) < 5:
-            speech_text = "我归票给最可疑的玩家。"
-
-        import re
-        endorse_target = ""
-        for m in re.finditer(r"(?:归票|出|投|票)\s*(p\d{2})", speech_text):
-            endorse_target = m.group(1)
+        target = (
+            getattr(action, "target_id", None)
+            or getattr(action, "target", None)
+        )
+        if isinstance(action, dict):
+            target = action.get("target_id") or action.get("target")
+        if not target and hasattr(action, "speech_text"):
+            import re
+            m = re.search(r"p\d{2}", str(action.speech_text))
+            if m:
+                target = m.group()
+        # Validate target is alive and not self
+        if target and target in alive_others:
+            endorse_target = target
+            private_reason = getattr(action, "reason", "") or ""
+            action_trace = getattr(action, "action_trace", None)
+        else:
+            endorse_target = ""
+            private_reason = ""
+            action_trace = None
     except Exception:
-        speech_text = ""
         endorse_target = ""
+        private_reason = ""
+        action_trace = None
 
-    return {"speech_text": speech_text, "endorse_target": endorse_target}
+    return {
+        "endorse_target": endorse_target,
+        "private_reason": private_reason,
+        "action_trace": action_trace,
+    }

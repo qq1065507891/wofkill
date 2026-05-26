@@ -128,7 +128,10 @@ class RuleEngine:
             and not state.antidote_used
             and witch_cfg["antidote"]["can_save_wolf_kill_target"]
         ):
-            if wolf_kill_target_id != witch_id or witch_cfg["antidote"].get("can_self_save", False):
+            can_self_save = witch_cfg["antidote"].get("can_self_save", False)
+            can_save_first_night = witch_cfg["antidote"].get("can_self_save_first_night", False)
+            can_save_self = can_self_save or (can_save_first_night and night_number == 1)
+            if wolf_kill_target_id != witch_id or can_save_self:
                 actions.append(Action(type="use_antidote", target_id=wolf_kill_target_id))
         if not state.poison_used:
             actions.append(Action(type="use_poison"))
@@ -164,7 +167,10 @@ class RuleEngine:
             return RuleResult(accepted=False, error_code="witch_poison_already_used")
         if not witch_cfg["use_both_potions_same_night"] and use_antidote and poison_target_id is not None:
             return RuleResult(accepted=False, error_code="witch_cannot_use_both_potions_same_night")
-        if use_antidote and wolf_kill_target_id == witch_id and not witch_cfg["antidote"].get("can_self_save", False):
+        can_self_save = witch_cfg["antidote"].get("can_self_save", False)
+        can_save_first_night = witch_cfg["antidote"].get("can_self_save_first_night", False)
+        can_save_self = can_self_save or (can_save_first_night and night_number == 1)
+        if use_antidote and wolf_kill_target_id == witch_id and not can_save_self:
             return RuleResult(accepted=False, error_code="witch_cannot_self_save")
         return RuleResult(accepted=True)
 
@@ -506,7 +512,11 @@ class RuleEngine:
                 continue
             if target_id not in legal_targets:
                 continue
-            weight = 3 if voter_id == state.sheriff_id and state.sheriff_badge_state == "active" else 2
+            sheriff_weight = float(self.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
+            base_weight = 2
+            weight = int(sheriff_weight * base_weight) if (
+                voter_id == state.sheriff_id and state.sheriff_badge_state == "active"
+            ) else base_weight
             tally[target_id] = tally.get(target_id, 0) + weight
 
         cfg = self.ruleset.raw["day_flow"]["vote"]

@@ -274,12 +274,22 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
 
 def day_vote(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
-    gs, _ = _judge_broadcast(
-        phase="vote_start",
-        message="讨论结束，现在开始投票。所有人同时投票，投票时不能发言。",
-        gs=gs, day_number=gs.day_number,
-        visibility="public",
+
+    # Sheriff endorse already announced vote_start when sheriff exists
+    _already_announced = (
+        gs.sheriff_id
+        and gs.sheriff_badge_state == "active"
+        and gs.players.get(gs.sheriff_id)
+        and gs.players[gs.sheriff_id].alive
     )
+    if not _already_announced:
+        gs, _ = _judge_broadcast(
+            phase="vote_start",
+            message="讨论结束，现在开始投票。所有人同时投票，投票时不能发言。",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+
     gs, _ = _judge_broadcast(
         phase="vote_collect",
         message="请所有仍在场玩家同时投票",
@@ -387,13 +397,15 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         pk_candidates=state.get("pk_candidates"),
         rng_seed=f"{gs.game_id}-vote-d{gs.day_number}",
     )
-    # Log vote tally with weighted counts (sheriff = 1.5, others = 1)
+    # Log vote tally with weighted counts (read from ruleset config)
     sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
+    engine: RuleEngine = state["engine"]
+    sheriff_weight = float(engine.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
     weighted_tally: dict[str, float] = {}
     vote_weights: dict[str, float] = {}
     if votes:
         for voter_id, target_id in votes.items():
-            weight = 1.5 if voter_id == sheriff_id else 1.0
+            weight = sheriff_weight if voter_id == sheriff_id else 1.0
             vote_weights[voter_id] = weight
             weighted_tally[target_id] = weighted_tally.get(target_id, 0) + weight
         tally_items = sorted(weighted_tally.items(), key=lambda x: -x[1])
