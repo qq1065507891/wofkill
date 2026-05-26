@@ -30,6 +30,10 @@ logging.basicConfig(
         logging.FileHandler(ROOT / "game_stdout.log", encoding="utf-8"),
     ],
 )
+# Game-step detail: graph module at DEBUG so role assignments, night actions,
+# speeches, votes, etc. are all visible. Suppress noisy httpx.
+logging.getLogger("werewolf_agent.runtime.nodes").setLevel(logging.DEBUG)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("real_game")
 
 
@@ -389,9 +393,9 @@ def main() -> None:
 
     load_local_dotenv(ROOT / ".env")
 
-    import os
-    api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("GLM_API_KEY") or ""
-    base_url = os.getenv("ANTHROPIC_BASE_URL") or os.getenv("GLM_BASE_URL") or ""
+    from werewolf_agent.model_gateway.providers import get_env
+    api_key = get_env("ANTHROPIC_API_KEY") or get_env("GLM_API_KEY") or ""
+    base_url = get_env("ANTHROPIC_BASE_URL") or get_env("GLM_BASE_URL") or ""
     if not api_key:
         print("ERROR: No API key found. Set ANTHROPIC_API_KEY or GLM_API_KEY in .env")
         sys.exit(1)
@@ -414,8 +418,12 @@ def main() -> None:
         print("ERROR: No providers registered. Check .env API keys.")
         sys.exit(1)
 
+    # Use first configured player for connectivity test so router resolves a real provider
+    _test_agent = next(
+        (pid for pid in router._player_assignments if pid != "judge"), "p01"
+    )
     test_result = router.generate(
-        agent_id="test",
+        agent_id=_test_agent,
         task_type="speech",
         prompt='Visible state: {"phase": "night", "alive_players": ["p01", "p02"]}\nRespond with valid JSON:',
         system_prompt="You are a player in a Werewolf game. Output ONLY valid JSON.",

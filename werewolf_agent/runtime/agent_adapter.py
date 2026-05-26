@@ -12,6 +12,71 @@ import logging
 import re
 from typing import Any, Protocol
 
+_SPEECH_STYLE_HINTS = {
+    "structured_logical": "用严谨的逻辑推理链分析场上信息，像法官一样条理清晰地展示判断依据。",
+    "aggressive_short": "用简短犀利、一针见血的质疑制造压力，不需要长篇大论。",
+    "moderate_calm": "用平和沉稳的语气，像旁观者一样冷静梳理场上各方的观点。",
+    "emotional_intuitive": "用感性直觉的方式判断人，从'感觉不对'出发再找逻辑支撑。",
+    "dramatic_theatrical": "用夸张、戏剧化的表达吸引注意力，善用比喻和反问。",
+    "quiet_analytical": "不声不响地默默分析，发言内容重质不重量，专注关键细节。",
+    "adaptable_flexible": "根据场上局势灵活调整发言策略，该激进时激进，该保守时保守。",
+}
+
+_SHERIFF_SPEECH_STYLE_OVERRIDES = {
+    "aggressive_short": "用简短犀利、一针见血的质疑制造压力，不需要长篇大论，每句话都要有攻击性。",
+    "moderate_calm": "用平和沉稳的语气，像旁观者一样冷静梳理场上各方的观点，指出其中的合理与矛盾。",
+    "emotional_intuitive": "用感性直觉的方式判断人，从'感觉不对'出发再找逻辑支撑，可以适当表达情绪。",
+    "dramatic_theatrical": "用夸张、戏剧化的表达吸引注意力，善用比喻和反问，让发言有记忆点。",
+    "quiet_analytical": "不声不响地默默分析，发言内容重质不重量，专注于关键细节的挖掘。",
+}
+
+_TASK_STYLE_HINTS = {
+    "authority_claim": "以领导者姿态出现，主动归纳场上信息，给出明确的方向性判断。",
+    "forceful_claim": "用强烈的语气宣称自己的判断，对反对者直接施压。",
+    "observation_first": "先全面观察再发言，重点分析别人的发言漏洞和信息差。",
+    "mystery_hint": "暗示自己掌握关键信息但不直接亮底牌，制造悬念引导讨论方向。",
+    "data_driven": "用事实和可验证的信息构建论证，避免空洞的定性判断。",
+    "counterattack": "面对质疑时反击而不是解释，把压力转回给质疑者。",
+}
+
+_PERSONA_PROFILES_CACHE: dict[str, dict[str, Any]] | None = None
+
+
+def _load_persona_profile(persona_key: str) -> dict[str, Any]:
+    global _PERSONA_PROFILES_CACHE
+    if _PERSONA_PROFILES_CACHE is None:
+        _PERSONA_PROFILES_CACHE = {}
+        try:
+            from pathlib import Path
+            import yaml
+            p = Path(__file__).resolve().parent.parent.parent / "config" / "personas" / "jingcheng_style_prototypes.yaml"
+            if p.exists():
+                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                _PERSONA_PROFILES_CACHE = data.get("persona_profiles", {})
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to load persona profiles, all agents will use generic speech styles",
+                exc_info=True,
+            )
+    return _PERSONA_PROFILES_CACHE.get(persona_key, {})
+
+
+def _get_persona_speech_style(agent: Any) -> str:
+    if not agent or not getattr(agent, "persona_key", None):
+        return ""
+    profile = _load_persona_profile(agent.persona_key)
+    return profile.get("base", {}).get("speech_style", "")
+
+
+def _get_persona_task_style(agent: Any, task_key: str) -> str:
+    if not agent or not getattr(agent, "persona_key", None):
+        return ""
+    profile = _load_persona_profile(agent.persona_key)
+    ts = profile.get("task_styles", {})
+    return ts.get(task_key, ts.get("speech", ""))
+
+
 from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.schemas import (
     ActionType,
@@ -1931,12 +1996,21 @@ def agent_day_speech(
         "平安夜只代表公开无人死亡，不代表狼人没有刀人。"
         "质疑跳女巫玩家时，应询问是否用药、为什么暂不公开银水、以及发言是否前后矛盾。"
     )
+
+    # Persona-based speech style for day discussion
+    style_hint = ""
+    ss = _get_persona_speech_style(agent)
+    if ss and ss in _SPEECH_STYLE_HINTS:
+        style_hint = f"\n- 你的发言风格：{_SPEECH_STYLE_HINTS[ss]}"
+
     strategy_directive["speech_originality"] = (
         "【发言原创性要求】\n"
         "- 禁止复述其他玩家已经说过的观点——你可以表示同意或反对，但必须补充自己的理由\n"
         "- 禁止使用模板化句式（如'我需要XX正面回应站边、票型'等重复套话）\n"
         "- 你的发言应该展现你独特的思考角度和分析能力\n"
-        "- 如果前面已经有人分析了某个玩家，你应换个角度或分析不同的玩家"
+        "- 如果前面已经有人分析了某个玩家，你应换个角度或分析不同的玩家\n"
+        "- 【严禁编造尚未发言的玩家说过的话】你只能引用上方transcript中确实记录的发言内容"
+        f"{style_hint}"
     )
 
     # Role-specific speech constraints
@@ -2852,33 +2926,50 @@ def agent_sheriff_election_speech(
             })
     prev_speech_instruction = ""
     if prev_speeches:
-        # Only include summary of previous speeches, not full text, to avoid copying
         prev_summaries = []
+        covered_topics = []
         for s in prev_speeches[-3:]:
-            snippet = s["text"][:60] + ("..." if len(s["text"]) > 60 else "")
+            snippet = s["text"][:150] + ("..." if len(s["text"]) > 150 else "")
             prev_summaries.append(f"  [{s['speaker']}]: {snippet}")
+            mentioned = re.findall(r'p\d{2}', s["text"])
+            for m in mentioned[:3]:
+                covered_topics.append(f"{s['speaker']}已分析过{m}")
         prev_texts = "\n".join(prev_summaries)
+        covered_note = ""
+        if covered_topics:
+            covered_note = f"\n【已被覆盖的观点】{', '.join(covered_topics[:6])}。你必须分析不同的玩家或使用完全不同的推理路径。"
         prev_speech_instruction = (
             f"\n\n【前人发言摘要】在你之前已经有候选人发言了：\n"
-            f"{prev_texts}\n"
-            "你可以对其中你不同意的观点进行反驳，或补充自己的独立判断。"
-            "但【严禁照搬/复述前人发言原文】——你有自己的判断角度。"
-            "如果前人已经指出了某个问题，你不需要再重复，而是给出新的分析方向。"
+            f"{prev_texts}"
+            f"{covered_note}\n"
+            "你可以反驳，也可以完全忽略前人走自己的分析路线。"
+            "【严禁照搬/复述前人发言原文或结构】。"
         )
+    else:
+        prev_speech_instruction = (
+            "\n\n你是本轮第一个发言的候选人。"
+            "你只能基于目前场上的公开信息发言。"
+            "【严禁编造/虚构尚未发言的候选人说过的话】——"
+            "你不知道其他候选人会说什么，只能表达自己的立场和分析。"
+        )
+
+    # Persona-based speech style differentiation
+    speech_style = _get_persona_speech_style(agent)
+    task_style = _get_persona_task_style(agent, "sheriff_speech")
+
+    merged_hints = {**_SPEECH_STYLE_HINTS, **_SHERIFF_SPEECH_STYLE_OVERRIDES}
+    style_hint = merged_hints.get(speech_style, "从你自己的独特角度分析场上局势。")
+    task_hint = _TASK_STYLE_HINTS.get(task_style, "")
 
     strategy_directive = {
         "sheriff_election_speech": (
-            "你正在竞选警长，必须解释上警原因。发言必须包含："
-            "1) 为什么你适合当警长（身份声明、逻辑能力等）；"
-            f"{badge_flow_instruction}"
-            "3) 你对场上局势的初步判断。"
+            "你正在竞选警长，必须解释上警原因和你的初步判断。"
             "不能只说'我来上警'之类空洞的话，必须有实质内容。"
             "注意：只有预言家（或悍跳预言家）才能留警徽流，其他身份不要提警徽流。"
             "非预言家不要在警上冒充预言家抢警徽。\n"
-            "【发言质量要求】\n"
-            "- 每个玩家的发言必须有独特的分析角度，不能和前人雷同\n"
-            "- 禁止使用模板化句式（'我需要XX正面回应站边、票型'等）\n"
-            "- 你的发言应该展现你独立思考的能力，不是复述别人的观点\n"
+            f"【你的发言风格】{style_hint}\n"
+            f"{task_hint}\n"
+            f"{badge_flow_instruction}"
             f"{seer_context}"
             f"{prev_speech_instruction}"
         ),

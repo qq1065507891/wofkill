@@ -304,13 +304,15 @@ def test_single_wolf_vote_uses_global_agent_timeout(monkeypatch) -> None:
     assert result["wolf_kill_target_id"] == "p02"
 
 
-def test_dispatch_agent_waits_before_player_request(monkeypatch) -> None:
-    from werewolf_agent.runtime import graph as runtime_graph
-
-    waits: list[float] = []
+def test_dispatch_agent_direct_call_when_timeout_zero(monkeypatch) -> None:
+    from werewolf_agent.runtime.nodes import _shared as shared_mod
+    import time
+    sleeps: list[float] = []
 
     def fake_sleep(seconds: float) -> None:
-        waits.append(seconds)
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
 
     def fake_agent_adapter(state, engine, registry, player_id):
         return {"ok": player_id}
@@ -319,9 +321,7 @@ def test_dispatch_agent_waits_before_player_request(monkeypatch) -> None:
         def get_agent(self, player_id):
             return object()
 
-    monkeypatch.setattr(runtime_graph.time, "sleep", fake_sleep)
-
-    result = runtime_graph._dispatch_agent(
+    result = shared_mod._dispatch_agent(
         {
             "game_state": GameState(game_id="wait_before_request"),
             "engine": _new_engine(),
@@ -333,6 +333,7 @@ def test_dispatch_agent_waits_before_player_request(monkeypatch) -> None:
     )
 
     assert result == {"ok": "p01"}
+    assert len(sleeps) == 0
 
 
 def test_free_discussion_speech_timeout_records_event() -> None:
@@ -443,7 +444,7 @@ def test_free_discussion_normal_speech_advances_speech_queue() -> None:
 
 
 def test_free_discussion_keeps_action_trace_out_of_public_speech(monkeypatch) -> None:
-    from werewolf_agent.runtime import graph as runtime_graph
+    from werewolf_agent.runtime.nodes import day as day_mod
 
     gs = GameState(game_id="speech_trace_private", day_number=1)
     private_trace = {
@@ -455,16 +456,16 @@ def test_free_discussion_keeps_action_trace_out_of_public_speech(monkeypatch) ->
         "final_action_type": "speech",
     }
 
-    def fake_call_agent(*args, **kwargs):
+    def fake_dispatch_agent(state, fn, *extra_args, **kwargs):
         return {"speech_text": "公开发言", "action_trace": private_trace}
 
     class Registry:
         def get_agent(self, player_id):
             return object()
 
-    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+    monkeypatch.setattr(day_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = runtime_graph.free_discussion({
+    result = day_mod.free_discussion({
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
@@ -660,7 +661,7 @@ def test_vote_action_trace_audit_exposes_structured_private_vote_thought_to_mode
 
 
 def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monkeypatch) -> None:
-    from werewolf_agent.runtime import graph as runtime_graph
+    from werewolf_agent.runtime.nodes import night as night_mod
 
     players = {
         "w1": PlayerState(id="w1", role="werewolf"),
@@ -673,8 +674,8 @@ def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monk
     gs = GameState(game_id="wolf_plan", players=players, night_number=1, phase="night")
     calls: list[tuple[str, Any]] = []
 
-    def fake_call_agent(_fn, _state, *_args, **_kwargs):
-        wolf_id = _args[-1]
+    def fake_dispatch_agent(_state, _fn, *_extra_args, **_kwargs):
+        wolf_id = _extra_args[0]
         calls.append((wolf_id, _state.get("wolf_discussion_round")))
         return {"speech_text": f"{wolf_id} round {_state.get('wolf_discussion_round')}"}
 
@@ -682,9 +683,9 @@ def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monk
         def get_agent(self, player_id):
             return object()
 
-    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+    monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = runtime_graph.wolf_discussion({
+    result = night_mod.wolf_discussion({
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
@@ -717,7 +718,7 @@ def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monk
 
 
 def test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan(monkeypatch) -> None:
-    from werewolf_agent.runtime import graph as runtime_graph
+    from werewolf_agent.runtime.nodes import night as night_mod
 
     players = {
         "w1": PlayerState(id="w1", role="werewolf"),
@@ -727,16 +728,16 @@ def test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan(monkeypatc
     }
     gs = GameState(game_id="wolf_plan_later", players=players, night_number=2, phase="night")
 
-    def fake_call_agent(_fn, _state, *_args, **_kwargs):
+    def fake_dispatch_agent(_state, _fn, *_extra_args, **_kwargs):
         return {"speech_text": "revise plan"}
 
     class Registry:
         def get_agent(self, player_id):
             return object()
 
-    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+    monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = runtime_graph.wolf_discussion({
+    result = night_mod.wolf_discussion({
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
@@ -750,7 +751,7 @@ def test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan(monkeypatc
 
 
 def test_wolf_discussion_drops_stale_targets_without_current_discussion_evidence(monkeypatch) -> None:
-    from werewolf_agent.runtime import graph as runtime_graph
+    from werewolf_agent.runtime.nodes import night as night_mod
 
     players = {
         "w1": PlayerState(id="w1", role="werewolf"),
@@ -760,16 +761,16 @@ def test_wolf_discussion_drops_stale_targets_without_current_discussion_evidence
     }
     gs = GameState(game_id="wolf_plan_stale", players=players, night_number=3, phase="night")
 
-    def fake_call_agent(_fn, _state, *_args, **_kwargs):
+    def fake_dispatch_agent(_state, _fn, *_extra_args, **_kwargs):
         return {"speech_text": "今晚先重新听意见，暂时不点明确刀口。"}
 
     class Registry:
         def get_agent(self, player_id):
             return object()
 
-    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+    monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = runtime_graph.wolf_discussion({
+    result = night_mod.wolf_discussion({
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
@@ -926,7 +927,7 @@ def test_agent_day_vote_excludes_voter_from_legal_targets() -> None:
 
 
 def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypatch) -> None:
-    from werewolf_agent.runtime import graph as runtime_graph
+    from werewolf_agent.runtime.nodes import sheriff as sheriff_mod
 
     players = {
         "p01": PlayerState(id="p01", role="seer"),
@@ -940,16 +941,16 @@ def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypat
     )
     private_trace = {"parsed_action": {"private_intent": {"true_role": "werewolf"}}}
 
-    def fake_call_agent(*_args, **_kwargs):
+    def fake_dispatch_agent(*_args, **_kwargs):
         return {"speech_text": "我上警竞选警长。", "action_trace": private_trace}
 
     class Registry:
         def get_agent(self, player_id):
             return object()
 
-    monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+    monkeypatch.setattr(sheriff_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = runtime_graph.sheriff_speech({
+    result = sheriff_mod.sheriff_speech({
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
@@ -1044,7 +1045,8 @@ def test_day_speech_requires_speech_action_from_agent() -> None:
     assert agent.context.legal_actions == [ActionType.SPEECH]
 
 
-def test_announce_deaths_resets_first_day_increment_marker() -> None:
+def test_announce_deaths_skips_increment_when_phase_is_day() -> None:
+    """When phase is already 'day', announce_deaths does not re-increment."""
     from werewolf_agent.runtime.graph import announce_deaths
 
     gs = GameState(
@@ -1055,13 +1057,9 @@ def test_announce_deaths_resets_first_day_increment_marker() -> None:
         night_number=1,
     )
 
-    result = announce_deaths({
-        "game_state": gs,
-        "day_number_already_incremented": True,
-    })
+    result = announce_deaths({"game_state": gs})
 
     assert result["game_state"].day_number == 1
-    assert result["day_number_already_incremented"] is False
 
 
 def test_free_discussion_routes_to_vote_after_last_normal_speech() -> None:
@@ -1313,17 +1311,18 @@ def test_route_after_vote_tie() -> None:
     assert result == "tie_pk_speech"
 
 
-def test_route_after_announce_day1_now_goes_to_discussion() -> None:
+def test_route_after_announce_night1_goes_to_free_discussion() -> None:
+    """N1 sheriff election now runs BEFORE announce_deaths, so after announce
+    the router goes straight to free_discussion."""
     from werewolf_agent.runtime.graph import route_after_announce
     engine = _new_engine()
-    gs = GameState(day_number=1)
-    # Sheriff election now happens BEFORE announce_deaths, so after announce → free_discussion
+    gs = GameState(day_number=1, night_number=1)
     assert route_after_announce({"game_state": gs, "engine": engine}) == "free_discussion"
 
 
 def test_route_after_announce_day2_discussion() -> None:
     from werewolf_agent.runtime.graph import route_after_announce
-    gs = GameState(day_number=2)
+    gs = GameState(day_number=2, night_number=2)
     assert route_after_announce({"game_state": gs}) == "free_discussion"
 
 
@@ -2117,6 +2116,7 @@ def test_all_players_on_sheriff_announces_no_sheriff_before_speeches() -> None:
     assert "由" in all_on_broadcast["message"] and "开始发言" in all_on_broadcast["message"]
     assert all_on_broadcast["speech_order"][0] in players
     assert new_gs.sheriff_id is None
+    # No death_announce broadcast yet → route to announce_deaths
     assert route_after_sheriff_speech({"game_state": new_gs}) == "announce_deaths"
 
 
@@ -2911,8 +2911,8 @@ class TestSheriffBadgeNightDeathRouting:
         result = route_after_hunter_shot({"game_state": gs, "engine": engine})
         assert result == "sheriff_badge_transfer"
 
-    def test_no_sheriff_death_routes_to_sheriff_first_day_on_night1(self) -> None:
-        """Night 1 with no sheriff death routes to sheriff_first_day_entry (sheriff before deaths)."""
+    def test_no_sheriff_death_routes_to_sheriff_election_on_night1(self) -> None:
+        """Night 1 with no sheriff death routes to sheriff election before deaths."""
         engine = _new_engine()
         players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=42)
         gs = GameState(

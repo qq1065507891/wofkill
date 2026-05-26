@@ -84,8 +84,8 @@ class AnthropicProvider(_BaseHttpProvider):
         http_client: Any | None = None,
     ) -> None:
         super().__init__(
-            api_key=api_key or _get_env("ANTHROPIC_API_KEY"),
-            base_url=base_url or _get_env("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+            api_key=api_key or get_env("ANTHROPIC_API_KEY"),
+            base_url=base_url or get_env("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
             http_client=http_client,
         )
 
@@ -163,8 +163,8 @@ class OpenAIProvider(_BaseHttpProvider):
         http_client: Any | None = None,
     ) -> None:
         super().__init__(
-            api_key=api_key or _get_env("OPENAI_API_KEY"),
-            base_url=base_url or _get_env("OPENAI_BASE_URL", "https://api.openai.com"),
+            api_key=api_key or get_env("OPENAI_API_KEY"),
+            base_url=base_url or get_env("OPENAI_BASE_URL", "https://api.openai.com"),
             http_client=http_client,
         )
 
@@ -207,8 +207,8 @@ class GLMProvider(_BaseHttpProvider):
         http_client: Any | None = None,
     ) -> None:
         super().__init__(
-            api_key=api_key or _get_env("GLM_API_KEY"),
-            base_url=base_url or _get_env("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
+            api_key=api_key or get_env("GLM_API_KEY"),
+            base_url=base_url or get_env("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
             http_client=http_client,
         )
 
@@ -259,10 +259,10 @@ class MiniMaxProvider(_BaseHttpProvider):
         http_client: Any | None = None,
     ) -> None:
         super().__init__(
-            api_key=api_key or _get_env("MINIMAX_API_KEY")
-                or _get_env("ANTHROPIC_API_KEY"),
-            base_url=base_url or _get_env("MINIMAX_BASE_URL")
-                or _get_env("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic"),
+            api_key=api_key or get_env("MINIMAX_API_KEY")
+                or get_env("ANTHROPIC_API_KEY"),
+            base_url=base_url or get_env("MINIMAX_BASE_URL")
+                or get_env("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic"),
             http_client=http_client,
         )
 
@@ -335,14 +335,14 @@ def create_provider_from_env(provider_name: str):
     """Create a known provider only when its API key is present."""
     load_local_dotenv()
     normalized = provider_name.lower()
-    if normalized == "anthropic" and _get_env("ANTHROPIC_API_KEY"):
+    if normalized == "anthropic" and get_env("ANTHROPIC_API_KEY"):
         return AnthropicProvider()
-    if normalized == "openai" and _get_env("OPENAI_API_KEY"):
+    if normalized == "openai" and get_env("OPENAI_API_KEY"):
         return OpenAIProvider()
-    if normalized == "glm" and _get_env("GLM_API_KEY"):
+    if normalized == "glm" and get_env("GLM_API_KEY"):
         return GLMProvider()
     if normalized == "minimax" and (
-        _get_env("MINIMAX_API_KEY") or _get_env("ANTHROPIC_API_KEY")
+        get_env("MINIMAX_API_KEY") or get_env("ANTHROPIC_API_KEY")
     ):
         return MiniMaxProvider()
     return None
@@ -351,7 +351,7 @@ def create_provider_from_env(provider_name: str):
 _ENV_OVERRIDES: dict[str, str] = {}
 
 
-def _get_env(key: str, default: str = "") -> str:
+def get_env(key: str, default: str = "") -> str:
     """Read env var, preferring .env overrides loaded by load_local_dotenv."""
     return _ENV_OVERRIDES.get(key) or os.getenv(key, default)
 

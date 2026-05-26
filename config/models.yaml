@@ -196,7 +196,7 @@ players:
     llm_profile: minimax_default
   p10:
     persona_id: burst_visionary
-    llm_profile: baidu_glm
+    llm_profile: baidu_deepseek
   p11:
     persona_id: structure_analyst
     llm_profile: minimax_default

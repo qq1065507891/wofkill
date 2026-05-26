@@ -332,21 +332,14 @@ class RuleEngine:
                 payload={"target_id": poison_target_id, "visibility": "witch_private"},
             ))
 
-        # Apply deaths
-        new_state = state
-        for death in deaths:
-            new_state = self.apply_death(new_state, death)
-
-        new_state = replace(new_state, antidote_used=antidote_used, poison_used=poison_used)
-
-        # 4. Seer check
+        # 4. Seer check (before apply_death so event appears before player_died)
         if seer_target_id is not None:
             seer_id = next(
-                (pid for pid, p in new_state.players.items() if p.role == "seer" and p.alive),
+                (pid for pid, p in state.players.items() if p.role == "seer" and p.alive),
                 None,
             )
             if seer_id is not None:
-                alignment_result = self.check_alignment(new_state, seer_id=seer_id, target_id=seer_target_id)
+                alignment_result = self.check_alignment(state, seer_id=seer_id, target_id=seer_target_id)
                 events.append(GameEvent(
                     type="seer_check",
                     payload={
@@ -356,6 +349,13 @@ class RuleEngine:
                         "visibility": "seer_only",
                     },
                 ))
+
+        # Apply deaths
+        new_state = state
+        for death in deaths:
+            new_state = self.apply_death(new_state, death)
+
+        new_state = replace(new_state, antidote_used=antidote_used, poison_used=poison_used)
 
         return new_state, events
 

@@ -117,13 +117,13 @@ class TestTiePKSpeechNode:
 
     def test_tie_pk_speech_with_registry_produces_candidate_events(self, monkeypatch):
         """With registry, tie_pk_speech calls agent_pk_speech for each candidate."""
-        from werewolf_agent.runtime import graph as runtime_graph
+        from werewolf_agent.runtime.nodes import skills as skills_mod
 
         gs = _make_gs_with_tie()
         calls = []
 
-        def fake_call_agent(fn, *args, **kwargs):
-            candidate_id = args[-1]
+        def fake_dispatch_agent(state, fn, *extra_args, **kwargs):
+            candidate_id = extra_args[0]
             calls.append(candidate_id)
             return {"speech_text": f"PK defense from {candidate_id}"}
 
@@ -131,9 +131,9 @@ class TestTiePKSpeechNode:
             def get_agent(self, player_id):
                 return object()
 
-        monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+        monkeypatch.setattr(skills_mod, "_dispatch_agent", fake_dispatch_agent)
 
-        result = runtime_graph.tie_pk_speech({
+        result = skills_mod.tie_pk_speech({
             "game_state": gs,
             "engine": RuleEngine.from_yaml(RULESET_PATH),
             "agent_registry": Registry(),
@@ -151,20 +151,20 @@ class TestTiePKSpeechNode:
 
     def test_tie_pk_speech_event_contains_day_number(self, monkeypatch):
         """PK speech events include day_number from current game state."""
-        from werewolf_agent.runtime import graph as runtime_graph
+        from werewolf_agent.runtime.nodes import skills as skills_mod
 
         gs = _make_gs_with_tie()  # day_number=2
 
-        def fake_call_agent(fn, *args, **kwargs):
+        def fake_dispatch_agent(state, fn, *extra_args, **kwargs):
             return {"speech_text": "defense"}
 
         class Registry:
             def get_agent(self, player_id):
                 return object()
 
-        monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+        monkeypatch.setattr(skills_mod, "_dispatch_agent", fake_dispatch_agent)
 
-        result = runtime_graph.tie_pk_speech({
+        result = skills_mod.tie_pk_speech({
             "game_state": gs,
             "engine": RuleEngine.from_yaml(RULESET_PATH),
             "agent_registry": Registry(),
@@ -176,7 +176,7 @@ class TestTiePKSpeechNode:
 
     def test_tie_pk_speech_keeps_action_trace_private(self, monkeypatch):
         """PK speech action traces must be in separate audit events, not in public speech."""
-        from werewolf_agent.runtime import graph as runtime_graph
+        from werewolf_agent.runtime.nodes import skills as skills_mod
 
         gs = _make_gs_with_tie()
         private_trace = {
@@ -185,16 +185,16 @@ class TestTiePKSpeechNode:
             "final_action_type": "speech",
         }
 
-        def fake_call_agent(fn, *args, **kwargs):
+        def fake_dispatch_agent(state, fn, *extra_args, **kwargs):
             return {"speech_text": "I am good", "action_trace": private_trace}
 
         class Registry:
             def get_agent(self, player_id):
                 return object()
 
-        monkeypatch.setattr(runtime_graph, "_call_agent", fake_call_agent)
+        monkeypatch.setattr(skills_mod, "_dispatch_agent", fake_dispatch_agent)
 
-        result = runtime_graph.tie_pk_speech({
+        result = skills_mod.tie_pk_speech({
             "game_state": gs,
             "engine": RuleEngine.from_yaml(RULESET_PATH),
             "agent_registry": Registry(),
