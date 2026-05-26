@@ -822,7 +822,7 @@ def _evaluate_wolf_kill_target(
                     value += 10
                     break
         except Exception:
-            pass
+            logger.warning("Failed to check seer-check claims during suspect scoring", exc_info=True)
         if not seer_check_wolf_from_pid:
             # Check if player publicly reported a wolf-check in speech
             for e in gs.events:
@@ -1059,7 +1059,7 @@ def _build_wolf_day_speech_directive(
                     "night": f.day or f.night if hasattr(f, 'night') else "",
                 })
     except Exception:
-        pass
+        logger.warning("Failed to check teammate-exposure claims", exc_info=True)
     if teammate_checked:
         parts["wolf_teammate_exposed"] = (
             f"警告：你的队友被真预言家验出狼人了！"
@@ -2293,7 +2293,7 @@ def agent_day_vote(
             if fb:
                 strategy_directive["_vote_fallback_target"] = fb
         except Exception:
-            pass
+            logger.warning("Failed to compute vote fallback target", exc_info=True)
 
     context = build_agent_context(
         engine, gs, voter_id, TaskType.VOTE,
@@ -2579,7 +2579,7 @@ def _evaluate_hunter_shot_target(
                     _wolf_check_found = True
                     break
         except Exception:
-            pass
+            logger.warning("Failed to score wolf-kill target via seer claims", exc_info=True)
 
         # Counterclaiming seer: high-value target (+6)
         counterclaiming_seers = _public_seer_claimants(gs)
@@ -2623,7 +2623,7 @@ def _evaluate_hunter_shot_target(
                     value += 3
                     break
         except Exception:
-            pass
+            logger.warning("Failed to score wolf-kill target via contradiction alerts", exc_info=True)
 
         # Claimed a power role (+2)
         for e in gs.events:
@@ -3047,3 +3047,45 @@ def agent_sheriff_election_speech(
             )
 
     return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}
+
+
+def _agent_reflection(
+    state: dict[str, Any],
+    engine: Any,
+    registry: Any,
+    player_id: str,
+) -> dict[str, Any]:
+    """Post-game reflection: each player reviews their performance.
+
+    Design doc §10.2: generates key judgments, mistakes, successful
+    strategies, deception experienced, and improvement suggestions.
+    """
+    agent = registry.get_agent(player_id)
+    if agent is None:
+        return {}
+
+    from werewolf_agent.agents.schemas import TaskType
+
+    gs = state["game_state"]
+    player = gs.players.get(player_id)
+    role = player.role if player else "?"
+    winner = gs.winning_faction or "?"
+
+    system_prompt = (
+        "你是刚完成一局狼人杀的玩家，现在进行对局复盘。"
+        f"你的身份是{role}，{'存活到' if (player and player.alive) else '在'}游戏结束。"
+        f"胜利方是{'好人' if winner == 'good' else '狼人'}阵营。"
+        "请反思本局表现：你做了哪些关键判断？哪些是对的？哪些是错的？"
+        "有没有被谁欺骗或误导？下局如何改进？"
+    )
+    prompt = "请给出你的对局复盘。"
+
+    try:
+        action = agent.act(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            task_type=TaskType.SPEECH,
+        )
+        return {"reflection_text": action.speech_text or ""}
+    except Exception:
+        return {"reflection_text": ""}

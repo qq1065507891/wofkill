@@ -1076,7 +1076,7 @@ def test_free_discussion_routes_to_vote_after_last_normal_speech() -> None:
 
     assert result["speech_index"] == 1
     assert result["current_speaker_id"] is None
-    assert route_self_destruct_check(result) == "day_vote"
+    assert route_self_destruct_check(result) == "summarize_positions"
 
 
 def test_free_discussion_announces_speech_order_and_discussion_end() -> None:
@@ -1342,7 +1342,7 @@ def test_route_after_free_discussion_continues_until_speech_queue_done() -> None
         "speech_order": ["p01", "p02"],
         "speech_index": 2,
         "current_speaker_id": None,
-    }) == "day_vote"
+    }) == "summarize_positions"
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,6 @@ from typing import Any
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
-    agent_day_speech,
     agent_sheriff_election_speech,
     agent_sheriff_pick_speech_order,
     agent_sheriff_register,
@@ -114,70 +113,6 @@ def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
                      payload={"candidates": candidates},
                  )])
     return {"game_state": gs, "sheriff_candidates": candidates}
-
-
-def _legacy_sheriff_speech(state: RuntimeState) -> dict[str, Any]:
-    """Sheriff candidates speak in random order assigned by the judge."""
-    gs: GameState = state["game_state"]
-    engine: RuleEngine = state["engine"]
-    registry = state.get("agent_registry")
-    candidates = list(gs.sheriff_candidates or state.get("sheriff_candidates", []))
-
-    if not candidates:
-        gs = replace(gs, events=gs.events + [GameEvent(type="sheriff_speech", payload={})])
-        return {"game_state": gs}
-
-    # Judge randomly assigns speaking order
-    import random as _random
-    seed = _stable_seed(gs.game_id, "sheriff_speech_order", gs.day_number)
-    rng = _random.Random(seed)
-    speech_order = list(candidates)
-    rng.shuffle(speech_order)
-
-    names = ", ".join(_player_display(state, p) for p in speech_order)
-    gs, _ = _judge_broadcast(
-        phase="sheriff_speech_start",
-        message=f"警上发言顺序: {names}",
-        gs=gs, day_number=gs.day_number,
-        visibility="public",
-    )
-
-    events: list[GameEvent] = []
-    has_agents = False
-    for candidate_id in speech_order:
-        result = _dispatch_agent(
-            state,
-            agent_day_speech,
-            candidate_id,
-            timeout_override=AGENT_TIMEOUTS.day_speech,
-        )
-        if result is not None:
-            has_agents = True
-            if result.get("self_destruct"):
-                return {"game_state": gs, "self_destruct_wolf_id": candidate_id}
-            speech_text = result.get("speech_text", "")
-            logger.debug(f"  [警上发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
-            events.append(GameEvent(
-                type="sheriff_speech",
-                payload={
-                    "speaker": candidate_id,
-                    "day_number": gs.day_number,
-                    "text": speech_text,
-                },
-            ))
-            if result.get("action_trace"):
-                events.append(_action_trace_event(
-                    player_id=candidate_id,
-                    phase="sheriff_speech",
-                    action_trace=result["action_trace"],
-                    day_number=gs.day_number,
-                    night_number=gs.night_number,
-                ))
-    if not has_agents:
-        events.append(GameEvent(type="sheriff_speech", payload={}))
-
-    gs = replace(gs, events=gs.events + events)
-    return {"game_state": gs}
 
 
 def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
@@ -452,3 +387,108 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
         ])
 
     return {"game_state": gs}
+
+
+def sheriff_endorse(state: RuntimeState) -> dict[str, Any]:
+    """Sheriff gives formal endorsement / guipiao before voting.
+
+    Design doc §6.2 node 18: sheriff announces who should be voted out.
+    Only runs when sheriff exists and badge is active.
+    """
+    gs: GameState = state["game_state"]
+    sheriff_id = gs.sheriff_id
+    if not sheriff_id or gs.sheriff_badge_state != "active":
+        return {}
+
+    gs, _ = _judge_broadcast(
+        phase="sheriff_endorse",
+        message=f"请警长{_player_display(state, sheriff_id)}进行归票",
+        gs=gs, day_number=gs.day_number,
+        visibility="public",
+    )
+
+    result = _dispatch_agent(
+        state,
+        _sheriff_endorse_adapter,
+        sheriff_id,
+        timeout_override=120,
+    )
+    if result:
+        speech_text = result.get("speech_text", "")
+        endorse_target = result.get("endorse_target", "")
+        gs = replace(gs, events=gs.events + [GameEvent(
+            type="sheriff_endorse",
+            payload={
+                "speaker": sheriff_id,
+                "day_number": gs.day_number,
+                "text": speech_text,
+                "endorse_target": endorse_target,
+            },
+        )])
+        logger.debug(
+            f"  [警长归票] {_player_display(state, sheriff_id)}: "
+            f"{speech_text[:80] if speech_text else '(无)'}"
+        )
+    else:
+        gs = replace(gs, events=gs.events + [GameEvent(
+            type="sheriff_endorse",
+            payload={"speaker": sheriff_id, "day_number": gs.day_number, "text": ""},
+        )])
+
+    return {"game_state": gs}
+
+
+def _sheriff_endorse_adapter(
+    state: RuntimeState,
+    engine: RuleEngine,
+    registry: Any,
+    sheriff_id: str,
+) -> dict[str, Any]:
+    """Adapter: ask sheriff agent to give endorsement before vote."""
+    agent = registry.get_agent(sheriff_id)
+    if agent is None:
+        return {}
+
+    from werewolf_agent.agents.schemas import ActionType, TaskType
+    gs: GameState = state["game_state"]
+    legal_actions = [ActionType.SPEECH]
+    context = None
+    try:
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+        context = build_agent_context(
+            engine, gs, sheriff_id, TaskType.SPEECH,
+            legal_actions=legal_actions,
+        )
+    except Exception:
+        pass
+
+    system_prompt = (
+        "你是警长，现在是归票环节。请总结今天的讨论，明确指出你认为应该投票出局的玩家。"
+    )
+    prompt = "请给出你的归票发言。"
+    if context:
+        prompt = (
+            f"Visible state: {context.visible_state_summary}\n"
+            f"请给出你的归票发言，明确指出投票目标。"
+        )
+
+    try:
+        action = agent.act(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            task_type=TaskType.SPEECH,
+            legal_actions=legal_actions,
+        )
+        speech_text = (action.speech_text or "").strip()
+        if speech_text and len(speech_text) < 5:
+            speech_text = "我归票给最可疑的玩家。"
+
+        import re
+        endorse_target = ""
+        for m in re.finditer(r"(?:归票|出|投|票)\s*(p\d{2})", speech_text):
+            endorse_target = m.group(1)
+    except Exception:
+        speech_text = ""
+        endorse_target = ""
+
+    return {"speech_text": speech_text, "endorse_target": endorse_target}

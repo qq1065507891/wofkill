@@ -253,5 +253,9 @@ def create_retriever(
             from werewolf_agent.rag.reranker_client import SiliconFlowRerankerClient
             reranker = SiliconFlowRerankerClient()
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to initialize SiliconFlow reranker, continuing without it",
+                exc_info=True,
+            )
     return StrategyRetriever(entries, reranker=reranker)

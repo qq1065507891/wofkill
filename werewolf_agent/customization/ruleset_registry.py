@@ -14,7 +14,7 @@ from werewolf_agent.customization.compatibility import (
 
 
 DEFAULT_RULESET_ID = "pre_witch_hunter_idiot_mixed"
-DEFAULT_RULESET_PATH = Path("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
+DEFAULT_RULESET_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "rulesets" / "pre_witch_hunter_idiot_mixed.yaml"
 
 
 @dataclass(frozen=True)

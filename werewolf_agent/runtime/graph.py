@@ -93,6 +93,17 @@ from werewolf_agent.runtime.nodes.skills import (  # noqa: F401
     tie_revote,
 )
 
+from werewolf_agent.runtime.nodes.sheriff import (  # noqa: F401
+    sheriff_endorse,
+)
+
+from werewolf_agent.runtime.nodes.summary import (  # noqa: F401
+    _route_after_summarize,
+    reflection,
+    summarize_context,
+    summarize_positions,
+)
+
 
 # ---------------------------------------------------------------------------
 # Setup nodes (tiny, tightly coupled to graph init — stay here)
@@ -279,7 +290,7 @@ def route_self_destruct_check(state: RuntimeState) -> str:
     speech_index = state.get("speech_index", 0)
     if speech_order and speech_index < len(speech_order):
         return "continue_discussion"
-    return "day_vote"
+    return "summarize_positions"
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +345,10 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("resolve_hunter_shot", resolve_hunter_shot)
     graph.add_node("check_victory", check_victory)
     graph.add_node("sheriff_badge_transfer", sheriff_badge_transfer)
+    graph.add_node("summarize_positions", summarize_positions)
+    graph.add_node("sheriff_endorse", sheriff_endorse)
+    graph.add_node("summarize_context", summarize_context)
+    graph.add_node("reflection", reflection)
     graph.add_node("finish_game", finish_game)
 
 
@@ -392,8 +407,13 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_conditional_edges("free_discussion", route_self_destruct_check, {
         "resolve_self_destruct": "resolve_self_destruct",
         "continue_discussion": "free_discussion",
+        "summarize_positions": "summarize_positions",
+    })
+    graph.add_conditional_edges("summarize_positions", _route_after_summarize, {
+        "sheriff_endorse": "sheriff_endorse",
         "day_vote": "day_vote",
     })
+    graph.add_edge("sheriff_endorse", "day_vote")
     graph.add_edge("resolve_self_destruct", "check_victory")
     graph.add_edge("day_vote", "resolve_vote_node")
     graph.add_conditional_edges("resolve_vote_node", route_after_vote, {
@@ -410,13 +430,15 @@ def _add_all_edges(graph: StateGraph) -> None:
         "check_victory": "check_victory",
     })
     graph.add_conditional_edges("check_victory", route_victory, {
-        "finish_game": "finish_game",
+        "finish_game": "reflection",
         "sheriff_badge_transfer": "sheriff_badge_transfer",
-        "enter_night": "enter_night",
+        "enter_night": "summarize_context",
     })
     graph.add_conditional_edges("sheriff_badge_transfer", _route_after_badge_transfer, {
         "sheriff_first_day_entry": "sheriff_first_day_entry",
         "announce_deaths": "announce_deaths",
-        "enter_night": "enter_night",
+        "enter_night": "summarize_context",
     })
+    graph.add_edge("summarize_context", "enter_night")
+    graph.add_edge("reflection", "finish_game")
     graph.add_edge("finish_game", END)

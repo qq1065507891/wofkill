@@ -303,7 +303,11 @@ def choose_vote_fallback_target(
             if target in candidates and ("wolf" in val or "狼" in (f.value or "")):
                 scores[target] += 10
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to score vote targets with seer-check claims",
+            exc_info=True,
+        )
 
     # Contradiction alerts: players caught in contradictions get weight
     try:
@@ -316,7 +320,11 @@ def choose_vote_fallback_target(
             if alert.player_id in candidates:
                 scores[alert.player_id] += 3
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to score vote targets with contradiction alerts",
+            exc_info=True,
+        )
 
     best_score = max(scores.values(), default=0)
     if best_score > 0:

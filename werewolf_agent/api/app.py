@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 from pathlib import Path
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -173,12 +175,12 @@ def create_app(
 
     @app.get("/templates/ruleset", response_class=PlainTextResponse)
     def download_ruleset_template() -> PlainTextResponse:
-        path = Path("config/rulesets/templates/custom_ruleset_template.yaml")
+        path = _PROJECT_ROOT / "config" / "rulesets" / "templates" / "custom_ruleset_template.yaml"
         return PlainTextResponse(path.read_text(encoding="utf-8"))
 
     @app.get("/templates/persona-pack", response_class=PlainTextResponse)
     def download_persona_pack_template() -> PlainTextResponse:
-        path = Path("config/personas/templates/player_profile_pack_template.yaml")
+        path = _PROJECT_ROOT / "config" / "personas" / "templates" / "player_profile_pack_template.yaml"
         return PlainTextResponse(path.read_text(encoding="utf-8"))
 
     @app.post("/customization/rulesets/validate")
@@ -727,7 +729,7 @@ def _load_marketplace(path: str) -> dict:
 def _build_locked_config_snapshot(req: CreateGameRequest) -> dict:
     seed = req.seed if req.seed is not None else 0
     # Hash actual ruleset content, not just the ID
-    ruleset_path = Path("config/rulesets") / f"{req.ruleset_id}.yaml"
+    ruleset_path = _PROJECT_ROOT / "config" / "rulesets" / f"{req.ruleset_id}.yaml"
     ruleset_content = ruleset_path.read_text(encoding="utf-8") if ruleset_path.exists() else req.ruleset_id
     return {
         "ruleset_id": req.ruleset_id,
@@ -736,9 +738,9 @@ def _build_locked_config_snapshot(req: CreateGameRequest) -> dict:
         "profile_pack_id": req.profile_pack_id,
         "profile_pack_version": "runtime-current",
         "profile_pack_hash": hashlib.sha256((
-            (Path("config/persona_packs") / f"{req.profile_pack_id}.yaml")
+            (_PROJECT_ROOT / "config" / "persona_packs" / f"{req.profile_pack_id}.yaml")
             .read_text(encoding="utf-8")
-            if (Path("config/persona_packs") / f"{req.profile_pack_id}.yaml").exists()
+            if (_PROJECT_ROOT / "config" / "persona_packs" / f"{req.profile_pack_id}.yaml").exists()
             else req.profile_pack_id
         ).encode("utf-8")).hexdigest(),
         "model_config_hash": "",

@@ -31,7 +31,6 @@ from werewolf_agent.runtime.nodes._shared import (
 
 from werewolf_agent.runtime.nodes.night import (
     enter_night,
-    _legacy_single_round_wolf_discussion,
     _legacy_wolf_consensus,
     night_witch,
     night_seer,
@@ -59,10 +58,10 @@ from werewolf_agent.runtime.nodes.day import (
 from werewolf_agent.runtime.nodes.sheriff import (
     sheriff_first_day_entry,
     sheriff_registration,
-    _legacy_sheriff_speech,
     sheriff_withdraw,
     sheriff_vote,
     sheriff_speech,
+    sheriff_endorse,
 )
 
 from werewolf_agent.runtime.nodes.skills import (
@@ -73,6 +72,13 @@ from werewolf_agent.runtime.nodes.skills import (
     tie_pk_speech,
     tie_revote,
     sheriff_badge_transfer,
+)
+
+from werewolf_agent.runtime.nodes.summary import (
+    summarize_positions,
+    summarize_context,
+    reflection,
+    _route_after_summarize,
 )
 
 __all__ = [
@@ -105,7 +111,6 @@ __all__ = [
     "_deaths_already_announced",
     # night
     "enter_night",
-    "_legacy_single_round_wolf_discussion",
     "_legacy_wolf_consensus",
     "night_witch",
     "night_seer",
@@ -129,10 +134,15 @@ __all__ = [
     # sheriff
     "sheriff_first_day_entry",
     "sheriff_registration",
-    "_legacy_sheriff_speech",
     "sheriff_withdraw",
     "sheriff_vote",
     "sheriff_speech",
+    "sheriff_endorse",
+    # summary
+    "summarize_positions",
+    "summarize_context",
+    "reflection",
+    "_route_after_summarize",
     # skills
     "post_exile_skills",
     "resolve_hunter_shot",

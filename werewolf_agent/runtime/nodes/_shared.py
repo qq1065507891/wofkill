@@ -8,6 +8,7 @@ import random
 import re
 import uuid
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, TypedDict
 
 from werewolf_agent.core.models import (
@@ -40,7 +41,7 @@ from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import detect_timeline_confusion, phase_label
 
-RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
+RULESET_PATH = str(Path(__file__).resolve().parent.parent.parent.parent / "config" / "rulesets" / "pre_witch_hunter_idiot_mixed.yaml")
 
 logger = logging.getLogger(__name__)
 

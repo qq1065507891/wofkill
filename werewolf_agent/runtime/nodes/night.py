@@ -54,50 +54,6 @@ def enter_night(state: RuntimeState) -> dict[str, Any]:
     return {"game_state": gs}
 
 
-def _legacy_single_round_wolf_discussion(state: RuntimeState) -> dict[str, Any]:
-    gs: GameState = state["game_state"]
-    wolves = _alive_wolves(gs)
-    events = []
-    logger.debug(f"  [狼人密谈] 狼人: {[_player_display(state, w) for w in wolves]}")
-    has_agents = False
-    for wolf_id in wolves:
-        result = _dispatch_agent(
-            state,
-            agent_wolf_discussion,
-            wolf_id,
-            timeout_override=AGENT_TIMEOUTS.wolf_discussion_per_player,
-        )
-        if result is not None:
-            has_agents = True
-            speech_text = result.get("speech_text", "")
-            logger.debug(f"    {_player_display(state, wolf_id)}(狼人): {speech_text if speech_text else '(沉默)'}")
-            payload = {
-                "wolf_id": wolf_id,
-                "night_number": gs.night_number,
-                "text": speech_text,
-                "visibility": "werewolf_team_only",
-            }
-            events.append(GameEvent(
-                type="wolf_discussion",
-                payload=payload,
-            ))
-            if result.get("action_trace"):
-                events.append(_action_trace_event(
-                    player_id=wolf_id,
-                    phase="wolf_discussion",
-                    action_trace=result["action_trace"],
-                    day_number=gs.day_number,
-                    night_number=gs.night_number,
-                ))
-    if has_agents:
-        gs = replace(gs, events=gs.events + events)
-        return {"game_state": gs}
-
-    # Scripted fallback
-    gs = replace(gs, events=gs.events + [GameEvent(type="wolf_discussion", payload={})])
-    return {"game_state": gs}
-
-
 def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     """Determine wolf night action.
 
