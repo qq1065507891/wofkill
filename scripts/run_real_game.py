@@ -436,20 +436,26 @@ def main() -> None:
     _sep("STARTING GAME")
     start = time.monotonic()
 
-    # Persistent memory: SQLite store + coordinator for cross-game learning
+    # Persistent memory: Docker PostgreSQL + coordinator for cross-game learning
     memory_coordinator = None
     game_repo = None
-    _memory_db = ROOT / "run_real_game_memory.db"
     try:
-        from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+        import subprocess
+        subprocess.run(
+            ["docker", "compose", "up", "-d", "postgres"],
+            cwd=ROOT, capture_output=True, check=False,
+        )
+        from werewolf_agent.storage.postgres_store import PostgresGameRepository
         from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
-        game_repo = SqliteGameRepository(str(_memory_db))
+        game_repo = PostgresGameRepository(
+            "postgresql://wofkill:wofkill-dev@localhost:5432/wofkill",
+        )
         memory_coordinator = PersistentMemoryCoordinator(game_repo)
-        print(f"  Memory DB: {_memory_db}")
+        print("  Memory DB: PostgreSQL (via Docker)")
         if game_repo.load_rag_entries():
             print("  RAG entries: restored from previous session")
     except Exception:
-        print("  Memory DB: disabled (sqlite init failed)")
+        print("  Memory DB: disabled (Docker PostgreSQL unavailable)")
 
     config = GameRunnerConfig(
         ruleset_id="pre_witch_hunter_idiot_mixed",
