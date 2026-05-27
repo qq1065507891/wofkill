@@ -436,6 +436,20 @@ def main() -> None:
     _sep("STARTING GAME")
     start = time.monotonic()
 
+    # Persistent memory: SQLite store + coordinator for cross-game learning
+    memory_coordinator = None
+    _memory_db = ROOT / "run_real_game_memory.db"
+    try:
+        from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+        repo = SqliteGameRepository(str(_memory_db))
+        memory_coordinator = PersistentMemoryCoordinator(repo)
+        print(f"  Memory DB: {_memory_db}")
+        if repo.load_rag_entries():
+            print("  RAG entries: restored from previous session")
+    except Exception:
+        print("  Memory DB: disabled (sqlite init failed)")
+
     config = GameRunnerConfig(
         ruleset_id="pre_witch_hunter_idiot_mixed",
         player_count=12,
@@ -444,6 +458,7 @@ def main() -> None:
         model_config_path=str(ROOT / "config" / "models.yaml"),
         persona_config_path=str(ROOT / "config" / "personas" / "jingcheng_style_prototypes.yaml"),
         agent_call_timeout=0 if args.no_timeout else args.timeout,
+        memory_coordinator=memory_coordinator,
     )
 
     runner = GameRunner(config)
