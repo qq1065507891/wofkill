@@ -1307,6 +1307,14 @@ def build_agent_context(
     elif player.role == "witch":
         visible["antidote_available"] = not gs.antidote_used
         visible["poison_available"] = not gs.poison_used
+        if not gs.poison_used and gs.phase == "day":
+            alive = sum(1 for p in gs.players.values() if p.alive)
+            if alive <= 8:
+                strategy_directive["witch_poison_deterrent"] = (
+                    "你的毒药还未使用。如果场上有人持续踩你、试图把你放逐出局，"
+                    "你可以在发言中暗示自己有底牌——'我手里还有东西没用，不要太冲动'。"
+                    "狼人听到这种暗示可能会退缩。但不要明报身份。"
+                )
         if wolf_kill_target_id:
             visible["wolf_kill_target"] = wolf_kill_target_id
         # Poison pressure targets from public state

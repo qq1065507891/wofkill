@@ -91,10 +91,13 @@ class RoleStateMonitor:
             alert_type="SEER_UNDER_PRESSURE",
             severity="critical",
             message=(
-                f"你有{len(questioning_speakers)}个玩家在质疑你的预言家身份。"
+                f"你有{len(questioning_speakers)}个玩家在质疑你的预言家身份（"
+                f"{', '.join(sorted(questioning_speakers))}）。"
                 f"你必须完整列出所有夜晚查验记录（含查验理由和结果），"
                 f"并明确警徽流。不能只说'按顺序验'——每夜的查验目标必须有具体动机。"
                 f"{'你还有未报出的查验结果，必须在本轮全部报出！' if unreported else ''}"
+                f"注意：冲票你的人中至少有一匹狼在带节奏——点出谁在踩你、他们的票型和发言"
+                f"是否存在矛盾，引导好人盘冲票关系。"
             ),
             evidence=evidence,
         )]
