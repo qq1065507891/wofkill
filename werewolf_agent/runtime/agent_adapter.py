@@ -1390,6 +1390,18 @@ def build_agent_context(
     world_state = None
     belief_state = None
     alerts: list[Any] = []
+
+    # Hybrid: when master is dead, provide faction-guidance
+    if player.role == "hybrid" and gs.hybrid_master_id:
+        master = gs.players.get(gs.hybrid_master_id)
+        if master and not master.alive:
+            faction_label = "好人" if gs.hybrid_master_faction == "good" else "狼人"
+            strategy_directive["hybrid_master_dead"] = (
+                f"你的主人{gs.hybrid_master_id}已死亡。"
+                f"你现在以{faction_label}阵营身份继续。"
+                f"你现在等同于村民——用分析而非技能帮助阵营。"
+            )
+
     try:
         from werewolf_agent.cognition.world_state import build_world_state
         from werewolf_agent.cognition.contradiction import ContradictionEngine
@@ -1637,6 +1649,15 @@ def agent_night_witch(
         witch_directive["witch_strategy_hint"] = ""
     if not gs.poison_used:
         witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
+
+    if not gs.poison_used:
+        alive = sum(1 for p in gs.players.values() if p.alive)
+        if alive <= 8:
+            witch_directive["poison_urgency"] = (
+                f"场上仅存活{alive}人。你的毒药还没有使用。"
+                f"你必须认真考虑今晚撒毒——选择你最有把握的狼人目标。"
+                f"如果你被刀或被投出局，毒药将浪费。"
+            )
 
     witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
 
@@ -2990,6 +3011,11 @@ def agent_sheriff_election_speech(
             f"{prev_speech_instruction}"
         ),
         "other_candidates": other_candidates,
+        "anti_template": (
+            "【禁止模板化】你的发言不能机械套用模板。以下句式会让你的发言"
+            "被判定为无效：'我这轮先把视角压到XX身上'、'依据是XX最近发言：...'。"
+            "你必须有自己独立的角度和分析逻辑。"
+        ),
     }
 
     # Role-specific speech differentiation
@@ -3017,6 +3043,14 @@ def agent_sheriff_election_speech(
         strategy_directive["role_speech_hint"] = (
             "你是混血儿，警上发言重点：观察场上局势，"
             "在不确定主人阵营前保持中立分析。"
+        )
+
+    if player_role == "seer":
+        strategy_directive["seer_verification_rationale"] = (
+            "【查验理由要求】你每夜的查验目标必须有具体动机。"
+            "禁止说'按顺序验'或'随便验的'。正确的说法示例："
+            "'N1验p03是因为他在警下靠前位置，我需要尽早确认他的身份以建立信息基点'。"
+            "如果没有特殊理由，可以说'首夜随机查验，但我选择了发言量较大的位置'。"
         )
 
     # Wolf anti-reveal: don't expose fake seer teammate before they speak
