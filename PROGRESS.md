@@ -4,10 +4,63 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: Real Werewolf Game Quality — Round 3 fixes applied.
-- Active task: RAG seed knowledge now syncs into repository/vector-backed service and is injected into live player contexts.
+- Current phase: **Full-project code review + hardening** — 2026-05-27
+- Active task: None (all reported defects fixed or documented below)
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-20
+- Last updated: 2026-05-27
+
+---
+
+## Summary: Completed vs Remaining
+
+| Item | Completed | Remaining |
+|------|-----------|-----------|
+| Design doc §6.2 Graph Nodes | 36/36 done | — |
+| RuleEngine V1 rules | All done | — |
+| Agent strategy directives | All 8 roles optimized | — |
+| Cross-game memory | Save + restore + inject (Docker PG) | vector reflection search |
+| RoleStateMonitor | 4 alert types, wired | — |
+| Code defects | 20+ fixed (except:pass, CWD paths, thread safety, missing locks) | 3 medium/low deferred |
+| model_gateway tests | 38 tests | — |
+| Design doc features | ~70% | Dashboard, MCP, timers, evaluation, cost, prod hardening |
+
+---
+
+## Remaining Gaps
+
+### Design Doc Features Not Yet Implemented
+
+**Frontend & Dashboard (§12.2)**
+- RAG hit panels, memory call visualization, attention/salience stats, belief probability charts, contradiction timeline, persona routing tracker, model per-call token/cost/latency, cognitive diff slider — all missing
+
+**API & Runtime (§12.1)**
+- `/games/{id}/start` hardcodes `range(1,13)`, doesn't read `player_count` (needs `GameState.player_count` field)
+- No auth beyond `mod1`/`dbg1` fixtures
+- Human-seat mode: flags exist, no live turn handling
+
+**MCP Protocol (§11)**
+- Mock/example only; no real connectors, transport, or external credentials
+
+**Async Timers (§6)**
+- Wolf discussion/day speech timeouts are marker-only, no real clock loops
+
+**Evaluation (§14)**
+- Several metrics schema-present but not live-data-computed: lie detection, stance accuracy, speech influence, hybrid master value, witch potion yield, seer badge-flow quality, contradiction adoption
+
+**Cost Accounting**
+- Token/latency tracked; no durable logs, price tables, or per-action cost audit
+
+**Production Hardening**
+- No TLS, production auth, or log aggregation; Docker is dev-grade; no secrets beyond `.env`
+
+### Deferred Code Defects (from full-project review)
+
+- `api/app.py:311` — `start_game` hardcodes `range(1,13)` instead of reading `player_count` (needs model change)
+- `evaluation/schemas.py:128` — `to_dict()` overwrites 3 fields with empty containers (dead code or data loss)
+- `evaluation/metrics.py:518` — uses deprecated `ActionVerdict.FALBACK` typo; will break when removed
+- `skills/schemas.py:65` — `available_experience` type annotation `list[dict]` but default factory is `dict`
+- `tools/schemas.py` — `MCPProvider` protocol signature doesn't match any concrete implementation
+- `tools/mcp_registry.py:147` — `ExternalHistoryProvider` and `ExternalProfileProvider` dead code
 
 ## RAG Vector/Seed Architecture Implementation - 2026-05-20
 
@@ -616,6 +669,66 @@ The automated test suite passes, but passing tests do not mean the design docume
 - **增强观战台前端**: dashboard.html 新增 7 个面板：认知差异图、RAG 命中、模型路由、人格路由、注意力过滤统计、成本延迟、私有意图审计。新增 `/games/{id}/rag-audit` API 端点。**8 new tests, 991 total tests, 0 failures.**
 - **Docker Compose 本地服务栈**: 创建 Dockerfile 和 docker-compose.yml（api + 可选 redis）。app.py 支持 WEREWOLF_DB_PATH 环境变量自动配置 SQLite。README 添加 Docker 快速启动。**991 total tests, 0 failures.**
 - **Schema Migration + Sheriff Badge 夜死路由修复**: 创建 `storage/migrations.py` 版本化迁移系统。修复 graph.py 中 sheriff 夜间死亡后 badge transfer 路由（`route_after_resolve_night` 和 `route_after_hunter_shot` 新增 sheriff 死亡检查）。**10 new tests (3 migration + 7 routing), 1001 total tests, 0 failures.**
+
+## Graph Node Refactoring Into Subpackage - 2026-05-27
+
+- **graph.py 拆分**: 将 26 个节点函数从 graph.py（2400+ 行）迁移到 `werewolf_agent/runtime/nodes/` 子包，包括 `_shared.py`（共享类型/工具）、`night.py`、`day.py`、`sheriff.py`、`skills.py`。graph.py 保留了图构建、条件路由和 re-export。
+- **`day_number_already_incremented` 重构**: 用基于 `gs.phase` 的 `_ensure_day_incremented` 替代显式布尔标志
+- **所有外部调用**通过 graph.py 的 re-export 保持向后兼容
+
+## Architecture Defect Fixes - 2026-05-27
+
+- **投票权重从 YAML 读取**: `rule_engine.py:509` + `day.py:396` 从 `self.ruleset.raw["sheriff"]["vote_weight"]` 读取，而非硬编码 3/2 和 1.5/1.0
+- **女巫自救补齐**: `legal_witch_actions` + `resolve_witch_action` 增加 `can_self_save_first_night` 检查，对齐 `resolve_night` 参考实现
+- **警长归票流程优化**: 使用 VOTE action + private_intent，归票决策对其他玩家不可见
+- **新增 `tests/model_gateway/`**: 38 个测试覆盖 providers + router
+- **新增 `tests/conftest.py`**: 共享 engine、ruleset_path、new_gs fixture
+
+## Game Quality Fixes + Memory System Completion - 2026-05-27
+
+### Bug Fixes
+- **Filter dead players from speech_order**: `free_discussion` now filters out dead players from stale speech_order, fixing the bug where exiled/night-killed players still spoke during day discussion
+- **Hunter shot crash fix**: Guard `_dispatch_agent` return type in `resolve_hunter_shot` and wrap `_evaluate_hunter_shot_target` in try/except, fixing `AttributeError: 'list' object has no attribute 'get'`
+
+### Missing Graph Nodes (Design Doc §6.2)
+- **summarize_positions** (node 17): Deterministic position summary between free_discussion and day_vote — extracts suspects/trusts/role claims from current day's speeches via regex
+- **sheriff_endorse** (node 18): Agent-driven sheriff endorsement (gui piao) before voting — sheriff privately decides target, only result announced publicly, inner reason in moderator-only audit
+- **summarize_context** (node 26): Daily structured context summary — stance changes, vote relationships, death clues — stored as GameEvent for future day pruning
+- **reflection** (node 27): Post-game per-player reflection, stored into ReflectionMemory for cross-game retrieval
+
+### RoleStateMonitor (New Module)
+- Added `werewolf_agent/cognition/role_monitor.py` with 4 alert types: `SEER_UNDER_PRESSURE`, `WITCH_POISON_UNUSED_AT_RISK`, `HUNTER_MAY_DIE_SOON`, `HYBRID_MASTER_DEAD`
+- Wired into CognitivePipeline and build_agent_context strategy_directive
+- 6 tests in `tests/cognition/test_role_monitor.py`
+
+### Cross-Game Memory Completion
+- `_save_memory_snapshot` now populates MemoryStore with: structured world state → relation graph, cognition matrices, reviews/reflections, profile updates
+- `restored_memory` threaded through RuntimeState → 16 build_agent_context call sites → injects accumulated profile and role-history into agent strategy_directive
+- Memory enabled in run_real_game.py via Docker PostgreSQL + PersistentMemoryCoordinator
+- Added `scripts/clear_memory.py` for flushing database
+
+### All-Role Agent Strategy Enhancements
+- **Seer**: Verification rationale requirement (no "checked in order"), pressure alert names accusers
+- **Witch**: N1 always-save-unless-selfharm strategy, poison urgency when ≤8 alive, daytime poison deterrent hint
+- **Hunter**: Shot encouragement if suspects exist
+- **Idiot**: Saved-by-witch hint (can imply special knowledge)
+- **Villager**: Golden water duty (must stand up for verifying seer)
+- **Hybrid**: Master selection guidance prioritizing survivability + influence
+- **Wolf**: N1 role division suggestion (fake-seer/pusher/hooker/deep-cover), anti-template in sheriff speech
+- All P1+P2 enhancements commit history available in git log
+
+## Full-Project Code Review — 2026-05-27
+
+- **Scope**: 108 Python files across 15 packages, 4 parallel review agents
+- **High-priority fixes applied** (8 locations):
+  - Thread safety: `_PERSONA_PROFILES_CACHE` in agent_adapter.py
+  - Lazy imports: `SkillRegistry`/`SkillInput`/`choose_vote_fallback_target` moved to module level
+  - CWD paths: `game_runner.py` config/models.yaml, `api/app.py` marketplace paths
+  - Missing logging: hunter shot eval, cognition pipeline failures (`logger.debug`→`logger.warning`)
+  - Missing lock: `sqlite_store.py` `delete_memory_snapshot`
+  - Redundant imports: `api/app.py` inline `import logging`
+- **Critical bug fix**: `sheriff_endorse` — `context.visible_state_summary` → `context.visible_world_state`
+- **Deferred** (low-risk or needs model changes): 6 items listed in Remaining Gaps
 
 ## Active Task Checklist
 
