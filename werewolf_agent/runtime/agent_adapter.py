@@ -1547,26 +1547,29 @@ def build_agent_context(
     except Exception:
         logger.debug("Role state monitoring failed, skipping", exc_info=True)
 
-    # -- Cross-game memory: inject profile info from previous games --
+    # -- Cross-game memory: inject accumulated learning from previous games --
     if restored_memory is not None:
         try:
             profile = restored_memory.get_profile(player_id)
-            if profile is not None:
-                strategy_directive["cross_game_profile"] = (
-                    f"你的历史评分：逻辑{profile.logic*10:.0f}/10 · "
+            if profile is not None and profile.games_played > 0:
+                parts = [
+                    f"累计{profile.games_played}局 · "
+                    f"逻辑{profile.logic*10:.0f}/10 · "
                     f"欺骗{profile.deception*10:.0f}/10 · "
-                    f"领导力{profile.leadership*10:.0f}/10 · "
-                    f"可信度{profile.credibility*10:.0f}/10 · "
-                    f"学习率{profile.learning_rate*10:.0f}/10 · "
-                    f"风险偏好{profile.risk_preference*10:.0f}/10。"
-                    f"曾游戏{profile.games_played}局。"
-                )
-            recent = restored_memory.reflections_by_player(player_id)
-            if recent:
-                latest = recent[-1]
-                strategy_directive["last_game_reflection"] = (
-                    f"上局{latest.role}身份时的反思：{latest.text[:200] if latest.text else '无'}"
-                )
+                    f"可信度{profile.credibility*10:.0f}/10",
+                ]
+                # Aggregate by role across all reflections for pattern summary
+                role_stats: dict[str, dict[str, int]] = {}
+                for ref in restored_memory.reflections_by_player(player_id):
+                    r = ref.role or "?"
+                    role_stats.setdefault(r, {"count": 0})
+                    role_stats[r]["count"] += 1
+                if role_stats:
+                    role_line = "、".join(
+                        f"{r}:{s['count']}局" for r, s in sorted(role_stats.items())
+                    )
+                    parts.append(f"角色经历：{role_line}")
+                strategy_directive["cross_game_profile"] = " | ".join(parts)
         except Exception:
             logger.debug("Failed to inject cross-game memory for %s", player_id, exc_info=True)
 
