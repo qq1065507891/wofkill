@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import inspect
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -147,6 +148,7 @@ class ModelRouter:
         self._player_assignments = player_assignments
         self._providers: dict[str, LLMProvider] = providers or {}
         self._usage_log: list[UsageRecord] = []
+        self._usage_lock = threading.Lock()
 
     @classmethod
     def from_yaml(
@@ -323,9 +325,10 @@ class ModelRouter:
                         latency_ms=result.usage.latency_ms,
                         success=True,
                     )
-                    self._usage_log.append(usage)
-                    if len(self._usage_log) > 10000:
-                        self._usage_log = self._usage_log[-5000:]
+                    with self._usage_lock:
+                        self._usage_log.append(usage)
+                        if len(self._usage_log) > 10000:
+                            self._usage_log = self._usage_log[-5000:]
                 return result
             except Exception as exc:
                 primary_error = exc
@@ -337,7 +340,6 @@ class ModelRouter:
                         attempt + 1, max_retries + 1, delay,
                         _format_exception(exc),
                     )
-                    # Rate-limit backoff: wait before retrying
                     time.sleep(delay)
                     continue
                 logger.warning(
@@ -382,9 +384,10 @@ class ModelRouter:
                             fallback_reason=f"primary_failed:{_format_exception(primary_error)}",
                             success=True,
                         )
-                        self._usage_log.append(usage)
-                        if len(self._usage_log) > 10000:
-                            self._usage_log = self._usage_log[-5000:]
+                        with self._usage_lock:
+                            self._usage_log.append(usage)
+                            if len(self._usage_log) > 10000:
+                                self._usage_log = self._usage_log[-5000:]
                     return result
                 except Exception as exc:
                     fallback_error = exc
@@ -411,16 +414,17 @@ class ModelRouter:
 
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
-        self._usage_log.append(UsageRecord(
-            agent_id=agent_id,
-            task_type=task_type,
-            provider=config.provider,
-            model=config.model,
-            fallback_reason=failure_reason,
-            success=False,
-        ))
-        if len(self._usage_log) > 10000:
-            self._usage_log = self._usage_log[-5000:]
+        with self._usage_lock:
+            self._usage_log.append(UsageRecord(
+                agent_id=agent_id,
+                task_type=task_type,
+                provider=config.provider,
+                model=config.model,
+                fallback_reason=failure_reason,
+                success=False,
+            ))
+            if len(self._usage_log) > 10000:
+                self._usage_log = self._usage_log[-5000:]
         return GenerateResult(
             text="",
             provider=config.provider,
@@ -464,7 +468,8 @@ class ModelRouter:
         return providers
 
     def get_usage_log(self) -> list[UsageRecord]:
-        return list(self._usage_log)
+        with self._usage_lock:
+            return list(self._usage_log)
 
     def get_llm_profile_for_agent(self, agent_id: str) -> str:
         return self._player_assignments.get(agent_id, "")

@@ -56,8 +56,9 @@ def main() -> int:
     args = parser.parse_args()
 
     load_local_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    base_url = (args.base_url or os.getenv("OPENAI_BASE_URL", "")).rstrip("/")
+    from werewolf_agent.model_gateway.providers import get_env as _get_env
+    api_key = _get_env("OPENAI_API_KEY")
+    base_url = (args.base_url or _get_env("OPENAI_BASE_URL")).rstrip("/")
     if not api_key:
         print("ERROR: OPENAI_API_KEY is not set.")
         return 2

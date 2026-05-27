@@ -419,10 +419,18 @@ def main() -> None:
         print("ERROR: No providers registered. Check .env API keys.")
         sys.exit(1)
 
-    # Use first configured player for connectivity test so router resolves a real provider
     _test_agent = next(
         (pid for pid in router._player_assignments if pid != "judge"), "p01"
     )
+    _test_profile = router._player_assignments.get(_test_agent, "?")
+    _test_llm = router._llm_profiles.get(_test_profile, {})
+    _test_default = _test_llm.get("default", {})
+    _test_model_profile = _test_default.get("model_profile", "?")
+    _test_model_cfg = router._model_profiles.get(_test_model_profile, {})
+    print(f"  Test agent:  {_test_agent} (profile={_test_profile})")
+    print(f"  Test model:  provider={_test_default.get('provider','?')} model={_test_model_cfg.get('model','?')} timeout={_test_model_cfg.get('timeout','?')}s")
+    print(f"  Calling API (this may take up to {int((_test_model_cfg.get('timeout') or 60) * 3)}s with retries)...", flush=True)
+
     test_result = router.generate(
         agent_id=_test_agent,
         task_type="speech",
@@ -430,9 +438,9 @@ def main() -> None:
         system_prompt="You are a player in a Werewolf game. Output ONLY valid JSON.",
     )
     if test_result.text:
-        print(f"  API OK: {test_result.text[:100]}...")
+        print(f"  API OK ({test_result.provider}/{test_result.model}): {test_result.text[:100]}...")
     else:
-        print("  WARNING: API returned empty text")
+        print(f"  WARNING: API returned empty text (provider={test_result.provider}, model={test_result.model})")
 
     _sep("STARTING GAME")
     start = time.monotonic()
@@ -442,9 +450,11 @@ def main() -> None:
     game_repo = None
     try:
         import subprocess
+        print("  Starting Docker PostgreSQL (30s timeout)...", flush=True)
         subprocess.run(
             ["docker", "compose", "up", "-d", "postgres"],
             cwd=ROOT, capture_output=True, check=False,
+            timeout=30,
         )
         from werewolf_agent.storage.postgres_store import PostgresGameRepository
         from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
