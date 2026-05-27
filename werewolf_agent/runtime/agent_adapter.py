@@ -1484,6 +1484,21 @@ def build_agent_context(
     except Exception:
         logger.debug("Skill injection failed, skipping", exc_info=True)
 
+    # -- Role state monitoring: inject role-specific critical/warning alerts --
+    try:
+        from werewolf_agent.cognition.role_monitor import RoleStateMonitor
+        monitor = RoleStateMonitor(ruleset=engine.ruleset)
+        role_alerts = monitor.assess(gs, player_id, player.role, gs.phase)
+        if role_alerts:
+            role_alert_msgs = []
+            for a in role_alerts:
+                if a.severity in ("critical", "warning"):
+                    role_alert_msgs.append(a.message)
+            if role_alert_msgs:
+                strategy_directive["role_alerts"] = role_alert_msgs
+    except Exception:
+        logger.debug("Role state monitoring failed, skipping", exc_info=True)
+
     context = AgentContext(
         agent_id=player_id,
         task_type=task_type,

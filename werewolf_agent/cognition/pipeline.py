@@ -14,6 +14,7 @@ from werewolf_agent.cognition.attention import AttentionFilter
 from werewolf_agent.cognition.belief import BeliefState, BeliefUpdater
 from werewolf_agent.cognition.context import LocalContextBuilder, PromptBudgetReport
 from werewolf_agent.cognition.contradiction import ContradictionEngine
+from werewolf_agent.cognition.role_monitor import RoleStateMonitor
 from werewolf_agent.cognition.salience import SalienceEngine
 from werewolf_agent.cognition.strategy import StrategySelector
 from werewolf_agent.cognition.visibility import VisibilityPolicy
@@ -37,6 +38,7 @@ class CognitivePipeline:
         self._belief = BeliefUpdater(all_role_names)
         self._contradiction = ContradictionEngine()
         self._strategy = StrategySelector()
+        self._role_monitor = RoleStateMonitor(ruleset=None)
         self._builder = LocalContextBuilder(
             visibility_policy=self._policy,
             attention_filter=self._attention,
@@ -68,7 +70,7 @@ class CognitivePipeline:
         belief_state: BeliefState | None = None,
     ) -> tuple[AgentContext, PromptBudgetReport]:
         """Build the complete local context for a player agent call."""
-        return self._builder.build(
+        context, budget = self._builder.build(
             game_state=game_state,
             viewer_id=viewer_id,
             viewer_role=viewer_role,
@@ -80,3 +82,17 @@ class CognitivePipeline:
             belief_state=belief_state,
             current_day=game_state.day_number,
         )
+
+        # -- Role state monitoring: inject role-specific alerts into strategy --
+        role_alerts = self._role_monitor.assess(
+            game_state, viewer_id, viewer_role, current_phase
+        )
+        if role_alerts:
+            directive = dict(context.strategy_directive)
+            directive["role_alerts"] = [
+                {"alert_type": a.alert_type, "severity": a.severity, "message": a.message}
+                for a in role_alerts
+            ]
+            context = context.model_copy(update={"strategy_directive": directive})
+
+        return context, budget
