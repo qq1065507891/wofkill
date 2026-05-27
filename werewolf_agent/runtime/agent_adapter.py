@@ -676,6 +676,23 @@ def _build_villager_day_speech_directive(
         death_analysis = "\n\n【死亡顺序】" + death_order
 
     role_label = "白痴" if gs.players.get(villager_id, None) and gs.players[villager_id].role == "idiot" else "普通村民"
+
+    # Check if this villager is seer-verified gold water
+    gold_water_duty = ""
+    for e in gs.events:
+        if e.type == "seer_check" and e.payload.get("target_id") == villager_id:
+            if e.payload.get("alignment") == "good":
+                seer = next(
+                    (pid for pid, p in gs.players.items() if p.role == "seer"), None
+                )
+                if seer:
+                    gold_water_duty = (
+                        f"\n\n【你是预言家{seer}的金水】你在好人视角是最高身份。"
+                        f"你有义务为预言家站边——你是场上最应该信他的人。"
+                        f"如果预言家被多人踩，你必须站出来帮他拉票、分析谁在冲票。"
+                    )
+            break
+
     parts["villager_speech_directive"] = (
         f"你是{role_label}，没有夜间技能和私有信息，你的核心价值是逻辑分析能力。\n\n"
         "发言策略：\n"
@@ -684,7 +701,7 @@ def _build_villager_day_speech_directive(
         "3) 如果你有独立的怀疑对象，说明理由；不要无证据跟风\n"
         "4) 不要冒充任何角色——你没有信息来支撑冒充\n"
         "5) 如果预言家已死或被怀疑，好人阵营需要你站出来做逻辑整理"
-        f"{seer_analysis}{vote_analysis}{death_analysis}"
+        f"{gold_water_duty}{seer_analysis}{vote_analysis}{death_analysis}"
     )
 
     return parts
@@ -746,6 +763,18 @@ def _build_idiot_day_speech_directive(
         if idx != -1:
             analysis_sections += "\n" + villager_text[idx:]
 
+    # Check if idiot was saved by witch (witch_private audit means witch used antidote)
+    witch_saved_note = ""
+    for e in gs.events:
+        if e.type == "witch_decision_audit" and e.payload.get("action_taken") == "use_antidote":
+            if e.payload.get("wolf_kill_target_id") == idiot_id:
+                witch_saved_note = (
+                    "\n\n【注意：你被女巫救了】首夜狼人刀了你，女巫用解药救了你。"
+                    "女巫知道你的好身份。你可以在发言中暗示女巫的存在——"
+                    "'我第一晚就知道自己是谁'——来让狼人猜忌，但不要直接报出女巫身份。"
+                )
+            break
+
     if revealed:
         parts["idiot_speech_directive"] = (
             "你是白痴，已经翻牌亮明身份。你当前状态：\n"
@@ -759,7 +788,7 @@ def _build_idiot_day_speech_directive(
             "3) 明确表态你怀疑谁、信任谁——你不用担心被投\n"
             "4) 不要虚张声势说你有什么特殊信息——你只是普通好人\n"
             "5) 你的发言仍然需要逻辑和证据支撑，否则存活玩家不会采信"
-            f"{analysis_sections}"
+            f"{witch_saved_note}{analysis_sections}"
         )
     else:
         parts["idiot_speech_directive"] = (
@@ -1969,6 +1998,18 @@ def agent_wolf_discussion(
             "表示同意、反对或补充意见，形成真正的团队讨论，而不是自顾自发言。"
         )
 
+    # N1: suggest role division among wolves
+    if gs.night_number == 1 and not prev_speeches:
+        discussion_instruction += (
+            "\n\n【首夜角色分工建议】狼队可以分工配合：\n"
+            "1) 悍跳位——白天假装预言家争夺警徽（建议由能言善辩的队友担任）\n"
+            "2) 冲锋位——为悍跳队友强力站边，质疑真预言家\n"
+            "3) 倒钩位——表面上站边真预言家，暗中破坏好人节奏\n"
+            "4) 深水位——保持低调，活到最后为团队收尾\n"
+            "讨论谁适合什么角色，但不一定每局都需要悍跳。"
+            "如果真预言家查验理由薄弱，悍跳是很好的选择。"
+        )
+
     strategy_directive = {
         "wolf_team_discussion": discussion_instruction,
         "round_focus": requirements.get("required", "讨论狼队策略。"),
@@ -2743,11 +2784,23 @@ def agent_hunter_shot(
     death_label = {"wolf_kill": "被狼人袭击", "exile": "被投票放逐"}.get(
         death_reason, f"因{death_reason}"
     )
+    # Determine if there are plausible wolf suspects
+    has_suspects = (
+        shot_assessment
+        and shot_assessment.get("ranked_targets")
+        and len(shot_assessment["ranked_targets"]) > 0
+    )
+    shoot_encouragement = (
+        "从评估结果看，你有一个值得考虑的目标，建议带走。"
+        if has_suspects
+        else "当前没有高价值目标，但如果你白天有强烈怀疑的玩家，也可以开枪带走。"
+    )
+
     strategy_directive: dict[str, Any] = {
         "hunter_shot_directive": (
             f"你是猎人，{death_label}导致死亡。你现在可以开枪带走一名玩家。\n"
-            "开枪是一次性的：选错目标会帮狼人减少好人数量，必须谨慎。\n"
-            "如果场上没有明确狼人目标，选择不开枪（NO_ACTION）比乱枪更好。\n"
+            "开枪是一次性的，但你的判断是场上最好的武器之一。\n"
+            f"{shoot_encouragement}\n"
             "注意：本局没有守卫，如果你被女巫毒杀（而非被狼杀或放逐），你无法开枪。\n"
             "speech字段留空。"
         ),
