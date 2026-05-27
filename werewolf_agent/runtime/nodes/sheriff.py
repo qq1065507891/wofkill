@@ -501,9 +501,11 @@ def _sheriff_endorse_adapter(
         context = build_agent_context(
             engine, gs, sheriff_id, TaskType.VOTE,
             legal_actions=legal_actions,
+            rag_service=state.get("rag_service"),
+            restored_memory=state.get("restored_memory"),
         )
     except Exception:
-        pass
+        logger.warning("Failed to build agent context for sheriff endorse", exc_info=True)
 
     system_prompt = (
         "你是警长。现在所有玩家已经发言完毕，即将开始放逐投票。"
@@ -517,7 +519,7 @@ def _sheriff_endorse_adapter(
     )
     if context:
         prompt = (
-            f"Visible state: {context.visible_state_summary}\n"
+            f"Visible state: {context.visible_world_state}\n"
             f"合法归票目标: {', '.join(alive_others)}\n"
             f"请选择归票目标，内心理由不公开。"
         )
