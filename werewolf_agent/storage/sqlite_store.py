@@ -359,7 +359,8 @@ class SqliteGameRepository:
         return [{"snapshot_id": r[0], "created_at": r[1]} for r in rows]
 
     def delete_memory_snapshot(self, snapshot_id: str) -> None:
-        self._conn.execute(
-            "DELETE FROM memory_snapshots WHERE snapshot_id = ?", (snapshot_id,)
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM memory_snapshots WHERE snapshot_id = ?", (snapshot_id,)
+            )
+            self._conn.commit()

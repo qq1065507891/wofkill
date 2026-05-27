@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from typing import Any, Protocol
 
 _SPEECH_STYLE_HINTS = {
@@ -40,25 +41,27 @@ _TASK_STYLE_HINTS = {
 }
 
 _PERSONA_PROFILES_CACHE: dict[str, dict[str, Any]] | None = None
+_PERSONA_PROFILES_LOCK: threading.Lock = threading.Lock()
 
 
 def _load_persona_profile(persona_key: str) -> dict[str, Any]:
     global _PERSONA_PROFILES_CACHE
-    if _PERSONA_PROFILES_CACHE is None:
-        _PERSONA_PROFILES_CACHE = {}
-        try:
-            from pathlib import Path
-            import yaml
-            p = Path(__file__).resolve().parent.parent.parent / "config" / "personas" / "jingcheng_style_prototypes.yaml"
-            if p.exists():
-                data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-                _PERSONA_PROFILES_CACHE = data.get("persona_profiles", {})
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Failed to load persona profiles, all agents will use generic speech styles",
-                exc_info=True,
-            )
+    with _PERSONA_PROFILES_LOCK:
+        if _PERSONA_PROFILES_CACHE is None:
+            _PERSONA_PROFILES_CACHE = {}
+            try:
+                from pathlib import Path
+                import yaml
+                p = Path(__file__).resolve().parent.parent.parent / "config" / "personas" / "jingcheng_style_prototypes.yaml"
+                if p.exists():
+                    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                    _PERSONA_PROFILES_CACHE = data.get("persona_profiles", {})
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Failed to load persona profiles, all agents will use generic speech styles",
+                    exc_info=True,
+                )
     return _PERSONA_PROFILES_CACHE.get(persona_key, {})
 
 
@@ -87,7 +90,9 @@ from werewolf_agent.agents.schemas import (
 )
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
-from werewolf_agent.skills.schemas import SkillName
+from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+from werewolf_agent.skills.registry import SkillRegistry
+from werewolf_agent.skills.schemas import SkillInput, SkillName
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
@@ -1165,9 +1170,6 @@ def _inject_skill_output(
 
     Returns (updated strategy_directive, tool_analyses).
     """
-    from werewolf_agent.skills.registry import SkillRegistry
-    from werewolf_agent.skills.schemas import SkillInput
-
     player = gs.players.get(player_id)
     if not player or not player.alive:
         return strategy_directive, {}
@@ -1545,7 +1547,7 @@ def build_agent_context(
                 for a in role_alerts
             ]
     except Exception:
-        logger.debug("Role state monitoring failed, skipping", exc_info=True)
+        logger.warning("Role state monitoring failed, skipping", exc_info=True)
 
     # -- Cross-game memory: inject accumulated learning from previous games --
     if restored_memory is not None:
@@ -2427,8 +2429,6 @@ def agent_day_vote(
     # Fallback: if agent returned wrong action type but has legal targets,
     # pick an evidence-aware target rather than abstaining silently.
     if target is None and legal_targets:
-        from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
-
         target = choose_vote_fallback_target(gs, voter_id, legal_targets)
     speech = getattr(action, "speech", "") or ""
     reason = getattr(action, "reason", "") or ""
@@ -2817,6 +2817,7 @@ def agent_hunter_shot(
             gs, hunter_id, legal_targets, death_reason,
         )
     except Exception:
+        logger.warning("Hunter shot target evaluation failed", exc_info=True)
         shot_assessment = None
 
     death_label = {"wolf_kill": "被狼人袭击", "exile": "被投票放逐"}.get(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 from dataclasses import dataclass, replace
 from typing import Any, Iterator
 
@@ -180,7 +181,9 @@ class GameRunner:
         """Build PlayerAgent registry when real agent mode is enabled."""
         if not self._config.use_agent_registry:
             return None
-        model_config_path = self._config.model_config_path or "config/models.yaml"
+        model_config_path = self._config.model_config_path or str(
+            Path(__file__).resolve().parent.parent.parent / "config" / "models.yaml"
+        )
         router = ModelRouter.from_yaml(model_config_path, register_env_providers=True)
         if self._config.probe_tool_call_support:
             probe = router.probe_tool_call_support("p01", "speech")

@@ -131,18 +131,16 @@ def create_app(
 
                 vector_store = create_vector_store(vector_backend)
             except Exception as exc:
-                import logging
 
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "Vector store initialization failed; using RAG fallback: %s",
                     exc,
                 )
         rag_service = RAGKnowledgeService(repository=_repo, vector_store=vector_store)
         rag_service.ensure_seeded()
     except Exception as exc:
-        import logging
 
-        logging.getLogger(__name__).warning("RAG knowledge service initialization failed: %s", exc)
+        logger.warning("RAG knowledge service initialization failed: %s", exc)
     app.state.repository = _repo
     app.state.rag_service = rag_service
 
@@ -251,11 +249,11 @@ def create_app(
 
     @app.get("/marketplace/rulesets")
     def list_ruleset_marketplace() -> dict:
-        return _load_marketplace("config/rulesets/marketplace.yaml")
+        return _load_marketplace(str(_PROJECT_ROOT / "config" / "rulesets" / "marketplace.yaml"))
 
     @app.get("/marketplace/persona-packs")
     def list_persona_pack_marketplace() -> dict:
-        return _load_marketplace("config/personas/marketplace.yaml")
+        return _load_marketplace(str(_PROJECT_ROOT / "config" / "personas" / "marketplace.yaml"))
 
     @app.post("/games", response_model=GameCreateResponse)
     def create_game(req: CreateGameRequest) -> GameCreateResponse:
