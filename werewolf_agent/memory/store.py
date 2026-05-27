@@ -127,18 +127,37 @@ class MemoryStore:
 
         return report
 
+    _GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
+    _WOLF_ROLES = {"werewolf"}
+
+    @classmethod
+    def _player_faction(cls, role: str | None) -> str:
+        if role in cls._GOOD_ROLES:
+            return "good"
+        if role in cls._WOLF_ROLES:
+            return "werewolf"
+        return "unknown"
+
     def generate_reviews_for_game(
         self,
         game_id: str,
         player_ids: list[str],
         roles: dict[str, str],
-        faction_won: bool,
+        winning_faction: str,
         ground_truth: dict[str, str],
+        player_factions: dict[str, str] | None = None,
     ) -> list[ReviewReport]:
-        """Generate reviews for all players in a game."""
+        """Generate reviews for all players in a game.
+
+        Args:
+            winning_faction: The faction that won (\"good\" or \"werewolf\").
+            player_factions: Optional per-player faction override (e.g. for hybrid).
+        """
         reports = []
         for pid in player_ids:
             role = roles.get(pid, "unknown")
+            pf = (player_factions or {}).get(pid) or self._player_faction(role)
+            faction_won = pf == winning_faction
             report = self.generate_review(
                 game_id=game_id,
                 player_id=pid,

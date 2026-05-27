@@ -106,16 +106,7 @@ class PlayerAgent:
     _MAX_TRANSCRIPT_ITEMS = 4
     _MAX_TRANSCRIPT_TEXT_CHARS = 220
     _MAX_SALIENCE_ITEMS = 4
-    _CHOICE_TARGET_ACTIONS = {
-        ActionType.VOTE,
-        ActionType.WOLF_KILL,
-        ActionType.USE_POISON,
-        ActionType.CHECK_ALIGNMENT,
-        ActionType.CHOOSE_MASTER,
-        ActionType.HUNTER_SHOT,
-        ActionType.BADGE_TRANSFER,
-        ActionType.SHERIFF_VOTE,
-    }
+    _CHOICE_TARGET_ACTIONS = DefaultActionValidator._TARGET_REQUIRED_ACTIONS
     _SPEECH_INTENT_TASKS = {
         TaskType.SPEECH,
         TaskType.SHERIFF_SPEECH,
@@ -159,6 +150,7 @@ class PlayerAgent:
         parse_error_str: str | None = None
         structured_failure_reason: str | None = None
         skill_tools_consumed = False
+        skill_call_count = 0  # cap total on-demand skill tool calls per act()
 
         attempt = 0
         while attempt < self.max_retries:
@@ -219,8 +211,9 @@ class PlayerAgent:
 
             # Detect on-demand skill tool call (LLM requested tactical analysis)
             called_tool = getattr(result, "tool_call_name", "") or ""
-            if called_tool and called_tool in context.skill_analyses:
+            if called_tool and called_tool in context.skill_analyses and skill_call_count < 2:
                 skill_tools_consumed = True
+                skill_call_count += 1
                 analysis = context.skill_analyses.get(called_tool, "")
                 if analysis:
                     hint = (

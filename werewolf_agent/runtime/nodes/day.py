@@ -402,7 +402,6 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     )
     # Log vote tally with weighted counts (read from ruleset config)
     sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
-    engine: RuleEngine = state["engine"]
     sheriff_weight = float(engine.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
     weighted_tally: dict[str, float] = {}
     vote_weights: dict[str, float] = {}

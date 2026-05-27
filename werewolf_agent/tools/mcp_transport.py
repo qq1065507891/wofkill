@@ -173,6 +173,14 @@ class PersonaQueryTransport:
 
 
 class HTTPTransport:
+    """Generic HTTP transport for external MCP services.
+
+    Sends tool calls as POST requests to a configured base URL.
+    Includes retry logic and timeout handling.
+    """
+
+    name: str
+    description: str
 
     def close(self) -> None:
         """关闭 HTTP 传输连接。"""
@@ -184,14 +192,6 @@ class HTTPTransport:
 
     def __exit__(self, *args: object) -> None:
         self.close()
-    """Generic HTTP transport for external MCP services.
-
-    Sends tool calls as POST requests to a configured base URL.
-    Includes retry logic and timeout handling.
-    """
-
-    name: str
-    description: str
 
     def __init__(
         self,

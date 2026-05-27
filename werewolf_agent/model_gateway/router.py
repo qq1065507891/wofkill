@@ -520,9 +520,13 @@ def _call_provider_generate(
 
 def _normalize_tool_metadata(
     result: GenerateResult,
-    tool_choice: dict[str, Any] | None,
+    tool_choice: dict[str, Any] | str | None,
 ) -> None:
     if not tool_choice:
+        return
+    # If tool_choice is "auto", LLM may freely choose text-only response
+    tc_type = tool_choice if isinstance(tool_choice, str) else tool_choice.get("type", "")
+    if tc_type == "auto":
         return
     # If provider already signaled text fallback is acceptable, don't
     # override it — some providers (MiniMax, certain Baidu models) cannot
@@ -530,12 +534,12 @@ def _normalize_tool_metadata(
     if result.allow_text_tool_fallback and result.text:
         result.tool_call_required = True
         if not result.tool_call_name:
-            result.tool_call_name = str(tool_choice.get("name") or "")
+            result.tool_call_name = str(tool_choice.get("name") or "") if isinstance(tool_choice, dict) else ""
         result.text_fallback_used = True
         return
     result.tool_call_required = True
     if not result.tool_call_name:
-        result.tool_call_name = str(tool_choice.get("name") or "")
+        result.tool_call_name = str(tool_choice.get("name") or "") if isinstance(tool_choice, dict) else ""
     if not result.tool_call_received:
         result.text_fallback_used = bool(result.text)
         if result.structured_failure_reason is None:

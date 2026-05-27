@@ -1318,6 +1318,7 @@ def build_agent_context(
         visible["private_memory"] = private_memory
 
     # Role-specific private info
+    strategy_directive: dict[str, Any] = {}
     if player.role == "werewolf":
         visible["wolf_teammates"] = [
             pid for pid, p in gs.players.items()
@@ -1425,7 +1426,6 @@ def build_agent_context(
     # Build contradiction alerts and belief state from world state
     ctx_alerts: list[dict[str, Any]] = []
     must_address: list[dict[str, Any]] = []
-    strategy_directive: dict[str, Any] = {}
     belief_dict: dict[str, Any] = {}
     world_state = None
     belief_state = None
@@ -1510,10 +1510,8 @@ def build_agent_context(
             })
 
         if must_address:
-            strategy_directive = {
-                "must_address_alerts": must_address,
-                "directive": "你必须在发言中回应以下矛盾：选择站队、质疑、或明确表示暂不判断。",
-            }
+            strategy_directive["must_address_alerts"] = must_address
+            strategy_directive["directive"] = "你必须在发言中回应以下矛盾：选择站队、质疑、或明确表示暂不判断。"
     except Exception:
         logger.debug("Contradiction/belief building failed, skipping", exc_info=True)
 
@@ -2724,11 +2722,12 @@ def _evaluate_hunter_shot_target(
         for e in gs.events:
             if e.type != "vote_resolved":
                 continue
-            voter_map = e.payload.get("votes", {})
-            if voter_map.get(pid) == hunter_id:
-                sig.append("voted_exile_hunter")
-                value += 3
-                break
+            vote_list = e.payload.get("votes") or []
+            for vote in vote_list:
+                if isinstance(vote, dict) and vote.get("voter") == pid and vote.get("target") == hunter_id:
+                    sig.append("voted_exile_hunter")
+                    value += 3
+                    break
 
         # Contradiction alerts (+3)
         try:
@@ -2926,7 +2925,7 @@ def agent_sheriff_register(
     gs: GameState = state["game_state"]
     agent = registry.get_agent(player_id)
     if agent is None:
-        return False
+        return None
 
     player_role = gs.players[player_id].role if player_id in gs.players else ""
     # Build role-specific registration guidance
@@ -2988,7 +2987,7 @@ def agent_sheriff_withdraw(
     gs: GameState = state["game_state"]
     agent = registry.get_agent(candidate_id)
     if agent is None:
-        return False
+        return None
 
     context = build_agent_context(
         engine, gs, candidate_id, TaskType.SHERIFF_SPEECH,

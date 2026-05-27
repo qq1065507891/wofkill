@@ -90,7 +90,7 @@ def test_seer_checks_hybrid_as_good() -> None:
     engine = make_engine()
     state = make_state()
 
-    result = engine.check_alignment(state, seer_id="seer", target_id="hybrid")
+    result = engine.check_alignment(state, target_id="hybrid")
 
     assert result.alignment == "good"
     assert result.role is None

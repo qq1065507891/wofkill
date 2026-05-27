@@ -178,7 +178,7 @@ def validate_structured_vote_action(
         }
 
     reason_result = validate_vote_reason(action, context)
-    if not reason_result["valid"] and vote_basis == "fallback":
+    if not reason_result["valid"]:
         return {
             **reason_result,
             "error_code": "vote_quality",

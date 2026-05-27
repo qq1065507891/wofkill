@@ -214,8 +214,12 @@ class BatchRunner:
             alive_players = [pid for pid, p in state.players.items() if p.alive]
             exile_targets = self._engine.legal_exile_targets(state)
             if exile_targets:
-                # Simplified: pick random exile target
-                exiled = game_rng.choice(exile_targets)
+                # Use deterministic evidence-based fallback for reproducible metrics
+                try:
+                    from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+                    exiled = choose_vote_fallback_target(state, exile_targets, rng_seed=state.game_id)
+                except Exception:
+                    exiled = game_rng.choice(exile_targets)
                 before_events = len(state.events)
                 state, exile_events = self._engine.resolve_exile(state, target_id=exiled)
                 if exile_events:

@@ -14,7 +14,8 @@ from werewolf_agent.core.models import GameState
 
 
 # ---------------------------------------------------------------------------
-# Deterministic seed helper (local copy to avoid circular import from graph.py)
+# Deterministic seed helper (local copy to avoid circular import:
+#   sheriff_policy → _shared → nodes/__init__ → day → sheriff_policy)
 # ---------------------------------------------------------------------------
 
 def _stable_seed(*parts: object) -> int:

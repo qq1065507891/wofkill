@@ -70,10 +70,6 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
             consecutive_no_kill += 1
         elif ev.type in ("wolf_kill_selected",):
             break
-        elif ev.type == "enter_night":
-            continue
-        else:
-            continue
 
     if _timer_expired(state, "wolf_discussion"):
         if consecutive_no_kill >= max_consecutive_no_kill:
@@ -597,7 +593,7 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
         visibility="moderator_only",
     )
     state = {**state, "game_state": gs}
-    _timeout_contract = AGENT_TIMEOUTS.wolf_consensus
+    _ = AGENT_TIMEOUTS.wolf_consensus  # referenced for timeout contract, wired in future
     planned = _planned_wolf_kill(state)
     if planned is not None and not state.get("wolf_action"):
         result = planned

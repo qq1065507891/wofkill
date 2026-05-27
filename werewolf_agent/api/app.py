@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 from typing import Any, TYPE_CHECKING
 from dataclasses import asdict, replace
 import threading
@@ -339,7 +340,8 @@ def create_app(
         state = _get_game(games, game_id)
         if state.paused:
             raise HTTPException(400, "Game is paused")
-        runner = runners.get(game_id)
+        with _runners_lock:
+            runner = runners.get(game_id)
         if runner is None:
             raise HTTPException(404, f"No runner for game {game_id}. Start the game first.")
         if runner.finished:
@@ -725,6 +727,10 @@ def _load_marketplace(path: str) -> dict:
 
 
 def _build_locked_config_snapshot(req: CreateGameRequest) -> dict:
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", req.ruleset_id):
+        raise HTTPException(400, f"Invalid ruleset_id: {req.ruleset_id}")
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", req.profile_pack_id):
+        raise HTTPException(400, f"Invalid profile_pack_id: {req.profile_pack_id}")
     seed = req.seed if req.seed is not None else 0
     # Hash actual ruleset content, not just the ID
     ruleset_path = _PROJECT_ROOT / "config" / "rulesets" / f"{req.ruleset_id}.yaml"

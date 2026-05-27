@@ -224,16 +224,10 @@ class MetricsAggregator:
                 if d.get("reason") == "exile"
                 and result.player_factions.get(d.get("player_id", "")) == "good"
             )
-            good_alive_end = sum(
-                1 for pid in result.player_roles
-                if result.player_factions.get(pid) == "good"
-                and not any(dd.get("player_id") == pid for dd in result.deaths)
-            )
             total_exiled = sum(1 for d in result.deaths if d.get("reason") == "exile")
             if total_exiled > 0:
-                anti_push_total += 1
-                if good_exiled == 0 or good_alive_end > 0:
-                    anti_push_count += 1
+                anti_push_total += total_exiled
+                anti_push_count += good_exiled
 
             # --- Vote accuracy ---
             exiled_wolves = sum(
@@ -366,11 +360,12 @@ class MetricsAggregator:
                         if vote.get("target_id", "") in targets:
                             speech_influence_aligned += 1
 
-            # --- Speech order utilization ---
+            # --- Multi-speech rate (field: speech_order_utilization) ---
+            # Measures fraction of speeches that are not the first speech of their day,
+            # i.e. discussion depth beyond the opening speech each round.
             for idx, speech in enumerate(speech_events):
                 speech_order_total += 1
                 day = speech.get("day_number", 0)
-                # Check if any earlier speech exists on the same day
                 for prev in speech_events[:idx]:
                     if prev.get("day_number") == day:
                         speech_order_with_ref += 1

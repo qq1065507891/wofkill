@@ -10,13 +10,16 @@ game, RAG, and memory snapshot tables.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-DSN = "postgresql://wofkill:wofkill-dev@localhost:5432/wofkill"
+DSN = os.getenv("WOFKILL_PG_DSN", "postgresql://wofkill:wofkill-dev@localhost:5432/wofkill")
+
+_VALID_TABLES = {"games", "rag_entries", "memory_snapshots", "custom_configs"}
 
 
 def main() -> None:
@@ -47,18 +50,12 @@ def main() -> None:
     repo = PostgresGameRepository(DSN)
     conn = repo._ensure_connection()
 
-    tables = [
-        "games",
-        "rag_entries",
-        "memory_snapshots",
-        "custom_configs",
-    ]
     total = 0
-    for table in tables:
-        cur = conn.execute(f"SELECT count(*) FROM {table}")
+    for table in sorted(_VALID_TABLES):
+        cur = conn.execute("SELECT count(*) FROM {}".format(table))
         count = cur.fetchone()[0]
         if count > 0:
-            conn.execute(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE TABLE {} RESTART IDENTITY CASCADE".format(table))
             total += count
             print(f"  Cleared {table}: {count} rows")
         else:

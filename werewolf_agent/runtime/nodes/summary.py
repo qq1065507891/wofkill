@@ -13,6 +13,7 @@ from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.runtime.agent_adapter import _agent_reflection
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     _action_trace_event,
@@ -203,7 +204,6 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
     for pid, player in gs.players.items():
         reflection_text = ""
         try:
-            from werewolf_agent.runtime.agent_adapter import _agent_reflection
             result = _dispatch_agent(state, _agent_reflection, pid)
             if result:
                 reflection_text = result.get("reflection_text", "")

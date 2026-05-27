@@ -62,7 +62,7 @@ class SkillInput:
     phase: str
     situation: str = ""
     persona_params: dict[str, Any] = field(default_factory=dict)
-    available_experience: list[dict[str, Any]] = field(default_factory=dict)
+    available_experience: list[dict[str, Any]] = field(default_factory=list)
     legal_actions: list[str] = field(default_factory=list)
     legal_targets: list[str] = field(default_factory=list)
     day: int = 0

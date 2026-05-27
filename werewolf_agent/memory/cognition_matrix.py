@@ -34,6 +34,8 @@ class CognitionMatrix:
         roles = role_names or [
             "villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid",
         ]
+        if not roles:
+            return
         uniform = 1.0 / len(roles)
         for pid in player_ids:
             if pid == self.viewer_id:

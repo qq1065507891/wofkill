@@ -120,6 +120,12 @@ class SqliteGameRepository:
         with self._lock:
             self._conn.close()
 
+    def __enter__(self) -> "SqliteGameRepository":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
     # -- Game state --------------------------------------------------------
 
     def save_game(self, state: GameState) -> None:

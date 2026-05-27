@@ -131,17 +131,29 @@ class LocalContextBuilder:
         persona_style = ""
         if persona_snapshot:
             persona_style = persona_snapshot.get("speech_style", "")
-        # --- 判断是否被多数人怀疑（低信任占比过高） ---
+        # --- 判断是否被多数人怀疑（基于公开投票和发言中指向本玩家的比例） ---
         is_suspected = False
         teammate_exiled = False
-        if belief_state:
-            low_trust_count = sum(
-                1 for pid, b in belief_state.beliefs.items()
-                if pid != viewer_id and b.trust < 0.35
-            )
-            alive_others = sum(1 for pid in belief_state.beliefs if pid != viewer_id)
-            if alive_others > 0 and low_trust_count / alive_others > 0.5:
-                is_suspected = True
+        if game_state:
+            # Count votes targeting this player in the most recent exile vote
+            for e in reversed(game_state.events):
+                if e.type == "vote_resolved":
+                    for v in (e.payload.get("votes") or []):
+                        if isinstance(v, dict) and v.get("target") == viewer_id:
+                            is_suspected = True
+                            break
+                    break
+            # Also check recent public speeches for accusations
+            if not is_suspected:
+                accuse_count = 0
+                for e in reversed(game_state.events):
+                    if e.type == "speech" and e.payload.get("speaker") != viewer_id:
+                        text = e.payload.get("text", "")
+                        if viewer_id in text and any(w in text for w in ("可疑", "狼", "查杀", "铁狼", "票", "不做好")):
+                            accuse_count += 1
+                    if accuse_count >= 2:
+                        is_suspected = True
+                        break
 
         # --- 狼人视角：队友是否被放逐 ---
         if viewer_role == "werewolf":
@@ -250,8 +262,9 @@ class LocalContextBuilder:
             state["master_id"] = game_state.hybrid_master_id
         elif viewer_role == "seer":
             check_results = [
-                e.payload for e in game_state.events
-                if e.type == "seer_check"
+                {"target_id": f.target_player, "alignment": f.value, "night_number": f.night}
+                for f in visible_facts
+                if f.fact_type == "seer_check" and f.target_player
             ]
             state["check_results"] = check_results
         elif viewer_role == "witch":

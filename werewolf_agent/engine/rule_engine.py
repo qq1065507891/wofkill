@@ -82,10 +82,26 @@ class RuleEngine:
 
     # -- Seer --
 
-    def check_alignment(self, state: GameState, *, seer_id: str, target_id: str) -> AlignmentResult:
+    def check_alignment(self, state: GameState, *, target_id: str) -> AlignmentResult:
         target = state.players[target_id]
         seer_result = self.ruleset.raw["roles"][target.role].get("seer_result", "good")
         return AlignmentResult(alignment=seer_result, role=None)
+
+    def _apply_idiot_reveal(self, state: GameState, player_id: str) -> GameState:
+        """Apply idiot reveal state transitions. Shared across resolve_exile and reduce_event."""
+        player = state.players[player_id]
+        if player.role != "idiot" or player.revealed_idiot:
+            return state
+        after = self.ruleset.raw["roles"]["idiot"]["abilities"]["state_after_reveal"]
+        updated = replace(
+            player,
+            alive=after["alive"],
+            revealed_idiot=after["revealed_idiot"],
+            vote_enabled=not after["vote_disabled"],
+            badge_eligible=not after["badge_ineligible"],
+            exile_immune=after["exile_immune"],
+        )
+        return replace(state, players={**state.players, player_id: updated})
 
     # -- Hybrid master --
 
@@ -195,17 +211,8 @@ class RuleEngine:
             return state, events
 
         if target.role == "idiot" and not target.revealed_idiot:
-            idiot_cfg = self.ruleset.raw["roles"]["idiot"]["abilities"]
-            after = idiot_cfg["state_after_reveal"]
-            updated = replace(
-                target,
-                alive=after["alive"],
-                revealed_idiot=after["revealed_idiot"],
-                vote_enabled=not after["vote_disabled"],
-                badge_eligible=not after["badge_ineligible"],
-                exile_immune=after["exile_immune"],
-            )
-            new_players = {**state.players, target_id: updated}
+            state = self._apply_idiot_reveal(state, target_id)
+            new_players = state.players
             events.append(GameEvent(type="idiot_revealed", payload={"player_id": target_id}))
             return replace(state, players=new_players), events
 
@@ -305,7 +312,7 @@ class RuleEngine:
                     None,
                 )
                 witch_cfg = self.ruleset.raw["roles"]["witch"]
-                antidote_cfg = witch_cfg.get("abilities", witch_cfg).get("antidote", {})
+                antidote_cfg = witch_cfg["abilities"].get("antidote", {})
                 can_self_save = antidote_cfg.get("can_self_save", False)
                 can_save_first_night = antidote_cfg.get("can_self_save_first_night", False)
                 can_save = (
@@ -324,19 +331,22 @@ class RuleEngine:
                 deaths.append(wolf_death)
 
         # 3. Witch poison
-        if poison_target_id is not None and not poison_used and not saved_by_antidote:
-            self._validate_alive_target(state, poison_target_id, "poison_target")
-            poison_used = True
-            deaths.append(Death(
-                player_id=poison_target_id,
-                reason="witch_poison",
-                timing="night",
-                resolution_batch=batch,
-            ))
-            events.append(GameEvent(
-                type="witch_poison_used",
-                payload={"target_id": poison_target_id, "visibility": "witch_private"},
-            ))
+        witch_cfg = self.ruleset.raw["roles"]["witch"]
+        use_both = witch_cfg.get("use_both_potions_same_night", False)
+        if poison_target_id is not None and not poison_used:
+            if not saved_by_antidote or use_both:
+                self._validate_alive_target(state, poison_target_id, "poison_target")
+                poison_used = True
+                deaths.append(Death(
+                    player_id=poison_target_id,
+                    reason="witch_poison",
+                    timing="night",
+                    resolution_batch=batch,
+                ))
+                events.append(GameEvent(
+                    type="witch_poison_used",
+                    payload={"target_id": poison_target_id, "visibility": "witch_private"},
+                ))
 
         # 4. Seer check (before apply_death so event appears before player_died)
         if seer_target_id is not None:
@@ -345,7 +355,7 @@ class RuleEngine:
                 None,
             )
             if seer_id is not None:
-                alignment_result = self.check_alignment(state, seer_id=seer_id, target_id=seer_target_id)
+                alignment_result = self.check_alignment(state, target_id=seer_target_id)
                 events.append(GameEvent(
                     type="seer_check",
                     payload={
@@ -566,19 +576,18 @@ class RuleEngine:
                     and max_allowed > 0
                     and consecutive_no_exile_days >= max_allowed
                 ):
-                    return self._anti_stall_tie_break(state, top, rng_seed)
+                    return self._anti_stall_tie_break(state, top, rng_seed, votes)
                 return VoteResult(exiled_player_id=None, next_phase="night", reason="second_tie_no_exile")
 
         return VoteResult(exiled_player_id=top[0], next_phase="resolve_exile", reason="majority")
 
     def _anti_stall_tie_break(
-        self, state: GameState, tied: list[str], rng_seed: str | None,
+        self, state: GameState, tied: list[str], rng_seed: str | None, votes: dict[str, str],
     ) -> VoteResult:
         """Deterministic tie-break for anti-stall: sheriff vote then seeded random."""
         # 1. If active sheriff voted for one of the tied candidates, exile that one
         if state.sheriff_id and state.sheriff_badge_state == "active":
-            # 直接从 state.votes 字典读取警长投票，而非从 speech 文本解析
-            sheriff_vote = state.votes.get(state.sheriff_id)
+            sheriff_vote = votes.get(state.sheriff_id)
             if sheriff_vote and sheriff_vote in tied:
                 return VoteResult(
                     exiled_player_id=sheriff_vote,
@@ -675,19 +684,10 @@ class RuleEngine:
 
         if etype == "idiot_revealed":
             pid = payload["player_id"]
-            player = state.players[pid]
-            idiot_cfg = self.ruleset.raw["roles"]["idiot"]["abilities"]
-            after = idiot_cfg["state_after_reveal"]
-            updated = replace(
-                player,
-                alive=after["alive"],
-                revealed_idiot=after["revealed_idiot"],
-                vote_enabled=not after["vote_disabled"],
-                badge_eligible=not after["badge_ineligible"],
-                exile_immune=after["exile_immune"],
+            return replace(
+                self._apply_idiot_reveal(state, pid),
+                events=state.events + [event],
             )
-            new_players = {**state.players, pid: updated}
-            return replace(state, players=new_players, events=state.events + [event])
 
         if etype == "werewolf_self_destructed":
             pid = payload["player_id"]
@@ -731,22 +731,9 @@ class RuleEngine:
             pid = payload["player_id"]
             player = state.players[pid]
             if player.alive and not player.exile_immune:
-                # Idiot reveal: survive, lose vote, no death record
                 if player.role == "idiot" and not player.revealed_idiot:
-                    idiot_cfg = self.ruleset.raw["roles"]["idiot"]["abilities"]
-                    after = idiot_cfg["state_after_reveal"]
-                    updated = replace(
-                        player,
-                        alive=after["alive"],
-                        revealed_idiot=after["revealed_idiot"],
-                        vote_enabled=not after["vote_disabled"],
-                        badge_eligible=not after["badge_ineligible"],
-                        exile_immune=after["exile_immune"],
-                    )
-                    new_players = {**state.players, pid: updated}
                     return replace(
-                        state,
-                        players=new_players,
+                        self._apply_idiot_reveal(state, pid),
                         events=state.events + [event],
                     )
                 updated = replace(player, alive=False)

@@ -177,7 +177,11 @@ def route_after_hunter_shot(state: RuntimeState) -> str:
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
     if gs.phase != "night":
-        return "check_victory"
+        if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
+            return "announce_deaths_with_badge_loss"
+        if _needs_sheriff_before_deaths(gs):
+            return "sheriff_first_day_entry"
+        return "announce_deaths"
     if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
         return "announce_deaths_with_badge_loss"
     if _needs_sheriff_before_deaths(gs):

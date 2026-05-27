@@ -23,14 +23,16 @@ from werewolf_agent.skills.werewolf_skills import (
 
 
 # Roles that belong to the good faction
-_GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot", "hybrid"}
+_GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
 _WOLF_ROLES = {"werewolf"}
 
 
 def faction_for_role(role: str) -> SkillFaction:
-    """Return the faction a role belongs to."""
+    """Return the faction a role belongs to. Hybrid faction varies, returns GOOD as fallback."""
     if role in _WOLF_ROLES:
         return SkillFaction.WOLF
+    if role == "hybrid":
+        return SkillFaction.GOOD  # fallback; actual faction depends on master
     return SkillFaction.GOOD
 
 

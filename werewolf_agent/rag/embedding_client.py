@@ -42,6 +42,11 @@ class SiliconFlowEmbeddingClient:
         )).rstrip("/")
         self._model = model
         self._http = http_client or httpx.Client()
+        self._owns_http = http_client is None
+
+    def close(self) -> None:
+        if self._owns_http:
+            self._http.close()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a batch of texts.

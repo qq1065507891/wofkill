@@ -716,7 +716,7 @@ class TestMemoryStore:
             game_id="g1",
             player_ids=list(gt.keys()),
             roles=gt,
-            faction_won=True,
+            winning_faction="good",
             ground_truth=gt,
         )
         assert len(reports) == 5

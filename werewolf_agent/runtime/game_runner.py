@@ -453,13 +453,13 @@ class GameRunner:
             for pid in player_ids:
                 mem_store.init_matrix(pid, player_ids, role_names)
 
-            faction_won = self._state.winning_faction == "good"
+            winning_faction = self._state.winning_faction or "good"
             ground_truth = {pid: p.role for pid, p in self._state.players.items()}
             mem_store.generate_reviews_for_game(
                 game_id=self._game_id,
                 player_ids=player_ids,
                 roles=ground_truth,
-                faction_won=faction_won,
+                winning_faction=winning_faction,
                 ground_truth=ground_truth,
             )
 

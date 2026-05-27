@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -447,9 +448,8 @@ def main() -> None:
         )
         from werewolf_agent.storage.postgres_store import PostgresGameRepository
         from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
-        game_repo = PostgresGameRepository(
-            "postgresql://wofkill:wofkill-dev@localhost:5432/wofkill",
-        )
+        db_dsn = os.getenv("WOFKILL_PG_DSN", "postgresql://wofkill:wofkill-dev@localhost:5432/wofkill")
+        game_repo = PostgresGameRepository(db_dsn)
         memory_coordinator = PersistentMemoryCoordinator(game_repo)
         print("  Memory DB: PostgreSQL (via Docker)")
         if game_repo.load_rag_entries():

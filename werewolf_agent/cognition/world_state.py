@@ -362,16 +362,17 @@ def _extract_vote(event: GameEvent, state: GameState) -> list[StructuredFact]:
 
 
 def _extract_seer_check(event: GameEvent, state: GameState) -> list[StructuredFact]:
-    seer = event.payload.get("seer_id", "?")
     target = event.payload.get("target_id", "?")
-    result = event.payload.get("result", "?")
+    alignment = event.payload.get("alignment") or event.payload.get("result", "?")
     night = event.payload.get("night_number", 0)
+    # seer_id not in payload (only one seer), mark source as seer role
+    seer = next((pid for pid, p in state.players.items() if p.role == "seer"), "?")
     return [StructuredFact(
         fact_type="seer_check",
         source_player=seer,
         target_player=target,
         night=night,
-        value=result,
+        value=str(alignment),
     )]
 
 
