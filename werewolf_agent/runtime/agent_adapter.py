@@ -1490,12 +1490,10 @@ def build_agent_context(
         monitor = RoleStateMonitor(ruleset=engine.ruleset)
         role_alerts = monitor.assess(gs, player_id, player.role, gs.phase)
         if role_alerts:
-            role_alert_msgs = []
-            for a in role_alerts:
-                if a.severity in ("critical", "warning"):
-                    role_alert_msgs.append(a.message)
-            if role_alert_msgs:
-                strategy_directive["role_alerts"] = role_alert_msgs
+            strategy_directive["role_alerts"] = [
+                {"alert_type": a.alert_type, "severity": a.severity, "message": a.message}
+                for a in role_alerts
+            ]
     except Exception:
         logger.debug("Role state monitoring failed, skipping", exc_info=True)
 
