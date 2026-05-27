@@ -168,6 +168,9 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         else:
             speech_order = choose_no_sheriff_speech_order(gs)
 
+    # Filter out dead players from any pre-existing or auto-generated speech_order
+    speech_order = [pid for pid in speech_order if pid not in gs.players or gs.players[pid].alive]
+
     if speech_index == 0 and not speaker_id:
         order_names = "、".join(_player_display(state, pid) for pid in speech_order)
         gs, _ = _judge_broadcast(
