@@ -130,3 +130,32 @@ def choose_sheriff_led_speech_order(
     if sheriff_id in alive:
         order.append(sheriff_id)
     return order
+
+
+# ---------------------------------------------------------------------------
+# Sheriff candidate filter
+# ---------------------------------------------------------------------------
+
+import re
+
+_TEMPLATE_PATTERNS = [
+    r"我这轮先把视角压到",
+    r"依据是.*最近发言",
+]
+
+def filter_sheriff_candidates(
+    gs: GameState,
+    candidates: list[str],
+    speeches: dict[str, str] | None = None,
+) -> list[str]:
+    """Remove candidates whose sheriff speech is too short or matches templates."""
+    speeches = speeches or {}
+    kept: list[str] = []
+    for c in candidates:
+        text = speeches.get(c, "")
+        if len(text) < 30:
+            continue
+        if any(re.search(p, text) for p in _TEMPLATE_PATTERNS):
+            continue
+        kept.append(c)
+    return kept

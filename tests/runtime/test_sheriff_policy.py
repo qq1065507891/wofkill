@@ -265,3 +265,41 @@ class TestSheriffLedSpeechOrder:
         # Non-focus, non-sheriff players should be reversed
         assert order_cw[-1] == sheriff_id
         assert order_ccw[-1] == sheriff_id
+
+
+# ===================================================================
+# Sheriff candidate filter
+# ===================================================================
+
+
+def test_filter_removes_template_matching_speeches():
+    from werewolf_agent.runtime.sheriff_policy import filter_sheriff_candidates
+    gs = GameState(game_id="test")
+    candidates = ["p03", "p04"]
+    speeches = {
+        "p03": "我这轮先把视角压到p01身上。依据是p04最近发言：我是村民...",
+        "p04": "我是预言家，昨晚查验了p01是好人。我的警徽流先留p08，第二夜验p12。请大家支持我当警长。",
+    }
+    result = filter_sheriff_candidates(gs, candidates, speeches)
+    assert result == ["p04"]
+
+
+def test_filter_removes_short_speeches():
+    from werewolf_agent.runtime.sheriff_policy import filter_sheriff_candidates
+    gs = GameState(game_id="test")
+    candidates = ["p03", "p04"]
+    speeches = {"p03": "我上警", "p04": "我是预言家，昨晚查验了p01是好人，警徽流留p08"}
+    result = filter_sheriff_candidates(gs, candidates, speeches)
+    assert "p03" not in result
+
+
+def test_filter_keeps_all_when_valid():
+    from werewolf_agent.runtime.sheriff_policy import filter_sheriff_candidates
+    gs = GameState(game_id="test")
+    candidates = ["p03", "p04"]
+    speeches = {
+        "p03": "我是预言家，昨晚查验p01是好人，警徽流留p08，验人动机是他在警下靠前位置",
+        "p04": "我是村民，上警是为了分享我对当前局势的分析和判断，重点关注后置位的发言逻辑。",
+    }
+    result = filter_sheriff_candidates(gs, candidates, speeches)
+    assert result == ["p03", "p04"]
