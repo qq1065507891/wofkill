@@ -72,12 +72,18 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         target = state.get("hunter_shot_target_id")
         if target is None:
             shot_state = {**state, "hunter_death_reason": death.reason}
-            target = _dispatch_agent(
+            shot_result = _dispatch_agent(
                 shot_state,
                 agent_hunter_shot,
                 death.player_id,
                 timeout_override=AGENT_TIMEOUTS.hunter_shot,
             )
+            if isinstance(shot_result, dict):
+                target = shot_result.get("hunter_shot_target_id")
+            elif isinstance(shot_result, str):
+                target = shot_result
+            else:
+                target = None
         if target is None:
             target = _hunter_shot_target_from_last_words(gs, death.player_id)
         if target and target in gs.players and gs.players[target].alive and target != death.player_id:

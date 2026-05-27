@@ -2692,9 +2692,12 @@ def agent_hunter_shot(
     legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != hunter_id]
 
     # Evaluate shot target value
-    shot_assessment = _evaluate_hunter_shot_target(
-        gs, hunter_id, legal_targets, death_reason,
-    )
+    try:
+        shot_assessment = _evaluate_hunter_shot_target(
+            gs, hunter_id, legal_targets, death_reason,
+        )
+    except Exception:
+        shot_assessment = None
 
     death_label = {"wolf_kill": "被狼人袭击", "exile": "被投票放逐"}.get(
         death_reason, f"因{death_reason}"
