@@ -1844,6 +1844,7 @@ def agent_night_seer(
         legal_actions=[ActionType.CHECK_ALIGNMENT, ActionType.NO_ACTION],
         legal_targets=legal_targets,
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -1940,6 +1941,7 @@ def _single_wolf_vote(
         legal_targets=legal_targets,
         wolf_team_plan=wolf_plan,
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2221,6 +2223,7 @@ def agent_sheriff_pick_speech_order(
         legal_targets=alive_players,
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     strategy_directive = {
         "choose_speech_order": (
@@ -2271,6 +2274,7 @@ def agent_pk_speech(
         legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     # Add prior tally to visible state
     if prior_tally:
@@ -2409,6 +2413,7 @@ def agent_day_vote(
         legal_targets=legal_targets,
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     if strategy_directive:
         context = _merge_strategy_directive(context, strategy_directive)
@@ -2544,6 +2549,7 @@ def agent_hybrid_choose_master(
         legal_actions=[ActionType.CHOOSE_MASTER],
         legal_targets=candidates,
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2572,6 +2578,7 @@ def agent_exile_last_words(
         engine, gs, player_id, TaskType.LAST_WORDS,
         legal_actions=[ActionType.SPEECH],
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     strategy_directive = {
         "last_words": (
@@ -2620,6 +2627,7 @@ def agent_badge_decision(
         legal_actions=[ActionType.BADGE_TRANSFER, ActionType.BADGE_TEAR],
         legal_targets=alive_others,
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     player_role = gs.players[sheriff_id].role if sheriff_id in gs.players else ""
     role_hint = ""
@@ -2840,6 +2848,7 @@ def agent_hunter_shot(
         legal_actions=[ActionType.HUNTER_SHOT, ActionType.NO_ACTION],
         legal_targets=legal_targets,
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2948,6 +2957,7 @@ def agent_sheriff_register(
         engine, gs, player_id, TaskType.SHERIFF_REGISTRATION,
         legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -3160,6 +3170,7 @@ def agent_sheriff_election_speech(
         legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
