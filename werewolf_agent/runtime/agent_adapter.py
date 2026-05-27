@@ -1553,13 +1553,13 @@ def build_agent_context(
             profile = restored_memory.get_profile(player_id)
             if profile is not None:
                 strategy_directive["cross_game_profile"] = (
-                    f"你的历史评分：逻辑{profile.logic_score}/10 · "
-                    f"欺骗{profile.deception_score}/10 · "
-                    f"领导力{profile.leadership_score}/10 · "
-                    f"可信度{profile.credibility_score}/10 · "
-                    f"学习率{profile.learning_rate_score}/10 · "
-                    f"风险偏好{profile.risk_preference_score}/10。"
-                    f"曾游戏{profile.total_games}局。"
+                    f"你的历史评分：逻辑{profile.logic*10:.0f}/10 · "
+                    f"欺骗{profile.deception*10:.0f}/10 · "
+                    f"领导力{profile.leadership*10:.0f}/10 · "
+                    f"可信度{profile.credibility*10:.0f}/10 · "
+                    f"学习率{profile.learning_rate*10:.0f}/10 · "
+                    f"风险偏好{profile.risk_preference*10:.0f}/10。"
+                    f"曾游戏{profile.games_played}局。"
                 )
             recent = restored_memory.reflections_by_player(player_id)
             if recent:
@@ -1568,7 +1568,7 @@ def build_agent_context(
                     f"上局{latest.role}身份时的反思：{latest.text[:200] if latest.text else '无'}"
                 )
         except Exception:
-            pass
+            logger.debug("Failed to inject cross-game memory for %s", player_id, exc_info=True)
 
     context = AgentContext(
         agent_id=player_id,
