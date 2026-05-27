@@ -1499,7 +1499,7 @@ def build_agent_context(
     # -- Role state monitoring: inject role-specific critical/warning alerts --
     try:
         from werewolf_agent.cognition.role_monitor import RoleStateMonitor
-        monitor = RoleStateMonitor(ruleset=engine.ruleset)
+        monitor = RoleStateMonitor()
         role_alerts = monitor.assess(gs, player_id, player.role, gs.phase)
         if role_alerts:
             strategy_directive["role_alerts"] = [
@@ -1649,8 +1649,6 @@ def agent_night_witch(
         witch_directive["witch_strategy_hint"] = ""
     if not gs.poison_used:
         witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
-
-    if not gs.poison_used:
         alive = sum(1 for p in gs.players.values() if p.alive)
         if alive <= 8:
             witch_directive["poison_urgency"] = (

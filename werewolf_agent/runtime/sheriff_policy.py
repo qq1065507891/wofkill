@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import random as _random
+import re
 
 from werewolf_agent.core.models import GameState
 
@@ -135,8 +136,6 @@ def choose_sheriff_led_speech_order(
 # ---------------------------------------------------------------------------
 # Sheriff candidate filter
 # ---------------------------------------------------------------------------
-
-import re
 
 _TEMPLATE_PATTERNS = [
     r"我这轮先把视角压到",

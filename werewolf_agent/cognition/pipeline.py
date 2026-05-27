@@ -38,7 +38,7 @@ class CognitivePipeline:
         self._belief = BeliefUpdater(all_role_names)
         self._contradiction = ContradictionEngine()
         self._strategy = StrategySelector()
-        self._role_monitor = RoleStateMonitor(ruleset=None)  # ruleset unused by monitor, kept for future config-driven alerts
+        self._role_monitor = RoleStateMonitor()
         self._builder = LocalContextBuilder(
             visibility_policy=self._policy,
             attention_filter=self._attention,

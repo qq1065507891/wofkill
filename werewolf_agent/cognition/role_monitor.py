@@ -22,8 +22,11 @@ class RoleAlert:
 
 
 class RoleStateMonitor:
-    def __init__(self, ruleset: Any) -> None:
-        self._ruleset = ruleset
+    """Detect critical role-specific states (seer pressure, witch poison risk, etc.).
+
+    All detection is deterministic regex/keyword-based — no LLM calls.
+    Stateless — single instance can be reused across all calls.
+    """
 
     def assess(
         self, gs: GameState, player_id: str, role: str, phase: str,
