@@ -162,6 +162,8 @@ class GameRunner:
             rt["rag_service"] = self._rag_service
         if self._config.agent_call_timeout > 0:
             rt["agent_call_timeout"] = self._config.agent_call_timeout
+        if self._restored_memory is not None:
+            rt["restored_memory"] = self._restored_memory
         return rt
 
     def _build_default_rag_service(self) -> Any | None:
@@ -425,35 +427,50 @@ class GameRunner:
             logger.warning("Memory restore error for game %s: %s", self._game_id, exc)
 
     def _save_memory_snapshot(self) -> None:
-        """Persist a memory snapshot when a memory_coordinator is configured.
+        """Persist full memory snapshot at game end.
 
-        Creates a minimal MemoryStore, inits cognition matrices for all
-        players in the final game state, and saves via the coordinator.
-        Called at game end, before _persist_if_configured().
+        Builds structured world state, imports relations, syncs cognition
+        matrices, generates reviews, and saves via the coordinator for
+        cross-game retrieval.
         """
         coordinator = self._config.memory_coordinator
         if coordinator is None or self._config.repository is None:
             return
         try:
+            from werewolf_agent.cognition.world_state import build_world_state
             from werewolf_agent.memory.store import MemoryStore
 
             mem_store = MemoryStore()
             player_ids = list(self._state.players.keys())
-            if player_ids:
-                # Collect unique role names for matrix initialization
-                role_names = [
-                    self._state.players[pid].role
-                    for pid in player_ids
-                    if pid in self._state.players
-                ]
-                for pid in player_ids:
-                    mem_store.init_matrix(pid, player_ids, role_names)
+            role_names = list({p.role for p in self._state.players.values()})
+
+            ws = build_world_state(self._state)
+            mem_store.import_world_state(ws)
+
+            for pid in player_ids:
+                mem_store.init_matrix(pid, player_ids, role_names)
+
+            faction_won = self._state.winning_faction == "good"
+            ground_truth = {pid: p.role for pid, p in self._state.players.items()}
+            mem_store.generate_reviews_for_game(
+                game_id=self._game_id,
+                player_ids=player_ids,
+                roles=ground_truth,
+                faction_won=faction_won,
+                ground_truth=ground_truth,
+            )
 
             coordinator.save_all(
                 memory_store=mem_store,
                 retriever=None,
                 snapshot_id=self._game_id,
             )
-            logger.info("Saved memory snapshot for game %s", self._game_id)
-        except Exception as exc:
-            logger.warning("Memory snapshot save error for game %s: %s", self._game_id, exc)
+            logger.info(
+                "Saved memory snapshot for game %s (%d players, %d reviews)",
+                self._game_id, len(player_ids), len(ground_truth),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to save memory snapshot for game %s", self._game_id,
+                exc_info=True,
+            )

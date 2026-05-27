@@ -91,6 +91,8 @@ class RuntimeState(TypedDict, total=False):
     agent_registry: Any  # AgentRegistry protocol, optional
     # RAG knowledge service: retrieves strategy hints for agent contexts
     rag_service: Any
+    # Restored MemoryStore from previous game (cross-game learning)
+    restored_memory: Any
     # Runtime flow-control timer; must not adjudicate RuleEngine truth
     runtime_timer: Any
     # Anti-stall: consecutive days with no exile from vote

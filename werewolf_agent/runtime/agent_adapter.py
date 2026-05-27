@@ -1294,6 +1294,7 @@ def build_agent_context(
     wolf_kill_target_id: str | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
     rag_service: Any | None = None,
+    restored_memory: Any | None = None,
 ) -> AgentContext:
     """Build AgentContext for a player from current game state.
 
@@ -1546,6 +1547,29 @@ def build_agent_context(
     except Exception:
         logger.debug("Role state monitoring failed, skipping", exc_info=True)
 
+    # -- Cross-game memory: inject profile info from previous games --
+    if restored_memory is not None:
+        try:
+            profile = restored_memory.get_profile(player_id)
+            if profile is not None:
+                strategy_directive["cross_game_profile"] = (
+                    f"你的历史评分：逻辑{profile.logic_score}/10 · "
+                    f"欺骗{profile.deception_score}/10 · "
+                    f"领导力{profile.leadership_score}/10 · "
+                    f"可信度{profile.credibility_score}/10 · "
+                    f"学习率{profile.learning_rate_score}/10 · "
+                    f"风险偏好{profile.risk_preference_score}/10。"
+                    f"曾游戏{profile.total_games}局。"
+                )
+            recent = restored_memory.reflections_by_player(player_id)
+            if recent:
+                latest = recent[-1]
+                strategy_directive["last_game_reflection"] = (
+                    f"上局{latest.role}身份时的反思：{latest.text[:200] if latest.text else '无'}"
+                )
+        except Exception:
+            pass
+
     context = AgentContext(
         agent_id=player_id,
         task_type=task_type,
@@ -1625,6 +1649,7 @@ def agent_night_witch(
         legal_targets=legal_targets,
         wolf_kill_target_id=wolf_kill_target_id,
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
 
     # Build witch strategy directive with clear action guidance
@@ -2022,6 +2047,7 @@ def agent_wolf_discussion(
         legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
 
     # Inject teammate transcript into recent_transcript for prompt visibility
@@ -2069,6 +2095,7 @@ def agent_day_speech(
         legal_actions=[ActionType.SPEECH],
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
 
     strategy_directive = context.strategy_directive or {}
@@ -2841,6 +2868,7 @@ def agent_sheriff_vote(
         legal_targets=candidates,
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
 
     # Wolf strategy for sheriff voting
@@ -2952,6 +2980,7 @@ def agent_sheriff_withdraw(
         engine, gs, candidate_id, TaskType.SHERIFF_SPEECH,
         legal_actions=[ActionType.SHERIFF_WITHDRAW, ActionType.NO_ACTION],
         rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
     )
 
     try:
