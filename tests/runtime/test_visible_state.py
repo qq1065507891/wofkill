@@ -18,6 +18,9 @@ def test_build_visible_player_state_contains_shared_timeline_and_public_fields()
             "p01": PlayerState(id="p01", role="seer", alive=True),
             "p02": PlayerState(id="p02", role="werewolf", alive=False),
         },
+        events=[
+            GameEvent(type="judge_broadcast", payload={"phase": "death_announce", "message": "昨夜死亡: p02", "visibility": "public"}),
+        ],
         deaths=[Death(
             player_id="p02",
             reason="wolf_kill",
@@ -33,7 +36,7 @@ def test_build_visible_player_state_contains_shared_timeline_and_public_fields()
     assert state["phase_label"] == "D1 / 第一天"
     assert state["timeline_facts"]["previous_phase_label"] == "N1 / 首夜"
     assert state["alive_players"] == ["p01"]
-    assert state["dead_players"] == [{"id": "p02", "reason": "wolf_kill"}]
+    assert state["dead_players"] == [{"id": "p02", "reason": "night"}]
     assert state["sheriff_id"] == "p01"
 
 

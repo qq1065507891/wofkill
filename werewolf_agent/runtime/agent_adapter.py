@@ -736,12 +736,19 @@ def _collect_public_vote_history(gs: GameState) -> str:
 
 
 def _collect_death_order(gs: GameState) -> str:
-    """Collect public death order for villager analysis."""
+    """Collect public death order for villager analysis.
+
+    Only exile and hunter_shot reasons are public knowledge.
+    wolf_kill and witch_poison are indistinguishable to players — both are night deaths.
+    """
+    _public_reasons = {"exile": "放逐", "hunter_shot": "枪杀"}
     lines: list[str] = []
     for d in gs.deaths:
-        reason_label = {"wolf_kill": "狼杀", "exile": "放逐", "witch_poison": "毒杀",
-                        "hunter_shot": "猎人开枪"}.get(d.reason, d.reason)
-        lines.append(f"{d.player_id}({reason_label})")
+        label = _public_reasons.get(d.reason)
+        if label:
+            lines.append(f"{d.player_id}({label})")
+        else:
+            lines.append(d.player_id)
     if not lines:
         return ""
     return " → ".join(lines)
@@ -810,6 +817,166 @@ def _build_idiot_day_speech_directive(
         )
 
     return parts
+
+
+def _evaluate_death_cause_claims(
+    gs: GameState,
+    player_id: str,
+    player_role: str,
+    wolf_kill_target_id: str | None = None,
+) -> list[str]:
+    """Evaluate trustworthiness of death cause claims from public speeches.
+
+    Scans speech events for claims about how players died (poison, wolf-kill,
+    saved). Evaluates each claim from the current player's perspective based
+    on their private role knowledge.
+
+    Returns a list of evaluation strings suitable for strategy_directive.
+    """
+    evaluations: list[str] = []
+    if not player_role:
+        return evaluations
+
+    # Step 1: collect witch private data
+    witch_actions: list[dict[str, Any]] = []
+    for e in gs.events:
+        if e.type == "witch_decision_audit":
+            witch_actions.append(e.payload)
+
+    # Step 2: collect all wolf kill targets (all nights, not just current)
+    wolf_kill_targets: dict[int, str] = {}  # night_number -> target_id
+    for e in gs.events:
+        if e.type == "wolf_kill_selected":
+            night = e.payload.get("night_number", 0)
+            target = e.payload.get("target_id", "")
+            if night and target:
+                wolf_kill_targets[night] = target
+
+    # Step 3: collect seer check results (seer_check events, visible only to seer)
+    seer_checks: list[tuple[str, str]] = []
+    if player_role == "seer":
+        for e in gs.events:
+            if e.type == "seer_check":
+                seer_checks.append((e.payload["target_id"], e.payload["alignment"]))
+
+    # Step 4: scan speeches for death cause claims
+    _cause_patterns = [
+        # (pattern, cause_type, label) — group 1 or 2 is the target player
+        (r'(?:我|女巫).{0,4}(?:毒[杀了死]|撒毒).{0,4}(p\d+)', "poison", "自称毒杀"),
+        (r'(p\d+).{0,6}(?:是|被)(?:女巫)?毒[杀了死]', "poison", "被指毒杀"),
+        (r'(?:狼[刀杀人]|狼人[刀杀]).{0,4}(p\d+)|(p\d+).{0,4}(?:是|被)狼[刀杀了]', "wolf_kill", "被指狼刀"),
+        (r'(?:我|女巫).{0,4}(?:救[了过]|用解药).{0,4}(p\d+)', "saved", "自称救了"),
+        (r'(p\d+).{0,4}(?:是)?银水', "saved", "被指银水"),
+    ]
+
+    for e in gs.events:
+        if e.type not in ("speech", "sheriff_speech"):
+            continue
+        speaker = e.payload.get("speaker", "")
+        if speaker == player_id:
+            continue
+        text = str(e.payload.get("text", ""))
+
+        for pattern, cause_type, label in _cause_patterns:
+            m = re.search(pattern, text)
+            if not m:
+                continue
+            target = m.group(1) or m.group(2)
+            if not target:
+                continue
+
+            eval_text = None
+
+            # -- Witch's own knowledge --
+            if player_role == "witch":
+                if cause_type == "poison":
+                    poison_used = any(
+                        a.get("action_taken") == "use_poison" and a.get("poison_target_id")
+                        for a in witch_actions
+                    )
+                    poison_target = next(
+                        (a["poison_target_id"] for a in witch_actions
+                         if a.get("action_taken") == "use_poison" and a.get("poison_target_id")),
+                        None,
+                    )
+                    if poison_target == target:
+                        eval_text = f"[可信] {speaker}称{target}被毒杀——你确实毒了{target}"
+                    elif poison_used and poison_target:
+                        eval_text = f"[不可信] {speaker}称{target}被毒杀——你毒的是{poison_target}，不是{target}，{speaker}在撒谎或猜错"
+                    elif not gs.poison_used or (gs.poison_used and not poison_used):
+                        eval_text = f"[不可信] {speaker}称{target}被毒杀——你的毒药尚未使用"
+                elif cause_type == "saved":
+                    saved_target = next(
+                        (a["wolf_kill_target_id"] for a in witch_actions
+                         if a.get("action_taken") == "use_antidote"),
+                        None,
+                    )
+                    if saved_target == target:
+                        eval_text = f"[可信] {speaker}称{target}被救——你确实救了{target}"
+                    elif gs.antidote_used and saved_target:
+                        eval_text = f"[不可信] {speaker}称{target}被救——你救的是{saved_target}，不是{target}"
+                elif cause_type == "wolf_kill":
+                    wkt = wolf_kill_target_id or next(
+                        (a["wolf_kill_target_id"] for a in witch_actions
+                         if a.get("wolf_kill_target_id")),
+                        None,
+                    )
+                    saved = any(
+                        a.get("action_taken") == "use_antidote"
+                        for a in witch_actions
+                    )
+                    if wkt == target and saved:
+                        eval_text = f"[可信] {speaker}称{target}被狼刀——你救了{target}，他确实是狼刀目标"
+                    elif wkt == target and not saved:
+                        eval_text = f"[可信] {speaker}称{target}被狼刀——你没救{target}，他死于狼刀"
+
+            # -- Werewolf's own knowledge --
+            elif player_role == "werewolf":
+                all_wolf_targets = set(wolf_kill_targets.values())
+                if cause_type == "wolf_kill":
+                    if target in all_wolf_targets:
+                        nights = sorted(n for n, t in wolf_kill_targets.items() if t == target)
+                        night_list = "、".join(f"N{n}" for n in nights)
+                        eval_text = f"[可信] {speaker}称{target}被狼刀——狼队在{night_list}确实刀了{target}"
+                    elif all_wolf_targets:
+                        all_targets_str = "、".join(
+                            f"N{n}:{t}" for n, t in sorted(wolf_kill_targets.items())
+                        )
+                        eval_text = f"[不可信] {speaker}称{target}被狼刀——狼队从未刀过{target}（狼队刀口: {all_targets_str}），{speaker}在转移视线"
+                    else:
+                        eval_text = f"[可信] {speaker}称{target}被狼刀——当前无狼刀记录，若{target}已死则可能属实"
+                elif cause_type == "poison":
+                    if target in all_wolf_targets:
+                        eval_text = f"[需判断] {speaker}称{target}被毒杀——狼队刀过{target}，不排除毒杀，但{target}更可能是狼刀致死"
+                    else:
+                        eval_text = f"[需判断] {speaker}称{target}被毒杀——狼队未刀过{target}，若{target}已死则毒杀可能性高"
+                elif cause_type == "saved":
+                    if target in all_wolf_targets:
+                        eval_text = f"[需判断] {speaker}称{target}被救——狼队刀过{target}，若无人死亡则可能属实"
+                    else:
+                        eval_text = f"[需判断] {speaker}称{target}被救——狼队未刀过{target}，{speaker}可能是假女巫在编造信息"
+
+            # -- Seer's knowledge (from checks) --
+            elif player_role == "seer":
+                speaker_alignment = next((a for cid, a in seer_checks if cid == speaker), None)
+                if speaker_alignment == "wolf":
+                    eval_text = f"[不可信] {speaker}称{target}死因{label}——你查验{speaker}为狼人，此声明极可能是谎言"
+                elif speaker_alignment == "good":
+                    eval_text = f"[可信] {speaker}称{target}死因{label}——你查验{speaker}为好人，声明可信度较高"
+                else:
+                    eval_text = f"[需判断] {speaker}称{target}死因{label}——你未查验{speaker}，需从逻辑一致性判断"
+
+            # -- Commoner perspective (villager / hunter / idiot / hybrid) --
+            else:
+                eval_text = f"[需判断] {speaker}称{target}死因{label}——你无私有信息可验证，需判断{speaker}发言逻辑是否自洽、是否有矛盾"
+
+            if eval_text:
+                already_exists = any(eval_text in e for e in evaluations)
+                if not already_exists:
+                    evaluations.append(eval_text)
+            break  # one label per speech
+
+    return evaluations
 
 
 def _evaluate_wolf_kill_target(
@@ -1345,14 +1512,12 @@ def build_agent_context(
                 "type": e.type,
             })
 
-    # Build public summary: chronological timeline of key public events.
-    # Strategy to stay within context budget (~2500 chars):
-    #   - Structural events (deaths, votes, exiles): keep in full (compact)
-    #   - Previous-day speech text is intentionally not replayed. Players keep
-    #     only their own private_memory notes across days.
-    #   - If total exceeds SUMMARY_BUDGET, drop oldest lines first
+    # ── Build public summary (A: enriched events, B: smart truncation) ──
+    # Priority: 1=critical(death/vote/seer), 2=secondary(PK/sheriff_no), 3=low(separators)
     SUMMARY_BUDGET = 2500
-    summary_parts: list[str] = []
+
+    summary_items: list[tuple[int, str]] = []
+
     for e in gs.events:
         if e.type == "day_announce":
             day = e.payload.get("day", "?")
@@ -1360,35 +1525,89 @@ def build_agent_context(
                 day_label = phase_label("day", int(day))
             except (TypeError, ValueError):
                 day_label = f"D{day}"
-            summary_parts.append(f"\n===== {day_label} =====")
+            summary_items.append((3, f"\n===== {day_label} ====="))
+
         elif e.type == "judge_broadcast" and e.payload.get("visibility") == "public":
-            msg = e.payload.get("message", "")
             phase = e.payload.get("phase", "")
-            if phase in ("death_announce", "exile", "vote_result_announce",
-                         "vote_tie_pk", "vote_second_tie",
-                         "sheriff_elected", "sheriff_no_election"):
-                summary_parts.append(f"[法官] {msg}")
+            msg = e.payload.get("message", "")
+            if phase == "death_announce":
+                summary_items.append((1, f"[死讯] {msg}"))
+            elif phase == "exile":
+                summary_items.append((1, f"[法官] {msg}"))
+            elif phase == "sheriff_elected":
+                summary_items.append((1, f"[警长] {msg}"))
+            elif phase in ("vote_tie_pk", "vote_second_tie"):
+                summary_items.append((2, f"[法官] {msg}"))
+            elif phase == "sheriff_no_election":
+                summary_items.append((2, f"[警长] {msg}"))
+
         elif e.type == "vote_resolved":
             exiled = e.payload.get("exiled")
             reason = e.payload.get("reason", "")
             tied = e.payload.get("tied", [])
+            weighted = e.payload.get("weighted_tally", {})
+            day = e.payload.get("day_number", "?")
             if exiled:
-                summary_parts.append(f"[投票结果] {exiled} 被放逐")
+                if weighted:
+                    tally_str = "、".join(
+                        f"{pid}={int(w)}票" for pid, w in
+                        sorted(weighted.items(), key=lambda x: -x[1])[:5]
+                    )
+                    summary_items.append((1, f"[放逐] D{day} {exiled}被放逐 ({tally_str})"))
+                else:
+                    summary_items.append((1, f"[放逐] D{day} {exiled}被放逐"))
             elif reason == "second_tie_no_exile":
-                summary_parts.append("[投票结果] 二次平票，无人出局")
+                summary_items.append((1, "[放逐] 二次平票，无人出局"))
             elif tied:
-                summary_parts.append(f"[投票结果] 平票PK: {', '.join(tied)}")
-        elif e.type == "idiot_reveal":
-            summary_parts.append(f"[白痴亮牌] {e.payload.get('player_id', '?')} 亮出白痴身份")
-        elif e.type == "hunter_shot_public":
-            summary_parts.append(f"[猎人开枪] 猎人带走了 {e.payload.get('target_id', '?')}")
+                summary_items.append((2, f"[放逐] 平票PK: {', '.join(tied)}"))
 
-    # Trim from front to stay within budget
-    total = sum(len(p) for p in summary_parts)
-    while total > SUMMARY_BUDGET and len(summary_parts) > 1:
-        dropped = summary_parts.pop(0)
-        total -= len(dropped)
-    public_summary = "\n".join(summary_parts) if summary_parts else ""
+        elif e.type == "idiot_reveal":
+            summary_items.append((1, f"[白痴] {e.payload.get('player_id', '?')} 亮牌"))
+
+        elif e.type == "hunter_shot_public":
+            summary_items.append((1, f"[枪声] 猎人带走了 {e.payload.get('target_id', '?')}"))
+
+        elif e.type in ("speech", "sheriff_speech"):
+            text = str(e.payload.get("text", ""))
+            speaker = e.payload.get("speaker", "")
+            # Extract public seer check claims from speech
+            if any(kw in text for kw in ("验了", "查验", "查杀", "金水")):
+                m = re.search(r'(?:第?(\d)夜|N(\d)).*?验[了过]?\s*(p\d+).*?(狼人|查杀|好人|金水)', text)
+                if m:
+                    night = m.group(1) or m.group(2)
+                    target = m.group(3)
+                    result_raw = m.group(4)
+                    result_cn = {"狼人": "狼人", "查杀": "狼人", "好人": "好人", "金水": "好人"}.get(result_raw, result_raw)
+                    summary_items.append((1, f"[验人] {speaker} 报 N{night} {target}={result_cn}"))
+            # Extract death cause claims (poison / wolf-kill / saved)
+            for pattern, label in [
+                (r'(?:我|女巫).{0,4}(?:毒[杀了死]|撒毒).{0,4}(p\d+)', '自称毒杀'),
+                (r'(p\d+).{0,6}(?:是|被)(?:女巫)?毒[杀了死]', '被指毒杀'),
+                (r'(?:狼[刀杀人]|狼人[刀杀]).{0,4}(p\d+)|(p\d+).{0,4}(?:是|被)狼[刀杀了]', '被指狼刀'),
+                (r'(?:我|女巫).{0,4}(?:救[了过]|用解药).{0,4}(p\d+)', '自称救了'),
+                (r'(p\d+).{0,4}(?:是)?银水', '被指银水'),
+            ]:
+                for m in re.finditer(pattern, text):
+                    target = m.group(1) or m.group(2)
+                    if target:
+                        summary_items.append((2, f"[死因] {speaker} 称 {target}{label}"))
+                        break  # one claim per pattern per speech
+
+    # ── Smart truncation by priority (B) ──
+    total = sum(len(t) for _, t in summary_items)
+    if total > SUMMARY_BUDGET:
+        for drop_priority in (3, 2, 1):
+            if total <= SUMMARY_BUDGET:
+                break
+            for i, (pri, text) in enumerate(summary_items):
+                if pri == drop_priority and text:
+                    total -= len(text)
+                    summary_items[i] = (pri, "")
+                    if total <= SUMMARY_BUDGET:
+                        break
+        summary_items = [(p, t) for p, t in summary_items if t]
+
+    public_summary = "\n".join(text for _, text in summary_items)
     if public_summary:
         public_summary = f"{TIMELINE_ORDER_NOTE}\n{public_summary}"
     else:
@@ -1522,6 +1741,17 @@ def build_agent_context(
             ]
     except Exception:
         logger.warning("Role state monitoring failed, skipping", exc_info=True)
+
+    # -- Death cause claim evaluation: does the player trust each claim? --
+    try:
+        death_evaluations = _evaluate_death_cause_claims(
+            gs, player_id, player.role,
+            wolf_kill_target_id=wolf_kill_target_id,
+        )
+        if death_evaluations:
+            strategy_directive["death_cause_evaluation"] = death_evaluations
+    except Exception:
+        logger.debug("Death cause evaluation failed, skipping", exc_info=True)
 
     # -- Cross-game memory: inject accumulated learning from previous games --
     if restored_memory is not None:

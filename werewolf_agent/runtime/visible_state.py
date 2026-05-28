@@ -49,7 +49,7 @@ def build_visible_player_state(game_state: GameState) -> dict[str, Any]:
             pid for pid, player in game_state.players.items() if player.alive
         ],
         "dead_players": [
-            {"id": death.player_id, "reason": death.reason}
+            {"id": death.player_id, "reason": death.reason if death.reason in ("exile", "hunter_shot") else "night"}
             for death in deaths
         ],
         "sheriff_id": game_state.sheriff_id,

@@ -67,6 +67,12 @@ class TaskType(str, Enum):
     PK_SPEECH = "pk_speech"
 
 
+class OutputMode(str, Enum):
+    FULL_ACTION = "full_action"
+    TARGET_CHOICE = "target_choice"
+    SPEECH_INTENT = "speech_intent"
+
+
 class FactionGoal(str, Enum):
     PUSH_GOOD_PLAYER_OUT = "push_good_player_out"
     PROTECT_TEAMMATE = "protect_teammate"

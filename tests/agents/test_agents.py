@@ -911,6 +911,9 @@ class TestPlayerAgentRetryFallback:
                 self.calls = 0
                 self._usage_log: list[UsageRecord] = []
 
+            def resolve_config(self, agent_id: str, task_type: str):
+                return ModelConfig(provider="minimax", model="MiniMax-M2.7", allow_text_tool_fallback=False), None
+
             def generate(self, *args, **kwargs):
                 self.calls += 1
                 self._usage_log.append(UsageRecord(
@@ -1159,7 +1162,8 @@ class TestPlayerAgentRetryFallback:
             legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
         )
 
-        prompt = agent._build_system_prompt(ctx)
+        # s10: examples are in user_prompt (dynamic per-task context)
+        prompt = agent._build_prompt(ctx, RetryInfo(max_retries=1))
 
         assert "submit_player_action" in prompt
         assert '"action_type": "sheriff_register"' in prompt
@@ -1963,7 +1967,7 @@ class TestMandatoryVote:
         assert action.target_id == "p05"
 
     def test_mandatory_vote_prompt_contains_pressure(self) -> None:
-        """System prompt mentions mandatory voting when NO_ACTION not available."""
+        """User prompt mentions mandatory voting when NO_ACTION not available (s10: dynamic)."""
         agent = self._make_agent("unused")
         ctx = AgentContext(
             agent_id="p01",
@@ -1974,7 +1978,7 @@ class TestMandatoryVote:
             legal_actions=[ActionType.VOTE],
             legal_targets=["p05", "p06"],
         )
-        prompt = agent._build_system_prompt(ctx)
+        prompt = agent._build_prompt(ctx, RetryInfo(max_retries=1))
         assert "必须" in prompt
         assert "不能弃票" in prompt
 
@@ -1992,7 +1996,7 @@ class TestMandatoryVote:
         prompt = agent._build_system_prompt(ctx)
 
         assert "平安夜不等于无人被刀" in prompt
-        assert "不能用“平安夜没人死”反驳女巫知道刀口" in prompt
+        assert "不能用「平安夜没人死」反驳女巫知道刀口" in prompt
         assert "不要跟风复述" in prompt
 
     def test_vote_pressure_from_strategy_directive(self) -> None:

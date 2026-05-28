@@ -23,6 +23,7 @@ from werewolf_agent.agents.schemas import (
     AgentContext,
     FallbackAction,
     FactionGoal,
+    OutputMode,
     PlayerAction,
     PrivateIntent,
     RetryInfo,
@@ -31,15 +32,10 @@ from werewolf_agent.agents.schemas import (
     TaskType,
     VoteBasis,
 )
+from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
 from werewolf_agent.model_gateway.router import ModelRouter
 
 logger = logging.getLogger(__name__)
-
-
-class OutputMode(str, Enum):
-    FULL_ACTION = "full_action"
-    TARGET_CHOICE = "target_choice"
-    SPEECH_INTENT = "speech_intent"
 
 
 class ActionValidator(Protocol):
@@ -102,10 +98,6 @@ class PlayerAgent:
     6. Fallback to safe action after max retries
     """
 
-    _MAX_JSON_CONTEXT_CHARS = 1800
-    _MAX_TRANSCRIPT_ITEMS = 4
-    _MAX_TRANSCRIPT_TEXT_CHARS = 220
-    _MAX_SALIENCE_ITEMS = 4
     _CHOICE_TARGET_ACTIONS = DefaultActionValidator._TARGET_REQUIRED_ACTIONS
     _SPEECH_INTENT_TASKS = {
         TaskType.SPEECH,
@@ -1005,8 +997,8 @@ class PlayerAgent:
     def _speech_intent_reason(self, intent: str, target_id: str | None) -> str:
         intent_label = self._SPEECH_INTENTS.get(intent, "补充发言")
         if target_id:
-            return f"按发言意图“{intent_label}”围绕{target_id}组织公开发言"
-        return f"按发言意图“{intent_label}”组织公开发言"
+            return f"按发言意图「{intent_label}」围绕{target_id}组织公开发言"
+        return f"按发言意图「{intent_label}」组织公开发言"
 
     def _infer_standing_with_seer(self, context: AgentContext) -> str:
         for item in context.salience_items:
@@ -1468,393 +1460,12 @@ class PlayerAgent:
         ]
         return templates[salt % len(templates)]
 
-    # Role name mapping for Chinese prompts
-    _ROLE_NAMES = {
-        "werewolf": "狼人", "villager": "村民", "seer": "预言家",
-        "witch": "女巫", "hunter": "猎人", "idiot": "白痴",
-        "hybrid": "混血儿",
-    }
+    # ── Prompt building delegated to PlayerPromptBuilder (s10 pipeline) ──
 
     def _build_system_prompt(self, context: AgentContext) -> str:
-        """Build system prompt with role identity and constraints (Chinese)."""
-        role_cn = self._ROLE_NAMES.get(context.own_role or "", context.own_role or "")
-        parts = [
-            "你是一场狼人杀游戏的玩家。请用中文发言和思考。",
-            "【禁止事项】本局只有以下7种角色：狼人、村民、预言家、女巫、猎人、白痴、混血儿。"
-            "绝对禁止提及守卫、恋人、丘比特、白狼王、熊、乌鸦、狐狸、盗贼、吹笛者等任何不存在的角色。"
-            "没有守卫，不存在被守护的可能。没有平安夜是由守卫造成的。平安夜只有两种可能：狼人空刀，或女巫使用解药救人。",
-            "【平安夜与女巫规则硬约束】平安夜不等于无人被刀，只代表公开结果无人死亡。"
-            "除狼人外，普通玩家不知道狼人是否空刀；除女巫外，普通玩家不知道女巫是否救人。"
-            "不能用“平安夜没人死”反驳女巫知道刀口，也不能把“不公开救谁”直接等同于假女巫。"
-            "可以质疑跳女巫玩家是否用药、为什么暂不公开银水、以及发言前后是否矛盾。"
-            "不要跟风复述已有指控；每次发言必须给出独立证据、明确区分事实和推测。",
-            "【公开记录引用约束】只有游戏概况、可见状态、关键事件、近期发言中明确出现的信息，才能称为公开记录。"
-            "不要编造某玩家曾经说过的话、声称过的身份、投票理由或查验结论；不确定时必须写成推测或质疑。",
-            f"你的玩家ID: {context.agent_id}",
-            f"你的名字: {self.player_name}",
-        ]
-        if context.own_role:
-            parts.append(f"你的角色: {role_cn}（{context.own_role}）")
-            # Role-specific rules
-            role_rules = {
-                "hunter": "猎人规则：被狼人杀死或被放逐时可以开枪带走一人；被女巫毒杀时不能开枪。夜间无法自保。",
-                "idiot": "白痴规则：被放逐时亮出身份免死，但失去投票权且不能再被放逐；之后被狼人杀死才算真正死亡。夜间无法自保。",
-                "witch": "女巫规则：有一瓶解药和一瓶毒药，不能在同一夜同时使用。解药不能自救。N1 / 首夜大概率应该救人。",
-                "seer": "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。上警时必须留两夜警徽流。",
-                "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
-                "hybrid": "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。主人死亡后阵营不再改变。",
-            }
-            if context.own_role in role_rules:
-                parts.append(role_rules[context.own_role])
-        # Inject belief state: who I suspect and trust
-        if context.belief_state:
-            suspects = context.belief_state.get("my_suspects", [])
-            trusted = context.belief_state.get("my_trusted", [])
-            belief_lines = []
-            if suspects:
-                suspect_desc = ", ".join(
-                    f"{s['player']}(嫌疑{s['faction_lean']}, 猜{s['top_role_guess']})"
-                    for s in suspects[:5]
-                )
-                belief_lines.append(f"我怀疑的玩家: {suspect_desc}")
-            if trusted:
-                trust_desc = ", ".join(
-                    f"{t['player']}(倾向{t['faction_lean']}, 信任{t['trust']})"
-                    for t in trusted[:5]
-                )
-                belief_lines.append(f"我信任的玩家: {trust_desc}")
-            if belief_lines:
-                parts.append("【我的判断（基于已有信息的推理，可能是错的）】" + " ".join(belief_lines))
-        parts.append(f"当前阶段: {context.phase}")
-        if context.legal_actions:
-            parts.append(
-                f"可用操作: {[a.value for a in context.legal_actions]}"
-            )
-        if context.legal_targets:
-            parts.append(f"可选目标: {context.legal_targets}")
-        # Mandatory vote pressure hints
-        if context.legal_actions and ActionType.VOTE in context.legal_actions:
-            if ActionType.NO_ACTION not in context.legal_actions:
-                parts.append("重要：本轮投票必须选择一名玩家放逐，不能弃票！")
-            if context.legal_actions == [ActionType.VOTE] and context.legal_targets:
-                parts.append("你必须投出选票，从可选目标中选择一人。")
-            parts.append(
-                "投票时必须先在心里完成判断，并在JSON中额外给出这些私有字段："
-                "seer_stance（枚举：trust/distrust/undecided/no_claim）、"
-                "vote_basis（枚举：seer_check/seer_siding/speech_logic/vote_pattern/pressure_test/anti_herd/fallback）、"
-                "standing_with_seer（你站边哪个预言家/逻辑线，没有则写空字符串）、"
-                "suspect_reason（为什么怀疑最终投票对象）、"
-                "not_voting_reason（为什么不投其他主要候选人）、"
-                "private_reason（完整内心活动：为什么投他、担心什么、最终如何决定）。"
-                "这些字段不会公开发言，只给主持人审计。"
-            )
-        parts.append(
-            "请优先通过 submit_player_action 工具提交结构化行动。"
-            "如果当前模型无法调用工具，则只输出一个JSON对象，不要解释、不要Markdown。"
-            "字段必须包含 action_type、target_id、speech、reason、confidence。"
-        )
-        parts.append("重要：speech字段必须使用中文，这是你在游戏中的公开发言。")
-        parts.append("")
-
-        # ── 可用技能 ──
-        skill_prompt = self._build_skill_prompt(context)
-        if skill_prompt:
-            parts.append(skill_prompt)
-            parts.append("")
-
-        # Show context-appropriate examples based on legal actions
-        if context.legal_actions and any(
-            a in (ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL) for a in context.legal_actions
-        ):
-            example_target = context.legal_targets[0] if context.legal_targets else "p05"
-            parts.append("示例输出（狼人击杀场景）：")
-            parts.append(
-                f'{{"action_type": "wolf_kill", "target_id": "{example_target}", '
-                f'"speech": "", '
-                f'"reason": "选择击杀目标", "confidence": 0.8, '
-                f'"private_intent": {{"true_role": "werewolf", '
-                f'"faction_goal": "push_good_player_out", "claimed_view": "我是好人", '
-                f'"pressure_target": "{example_target}", "risk_flags": []}}}}'
-            )
-            parts.append("示例输出（狼人空刀场景）：")
-            parts.append(
-                '{"action_type": "wolf_no_kill", "target_id": null, '
-                '"speech": "", '
-                '"reason": "本轮空刀策略", "confidence": 0.6, '
-                '"private_intent": {"true_role": "werewolf", '
-                '"faction_goal": "confuse_good", "claimed_view": "我是好人", '
-                '"pressure_target": null, "risk_flags": []}}'
-            )
-        elif context.legal_actions and ActionType.SHERIFF_REGISTER in context.legal_actions:
-            parts.append("示例输出（上警报名场景）：")
-            parts.append(
-                '{"action_type": "sheriff_register", "target_id": null, '
-                '"speech": "我报名竞选警长。", '
-                '"reason": "希望参与警上发言并争取带队", "confidence": 0.6}'
-            )
-            if ActionType.NO_ACTION in context.legal_actions:
-                parts.append("示例输出（不上警场景）：")
-                parts.append(
-                    '{"action_type": "no_action", "target_id": null, '
-                    '"speech": "我不上警，先听警上发言再判断。", '
-                    '"reason": "当前信息不足，先观察警上格局", "confidence": 0.6}'
-                )
-        else:
-            parts.append("示例输出（发言场景）：")
-            parts.append('{"action_type": "speech", "target_id": null, '
-                         '"speech": "我觉得p05很可疑，昨晚他的发言前后矛盾。", '
-                         '"reason": "根据发言分析", "confidence": 0.7, '
-                         '"private_intent": {"true_role": "villager", '
-                         '"faction_goal": "find_wolves", "claimed_view": "我是好人", '
-                         '"pressure_target": "p05", "risk_flags": []}}')
-            parts.append("示例输出（投票场景）：")
-            parts.append('{"action_type": "vote", "target_id": "p05", '
-                         '"speech": "", '
-                         '"reason": "公开理由：p05发言可疑", '
-                         '"seer_stance": "trust", '
-                         '"vote_basis": "seer_check", '
-                         '"standing_with_seer": "p03", '
-                         '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
-                         '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
-                         '"private_reason": "心里活动：我更信p03的预言家线，p05像狼队抗推失败后的防守位，所以投p05。", '
-                         '"confidence": 0.8, '
-                         '"private_intent": {"true_role": "seer", '
-                         '"faction_goal": "find_wolves", "claimed_view": "我是预言家", '
-                         '"pressure_target": "p05", "risk_flags": []}}')
-        return "\n".join(parts)
-
-    # ── Skill system: lightweight catalog → load_skill tool → deep load ──
-    # Follows the standard two-layer pattern:
-    #   1. System prompt: only name + one-line description (lightweight catalog)
-    #   2. load_skill tool: returns full analysis body (deep loading)
-    # The model decides WHEN to call load_skill — we don't force it.
-
-    _SKILL_CATALOG: dict[str, dict[str, str]] = {
-        "wolf_pit": {
-            "name": "盘狼坑",
-            "desc": "系统性分析场上可能的狼人分布，输出嫌疑人区和排除区",
-        },
-        "find_power": {
-            "name": "找神",
-            "desc": "分析场上哪些玩家可能是神职（预言家/女巫/猎人等）",
-        },
-        "last_words": {
-            "name": "分析遗言",
-            "desc": "分析刚出局玩家的遗言，判断其身份可信度",
-        },
-    }
-
-    def _build_skill_prompt(self, context: AgentContext) -> str:
-        """Build the lightweight skill catalog for the system prompt.
-
-        Only includes name + one-line description — the full analysis body
-        lives behind the load_skill tool and is injected only on demand.
-        """
-        from werewolf_agent.skills.registry import SkillRegistry, faction_for_role
-        from werewolf_agent.runtime.agent_adapter import _TOOL_SKILL_NAMES
-
-        registry = SkillRegistry()
-        role = context.own_role or ""
-        phase = context.phase or ""
-        role_faction = faction_for_role(role)
-        allowed = {"common", "universal", role_faction.value}
-
-        lines: list[str] = []
-        for skill in registry.all_skills():
-            if skill.faction.value not in allowed:
-                continue
-            if not skill.is_applicable(role, phase):
-                continue
-            name = skill.name.value
-            if name not in _TOOL_SKILL_NAMES:
-                continue
-            catalog = self._SKILL_CATALOG.get(name)
-            if catalog:
-                lines.append(f"- {catalog['name']}: {catalog['desc']}")
-
-        if lines:
-            return (
-                "【可用技能目录】以下技能可通过 load_skill 工具按需加载完整分析：\n"
-                + "\n".join(lines)
-                + "\n在提交行动前，建议先调用 load_skill 加载相关分析以获得更准确的信息。"
-            )
-        return ""
+        """Build system prompt via s10 pipeline: core + rules + role_guide + skills + output_contract."""
+        return PlayerPromptBuilder(context, self.player_name).build_system_prompt()
 
     def _build_prompt(self, context: AgentContext, retry: RetryInfo) -> str:
-        """Build the user prompt with context and retry hints (Chinese)."""
-        parts: list[str] = []
-
-        if context.public_summary:
-            parts.append(f"游戏概况:\n{self._truncate_text(context.public_summary, self._MAX_JSON_CONTEXT_CHARS)}")
-
-        if context.visible_world_state:
-            parts.append(
-                "可见状态: "
-                + self._compact_json_for_prompt(context.visible_world_state, self._MAX_JSON_CONTEXT_CHARS)
-            )
-
-        if context.salience_items:
-            parts.append(
-                "关键事件: "
-                + self._compact_json_for_prompt(
-                    context.salience_items[:self._MAX_SALIENCE_ITEMS],
-                    self._MAX_JSON_CONTEXT_CHARS,
-                )
-            )
-
-        if context.strategy_directive:
-            parts.append(
-                "策略建议: "
-                + self._compact_json_for_prompt(context.strategy_directive, self._MAX_JSON_CONTEXT_CHARS)
-            )
-
-        if context.persona_snapshot:
-            parts.append(
-                "人格设定: "
-                + self._compact_json_for_prompt(context.persona_snapshot, self._MAX_JSON_CONTEXT_CHARS)
-            )
-
-        if context.recent_transcript:
-            parts.append("近期发言:\n" + self._format_recent_transcript(context.recent_transcript))
-
-        if retry.correction_hint:
-            parts.append(f"\n纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）: {retry.correction_hint}")
-            parts.append(f"错误信息: {retry.error_message}")
-
-        output_mode = self._select_output_mode(context)
-        if output_mode == OutputMode.TARGET_CHOICE:
-            parts.append(self._format_choice_prompt(context))
-        elif output_mode == OutputMode.SPEECH_INTENT:
-            parts.append(self._format_speech_intent_prompt(context))
-
-        parts.append(self._strict_output_contract(context, output_mode))
-        return "\n".join(parts)
-
-    def _compact_json_for_prompt(self, value: Any, max_chars: int) -> str:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        return self._truncate_text(text, max_chars)
-
-    def _truncate_text(self, text: str, max_chars: int) -> str:
-        if len(text) <= max_chars:
-            return text
-        return text[:max_chars] + f"...（已截断，原长度{len(text)}）"
-
-    def _format_recent_transcript(self, transcript: list[dict[str, Any]]) -> str:
-        lines: list[str] = []
-        for item in transcript[-self._MAX_TRANSCRIPT_ITEMS:]:
-            speaker = item.get("speaker", "?")
-            text = self._truncate_text(
-                str(item.get("text", "")),
-                self._MAX_TRANSCRIPT_TEXT_CHARS,
-            )
-            lines.append(f"  [{speaker}] {text}")
-        return "\n".join(lines)
-
-    def _strict_output_contract(self, context: AgentContext, output_mode: OutputMode | None = None) -> str:
-        legal_actions = [action.value for action in context.legal_actions]
-        legal_targets = list(context.legal_targets)
-        output_mode = output_mode or self._select_output_mode(context)
-        if output_mode == OutputMode.TARGET_CHOICE:
-            output_fields = "choice、reason、confidence"
-            if context.legal_actions == [ActionType.VOTE]:
-                output_fields = (
-                    "choice、reason、seer_stance、vote_basis、standing_with_seer、suspect_reason、"
-                    "not_voting_reason、private_reason、confidence"
-                )
-            lines = [
-                "",
-                "最终输出协议（必须遵守）：",
-                "1. 只输出一个choice决策JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
-                "2. JSON必须以{开头、以}结尾，且只能有一个对象。",
-                f"3. 最终输出字段：{output_fields}。",
-                "4. choice只能取上方候选枚举中的字母，不要直接编写target_id。",
-            ]
-            if context.legal_actions == [ActionType.VOTE]:
-                lines.append(
-                    "5. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
-                    "suspect_reason、not_voting_reason、private_reason，理由字段不能写“未说明”。"
-                )
-            lines.append("现在提交行动。")
-            return "\n".join(lines)
-        if output_mode == OutputMode.SPEECH_INTENT:
-            lines = [
-                "",
-                "最终输出协议（必须遵守）：",
-                "1. 只输出一个发言意图JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
-                "2. JSON必须以{开头、以}结尾，且只能有一个对象。",
-                "3. 最终输出字段：intent、target_id、speech、reason、confidence。",
-                "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
-            ]
-            if legal_targets:
-                lines.append(f"5. target_id只能取这些玩家之一或null：{legal_targets}。")
-            lines.append("现在提交行动。")
-            return "\n".join(lines)
-        lines = [
-            "",
-            "最终输出协议（必须遵守）：",
-            "1. 首选 submit_player_action 工具调用提交结构化参数。",
-            "2. 如果当前模型无法工具调用，只输出一个JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
-            "3. JSON必须以{开头、以}结尾，且只能有一个对象。",
-            "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
-            "5. 必填字段：action_type、target_id、speech、reason、confidence。",
-        ]
-        if legal_actions:
-            lines.append(f"6. action_type只能取：{legal_actions}。")
-        if legal_targets:
-            lines.append(f"7. target_id只能取这些玩家之一或null：{legal_targets}。")
-        if ActionType.VOTE in context.legal_actions:
-            lines.append(
-                "8. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
-                "suspect_reason、not_voting_reason、private_reason，理由字段不能写“未说明”。"
-            )
-        lines.append("现在提交行动。")
-        return "\n".join(lines)
-
-    def _format_choice_prompt(self, context: AgentContext) -> str:
-        is_vote = context.legal_actions == [ActionType.VOTE]
-        header = "投票候选枚举" if is_vote else "目标候选枚举"
-        lines = [f"{header}（必须从中选择一个choice，不要直接编写target_id）："]
-        for choice, target_id in self._vote_choice_map(context).items():
-            summary = (
-                self._vote_candidate_summary(context, target_id)
-                if is_vote
-                else self._target_candidate_summary(context, target_id)
-            )
-            lines.append(f"{choice} = {target_id}，摘要：{summary}")
-        if is_vote:
-            example = (
-                '{"choice":"A","reason":"投票公开理由",'
-                '"seer_stance":"trust",'
-                '"vote_basis":"seer_check",'
-                '"standing_with_seer":"站边的预言家或逻辑线",'
-                '"suspect_reason":"为什么怀疑该候选",'
-                '"not_voting_reason":"为什么不投其他候选",'
-                '"private_reason":"完整内心理由",'
-                '"confidence":0.7}'
-            )
-        else:
-            example = '{"choice":"A","reason":"选择该目标的简明理由","confidence":0.7}'
-        lines.extend([
-            "只需要输出choice决策JSON，程序会把choice映射为target_id并组装PlayerAction。",
-            "示例：",
-            example,
-        ])
-        return "\n".join(lines)
-
-    def _format_speech_intent_prompt(self, context: AgentContext) -> str:
-        lines = ["发言意图枚举（先选intent，再写speech；不要输出分析过程）："]
-        for intent, label in self._SPEECH_INTENTS.items():
-            lines.append(f"- {intent}: {label}")
-        if context.legal_targets:
-            lines.append(f"可围绕的目标玩家: {context.legal_targets}")
-        lines.extend([
-            "发言阶段只需要输出intent决策JSON，程序会组装为speech行动。",
-            "speech必须是公开发言正文，不能留空，不能写“未发言”。",
-            "示例：",
-            (
-                '{"intent":"question_target","target_id":"p05",'
-                '"speech":"我想追问p05，你的站边和投票理由需要讲清楚。",'
-                '"reason":"围绕可疑目标施压","confidence":0.7}'
-            ),
-        ])
-        return "\n".join(lines)
+        """Build user prompt via s10 pipeline: dynamic per-turn context and task instructions."""
+        return PlayerPromptBuilder(context, self.player_name).build_user_prompt(retry)
