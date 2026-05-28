@@ -85,6 +85,6 @@ def restore_memory_store(data: dict[str, Any]) -> MemoryStore:
     # Restore profiles
     for prof_data in data.get("profiles", []):
         profile = PlayerProfile(**prof_data)
-        store.profiles._profiles[profile.player_id] = profile
+        store.profiles.store(profile)
 
     return store

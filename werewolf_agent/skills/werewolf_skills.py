@@ -23,116 +23,88 @@ from werewolf_agent.skills.schemas import (
 # 12 core werewolf skills
 # ---------------------------------------------------------------------------
 
-SKILL_DEFINITIONS: list[SkillDefinition] = [
-    SkillDefinition(
-        name=SkillName.BOLD_CLAIM,
-        display_name="悍跳",
-        description="冒充神职角色，通过假查验或假身份获取信任和话语权",
-        applicable_roles=["werewolf"],
-        applicable_phases=["speech", "sheriff_speech", "pk_speech", "wolf_discussion"],
-        faction=SkillFaction.WOLF,
-        tags=["deception", "aggressive"],
-    ),
-    SkillDefinition(
-        name=SkillName.COUNTER_CLAIM,
-        display_name="对跳",
-        description="针对已经起跳的玩家进行身份对跳，争夺话语权",
-        applicable_roles=["seer", "werewolf"],
-        applicable_phases=["speech", "pk_speech"],
-        faction=SkillFaction.COMMON,
-        tags=["confrontation", "identity_claim"],
-    ),
-    SkillDefinition(
-        name=SkillName.PUSH_VOTE,
-        display_name="归票",
-        description="引导全场投票方向，集中票数归出目标玩家",
-        applicable_roles=["seer", "werewolf", "villager", "hunter", "witch", "idiot", "hybrid"],
-        applicable_phases=["speech", "vote"],
-        faction=SkillFaction.COMMON,
-        tags=["leadership", "voting"],
-    ),
-    SkillDefinition(
-        name=SkillName.SWING_VOTE,
-        display_name="冲票",
-        description="集中阵营力量冲票特定目标，多用于狼队协同冲票",
-        applicable_roles=["werewolf"],
-        applicable_phases=["vote", "wolf_discussion"],
-        faction=SkillFaction.WOLF,
-        tags=["coordination", "aggressive"],
-    ),
-    SkillDefinition(
-        name=SkillName.DEEP_HOOK,
-        display_name="倒钩",
-        description="在好人阵营中建立可信度，通过适度攻击狼队友来获取信任",
-        applicable_roles=["werewolf"],
-        applicable_phases=["speech", "vote", "wolf_discussion", "last_words"],
-        faction=SkillFaction.WOLF,
-        tags=["deception", "long_term"],
-    ),
-    SkillDefinition(
-        name=SkillName.FIND_POWER,
-        display_name="找神",
-        description="通过发言和行为模式分析找出神职玩家",
-        applicable_roles=["werewolf", "villager", "seer", "witch", "hybrid"],
-        applicable_phases=["speech", "night_action", "wolf_discussion", "hunter_shot"],
-        faction=SkillFaction.COMMON,
-        tags=["analysis", "information"],
-    ),
-    SkillDefinition(
-        name=SkillName.HIDE_IDENTITY,
-        display_name="藏身份",
-        description="隐藏自己的真实角色，避免被过早识别",
-        applicable_roles=["seer", "witch", "hunter", "werewolf", "hybrid"],
-        applicable_phases=["speech", "sheriff_speech", "sheriff_registration"],
-        faction=SkillFaction.COMMON,
-        tags=["stealth", "defense"],
-    ),
-    SkillDefinition(
-        name=SkillName.RESIST_PUSH,
-        display_name="抗推",
-        description="在被怀疑或被推票时进行有效防守和反驳",
-        applicable_roles=["werewolf", "villager", "seer", "witch", "hunter", "idiot", "hybrid"],
-        applicable_phases=["defense_speech", "pk_speech", "last_words"],
-        faction=SkillFaction.COMMON,
-        tags=["defense", "persuasion"],
-    ),
-    SkillDefinition(
-        name=SkillName.WOLF_PIT_ANALYSIS,
-        display_name="盘狼坑",
-        description="系统性分析可能的狼人分布，缩小嫌疑范围",
-        applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid"],
-        applicable_phases=["speech", "sheriff_speech", "pk_speech", "hunter_shot"],
-        faction=SkillFaction.GOOD,
-        tags=["analysis", "logic"],
-    ),
-    SkillDefinition(
-        name=SkillName.PROTECT_POWER,
-        display_name="保护强神",
-        description="保护关键神职角色不被狼人发现或冲票",
-        applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid"],
-        applicable_phases=["speech", "vote"],
-        faction=SkillFaction.GOOD,
-        tags=["protection", "team_play"],
-    ),
-    SkillDefinition(
-        name=SkillName.LAST_WORDS_ANALYSIS,
-        display_name="遗言分析",
-        description="分析遗言内容，提取信息，判断发言者真实身份",
-        applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid", "werewolf"],
-        applicable_phases=["speech", "last_words"],
-        faction=SkillFaction.COMMON,
-        tags=["analysis", "information"],
-    ),
-    SkillDefinition(
-        name=SkillName.REVIEW_CORRECTION,
-        display_name="复盘纠错",
-        description="复盘本局关键判断，识别错误，提出改进建议",
-        applicable_roles=["villager", "seer", "witch", "hunter", "idiot", "hybrid", "werewolf"],
-        applicable_phases=["review"],
-        faction=SkillFaction.UNIVERSAL,
-        tags=["review", "improvement"],
-    ),
-]
+def _parse_skill_frontmatter(text: str) -> dict[str, Any]:
+    """Extract YAML frontmatter from a SKILL.md file (delimited by ---)."""
+    import yaml
+    if not text.startswith("---"):
+        return {}
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}
+    return yaml.safe_load(parts[1]) or {}
+
+
+def _load_manifests() -> list[SkillDefinition]:
+    """Load skill metadata from SKILL.md files under skill directories.
+
+    Each skill directory contains a SKILL.md with YAML frontmatter
+    (name, description, applicable roles/phases, faction, tags).
+    The dynamic analysis logic lives in Python handlers — only static
+    metadata is stored here.
+    """
+    from pathlib import Path
+
+    _root = Path(__file__).resolve().parent
+    result: list[SkillDefinition] = []
+    for skill_dir in sorted(_root.iterdir()):
+        if not skill_dir.is_dir() or skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
+            continue
+        if skill_dir.name == "manifests":
+            continue  # legacy, skip
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        data = _parse_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
+        if not data:
+            continue
+        try:
+            result.append(SkillDefinition(
+                name=SkillName(data["name"]),
+                display_name=data.get("display_name", ""),
+                description=data.get("description", ""),
+                applicable_roles=data.get("applicable_roles", []),
+                applicable_phases=data.get("applicable_phases", []),
+                faction=SkillFaction(data.get("faction", "common")),
+                tags=data.get("tags", []),
+            ))
+        except (KeyError, ValueError) as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to load skill %s: %s", skill_dir.name, exc,
+            )
+    return result
+
+
+def _load_tool_skills() -> tuple[set[str], dict[str, dict[str, Any]]]:
+    """Load tool-skill metadata from SKILL.md frontmatter."""
+    from pathlib import Path
+
+    _root = Path(__file__).resolve().parent
+    names: set[str] = set()
+    tools: dict[str, dict[str, Any]] = {}
+    for skill_dir in sorted(_root.iterdir()):
+        if not skill_dir.is_dir() or skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
+            continue
+        if skill_dir.name == "manifests":
+            continue
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        data = _parse_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
+        if not data:
+            continue
+        if data.get("is_tool_skill") and data.get("tool_name"):
+            names.add(data["name"])
+            tools[data["name"]] = {
+                "name": data["tool_name"],
+                "description": data.get("tool_description", ""),
+                "input_schema": {"type": "object", "properties": {}},
+            }
+    return names, tools
+
+
+SKILL_DEFINITIONS: list[SkillDefinition] = _load_manifests()
+
 
 
 # ---------------------------------------------------------------------------
@@ -1263,6 +1235,7 @@ def _review_correction_dynamic(inp: SkillInput, skill: SkillDefinition) -> Skill
     if winner != "unknown":
         parts.append(f"获胜方：{winner}。")
 
+    correct_votes = 0
     if my_votes:
         parts.append(f"你共投出{len(my_votes)}票，投票目标：{'、'.join(my_votes[:6])}。")
         # Check if any vote hit a wolf (cross-reference with actual roles)

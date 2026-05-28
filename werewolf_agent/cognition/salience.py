@@ -45,7 +45,7 @@ _HIGH_PRIORITY_TYPES: set[str] = {
 
 # Fact types about the current phase get a boost
 _PHASE_RELEVANCE: dict[str, set[str]] = {
-    "wolf_discussion_and_kill": {"wolf_kill_target", "wolf_discussion"},
+    "wolf_discussion_and_kill": {"wolf_kill_selected", "wolf_discussion"},
     "vote": {"vote", "claimed_suspect", "claimed_claim"},
     "speech": {"speech", "claimed_role", "claimed_suspect", "badge_flow_claim"},
     "seer_check": {"seer_check"},
@@ -90,7 +90,7 @@ def _compute_weight(
         reasons.append("phase_relevant")
 
     # Role-specific relevance
-    if viewer_role == "werewolf" and fact.fact_type in {"wolf_kill_target", "wolf_discussion"}:
+    if viewer_role == "werewolf" and fact.fact_type in {"wolf_kill_selected", "wolf_discussion"}:
         weight += 0.2
         reasons.append("role_relevant:wolf_team")
     if viewer_role == "seer" and fact.fact_type == "seer_check":

@@ -91,6 +91,8 @@ class ReportGenerator:
             for snap in self._snapshots:
                 if pid in snap.player_metrics:
                     snap_count += 1
+                    # Note: quality/safety metrics are per-game global metrics,
+                    # so players in the same game batch share these scores.
                     avg_anti_push += snap.quality_metrics.anti_push_rate
                     avg_lie_detection += snap.quality_metrics.lie_detection_rate
                     avg_stance += snap.quality_metrics.stance_accuracy

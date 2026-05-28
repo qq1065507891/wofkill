@@ -1,0 +1,15 @@
+name: bold_claim
+display_name: 悍跳
+description: 冒充神职角色，通过假查验或假身份获取信任和话语权
+applicable_roles:
+- werewolf
+applicable_phases:
+- speech
+- sheriff_speech
+- pk_speech
+- wolf_discussion
+faction: wolf
+tags:
+- deception
+- aggressive
+is_tool_skill: false

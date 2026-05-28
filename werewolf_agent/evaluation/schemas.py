@@ -21,7 +21,6 @@ class ActionVerdict(str, Enum):
     LEGAL = "legal"
     ILLEGAL = "illegal"
     RETRY_RECOVERED = "retry_recovered"
-    FALBACK = "fallback"  # deprecated alias, will be removed in V2
     FALLBACK = "fallback"
 
 
@@ -125,10 +124,19 @@ class GameResult:
             "rag_config_snapshot": dict(self.rag_config_snapshot),
             "strategy_config_snapshot": dict(self.strategy_config_snapshot),
         }
-        result["action_records"] = []
-        result["leakage_records"] = []
-        result["cost_records"] = []
-        result["cognition_snapshots"] = {}
+        result["action_records"] = [
+            {"player_id": a.player_id, "action_type": a.action_type,
+             "target_id": a.target_id, "verdict": a.verdict.value,
+             "phase": a.phase, "day_number": a.day_number}
+            for a in self.action_records
+        ]
+        result["leakage_records"] = [
+            {"player_id": l.player_id, "leaked_info_type": l.leaked_info_type,
+             "detail": l.detail}
+            for l in self.leakage_records
+        ]
+        result["cost_records"] = [dict(c) for c in self.cost_records]
+        result["cognition_snapshots"] = {k: dict(v) for k, v in self.cognition_snapshots.items()}
         return result
 
 

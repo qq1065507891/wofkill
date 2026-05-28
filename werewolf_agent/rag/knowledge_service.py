@@ -92,7 +92,7 @@ class RAGKnowledgeService:
         max_items: int = 3,
     ) -> list[dict[str, Any]]:
         """Convert RAG hits to prompt-safe salience items."""
-        return RAGInjector(StrategyRetriever()).hits_to_context_items(
+        return RAGInjector.hits_to_context_items(
             hits,
             max_items=max_items,
         )

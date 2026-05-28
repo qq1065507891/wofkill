@@ -184,7 +184,7 @@ def summarize_wolf_consensus(
         if len(sorted_targets) > 1:
             backup_target = sorted_targets[1][0]
         else:
-            backup_target = primary_target
+            backup_target = None
 
     # Build consensus plan
     consensus: dict[str, Any] = {

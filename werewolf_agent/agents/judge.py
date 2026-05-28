@@ -59,7 +59,7 @@ class JudgeAgent:
         if public_data:
             deaths = public_data.get("deaths", [])
             if deaths:
-                players_str = "、".join(d["player_id"] for d in deaths)
+                players_str = "、".join(d.get("player_id", "???") for d in deaths)
                 message += f" 昨夜倒牌：{players_str}。"
             exiled = public_data.get("exiled")
             if exiled:

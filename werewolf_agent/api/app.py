@@ -104,6 +104,8 @@ def create_app(
             if db_path:
                 from werewolf_agent.storage.sqlite_store import SqliteGameRepository
                 repository = SqliteGameRepository(db_path)
+            else:
+                logger.warning("No storage backend configured — using in-memory (data lost on restart)")
     app = FastAPI(title="Werewolf Agent API", version="1.0")
     static_dir = Path(__file__).parent.parent / "ui" / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -260,7 +262,7 @@ def create_app(
     def create_game(req: CreateGameRequest) -> GameCreateResponse:
         if req.experience_mode == "human_seat" and (req.human_seat is None or req.human_seat < 1 or req.human_seat > 12):
             raise HTTPException(400, "human_seat must be between 1 and 12 when experience_mode is human_seat")
-        game_id = req.seed is not None and f"game_{req.seed}" or str(uuid.uuid4())[:8]
+        game_id = f"game_{req.seed}" if req.seed is not None else str(uuid.uuid4())[:8]
         game_id = f"g_{game_id}" if not game_id.startswith("g_") else game_id
         config_snapshot = _build_locked_config_snapshot(req)
         state = GameState(

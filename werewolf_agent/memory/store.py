@@ -131,7 +131,9 @@ class MemoryStore:
     _WOLF_ROLES = {"werewolf"}
 
     @classmethod
-    def _player_faction(cls, role: str | None) -> str:
+    def _player_faction(cls, role: str | None, *, master_faction: str | None = None) -> str:
+        if role == "hybrid":
+            return master_faction or "unknown"
         if role in cls._GOOD_ROLES:
             return "good"
         if role in cls._WOLF_ROLES:

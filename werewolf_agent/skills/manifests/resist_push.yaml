@@ -1,0 +1,20 @@
+name: resist_push
+display_name: 抗推
+description: 在被怀疑或被推票时进行有效防守和反驳
+applicable_roles:
+- werewolf
+- villager
+- seer
+- witch
+- hunter
+- idiot
+- hybrid
+applicable_phases:
+- defense_speech
+- pk_speech
+- last_words
+faction: common
+tags:
+- defense
+- persuasion
+is_tool_skill: false

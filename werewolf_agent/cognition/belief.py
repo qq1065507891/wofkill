@@ -197,9 +197,11 @@ class BeliefUpdater:
         if "wolf" in val or "狼" in val:
             if target and target in state.beliefs:
                 state.beliefs[target].faction_lean = "wolf_lean"
+                state.beliefs[target].trust = max(0.0, state.beliefs[target].trust - 0.03)
             if source and source in state.beliefs:
                 state.beliefs[source].trust = min(1.0, state.beliefs[source].trust + 0.02)
         elif "good" in val or "好人" in val or "金水" in val:
             if target and target in state.beliefs:
                 state.beliefs[target].faction_lean = "good_lean"
+                state.beliefs[target].trust = min(1.0, state.beliefs[target].trust + 0.02)
         return state

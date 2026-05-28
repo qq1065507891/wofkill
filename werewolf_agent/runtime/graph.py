@@ -76,6 +76,7 @@ from werewolf_agent.runtime.nodes.day import (  # noqa: F401
 )
 
 from werewolf_agent.runtime.nodes.sheriff import (  # noqa: F401
+    sheriff_endorse,
     sheriff_first_day_entry,
     sheriff_registration,
     sheriff_speech,
@@ -91,10 +92,6 @@ from werewolf_agent.runtime.nodes.skills import (  # noqa: F401
     sheriff_badge_transfer,
     tie_pk_speech,
     tie_revote,
-)
-
-from werewolf_agent.runtime.nodes.sheriff import (  # noqa: F401
-    sheriff_endorse,
 )
 
 from werewolf_agent.runtime.nodes.summary import (  # noqa: F401
@@ -275,6 +272,7 @@ def route_after_sheriff_registration(state: RuntimeState) -> str:
 def route_after_sheriff_speech(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
     if is_all_players_on_sheriff(gs, list(gs.sheriff_candidates or [])):
+        # No sheriff election possible — badge lost. Sheriff phase ends here.
         if not _deaths_already_announced(gs):
             return _route_after_sheriff_phase(state, "announce_deaths")
         return _route_after_sheriff_phase(state, "free_discussion")

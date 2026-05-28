@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import inspect
+import random
 import threading
 import time
 from dataclasses import dataclass, field
@@ -303,14 +304,24 @@ class ModelRouter:
 
         max_retries = getattr(config, "retry_count", 2) or 0
         for attempt in range(max_retries + 1):
+            # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
+            # On the first attempt only — retries already have backoff.
+            if attempt == 0:
+                time.sleep(random.uniform(0, 0.8))
             try:
+                # For text-fallback models, skip tool_choice on first attempt.
+                # These models rarely return tool_calls reliably; forcing it
+                # wastes retries. Let them respond with free-form text/JSON.
+                effective_tool_choice = tool_choice
+                if config.allow_text_tool_fallback and tool_choice and attempt == 0:
+                    effective_tool_choice = None
                 result = _call_provider_generate(
                     provider,
                     prompt,
                     config,
                     system_prompt,
                     tools=tools,
-                    tool_choice=tool_choice,
+                    tool_choice=effective_tool_choice,
                 )
                 result.allow_text_tool_fallback = config.allow_text_tool_fallback
                 _normalize_tool_metadata(result, tool_choice)
@@ -362,13 +373,16 @@ class ModelRouter:
             fb_max_retries = getattr(fb_config, "retry_count", 1) or 0
             for fb_attempt in range(fb_max_retries + 1):
                 try:
+                    fb_effective_tool_choice = tool_choice
+                    if fb_config.allow_text_tool_fallback and tool_choice and fb_attempt == 0:
+                        fb_effective_tool_choice = None
                     result = _call_provider_generate(
                         fb_provider,
                         prompt,
                         fb_config,
                         system_prompt,
                         tools=tools,
-                        tool_choice=tool_choice,
+                        tool_choice=fb_effective_tool_choice,
                     )
                     result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
                     _normalize_tool_metadata(result, tool_choice)
@@ -577,7 +591,12 @@ def _is_retryable_exception(exc: Exception) -> bool:
 
 
 def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
-    """Compute retry delay: exponential backoff with 429 Retry-After support."""
+    """Exponential backoff with jitter and 429 Retry-After support.
+
+    Base delay = 2^attempt seconds, capped at 60 s, with +-25 % random
+    jitter to spread out concurrent retries and avoid thundering-herd
+    rate-limiting.
+    """
     base = 2.0
     # Check for Retry-After header on 429
     try:
@@ -588,4 +607,7 @@ def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
                 return min(float(retry_after), 30.0)
     except (ImportError, ValueError, TypeError):
         pass
-    return min(base ** attempt, 30.0)
+    # Exponential backoff with jitter: 1.0/2.0/4.0/8.0/... capped at 60 s
+    raw = min(base ** attempt, 60.0)
+    jitter = raw * random.uniform(-0.25, 0.25)
+    return max(0.5, raw + jitter)

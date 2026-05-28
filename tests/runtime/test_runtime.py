@@ -1378,13 +1378,13 @@ def test_extract_event_log() -> None:
 def test_phase1_rule_tests_still_pass() -> None:
     """Meta-test: confirm we didn't break Phase 1."""
     import subprocess
+    import sys
     result = subprocess.run(
-        ["D:/Miniforge3/envs/wofkill/python.exe", "-m", "pytest",
+        [sys.executable, "-m", "pytest",
          "tests/rules/test_rule_engine_v1.py", "-q"],
-        capture_output=True, text=True, cwd="E:/NLP/agent/wofkill",
+        capture_output=True, text=True,
     )
-    assert result.returncode == 0
-    assert "58 passed" in result.stdout or result.returncode == 0
+    assert result.returncode == 0, f"Phase 1 tests failed: {result.stdout[:500]}"
 
 
 # ---------------------------------------------------------------------------

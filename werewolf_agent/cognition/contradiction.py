@@ -127,26 +127,35 @@ class ContradictionEngine:
             if f.fact_type == "claimed_suspect" and f.source_player:
                 suspect_claims.setdefault(f.source_player, []).append(f)
 
-        # Check: player claims X is wolf but votes for Y instead
+        # Check: player claims X is wolf but votes for Y instead (same day only)
         for pid, claims in suspect_claims.items():
-            claimed_targets = {c.target_player for c in claims if c.target_player}
+            claim_days: dict[int, set[str]] = {}
+            for c in claims:
+                if c.target_player:
+                    claim_days.setdefault(c.day, set()).add(c.target_player)
             player_votes = votes.get(pid, [])
-            voted_targets = {v.target_player for v in player_votes if v.target_player}
+            vote_days: dict[int, set[str]] = {}
+            for v in player_votes:
+                if v.target_player:
+                    vote_days.setdefault(v.day, set()).add(v.target_player)
 
-            if claimed_targets and voted_targets and not (claimed_targets & voted_targets):
-                alerts.append(ContradictionAlert(
-                    player_id=pid,
-                    alert_type="vote_conflict",
-                    priority="medium",
-                    description=(
-                        f"{pid}: claimed {claimed_targets} as suspect "
-                        f"but voted for {voted_targets}"
-                    ),
-                    evidence=tuple(
-                        {"day": f.day, "target": f.target_player, "type": f.fact_type}
-                        for f in claims + player_votes
-                    ),
-                ))
+            for day, claimed_targets in claim_days.items():
+                voted_targets = vote_days.get(day, set())
+                if claimed_targets and voted_targets and not (claimed_targets & voted_targets):
+                    alerts.append(ContradictionAlert(
+                        player_id=pid,
+                        alert_type="vote_conflict",
+                        priority="medium",
+                        description=(
+                            f"{pid}: claimed {claimed_targets} as suspect "
+                            f"but voted for {voted_targets} (day {day})"
+                        ),
+                        evidence=tuple(
+                            {"day": f.day, "target": f.target_player, "type": f.fact_type}
+                            for f in claims + player_votes
+                            if f.day == day
+                        ),
+                    ))
 
         return alerts
 

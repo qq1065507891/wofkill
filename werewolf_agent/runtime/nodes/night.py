@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-import re
 import time
 import uuid
 from dataclasses import replace

@@ -1,0 +1,21 @@
+name: last_words
+display_name: 分析遗言
+description: 分析遗言内容，提取信息，判断发言者真实身份
+applicable_roles:
+- villager
+- seer
+- witch
+- hunter
+- idiot
+- hybrid
+- werewolf
+applicable_phases:
+- speech
+- last_words
+faction: common
+tags:
+- analysis
+- information
+is_tool_skill: true
+tool_name: skill_analyze_last_words
+tool_description: 分析刚出局玩家的遗言。提取关键信息、判断可信度、与已知信息对比。调用后返回分析结果供你参考。

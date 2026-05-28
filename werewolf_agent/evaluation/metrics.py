@@ -181,6 +181,7 @@ class MetricsAggregator:
         contradiction_total = 0
         contradiction_adopted = 0
         contradiction_adopted_total = 0
+        games_with_contradictions = 0
         potion_beneficial = 0
         potion_total = 0
         seer_checks_correct = 0
@@ -227,7 +228,7 @@ class MetricsAggregator:
             total_exiled = sum(1 for d in result.deaths if d.get("reason") == "exile")
             if total_exiled > 0:
                 anti_push_total += total_exiled
-                anti_push_count += good_exiled
+                anti_push_count += total_exiled - good_exiled
 
             # --- Vote accuracy ---
             exiled_wolves = sum(
@@ -388,6 +389,7 @@ class MetricsAggregator:
                     contradiction_hits += len(adopted)
                     contradiction_adopted_total += len(alerts)
                     contradiction_adopted += len(adopted)
+                    games_with_contradictions += 1
 
         # --- Set rates ---
         if anti_push_total:
@@ -406,7 +408,7 @@ class MetricsAggregator:
             q.hybrid_co_win_rate = hybrid_co_wins / hybrid_total
             q.hybrid_master_choice_benefit = hybrid_co_wins / hybrid_total
         if contradiction_total:
-            q.contradiction_hit_rate = contradiction_hits / contradiction_total
+            q.contradiction_hit_rate = games_with_contradictions / max(1, len(self._results))
         if contradiction_adopted_total:
             q.contradiction_adopted_rate = contradiction_adopted / contradiction_adopted_total
         if potion_total:
@@ -449,7 +451,7 @@ class MetricsAggregator:
                 "sample_entries": [],
             }
 
-        _prov("anti_push_rate", "good surviving exile / games with exiles",
+        _prov("anti_push_rate", "non-good exiled / total exiled (lower good exile rate = better defense)",
               ["deaths", "player_factions"], anti_push_total)
         _prov("lie_detection_rate", "detected false claims / total false claims from event_log",
               ["event_log", "cognition_snapshots"], lie_total)
@@ -473,7 +475,7 @@ class MetricsAggregator:
               ["event_log", "player_roles"], wolf_kill_total)
         _prov("badge_decision_quality", "beneficial badge decisions / total badge events",
               ["event_log", "player_factions"], badge_decisions_recorded)
-        _prov("contradiction_hit_rate", "adopted contradiction alerts / total alerts from reviews",
+        _prov("contradiction_hit_rate", "games with contradictions / total games",
               ["reviews"], contradiction_total)
         _prov("contradiction_adopted_rate", "adopted alerts / total alerts from reviews",
               ["reviews"], contradiction_adopted_total)
@@ -510,7 +512,7 @@ class MetricsAggregator:
                     illegal_actions += 1
                 elif action.verdict == ActionVerdict.RETRY_RECOVERED:
                     retry_recovered += 1
-                elif action.verdict == ActionVerdict.FALBACK:
+                elif action.verdict == ActionVerdict.FALLBACK:
                     fallbacks += 1
 
             total_leaks += len(result.leakage_records)

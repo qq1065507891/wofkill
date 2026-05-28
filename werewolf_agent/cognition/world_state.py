@@ -402,6 +402,7 @@ _EXTRACTORS: dict[str, Any] = {
     "wolf_no_kill_declared": _extract_wolf_no_kill,
     "wolf_no_kill_timeout": _extract_wolf_no_kill,
     "speech": _extract_speech,
+    "sheriff_speech": _extract_speech,
     "vote": _extract_vote,
     "seer_check": _extract_seer_check,
     "sheriff_no_election": _extract_sheriff_no_election,

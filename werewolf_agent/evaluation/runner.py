@@ -166,7 +166,7 @@ class BatchRunner:
             state, night_events = self._engine.resolve_night(
                 state,
                 night_number=night_number,
-                wolf_kill_target_id=wolf_target if not use_antidote else wolf_target,
+                wolf_kill_target_id=wolf_target,
                 use_antidote=use_antidote,
                 poison_target_id=poison_target,
             )

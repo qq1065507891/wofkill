@@ -149,10 +149,18 @@ class PlayerAgent:
         parse_success = False
         parse_error_str: str | None = None
         structured_failure_reason: str | None = None
-        skill_tools_consumed = False
-        skill_call_count = 0  # cap total on-demand skill tool calls per act()
+        skill_call_count = 0  # cap total on-demand skill injections per act()
 
         attempt = 0
+        # Resolve model config once to check text-fallback support.
+        # Models that reliably return plain-text JSON don't need forced
+        # tool_choice — we let them respond in their native format and
+        # parse the text directly, skipping wasted retries.
+        _fb_config, _fb = self.model_router.resolve_config(
+            self.agent_id, context.task_type.value,
+        )
+        _model_text_fallback = _fb_config.allow_text_tool_fallback
+
         while attempt < self.max_retries:
             attempt += 1
             retry = RetryInfo(
@@ -166,10 +174,14 @@ class PlayerAgent:
             # Build tool list: always include submit_player_action; optionally
             # include skill analysis tools for the LLM to call on-demand.
             tools = [self._player_action_tool(context)]
-            has_skill_tools = bool(context.skill_tools) and not skill_tools_consumed
+            has_skill_tools = bool(context.skill_tools)
             if has_skill_tools:
                 tools.extend(context.skill_tools)
-                tool_choice_val: dict[str, Any] = {"type": "auto"}
+                tool_choice_val: dict[str, Any] | None = {"type": "auto"}
+            elif _model_text_fallback:
+                # This model returns plain-text JSON natively — no need
+                # to force tool_choice. Let the provider decide format.
+                tool_choice_val = None
             else:
                 tool_choice_val = {"type": "tool", "name": "submit_player_action"}
 
@@ -209,10 +221,10 @@ class PlayerAgent:
 
             tool_call_received = bool(getattr(result, "tool_call_received", False))
 
-            # Detect on-demand skill tool call (LLM requested tactical analysis)
+            # ── On-demand skill loading (load_skill tool pattern) ──
+            # The model calls a skill analysis tool → inject analysis body.
             called_tool = getattr(result, "tool_call_name", "") or ""
             if called_tool and called_tool in context.skill_analyses and skill_call_count < 2:
-                skill_tools_consumed = True
                 skill_call_count += 1
                 analysis = context.skill_analyses.get(called_tool, "")
                 if analysis:
@@ -273,7 +285,12 @@ class PlayerAgent:
                 getattr(result, "allow_text_tool_fallback", False)
                 and getattr(result, "text_fallback_used", False)
             )
-            if tool_call_required and not tool_call_received and not allow_text_tool_fallback:
+            if (
+                tool_call_required
+                and not tool_call_received
+                and not allow_text_tool_fallback
+                and not _model_text_fallback
+            ):
                 structured_failure_reason = (
                     getattr(result, "structured_failure_reason", None)
                     or "missing_tool_call"
@@ -446,6 +463,39 @@ class PlayerAgent:
             structured_failure_reason=structured_failure_reason,
         )
 
+    @staticmethod
+    def _repair_json_text(raw: str) -> str:
+        """Apply common JSON repairs for LLM output quirks.
+
+        Handles: trailing commas, single-quoted strings, unquoted keys,
+        JS-style comments, NaN/Infinity literals, and BOM.
+        """
+        import re as _re
+
+        text = raw.strip()
+        # Remove BOM and zero-width characters
+        text = text.replace("﻿", "").replace("​", "")
+        # Remove // line comments and /* block comments */
+        text = _re.sub(r"//[^\n]*", "", text)
+        text = _re.sub(r"/\*.*?\*/", "", text, flags=_re.DOTALL)
+        # Replace NaN / Infinity with null
+        text = _re.sub(r"\bNaN\b", "null", text)
+        text = _re.sub(r"\bInfinity\b|\binf\b", "null", text, flags=_re.IGNORECASE)
+        # Fix single-quoted strings → double-quoted (naive but covers common cases)
+        # Only outside already-double-quoted strings
+        text = _re.sub(r"(?<!\\)'([^']*?)'", r'"\1"', text)
+        # Fix unquoted keys: word followed by :
+        text = _re.sub(
+            r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:',
+            r'\1"\2":',
+            text,
+        )
+        # Remove trailing commas before } or ]
+        text = _re.sub(r",\s*([}\]])", r"\1", text)
+        # Collapse multiple consecutive commas
+        text = _re.sub(r",\s*,", ",", text)
+        return text
+
     def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
         """Parse LLM output into PlayerAction. Returns (action, error)."""
         cleaned = text.strip()
@@ -461,6 +511,15 @@ class PlayerAgent:
             data = json.loads(cleaned)
             return self._action_from_data(data)
         except json.JSONDecodeError as direct_error:
+            # Repair and retry
+            repaired = self._repair_json_text(cleaned)
+            if repaired != cleaned:
+                try:
+                    data = json.loads(repaired)
+                    return self._action_from_data(data)
+                except json.JSONDecodeError:
+                    pass  # fall through to extraction
+
             parameter_data = self._extract_parameter_tag_action(cleaned)
             if parameter_data is not None:
                 action, parse_error = self._action_from_data(parameter_data)
@@ -476,9 +535,19 @@ class PlayerAgent:
                 try:
                     data = json.loads(candidate)
                 except json.JSONDecodeError as e:
-                    if first_error is None:
-                        first_error = f"JSON parse error: {e}"
-                    continue
+                    # Try repair on candidate
+                    repaired = self._repair_json_text(candidate)
+                    if repaired != candidate:
+                        try:
+                            data = json.loads(repaired)
+                        except json.JSONDecodeError:
+                            if first_error is None:
+                                first_error = f"JSON parse error: {e}"
+                            continue
+                    else:
+                        if first_error is None:
+                            first_error = f"JSON parse error: {e}"
+                        continue
                 action, parse_error = self._action_from_data(data)
                 if action is not None:
                     return action, None
@@ -1487,6 +1556,12 @@ class PlayerAgent:
         parts.append("重要：speech字段必须使用中文，这是你在游戏中的公开发言。")
         parts.append("")
 
+        # ── 可用技能 ──
+        skill_prompt = self._build_skill_prompt(context)
+        if skill_prompt:
+            parts.append(skill_prompt)
+            parts.append("")
+
         # Show context-appropriate examples based on legal actions
         if context.legal_actions and any(
             a in (ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL) for a in context.legal_actions
@@ -1547,6 +1622,63 @@ class PlayerAgent:
                          '"faction_goal": "find_wolves", "claimed_view": "我是预言家", '
                          '"pressure_target": "p05", "risk_flags": []}}')
         return "\n".join(parts)
+
+    # ── Skill system: lightweight catalog → load_skill tool → deep load ──
+    # Follows the standard two-layer pattern:
+    #   1. System prompt: only name + one-line description (lightweight catalog)
+    #   2. load_skill tool: returns full analysis body (deep loading)
+    # The model decides WHEN to call load_skill — we don't force it.
+
+    _SKILL_CATALOG: dict[str, dict[str, str]] = {
+        "wolf_pit": {
+            "name": "盘狼坑",
+            "desc": "系统性分析场上可能的狼人分布，输出嫌疑人区和排除区",
+        },
+        "find_power": {
+            "name": "找神",
+            "desc": "分析场上哪些玩家可能是神职（预言家/女巫/猎人等）",
+        },
+        "last_words": {
+            "name": "分析遗言",
+            "desc": "分析刚出局玩家的遗言，判断其身份可信度",
+        },
+    }
+
+    def _build_skill_prompt(self, context: AgentContext) -> str:
+        """Build the lightweight skill catalog for the system prompt.
+
+        Only includes name + one-line description — the full analysis body
+        lives behind the load_skill tool and is injected only on demand.
+        """
+        from werewolf_agent.skills.registry import SkillRegistry, faction_for_role
+        from werewolf_agent.runtime.agent_adapter import _TOOL_SKILL_NAMES
+
+        registry = SkillRegistry()
+        role = context.own_role or ""
+        phase = context.phase or ""
+        role_faction = faction_for_role(role)
+        allowed = {"common", "universal", role_faction.value}
+
+        lines: list[str] = []
+        for skill in registry.all_skills():
+            if skill.faction.value not in allowed:
+                continue
+            if not skill.is_applicable(role, phase):
+                continue
+            name = skill.name.value
+            if name not in _TOOL_SKILL_NAMES:
+                continue
+            catalog = self._SKILL_CATALOG.get(name)
+            if catalog:
+                lines.append(f"- {catalog['name']}: {catalog['desc']}")
+
+        if lines:
+            return (
+                "【可用技能目录】以下技能可通过 load_skill 工具按需加载完整分析：\n"
+                + "\n".join(lines)
+                + "\n在提交行动前，建议先调用 load_skill 加载相关分析以获得更准确的信息。"
+            )
+        return ""
 
     def _build_prompt(self, context: AgentContext, retry: RetryInfo) -> str:
         """Build the user prompt with context and retry hints (Chinese)."""

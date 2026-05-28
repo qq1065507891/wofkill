@@ -49,6 +49,17 @@ class _BaseHttpProvider:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._http_client = http_client or httpx.Client()
+        self._owns_http = http_client is None
+
+    def close(self) -> None:
+        if self._owns_http:
+            self._http_client.close()
+
+    def __enter__(self) -> "_BaseHttpProvider":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     @property
     def name(self) -> str:
@@ -101,18 +112,26 @@ class AnthropicProvider(_BaseHttpProvider):
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
+        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        # Prefill assistant with "{" to force JSON output from the first token.
+        # Only for text-fallback models without forced tool_choice — mutually
+        # exclusive with tool_use (the API rejects prefill + tool_choice).
+        forcing_tool = bool(tool_choice and tool_choice.get("name"))
+        if config.allow_text_tool_fallback and not forcing_tool:
+            messages.append({"role": "assistant", "content": "{"})
+
         payload: dict[str, Any] = {
             "model": config.model,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
             "top_p": config.top_p,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
         if system_prompt:
             payload["system"] = system_prompt
-        if tools:
+        if tools and not (config.allow_text_tool_fallback and not forcing_tool):
             payload["tools"] = tools
-        if tool_choice:
+        if tool_choice and not (config.allow_text_tool_fallback and not forcing_tool):
             payload["tool_choice"] = tool_choice
 
         start = time.monotonic()
@@ -131,6 +150,10 @@ class AnthropicProvider(_BaseHttpProvider):
         data = response.json()
         tool_call_received = _has_anthropic_tool_use(data)
         text = _extract_anthropic_text(data)
+        # When prefilled with "{", prepend it back to the response text
+        # so the JSON is complete. The API strips the prefill from output.
+        if config.allow_text_tool_fallback and not forcing_tool and text:
+            text = "{" + text if text[0] != "{" else text
         usage = data.get("usage", {})
         return GenerateResult(
             text=text,
@@ -139,7 +162,8 @@ class AnthropicProvider(_BaseHttpProvider):
             tool_call_required=bool(tool_choice),
             tool_call_received=tool_call_received,
             tool_call_name=_anthropic_tool_name(data) or (tool_choice or {}).get("name", ""),
-            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text),
+            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text)
+                or (config.allow_text_tool_fallback and not forcing_tool and bool(text)),
             structured_failure_reason=(
                 "missing_tool_call" if tools and tool_choice and not tool_call_received else None
             ),
@@ -278,18 +302,24 @@ class MiniMaxProvider(_BaseHttpProvider):
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
+        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        forcing_tool = bool(tool_choice and tool_choice.get("name"))
+        if config.allow_text_tool_fallback and not forcing_tool:
+            messages.append({"role": "assistant", "content": "{"})
+
         payload: dict[str, Any] = {
             "model": config.model,
             "max_tokens": config.max_tokens,
             "temperature": config.temperature,
             "top_p": config.top_p,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
         if system_prompt:
             payload["system"] = system_prompt
         # Send tools so model knows the schema, but DO NOT send tool_choice
-        # — MiniMax does not reliably enforce it
-        if tools:
+        # — MiniMax does not reliably enforce it.  Skip tools entirely when
+        # using prefill (assistant message already forces JSON shape).
+        if tools and not (config.allow_text_tool_fallback and not forcing_tool):
             payload["tools"] = tools
 
         start = time.monotonic()
@@ -310,6 +340,8 @@ class MiniMaxProvider(_BaseHttpProvider):
         # Extract text: prefer tool_use input, fall back to plain text
         tool_call_received = _has_anthropic_tool_use(data)
         text = _extract_anthropic_text(data)
+        if config.allow_text_tool_fallback and not forcing_tool and text:
+            text = "{" + text if text[0] != "{" else text
         usage = data.get("usage", {})
         return GenerateResult(
             text=text,
@@ -318,7 +350,8 @@ class MiniMaxProvider(_BaseHttpProvider):
             tool_call_required=bool(tool_choice),
             tool_call_received=tool_call_received,
             tool_call_name=_anthropic_tool_name(data) or (tool_choice or {}).get("name", ""),
-            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text),
+            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text)
+                or (config.allow_text_tool_fallback and not forcing_tool and bool(text)),
             structured_failure_reason=(
                 "missing_tool_call" if tools and tool_choice and not tool_call_received else None
             ),
@@ -397,7 +430,18 @@ def _generate_openai_compatible(
         "max_tokens": config.max_tokens,
         "top_p": config.top_p,
     }
-    if tools:
+    forcing_tool = bool(tool_choice and tool_choice.get("name"))
+    if tools and config.allow_text_tool_fallback and not forcing_tool:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "player_action",
+                "schema": _sanitize_for_json_schema(
+                    tools[0].get("input_schema", {})
+                ),
+            },
+        }
+    elif tools:
         payload["tools"] = [
             {
                 "type": "function",
@@ -409,11 +453,14 @@ def _generate_openai_compatible(
             }
             for tool in tools
         ]
-    if tool_choice and tool_choice.get("name"):
-        payload["tool_choice"] = {
-            "type": "function",
-            "function": {"name": tool_choice["name"]},
-        }
+        if forcing_tool:
+            payload["tool_choice"] = {
+                "type": "function",
+                "function": {"name": tool_choice["name"]},
+            }
+    elif config.allow_text_tool_fallback:
+        # No tools available — fall back to basic json_object constraint
+        payload["response_format"] = {"type": "json_object"}
     start = time.monotonic()
     response = http_client.post(
         _openai_chat_completions_url(base_url),
@@ -438,7 +485,8 @@ def _generate_openai_compatible(
         tool_call_required=bool(tool_choice),
         tool_call_received=tool_call_received,
         tool_call_name=_openai_tool_name(message) or (tool_choice or {}).get("name", ""),
-        text_fallback_used=bool(tools and tool_choice and not tool_call_received and text),
+        text_fallback_used=bool(tools and tool_choice and not tool_call_received and text)
+            or (config.allow_text_tool_fallback and not forcing_tool and bool(text)),
         structured_failure_reason=(
             "missing_tool_call" if tools and tool_choice and not tool_call_received else None
         ),
@@ -459,6 +507,39 @@ def _openai_chat_completions_url(base_url: str) -> str:
     if normalized != "https://api.openai.com" and "/" in normalized.removeprefix("https://").removeprefix("http://"):
         return f"{normalized}/chat/completions"
     return f"{normalized}/v1/chat/completions"
+
+
+def _sanitize_for_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Adapt an Anthropic-format input_schema for OpenAI json_schema.
+
+    Fixes: ``"type": ["string","null"]`` → string-only,
+    removes ``None`` from enum lists.
+    """
+    import copy
+    s = copy.deepcopy(schema)
+
+    def _walk(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        t = node.get("type")
+        # Replace ["string","null"] with "string" + nullable marker.
+        # OpenAI json_schema does not accept type arrays in many backends.
+        if isinstance(t, list) and "null" in t:
+            non_null = [x for x in t if x != "null"]
+            node["type"] = non_null[0] if len(non_null) == 1 else non_null
+        # Strip None from enum values — json_schema backends reject it
+        if "enum" in node:
+            node["enum"] = [v for v in node["enum"] if v is not None]
+        for _k, v in node.items():
+            if isinstance(v, dict):
+                _walk(v)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        _walk(item)
+        return node
+
+    return _walk(s)
 
 
 def _extract_anthropic_text(data: dict[str, Any]) -> str:

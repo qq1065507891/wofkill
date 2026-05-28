@@ -120,6 +120,7 @@ class RAGInjector:
     def audit_log(self) -> list[InjectionAuditRecord]:
         return list(self._audit_log)
 
+    @staticmethod
     def hits_to_context_items(
         self,
         hits: list[RAGHit],

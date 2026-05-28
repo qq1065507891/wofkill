@@ -226,12 +226,11 @@ def _estimate_witch_save_value(
                 ),
             },
             "trade_off": {
-                "save_now": "首夜必救是标准女巫打法。被杀者约{:.0f}%概率是神职、{:.0f}%概率是普通村民——除非你能盘出狼人自刀骗药，否则首夜救人保护好人阵营人数优势是最优选择。损失任何一名玩家对好人都很痛，损失预言家或猎人更是致命的".format(
+                "save_now": "【强烈建议使用解药】首夜救人是标准女巫的第一优先级操作。被杀者有{:.0f}%概率是神职（预言家/猎人/白痴/混血儿），若不救则好人立即损失关键角色。除非你有钢铁般的自刀证据（仅在被杀者上警且发言诡异的极罕见情况），否则首夜必须救人。错过首夜救人意味着解药大概率浪费——N2之后被刀的人通常没有遗言，且狼队会优先刀明好人".format(
                     power_roles_alive / max(non_wolf_alive, 1) * 100,
-                    max(non_wolf_alive - power_roles_alive, 0) / max(non_wolf_alive, 1) * 100,
                 ),
-                "save_later": "保留解药等有信息后精准救人的收益固然更高，但代价是首夜白白损失一个活人，好人从12人→11人。标准局不救N1的前提是能盘出明显的自刀逻辑",
-                "risk_no_save": "首夜不救的代价就是被刀的人必死——如果恰好是预言家，好人直接失去最重要的信息源。只有极罕见情况（明确自刀局）才值得冒险",
+                "save_later": "【不要保留解药！】解药留到N2+的收益远不如首夜救人——N1死亡有遗言但N2+没有，且真预言家通常在N1就被刀的。保留解药的最大风险是被刀者是预言家，好人直接崩盘",
+                "risk_no_save": "【不救的风险极高】不救→被刀者必死→如果他是预言家/猎人，好人阵营胜率直接掉30%以上。只有面对极其明显的自刀（概率<5%）才考虑不救",
             },
         }
 
@@ -1226,41 +1225,18 @@ def _inject_skill_output(
     return strategy_directive, tool_analyses
 
 
-# Skill names exposed as on-demand LLM tools (not injected as prompt text).
-_TOOL_SKILL_NAMES: set[str] = {
-    SkillName.WOLF_PIT_ANALYSIS.value,
-    SkillName.FIND_POWER.value,
-    SkillName.LAST_WORDS_ANALYSIS.value,
-}
+# Skill names and definitions loaded from SKILL.md frontmatter.
+def _resolve_tool_skills() -> 'tuple[set[str], dict[str, dict[str, Any]]]':
+    try:
+        from werewolf_agent.skills.werewolf_skills import _load_tool_skills as _lts
+        return _lts()
+    except Exception:
+        return set(), {}
 
-# Tool definitions for each on-demand skill (module-level constant).
-_SKILL_TOOL_DEFS: dict[str, dict[str, Any]] = {
-    SkillName.WOLF_PIT_ANALYSIS.value: {
-        "name": "skill_analyze_wolf_pit",
-        "description": (
-            "分析当前狼坑（嫌疑区和排除区）。基于验人信息、投票模式、发言矛盾等给出完整分析。"
-            "调用后会返回详细分析结果供你参考。"
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    SkillName.FIND_POWER.value: {
-        "name": "skill_find_power_roles",
-        "description": (
-            "分析场上哪些玩家可能是神职（预言家、女巫、猎人等）。"
-            "基于发言、行为模式和已知信息推断。"
-            "调用后返回推测结果供你参考。"
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    SkillName.LAST_WORDS_ANALYSIS.value: {
-        "name": "skill_analyze_last_words",
-        "description": (
-            "分析刚出局玩家的遗言。提取关键信息、判断可信度、与已知信息对比。"
-            "调用后返回分析结果供你参考。"
-        ),
-        "input_schema": {"type": "object", "properties": {}},
-    },
-}
+
+_TOOL_SKILL_NAMES: set[str]
+_SKILL_TOOL_DEFS: dict[str, dict[str, Any]]
+_TOOL_SKILL_NAMES, _SKILL_TOOL_DEFS = _resolve_tool_skills()
 
 
 def _build_skill_tool_defs(role: str, phase: str) -> list[dict[str, Any]]:
@@ -1672,22 +1648,36 @@ def agent_night_witch(
         ),
     }
     options = []
+    can_self = True
     if wolf_kill_target_id and not gs.antidote_used and ActionType.USE_ANTIDOTE in legal_actions:
         can_self = wolf_kill_target_id != witch_id
         save_hint = f"（他被狼人杀害了）" if can_self else "（但是你不能自救！）"
         options.append(
-            f"1) 使用解药救{wolf_kill_target_id}{save_hint} —— action_type='use_antidote', target_id='{wolf_kill_target_id}'"
+            f"1) [强烈推荐] 使用解药救{wolf_kill_target_id}{save_hint} —— action_type='use_antidote', target_id='{wolf_kill_target_id}'"
         )
     if not gs.poison_used and ActionType.USE_POISON in legal_actions:
         options.append(
-            "2) 使用毒药毒杀某人 —— action_type='use_poison', target_id='目标玩家ID'"
+            "2) [推荐] 使用毒药毒杀某人 —— action_type='use_poison', target_id='目标玩家ID'"
         )
-    options.append("3) 不使用药水 —— action_type='no_action'")
+    no_action_label = "3) [不推荐] 不使用药水 —— action_type='no_action'"
+    if not options:
+        no_action_label = "1) 不使用药水（无可用行动）—— action_type='no_action'"
+    options.append(no_action_label)
     witch_directive["witch_night_action"] += "\n".join(options)
-    witch_directive["witch_night_action"] += (
-        "\n\n重要规则：不能在同一夜同时使用解药和毒药。"
-        "解药不能自救。"
-    )
+    witch_directive["witch_night_action"] += "\n\n重要规则：不能在同一夜同时使用解药和毒药。"
+    if not can_self:
+        witch_directive["witch_night_action"] += "解药不能自救。"
+    # Push the LLM away from no_action
+    if wolf_kill_target_id and not gs.antidote_used:
+        witch_directive["witch_night_action"] += (
+            f"\n\n你应该优先使用解药救{wolf_kill_target_id}。"
+            f"不救人的女巫等于白板平民——你的解药是最强大的好人技能，不用则浪费。"
+        )
+    elif not gs.poison_used:
+        witch_directive["witch_night_action"] += (
+            "\n\n你的毒药还在。你是目前最能直接消灭狼人的人。"
+            "选择你最有把握的狼人目标——这会改变游戏走势。"
+        )
 
     # Structured target value assessment — LLM reasons over data, not vague text
     save_value = _estimate_witch_save_value(gs, wolf_kill_target_id)
@@ -1715,11 +1705,17 @@ def agent_night_witch(
     if not gs.poison_used:
         witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
         alive = sum(1 for p in gs.players.values() if p.alive)
-        if alive <= 8:
+        if alive <= 9:
             witch_directive["poison_urgency"] = (
-                f"场上仅存活{alive}人。你的毒药还没有使用。"
-                f"你必须认真考虑今晚撒毒——选择你最有把握的狼人目标。"
-                f"如果你被刀或被投出局，毒药将浪费。"
+                f"场上存活{alive}人，你的毒药还未使用。"
+                f"建议今晚撒毒——选择你最有把握的狼人目标。"
+            )
+        if alive <= 7:
+            witch_directive["poison_urgency"] = (
+                f"【紧急】场上仅存活{alive}人！你的毒药还没有使用！"
+                f"今晚必须撒毒！如果你不毒，你很可能再也没有机会了——"
+                f"狼队随时可能刀掉你，好人输掉后你的毒药等于不存在。"
+                f"选择你最有把握的狼人目标，现在不动手就晚了。"
             )
 
     witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
@@ -1969,7 +1965,11 @@ def _single_wolf_vote(
     if action.action_type == ActionType.WOLF_NO_KILL:
         return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
     if action.action_type == ActionType.WOLF_KILL and action.target_id:
-        return {"wolf_action": "kill", "wolf_kill_target_id": action.target_id, "action_trace": action_trace}
+        # Validate target is alive and not a wolf teammate
+        target_player = gs.players.get(action.target_id)
+        if target_player and target_player.alive and target_player.role != "werewolf":
+            return {"wolf_action": "kill", "wolf_kill_target_id": action.target_id, "action_trace": action_trace}
+        return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
     # Unknown action type — treat as no_kill rather than silently returning None
     return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
 
@@ -2176,7 +2176,7 @@ def agent_day_speech(
         # Truncate long speeches to prevent copying/repeating
         speech_summaries = []
         for s in sheriff_speeches:
-            snippet = s["text"][:80] + ("..." if len(s["text"]) > 80 else "")
+            snippet = s["text"][:120] + ("..." if len(s["text"]) > 120 else "")
             speech_summaries.append(f"  [{s['speaker']}]: {snippet}")
         strategy_directive["sheriff_election_record"] = (
             "以下是警上竞选环节各候选人发言的摘要：\n"
@@ -2490,16 +2490,16 @@ def _evaluate_hybrid_master_candidates(
 
     ranked = sorted(scores.items(), key=lambda x: x[1]["value"], reverse=True)
     total_candidates = len(candidates)
-    # Probability breakdown for the hybrid
-    god_count = 4  # seer + witch + hunter + idiot
-    wolf_count = 4
-    villager_count = 3
+    # Derive role counts from actual game state
+    wolf_count = sum(1 for pid, p in gs.players.items() if p.role == "werewolf" and pid != hybrid_id)
+    god_count = sum(1 for p in gs.players.values() if p.role in ("seer", "witch", "hunter", "idiot"))
+    villager_count = total_candidates - wolf_count - god_count
 
     return {
         "description": "主人候选评估（分数越高，玩家影响力越大，对混血儿越有价值）",
         "probability_framework": {
-            "p_good_faction": f"~{(god_count + villager_count) / total_candidates:.0%}（7/11 好人阵营）",
-            "p_wolf_faction": f"~{wolf_count / total_candidates:.0%}（4/11 狼人阵营）",
+            "p_good_faction": f"~{(god_count + villager_count) / max(1, total_candidates):.0%}（{god_count + villager_count}/{total_candidates} 好人阵营）",
+            "p_wolf_faction": f"~{wolf_count / max(1, total_candidates):.0%}（{wolf_count}/{total_candidates} 狼人阵营）",
             "note": "你不知道主人阵营，选到好人和狼人的概率都有，策略需要灵活适应",
         },
         "ranked_candidates": [
@@ -2917,7 +2917,7 @@ def agent_sheriff_register(
     engine: RuleEngine,
     registry: AgentRegistry,
     player_id: str,
-) -> dict[str, Any] | bool:
+) -> dict[str, Any] | None:
     """Ask a player whether they want to register for sheriff election.
 
     Returns dict with registration result and self_destruct flag.
@@ -2979,7 +2979,7 @@ def agent_sheriff_withdraw(
     engine: RuleEngine,
     registry: AgentRegistry,
     candidate_id: str,
-) -> dict[str, Any] | bool:
+) -> dict[str, Any] | None:
     """Ask a sheriff candidate whether they want to withdraw.
 
     Returns dict with withdrawal result and self_destruct flag.
@@ -3239,6 +3239,6 @@ def _agent_reflection(
             system_prompt=system_prompt,
             task_type=TaskType.SPEECH,
         )
-        return {"reflection_text": action.speech_text or ""}
+        return {"reflection_text": getattr(action, "speech_text", "") or ""}
     except Exception:
         return {"reflection_text": ""}

@@ -94,7 +94,7 @@ def timed_call(
     def _worker() -> None:
         try:
             result_box[0] = fn(*args)
-        except BaseException as exc:
+        except Exception as exc:
             error_box[0] = exc
 
     thread = threading.Thread(target=_worker, daemon=True)

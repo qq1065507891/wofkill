@@ -130,9 +130,8 @@ class StrategySelector:
         if role == "seer" and is_suspected:
             base_strategy = "aggressive_defense"
 
-        if role == "hybrid":
-            if faction_goal == "help_master_faction":
-                base_strategy = "deep_hook"
+        if role == "hybrid" and faction_goal == "help_master_faction":
+            base_strategy = "deep_hook"
 
         # Look up strategy package
         strategy = self._strategies.get(base_strategy)

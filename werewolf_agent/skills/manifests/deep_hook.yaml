@@ -1,0 +1,15 @@
+name: deep_hook
+display_name: 倒钩
+description: 在好人阵营中建立可信度，通过适度攻击狼队友来获取信任
+applicable_roles:
+- werewolf
+applicable_phases:
+- speech
+- vote
+- wolf_discussion
+- last_words
+faction: wolf
+tags:
+- deception
+- long_term
+is_tool_skill: false

@@ -149,6 +149,8 @@ def build_compatibility_matrix(
         warnings.append("Some victory conditions are not implemented by RuleEngine.")
 
     status = "playable"
+    if not roles:
+        status = "display_only"
     if unsupported_roles or missing_abilities or unsupported_victories:
         status = "display_only"
 

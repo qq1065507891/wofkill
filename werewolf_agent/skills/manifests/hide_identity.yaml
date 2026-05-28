@@ -1,0 +1,18 @@
+name: hide_identity
+display_name: 藏身份
+description: 隐藏自己的真实角色，避免被过早识别
+applicable_roles:
+- seer
+- witch
+- hunter
+- werewolf
+- hybrid
+applicable_phases:
+- speech
+- sheriff_speech
+- sheriff_registration
+faction: common
+tags:
+- stealth
+- defense
+is_tool_skill: false

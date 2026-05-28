@@ -283,7 +283,7 @@ def build_evaluation(
         audit_events=audit_events or [],
     )
 
-    if game_state.winning_faction:
+    if game_state.winning_faction and game_state.winning_faction in metrics.faction_win_rate:
         metrics.faction_win_rate[game_state.winning_faction] = 1.0
 
     annotation = ""

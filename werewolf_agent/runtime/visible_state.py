@@ -16,6 +16,20 @@ from werewolf_agent.runtime.timeline import (
 
 def build_visible_player_state(game_state: GameState) -> dict[str, Any]:
     """Build public fields common to all player contexts."""
+    deaths = list(game_state.deaths)
+    # Only reveal deaths after the judge has publicly announced them.
+    # During the sheriff election on day 1, deaths are already recorded in
+    # game_state.deaths but have NOT been announced yet — players must not
+    # see them prematurely (e.g. in their election speeches).
+    death_announced = any(
+        e.type == "judge_broadcast" and e.payload.get("phase") == "death_announce"
+        for e in game_state.events
+    )
+    if not death_announced:
+        # Keep only deaths that were announced in a prior day (exile, hunter shot).
+        # Night deaths are never visible until the first death_announce broadcast.
+        deaths = [d for d in deaths if d.timing != "night"]
+
     return {
         "phase": game_state.phase,
         "day": game_state.day_number,
@@ -36,7 +50,7 @@ def build_visible_player_state(game_state: GameState) -> dict[str, Any]:
         ],
         "dead_players": [
             {"id": death.player_id, "reason": death.reason}
-            for death in game_state.deaths
+            for death in deaths
         ],
         "sheriff_id": game_state.sheriff_id,
         "badge_state": game_state.sheriff_badge_state,

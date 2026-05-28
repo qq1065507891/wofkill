@@ -23,6 +23,9 @@ class ProfileStore:
             self._profiles[player_id] = PlayerProfile(player_id=player_id)
         return self._profiles[player_id]
 
+    def store(self, profile: PlayerProfile) -> None:
+        self._profiles[profile.player_id] = profile
+
     def get(self, player_id: str) -> PlayerProfile | None:
         return self._profiles.get(player_id)
 

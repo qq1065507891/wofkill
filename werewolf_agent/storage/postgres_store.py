@@ -8,6 +8,7 @@ Compose local production runs with the pgvector PostgreSQL image.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict
 from typing import Any
 
@@ -20,6 +21,7 @@ class PostgresGameRepository:
 
     def __init__(self, dsn: str, *, initialize: bool = True) -> None:
         self._dsn = dsn
+        self._lock = threading.Lock()
         self._conn: Any | None = None
         if initialize:
             self._ensure_connection()

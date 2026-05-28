@@ -331,7 +331,7 @@ class RuleEngine:
                 deaths.append(wolf_death)
 
         # 3. Witch poison
-        witch_cfg = self.ruleset.raw["roles"]["witch"]
+        witch_cfg = self.ruleset.raw["roles"]["witch"]["abilities"]
         use_both = witch_cfg.get("use_both_potions_same_night", False)
         if poison_target_id is not None and not poison_used:
             if not saved_by_antidote or use_both:
@@ -356,6 +356,8 @@ class RuleEngine:
             )
             if seer_id is not None:
                 alignment_result = self.check_alignment(state, target_id=seer_target_id)
+                # seer_id intentionally omitted from event payload (H-5)
+                # to prevent leaking seer identity through event records.
                 events.append(GameEvent(
                     type="seer_check",
                     payload={
@@ -406,9 +408,13 @@ class RuleEngine:
 
         # Slaughter check
         villagers_alive = [pid for pid, p in players.items() if p.alive and p.role == "villager"]
+        god_roles = {
+            r for r, cfg in self.ruleset.raw.get("roles", {}).items()
+            if cfg.get("category") == "god"
+        } or {"seer", "witch", "hunter", "idiot"}
         gods_alive = [
             pid for pid, p in players.items()
-            if p.alive and p.role in ("seer", "witch", "hunter", "idiot")
+            if p.alive and p.role in god_roles
         ]
 
         # God slaughter
@@ -524,7 +530,7 @@ class RuleEngine:
                 continue
             sheriff_weight = float(self.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
             base_weight = 2
-            weight = int(sheriff_weight * base_weight) if (
+            weight = round(sheriff_weight * base_weight) if (
                 voter_id == state.sheriff_id and state.sheriff_badge_state == "active"
             ) else base_weight
             tally[target_id] = tally.get(target_id, 0) + weight
