@@ -1768,14 +1768,49 @@ def build_agent_context(
                 role_stats: dict[str, dict[str, int]] = {}
                 for ref in restored_memory.reflections_by_player(player_id):
                     r = ref.role or "?"
-                    role_stats.setdefault(r, {"count": 0})
+                    role_stats.setdefault(r, {"count": 0, "wins": 0})
                     role_stats[r]["count"] += 1
+                    if ref.faction_won:
+                        role_stats[r]["wins"] += 1
                 if role_stats:
                     role_line = "、".join(
-                        f"{r}:{s['count']}局" for r, s in sorted(role_stats.items())
+                        f"{r}:{s['count']}局({s['wins']}胜)" for r, s in sorted(role_stats.items())
                     )
                     parts.append(f"角色经历：{role_line}")
                 strategy_directive["cross_game_profile"] = " | ".join(parts)
+
+                # Inject detailed reflections (self-evolution)
+                all_refs = restored_memory.reflections_by_player(player_id)
+                if all_refs:
+                    current_role = player.role
+                    current_faction = (
+                        "wolf" if current_role == "werewolf"
+                        else "good" if current_role in ("villager", "seer", "witch", "hunter", "idiot")
+                        else ("wolf" if gs.hybrid_master_faction == "wolf" else "good") if current_role == "hybrid"
+                        else "good"
+                    )
+                    # Sort: same-role first, then same-faction, then recent
+                    def _ref_score(r):
+                        priority = 0
+                        if r.role == current_role:
+                            priority = 2
+                        elif (r.role == "werewolf" and current_faction == "wolf") or (
+                            r.role != "werewolf" and current_faction == "good"
+                        ):
+                            priority = 1
+                        return (-priority, r.entry_id)  # higher priority first, newer (higher entry_id) first
+
+                    sorted_refs = sorted(all_refs, key=_ref_score)[:5]
+                    win_label = lambda r: "胜" if r.faction_won else "负"
+                    ref_lines = [
+                        f"- [{r.role}·{win_label(r)}] {r.text}"
+                        + (f"（背景：{r.situation}）" if r.situation else "")
+                        for r in sorted_refs
+                    ]
+                    strategy_directive["cross_game_reflections"] = (
+                        "【历史反思】以下是你在过往对局中的经验教训，请参考这些反思调整你的策略：\n"
+                        + "\n".join(ref_lines)
+                    )
         except Exception:
             logger.debug("Failed to inject cross-game memory for %s", player_id, exc_info=True)
 
