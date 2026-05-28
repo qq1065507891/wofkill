@@ -201,6 +201,40 @@ class PostgresGameRepository:
         conn.execute("DELETE FROM games WHERE game_id = %s", (game_id,))
         conn.commit()
 
+    # -- Memory snapshots ---------------------------------------------------
+
+    def save_memory_snapshot(self, snapshot_id: str, data: dict[str, Any]) -> None:
+        conn = self._ensure_connection()
+        conn.execute(
+            """
+            INSERT INTO memory_snapshots (snapshot_id, snapshot_json)
+            VALUES (%s, %s::jsonb)
+            ON CONFLICT (snapshot_id) DO UPDATE SET snapshot_json = EXCLUDED.snapshot_json
+            """,
+            (snapshot_id, json.dumps(data, ensure_ascii=False)),
+        )
+        conn.commit()
+
+    def load_memory_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        row = self._ensure_connection().execute(
+            "SELECT snapshot_json FROM memory_snapshots WHERE snapshot_id = %s",
+            (snapshot_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+
+    def list_memory_snapshots(self) -> list[dict[str, Any]]:
+        rows = self._ensure_connection().execute(
+            "SELECT snapshot_id, created_at FROM memory_snapshots ORDER BY created_at DESC"
+        ).fetchall()
+        return [{"snapshot_id": r[0], "created_at": str(r[1]) if r[1] else None} for r in rows]
+
+    def delete_memory_snapshot(self, snapshot_id: str) -> None:
+        conn = self._ensure_connection()
+        conn.execute("DELETE FROM memory_snapshots WHERE snapshot_id = %s", (snapshot_id,))
+        conn.commit()
+
     def _connect(self) -> Any:
         if self._conn is not None:
             return self._conn
