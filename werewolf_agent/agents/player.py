@@ -879,6 +879,21 @@ class PlayerAgent:
             ]
             return templates[salt % len(templates)]
         return f"[{context.agent_id} 本轮未发表有效言论。]"
+        if context.task_type in (TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH):
+            templates = [
+                "我上警是想给出自己的独立判断视角，重点关注前几位发言的逻辑一致性。",
+                "我参加警长竞选，希望通过观察和提问帮好人理清局势。",
+                "上警是为了确保好人阵营有人能带节奏，我会根据后续发言调整站边。",
+            ]
+            return templates[salt % len(templates)]
+        if context.task_type == TaskType.DEFENSE_SPEECH:
+            templates = [
+                "我确实不是狼人，请大家仔细分析我的发言和投票逻辑。",
+                "我没有理由被推，关注我的人应该先看看自己的视角是否正确。",
+                "我是好人，我的选择都是基于公开信息，没有任何隐藏动机。",
+            ]
+            return templates[salt % len(templates)]
+        return f"[{context.agent_id} 本轮未发表有效言论。]"
 
     # ── Prompt building delegated to PlayerPromptBuilder (s10 pipeline) ──
 
