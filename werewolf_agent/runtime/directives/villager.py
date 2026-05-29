@@ -13,8 +13,8 @@ def build_villager_directive(
     villager_id: str,
 ) -> dict[str, Any]:
     """Build day speech directive for villager/idiot -- pure analysis, no private info."""
-    # Lazy import to avoid circular dependency with agent_adapter
-    from werewolf_agent.runtime.agent_adapter import _public_seer_claimants
+    # TODO: Circular dependency — will be resolved when _public_seer_claimants moves to runtime/strategy/ (Task 2)
+    from werewolf_agent.runtime.agent_adapter import _public_seer_claimants  # noqa: TID251
 
     parts: dict[str, Any] = {}
 
