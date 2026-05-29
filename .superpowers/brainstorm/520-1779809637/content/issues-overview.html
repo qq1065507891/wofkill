@@ -1,0 +1,62 @@
+<h2>最新对局 g_1123488389 — 问题全景图</h2>
+<p class="subtitle">5月26日 22:24–23:11 · 狼人胜利(slaughter_gods) · 109步 · 7.9%回退率</p>
+
+<div class="section">
+  <h3>身份分布</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:14px">
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p01 陈思远</td><td style="padding:6px;border:1px solid #ddd">村民</td><td style="padding:6px;border:1px solid #ddd">D1被放逐</td></tr>
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p02 赵猛</td><td style="padding:6px;border:1px solid #ddd">女巫</td><td style="padding:6px;border:1px solid #ddd">D3被放逐 ⚠️毒药未用</td></tr>
+    <tr style="background:#ffebee"><td style="padding:6px;border:1px solid #ddd">p03 林静雅</td><td style="padding:6px;border:1px solid #ddd">🐺狼人</td><td style="padding:6px;border:1px solid #ddd">存活</td></tr>
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p04 周烈</td><td style="padding:6px;border:1px solid #ddd">村民</td><td style="padding:6px;border:1px solid #ddd">N4被刀</td></tr>
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p05 沈墨</td><td style="padding:6px;border:1px solid #ddd">预言家</td><td style="padding:6px;border:1px solid #ddd">D2被放逐 ⚠️</td></tr>
+    <tr style="background:#ffebee"><td style="padding:6px;border:1px solid #ddd">p06 方晴</td><td style="padding:6px;border:1px solid #ddd">🐺狼人</td><td style="padding:6px;border:1px solid #ddd">存活</td></tr>
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p07 孙乐</td><td style="padding:6px;border:1px solid #ddd">村民</td><td style="padding:6px;border:1px solid #ddd">N5被刀</td></tr>
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p08 韩书生</td><td style="padding:6px;border:1px solid #ddd">白痴</td><td style="padding:6px;border:1px solid #ddd">N1被刀(救)→N3被刀</td></tr>
+    <tr style="background:#ffebee"><td style="padding:6px;border:1px solid #ddd">p09 陆无声</td><td style="padding:6px;border:1px solid #ddd">🐺狼人</td><td style="padding:6px;border:1px solid #ddd">存活</td></tr>
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p10 吴闪</td><td style="padding:6px;border:1px solid #ddd">混血儿(主=p01)</td><td style="padding:6px;border:1px solid #ddd">N2被刀</td></tr>
+    <tr style="background:#ffebee"><td style="padding:6px;border:1px solid #ddd">p11 郑铭</td><td style="padding:6px;border:1px solid #ddd">🐺狼人</td><td style="padding:6px;border:1px solid #ddd">存活</td></tr>
+    <tr style="background:#e8f5e9"><td style="padding:6px;border:1px solid #ddd">p12 冯弈</td><td style="padding:6px;border:1px solid #ddd">猎人</td><td style="padding:6px;border:1px solid #ddd">N4被刀 ❌开枪崩溃</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>6 个问题严重度排布</h3>
+  <div class="options">
+    <div class="option" style="border-left:4px solid #c62828">
+      <div class="content">
+        <h3>#1 ❌ 致命 Bug：死人说话</h3>
+        <p>D3发言阶段，p01/p05/p08 三个已死玩家仍在自由讨论中发言。free_discussion 的 speech_order 未过滤已死玩家。</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #c62828">
+      <div class="content">
+        <h3>#2 ❌ 致命 Bug：猎人开枪崩溃</h3>
+        <p>N4猎人被刀后开枪逻辑抛出 AttributeError: 'list' object has no attribute 'get'。异常被吞，猎人未真正做出开枪决策。</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #ef6c00">
+      <div class="content">
+        <h3>#3 ⚠️ 流程缺陷：预言家被冲票</h3>
+        <p>预言家警上"按顺序验的"理由单薄，狼队集中攻击，无好人正面站边。D2被全场投出。</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #ef6c00">
+      <div class="content">
+        <h3>#4 ⚠️ 流程缺陷：女巫毒药未用</h3>
+        <p>女巫首夜用解药（救了白痴），D3被放逐时毒药未撒。整局零毒输出。</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #f9a825">
+      <div class="content">
+        <h3>#5 🔶 设计缺陷：警长竞选混乱</h3>
+        <p>8人报名上警，狼人发言机械复制模板。警徽给了狼人(p09)。</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #f9a825">
+      <div class="content">
+        <h3>#6 🔶 设计缺陷：混血儿零影响</h3>
+        <p>混血儿选了村民主人(p01)，D1主人即被投出。整局以好人存活但无技能可用。</p>
+      </div>
+    </div>
+  </div>
+</div>

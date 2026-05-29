@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 from werewolf_agent.model_gateway.router import UsageRecord
 
 PROVIDER_DOTENV_KEYS = {
@@ -36,7 +38,7 @@ class _BaseHttpProvider:
             raise ProviderConfigError(f"{self.name} API key is required")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._http_client = http_client or __import__("httpx").Client()
+        self._http_client = http_client or httpx.Client()
         self._owns_http = http_client is None
 
     def close(self) -> None:

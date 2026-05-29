@@ -42,7 +42,7 @@ class Ruleset:
 class RuleEngine:
     def __init__(self, ruleset: Ruleset) -> None:
         self.ruleset = ruleset
-        raw = ruleset.raw if hasattr(ruleset, "raw") else ruleset
+        raw = ruleset.raw if isinstance(ruleset, Ruleset) else ruleset
         self._sheriff = SheriffRules(raw)
         self._reducer = EventReducer(raw)
 

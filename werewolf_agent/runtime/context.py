@@ -42,11 +42,6 @@ from werewolf_agent.runtime.directives import (
     build_villager_directive as _build_villager_day_speech_directive,
     build_wolf_directive as _build_wolf_day_speech_directive,
 )
-from werewolf_agent.runtime.directives._shared import (
-    collect_death_order as _collect_death_order,
-    collect_public_vote_history as _collect_public_vote_history,
-)
-
 # Backward-compatible re-exports from runtime.strategy (Task 2 extraction).
 from werewolf_agent.runtime.strategy import (
     estimate_witch_save_value as _estimate_witch_save_value,
@@ -57,7 +52,6 @@ from werewolf_agent.runtime.strategy import (
     get_wolf_role_assignment as _get_wolf_role_assignment,
     has_publicly_claimed_seer as _has_publicly_claimed_seer,
 )
-from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +338,7 @@ def _resolve_tool_skills() -> 'tuple[set[str], dict[str, dict[str, Any]]]':
         from werewolf_agent.skills.werewolf_skills import _load_tool_skills as _lts
         return _lts()
     except Exception:
+        logger.warning("Failed to load tool-skill definitions; agents will lack tactical skill advice", exc_info=True)
         return set(), {}
 
 

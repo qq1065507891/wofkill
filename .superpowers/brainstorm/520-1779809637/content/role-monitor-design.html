@@ -1,0 +1,84 @@
+<h2>角色状态监控模块 — 设计方案</h2>
+<p class="subtitle">新增独立模块感知关键角色的"危险状态"并触发策略干预</p>
+
+<div class="section">
+  <h3>架构位置</h3>
+  <div class="mockup">
+    <div class="mockup-header">CognitivePipeline 调用链</div>
+    <div class="mockup-body" style="font-family:monospace;font-size:13px;line-height:2">
+      build_agent_context(engine, gs, player_id, task_type)<br>
+      &nbsp;&nbsp;├─ StructuredWorldState.build(gs)<br>
+      &nbsp;&nbsp;├─ VisibilityPolicy.filter(ws, viewer_role)<br>
+      &nbsp;&nbsp;├─ AttentionFilter.prune(facts, role)<br>
+      &nbsp;&nbsp;├─ SalienceEngine.weigh(facts, phase)<br>
+      &nbsp;&nbsp;├─ <span style="background:#fff3e0;padding:2px 6px">🆕 RoleStateMonitor.assess(gs, player_id, role) → alerts</span><br>
+      &nbsp;&nbsp;├─ ContradictionEngine.detect(facts)<br>
+      &nbsp;&nbsp;├─ StrategySelector.select(role, situation)<br>
+      &nbsp;&nbsp;└─ LocalContextBuilder.assemble(...)
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>检测 4 种危险状态</h3>
+
+  <div class="options">
+    <div class="option" style="border-left:4px solid #c62828">
+      <div class="content">
+        <h3>SEER_UNDER_PRESSURE</h3>
+        <p><b>触发条件：</b>预言家 · 当前日发言中有2+玩家公开质疑/要投此预言家 · 尚未报出完整查验记录</p>
+        <p><b>干预动作：</b>strategy_directive 中加入"你必须完整列出所有夜晚查验记录、警徽流、查验理由。你的发言不能只说'按顺序验'——要解释每一夜的验人动机。"</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #ef6c00">
+      <div class="content">
+        <h3>WITCH_POISON_UNUSED_AT_RISK</h3>
+        <p><b>触发条件：</b>女巫 · 毒药可用 · 存活≤8人 · 当天有2+玩家发言指向此女巫</p>
+        <p><b>干预动作：</b>strategy_directive 中加入"你的毒药还未使用。如果你今晚不出毒就被投出，毒药会浪费。你必须今晚出毒。从质疑你的玩家中选择最可疑的目标。"</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #1565c0">
+      <div class="content">
+        <h3>HUNTER_MAY_DIE_SOON</h3>
+        <p><b>触发条件：</b>猎人 · 存活≤6人 · 神职暴露风险高（已被多人讨论）</p>
+        <p><b>干预动作：</b>提示猎人"你是场上关键神职。如果今晚被刀，你必须提前思考开枪目标。"</p>
+      </div>
+    </div>
+    <div class="option" style="border-left:4px solid #2e7d32">
+      <div class="content">
+        <h3>HYBRID_MASTER_DEAD</h3>
+        <p><b>触发条件：</b>混血儿 · 主人已死亡 · 存活≤8人</p>
+        <p><b>干预动作：</b>提示"你的主人已死，你以主人家阵营继续游戏。你现在的身份等同于村民——用分析而非技能帮助阵营。"</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>模块接口</h3>
+  <div class="mockup">
+    <div class="mockup-body" style="font-family:monospace;font-size:13px;padding:12px">
+      <b>class RoleStateMonitor:</b><br>
+      &nbsp;&nbsp;<b>assess(gs, player_id, phase) → list[RoleAlert]</b><br><br>
+      <b>@dataclass RoleAlert:</b><br>
+      &nbsp;&nbsp;alert_type: "SEER_UNDER_PRESSURE" | "WITCH_POISON_UNUSED" | ...<br>
+      &nbsp;&nbsp;severity: "critical" | "warning" | "info"<br>
+      &nbsp;&nbsp;message: str &nbsp;&nbsp;<i># 注入到 strategy_directive 的文本</i><br>
+      &nbsp;&nbsp;evidence: list[str] &nbsp;&nbsp;<i># 触发此告警的具体事件/发言</i><br><br>
+      <b>class RoleStateMonitor:</b><br>
+      &nbsp;&nbsp;<b>__init__(ruleset: Ruleset)</b> &nbsp;&nbsp;<i># 读取角色能力配置</i><br>
+      &nbsp;&nbsp;<b>assess(gs, player_id, role, phase) → list[RoleAlert]</b><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;<i># 分析 gs.events + gs.players → 返回告警列表</i>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>集成点</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:14px">
+    <tr><td style="padding:6px;border:1px solid #ddd"><b>build_agent_context</b></td><td style="padding:6px;border:1px solid #ddd">调用 monitor.assess() → 告警注入 strategy_directive</td></tr>
+    <tr><td style="padding:6px;border:1px solid #ddd"><b>StrategySelector</b></td><td style="padding:6px;border:1px solid #ddd">接收告警作为 situation 输入 → 调整策略优先级</td></tr>
+    <tr><td style="padding:6px;border:1px solid #ddd"><b>新文件位置</b></td><td style="padding:6px;border:1px solid #ddd"><code>werewolf_agent/cognition/role_monitor.py</code></td></tr>
+    <tr><td style="padding:6px;border:1px solid #ddd"><b>测试</b></td><td style="padding:6px;border:1px solid #ddd"><code>tests/cognition/test_role_monitor.py</code></td></tr>
+  </table>
+</div>
