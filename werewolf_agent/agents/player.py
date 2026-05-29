@@ -33,6 +33,48 @@ from werewolf_agent.agents.schemas import (
     VoteBasis,
 )
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+from werewolf_agent.agents.output_parser import (
+    repair_json_text as _repair_json_impl,
+    extract_json_object_candidates as _extract_json_impl,
+    extract_parameter_tag_action as _extract_param_impl,
+    normalize_action_data as _normalize_impl,
+    clean_enum_value as _clean_enum_impl,
+    clean_reason as _clean_reason_impl,
+    sanitize_optional_private_fields as _sanitize_impl,
+    action_from_data as _action_from_data_impl,
+    parse_action as _parse_action_impl,
+    extract_decision_data as _extract_decision_impl,
+    repair_vote_decision as _repair_vote_impl,
+    repair_target_decision as _repair_target_impl,
+    repair_speech_intent_decision as _repair_speech_impl,
+    vote_choice_map as _vote_choice_map_impl,
+    target_from_vote_decision as _target_from_vote_impl,
+    choice_for_target as _choice_for_target_impl,
+    vote_candidate_summary as _vote_summary_impl,
+    target_candidate_summary as _target_summary_impl,
+    infer_speech_intent as _infer_intent_impl,
+    speech_target_from_decision as _speech_target_impl,
+    synthesize_intent_speech as _synthesize_impl,
+    ensure_speech_quality_components as _ensure_quality_impl,
+    speech_pressure_target as _pressure_target_impl,
+    speech_intent_reason as _intent_reason_impl,
+    infer_standing_with_seer as _infer_standing_impl,
+    infer_seer_stance as _infer_stance_impl,
+    infer_vote_basis as _infer_basis_impl,
+    default_not_voting_reason as _default_not_voting_impl,
+    parse_choice_action as _parse_choice_impl,
+    parse_speech_intent_action as _parse_speech_impl,
+    uses_choice_pipeline as _uses_choice_impl,
+    uses_speech_intent_pipeline as _uses_speech_impl,
+)
+from werewolf_agent.agents.tool_schema import (
+    player_action_tool as _tool_impl,
+    vote_audit_tool_properties as _vote_audit_impl,
+    speech_quality_error as _speech_quality_impl,
+    speech_quality_phase as _speech_phase_impl,
+    vote_quality_error as _vote_quality_impl,
+    all_legal_actions_require_target as _all_target_impl,
+)
 from werewolf_agent.model_gateway.router import ModelRouter
 
 logger = logging.getLogger(__name__)
@@ -105,15 +147,6 @@ class PlayerAgent:
         TaskType.DEFENSE_SPEECH,
         TaskType.PK_SPEECH,
         TaskType.LAST_WORDS,
-    }
-    _SPEECH_INTENTS = {
-        "self_clear": "表水",
-        "question_target": "质疑/追问目标",
-        "stand_with_seer": "站边预言家或逻辑线",
-        "respond_pressure": "回应质疑",
-        "push_vote": "提出投票倾向",
-        "info_synthesis": "整合多人发言要点，提出综合判断",
-        "anti_herd_call": "指出跟票风险，提醒大家独立判断",
     }
 
     def __init__(
@@ -403,24 +436,24 @@ class PlayerAgent:
                                     f"Legal targets: {context.legal_targets}",
                 )
                 continue
-            speech_quality_error = self._speech_quality_error(context, action)
-            if speech_quality_error:
+            speech_quality_err = self._speech_quality_error(context, action)
+            if speech_quality_err:
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="speech_quality",
-                    error_message=speech_quality_error,
-                    correction_hint=speech_quality_error,
+                    error_message=speech_quality_err,
+                    correction_hint=speech_quality_err,
                 )
                 continue
-            vote_quality_error = self._vote_quality_error(context, action)
-            if vote_quality_error:
+            vote_quality_err = self._vote_quality_error(context, action)
+            if vote_quality_err:
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="vote_quality",
-                    error_message=vote_quality_error,
-                    correction_hint=vote_quality_error,
+                    error_message=vote_quality_err,
+                    correction_hint=vote_quality_err,
                 )
                 continue
 
@@ -506,165 +539,29 @@ class PlayerAgent:
             structured_failure_reason=structured_failure_reason,
         )
 
+    # ── Delegated to output_parser.py ──
+
     @staticmethod
     def _repair_json_text(raw: str) -> str:
-        """Apply common JSON repairs for LLM output quirks.
-
-        Handles: trailing commas, single-quoted strings, unquoted keys,
-        JS-style comments, NaN/Infinity literals, and BOM.
-        """
-        import re as _re
-
-        text = raw.strip()
-        # Remove BOM and zero-width characters
-        text = text.replace("﻿", "").replace("​", "")
-        # Remove // line comments and /* block comments */
-        text = _re.sub(r"//[^\n]*", "", text)
-        text = _re.sub(r"/\*.*?\*/", "", text, flags=_re.DOTALL)
-        # Replace NaN / Infinity with null
-        text = _re.sub(r"\bNaN\b", "null", text)
-        text = _re.sub(r"\bInfinity\b|\binf\b", "null", text, flags=_re.IGNORECASE)
-        # Fix single-quoted strings → double-quoted (naive but covers common cases)
-        # Only outside already-double-quoted strings
-        text = _re.sub(r"(?<!\\)'([^']*?)'", r'"\1"', text)
-        # Fix unquoted keys: word followed by :
-        text = _re.sub(
-            r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:',
-            r'\1"\2":',
-            text,
-        )
-        # Remove trailing commas before } or ]
-        text = _re.sub(r",\s*([}\]])", r"\1", text)
-        # Collapse multiple consecutive commas
-        text = _re.sub(r",\s*,", ",", text)
-        return text
+        return _repair_json_impl(raw)
 
     def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
-        """Parse LLM output into PlayerAction. Returns (action, error)."""
-        cleaned = text.strip()
-
-        # Strip markdown code fences
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            cleaned = "\n".join(lines).strip()
-
-        # Try direct parse first
-        try:
-            data = json.loads(cleaned)
-            return self._action_from_data(data)
-        except json.JSONDecodeError as direct_error:
-            # Repair and retry
-            repaired = self._repair_json_text(cleaned)
-            if repaired != cleaned:
-                try:
-                    data = json.loads(repaired)
-                    return self._action_from_data(data)
-                except json.JSONDecodeError:
-                    pass  # fall through to extraction
-
-            parameter_data = self._extract_parameter_tag_action(cleaned)
-            if parameter_data is not None:
-                action, parse_error = self._action_from_data(parameter_data)
-                if action is not None:
-                    return action, None
-                return None, parse_error
-
-            candidates = self._extract_json_object_candidates(cleaned)
-            if not candidates:
-                return None, f"No JSON object found in output"
-            first_error: str | None = None
-            for candidate in candidates:
-                try:
-                    data = json.loads(candidate)
-                except json.JSONDecodeError as e:
-                    # Try repair on candidate
-                    repaired = self._repair_json_text(candidate)
-                    if repaired != candidate:
-                        try:
-                            data = json.loads(repaired)
-                        except json.JSONDecodeError:
-                            if first_error is None:
-                                first_error = f"JSON parse error: {e}"
-                            continue
-                    else:
-                        if first_error is None:
-                            first_error = f"JSON parse error: {e}"
-                        continue
-                action, parse_error = self._action_from_data(data)
-                if action is not None:
-                    return action, None
-                if first_error is None:
-                    first_error = parse_error
-            return None, first_error or f"JSON parse error: {direct_error}"
+        return _parse_action_impl(text)
 
     def _action_from_data(self, data: Any) -> tuple[PlayerAction | None, str | None]:
-        data = self._normalize_action_data(data)
-        try:
-            return PlayerAction(**data), None
-        except ValidationError as e:
-            sanitized = self._sanitize_optional_private_fields(data)
-            if sanitized != data:
-                try:
-                    return PlayerAction(**sanitized), None
-                except ValidationError:
-                    pass
-            return None, f"Schema validation error: {e}"
+        return _action_from_data_impl(data)
 
     def _normalize_action_data(self, data: Any) -> Any:
-        """Normalize provider quirks before schema validation."""
-        if not isinstance(data, dict):
-            return data
-        normalized = dict(data)
-        if isinstance(normalized.get("target_id"), str) and normalized["target_id"].strip().lower() in {
-            "",
-            "null",
-            "none",
-        }:
-            normalized["target_id"] = None
-        if "confidence" in normalized and isinstance(normalized["confidence"], str):
-            try:
-                normalized["confidence"] = float(normalized["confidence"].strip())
-            except ValueError:
-                pass
-        return normalized
+        return _normalize_impl(data)
 
     def _extract_parameter_tag_action(self, text: str) -> dict[str, Any] | None:
-        """Extract MiniMax-style <parameter name="...">value</parameter> tool payloads."""
-        pairs = re.findall(
-            r"<parameter\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</parameter>",
-            text,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-        if not pairs:
-            return None
-
-        data: dict[str, Any] = {}
-        for key, raw_value in pairs:
-            value = unescape(raw_value.strip())
-            if value.lower() in {"null", "none"}:
-                data[key] = None
-            elif key == "confidence":
-                try:
-                    data[key] = float(value)
-                except ValueError:
-                    data[key] = value
-            else:
-                data[key] = value
-        return data if "action_type" in data else None
+        return _extract_param_impl(text)
 
     def _uses_choice_pipeline(self, context: AgentContext) -> bool:
-        return (
-            len(context.legal_actions) == 1
-            and context.legal_actions[0] in self._CHOICE_TARGET_ACTIONS
-            and bool(context.legal_targets)
-        )
+        return _uses_choice_impl(context.legal_actions, context.legal_targets)
 
     def _uses_speech_intent_pipeline(self, context: AgentContext) -> bool:
-        return (
-            context.task_type in self._SPEECH_INTENT_TASKS
-            and context.legal_actions == [ActionType.SPEECH]
-        )
+        return _uses_speech_impl(context.legal_actions, context.task_type, self._SPEECH_INTENT_TASKS)
 
     def _select_output_mode(self, context: AgentContext) -> OutputMode:
         if self._uses_choice_pipeline(context):
@@ -678,198 +575,66 @@ class PlayerAgent:
         text: str,
         context: AgentContext,
     ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
-        data, parse_error = self._extract_decision_data(text)
-        if data is None:
-            return None, parse_error, None
-        if "choice" not in data and "target_id" not in data:
-            return None, "Choice output must include choice or target_id", data
-
-        if context.legal_actions == [ActionType.VOTE]:
-            repaired = self._repair_vote_decision(data, context)
-        else:
-            repaired = self._repair_target_decision(data, context)
-        if repaired is None:
-            return None, "Could not map choice to legal target", data
-
-        action = PlayerAction(
-            action_type=context.legal_actions[0],
-            target_id=repaired["target_id"],
-            speech="",
-            reason=repaired["reason"],
-            confidence=repaired["confidence"],
-            seer_stance=repaired.get("seer_stance", SeerStance.UNDECIDED.value),
-            vote_basis=repaired.get("vote_basis", VoteBasis.FALLBACK.value),
-            standing_with_seer=repaired.get("standing_with_seer", ""),
-            suspect_reason=repaired.get("suspect_reason", ""),
-            not_voting_reason=repaired.get("not_voting_reason", ""),
-            private_reason=repaired.get("private_reason", ""),
+        return _parse_choice_impl(
+            text,
+            context.legal_actions,
+            context.legal_targets,
+            context.salience_items,
         )
-        return action, None, repaired
 
     def _parse_speech_intent_action(
         self,
         text: str,
         context: AgentContext,
     ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
-        data, parse_error = self._extract_decision_data(text)
-        if data is None:
-            return None, parse_error, None
-        if "intent" not in data and "speech" not in data:
-            return None, "Speech intent output must include intent or speech", data
-
-        repaired = self._repair_speech_intent_decision(data, context)
-        action = PlayerAction(
-            action_type=ActionType.SPEECH,
-            target_id=repaired["target_id"],
-            speech=repaired["speech"],
-            reason=repaired["reason"],
-            confidence=repaired["confidence"],
+        return _parse_speech_impl(
+            text,
+            context.agent_id,
+            context.own_role,
+            context.legal_targets,
+            context.salience_items,
+            context.visible_world_state,
+            context.recent_transcript,
         )
-        return action, None, repaired
 
     def _extract_decision_data(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            lines = [line for line in lines if not line.strip().startswith("```")]
-            cleaned = "\n".join(lines).strip()
-
-        try:
-            data = json.loads(cleaned)
-            if isinstance(data, dict):
-                return self._normalize_action_data(data), None
-            return None, "Decision JSON must be an object"
-        except json.JSONDecodeError as direct_error:
-            parameter_data = self._extract_parameter_tag_action(cleaned)
-            if parameter_data is not None:
-                return self._normalize_action_data(parameter_data), None
-            candidates = self._extract_json_object_candidates(cleaned)
-            for candidate in candidates:
-                try:
-                    data = json.loads(candidate)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(data, dict):
-                    return self._normalize_action_data(data), None
-            return None, f"No JSON object found in output: {direct_error}"
+        return _extract_decision_impl(text)
 
     def _repair_vote_decision(
         self,
         data: dict[str, Any],
         context: AgentContext,
     ) -> dict[str, Any] | None:
-        choice_map = self._vote_choice_map(context)
-        target_id = self._target_from_vote_decision(data, choice_map, context.legal_targets)
-        if target_id is None:
-            return None
-
-        summary = self._vote_candidate_summary(context, target_id)
-        reason = self._clean_reason(data.get("reason")) or summary
-        suspect_reason = self._clean_reason(data.get("suspect_reason")) or summary
-        standing = self._clean_reason(data.get("standing_with_seer")) or self._infer_standing_with_seer(context)
-        not_voting = self._clean_reason(data.get("not_voting_reason")) or self._default_not_voting_reason(
-            context,
-            target_id,
+        return _repair_vote_impl(
+            data, context.legal_actions, context.legal_targets, context.salience_items,
         )
-        private_reason = self._clean_reason(data.get("private_reason")) or (
-            f"结构化投票修复：在合法候选中选择{target_id}。依据：{reason}"
-        )
-        vote_basis = self._clean_enum_value(
-            data.get("vote_basis"),
-            {basis.value for basis in VoteBasis},
-        )
-        if vote_basis is None:
-            vote_basis = self._infer_vote_basis(reason, suspect_reason, private_reason)
-        seer_stance = self._clean_enum_value(
-            data.get("seer_stance"),
-            {stance.value for stance in SeerStance},
-        )
-        if seer_stance is None:
-            seer_stance = self._infer_seer_stance(context, standing)
-        confidence = data.get("confidence", 0.5)
-        try:
-            confidence = float(confidence)
-        except (TypeError, ValueError):
-            confidence = 0.5
-        confidence = max(0.0, min(1.0, confidence))
-
-        return {
-            "choice": self._choice_for_target(choice_map, target_id),
-            "target_id": target_id,
-            "reason": reason,
-            "seer_stance": seer_stance,
-            "vote_basis": vote_basis,
-            "standing_with_seer": standing,
-            "suspect_reason": suspect_reason,
-            "not_voting_reason": not_voting,
-            "private_reason": private_reason,
-            "confidence": confidence,
-        }
 
     def _repair_target_decision(
         self,
         data: dict[str, Any],
         context: AgentContext,
     ) -> dict[str, Any] | None:
-        choice_map = self._vote_choice_map(context)
-        target_id = self._target_from_vote_decision(data, choice_map, context.legal_targets)
-        if target_id is None:
-            return None
-
-        reason = self._clean_reason(data.get("reason")) or self._target_candidate_summary(
-            context,
-            target_id,
+        return _repair_target_impl(
+            data, context.legal_actions, context.legal_targets, context.salience_items,
         )
-        confidence = data.get("confidence", 0.5)
-        try:
-            confidence = float(confidence)
-        except (TypeError, ValueError):
-            confidence = 0.5
-        confidence = max(0.0, min(1.0, confidence))
-
-        return {
-            "choice": self._choice_for_target(choice_map, target_id),
-            "target_id": target_id,
-            "reason": reason,
-            "confidence": confidence,
-        }
 
     def _repair_speech_intent_decision(
         self,
         data: dict[str, Any],
         context: AgentContext,
     ) -> dict[str, Any]:
-        intent = str(data.get("intent") or "").strip()
-        if intent not in self._SPEECH_INTENTS:
-            intent = self._infer_speech_intent(data, context)
-        target_id = self._speech_target_from_decision(data, context.legal_targets)
-        speech = self._clean_reason(data.get("speech"))
-        reason = self._clean_reason(data.get("reason"))
-        if not speech:
-            speech = self._synthesize_intent_speech(intent, target_id, context)
-        speech = self._ensure_speech_quality_components(speech, intent, target_id, context)
-        if not reason:
-            reason = self._speech_intent_reason(intent, target_id)
-        confidence = data.get("confidence", 0.5)
-        try:
-            confidence = float(confidence)
-        except (TypeError, ValueError):
-            confidence = 0.5
-        confidence = max(0.0, min(1.0, confidence))
-        return {
-            "intent": intent,
-            "target_id": target_id,
-            "speech": speech,
-            "reason": reason,
-            "confidence": confidence,
-        }
+        return _repair_speech_impl(
+            data,
+            context.agent_id,
+            context.own_role,
+            context.legal_targets,
+            context.salience_items,
+            context.visible_world_state,
+            context.recent_transcript,
+        )
 
     def _vote_choice_map(self, context: AgentContext) -> dict[str, str]:
-        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        return {
-            letters[idx]: target
-            for idx, target in enumerate(context.legal_targets[:len(letters)])
-        }
+        return _vote_choice_map_impl(context.legal_targets)
 
     def _target_from_vote_decision(
         self,
@@ -877,104 +642,29 @@ class PlayerAgent:
         choice_map: dict[str, str],
         legal_targets: list[str],
     ) -> str | None:
-        choice = str(data.get("choice") or "").strip().upper()
-        if choice in choice_map:
-            return choice_map[choice]
-        target = data.get("target_id")
-        if isinstance(target, str) and target in legal_targets:
-            return target
-        haystack = " ".join(str(value) for value in data.values())
-        for candidate in legal_targets:
-            if candidate in haystack:
-                return candidate
-        if len(legal_targets) == 1:
-            return legal_targets[0]
-        return None
+        return _target_from_vote_impl(data, choice_map, legal_targets)
 
     def _choice_for_target(self, choice_map: dict[str, str], target_id: str) -> str:
-        for choice, mapped_target in choice_map.items():
-            if mapped_target == target_id:
-                return choice
-        return ""
+        return _choice_for_target_impl(choice_map, target_id)
 
     def _clean_reason(self, value: Any) -> str:
-        text = str(value or "").strip()
-        if not text or text in {"未说明", "无", "none", "null"}:
-            return ""
-        return text
+        return _clean_reason_impl(value)
 
     def _vote_candidate_summary(self, context: AgentContext, target_id: str) -> str:
-        clues: list[str] = []
-        for item in context.salience_items:
-            if not isinstance(item, dict):
-                continue
-            target = item.get("target") or item.get("target_id") or item.get("player_id")
-            if target != target_id:
-                continue
-            item_type = item.get("type") or item.get("event")
-            if item_type == "seer_claim":
-                speaker = item.get("speaker") or item.get("seer_id")
-                result = item.get("result") or item.get("alignment")
-                if speaker and result:
-                    clues.append(f"{speaker}报{target_id}为{result}")
-            elif item_type in {"vote_resolved", "vote"}:
-                clues.append(f"{target_id}出现在关键票型中")
-            elif item_type in {"player_died", "death"}:
-                clues.append(f"{target_id}关联死亡事件")
-        if clues:
-            return "；".join(clues[:2])
-        return f"{target_id}是当前合法投票候选，需要基于发言、票型和站边继续施压"
+        return _vote_summary_impl(context.salience_items, target_id)
 
     def _target_candidate_summary(self, context: AgentContext, target_id: str) -> str:
-        action = context.legal_actions[0] if context.legal_actions else ActionType.NO_ACTION
-        action_reasons = {
-            ActionType.WOLF_KILL: "作为狼队夜间击杀目标",
-            ActionType.USE_POISON: "作为女巫毒药目标",
-            ActionType.CHECK_ALIGNMENT: "作为预言家查验目标",
-            ActionType.CHOOSE_MASTER: "作为混血儿主人选择目标",
-            ActionType.HUNTER_SHOT: "作为猎人开枪目标",
-            ActionType.BADGE_TRANSFER: "作为警徽移交目标",
-            ActionType.SHERIFF_VOTE: "作为警长投票目标",
-        }
-        clues: list[str] = []
-        for item in context.salience_items:
-            if not isinstance(item, dict):
-                continue
-            item_text = json.dumps(item, ensure_ascii=False)
-            if target_id in item_text:
-                clues.append(item_text[:80])
-        basis = f"；依据：{'；'.join(clues[:2])}" if clues else ""
-        return f"{target_id}{action_reasons.get(action, '作为当前合法目标')}较合适{basis}"
+        return _target_summary_impl(context.legal_actions, context.salience_items, target_id)
 
     def _infer_speech_intent(self, data: dict[str, Any], context: AgentContext) -> str:
-        text = " ".join(str(value) for value in data.values())
-        if any(word in text for word in ("站边", "预言家", "查验")):
-            return "stand_with_seer"
-        if any(word in text for word in ("整合", "综合", "多人", "总结")):
-            return "info_synthesis"
-        if any(word in text for word in ("跟票", "抱团", "独立判断")):
-            return "anti_herd_call"
-        if any(word in text for word in ("投", "归票", "出")):
-            return "push_vote"
-        if any(word in text for word in ("回应", "解释", "表水")):
-            return "respond_pressure"
-        if context.legal_targets:
-            return "question_target"
-        return "self_clear"
+        return _infer_intent_impl(data, context.legal_targets)
 
     def _speech_target_from_decision(
         self,
         data: dict[str, Any],
         legal_targets: list[str],
     ) -> str | None:
-        target = data.get("target_id")
-        if isinstance(target, str) and target in legal_targets:
-            return target
-        haystack = " ".join(str(value) for value in data.values())
-        for candidate in legal_targets:
-            if candidate in haystack:
-                return candidate
-        return legal_targets[0] if len(legal_targets) == 1 else None
+        return _speech_target_impl(data, legal_targets)
 
     def _synthesize_intent_speech(
         self,
@@ -982,45 +672,10 @@ class PlayerAgent:
         target_id: str | None,
         context: AgentContext,
     ) -> str:
-        target = target_id or (context.legal_targets[0] if context.legal_targets else "")
-        clue = self._context_clues(context)
-        basis = f"结合{clue}，" if clue else ""
-        if intent == "stand_with_seer":
-            return (
-                f"{basis}我现在需要明确站边和逻辑线。"
-                f"{('我更倾向相信' + target + '这边的信息，') if target else ''}"
-                "接下来会继续核对查验、票型和发言是否能互相印证。"
-            )
-        if intent == "respond_pressure":
-            return (
-                f"{basis}我先回应当前压力：我的判断不是跟票，"
-                "而是基于发言前后、票型变化和关键事件来排顺序。"
-            )
-        if intent == "push_vote":
-            if target:
-                return (
-                    f"{basis}我这轮会把投票压力先放到{target}。"
-                    f"{target}需要解释自己的站边、票型和对关键事件的回应。"
-                )
-            return f"{basis}我这轮会明确给出投票倾向，不接受继续模糊站边。"
-        if intent == "info_synthesis":
-            return (
-                f"{basis}我先把多人发言合在一起看：查验、死亡信息、票型和发言矛盾要能互相印证。"
-                "如果只剩单点发言可疑，我不会直接把它放到最高优先级。"
-            )
-        if intent == "anti_herd_call":
-            return (
-                f"{basis}我提醒大家不要无条件跟票。"
-                "如果同一批人持续集中冲同一个位置，要反查他们有没有抱团带节奏的可能。"
-            )
-        if intent == "question_target" and target:
-            return (
-                f"{basis}我想追问{target}：你的站边、票型和关键发言需要正面解释。"
-                "如果解释仍然空泛，我会继续把你放在重点怀疑位。"
-            )
-        return (
-            f"{basis}我先把自己的视角说清楚：我会按查验、死亡、票型和发言一致性来判断，"
-            "不会只跟随场上声音。"
+        return _synthesize_impl(
+            intent, target_id,
+            context.salience_items, context.visible_world_state,
+            context.recent_transcript, context.legal_targets,
         )
 
     def _ensure_speech_quality_components(
@@ -1030,22 +685,10 @@ class PlayerAgent:
         target_id: str | None,
         context: AgentContext,
     ) -> str:
-        target = self._speech_pressure_target(intent, target_id, context)
-        additions: list[str] = []
-        if not re.search(r"好人|我是.*?(?:村民|预言家|女巫|猎人|p\d{2})", speech):
-            if context.own_role in {"werewolf", "hybrid"}:
-                additions.append(f"我是{context.agent_id}视角。")
-            else:
-                additions.append("我是好人视角。")
-        if target and not re.search(r"(?:怀疑\s*p\d{2}|p\d{2}\s*有问题|投\s*p\d{2})", speech):
-            additions.append(f"我怀疑{target}有问题。")
-        if target and not re.search(r"(?:投|投票|归票|倾向).*?p\d{2}", speech):
-            additions.append(f"我倾向投{target}。")
-        if not re.search(r"矛盾|前后不一|不合理|查杀|查验|警徽流|对跳|票数|之前说|刚才说", speech):
-            additions.append("依据是查验、票型和前后发言矛盾需要继续对上。")
-        if additions:
-            return speech.rstrip("。") + "。" + "".join(additions)
-        return speech
+        return _ensure_quality_impl(
+            speech, intent, target_id,
+            context.own_role, context.agent_id, context.legal_targets,
+        )
 
     def _speech_pressure_target(
         self,
@@ -1053,322 +696,65 @@ class PlayerAgent:
         target_id: str | None,
         context: AgentContext,
     ) -> str | None:
-        if intent == "stand_with_seer" and target_id:
-            for candidate in context.legal_targets:
-                if candidate != target_id:
-                    return candidate
-        return target_id or (context.legal_targets[0] if context.legal_targets else None)
+        return _pressure_target_impl(intent, target_id, context.legal_targets)
 
     def _speech_intent_reason(self, intent: str, target_id: str | None) -> str:
-        intent_label = self._SPEECH_INTENTS.get(intent, "补充发言")
-        if target_id:
-            return f"按发言意图「{intent_label}」围绕{target_id}组织公开发言"
-        return f"按发言意图「{intent_label}」组织公开发言"
+        return _intent_reason_impl(intent, target_id)
 
     def _infer_standing_with_seer(self, context: AgentContext) -> str:
-        for item in context.salience_items:
-            if not isinstance(item, dict):
-                continue
-            item_type = item.get("type") or item.get("event")
-            speaker = item.get("speaker") or item.get("seer_id")
-            if item_type == "seer_claim" and speaker:
-                return str(speaker)
-        return ""
+        return _infer_standing_impl(context.salience_items)
 
     def _infer_seer_stance(self, context: AgentContext, standing_with_seer: str) -> str:
-        if standing_with_seer:
-            return SeerStance.TRUST.value
-        for item in context.salience_items:
-            if not isinstance(item, dict):
-                continue
-            item_type = item.get("type") or item.get("event")
-            if item_type == "seer_claim":
-                return SeerStance.UNDECIDED.value
-        return SeerStance.NO_CLAIM.value
+        return _infer_stance_impl(context.salience_items, standing_with_seer)
 
     def _infer_vote_basis(self, *texts: str) -> str:
-        try:
-            from werewolf_agent.runtime.vote_quality import (
-                extract_vote_basis,
-                normalize_vote_basis,
-            )
-
-            detected = extract_vote_basis(" ".join(text for text in texts if text))
-            return normalize_vote_basis(detected)
-        except Exception:
-            logger.debug("Vote basis inference failed", exc_info=True)
-            return VoteBasis.FALLBACK.value
+        return _infer_basis_impl(*texts)
 
     def _clean_enum_value(self, value: Any, allowed: set[str]) -> str | None:
-        if value is None:
-            return None
-        cleaned = str(value).strip()
-        return cleaned if cleaned in allowed else None
+        return _clean_enum_impl(value, allowed)
 
     def _default_not_voting_reason(self, context: AgentContext, target_id: str) -> str:
-        others = [target for target in context.legal_targets if target != target_id]
-        if not others:
-            return "本轮只有一个合法投票目标，没有其他可排除候选。"
-        return f"暂不投{', '.join(others[:4])}，因为当前可见线索优先指向{target_id}。"
+        return _default_not_voting_impl(context.legal_targets, target_id)
 
     def _extract_json_object_candidates(self, text: str) -> list[str]:
-        """Extract balanced JSON object candidates from mixed model text."""
-        candidates: list[str] = []
-        start: int | None = None
-        depth = 0
-        in_string = False
-        escape = False
-
-        for idx, ch in enumerate(text):
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-                continue
-
-            if ch == '"':
-                in_string = True
-                continue
-            if ch == "{":
-                if depth == 0:
-                    start = idx
-                depth += 1
-                continue
-            if ch == "}" and depth > 0:
-                depth -= 1
-                if depth == 0 and start is not None:
-                    candidates.append(text[start:idx + 1])
-                    start = None
-
-        action_candidates = [
-            candidate for candidate in candidates
-            if '"action_type"' in candidate or "'action_type'" in candidate
-        ]
-        return action_candidates or candidates
+        return _extract_json_impl(text)
 
     def _sanitize_optional_private_fields(self, data: Any) -> Any:
-        """Drop malformed optional audit fields without invalidating core action."""
-        if not isinstance(data, dict):
-            return data
-        private_intent = data.get("private_intent")
-        if not isinstance(private_intent, dict):
-            return data
+        return _sanitize_impl(data)
 
-        sanitized = dict(data)
-        sanitized_intent = dict(private_intent)
-
-        valid_goals = {goal.value for goal in FactionGoal}
-        if sanitized_intent.get("faction_goal") not in valid_goals:
-            true_role = str(sanitized_intent.get("true_role") or sanitized.get("action_type") or "")
-            sanitized_intent["faction_goal"] = (
-                FactionGoal.CONFUSE_GOOD.value
-                if true_role == "werewolf"
-                else FactionGoal.FIND_WOLVES.value
-            )
-
-        valid_flags = {flag.value for flag in RiskFlag}
-        flags = sanitized_intent.get("risk_flags")
-        if isinstance(flags, list):
-            sanitized_intent["risk_flags"] = [
-                flag for flag in flags
-                if isinstance(flag, str) and flag in valid_flags
-            ]
-        else:
-            sanitized_intent["risk_flags"] = []
-
-        sanitized["private_intent"] = sanitized_intent
-        return sanitized
+    # ── Delegated to tool_schema.py ──
 
     def _player_action_tool(self, context: AgentContext) -> dict[str, Any]:
-        action_values = [action.value for action in context.legal_actions]
-        if not action_values:
-            action_values = [action.value for action in ActionType]
-        target_values: list[str | None] = list(context.legal_targets)
-        if not self._all_legal_actions_require_target(context) and None not in target_values:
-            target_values.append(None)
-        target_schema: dict[str, Any] = {
-            "type": ["string", "null"],
-            "description": "Target player id when required; null otherwise.",
-        }
-        if context.legal_targets:
-            target_schema["enum"] = target_values
-        properties: dict[str, Any] = {
-            "action_type": {
-                "type": "string",
-                "enum": action_values,
-                "description": "Must be one of the currently legal actions.",
-            },
-            "target_id": target_schema,
-            "speech": {
-                "type": "string",
-                "description": "Public Chinese speech. Empty string for private night actions if no speech is needed.",
-            },
-            "reason": {
-                "type": "string",
-                "description": "Short Chinese reason for the action.",
-            },
-            "confidence": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1,
-            },
-        }
-        if context.task_type == TaskType.VOTE:
-            properties.update(self._vote_audit_tool_properties())
-        elif context.task_type == TaskType.WOLF_DISCUSSION:
-            properties["private_intent"] = {
-                "type": ["object", "null"],
-                "additionalProperties": False,
-                "properties": {
-                    "true_role": {"type": "string"},
-                    "faction_goal": {
-                        "type": "string",
-                        "enum": [
-                            "push_good_player_out",
-                            "protect_teammate",
-                            "find_wolves",
-                            "survive",
-                            "help_master_faction",
-                            "confuse_good",
-                            "deep_hook",
-                            "aggressive_push",
-                        ],
-                    },
-                    "claimed_view": {"type": "string"},
-                    "pressure_target": {"enum": target_values},
-                    "risk_flags": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "enum": [
-                                "avoid_night_kill_leak",
-                                "avoid_teammate_exposure",
-                                "high_visibility",
-                                "low_trust",
-                                "suspected",
-                            ],
-                        },
-                    },
-                },
-                "required": ["true_role", "faction_goal", "claimed_view"],
-            }
-        required = ["action_type", "target_id", "speech", "reason", "confidence"]
-        if context.task_type == TaskType.VOTE:
-            required.extend([
-                "seer_stance",
-                "vote_basis",
-                "standing_with_seer",
-                "suspect_reason",
-                "not_voting_reason",
-                "private_reason",
-            ])
-        return {
-            "name": "submit_player_action",
-            "description": "Submit exactly one legal Werewolf player action.",
-            "input_schema": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": properties,
-                "required": required,
-            },
-        }
+        return _tool_impl(context.legal_actions, context.legal_targets, context.task_type)
 
     def _vote_audit_tool_properties(self) -> dict[str, Any]:
-        return {
-            "seer_stance": {
-                "type": "string",
-                "enum": [stance.value for stance in SeerStance],
-                "description": "Vote stance enum about seer logic: trust, distrust, undecided, or no_claim.",
-            },
-            "vote_basis": {
-                "type": "string",
-                "enum": [basis.value for basis in VoteBasis],
-                "description": "Primary vote basis enum.",
-            },
-            "standing_with_seer": {
-                "type": "string",
-                "description": "Private moderator-only vote audit: seer or logic line you stand with; empty if none.",
-            },
-            "suspect_reason": {
-                "type": "string",
-                "description": "Private moderator-only vote audit: why the final vote target is suspicious.",
-            },
-            "not_voting_reason": {
-                "type": "string",
-                "description": "Private moderator-only vote audit: why you are not voting other major candidates.",
-            },
-            "private_reason": {
-                "type": "string",
-                "description": "Private moderator-only vote audit: full reasoning for the moderator; never public speech.",
-            },
-        }
+        return _vote_audit_impl()
 
     def _speech_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:
-        quality_phase = self._speech_quality_phase(context.task_type)
-        if quality_phase is None or action.action_type != ActionType.SPEECH:
-            return None
-        try:
-            from werewolf_agent.runtime.speech_quality import validate_public_speech
-
-            result = validate_public_speech(
-                action.speech,
-                phase=quality_phase,
-                context={
-                    "recent_transcript": list(context.recent_transcript),
-                    "public_summary": context.public_summary,
-                    "must_address_alerts": context.strategy_directive.get("must_address_alerts", [])
-                    if context.strategy_directive else [],
-                },
-            )
-        except Exception:
-            logger.debug("Speech quality validation failed unexpectedly", exc_info=True)
-            return None
-        if result.get("valid"):
-            return None
-        return str(result.get("hint") or "发言质量不足，请补充立场、怀疑对象、投票倾向和依据。")
+        return _speech_quality_impl(
+            context.task_type,
+            action,
+            context.recent_transcript,
+            context.public_summary,
+            context.strategy_directive,
+        )
 
     def _speech_quality_phase(self, task_type: TaskType) -> str | None:
-        phase_by_task = {
-            TaskType.SPEECH: "day_discussion",
-            TaskType.SHERIFF_SPEECH: "sheriff_speech",
-            TaskType.DEFENSE_SPEECH: "pk_speech",
-            TaskType.PK_SPEECH: "pk_speech",
-        }
-        return phase_by_task.get(task_type)
+        return _speech_phase_impl(task_type)
 
     def _vote_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:
-        if (
-            context.task_type != TaskType.VOTE
-            or action.action_type != ActionType.VOTE
-            or not context.strategy_directive.get("require_vote_quality")
-        ):
-            return None
-        try:
-            from werewolf_agent.runtime.vote_quality import validate_structured_vote_action
-
-            result = validate_structured_vote_action(
-                action.model_dump(exclude={"trace"}),
-                context={
-                    "strategy_directive": context.strategy_directive,
-                    "salience_items": list(context.salience_items),
-                    "recent_transcript": list(context.recent_transcript),
-                },
-            )
-        except Exception:
-            logger.debug("Vote quality validation failed unexpectedly", exc_info=True)
-            return None
-        if result.get("valid"):
-            return None
-        return str(result.get("hint") or "投票必须包含预言家立场、投票基点和具体理由。")
+        return _vote_quality_impl(
+            context.task_type,
+            action,
+            context.strategy_directive,
+            context.salience_items,
+            context.recent_transcript,
+        )
 
     def _all_legal_actions_require_target(self, context: AgentContext) -> bool:
-        return bool(context.legal_actions) and all(
-            action in DefaultActionValidator._TARGET_REQUIRED_ACTIONS
-            for action in context.legal_actions
-        )
+        return _all_target_impl(context.legal_actions)
+
+    # ── Remaining PlayerAgent methods ──
 
     def _fallback_action(self, context: AgentContext) -> FallbackAction:
         """Compute a safe fallback action from legal sets."""
