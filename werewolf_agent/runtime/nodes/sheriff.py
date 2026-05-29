@@ -497,7 +497,7 @@ def _sheriff_endorse_adapter(
 
     context = None
     try:
-        from werewolf_agent.runtime.agent_adapter import build_agent_context
+        from werewolf_agent.runtime.context import build_agent_context
         context = build_agent_context(
             engine, gs, sheriff_id, TaskType.VOTE,
             legal_actions=legal_actions,
