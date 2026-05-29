@@ -176,13 +176,86 @@ def _inject_seed_rag_hints(
         if not items:
             return context
         existing = [
-            item for item in context.salience_items
+            item for item in context.rag_hints
             if item.get("type") != "rag_hit"
         ]
-        return context.model_copy(update={"salience_items": existing + items})
+        return context.model_copy(update={"rag_hints": existing + items})
     except Exception:
         logger.debug("Seed RAG injection failed for %s", context.agent_id, exc_info=True)
         return context
+
+
+def _profile_memory_hint(profile: Any, role_stats: dict[str, dict[str, int]]) -> dict[str, Any]:
+    roles = [
+        {"role": role, "games": stats["count"], "wins": stats["wins"]}
+        for role, stats in sorted(role_stats.items())
+    ]
+    return {
+        "games_played": profile.games_played,
+        "logic": round(float(profile.logic), 2),
+        "deception": round(float(profile.deception), 2),
+        "credibility": round(float(profile.credibility), 2),
+        "summary": (
+            f"累计{profile.games_played}局 · "
+            f"逻辑{profile.logic*10:.0f}/10 · "
+            f"欺骗{profile.deception*10:.0f}/10 · "
+            f"可信度{profile.credibility*10:.0f}/10"
+        ),
+        "roles": roles,
+    }
+
+
+def _reflection_memory_hints(reflections: list[Any], current_role: str, current_faction: str) -> list[dict[str, Any]]:
+    def _ref_score(r: Any) -> tuple[int, Any]:
+        priority = 0
+        if r.role == current_role:
+            priority = 2
+        elif (r.role == "werewolf" and current_faction == "werewolf") or (
+            r.role != "werewolf" and current_faction == "good"
+        ):
+            priority = 1
+        return (-priority, str(r.entry_id))
+
+    hints: list[dict[str, Any]] = []
+    for ref in sorted(reflections, key=_ref_score)[:5]:
+        hints.append({
+            "role": ref.role,
+            "result": "胜" if ref.faction_won else "负",
+            "text": ref.text,
+            "situation": ref.situation,
+        })
+    return hints
+
+
+def _cognition_matrix_hint(restored_memory: Any, player_id: str) -> dict[str, Any]:
+    get_matrix = getattr(restored_memory, "get_matrix", None)
+    if not callable(get_matrix):
+        return {}
+    matrix = get_matrix(player_id)
+    if matrix is None or not hasattr(matrix, "all_entries"):
+        return {}
+
+    suspects: list[dict[str, Any]] = []
+    trusted: list[dict[str, Any]] = []
+    for entry in matrix.all_entries():
+        item = {
+            "player": entry.player_id,
+            "faction_read": entry.faction_read,
+            "trust": round(float(entry.trust), 2),
+            "key_evidence": list(getattr(entry, "key_evidence", []))[:3],
+            "open_questions": list(getattr(entry, "open_questions", []))[:3],
+        }
+        if entry.faction_read == "wolf_lean" or float(entry.trust) < 0.35:
+            suspects.append(item)
+        elif entry.faction_read == "good_lean" or float(entry.trust) > 0.65:
+            trusted.append(item)
+
+    hint: dict[str, Any] = {}
+    if suspects:
+        hint["suspects"] = sorted(suspects, key=lambda x: x["trust"])[:5]
+    if trusted:
+        hint["trusted"] = sorted(trusted, key=lambda x: -x["trust"])[:5]
+    return hint
 
 
 def _action_trace_payload(action: Any) -> dict[str, Any] | None:
@@ -1459,6 +1532,7 @@ def build_agent_context(
     private_memory = build_private_memory(gs, player_id)
     if private_memory:
         visible["private_memory"] = private_memory
+    private_memory_hints = private_memory or {}
 
     # Role-specific private info
     strategy_directive: dict[str, Any] = {}
@@ -1754,16 +1828,13 @@ def build_agent_context(
         logger.debug("Death cause evaluation failed, skipping", exc_info=True)
 
     # -- Cross-game memory: inject accumulated learning from previous games --
+    profile_memory_hint: dict[str, Any] = {}
+    reflection_memory_hints: list[dict[str, Any]] = []
+    cognition_matrix_hint: dict[str, Any] = {}
     if restored_memory is not None:
         try:
             profile = restored_memory.get_profile(player_id)
             if profile is not None and profile.games_played > 0:
-                parts = [
-                    f"累计{profile.games_played}局 · "
-                    f"逻辑{profile.logic*10:.0f}/10 · "
-                    f"欺骗{profile.deception*10:.0f}/10 · "
-                    f"可信度{profile.credibility*10:.0f}/10",
-                ]
                 # Aggregate by role across all reflections for pattern summary
                 role_stats: dict[str, dict[str, int]] = {}
                 for ref in restored_memory.reflections_by_player(player_id):
@@ -1772,45 +1843,22 @@ def build_agent_context(
                     role_stats[r]["count"] += 1
                     if ref.faction_won:
                         role_stats[r]["wins"] += 1
-                if role_stats:
-                    role_line = "、".join(
-                        f"{r}:{s['count']}局({s['wins']}胜)" for r, s in sorted(role_stats.items())
-                    )
-                    parts.append(f"角色经历：{role_line}")
-                strategy_directive["cross_game_profile"] = " | ".join(parts)
+                profile_memory_hint = _profile_memory_hint(profile, role_stats)
 
                 # Inject detailed reflections (self-evolution)
                 all_refs = restored_memory.reflections_by_player(player_id)
                 if all_refs:
                     current_role = player.role
                     current_faction = (
-                        "wolf" if current_role == "werewolf"
+                        "werewolf" if current_role == "werewolf"
                         else "good" if current_role in ("villager", "seer", "witch", "hunter", "idiot")
-                        else ("wolf" if gs.hybrid_master_faction == "wolf" else "good") if current_role == "hybrid"
+                        else ("werewolf" if gs.hybrid_master_faction == "werewolf" else "good") if current_role == "hybrid"
                         else "good"
                     )
-                    # Sort: same-role first, then same-faction, then recent
-                    def _ref_score(r):
-                        priority = 0
-                        if r.role == current_role:
-                            priority = 2
-                        elif (r.role == "werewolf" and current_faction == "wolf") or (
-                            r.role != "werewolf" and current_faction == "good"
-                        ):
-                            priority = 1
-                        return (-priority, r.entry_id)  # higher priority first, newer (higher entry_id) first
-
-                    sorted_refs = sorted(all_refs, key=_ref_score)[:5]
-                    win_label = lambda r: "胜" if r.faction_won else "负"
-                    ref_lines = [
-                        f"- [{r.role}·{win_label(r)}] {r.text}"
-                        + (f"（背景：{r.situation}）" if r.situation else "")
-                        for r in sorted_refs
-                    ]
-                    strategy_directive["cross_game_reflections"] = (
-                        "【历史反思】以下是你在过往对局中的经验教训，请参考这些反思调整你的策略：\n"
-                        + "\n".join(ref_lines)
+                    reflection_memory_hints = _reflection_memory_hints(
+                        all_refs, current_role, current_faction
                     )
+            cognition_matrix_hint = _cognition_matrix_hint(restored_memory, player_id)
         except Exception:
             logger.debug("Failed to inject cross-game memory for %s", player_id, exc_info=True)
 
@@ -1825,12 +1873,17 @@ def build_agent_context(
         legal_targets=legal_targets,
         public_summary=public_summary,
         visible_world_state=visible,
+        private_memory_hints=private_memory_hints,
+        reflection_memory_hints=reflection_memory_hints,
+        profile_memory_hint=profile_memory_hint,
+        cognition_matrix_hint=cognition_matrix_hint,
         recent_transcript=transcript,
         contradiction_alerts=ctx_alerts,
         belief_state=belief_dict,
         strategy_directive=strategy_directive,
         skill_tools=skill_tools,
         skill_analyses=skill_analyses,
+        skill_analysis_hints=skill_analyses,
     )
     return _inject_seed_rag_hints(
         context,
@@ -1969,18 +2022,25 @@ def agent_night_witch(
         witch_directive["witch_strategy_hint"] = ""
     if not gs.poison_used:
         witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
+        witch_directive["witch_poison_threshold"] = (
+            "【毒药硬证据门槛】毒药是好人阵营最容易打出负收益的技能，不能只因为"
+            "“发言像狼”“感觉可疑”“有人带节奏”就单独开毒。优先满足至少一项硬证据："
+            "1) 可信预言家的明确查杀；2) 强票型证据（连续保狼、冲票、关键轮分票）；"
+            "3) 对跳失败或身份逻辑明显破产；4) 多条公开记录互相印证。"
+            "如果证据只停留在泛化怀疑，应在reason里说明为什么暂不单独开毒。"
+        )
         alive = sum(1 for p in gs.players.values() if p.alive)
         if alive <= 9:
             witch_directive["poison_urgency"] = (
                 f"场上存活{alive}人，你的毒药还未使用。"
-                f"建议今晚撒毒——选择你最有把握的狼人目标。"
+                f"如果存在查杀、强票型或对跳失败目标，建议今晚撒毒；"
+                f"如果只有泛化怀疑，仍应谨慎，避免盲毒好人。"
             )
         if alive <= 7:
             witch_directive["poison_urgency"] = (
                 f"【紧急】场上仅存活{alive}人！你的毒药还没有使用！"
-                f"今晚必须撒毒！如果你不毒，你很可能再也没有机会了——"
-                f"狼队随时可能刀掉你，好人输掉后你的毒药等于不存在。"
-                f"选择你最有把握的狼人目标，现在不动手就晚了。"
+                f"若存在查杀、强票型或对跳失败等硬证据，今晚应优先用毒；"
+                f"若仍只有泛化怀疑，必须在reason里说明暂不毒的风险和理由，避免最后一毒误伤好人。"
             )
 
     witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
@@ -2609,6 +2669,15 @@ def agent_day_vote(
             "4) 如果没有明确查杀，投发言最可疑、逻辑最不通的人。"
         ),
     }
+    if voter_role in ("villager", "seer", "witch", "hunter", "idiot"):
+        strategy_directive["good_vote_decision_guard"] = (
+            "【好人投票决策纪律】先按硬信息优先级排序，再做选择："
+            "1) 预言家查验/可信查杀；2) 已知死亡身份和死亡原因；"
+            "3) 投票票型；4) 警徽流/警长归票；5) 发言怀疑。"
+            "【出错成本】投票前必须比较：如果目标其实是预言家、女巫、猎人、白痴或关键金水，"
+            "今天出错会不会直接导致屠神/屠民；若只有发言风格可疑而没有查验或强票型，"
+            "不要轻易推出疑似神职或高价值好人。"
+        )
     if not allow_abstain:
         parts = ["必须投票选出一名玩家放逐，不能弃票。"]
         if consecutive_no_exile > 0:
@@ -3093,11 +3162,18 @@ def agent_hunter_shot(
         and shot_assessment.get("ranked_targets")
         and len(shot_assessment["ranked_targets"]) > 0
     )
-    shoot_encouragement = (
-        "从评估结果看，你有一个值得考虑的目标，建议带走。"
-        if has_suspects
-        else "当前没有高价值目标，但如果你白天有强烈怀疑的玩家，也可以开枪带走。"
-    )
+    top_value = 0
+    if has_suspects:
+        top_value = int(shot_assessment["ranked_targets"][0].get("value", 0))
+    if top_value >= 6:
+        shoot_encouragement = "存在明确查杀、对跳或强公共证据目标，可以优先开枪带走。"
+    elif top_value >= 3:
+        shoot_encouragement = "存在一定公共证据目标；开枪前仍要比较出错成本，避免误伤好人。"
+    else:
+        shoot_encouragement = (
+            "当前没有明确查杀、强票型或强对跳失败目标，优先选择不开枪（NO_ACTION），"
+            "避免误伤好人；只有你能指出具体硬证据时才开枪。"
+        )
 
     strategy_directive: dict[str, Any] = {
         "hunter_shot_directive": (
@@ -3194,17 +3270,25 @@ def agent_sheriff_register(
 
     player_role = gs.players[player_id].role if player_id in gs.players else ""
     # Build role-specific registration guidance
+    wolf_plan = state.get("wolf_team_plan")
     if player_role == "seer":
         role_hint = (
             "你是预言家，强烈建议上警！预言家几乎必须上警留警徽流，"
             "这是预言家的核心玩法——通过警徽流传递验人信息。"
         )
     elif player_role == "werewolf":
-        # Check if any wolf is already planning to claim seer
-        role_hint = (
-            "你是狼人。如果团队安排你悍跳预言家，你必须上警与真预言家对抗。"
-            "如果不悍跳，也可以上警发言获取信息或带节奏。"
-        )
+        wolf_assignment = _get_wolf_role_assignment(wolf_plan, player_id)
+        if wolf_assignment == "fake_seer":
+            role_hint = (
+                "【强制指令】你是团队安排的悍跳预言家！你必须上警！"
+                "你需要在警上冒充预言家，报出假验人结果和警徽流，"
+                "与真预言家争夺警徽。这是你的核心任务，必须上警。"
+            )
+        else:
+            role_hint = (
+                "你是狼人。如果团队安排你悍跳预言家，你必须上警与真预言家对抗。"
+                "如果不悍跳，也可以上警发言获取信息或带节奏。"
+            )
     else:
         # Good player (non-seer)
         role_hint = (
@@ -3224,6 +3308,7 @@ def agent_sheriff_register(
     context = build_agent_context(
         engine, gs, player_id, TaskType.SHERIFF_REGISTRATION,
         legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+        wolf_team_plan=wolf_plan,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
     )
@@ -3420,10 +3505,25 @@ def agent_sheriff_election_speech(
             "如果没有特殊理由，可以说'首夜随机查验，但我选择了发言量较大的位置'。"
         )
 
-    # Wolf anti-reveal: don't expose fake seer teammate before they speak
+    # Wolf: inject role-specific strategy from wolf_team_plan
     if player_role == "werewolf":
         wolf_plan = state.get("wolf_team_plan")
-        if wolf_plan and wolf_plan.get("fake_seer"):
+        wolf_day_directive = _build_wolf_day_speech_directive(gs, candidate_id, wolf_plan)
+        # Merge wolf day directive into strategy_directive
+        strategy_directive.update(wolf_day_directive)
+
+        wolf_assignment = _get_wolf_role_assignment(wolf_plan, candidate_id)
+        if wolf_assignment == "fake_seer":
+            strategy_directive["wolf_sheriff_must_claim_seer"] = (
+                "【强制执行】你是团队安排的悍跳预言家！你现在在警上竞选。"
+                "你必须在这段发言中跳预言家，报出你的假验人结果和警徽流。"
+                "格式参考：'我是预言家，昨晚我验了[玩家]，结果是[好人/查杀]，"
+                "我的警徽流是先验[X]后验[Y]。' "
+                "不要犹豫、不要含糊——你必须像真预言家一样坚定。"
+                "你的假验人结果可以是：金水（假的好人结果）来拉拢人，"
+                "或查杀（假的狼人结果）来推好人。选择你认为最优的策略。"
+            )
+        elif wolf_plan and wolf_plan.get("fake_seer"):
             fake_seer_id = wolf_plan["fake_seer"]
             if fake_seer_id != candidate_id and not _has_publicly_claimed_seer(gs, fake_seer_id):
                 strategy_directive["wolf_no_reveal_seer"] = (

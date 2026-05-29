@@ -165,6 +165,8 @@ class GameRunner:
             rt["agent_call_timeout"] = self._config.agent_call_timeout
         if self._restored_memory is not None:
             rt["restored_memory"] = self._restored_memory
+        if self._config.repository is not None:
+            rt["repository"] = self._config.repository
         return rt
 
     def _build_default_rag_service(self) -> Any | None:
@@ -443,7 +445,7 @@ class GameRunner:
             from werewolf_agent.cognition.world_state import build_world_state
             from werewolf_agent.memory.store import MemoryStore
 
-            mem_store = MemoryStore()
+            mem_store = MemoryStore(repo=self._config.repository)
             player_ids = list(self._state.players.keys())
             role_names = list({p.role for p in self._state.players.values()})
 

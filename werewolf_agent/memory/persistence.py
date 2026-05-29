@@ -62,10 +62,10 @@ def save_memory_store(store: MemoryStore) -> dict[str, Any]:
     }
 
 
-def restore_memory_store(data: dict[str, Any]) -> MemoryStore:
+def restore_memory_store(data: dict[str, Any], repo: Any = None) -> MemoryStore:
     """Restore MemoryStore from a snapshot dict."""
     from werewolf_agent.memory.store import MemoryStore as _MS
-    store = _MS()
+    store = _MS(repo=repo)
 
     # Restore cognition matrices
     for viewer_id, matrix_data in data.get("cognition_matrices", {}).items():

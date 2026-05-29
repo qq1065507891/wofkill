@@ -122,7 +122,6 @@ class RAGInjector:
 
     @staticmethod
     def hits_to_context_items(
-        self,
         hits: list[RAGHit],
         max_items: int = 3,
     ) -> list[dict[str, Any]]:

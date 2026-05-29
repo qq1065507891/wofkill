@@ -242,6 +242,11 @@ class AgentContext(BaseModel):
     legal_targets: list[str] = Field(default_factory=list)
     visible_world_state: dict[str, Any] = Field(default_factory=dict)
     salience_items: list[dict[str, Any]] = Field(default_factory=list)
+    rag_hints: list[dict[str, Any]] = Field(default_factory=list)
+    private_memory_hints: dict[str, Any] = Field(default_factory=dict)
+    reflection_memory_hints: list[dict[str, Any]] = Field(default_factory=list)
+    profile_memory_hint: dict[str, Any] = Field(default_factory=dict)
+    cognition_matrix_hint: dict[str, Any] = Field(default_factory=dict)
     belief_state: dict[str, Any] = Field(default_factory=dict)
     contradiction_alerts: list[dict[str, Any]] = Field(default_factory=list)
     strategy_directive: dict[str, Any] = Field(default_factory=dict)
@@ -257,3 +262,4 @@ class AgentContext(BaseModel):
         default_factory=dict,
         description="Pre-computed skill analysis results keyed by tool name.",
     )
+    skill_analysis_hints: dict[str, str] = Field(default_factory=dict)

@@ -27,10 +27,10 @@ from werewolf_agent.memory.schemas import (
 class MemoryStore:
     """Top-level coordinator for all memory subsystems."""
 
-    def __init__(self) -> None:
+    def __init__(self, repo: Any = None) -> None:
         self.cognition_matrices: dict[str, CognitionMatrix] = {}
         self.relation_graph = RelationGraph()
-        self.reflections = ReflectionMemory()
+        self.reflections = ReflectionMemory(repo=repo)
         self.profiles = ProfileStore()
         self._review_generator = ReviewGenerator()
 

@@ -1190,6 +1190,63 @@ class TestPlayerAgentRetryFallback:
         assert "不要输出分析过程" in prompt
         assert prompt.rstrip().endswith("现在提交行动。")
 
+    def test_system_prompt_defines_information_boundaries_and_skill_rules(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+        )
+
+        prompt = agent._build_system_prompt(ctx)
+
+        assert "【信息边界】" in prompt
+        assert "知识库提示只是玩法经验，不是当前局发生的事" in prompt
+        assert "跨局记忆只是历史经验" in prompt
+        assert "【推理方法】" in prompt
+        assert "盘狼坑时优先看" in prompt
+        assert "【工具与技能使用规范】" in prompt
+        assert "skill 分析不是裁判真相" in prompt
+
+    def test_user_prompt_renders_dynamic_sources_as_separate_sections(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02", "p03"],
+            public_summary="D2公开票型：p02被多人质疑。",
+            visible_world_state={"alive_players": ["p01", "p02", "p03"]},
+            salience_items=[{"type": "vote", "target_id": "p02"}],
+            rag_hints=[{"type": "rag_hit", "entry_id": "basic_case_vote_bloc_001", "summary": "票型抱团识别"}],
+            private_memory_hints={"vote_thoughts": [{"target": "p02", "private_reason": "上一轮跟票异常"}]},
+            reflection_memory_hints=[{"role": "villager", "result": "负", "text": "好人失败原因：盲目跟票。"}],
+            profile_memory_hint={"summary": "累计3局 · 逻辑6/10"},
+            cognition_matrix_hint={"suspects": [{"player": "p02", "trust": 0.25, "faction_read": "wolf_lean"}]},
+            strategy_directive={"vote_pressure": "必须投票"},
+            skill_analysis_hints={"skill_analyze_wolf_pit": "嫌疑区：p02"},
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "当前局公开事实:" in prompt
+        assert "可见状态:" in prompt
+        assert "我的当前局记忆:" in prompt
+        assert "知识库提示:" in prompt
+        assert "知识库提示不是当前局事实" in prompt
+        assert "跨局反思记忆:" in prompt
+        assert "长期能力画像:" in prompt
+        assert "我的认知矩阵:" in prompt
+        assert "本轮策略指令:" in prompt
+        assert "技能分析结果:" in prompt
+        assert prompt.index("知识库提示:") < prompt.index("跨局反思记忆:")
+        assert prompt.index("跨局反思记忆:") < prompt.index("本轮策略指令:")
+        assert "策略建议:" not in prompt
+
     def test_mandatory_vote_prompt_uses_choice_schema(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
@@ -1257,10 +1314,31 @@ class TestPlayerAgentRetryFallback:
         assert "发言意图枚举" in prompt
         assert "question_target" in prompt
         assert "stand_with_seer" in prompt
+        assert "info_synthesis" in prompt
+        assert "anti_herd_call" in prompt
         assert '"intent"' in prompt
         assert '"speech"' in prompt
         assert "必填字段：action_type、target_id、speech、reason、confidence" not in prompt
         assert "最终输出字段：intent、target_id、speech、reason、confidence" in prompt
+
+    def test_vote_prompt_warns_good_players_against_herd_voting(self) -> None:
+        agent = self._make_agent("unused")
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p05", "p08"],
+        )
+
+        prompt = agent._build_prompt(ctx, RetryInfo())
+
+        assert "反跟票警告" in prompt
+        assert "不要无条件跟随任何人的归票" in prompt
+        assert "狼人抱团" in prompt
+        assert "独立判断优先级" in prompt
 
     def test_action_prompt_trims_long_context_for_json_stability(self) -> None:
         agent = self._make_agent("unused")
@@ -2063,7 +2141,7 @@ class TestMandatoryVote:
         assert action.reason != "fallback: retries exhausted"
         assert "p02" in action.reason
 
-    def test_speech_fallback_uses_context_not_generic_good_template(self) -> None:
+    def test_good_speech_fallback_marks_no_effective_public_speech(self) -> None:
         agent = self._make_agent("")
         ctx = AgentContext(
             agent_id="p06",
@@ -2086,9 +2164,9 @@ class TestMandatoryVote:
         action, _ = agent.act(ctx)
 
         assert isinstance(action, FallbackAction)
-        assert action.speech
-        assert not action.speech.startswith("我是好人阵营。")
-        assert "p02" in action.speech
+        assert action.speech == "[p06 本轮未发表有效言论。]"
+        assert "p02" not in action.speech
+        assert "我这轮先把视角压到" not in action.speech
 
 
 class TestSpeechQualityAndWolfAssignments:
@@ -2125,7 +2203,7 @@ class TestSpeechQualityAndWolfAssignments:
         assert "倒钩" in prompt
         assert "p08" in prompt
 
-    def test_speech_fallback_contains_non_empty_stance(self) -> None:
+    def test_good_speech_fallback_contains_failure_marker(self) -> None:
         router = ModelRouter(
             model_profiles={},
             llm_profiles={},
@@ -2147,10 +2225,10 @@ class TestSpeechQualityAndWolfAssignments:
 
         assert isinstance(action, FallbackAction)
         assert action.action_type == ActionType.SPEECH
-        assert "p02" in action.speech
+        assert action.speech == "[p01 本轮未发表有效言论。]"
         assert action.reason
 
-    def test_speech_fallback_varies_by_player_and_day(self) -> None:
+    def test_good_speech_fallback_varies_only_by_player_marker(self) -> None:
         router = ModelRouter(
             model_profiles={},
             llm_profiles={},
@@ -2172,8 +2250,10 @@ class TestSpeechQualityAndWolfAssignments:
         )
 
         assert first.speech != second.speech
-        assert "p03" in first.speech
-        assert "p03" in second.speech
+        assert first.speech == "[p01 本轮未发表有效言论。]"
+        assert second.speech == "[p02 本轮未发表有效言论。]"
+        assert "p03" not in first.speech
+        assert "p03" not in second.speech
 
     def test_wolf_discussion_fallback_keeps_werewolf_private_perspective(self) -> None:
         router = ModelRouter(
@@ -2648,3 +2728,195 @@ class TestSpeechMustAnswerVisibleContradictionAlert:
         speech = "p01和p05对跳预言家，我站p01这边。我怀疑p03是狼人，投p03。"
         result = validate_public_speech(speech, phase="day_discussion", context=context)
         assert result["valid"] is True
+
+
+class TestSkillSkipRetry:
+    """When skill tools are available but LLM skips them, retry with nudge.
+    After 3 skips, give up and proceed normally."""
+
+    @staticmethod
+    def _make_agent_with_skill_skip(skip_count: int) -> tuple[PlayerAgent, list[dict]]:
+        """Build agent that skips skill tools for `skip_count` calls, then submits."""
+        call_log: list[dict] = []
+        submitted = {"n": 0}
+
+        class SkipThenSubmit:
+            @property
+            def name(self) -> str:
+                return "mock"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                call_log.append({"tools": tools, "tool_choice": tool_choice, "prompt": prompt})
+                submitted["n"] += 1
+                if submitted["n"] <= skip_count:
+                    # LLM calls submit_player_action directly (tool_call_received but no skill tool)
+                    return GenerateResult(
+                        text='{"action_type":"vote","target_id":"p07","speech":"投7","reason":"可疑","confidence":0.8}',
+                        provider=self.name,
+                        model=config.model,
+                        usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
+                        tool_call_received=True,
+                        tool_call_name="submit_player_action",
+                    )
+                # After skips, still direct submit
+                return GenerateResult(
+                    text='{"action_type":"vote","target_id":"p07","speech":"投7","reason":"可疑","confidence":0.8}',
+                    provider=self.name,
+                    model=config.model,
+                    usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
+                    tool_call_received=True,
+                    tool_call_name="submit_player_action",
+                )
+
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": SkipThenSubmit()},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=10)
+        return agent, call_log
+
+    def _make_skill_context(self) -> AgentContext:
+        return AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+            legal_targets=["p07", "p08"],
+            public_summary="Day 1",
+            skill_tools=[
+                {
+                    "name": "skill_analyze_wolf_pit",
+                    "description": "分析狼坑",
+                    "input_schema": {"type": "object", "properties": {}},
+                },
+            ],
+            skill_analyses={
+                "skill_analyze_wolf_pit": "嫌疑区：p05(行为偏向狼人)；排除区：p02(被预言家发金水)",
+            },
+        )
+
+    def test_skill_skip_retries_with_nudge(self) -> None:
+        """LLM skips skill tools → retry with correction hint."""
+        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
+        action, retry = agent.act(self._make_skill_context())
+        assert isinstance(action, PlayerAction)
+        # 2 nudges + 1 fallback injection + 1 final submit = 4 calls
+        assert len(call_log) == 4
+        # First nudge should mention skill tool name
+        assert "skill_analyze_wolf_pit" in call_log[1]["prompt"]
+
+    def test_llm_can_call_skill_tool_before_submitting_action(self) -> None:
+        """LLM calls a skill tool, receives analysis, then submits an action."""
+        call_log: list[dict] = []
+        calls = {"n": 0}
+
+        class SkillThenSubmit:
+            @property
+            def name(self) -> str:
+                return "mock"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                call_log.append({"tools": tools, "tool_choice": tool_choice, "prompt": prompt})
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return GenerateResult(
+                        text="",
+                        provider=self.name,
+                        model=config.model,
+                        usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
+                        tool_call_received=True,
+                        tool_call_name="skill_analyze_wolf_pit",
+                    )
+                return GenerateResult(
+                    text='{"action_type":"vote","target_id":"p07","speech":"","reason":"根据技能分析，p07票型异常","confidence":0.8}',
+                    provider=self.name,
+                    model=config.model,
+                    usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
+                    tool_call_received=True,
+                    tool_call_name="submit_player_action",
+                )
+
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": SkillThenSubmit()},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=5)
+
+        action, retry = agent.act(self._make_skill_context())
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p07"
+        assert len(call_log) == 2
+        assert any(tool["name"] == "skill_analyze_wolf_pit" for tool in call_log[0]["tools"])
+        assert "【技能分析结果】" in call_log[1]["prompt"]
+        assert "嫌疑区：p05" in call_log[1]["prompt"]
+        assert retry.attempt <= retry.max_retries
+
+    def test_skill_skip_gives_up_after_3(self) -> None:
+        """After 3 skill skip retries, force-inject analysis and submit."""
+        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
+        action, retry = agent.act(self._make_skill_context())
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        # 2 nudges + 1 fallback injection + 1 final submit = 4 calls
+        assert len(call_log) == 4
+
+    def test_skill_skip_injects_analysis_on_final_retry(self) -> None:
+        """On the last skip, skill analysis is force-injected into prompt."""
+        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
+        action, retry = agent.act(self._make_skill_context())
+        assert isinstance(action, PlayerAction)
+        # 4th call (index 3) has the force-injected analysis in its prompt
+        last_prompt = call_log[3]["prompt"]
+        assert "【技能分析结果】" in last_prompt or "嫌疑区" in last_prompt
+
+    def test_no_skill_skip_when_no_skill_tools(self) -> None:
+        """Without skill tools, no skip retry happens."""
+        class DirectSubmit:
+            @property
+            def name(self) -> str:
+                return "mock"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                return GenerateResult(
+                    text='{"action_type":"vote","target_id":"p07","speech":"投7","reason":"可疑","confidence":0.8}',
+                    provider=self.name,
+                    model=config.model,
+                    usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
+                    tool_call_received=True,
+                    tool_call_name="submit_player_action",
+                )
+
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": DirectSubmit()},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=5)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+            legal_targets=["p07", "p08"],
+        )
+        action, _ = agent.act(ctx)
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+
+    def test_skill_skip_does_not_consume_attempt(self) -> None:
+        """Skill skip retries don't count against max_retries."""
+        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
+        action, retry = agent.act(self._make_skill_context())
+        # Even with 3 skip retries, max_retries should not be exhausted
+        assert retry.attempt <= retry.max_retries

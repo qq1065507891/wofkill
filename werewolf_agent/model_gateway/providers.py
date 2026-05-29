@@ -542,9 +542,23 @@ def _sanitize_for_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return _walk(s)
 
 
+def _anthropic_content(data: dict[str, Any]) -> list[dict[str, Any]]:
+    content = data.get("content") or []
+    if not isinstance(content, list):
+        if content is not None:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Unexpected Anthropic content type=%s raw=%s",
+                type(content).__name__,
+                repr(content)[:200],
+            )
+        return []
+    return content
+
+
 def _extract_anthropic_text(data: dict[str, Any]) -> str:
     parts: list[str] = []
-    for item in data.get("content", []):
+    for item in _anthropic_content(data):
         if item.get("type") == "text":
             parts.append(str(item.get("text", "")))
         elif item.get("type") == "tool_use":
@@ -553,11 +567,11 @@ def _extract_anthropic_text(data: dict[str, Any]) -> str:
 
 
 def _has_anthropic_tool_use(data: dict[str, Any]) -> bool:
-    return any(item.get("type") == "tool_use" for item in data.get("content", []))
+    return any(item.get("type") == "tool_use" for item in _anthropic_content(data))
 
 
 def _anthropic_tool_name(data: dict[str, Any]) -> str:
-    for item in data.get("content", []):
+    for item in _anthropic_content(data):
         if item.get("type") == "tool_use":
             return str(item.get("name", ""))
     return ""

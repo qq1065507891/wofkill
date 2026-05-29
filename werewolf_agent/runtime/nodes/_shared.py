@@ -101,6 +101,10 @@ class RuntimeState(TypedDict, total=False):
     agent_call_timeout: float
     wolf_discussion_round: int
     wolf_team_plan: dict[str, Any]
+    # Game repository for persistent storage (PostgresGameRepository etc.)
+    repository: Any
+    # Per-player discussion position summaries
+    discussion_positions: list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------

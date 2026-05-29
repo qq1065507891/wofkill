@@ -64,6 +64,8 @@ _SPEECH_INTENTS = {
     "stand_with_seer": "站边预言家或逻辑线",
     "respond_pressure": "回应质疑",
     "push_vote": "提出投票倾向",
+    "info_synthesis": "整合多人发言要点，提出综合判断",
+    "anti_herd_call": "指出跟票风险，提醒大家独立判断",
 }
 
 _MAX_JSON_CONTEXT_CHARS = 1800
@@ -98,9 +100,12 @@ class PlayerPromptBuilder:
         parts: list[str] = []
         parts.append(self._build_core_identity())
         parts.append(self._build_persona())
+        parts.append(self._build_information_boundaries())
         parts.append(self._build_game_rules())
         parts.append(self._build_role_guide())
+        parts.append(self._build_reasoning_method())
         parts.append(self._build_skill_catalog())
+        parts.append(self._build_tool_skill_policy())
         parts.append(self._build_output_contract())
         return "\n\n".join(p for p in parts if p)
 
@@ -127,6 +132,35 @@ class PlayerPromptBuilder:
             "不要跟风复述已有指控；每次发言必须给出独立证据、明确区分事实和推测。\n"
             "【公开记录引用约束】只有游戏概况、可见状态、关键事件、近期发言中明确出现的信息，才能称为公开记录。"
             "不要编造某玩家曾经说过的话、声称过的身份、投票理由或查验结论；不确定时必须写成推测或质疑。"
+        )
+
+    def _build_information_boundaries(self) -> str:
+        return (
+            "【信息边界】你收到的信息分为：当前局公开事实、当前局私有信息、知识库提示、"
+            "跨局记忆、认知矩阵、技能分析结果、模型推测。"
+            "公开发言时，只有当前局公开事实可以称为“场上已知”或“公开记录”。"
+            "私有信息可以用于决策，但不能伪装成公开事实。"
+            "知识库提示只是玩法经验，不是当前局发生的事。"
+            "跨局记忆只是历史经验，不代表本局任何玩家真实身份。"
+            "认知矩阵只是你自己的判断倾向，不是事实。"
+            "技能分析只是辅助推理，不改变规则、身份或公开记录。"
+            "不确定内容必须表达为推测。"
+        )
+
+    def _build_reasoning_method(self) -> str:
+        return (
+            "【推理方法】先区分事实、推测、立场、情绪。"
+            "盘狼坑时优先看：发言矛盾、票型关系、站边链条、收益动机、关键轮次行为。"
+            "投票前比较证据链完整度和出错成本，不盲从多数归票。"
+            "允许保留不确定性，但行动必须给出当前最优理由。"
+        )
+
+    def _build_tool_skill_policy(self) -> str:
+        return (
+            "【工具与技能使用规范】当存在相关 skill 工具时，优先调用 skill 获取分析，再提交行动。"
+            "skill 分析不是裁判真相，必须结合当前局可见事实判断。"
+            "如果 skill 分析和公开事实冲突，以公开事实为准。"
+            "提交行动时要吸收 skill 结论形成自己的判断，不要机械复述。"
         )
 
     def _build_role_guide(self) -> str:
@@ -200,8 +234,14 @@ class PlayerPromptBuilder:
         parts.append(self._build_belief_state())
         parts.append(self._build_public_summary())
         parts.append(self._build_visible_state())
+        parts.append(self._build_private_memory_hints())
         parts.append(self._build_salience_events())
+        parts.append(self._build_rag_hints())
+        parts.append(self._build_reflection_memory_hints())
+        parts.append(self._build_profile_memory_hint())
+        parts.append(self._build_cognition_matrix_hint())
         parts.append(self._build_strategy_directive())
+        parts.append(self._build_skill_analysis_hints())
         parts.append(self._build_recent_transcript())
         parts.append(self._build_retry_hint(retry))
         parts.append(self._build_task_prompt())
@@ -230,6 +270,10 @@ class PlayerPromptBuilder:
                 "not_voting_reason（为什么不投其他主要候选人）、"
                 "private_reason（完整内心活动：为什么投他、担心什么、最终如何决定）。"
                 "这些字段不会公开发言，只给主持人审计。"
+            )
+            lines.append(
+                "反跟票警告：不要无条件跟随任何人的归票。如果多人集中投同一人，"
+                "检查是否可能是狼人抱团。独立判断优先级：发言逻辑矛盾 > 票型异常 > 谁说了什么。"
             )
         return "\n".join(lines)
 
@@ -260,13 +304,27 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.public_summary:
             return ""
-        return "游戏概况:\n" + self._truncate_text(ctx.public_summary, _MAX_JSON_CONTEXT_CHARS)
+        return "当前局公开事实:\n" + self._truncate_text(ctx.public_summary, _MAX_JSON_CONTEXT_CHARS)
 
     def _build_visible_state(self) -> str:
         ctx = self.context
         if not ctx.visible_world_state:
             return ""
-        return "可见状态: " + self._compact_json(ctx.visible_world_state)
+        visible = dict(ctx.visible_world_state)
+        visible.pop("private_memory", None)
+        if not visible:
+            return ""
+        return "可见状态: " + self._compact_json(visible)
+
+    def _build_private_memory_hints(self) -> str:
+        ctx = self.context
+        memory = ctx.private_memory_hints or ctx.visible_world_state.get("private_memory", {})
+        if not memory:
+            return ""
+        return (
+            "我的当前局记忆: 以下只代表你在本局形成的观察、站边和私有思考，"
+            "不是公开记录。\n" + self._compact_json(memory)
+        )
 
     def _build_salience_events(self) -> str:
         ctx = self.context
@@ -276,11 +334,56 @@ class PlayerPromptBuilder:
             ctx.salience_items[:_MAX_SALIENCE_ITEMS],
         )
 
+    def _build_rag_hints(self) -> str:
+        ctx = self.context
+        if not ctx.rag_hints:
+            return ""
+        return (
+            "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
+            + self._compact_json(ctx.rag_hints[:3])
+        )
+
+    def _build_reflection_memory_hints(self) -> str:
+        ctx = self.context
+        if not ctx.reflection_memory_hints:
+            return ""
+        return (
+            "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
+            + self._compact_json(ctx.reflection_memory_hints[:5])
+        )
+
+    def _build_profile_memory_hint(self) -> str:
+        ctx = self.context
+        if not ctx.profile_memory_hint:
+            return ""
+        return (
+            "长期能力画像: 以下是你的历史能力画像和角色经历，只用于调整策略风格。\n"
+            + self._compact_json(ctx.profile_memory_hint)
+        )
+
+    def _build_cognition_matrix_hint(self) -> str:
+        ctx = self.context
+        if not ctx.cognition_matrix_hint:
+            return ""
+        return (
+            "我的认知矩阵: 以下是你自己的判断倾向，不是事实，也不包含其他玩家私密视角。\n"
+            + self._compact_json(ctx.cognition_matrix_hint)
+        )
+
     def _build_strategy_directive(self) -> str:
         ctx = self.context
         if not ctx.strategy_directive:
             return ""
-        return "策略建议: " + self._compact_json(ctx.strategy_directive)
+        return "本轮策略指令: " + self._compact_json(ctx.strategy_directive)
+
+    def _build_skill_analysis_hints(self) -> str:
+        ctx = self.context
+        if not ctx.skill_analysis_hints:
+            return ""
+        return (
+            "技能分析结果: 以下是本轮工具分析结果，只能作为辅助推理。\n"
+            + self._compact_json(ctx.skill_analysis_hints)
+        )
 
     def _build_persona(self) -> str:
         ctx = self.context
@@ -359,13 +462,24 @@ class PlayerPromptBuilder:
                     '"reason": "当前信息不足，先观察警上格局", "confidence": 0.6}'
                 )
         else:
+            role = ctx.own_role or "villager"
+            if role == "werewolf":
+                example_role = "werewolf"
+                example_goal = "confuse_good"
+                example_view = "我是好人"
+            else:
+                example_role = "villager"
+                example_goal = "find_wolves"
+                example_view = "我是好人"
             parts.append("示例输出（发言场景）：")
             parts.append('{"action_type": "speech", "target_id": null, '
                          '"speech": "我觉得p05很可疑，昨晚他的发言前后矛盾。", '
                          '"reason": "根据发言分析", "confidence": 0.7, '
-                         '"private_intent": {"true_role": "villager", '
-                         '"faction_goal": "find_wolves", "claimed_view": "我是好人", '
+                         f'"private_intent": {{"true_role": "{example_role}", '
+                         f'"faction_goal": "{example_goal}", "claimed_view": "{example_view}", '
                          '"pressure_target": "p05", "risk_flags": []}}')
+            vote_example_goal = "confuse_good" if example_role == "werewolf" else "find_wolves"
+            vote_example_view = "我是好人" if example_role != "seer" else "我是预言家"
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '
@@ -377,8 +491,8 @@ class PlayerPromptBuilder:
                          '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
                          '"private_reason": "心里活动：我更信p03的预言家线，p05像狼队抗推失败后的防守位，所以投p05。", '
                          '"confidence": 0.8, '
-                         '"private_intent": {"true_role": "seer", '
-                         '"faction_goal": "find_wolves", "claimed_view": "我是预言家", '
+                         f'"private_intent": {{"true_role": "{example_role}", '
+                         f'"faction_goal": "{vote_example_goal}", "claimed_view": "{vote_example_view}", '
                          '"pressure_target": "p05", "risk_flags": []}}')
         return "\n".join(parts)
 

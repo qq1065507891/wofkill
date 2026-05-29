@@ -112,6 +112,8 @@ class PlayerAgent:
         "stand_with_seer": "站边预言家或逻辑线",
         "respond_pressure": "回应质疑",
         "push_vote": "提出投票倾向",
+        "info_synthesis": "整合多人发言要点，提出综合判断",
+        "anti_herd_call": "指出跟票风险，提醒大家独立判断",
     }
 
     def __init__(
@@ -142,8 +144,10 @@ class PlayerAgent:
         parse_error_str: str | None = None
         structured_failure_reason: str | None = None
         skill_call_count = 0  # cap total on-demand skill injections per act()
+        skill_skip_count = 0  # track times LLM skipped skill tools
 
         attempt = 0
+        _MAX_SKILL_SKIP = 3
         # Resolve model config once to check text-fallback support.
         # Models that reliably return plain-text JSON don't need forced
         # tool_choice — we let them respond in their native format and
@@ -233,6 +237,53 @@ class PlayerAgent:
                 )
                 attempt -= 1  # skill tool 调用不消耗重试次数
                 continue
+
+            # ── Skill skip detection: LLM submitted action without calling any skill tool ──
+            # When skill tools are available but the LLM went straight to submit_player_action,
+            # nudge it to call an analysis tool first.  After _MAX_SKIP attempts, force-inject
+            # all skill analyses directly into the prompt so good players still get the info.
+            _called_skill_tool = called_tool and called_tool in context.skill_analyses
+            if (
+                has_skill_tools
+                and tool_call_received
+                and not _called_skill_tool
+                and skill_call_count == 0
+                and context.skill_analyses
+                and skill_skip_count < _MAX_SKILL_SKIP
+            ):
+                skill_skip_count += 1
+                if skill_skip_count >= _MAX_SKILL_SKIP:
+                    # Fallback: LLM won't call skill tools — inject analyses directly
+                    all_analyses = "\n\n".join(
+                        v for v in context.skill_analyses.values() if v
+                    )
+                    if not all_analyses:
+                        break  # nothing to inject, proceed normally
+                    retry = RetryInfo(
+                        attempt=attempt,
+                        max_retries=self.max_retries,
+                        correction_hint=(
+                            f"【技能分析结果】\n{all_analyses}\n\n"
+                            "请基于以上分析，通过 submit_player_action 提交你的行动。"
+                        ),
+                    )
+                    attempt -= 1
+                    continue
+                skill_names = ", ".join(
+                    t.get("name", "") for t in context.skill_tools
+                )
+                retry = RetryInfo(
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    correction_hint=(
+                        f"请先调用分析工具（{skill_names}）获取局势分析，"
+                        "然后再通过 submit_player_action 提交行动。"
+                        "不要跳过分析直接提交。"
+                    ),
+                )
+                attempt -= 1  # skill skip retry 不消耗重试次数
+                continue
+
             if not result.text:
                 failure_reason = self._latest_generation_failure_reason()
                 if failure_reason:
@@ -899,6 +950,10 @@ class PlayerAgent:
         text = " ".join(str(value) for value in data.values())
         if any(word in text for word in ("站边", "预言家", "查验")):
             return "stand_with_seer"
+        if any(word in text for word in ("整合", "综合", "多人", "总结")):
+            return "info_synthesis"
+        if any(word in text for word in ("跟票", "抱团", "独立判断")):
+            return "anti_herd_call"
         if any(word in text for word in ("投", "归票", "出")):
             return "push_vote"
         if any(word in text for word in ("回应", "解释", "表水")):
@@ -948,6 +1003,16 @@ class PlayerAgent:
                     f"{target}需要解释自己的站边、票型和对关键事件的回应。"
                 )
             return f"{basis}我这轮会明确给出投票倾向，不接受继续模糊站边。"
+        if intent == "info_synthesis":
+            return (
+                f"{basis}我先把多人发言合在一起看：查验、死亡信息、票型和发言矛盾要能互相印证。"
+                "如果只剩单点发言可疑，我不会直接把它放到最高优先级。"
+            )
+        if intent == "anti_herd_call":
+            return (
+                f"{basis}我提醒大家不要无条件跟票。"
+                "如果同一批人持续集中冲同一个位置，要反查他们有没有抱团带节奏的可能。"
+            )
         if intent == "question_target" and target:
             return (
                 f"{basis}我想追问{target}：你的站边、票型和关键发言需要正面解释。"
@@ -1427,38 +1492,7 @@ class PlayerAgent:
                 "我这里建议先整理每个人明天的站位：一人带节奏，一人补逻辑，一人适度倒钩保护团队。",
             ]
             return templates[salt % len(templates)]
-        if target:
-            clues = self._context_clues(context)
-            if clues:
-                return (
-                    f"我这轮先把视角压到{target}身上。依据是{clues}，"
-                    f"我需要{target}正面回应自己的站边、票型和关键事件解释；"
-                    "如果回应仍然空泛，我会把投票优先放在这里。"
-                )
-            templates = [
-                (
-                    "我这轮先重点听{target}的解释。"
-                    "{target}需要交代站边、投票依据和不投其他人的理由；"
-                    "如果这些信息补不出来，我会把他作为优先投票对象。"
-                ),
-                (
-                    "我会先追问{target}的视角来源。"
-                    "{target}需要把怀疑对象、站边逻辑和票型判断讲清楚，"
-                    "否则这个位置容易成为今天的主要焦点。"
-                ),
-                (
-                    "今天我先把{target}放进重点观察位。"
-                    "我需要听到他对关键发言和投票选择的正面解释，"
-                    "如果继续回避，我会考虑把票压过去。"
-                ),
-            ]
-            return templates[salt % len(templates)].format(target=target)
-        templates = [
-            "我这轮会重点看发言前后是否一致、投票是否跟逻辑匹配，不接受纯划水过麦。",
-            "现在信息还不够一锤定音，但每个人都要交代自己的站边和投票理由。",
-            "后续我会优先跟进票型变化和谁在回避关键问题，不能只靠情绪归票。",
-        ]
-        return templates[salt % len(templates)]
+        return f"[{context.agent_id} 本轮未发表有效言论。]"
 
     # ── Prompt building delegated to PlayerPromptBuilder (s10 pipeline) ──
 

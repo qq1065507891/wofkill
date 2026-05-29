@@ -213,6 +213,38 @@ def test_enter_night_increments_night() -> None:
     assert result["game_state"].phase == "night"
 
 
+def test_reflection_node_persists_entries_to_repository() -> None:
+    from werewolf_agent.runtime.nodes.summary import reflection
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.saved: list[dict[str, Any]] = []
+
+        def load_all_reflections(self) -> list[dict[str, Any]]:
+            return []
+
+        def save_reflection(self, entry: dict[str, Any]) -> None:
+            self.saved.append(dict(entry))
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=False),
+    }
+    gs = GameState(
+        game_id="reflection_persist",
+        players=players,
+        winning_faction="good",
+        day_number=3,
+    )
+    repo = FakeRepository()
+
+    result = reflection({"game_state": gs, "engine": _new_engine(), "repository": repo})
+
+    assert result["game_state"].events[-1].type == "reflection_complete"
+    assert [entry["player_id"] for entry in repo.saved] == ["p01", "p02"]
+    assert all(entry["game_id"] == "reflection_persist" for entry in repo.saved)
+
+
 def test_wolf_consensus_timeout_defaults_to_no_kill_event() -> None:
     engine = _new_engine()
     players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
@@ -3465,11 +3497,11 @@ class TestWitchPoisonPressureContext:
             legal_actions=[ActionType.SPEECH],
         )
 
-        rag_items = [
+        assert context.rag_hints == []
+        assert [
             item for item in context.salience_items
             if item.get("type") == "rag_hit"
-        ]
-        assert rag_items == []
+        ] == []
 
     def test_build_agent_context_uses_passed_rag_service(self) -> None:
         """Runtime can use a configured RAG service instead of seed fallback."""
@@ -3519,7 +3551,135 @@ class TestWitchPoisonPressureContext:
         assert service.last_query.phase == "night_discussion"
         assert service.last_game_id == "rag_service_context"
         assert service.last_player_id == "p01"
-        assert any(item["entry_id"] == "fake" for item in context.salience_items)
+        assert any(item["entry_id"] == "fake" for item in context.rag_hints)
+        assert not any(item.get("entry_id") == "fake" for item in context.salience_items)
+
+    def test_good_player_cross_game_reflections_include_good_failure_lessons(self) -> None:
+        """Good-side players should receive actionable good-side failure reflections."""
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+
+        class FakeProfile:
+            games_played = 3
+            logic = 0.6
+            deception = 0.2
+            credibility = 0.7
+
+        class FakeReflection:
+            def __init__(
+                self,
+                entry_id: int,
+                role: str,
+                faction_won: bool,
+                text: str,
+                situation: str = "",
+            ) -> None:
+                self.entry_id = entry_id
+                self.role = role
+                self.faction_won = faction_won
+                self.text = text
+                self.situation = situation
+
+        class FakeMemory:
+            def get_profile(self, player_id):
+                return FakeProfile()
+
+            def reflections_by_player(self, player_id):
+                return [
+                    FakeReflection(
+                        1,
+                        "werewolf",
+                        True,
+                        "狼人赢在好人分票和女巫盲毒。",
+                    ),
+                    FakeReflection(
+                        2,
+                        "villager",
+                        False,
+                        "好人失败原因：没有把预言家查杀转成统一投票；改进：先按查验和票型排序。",
+                        "D2放逐前",
+                    ),
+                ]
+
+            def get_matrix(self, player_id):
+                class Entry:
+                    player_id = "p02"
+                    faction_read = "wolf_lean"
+                    trust = 0.25
+                    key_evidence = ["连续跟票"]
+                    open_questions = ["是否抱团"]
+
+                class Matrix:
+                    def all_entries(self):
+                        return [Entry()]
+
+                return Matrix()
+
+        players = {
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        }
+        gs = GameState(
+            game_id="good_reflection_context",
+            players=players,
+            phase="day",
+            day_number=2,
+        )
+
+        context = build_agent_context(
+            _new_engine(),
+            gs,
+            "p01",
+            TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            restored_memory=FakeMemory(),
+        )
+
+        assert "cross_game_reflections" not in context.strategy_directive
+        reflections = context.reflection_memory_hints
+        joined = str(reflections)
+        assert "好人失败原因" in joined
+        assert "改进" in joined
+        assert joined.index("villager") < joined.index("werewolf")
+        assert context.profile_memory_hint["games_played"] == 3
+        assert context.cognition_matrix_hint["suspects"][0]["player"] == "p02"
+
+    def test_skill_outputs_are_exposed_as_prompt_hints(self, monkeypatch) -> None:
+        """Runtime skill analyses should populate the explicit prompt section."""
+        import werewolf_agent.runtime.agent_adapter as adapter
+        from werewolf_agent.runtime.agent_adapter import build_agent_context
+
+        def fake_inject_skill_output(
+            strategy_directive,
+            gs,
+            player_id,
+            world_state,
+            belief_state,
+            contradiction_alerts,
+            phase,
+            legal_targets=None,
+            wolf_team_plan=None,
+        ):
+            return strategy_directive, {"skill_analyze_wolf_pit": "suspects: p02"}
+
+        monkeypatch.setattr(adapter, "_inject_skill_output", fake_inject_skill_output)
+        monkeypatch.setattr(adapter, "_build_skill_tool_defs", lambda role, phase: [])
+
+        players = {
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        }
+        gs = GameState(game_id="skill_hint_context", players=players, phase="day")
+
+        context = build_agent_context(
+            _new_engine(),
+            gs,
+            "p01",
+            TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+        )
+
+        assert context.skill_analyses == {"skill_analyze_wolf_pit": "suspects: p02"}
+        assert context.skill_analysis_hints == context.skill_analyses
 
 
 class TestSheriffElectionSpeechFallback:
@@ -3964,6 +4124,17 @@ class TestWitchStrategyHints:
         hint = ctx.strategy_directive["witch_strategy_hint"]
         assert "毒药" in hint
 
+    def test_witch_poison_requires_hard_evidence(self) -> None:
+        """Witch poison guidance should require hard evidence before using poison."""
+        from werewolf_agent.runtime.agent_adapter import agent_night_witch
+        state, engine, registry = self._make_witch_state(night_number=2, poison_used=False)
+        agent_night_witch(state, engine, registry)
+        ctx = registry.agent.last_context
+        directive = ctx.strategy_directive["witch_poison_threshold"]
+        assert "查杀" in directive
+        assert "强票型" in directive
+        assert "单独开毒" in directive
+
     def test_poison_used_no_poison_hint(self) -> None:
         """When poison is already used, no poison alternative is mentioned."""
         from werewolf_agent.runtime.agent_adapter import agent_night_witch
@@ -4301,6 +4472,17 @@ class TestHunterStrategyDirectives:
         top_value = sv["ranked_targets"][0]["value"]
         if top_value < 3:
             assert "不开枪" in sv["shoot_advisory"] or "NO_ACTION" in sv["shoot_advisory"]
+
+    def test_low_evidence_hunter_directive_prefers_no_shot(self) -> None:
+        """Hunter prompt must not turn a low-evidence target list into a forced shot."""
+        state, engine, registry = self._make_hunter_state()
+        from werewolf_agent.runtime.agent_adapter import agent_hunter_shot
+        agent_hunter_shot(state, engine, registry, "hunter")
+        ctx = registry.agent.last_context
+        directive = ctx.strategy_directive["hunter_shot_directive"]
+        assert "不开枪" in directive or "NO_ACTION" in directive
+        assert "明确查杀" in directive
+        assert "避免误伤好人" in directive
 
     def test_death_reason_passed_to_agent(self) -> None:
         """Death reason should be available in the strategy directive."""
@@ -4722,6 +4904,82 @@ class TestVillagerStrategyDirectives:
         vs = ctx.strategy_directive["villager_vote_strategy"]
         assert "判断预言家真假" in vs
         assert "不要无条件" in vs
+
+    def test_good_vote_has_hard_info_and_mistake_cost_guard(self) -> None:
+        """Good-side vote context must prioritize hard info and evaluate mistake cost."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        players = {
+            "v1": PlayerState(id="v1", role="villager"),
+            "w1": PlayerState(id="w1", role="werewolf"),
+            "seer": PlayerState(id="seer", role="seer"),
+            "hunter": PlayerState(id="hunter", role="hunter"),
+        }
+        gs = GameState(
+            game_id="good_vote_guard_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=[
+                GameEvent(type="sheriff_speech", payload={
+                    "speaker": "seer",
+                    "text": "我是预言家，w1查杀，警徽流先验hunter。",
+                    "claims": [{"type": "role", "value": "seer"}],
+                }),
+            ],
+        )
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                return (PlayerAction(
+                    action_type=ActionType.VOTE,
+                    target_id="w1",
+                    reason="seer查杀w1",
+                    seer_stance="trust",
+                    vote_basis="seer_check",
+                    standing_with_seer="seer",
+                    suspect_reason="w1被seer查杀",
+                    not_voting_reason="hunter没有硬证据狼面",
+                    private_reason="优先走可信预言家的查验。",
+                ), RetryInfo())
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+            def get_agent(self, player_id):
+                return self.agent
+
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": _new_engine(),
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        registry = CaptureRegistry()
+        agent_day_vote(state, state["engine"], registry, "v1")
+
+        ctx = registry.agent.last_context
+        guard = ctx.strategy_directive["good_vote_decision_guard"]
+        assert "硬信息优先级" in guard
+        assert "预言家查验" in guard
+        assert "出错成本" in guard
+        assert "猎人" in guard
 
     def test_idiot_uses_villager_strategy(self) -> None:
         """Idiot should get the same analysis strategy as villager."""

@@ -172,10 +172,10 @@ players:
     llm_profile: baidu_deepseek
   p02:
     persona_id: aggressive_bluffer
-    llm_profile: baidu_deepseek
+    llm_profile: minimax_default
   p03:
     persona_id: steady_sider
-    llm_profile: minimax_default
+    llm_profile: baidu_glm
   p04:
     persona_id: bold_pretender
     llm_profile: minimax_default
@@ -187,19 +187,19 @@ players:
     llm_profile: minimax_default
   p07:
     persona_id: chaos_joker
-    llm_profile: minimax_default
+    llm_profile: baidu_kimi
   p08:
     persona_id: review_learner
-    llm_profile: baidu_kimi
+    llm_profile: minimax_default
   p09:
     persona_id: quiet_observer
-    llm_profile: minimax_default
+    llm_profile: baidu_deepseek
   p10:
     persona_id: burst_visionary
-    llm_profile: baidu_deepseek
+    llm_profile: minimax_default
   p11:
     persona_id: structure_analyst
-    llm_profile: minimax_default
+    llm_profile: baidu_glm
   p12:
     persona_id: adaptive_gamer
     llm_profile: minimax_default

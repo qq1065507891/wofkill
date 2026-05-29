@@ -10,19 +10,78 @@ is a future extension — current implementation uses exact tag/role matching.
 
 from __future__ import annotations
 
+import json
+import uuid
 from typing import Any
 
 from werewolf_agent.memory.schemas import CrossGameQuery, ReflectionEntry
 
 
 class ReflectionMemory:
-    """Stores and retrieves post-game reflections across games."""
+    """Stores and retrieves post-game reflections across games.
 
-    def __init__(self) -> None:
+    When a ``repo`` (PostgresGameRepository) is provided, reflections are
+    persisted to the ``reflections`` table.  Otherwise entries are kept
+    in memory only (suitable for tests and single-run scenarios).
+    """
+
+    def __init__(self, repo: Any | None = None) -> None:
         self._entries: dict[str, ReflectionEntry] = {}
+        self._repo = repo
+        if self._repo is not None:
+            self._load_all()
 
-    def store(self, entry: ReflectionEntry) -> None:
+    # -- Persistence --------------------------------------------------------
+
+    def _load_all(self) -> None:
+        try:
+            rows = self._repo.load_all_reflections()
+        except Exception:
+            return
+        for data in rows:
+            try:
+                entry = ReflectionEntry.from_dict(data)
+                self._entries[entry.entry_id] = entry
+            except Exception:
+                pass
+
+    def _persist(self, entry: ReflectionEntry) -> None:
+        if self._repo is None:
+            return
+        try:
+            self._repo.save_reflection(entry.to_dict())
+        except Exception:
+            pass
+
+    # -- CRUD ---------------------------------------------------------------
+
+    def store(
+        self,
+        entry_or_game_id: ReflectionEntry | str = "",
+        *,
+        player_id: str = "",
+        role: str = "",
+        faction_won: str | bool = "",
+        text: str = "",
+        tags: list[str] | None = None,
+        situation: str | dict | None = None,
+    ) -> None:
+        """Store a reflection entry. Accepts either a ReflectionEntry or keyword args."""
+        if isinstance(entry_or_game_id, ReflectionEntry):
+            entry = entry_or_game_id
+        else:
+            entry = ReflectionEntry(
+                entry_id=uuid.uuid4().hex[:12],
+                game_id=str(entry_or_game_id),
+                player_id=player_id,
+                role=role,
+                faction_won=bool(faction_won) if isinstance(faction_won, (bool, int)) else faction_won == "werewolf",
+                text=text,
+                tags=tags or [],
+                situation=json.dumps(situation, ensure_ascii=False) if isinstance(situation, dict) else str(situation or ""),
+            )
         self._entries[entry.entry_id] = entry
+        self._persist(entry)
 
     def get(self, entry_id: str) -> ReflectionEntry | None:
         return self._entries.get(entry_id)
@@ -36,8 +95,15 @@ class ReflectionMemory:
     def delete(self, entry_id: str) -> bool:
         if entry_id in self._entries:
             del self._entries[entry_id]
+            if self._repo is not None:
+                try:
+                    self._repo.delete_reflection(entry_id)
+                except Exception:
+                    pass
             return True
         return False
+
+    # -- Query --------------------------------------------------------------
 
     def query(self, query: CrossGameQuery) -> list[ReflectionEntry]:
         """Retrieve reflections matching query criteria."""

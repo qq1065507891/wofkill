@@ -59,8 +59,8 @@ class PersistentMemoryCoordinator:
         from werewolf_agent.memory.store import MemoryStore
         data = self._repo.load_memory_snapshot(snapshot_id)
         if data is None:
-            return None
-        return restore_memory_store(data)
+            return MemoryStore(repo=self._repo)
+        return restore_memory_store(data, repo=self._repo)
 
     def list_snapshots(self) -> list[dict[str, Any]]:
         return self._repo.list_memory_snapshots()

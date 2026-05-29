@@ -100,6 +100,7 @@ def announce_deaths_with_badge_loss(state: RuntimeState) -> dict[str, Any]:
 def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     engine: RuleEngine = state["engine"]
+    registry = state.get("agent_registry")
     batch = f"night_{gs.night_number}"
     eligible = []
     for death in gs.deaths:
@@ -125,6 +126,24 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
     gs = replace(gs, events=gs.events + [GameEvent(
         type="night_death_last_words", payload={"players": eligible}
     )])
+
+    # Let each eligible dead player actually speak their last words via agent
+    if registry and eligible:
+        for pid in eligible:
+            call_state = {**state, "game_state": gs}
+            result = _dispatch_agent(
+                call_state,
+                agent_exile_last_words,
+                pid,
+                timeout_override=AGENT_TIMEOUTS.day_speech,
+            )
+            speech_text = result.get("speech_text", "") if result else ""
+            logger.debug(f"  [夜死遗言] {_player_display(state, pid)}: {speech_text if speech_text else '(无遗言)'}")
+            gs = replace(gs, events=gs.events + [GameEvent(
+                type="night_death_last_words",
+                payload={"speaker": pid, "day_number": gs.day_number, "text": speech_text},
+            )])
+
     return {"game_state": gs}
 
 

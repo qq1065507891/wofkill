@@ -235,6 +235,56 @@ class PostgresGameRepository:
         conn.execute("DELETE FROM memory_snapshots WHERE snapshot_id = %s", (snapshot_id,))
         conn.commit()
 
+    # -- Reflections --------------------------------------------------------
+
+    def save_reflection(self, entry: dict[str, Any]) -> None:
+        conn = self._ensure_connection()
+        entry_id = entry.get("entry_id", "")
+        conn.execute(
+            """
+            INSERT INTO reflections (entry_id, game_id, player_id, entry_json)
+            VALUES (%s, %s, %s, %s::jsonb)
+            ON CONFLICT (entry_id) DO UPDATE SET entry_json = EXCLUDED.entry_json
+            """,
+            (entry_id, entry.get("game_id", ""), entry.get("player_id", ""),
+             json.dumps(entry, ensure_ascii=False)),
+        )
+        conn.commit()
+
+    def load_reflection(self, entry_id: str) -> dict[str, Any] | None:
+        row = self._ensure_connection().execute(
+            "SELECT entry_json FROM reflections WHERE entry_id = %s",
+            (entry_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+
+    def load_reflections_by_game(self, game_id: str) -> list[dict[str, Any]]:
+        rows = self._ensure_connection().execute(
+            "SELECT entry_json FROM reflections WHERE game_id = %s",
+            (game_id,),
+        ).fetchall()
+        return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
+
+    def load_reflections_by_player(self, player_id: str) -> list[dict[str, Any]]:
+        rows = self._ensure_connection().execute(
+            "SELECT entry_json FROM reflections WHERE player_id = %s",
+            (player_id,),
+        ).fetchall()
+        return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
+
+    def load_all_reflections(self) -> list[dict[str, Any]]:
+        rows = self._ensure_connection().execute(
+            "SELECT entry_json FROM reflections ORDER BY entry_id"
+        ).fetchall()
+        return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
+
+    def delete_reflection(self, entry_id: str) -> None:
+        conn = self._ensure_connection()
+        conn.execute("DELETE FROM reflections WHERE entry_id = %s", (entry_id,))
+        conn.commit()
+
     def _connect(self) -> Any:
         if self._conn is not None:
             return self._conn
@@ -311,4 +361,32 @@ class PostgresGameRepository:
                 entry_json JSONB NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memory_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                snapshot_json JSONB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS custom_configs (
+                config_id TEXT PRIMARY KEY,
+                config_json JSONB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reflections (
+                entry_id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                player_id TEXT NOT NULL,
+                entry_json JSONB NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reflections_game ON reflections (game_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id)"
+        )
         conn.commit()

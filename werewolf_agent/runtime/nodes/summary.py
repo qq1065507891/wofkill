@@ -222,17 +222,29 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
         reflection_entries.append(entry)
 
     # Persist to ReflectionMemory when available
+    _GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
+    winning = gs.winning_faction or ""
     try:
         from werewolf_agent.memory.reflection import ReflectionMemory
-        rm = ReflectionMemory()
+        rm = ReflectionMemory(repo=state.get("repository"))
         for entry in reflection_entries:
+            pid = entry["player_id"]
+            role = entry["role"]
+            pf = "unknown"
+            if role == "hybrid":
+                pf = gs.hybrid_master_faction or "unknown"
+            elif role in _GOOD_ROLES:
+                pf = "good"
+            elif role == "werewolf":
+                pf = "werewolf"
+            player_faction_won = pf == winning
             rm.store(
-                game_id=gs.game_id,
-                player_id=entry["player_id"],
-                role=entry["role"],
-                faction_won=gs.winning_faction or "",
+                gs.game_id,
+                player_id=pid,
+                role=role,
+                faction_won=player_faction_won,
                 text=entry.get("reflection", ""),
-                tags=[entry["role"], "post_game"],
+                tags=[role, "post_game"],
                 situation={"alive": entry["alive"], "day": gs.day_number},
             )
     except Exception:

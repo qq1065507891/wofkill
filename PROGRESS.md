@@ -4,10 +4,10 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Full-project code review + hardening** — 2026-05-27
+- Current phase: **Full-project code review + hardening** — 2026-05-29
 - Active task: None (all reported defects fixed or documented below)
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-27
+- Last updated: 2026-05-29
 
 ---
 
@@ -23,6 +23,28 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 | Code defects | 20+ fixed (except:pass, CWD paths, thread safety, missing locks) | 3 medium/low deferred |
 | model_gateway tests | 38 tests | — |
 | Design doc features | ~70% | Dashboard, MCP, timers, evaluation, cost, prod hardening |
+
+---
+
+## Good-Side Decision Discipline Hardening - 2026-05-29
+
+Based on recent game-log analysis where good-side losses came from hard evidence not converting into votes, scattered day voting, and negative-value witch/hunter actions, added narrow runtime guardrails without changing the redesigned prompt pipeline or skill structure:
+
+- Witch poison now has a hard-evidence threshold and late-game urgency no longer encourages blind poison on vague suspicion.
+- Hunter shot guidance now prefers `NO_ACTION` when the best target lacks clear hard evidence, reducing good-side self-damage.
+- Good-side day voting now receives a hard-info priority order and mistake-cost check before pushing likely gods or key good players.
+- Public speech fallback now marks API/structured-output failure as no effective speech instead of fabricating pressure speeches; wolf night-discussion fallback is preserved.
+- Vote prompts now include a short anti-herd warning, and speech intent selection now includes information synthesis and anti-herd calls.
+- Cross-game reflection injection is covered by a regression test that confirms good-side failure lessons and improvement advice reach good-side players.
+
+Verification:
+
+- `python -m pytest tests\runtime\test_runtime.py::TestWitchStrategyHints tests\runtime\test_runtime.py::TestHunterStrategyDirectives tests\runtime\test_runtime.py::TestVillagerStrategyDirectives -q` passed.
+- `python -m pytest tests\runtime\test_pk_flow.py::TestPKRevoteRestrictsTargets::test_agent_day_vote_requires_structured_vote_quality -q` passed.
+- `python -m pytest tests\agents\test_agents.py::TestPlayerAgentRetryFallback tests\agents\test_agents.py::TestMandatoryVote tests\agents\test_agents.py::TestSpeechQualityAndWolfAssignments -q` passed.
+- `python -m pytest tests\runtime\test_runtime.py::TestWitchStrategyHints tests\runtime\test_runtime.py::TestHunterStrategyDirectives tests\runtime\test_runtime.py::TestVillagerStrategyDirectives tests\runtime\test_runtime.py::TestWitchPoisonPressureContext -q` passed.
+- `git diff --check -- tests/runtime/test_runtime.py werewolf_agent/runtime/agent_adapter.py` passed after pure whitespace cleanup in the already-modified sheriff/wolf-plan hunks.
+- `git diff --check -- werewolf_agent/agents/prompt_builder.py werewolf_agent/runtime/agent_adapter.py tests/runtime/test_runtime.py PROGRESS.md` passed; `player.py` and `tests/agents/test_agents.py` retain the repository's CRLF line endings, which this command reports as trailing whitespace on added lines.
 
 ---
 

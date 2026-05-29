@@ -91,6 +91,25 @@ class TestGenerateWithMockProvider:
         assert result is not None
         assert "mock response" in result.text
 
+    def test_first_attempt_jitter_uses_short_default_window(self, monkeypatch) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+
+        uniform_calls: list[tuple[float, float]] = []
+        sleeps: list[float] = []
+
+        def fake_uniform(low: float, high: float) -> float:
+            uniform_calls.append((low, high))
+            return high
+
+        monkeypatch.setattr(router_module.random, "uniform", fake_uniform)
+        monkeypatch.setattr(router_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
+        router.generate(agent_id="p01", task_type="speech", prompt="Hello")
+
+        assert uniform_calls[0] == (0, 0.8)
+        assert sleeps[0] == 0.8
+
     def test_generate_registers_usage(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
         router.generate(agent_id="p01", task_type="speech", prompt="test")
