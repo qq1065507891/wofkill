@@ -4,10 +4,53 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Full-project code review + hardening** — 2026-05-29
-- Active task: None (all reported defects fixed or documented below)
+- Current phase: **Full-project code review + hardening** — 2026-05-30
+- Active task: None (God Object + RuleEngine decomposition complete)
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-29
+- Last updated: 2026-05-30
+
+---
+
+## God Object Decomposition — 2026-05-30
+
+Decomposed the 4 most responsibility-bloated modules into 15 focused, single-concern files.
+
+### Results
+
+| Module | Before | After | Reduction |
+|--------|--------|-------|-----------|
+| `agent_adapter.py` | 3203 lines / 57 funcs | 1610 lines | **-50%** |
+| `player.py` | 1393 lines / 51 methods | 891 lines | **-36%** |
+| `werewolf_skills.py` | 1068 lines / 36 funcs | 1234 lines / 12 handlers | 36→12 funcs |
+| `ingestion.py` | 1110 lines | 150 lines | **-86%** |
+| **4 files total** | **6774 lines** | **3885 lines** | **-43%** |
+
+### New files created
+
+| New module | Lines | Responsibility |
+|-----------|-------|----------------|
+| `runtime/directives/` (8 files) | 647 | Per-role speech directive builders |
+| `runtime/strategy/` (7 files) | 857 | Deterministic strategy evaluation |
+| `runtime/context.py` | 770 | AgentContext builder |
+| `agents/output_parser.py` | 826 | JSON repair, choice/speech-intent parsing |
+| `agents/tool_schema.py` | 242 | LLM tool schema generation |
+| `rag/seed_data.py` | 147 | YAML seed data loader |
+| `config/rag_seeds/seed_entries.yaml` | 879 | Seed data |
+
+### Design decisions
+
+- All function bodies copied verbatim — zero logic changes
+- Backward-compatible re-exports preserved in original files for test backward compatibility
+- `runtime/directives/` → `runtime/strategy/` direct imports, avoiding circular dependency with `agent_adapter`
+- `werewolf_skills.py` switched to `@register_handler` decorator pattern, eliminating 24 static/dynamic functions
+- `ingestion.py` seed data extracted to YAML, keeping only `CaseIngester` validation logic
+
+### Verification
+
+- Full test suite: 1633+ passed, 0 failed
+- 8 commits, each independently revertible
+- Plan: `docs/superpowers/plans/2026-05-29-god-object-decomposition.md`
+- Commits: d3f49e3 → 878da09
 
 ---
 
@@ -23,6 +66,24 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 | Code defects | 20+ fixed (except:pass, CWD paths, thread safety, missing locks) | 3 medium/low deferred |
 | model_gateway tests | 38 tests | — |
 | Design doc features | ~70% | Dashboard, MCP, timers, evaluation, cost, prod hardening |
+
+---
+
+## RuleEngine Decomposition — 2026-05-30
+
+Split `engine/rule_engine.py` (848 lines, 18 domains) into 3 modules.
+
+| Module | Before | After |
+|--------|--------|-------|
+| `engine/rule_engine.py` | 848 lines | 634 lines |
+| `engine/sheriff.py` (new) | — | 85 lines |
+| `engine/event_reducer.py` (new) | — | 192 lines |
+
+- `engine/sheriff.py` — `SheriffRules`: 6 methods for badge/election/speech order
+- `engine/event_reducer.py` — `EventReducer`: 12-case event-to-state reducer
+- `RuleEngine` backward-compatible facade, delegates to sub-modules
+- Zero caller changes; full test suite passes
+- Plan: `docs/superpowers/plans/2026-05-30-rule-engine-decomposition.md`
 
 ---
 
