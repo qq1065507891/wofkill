@@ -1,0 +1,136 @@
+"""Anthropic Messages API provider and response parsers."""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
+from werewolf_agent.model_gateway.providers.env import get_env
+from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
+
+
+class AnthropicProvider(_BaseHttpProvider):
+    """Anthropic Messages API provider."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        base_url: str | None = None,
+        http_client: Any | None = None,
+    ) -> None:
+        super().__init__(
+            api_key=api_key or get_env("ANTHROPIC_API_KEY"),
+            base_url=base_url or get_env("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+            http_client=http_client,
+        )
+
+    @property
+    def name(self) -> str:
+        return "anthropic"
+
+    def generate(
+        self,
+        prompt: str,
+        config: ModelConfig,
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
+    ) -> GenerateResult:
+        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        forcing_tool = bool(tool_choice and tool_choice.get("name"))
+        if config.allow_text_tool_fallback and not forcing_tool:
+            messages.append({"role": "assistant", "content": "{"})
+
+        payload: dict[str, Any] = {
+            "model": config.model,
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature,
+            "top_p": config.top_p,
+            "messages": messages,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        if tools and not (config.allow_text_tool_fallback and not forcing_tool):
+            payload["tools"] = tools
+        if tool_choice and not (config.allow_text_tool_fallback and not forcing_tool):
+            payload["tool_choice"] = tool_choice
+
+        start = time.monotonic()
+        response = self._http_client.post(
+            f"{self._base_url}/v1/messages",
+            headers={
+                "x-api-key": self._api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=config.timeout,
+        )
+        response.raise_for_status()
+        latency_ms = int((time.monotonic() - start) * 1000)
+        data = response.json()
+        tool_call_received = _has_anthropic_tool_use(data)
+        text = _extract_anthropic_text(data)
+        if config.allow_text_tool_fallback and not forcing_tool and text:
+            text = "{" + text if text[0] != "{" else text
+        usage = data.get("usage", {})
+        return GenerateResult(
+            text=text,
+            provider=self.name,
+            model=config.model,
+            tool_call_required=bool(tool_choice),
+            tool_call_received=tool_call_received,
+            tool_call_name=_anthropic_tool_name(data) or (tool_choice or {}).get("name", ""),
+            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text)
+                or (config.allow_text_tool_fallback and not forcing_tool and bool(text)),
+            structured_failure_reason=(
+                "missing_tool_call" if tools and tool_choice and not tool_call_received else None
+            ),
+            usage=self._usage(
+                model=config.model,
+                latency_ms=latency_ms,
+                prompt_tokens=int(usage.get("input_tokens", 0) or 0),
+                completion_tokens=int(usage.get("output_tokens", 0) or 0),
+            ),
+        )
+
+
+# -- Anthropic response parsers --
+
+
+def _anthropic_content(data: dict[str, Any]) -> list[dict[str, Any]]:
+    content = data.get("content") or []
+    if not isinstance(content, list):
+        if content is not None:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Unexpected Anthropic content type=%s raw=%s",
+                type(content).__name__,
+                repr(content)[:200],
+            )
+        return []
+    return content
+
+
+def _extract_anthropic_text(data: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for item in _anthropic_content(data):
+        if item.get("type") == "text":
+            parts.append(str(item.get("text", "")))
+        elif item.get("type") == "tool_use":
+            parts.append(json.dumps(item.get("input", {}), ensure_ascii=False))
+    return "\n".join(part for part in parts if part)
+
+
+def _has_anthropic_tool_use(data: dict[str, Any]) -> bool:
+    return any(item.get("type") == "tool_use" for item in _anthropic_content(data))
+
+
+def _anthropic_tool_name(data: dict[str, Any]) -> str:
+    for item in _anthropic_content(data):
+        if item.get("type") == "tool_use":
+            return str(item.get("name", ""))
+    return ""

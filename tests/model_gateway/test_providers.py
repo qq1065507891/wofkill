@@ -113,7 +113,7 @@ class TestCreateProviderFromEnv:
         )
         _ENV_OVERRIDES.clear()
         monkeypatch.setattr(
-            "werewolf_agent.model_gateway.providers.load_local_dotenv",
+            "werewolf_agent.model_gateway.providers.env.load_local_dotenv",
             lambda *a, **kw: None,
         )
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
