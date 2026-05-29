@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Full-project code review + hardening** — 2026-05-30
-- Active task: None (God Object + RuleEngine + app.py decomposition complete)
+- Active task: None (God Object + RuleEngine + app.py + providers decomposition complete)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-05-30
 
@@ -104,6 +104,27 @@ Split `api/app.py` (786 lines, `create_app()` monolithic 540-line factory) into 
 - Full test suite passes; zero caller changes
 - Commit: 753753e
 - Plan: `docs/superpowers/plans/2026-05-30-app-py-decomposition.md`
+
+---
+
+## providers.py Decomposition — 2026-05-30
+
+Split `model_gateway/providers.py` (598 lines, 31 funcs, 6 classes) into `providers/` package.
+
+| Module | Lines | Responsibility |
+|--------|-------|----------------|
+| `base.py` | 65 | `_BaseHttpProvider`, `ProviderConfigError`, config keys |
+| `env.py` | 44 | `get_env`, `load_local_dotenv`, `_ENV_OVERRIDES` |
+| `anthropic.py` | 115 | `AnthropicProvider` + 4 response parsers |
+| `openai.py` | 160 | `OpenAIProvider` + shared OpenAI-compatible generation |
+| `glm.py` | 47 | `GLMProvider` (reuses openai shared logic) |
+| `minimax.py` | 110 | `MiniMaxProvider` (reuses anthropic parsers) |
+| `factory.py` | 33 | `create_provider_from_env` (lazy imports) |
+| `__init__.py` | 35 | Backward-compatible re-exports |
+
+- `factory.py` uses lazy imports to preserve test monkeypatch compatibility
+- Full test suite passes
+- Commit: 9a6dda1
 
 ---
 
