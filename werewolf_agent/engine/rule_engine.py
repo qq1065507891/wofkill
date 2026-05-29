@@ -21,6 +21,7 @@ from werewolf_agent.core.models import (
     VoteResult,
     VictoryResult,
 )
+from werewolf_agent.engine.sheriff import SheriffRules
 
 
 def _stable_seed_val(*parts: object) -> int:
@@ -40,6 +41,8 @@ class Ruleset:
 class RuleEngine:
     def __init__(self, ruleset: Ruleset) -> None:
         self.ruleset = ruleset
+        raw = ruleset.raw if hasattr(ruleset, "raw") else ruleset
+        self._sheriff = SheriffRules(raw)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RuleEngine":
@@ -444,66 +447,32 @@ class RuleEngine:
         sheriff_id: str,
         death_reason: str,
     ) -> BadgeDecisionOptions:
-        cfg = self.ruleset.raw["sheriff"]["death_policy"]
-        can_act = death_reason in cfg["may_transfer_or_tear_on_death_reasons"]
-        if not can_act:
-            return BadgeDecisionOptions(can_transfer=False, can_tear=False, transfer_targets=[])
-
-        targets = [
-            pid for pid, p in state.players.items()
-            if p.alive and pid != sheriff_id and p.badge_eligible
-        ]
-        return BadgeDecisionOptions(can_transfer=True, can_tear=True, transfer_targets=targets)
+        return self._sheriff.badge_options_after_sheriff_death(
+            state, sheriff_id=sheriff_id, death_reason=death_reason,
+        )
 
     def resolve_badge_decision(
         self, state: GameState, *, decision: str, target_id: str | None = None
     ) -> GameState:
-        if decision == "tear":
-            return replace(state, sheriff_id=None, sheriff_badge_state="torn")
-        if decision == "transfer" and target_id is not None:
-            return replace(state, sheriff_id=target_id, sheriff_badge_state="active")
-        return state
+        return self._sheriff.resolve_badge_decision(state, decision=decision, target_id=target_id)
 
     def sheriff_register(
         self, state: GameState, *, candidates: list[str]
     ) -> tuple[GameState, GameEvent]:
-        event = GameEvent(type="sheriff_registered", payload={"candidates": candidates})
-        return state, event
+        return self._sheriff.sheriff_register(state, candidates=candidates)
 
     def sheriff_withdraw(
         self, state: GameState, *, candidates: list[str], withdrawing: list[str]
     ) -> tuple[GameState, GameEvent]:
-        remaining = [c for c in candidates if c not in withdrawing]
-        event = GameEvent(
-            type="sheriff_withdraw",
-            payload={"remaining": remaining, "withdrew": withdrawing},
-        )
-        return state, event
+        return self._sheriff.sheriff_withdraw(state, candidates=candidates, withdrawing=withdrawing)
 
     def resolve_sheriff_vote(
         self, state: GameState, *, votes: dict[str, str], candidates: list[str]
     ) -> tuple[GameState, GameEvent]:
-        tally: dict[str, int] = {}
-        for target_id in votes.values():
-            if target_id in candidates:
-                tally[target_id] = tally.get(target_id, 0) + 1
-        if not tally:
-            return state, GameEvent(type="sheriff_no_election", payload={})
-        max_votes = max(tally.values())
-        top = [pid for pid, count in tally.items() if count == max_votes]
-        if len(top) != 1:
-            return state, GameEvent(type="sheriff_vote_tie", payload={"tied": top})
-        winner = top[0]
-        new_state = replace(state, sheriff_id=winner, sheriff_badge_state="active")
-        return new_state, GameEvent(type="sheriff_elected", payload={"sheriff_id": winner})
+        return self._sheriff.resolve_sheriff_vote(state, votes=votes, candidates=candidates)
 
     def speech_order_policy(self, state: GameState) -> str:
-        cfg = self.ruleset.raw["day_flow"]["speech"]
-        if state.sheriff_badge_state == "active":
-            return cfg.get("sheriff_order_policy", "random_start")
-        if state.sheriff_badge_state == "torn":
-            return cfg["torn_badge_order_policy"]
-        return cfg["no_sheriff_order_policy"]
+        return self._sheriff.speech_order_policy(state)
 
     # -- Vote --
 
