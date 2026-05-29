@@ -21,6 +21,7 @@ from werewolf_agent.core.models import (
     VoteResult,
     VictoryResult,
 )
+from werewolf_agent.engine.event_reducer import EventReducer, _apply_idiot_reveal
 from werewolf_agent.engine.sheriff import SheriffRules
 
 
@@ -43,6 +44,7 @@ class RuleEngine:
         self.ruleset = ruleset
         raw = ruleset.raw if hasattr(ruleset, "raw") else ruleset
         self._sheriff = SheriffRules(raw)
+        self._reducer = EventReducer(raw)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RuleEngine":
@@ -91,20 +93,8 @@ class RuleEngine:
         return AlignmentResult(alignment=seer_result, role=None)
 
     def _apply_idiot_reveal(self, state: GameState, player_id: str) -> GameState:
-        """Apply idiot reveal state transitions. Shared across resolve_exile and reduce_event."""
-        player = state.players[player_id]
-        if player.role != "idiot" or player.revealed_idiot:
-            return state
-        after = self.ruleset.raw["roles"]["idiot"]["abilities"]["state_after_reveal"]
-        updated = replace(
-            player,
-            alive=after["alive"],
-            revealed_idiot=after["revealed_idiot"],
-            vote_enabled=not after["vote_disabled"],
-            badge_eligible=not after["badge_ineligible"],
-            exile_immune=after["exile_immune"],
-        )
-        return replace(state, players={**state.players, player_id: updated})
+        """Apply idiot reveal state transitions. Delegates to engine-level helper."""
+        return _apply_idiot_reveal(self.ruleset.raw, state, player_id)
 
     # -- Hybrid master --
 
@@ -628,185 +618,13 @@ class RuleEngine:
             sections.add("all_private_states")
         return VisibleContext(view_mode=view_mode, visible_sections=sections)
 
-    # -- Event reducer --
+    # -- Event reducer (delegates to EventReducer) --
 
     def reduce_event(self, state: GameState, event: GameEvent) -> GameState:
-        etype = event.type
-        payload = event.payload
-
-        if etype == "player_died":
-            pid = payload["player_id"]
-            player = state.players[pid]
-            if player.alive:
-                updated = replace(player, alive=False)
-                new_players = {**state.players, pid: updated}
-                death = Death(
-                    player_id=pid,
-                    reason=payload.get("reason", "unknown"),
-                    timing=payload.get("timing", "unknown"),
-                    resolution_batch=payload.get("resolution_batch", "unknown"),
-                    source_player_id=payload.get("source_player_id"),
-                    can_leave_last_words=payload.get("can_leave_last_words"),
-                    triggered_skills=list(payload.get("triggered_skills", [])),
-                )
-                return replace(
-                    state,
-                    players=new_players,
-                    deaths=state.deaths + [death],
-                    events=state.events + [event],
-                )
-            return replace(state, events=state.events + [event])
-
-        if etype == "idiot_revealed":
-            pid = payload["player_id"]
-            return replace(
-                self._apply_idiot_reveal(state, pid),
-                events=state.events + [event],
-            )
-
-        if etype == "werewolf_self_destructed":
-            pid = payload["player_id"]
-            player = state.players[pid]
-            if player.alive:
-                updated = replace(player, alive=False)
-                new_players = {**state.players, pid: updated}
-                death = Death(
-                    player_id=pid,
-                    reason="self_destruct",
-                    timing="day_discussion",
-                    resolution_batch=f"day_{payload.get('day_number', '?')}_self_destruct",
-                    can_leave_last_words=payload.get("can_leave_last_words"),
-                    triggered_skills=list(payload.get("triggered_skills", [])),
-                )
-                return replace(
-                    state,
-                    players=new_players,
-                    deaths=state.deaths + [death],
-                    events=state.events + [event],
-                )
-            return replace(state, events=state.events + [event])
-
-        if etype == "hybrid_master_chosen":
-            return replace(
-                state,
-                hybrid_master_id=payload["master_id"],
-                hybrid_master_faction=self._faction_for_player(state, payload["master_id"]),
-                events=state.events + [event],
-            )
-
-        if etype == "sheriff_elected":
-            return replace(
-                state,
-                sheriff_id=payload["sheriff_id"],
-                sheriff_badge_state="active",
-                events=state.events + [event],
-            )
-
-        if etype == "player_exiled":
-            pid = payload["player_id"]
-            player = state.players[pid]
-            if player.alive and not player.exile_immune:
-                if player.role == "idiot" and not player.revealed_idiot:
-                    return replace(
-                        self._apply_idiot_reveal(state, pid),
-                        events=state.events + [event],
-                    )
-                updated = replace(player, alive=False)
-                new_players = {**state.players, pid: updated}
-                death = Death(
-                    player_id=pid,
-                    reason="exile",
-                    timing="day_vote",
-                    resolution_batch=payload.get("resolution_batch", "day_vote"),
-                    can_leave_last_words=payload.get("can_leave_last_words"),
-                    triggered_skills=list(payload.get("triggered_skills", [])),
-                )
-                return replace(
-                    state,
-                    players=new_players,
-                    deaths=state.deaths + [death],
-                    events=state.events + [event],
-                )
-            return replace(state, events=state.events + [event])
-
-        if etype in {"victory", "victory_checked"}:
-            winner = payload.get("winner") or payload.get("winning_faction")
-            if winner is None:
-                return replace(state, events=state.events + [event])
-            hybrid_result = payload.get("hybrid_result")
-            if hybrid_result is None:
-                hybrid_result = self._hybrid_result(state, winner)
-            return replace(
-                state,
-                winning_faction=winner,
-                hybrid_result=hybrid_result,
-                phase="finished",
-                events=state.events + [event],
-            )
-
-        # Badge decisions
-        if etype == "badge_torn":
-            return replace(
-                state,
-                sheriff_id=None,
-                sheriff_badge_state="torn",
-                events=state.events + [event],
-            )
-        if etype == "badge_transferred":
-            return replace(
-                state,
-                sheriff_id=payload["new_sheriff_id"],
-                sheriff_badge_state="active",
-                events=state.events + [event],
-            )
-
-        # Witch potion tracking
-        if etype == "witch_antidote_used":
-            return replace(
-                state, antidote_used=True, events=state.events + [event]
-            )
-        if etype == "witch_poison_used":
-            return replace(
-                state, poison_used=True, events=state.events + [event]
-            )
-
-        # Game started — transition to night with initial players
-        if etype == "game_started":
-            new_players = {}
-            for pid, pdata in payload.get("players", {}).items():
-                if isinstance(pdata, dict):
-                    new_players[pid] = PlayerState(**pdata)
-                else:
-                    new_players[pid] = pdata
-            return replace(
-                state,
-                players=new_players or state.players,
-                phase="night",
-                events=state.events + [event],
-            )
-
-        # Pause / resume
-        if etype == "game_paused":
-            return replace(state, paused=True, events=state.events + [event])
-        if etype == "game_resumed":
-            return replace(state, paused=False, events=state.events + [event])
-
-        # Default: just append event
-        return replace(state, events=state.events + [event])
+        return self._reducer.reduce_event(state, event)
 
     def reduce_events(self, state: GameState, events: list[GameEvent]) -> GameState:
-        for event in events:
-            state = self.reduce_event(state, event)
-        return state
-
-    def _faction_for_player(self, state: GameState, player_id: str) -> str:
-        role = state.players[player_id].role
-        return self.ruleset.raw["roles"][role]["faction"]
-
-    def _hybrid_result(self, state: GameState, winning_faction: str) -> str | None:
-        if state.hybrid_master_faction is None:
-            return None
-        return "win" if state.hybrid_master_faction == winning_faction else "lose"
+        return self._reducer.reduce_events(state, events)
 
     def _validate_alive_target(self, state: GameState, target_id: str, label: str) -> None:
         target = state.players.get(target_id)
