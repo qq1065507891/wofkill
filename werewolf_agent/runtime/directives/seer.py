@@ -12,8 +12,7 @@ def build_seer_directive(
     seer_id: str,
 ) -> dict[str, Any]:
     """Build structured day speech directives for the seer."""
-    # TODO: Circular dependency — will be resolved when _public_seer_claimants moves to runtime/strategy/ (Task 2)
-    from werewolf_agent.runtime.agent_adapter import _public_seer_claimants  # noqa: TID251
+    from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants
 
     parts: dict[str, Any] = {}
 

@@ -64,10 +64,9 @@ def build_wolf_directive(
     wolf_team_plan: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Build day speech directive for a werewolf with role-aware strategy."""
-    # TODO: Circular dependency — will be resolved when _get_wolf_role_assignment/_has_publicly_claimed_seer move to runtime/strategy/ (Task 2)
-    from werewolf_agent.runtime.agent_adapter import (  # noqa: TID251
-        _get_wolf_role_assignment,
-        _has_publicly_claimed_seer,
+    from werewolf_agent.runtime.strategy import (
+        get_wolf_role_assignment as _get_wolf_role_assignment,
+        has_publicly_claimed_seer as _has_publicly_claimed_seer,
     )
 
     parts: dict[str, Any] = {}
@@ -169,8 +168,7 @@ def build_wolf_vote_directive(
     wolf_team_plan: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Build vote strategy for a werewolf."""
-    # TODO: Circular dependency — will be resolved when _get_wolf_role_assignment moves to runtime/strategy/ (Task 2)
-    from werewolf_agent.runtime.agent_adapter import _get_wolf_role_assignment  # noqa: TID251
+    from werewolf_agent.runtime.strategy import get_wolf_role_assignment as _get_wolf_role_assignment
 
     assignment = _get_wolf_role_assignment(wolf_team_plan, voter_id)
     parts: dict[str, Any] = {}
