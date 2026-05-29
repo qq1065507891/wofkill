@@ -878,7 +878,6 @@ class PlayerAgent:
                 "我这里建议先整理每个人明天的站位：一人带节奏，一人补逻辑，一人适度倒钩保护团队。",
             ]
             return templates[salt % len(templates)]
-        return f"[{context.agent_id} 本轮未发表有效言论。]"
         if context.task_type in (TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH):
             templates = [
                 "我上警是想给出自己的独立判断视角，重点关注前几位发言的逻辑一致性。",
