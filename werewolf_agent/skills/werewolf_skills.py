@@ -8,7 +8,7 @@ back to static output for backward compatibility.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from werewolf_agent.skills.schemas import (
     SkillDefinition,
@@ -17,6 +17,26 @@ from werewolf_agent.skills.schemas import (
     SkillName,
     SkillOutput,
 )
+
+
+# ---------------------------------------------------------------------------
+# Skill handler registry (table-driven pattern)
+# ---------------------------------------------------------------------------
+
+_SKILL_HANDLERS: dict[SkillName, Callable] = {}
+
+
+def register_handler(name: SkillName):
+    """Decorator to register a skill handler in the dispatch table."""
+    def decorator(fn: Callable) -> Callable:
+        _SKILL_HANDLERS[name] = fn
+        return fn
+    return decorator
+
+
+def get_handler(name: SkillName) -> Callable | None:
+    """Look up a registered skill handler by name."""
+    return _SKILL_HANDLERS.get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +244,9 @@ def apply_skill(skill_name: SkillName, skill_input: SkillInput) -> SkillOutput:
             risk_alerts=["未知技能"],
         )
 
-    handler = _SKILL_HANDLERS.get(skill_name, _default_handler)
+    handler = get_handler(skill_name)
+    if handler is None:
+        handler = _default_handler
     return handler(skill_input, skill_def)
 
 
@@ -236,7 +258,8 @@ def _find_definition(name: SkillName) -> SkillDefinition | None:
 
 
 # ---------------------------------------------------------------------------
-# Handlers — each has a static fallback and a dynamic branch
+# Handlers — each merges static fallback (game_state is None) and dynamic
+# analysis (game_state provided) into a single registered function.
 # ---------------------------------------------------------------------------
 
 def _default_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
@@ -250,33 +273,27 @@ def _default_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- BOLD_CLAIM (悍跳) ---
 
-def _bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.BOLD_CLAIM)
+def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _bold_claim_static(inp, skill)
-    return _bold_claim_dynamic(inp, skill)
-
-
-def _bold_claim_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    risks = ["悍跳风险：如果对跳方是真预言家，可信度会大幅下降"]
-    if inp.day > 2:
-        risks.append("晚期悍跳风险更高：已发言轮次多，矛盾点容易被抓")
-    conf = 0.6 if inp.day <= 1 else 0.3
-    prompt = "悍跳建议：尽早跳预言家并报出假查验结果。构建完整的时间线和警徽流。" if conf >= 0.5 else "晚期悍跳风险极高，不建议此时悍跳。"
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="claim_role",
-        speech_structure=["报查验结果", "声明警徽流", "攻击对立面逻辑"],
-        risk_alerts=risks,
-        confidence=conf,
-        reasoning="悍跳需要前期执行，后期风险增大",
-        prompt_injectable=prompt,
-    )
-
-
-def _bold_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        risks = ["悍跳风险：如果对跳方是真预言家，可信度会大幅下降"]
+        if inp.day > 2:
+            risks.append("晚期悍跳风险更高：已发言轮次多，矛盾点容易被抓")
+        conf = 0.6 if inp.day <= 1 else 0.3
+        prompt = "悍跳建议：尽早跳预言家并报出假查验结果。构建完整的时间线和警徽流。" if conf >= 0.5 else "晚期悍跳风险极高，不建议此时悍跳。"
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="claim_role",
+            speech_structure=["报查验结果", "声明警徽流", "攻击对立面逻辑"],
+            risk_alerts=risks,
+            confidence=conf,
+            reasoning="悍跳需要前期执行，后期风险增大",
+            prompt_injectable=prompt,
+        )
+    # dynamic analysis
     ws = inp.world_state
-    gs = inp.game_state
     day = gs.day_number
     seer_count = _count_seer_claimants(ws)
     wolves = _alive_wolves(gs)
@@ -347,27 +364,22 @@ def _bold_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- COUNTER_CLAIM (对跳) ---
 
-def _counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.COUNTER_CLAIM)
+def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _counter_claim_static(inp, skill)
-    return _counter_claim_dynamic(inp, skill)
-
-
-def _counter_claim_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    risks = ["对跳风险：真预言家对跳时好人会倾向真预言家"]
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="counter_claim",
-        speech_structure=["指出对方漏洞", "报自身查验信息", "建立时间线对比"],
-        risk_alerts=risks,
-        confidence=0.55,
-        reasoning="对跳需要充分的逻辑支撑和时间线一致性",
-        prompt_injectable="对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。",
-    )
-
-
-def _counter_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        risks = ["对跳风险：真预言家对跳时好人会倾向真预言家"]
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="counter_claim",
+            speech_structure=["指出对方漏洞", "报自身查验信息", "建立时间线对比"],
+            risk_alerts=risks,
+            confidence=0.55,
+            reasoning="对跳需要充分的逻辑支撑和时间线一致性",
+            prompt_injectable="对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     claimants = _get_seer_claimants(ws)
     alerts = inp.contradiction_alerts
@@ -415,29 +427,23 @@ def _counter_claim_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutp
 
 # --- PUSH_VOTE (归票) ---
 
-def _push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.PUSH_VOTE)
+def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _push_vote_static(inp, skill)
-    return _push_vote_dynamic(inp, skill)
-
-
-def _push_vote_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="vote",
-        speech_structure=["陈述归票理由", "分析目标嫌疑", "号召全场归票"],
-        risk_alerts=["归票错误目标可能导致好人损失"],
-        confidence=0.6,
-        reasoning="归票需要有充分的逻辑依据和说服力",
-        prompt_injectable="归票建议：根据发言逻辑和验人信息，选择嫌疑最大的人归票。陈述理由时需要有理有据，号召全场跟随。",
-    )
-
-
-def _push_vote_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="vote",
+            speech_structure=["陈述归票理由", "分析目标嫌疑", "号召全场归票"],
+            risk_alerts=["归票错误目标可能导致好人损失"],
+            confidence=0.6,
+            reasoning="归票需要有充分的逻辑依据和说服力",
+            prompt_injectable="归票建议：根据发言逻辑和验人信息，选择嫌疑最大的人归票。陈述理由时需要有理有据，号召全场跟随。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     bs = inp.belief_state
-    gs = inp.game_state
 
     top_suspects = _belief_top_suspects(bs, count=3)
     day = gs.day_number
@@ -488,28 +494,22 @@ def _push_vote_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- SWING_VOTE (冲票) ---
 
-def _swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.SWING_VOTE)
+def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _swing_vote_static(inp, skill)
-    return _swing_vote_dynamic(inp, skill)
-
-
-def _swing_vote_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    risks = ["冲票暴露投票链：好人可能通过投票链锁定狼人"]
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="vote",
-        speech_structure=["在狼讨论中提出冲票目标", "分析目标的投票压力", "协调队友分散或集中票"],
-        risk_alerts=risks,
-        confidence=0.5,
-        reasoning="冲票需要考虑投票链暴露风险",
-        prompt_injectable="冲票建议：选择场上已有投票压力的好人作为冲票目标。与队友协调投票方向，避免投票链暴露狼人身份。",
-    )
-
-
-def _swing_vote_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    gs = inp.game_state
+        # static fallback
+        risks = ["冲票暴露投票链：好人可能通过投票链锁定狼人"]
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="vote",
+            speech_structure=["在狼讨论中提出冲票目标", "分析目标的投票压力", "协调队友分散或集中票"],
+            risk_alerts=risks,
+            confidence=0.5,
+            reasoning="冲票需要考虑投票链暴露风险",
+            prompt_injectable="冲票建议：选择场上已有投票压力的好人作为冲票目标。与队友协调投票方向，避免投票链暴露狼人身份。",
+        )
+    # dynamic analysis
     ws = inp.world_state
 
     wolves = _alive_wolves(gs)
@@ -568,27 +568,21 @@ def _swing_vote_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- DEEP_HOOK (倒钩) ---
 
-def _deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.DEEP_HOOK)
+def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _deep_hook_static(inp, skill)
-    return _deep_hook_dynamic(inp, skill)
-
-
-def _deep_hook_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="speech",
-        speech_structure=["站边好人逻辑", "适度攻击可疑队友", "建立可信度"],
-        risk_alerts=["倒钩策略需要长期维持一致性", "过度攻击队友可能被识别"],
-        confidence=0.55,
-        reasoning="倒钩核心是在好人阵营中建立长期可信度",
-        prompt_injectable="倒钩建议：伪装成好人，站边好人逻辑线，适度攻击被怀疑的队友来建立信任。注意保持发言一致性，不要前后矛盾。",
-    )
-
-
-def _deep_hook_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    gs = inp.game_state
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="speech",
+            speech_structure=["站边好人逻辑", "适度攻击可疑队友", "建立可信度"],
+            risk_alerts=["倒钩策略需要长期维持一致性", "过度攻击队友可能被识别"],
+            confidence=0.55,
+            reasoning="倒钩核心是在好人阵营中建立长期可信度",
+            prompt_injectable="倒钩建议：伪装成好人，站边好人逻辑线，适度攻击被怀疑的队友来建立信任。注意保持发言一致性，不要前后矛盾。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     bs = inp.belief_state
 
@@ -659,25 +653,20 @@ def _deep_hook_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- FIND_POWER (找神) ---
 
-def _find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.FIND_POWER)
+def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _find_power_static(inp, skill)
-    return _find_power_dynamic(inp, skill)
-
-
-def _find_power_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="analyze",
-        speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
-        confidence=0.5,
-        reasoning="找神需要综合多个信号源进行推断",
-        prompt_injectable="找神建议：关注发言中信息量异常的玩家（可能知道夜晚信息）、投票倾向保守的玩家、以及试图保护某些位置的玩家，这些可能是神职。",
-    )
-
-
-def _find_power_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="analyze",
+            speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
+            confidence=0.5,
+            reasoning="找神需要综合多个信号源进行推断",
+            prompt_injectable="找神建议：关注发言中信息量异常的玩家（可能知道夜晚信息）、投票倾向保守的玩家、以及试图保护某些位置的玩家，这些可能是神职。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     bs = inp.belief_state
 
@@ -740,31 +729,26 @@ def _find_power_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- HIDE_IDENTITY (藏身份) ---
 
-def _hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.HIDE_IDENTITY)
+def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _hide_identity_static(inp, skill)
-    return _hide_identity_dynamic(inp, skill)
-
-
-def _hide_identity_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    risks = ["藏身份过久可能导致无法在关键时刻发挥作用"]
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="speech",
-        speech_structure=["保持中立发言", "避免暴露信息优势", "控制发言节奏"],
-        risk_alerts=risks,
-        confidence=0.6,
-        reasoning="藏身份需要在隐匿和发挥作用之间找到平衡",
-        prompt_injectable="藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。如果被质疑，适度释放信息自证但不要全露底牌。",
-    )
-
-
-def _hide_identity_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        risks = ["藏身份过久可能导致无法在关键时刻发挥作用"]
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="speech",
+            speech_structure=["保持中立发言", "避免暴露信息优势", "控制发言节奏"],
+            risk_alerts=risks,
+            confidence=0.6,
+            reasoning="藏身份需要在隐匿和发挥作用之间找到平衡",
+            prompt_injectable="藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。如果被质疑，适度释放信息自证但不要全露底牌。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     pid = inp.player_id
     alerts = inp.contradiction_alerts
-    day = inp.game_state.day_number
+    day = gs.day_number
 
     my_claims = []
     if ws is not None:
@@ -816,26 +800,21 @@ def _hide_identity_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutp
 
 # --- RESIST_PUSH (抗推) ---
 
-def _resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.RESIST_PUSH)
+def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _resist_push_static(inp, skill)
-    return _resist_push_dynamic(inp, skill)
-
-
-def _resist_push_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="defense_speech",
-        speech_structure=["承认疑虑合理性", "逻辑反驳关键指控", "提出建设性站边"],
-        risk_alerts=["过度防御可能加深怀疑", "攻击质疑者会适得其反"],
-        confidence=0.55,
-        reasoning="抗推需要冷静的逻辑反驳，而非情绪对抗",
-        prompt_injectable="抗推建议：冷静反驳质疑，针对关键指控逐一回应。如果被查杀，质疑预言家身份；如果仅被怀疑，补充自己的逻辑线和站边理由。",
-    )
-
-
-def _resist_push_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="defense_speech",
+            speech_structure=["承认疑虑合理性", "逻辑反驳关键指控", "提出建设性站边"],
+            risk_alerts=["过度防御可能加深怀疑", "攻击质疑者会适得其反"],
+            confidence=0.55,
+            reasoning="抗推需要冷静的逻辑反驳，而非情绪对抗",
+            prompt_injectable="抗推建议：冷静反驳质疑，针对关键指控逐一回应。如果被查杀，质疑预言家身份；如果仅被怀疑，补充自己的逻辑线和站边理由。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     pid = inp.player_id
     alerts = inp.contradiction_alerts
@@ -899,28 +878,22 @@ def _resist_push_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput
 
 # --- WOLF_PIT_ANALYSIS (盘狼坑) ---
 
-def _wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.WOLF_PIT_ANALYSIS)
+def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _wolf_pit_static(inp, skill)
-    return _wolf_pit_dynamic(inp, skill)
-
-
-def _wolf_pit_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="analyze",
-        speech_structure=["列出嫌疑人", "分析各嫌疑人证据", "排除法缩小范围"],
-        confidence=0.5,
-        reasoning="盘狼坑需要系统性分析所有嫌疑人的行为链",
-        prompt_injectable="盘狼坑建议：系统性分析所有嫌疑人的行为链。从发言矛盾、投票链异常、验人冲突等维度排查，用排除法缩小狼坑范围。",
-    )
-
-
-def _wolf_pit_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="analyze",
+            speech_structure=["列出嫌疑人", "分析各嫌疑人证据", "排除法缩小范围"],
+            confidence=0.5,
+            reasoning="盘狼坑需要系统性分析所有嫌疑人的行为链",
+            prompt_injectable="盘狼坑建议：系统性分析所有嫌疑人的行为链。从发言矛盾、投票链异常、验人冲突等维度排查，用排除法缩小狼坑范围。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     bs = inp.belief_state
-    gs = inp.game_state
 
     # Build suspect and exclude lists
     suspects: list[tuple[str, str]] = []   # (player, reason)
@@ -987,26 +960,21 @@ def _wolf_pit_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- PROTECT_POWER (保护强神) ---
 
-def _protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.PROTECT_POWER)
+def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _protect_power_static(inp, skill)
-    return _protect_power_dynamic(inp, skill)
-
-
-def _protect_power_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="speech",
-        speech_structure=["暗示关键角色需要保护", "引导怀疑方向远离神职", "分散狼队注意力"],
-        risk_alerts=["过度保护某个玩家反而暴露其身份"],
-        confidence=0.5,
-        reasoning="保护强神需要隐蔽的引导而非明显的保护行为",
-        prompt_injectable="保护强神建议：如果推测某玩家是神职且被推，用'我觉得他的逻辑没问题'等方式引导怀疑方向远离，不要直接说'保护他'。",
-    )
-
-
-def _protect_power_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="speech",
+            speech_structure=["暗示关键角色需要保护", "引导怀疑方向远离神职", "分散狼队注意力"],
+            risk_alerts=["过度保护某个玩家反而暴露其身份"],
+            confidence=0.5,
+            reasoning="保护强神需要隐蔽的引导而非明显的保护行为",
+            prompt_injectable="保护强神建议：如果推测某玩家是神职且被推，用'我觉得他的逻辑没问题'等方式引导怀疑方向远离，不要直接说'保护他'。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     bs = inp.belief_state
 
@@ -1067,31 +1035,33 @@ def _protect_power_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutp
 
 # --- LAST_WORDS_ANALYSIS (遗言分析) ---
 
-def _last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.LAST_WORDS_ANALYSIS)
+def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _last_words_static(inp, skill)
-    return _last_words_dynamic(inp, skill)
-
-
-def _last_words_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="analyze",
-        speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
-        confidence=0.55,
-        reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
-        prompt_injectable="遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。",
-    )
-
-
-def _last_words_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="analyze",
+            speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
+            confidence=0.55,
+            reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
+            prompt_injectable="遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。",
+        )
+    # dynamic analysis
     ws = inp.world_state
     alerts = inp.contradiction_alerts
-    gs = inp.game_state
 
     if ws is None:
-        return _last_words_static(inp, skill)
+        # Reuse static fallback when world_state is also missing
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="analyze",
+            speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
+            confidence=0.55,
+            reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
+            prompt_injectable="遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。",
+        )
 
     # Find recent deaths
     recent_deaths = list(ws.facts_of_type("player_died"))
@@ -1170,27 +1140,21 @@ def _last_words_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 # --- REVIEW_CORRECTION (复盘纠错) ---
 
-def _review_correction_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+@register_handler(SkillName.REVIEW_CORRECTION)
+def review_correction_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        return _review_correction_static(inp, skill)
-    return _review_correction_dynamic(inp, skill)
-
-
-def _review_correction_static(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
-    return SkillOutput(
-        skill_name=skill.name.value,
-        recommended_action="review",
-        speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
-        confidence=0.7,
-        reasoning="复盘纠错以事实为基础，系统性地回顾决策过程",
-        prompt_injectable="复盘建议：回顾每个Day的站边选择和投票决策。找出判断失误的关键节点，分析误判原因（信息不足？逻辑链断裂？被误导？），总结改进方向。",
-    )
-
-
-def _review_correction_dynamic(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+        # static fallback
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="review",
+            speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
+            confidence=0.7,
+            reasoning="复盘纠错以事实为基础，系统性地回顾决策过程",
+            prompt_injectable="复盘建议：回顾每个Day的站边选择和投票决策。找出判断失误的关键节点，分析误判原因（信息不足？逻辑链断裂？被误导？），总结改进方向。",
+        )
+    # dynamic analysis
     ws = inp.world_state
-    gs = inp.game_state
 
     winner = gs.winning_faction or "unknown"
     day = gs.day_number
@@ -1268,23 +1232,3 @@ def _review_correction_dynamic(inp: SkillInput, skill: SkillDefinition) -> Skill
         reasoning="动态分析：基于投票准确率和事件时间线进行复盘",
         prompt_injectable="\n".join(parts),
     )
-
-
-# ---------------------------------------------------------------------------
-# Handler dispatch table
-# ---------------------------------------------------------------------------
-
-_SKILL_HANDLERS = {
-    SkillName.BOLD_CLAIM: _bold_claim_handler,
-    SkillName.COUNTER_CLAIM: _counter_claim_handler,
-    SkillName.PUSH_VOTE: _push_vote_handler,
-    SkillName.SWING_VOTE: _swing_vote_handler,
-    SkillName.DEEP_HOOK: _deep_hook_handler,
-    SkillName.FIND_POWER: _find_power_handler,
-    SkillName.HIDE_IDENTITY: _hide_identity_handler,
-    SkillName.RESIST_PUSH: _resist_push_handler,
-    SkillName.WOLF_PIT_ANALYSIS: _wolf_pit_handler,
-    SkillName.PROTECT_POWER: _protect_power_handler,
-    SkillName.LAST_WORDS_ANALYSIS: _last_words_handler,
-    SkillName.REVIEW_CORRECTION: _review_correction_handler,
-}
