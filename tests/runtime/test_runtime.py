@@ -3645,7 +3645,7 @@ class TestWitchPoisonPressureContext:
 
     def test_skill_outputs_are_exposed_as_prompt_hints(self, monkeypatch) -> None:
         """Runtime skill analyses should populate the explicit prompt section."""
-        import werewolf_agent.runtime.agent_adapter as adapter
+        import werewolf_agent.runtime.context as context_mod
         from werewolf_agent.runtime.agent_adapter import build_agent_context
 
         def fake_inject_skill_output(
@@ -3661,8 +3661,8 @@ class TestWitchPoisonPressureContext:
         ):
             return strategy_directive, {"skill_analyze_wolf_pit": "suspects: p02"}
 
-        monkeypatch.setattr(adapter, "_inject_skill_output", fake_inject_skill_output)
-        monkeypatch.setattr(adapter, "_build_skill_tool_defs", lambda role, phase: [])
+        monkeypatch.setattr(context_mod, "_inject_skill_output", fake_inject_skill_output)
+        monkeypatch.setattr(context_mod, "_build_skill_tool_defs", lambda role, phase: [])
 
         players = {
             "p01": PlayerState(id="p01", role="villager"),
