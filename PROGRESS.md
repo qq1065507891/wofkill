@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Full-project code review + hardening** — 2026-05-30
-- Active task: None (God Object + RuleEngine decomposition complete)
+- Active task: None (God Object + RuleEngine + app.py decomposition complete)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-05-30
 
@@ -84,6 +84,26 @@ Split `engine/rule_engine.py` (848 lines, 18 domains) into 3 modules.
 - `RuleEngine` backward-compatible facade, delegates to sub-modules
 - Zero caller changes; full test suite passes
 - Plan: `docs/superpowers/plans/2026-05-30-rule-engine-decomposition.md`
+
+---
+
+## app.py Decomposition — 2026-05-30
+
+Split `api/app.py` (786 lines, `create_app()` monolithic 540-line factory) into route modules.
+
+| Module | Before | After |
+|--------|--------|-------|
+| `api/app.py` | 786 lines | 144 lines |
+| `api/routes/games.py` (new) | — | 529 lines |
+| `api/routes/customization.py` (new) | — | 191 lines |
+
+- `api/routes/games.py` — `create_game_router()`: auth, dashboard, game CRUD, 11 query endpoints, + helpers
+- `api/routes/customization.py` — `create_customization_router()`: templates, validation, save, marketplace, + helpers
+- Each router factory takes closure variables as explicit keyword parameters
+- `app.py` now 144 lines: storage setup, component init, RAG init, router mounting
+- Full test suite passes; zero caller changes
+- Commit: 753753e
+- Plan: `docs/superpowers/plans/2026-05-30-app-py-decomposition.md`
 
 ---
 
