@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Full-project code review + hardening** — 2026-05-30
-- Active task: None (God Object + RuleEngine + app.py + providers decomposition complete)
+- Active task: None (God Object + RuleEngine + app.py + providers + test decomposition complete)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-05-30
 
@@ -125,6 +125,26 @@ Split `model_gateway/providers.py` (598 lines, 31 funcs, 6 classes) into `provid
 - `factory.py` uses lazy imports to preserve test monkeypatch compatibility
 - Full test suite passes
 - Commit: 9a6dda1
+
+---
+
+## Test File Decomposition — 2026-05-30
+
+Split the two largest test files by domain.
+
+| File | Before | After |
+|------|--------|-------|
+| `tests/runtime/test_runtime.py` | 5394 lines / 76 classes | 1494 line compat shim |
+| `tests/agents/test_agents.py` | 2923 lines / 33 classes | 65 line compat shim |
+
+New files (15 total):
+- `tests/runtime/` — `test_night_flow.py`, `test_wolf_flow.py`, `test_witch_flow.py`, `test_hunter_flow.py`, `test_sheriff_flow.py`, `test_vote_flow.py`, `test_event_sourcing.py`, `test_judge_flow.py`, `test_strategy_directives.py`
+- `tests/agents/` — `test_schemas.py`, `test_visibility.py`, `test_persona_router.py`, `test_player_agent.py`, `test_model_router.py`, `test_judge_agent.py`
+
+- Backward-compat re-imports in original files
+- Full test suite passes (exit code 0)
+- Commit: f77f576
+- Plan: `docs/superpowers/plans/2026-05-30-test-file-decomposition.md`
 
 ---
 
