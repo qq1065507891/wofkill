@@ -105,6 +105,11 @@ class RuntimeState(TypedDict, total=False):
     repository: Any
     # Per-player discussion position summaries
     discussion_positions: list[dict[str, Any]]
+    judge_agent: Any
+    judge_llm_enabled: bool
+    judge_hitl: Any
+    judge_hitl_enabled: bool
+    hitl_auto_pause_after: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -306,11 +311,32 @@ def _judge_broadcast(
     night_number: int = 0,
     extra_payload: dict[str, Any] | None = None,
     visibility: str = "public",
+    judge_agent: Any = None,
+    judge_llm_enabled: bool = False,
+    judge_method: str = "phase",
 ) -> tuple[GameState, GameEvent]:
-    """Create a judge broadcast event and append to game state."""
+    """Create a judge broadcast event and append to game state.
+
+    When judge_agent is provided and judge_llm_enabled is True, dispatches to
+    the appropriate JudgeAgent method based on ``judge_method``. The ``message``
+    param serves as fallback on failure.
+    """
+    final_message = message
+    if judge_agent is not None and judge_llm_enabled:
+        try:
+            llm_msg = _generate_judge_message(
+                judge_agent, phase=phase, fallback=message,
+                day_number=day_number, night_number=night_number,
+                extra_payload=extra_payload, judge_method=judge_method,
+            )
+            if llm_msg:
+                final_message = llm_msg
+        except Exception:
+            pass  # fallback to hardcoded message
+
     payload: dict[str, Any] = {
         "phase": phase,
-        "message": message,
+        "message": final_message,
         "day_number": day_number,
         "night_number": night_number,
         "visibility": visibility,
@@ -326,19 +352,184 @@ def _judge_broadcast(
     return gs, event
 
 
-def _ensure_day_incremented(gs: GameState) -> tuple[GameState, int]:
+def _generate_judge_message(
+    judge_agent: Any,
+    *,
+    phase: str,
+    fallback: str,
+    day_number: int = 0,
+    night_number: int = 0,
+    extra_payload: dict[str, Any] | None = None,
+    judge_method: str = "phase",
+) -> str:
+    """Dispatch to the appropriate JudgeAgent method, return empty string on failure."""
+    ep = extra_payload or {}
+
+    if judge_method == "vote_calling":
+        result = judge_agent.broadcast_vote_calling(
+            voter_id=ep.get("voter_id", ""),
+            voter_name=ep.get("voter_name", ""),
+            candidates=ep.get("candidates", []),
+            position=ep.get("position", 1),
+            total=ep.get("total", 1),
+            day_number=day_number,
+            sheriff_weight=ep.get("sheriff_weight", 1.0),
+        )
+        return result.message if result and result.message else ""
+
+    if judge_method == "skill_guide":
+        result = judge_agent.guide_skill_use(
+            role=ep.get("role", ""),
+            player_id=ep.get("player_id", ""),
+            player_name=ep.get("player_name", ""),
+            available_actions=ep.get("available_actions", []),
+            context_hints=ep.get("context_hints"),
+        )
+        return result.message if result and result.message else ""
+
+    if judge_method == "vote_tally":
+        result = judge_agent.announce_vote_tally(
+            tally=ep.get("tally", {}),
+            player_names=ep.get("player_names", {}),
+            sheriff_id=ep.get("sheriff_id"),
+            sheriff_weight=ep.get("sheriff_weight", 1.5),
+            day_number=day_number,
+        )
+        return result.message if result and result.message else ""
+
+    if judge_method == "exile":
+        result = judge_agent.announce_exile_result(
+            exiled_player_id=ep.get("exiled_player_id"),
+            exiled_player_name=ep.get("exiled_player_name", ""),
+            reason=ep.get("reason", ""),
+            tied_player_ids=ep.get("tied_player_ids"),
+            day_number=day_number,
+        )
+        return result.message if result and result.message else ""
+
+    if judge_method == "death":
+        deaths = ep.get("deaths", [])
+        result = judge_agent.broadcast_death_announcement(
+            deaths=deaths, day_number=day_number,
+        )
+        return result.message if result and result.message else ""
+
+    if judge_method == "sheriff":
+        result = judge_agent.broadcast_sheriff_result(
+            sheriff_id=ep.get("sheriff_id"),
+            badge_state=ep.get("badge_state", "none"),
+        )
+        return result.message if result and result.message else ""
+
+    # Default: broadcast_phase
+    public_data: dict[str, Any] = dict(ep)
+    if night_number > 0:
+        public_data["night_number"] = night_number
+    if day_number > 0:
+        public_data["day_number"] = day_number
+    result = judge_agent.broadcast_phase(
+        phase=phase,
+        day_number=day_number,
+        night_number=night_number,
+        public_data=public_data or None,
+    )
+    return result.message if result and result.message else ""
+
+
+def _jb(
+    state: RuntimeState,
+    *,
+    phase: str,
+    message: str,
+    gs: GameState | None = None,
+    day_number: int = 0,
+    night_number: int = 0,
+    extra_payload: dict[str, Any] | None = None,
+    visibility: str = "public",
+    judge_method: str = "phase",
+) -> tuple[GameState, GameEvent]:
+    """Shortcut: _judge_broadcast that extracts judge_agent from RuntimeState.
+
+    Updates ``state["game_state"]`` in-place so subsequent ``_jb`` calls in
+    the same node function accumulate events without needing explicit ``gs=gs``.
+    This is safe for LangGraph checkpoint/replay because the node function's
+    returned ``{"game_state": gs}`` dict is what gets checkpointed, not the
+    mutated input state dict.
+    """
+    if gs is None:
+        gs = state["game_state"]
+    gs, event = _judge_broadcast(
+        phase=phase,
+        message=message,
+        gs=gs,
+        day_number=day_number,
+        night_number=night_number,
+        extra_payload=extra_payload,
+        visibility=visibility,
+        judge_agent=state.get("judge_agent"),
+        judge_llm_enabled=state.get("judge_llm_enabled", False),
+        judge_method=judge_method,
+    )
+    state["game_state"] = gs
+    return gs, event
+
+
+def _ensure_day_incremented(
+    state: RuntimeState,
+    gs: GameState | None = None,
+) -> tuple[GameState, int]:
     """Increment day_number and broadcast '天亮了' if not already done.
 
     Returns (updated_gs, current_day_number).
     """
+    if gs is None:
+        gs = state["game_state"]
     if gs.phase != "day":
         d = gs.day_number + 1
         label = phase_label("day", d)
-        gs, _ = _judge_broadcast(phase="day_announce", message=f"{label}：天亮了", gs=gs, day_number=d)
+        gs, _ = _jb(
+            state,
+            phase="day_announce",
+            message=f"{label}：天亮了",
+            gs=gs,
+            day_number=d,
+            visibility="public",
+        )
         gs = replace(gs, phase="day", day_number=d,
                      events=gs.events + [GameEvent(type="day_announce", payload={"day": d})])
         return gs, d
     return gs, gs.day_number
+
+
+def _hitl_checkpoint(state: RuntimeState, phase: str, direction: str = "after") -> dict[str, Any]:
+    """HITL checkpoint: pause execution if JudgeHITLInterface says so.
+
+    Call at key phase transitions (enter_night, announce_deaths, day_vote,
+    resolve_exile). When HITL is enabled and a pause is triggered, processes
+    human commands and flushes audit events into game state.
+
+    Returns a dict to merge into the node's return value.
+    """
+    if not state.get("judge_hitl_enabled"):
+        return {}
+    hitl = state.get("judge_hitl")
+    if hitl is None:
+        return {}
+    if not hitl.should_pause(phase, direction):
+        return {}
+    gs = state["game_state"]
+    # Wait for human input (non-blocking in simulation mode)
+    cmd = hitl.wait_for_human(timeout=300)
+    if cmd is not None:
+        result = hitl.handle_command(cmd, gs)
+        if "game_state" in result:
+            state["game_state"] = result["game_state"]
+    # Flush HITL audit events into game state
+    hitl_events = hitl.flush_events()
+    if hitl_events:
+        gs = state["game_state"]
+        state["game_state"] = replace(gs, events=gs.events + hitl_events)
+    return {}
 
 
 def _build_wolf_team_plan(

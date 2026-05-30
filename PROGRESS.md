@@ -4,10 +4,201 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Full-project code review + hardening** — 2026-05-30
-- Active task: None (God Object + RuleEngine + app.py + providers + test decomposition complete)
+- Current phase: **Judge Role Optimization — All 4 Layers Complete + Code Review Fixes** — 2026-05-31
+- Active task: None (all 4 layers + review fixes complete)
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-30
+- Last updated: 2026-05-31
+
+---
+
+## Code Review Bug Fixes — 2026-05-31
+
+Fixed 14 bugs found during systematic 5-angle code review across all 4 layers.
+
+### Critical fixes (5)
+
+| Bug | File | Fix |
+|-----|------|-----|
+| `announce_exile_result` missing `_persona_inject()` | `judge.py:384` | Added `prompt = self._persona_inject(prompt, "judge_exile")` before LLM call |
+| `summarize_speech` crashes when `model_router=None` | `judge.py:427` | Added `None` guard — falls back to text extraction when no router |
+| HITL `inject_event` case-sensitive bypass | `judge_hitl.py:345` | Changed to case-insensitive check: `key.lower() in protected_lower` |
+| `should_pause` step counter bypasses `PAUSED_USER` | `judge_hitl.py:149` | Reordered checks — `PAUSED_USER` takes priority over step counter |
+| `resume()` works after `stop()` | `judge_hitl.py:188` | Added `STOPPED` guard + `max(0, steps)` for negative steps |
+
+### High/Medium fixes (5)
+
+| Bug | File | Fix |
+|-----|------|-----|
+| HITL state machine dead code (never called from graph) | `_shared.py`, `night.py`, `day.py` | Created `_hitl_checkpoint()` and wired into `enter_night` + `announce_deaths` |
+| `judge_llm_enabled` silently ignored without registry | `game_runner.py` | Added `logger.warning()` when LLM enabled but no agent registry |
+| LLM/fallback sheriff weight display mismatch | `judge.py:305` | LLM prompt now shows `（警长{sheriff_weight}票）` matching fallback |
+| `_broadcast_vote_details` missing explicit `gs=gs` | `day.py:446` | Added `gs=gs` parameter |
+| `_ensure_day_incremented` bypasses judge LLM | `_shared.py`, `day.py`, `sheriff.py` | Refactored to accept `state: RuntimeState`, uses `_jb()` for persona-aware broadcast |
+
+### Low fixes (4)
+
+| Bug | File | Fix |
+|-----|------|-----|
+| Duplicate `weight_note` dead code | `judge.py:181` | Removed duplicate assignment |
+| `guide_skill_use` role_labels incomplete | `judge.py:227` | Added `"werewolf": "狼人"`, `"villager": "平民"` |
+| HITL `inject_event` no event_type validation | `judge_hitl.py:337` | Added validation: non-empty, ≤64 chars, no `_` prefix, no system-reserved types |
+| `_cmd_inspect` namespace pollution | `judge_hitl.py:306` | Reserved keywords checked before player ID lookup, `"game"` → status fallthrough |
+
+### Verification
+
+- Full test suite: **all passed** (exit code 0)
+- Plan: `docs/superpowers/plans/2026-05-31-judge-optimization.md`
+
+---
+
+## Judge Optimization Layer 4 — 2026-05-31
+
+Judge as the sole Human-in-the-Loop entry point: pause/resume/inspect/inject — all through the judge.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `werewolf_agent/agents/judge_hitl.py` | **New** — `JudgeHITLInterface`: HITL state machine (RUNNING/WAITING_BEFORE/WAITING_AFTER/PAUSED_USER/STOPPED), command parser (12 commands), `should_pause()`, `wait_for_human()`, `handle_command()`, protected-field enforcement, event-sourced audit logging |
+| `tests/agents/test_judge_hitl.py` | **New** — 22 tests: `TestHITLCommand` (4), `TestJudgeHITLInterface` (14), `TestHITLGameRunnerIntegration` (4) |
+| `werewolf_agent/runtime/nodes/_shared.py` | `RuntimeState` +`judge_hitl`, +`judge_hitl_enabled`, +`hitl_auto_pause_after` |
+| `werewolf_agent/runtime/game_runner.py` | `GameRunnerConfig` +`judge_hitl_enabled`, +`judge_hitl_auto_pause_triggers`; `GameRunner` creates `JudgeHITLInterface`, injects into `RuntimeState`; +`hitl_interface` property, +`pause()`/`resume()`/`send_command()` methods |
+
+### HITL Command Set
+
+| Command | Function |
+|---------|----------|
+| `pause` | Pause game at next checkpoint |
+| `resume [N]` | Resume execution (optional N-step auto-pause) |
+| `stop` | Terminate game |
+| `show_phase` | Current phase/day/night/survivors |
+| `show_alive` | List alive players |
+| `show_roles` | Role assignments (debug view) |
+| `show_votes` | Vote history |
+| `inspect [game\|events\|deaths\|<player_id>]` | Inspect public state |
+| `inject_event <type> [k=v ...]` | Inject custom GameEvent (protected fields rejected) |
+| `status` | Full game status summary |
+| `help` | List all commands |
+
+### Design decisions
+
+- Protected fields (`players`, `deaths`, `votes`, `phase`, `winning_faction`, `hybrid_result`) are enforced at command level — inject_event rejects mutations to these
+- All HITL interactions recorded as `GameEvent(type="judge_hitl_interaction")` — full audit trail
+- `judge_hitl_enabled=False` by default — zero-risk, backward compatible
+- `wait_for_human()` is non-blocking for simulation — returns None on timeout (300s), auto-resumes
+- Command parsing is whitespace-split with `key=value` support for inject_event
+
+### Verification
+
+- HITL tests: **22 passed**
+- Full judge + night + vote + game_runner suite: **all passed**
+- Plan: `docs/superpowers/plans/2026-05-31-judge-optimization.md`
+
+---
+
+## Judge Optimization Layer 3 — 2026-05-31
+- Last updated: 2026-05-31
+
+---
+
+## Judge Optimization Layer 3 — 2026-05-31
+
+Added judge persona routing with 4 tone variants, RAG seed entries for broadcast styles, and persona-aware LLM prompt injection.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `config/personas/judge_profiles.yaml` | **New** — 4 judge profiles: tournament_referee, variety_show_host, neutral_arbiter, ancient_mystic; each with base params, task_styles, broadcast_patterns, system_prompt |
+| `config/rag_seeds/judge_broadcast_seeds.yaml` | **New** — 14 seed entries covering key broadcast phases (enter_night, day_announce, death_announce, vote_calling, vote_result, witch/seer/hunter guide, sheriff election, exile, victory, wolf discussion, PK speech, badge transfer) |
+| `werewolf_agent/persona_runtime/judge_router.py` | **New** — `JudgeProfileRouter`: YAML loading, `resolve()` by profile_id, `resolve_by_tone()`, `JudgePersonaSnapshot` dataclass |
+| `werewolf_agent/agents/judge.py` | `JudgeAgent.__init__` now accepts optional `profile_router` + `profile_id`; new `_resolve_persona()`, `_persona_system_prompt()`, `_persona_inject()` helpers; vote_calling/skill_guide/vote_tally prompts include persona system prompt |
+| `werewolf_agent/runtime/game_runner.py` | `GameRunnerConfig` +`judge_persona_profile_id`, +`judge_persona_config_path`; `GameRunner._load_judge_profile_router()` loads from YAML; passes to JudgeAgent |
+| `tests/runtime/test_judge_flow.py` | +11 tests: `TestJudgeProfileRouter` (6) + `TestJudgePersonaIntegration` (5) |
+
+### Design decisions
+
+- JudgeProfileRouter follows PersonaRouter pattern: `profiles` dict → `resolve(profile_id, task_type)` → immutable snapshot
+- Falls back to `neutral_arbiter` when profile_id not found — safe default
+- `_persona_inject()` prepends persona system_prompt to LLM generation prompts — no prompt structure changes needed
+- JudgeAgent works without profile_router (`_resolve_persona()` returns None) — backward compatible
+- RAG seeds use `visibility_boundary: public_only` — no god-view or private info in style templates
+- 4 tone variants mirror real werewolf hosting styles: tournament (庄重), variety show (综艺), neutral (中立), mystical (玄学)
+
+### Verification
+
+- Full runtime test suite: **all passed**
+- Judge tests: **47 passed** (12 unit + 35 integration)
+- Plan: `docs/superpowers/plans/2026-05-31-judge-optimization.md`
+
+---
+
+## Judge Optimization Layer 2 — 2026-05-31
+- Last updated: 2026-05-31
+
+---
+
+## Judge Optimization Layer 2 — 2026-05-31
+
+Added structured judge methods for vote calling (唱票), skill guidance, vote tally, and exile announcement.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `werewolf_agent/agents/schemas.py` | `TaskType` +7 JUDGE_* values; new schemas: `JudgeVoteCallingInput`, `JudgeSkillGuideInput`, `JudgeTallyInput`, `JudgeExileInput` |
+| `werewolf_agent/agents/judge.py` | +5 methods: `broadcast_vote_calling()`, `guide_skill_use()`, `announce_vote_tally()`, `announce_exile_result()` — each with LLM generation + hardcoded fallback |
+| `werewolf_agent/runtime/nodes/_shared.py` | `_judge_broadcast()` +`judge_method` param; `_generate_judge_message()` dispatches 6 judge methods via `judge_method`; `_jb()` auto-updates `state["game_state"]` for event accumulation |
+| `werewolf_agent/runtime/nodes/day.py` | `day_vote()` converts vote_start/collect to `_jb`; per-voter `judge_method="vote_calling"` (唱票); `_broadcast_vote_details()` uses `vote_tally` with structured tally data |
+| `werewolf_agent/runtime/nodes/night.py` | `night_witch()` 3 broadcasts → `judge_method="skill_guide"`; `night_seer()` 2 broadcasts → `judge_method="skill_guide"` |
+| `werewolf_agent/runtime/nodes/skills.py` | `resolve_hunter_shot()` → `judge_method="skill_guide"` |
+| `tests/runtime/test_judge_flow.py` | +9 tests: `TestJudgeStructuredBroadcasts` |
+
+### Design decisions
+
+- `judge_method` parameter dispatches to specialized JudgeAgent method: `"phase"`, `"vote_calling"`, `"skill_guide"`, `"vote_tally"`, `"exile"`, `"death"`, `"sheriff"`
+- Each new JudgeAgent method tries LLM generation first, falls back to hardcoded template on failure/no-router
+- `_jb()` now updates `state["game_state"]` in-place after each call → no need for callers to pass `gs=gs` explicitly
+- Per-voter vote calling (唱票) emits individual `judge_broadcast` events with `phase="vote_calling"` for each voter
+- Night skill guidance remains `visibility="moderator_only"` / `"witch_private"` / `"seer_private"` as appropriate
+
+### Verification
+
+- Judge + night + vote + hunter + wolf + witch + sheriff + day + PK suites: **all passed**
+- Plan: `docs/superpowers/plans/2026-05-31-judge-optimization.md`
+
+---
+
+## Judge Optimization Layer 1 — 2026-05-31
+
+Wired JudgeAgent into the runtime graph so it stops being dead code (~188 lines unused).
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `werewolf_agent/runtime/nodes/_shared.py` | `RuntimeState` +`judge_agent`, +`judge_llm_enabled`; `_judge_broadcast()` accepts optional `judge_agent`/`judge_llm_enabled` params; new `_generate_judge_message()` and `_jb()` shortcut |
+| `werewolf_agent/runtime/nodes/__init__.py` | Export `_jb` |
+| `werewolf_agent/runtime/game_runner.py` | `GameRunnerConfig` +`judge_llm_enabled`; `GameRunner` creates `JudgeAgent` when agent_registry active; injects into `RuntimeState` via `_build_runtime_state()` |
+| `werewolf_agent/runtime/nodes/night.py` | Import `_jb` |
+| `werewolf_agent/runtime/nodes/day.py` | Import `_jb` |
+| `werewolf_agent/runtime/nodes/sheriff.py` | Import `_jb` |
+| `werewolf_agent/runtime/nodes/skills.py` | Import `_jb` |
+| `werewolf_agent/runtime/graph.py` | Import `_jb` |
+| `tests/runtime/test_judge_flow.py` | +6 tests: `TestJudgeAgentWiredToGraph` |
+
+### Design decisions
+
+- `judge_llm_enabled` defaults to `False` — zero-risk merge, opt-in LLM
+- `_jb(state, ...)` shortcut extracts judge_agent from RuntimeState, avoids 73 manual param additions
+- `_judge_broadcast()` keeps original signature — all existing call sites unchanged, backward-compatible
+- Existing call sites continue using hardcoded messages (judge_agent=None/llm_enabled=False path)
+- Only call sites that opt-in via `_jb()` + `judge_llm_enabled=True` get JudgeAgent-enhanced broadcasts
+
+### Verification
+
+- Full judge test suite: **27 passed, 0 failed**
+- Plan: `docs/superpowers/plans/2026-05-31-judge-optimization.md`
 
 ---
 

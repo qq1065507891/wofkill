@@ -24,6 +24,8 @@ from werewolf_agent.runtime.nodes._shared import (
     _dispatch_agent,
     _find_role,
     _judge_broadcast,
+    _jb,
+    _hitl_checkpoint,
     _new_engine,
     _player_display,
     _player_ids,
@@ -50,6 +52,7 @@ def enter_night(state: RuntimeState) -> dict[str, Any]:
     logger.debug(f"\n{'='*60}")
     logger.debug(f"  【{label}】天黑请闭眼 (存活: {len(alive)}人)")
     logger.debug(f"{'='*60}")
+    _hitl_checkpoint(state, "enter_night", "after")
     return {"game_state": gs}
 
 
@@ -177,26 +180,51 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     if _find_role(gs, "witch") is None:
         return {"game_state": gs, "use_antidote": False, "poison_target_id": None}
-    gs, _ = _judge_broadcast(
+    gs, _ = _jb(
+        state,
         phase="witch_wake",
         message="女巫请睁眼",
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
+        judge_method="skill_guide",
+        extra_payload={
+            "role": "witch",
+            "player_id": _find_role(gs, "witch") or "",
+            "player_name": _player_display(state, _find_role(gs, "witch") or ""),
+            "available_actions": ["use_antidote", "use_poison", "no_action"],
+        },
     )
     wolf_target = state.get("wolf_kill_target_id")
     if wolf_target:
-        gs, _ = _judge_broadcast(
+        gs, _ = _jb(
+            state,
             phase="witch_kill_info",
             message=f"今晚{_player_display(state, wolf_target)}被狼人杀害了",
             gs=gs, night_number=gs.night_number,
             visibility="witch_private",
-            extra_payload={"wolf_kill_target_id": wolf_target},
+            extra_payload={
+                "wolf_kill_target_id": wolf_target,
+                "role": "witch",
+                "player_id": _find_role(gs, "witch") or "",
+                "player_name": _player_display(state, _find_role(gs, "witch") or ""),
+                "available_actions": ["use_antidote", "use_poison", "no_action"],
+                "context_hints": {"wolf_kill_target": _player_display(state, wolf_target)},
+            },
+            judge_method="skill_guide",
         )
-    gs, _ = _judge_broadcast(
+    gs, _ = _jb(
+        state,
         phase="witch_choose",
         message="女巫请选择是否使用解药或毒药",
         gs=gs, night_number=gs.night_number,
         visibility="witch_private",
+        judge_method="skill_guide",
+        extra_payload={
+            "role": "witch",
+            "player_id": _find_role(gs, "witch") or "",
+            "player_name": _player_display(state, _find_role(gs, "witch") or ""),
+            "available_actions": ["use_antidote", "use_poison", "no_action"],
+        },
     )
     state = {**state, "game_state": gs}
 
@@ -258,17 +286,33 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     if _find_role(gs, "seer") is None:
         return {"game_state": gs, "seer_target_id": None}
-    gs, _ = _judge_broadcast(
+    gs, _ = _jb(
+        state,
         phase="seer_wake",
         message="预言家请睁眼",
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
+        judge_method="skill_guide",
+        extra_payload={
+            "role": "seer",
+            "player_id": _find_role(gs, "seer") or "",
+            "player_name": _player_display(state, _find_role(gs, "seer") or ""),
+            "available_actions": ["check_alignment"],
+        },
     )
-    gs, _ = _judge_broadcast(
+    gs, _ = _jb(
+        state,
         phase="seer_choose",
         message="预言家请选择你要查验的玩家",
         gs=gs, night_number=gs.night_number,
         visibility="seer_private",
+        judge_method="skill_guide",
+        extra_payload={
+            "role": "seer",
+            "player_id": _find_role(gs, "seer") or "",
+            "player_name": _player_display(state, _find_role(gs, "seer") or ""),
+            "available_actions": ["check_alignment"],
+        },
     )
     state = {**state, "game_state": gs}
 

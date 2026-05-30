@@ -1,0 +1,386 @@
+# Judge Broadcast RAG Seed Entries — 法官广播风格种子
+# Layer 3: Style templates for judge broadcasts, retrievable by phase + role_perspective.
+# visibility_boundary: public_only — no god-view or private information.
+
+- entry_id: seed_judge_phase_night_open_01
+  title: "天黑请闭眼 — 四种风格开场"
+  summary: >
+    法官宣布进入黑夜阶段。锦标赛风格简短权威，综艺风格有悬念感，
+    中立风格干净利落，玄学风格神秘诗意。
+  key_decisions:
+    - "简短有力，控制节奏"
+    - "根据人设选择措辞风格"
+  short_quotes:
+    - "天黑请闭眼"
+    - "夜幕降临，请所有玩家闭眼"
+    - "天黑请闭眼，第{N}夜开始"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: enter_night
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 夜晚开场"
+    tags: [judge, phase_transition, night, broadcast_style]
+
+- entry_id: seed_judge_day_announce_01
+  title: "天亮了 — 天亮播报风格"
+  summary: >
+    法官宣布天亮。根据是否有夜间死亡选择"倒牌"或"平安夜"措辞。
+    锦标赛风格直接宣布死讯，综艺风格制造悬念。
+  key_decisions:
+    - "根据是否有死亡选择措辞"
+    - "预留悬念停顿"
+  short_quotes:
+    - "天亮了"
+    - "昨晚是平安夜，无人倒牌"
+    - "昨晚倒牌的玩家是——"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: day_announce
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 天亮播报"
+    tags: [judge, phase_transition, day, death_announcement, peace_night]
+
+- entry_id: seed_judge_death_announce_01
+  title: "死亡公告 — 多风格死讯播报"
+  summary: >
+    法官公布夜间死亡信息。需根据死亡人数和原因选择合适措辞。
+    单死、双死、平安夜各有不同的播报节奏。
+  key_decisions:
+    - "单死：简短有力"
+    - "双死：制造紧张感"
+    - "平安夜：留白充足"
+  short_quotes:
+    - "昨夜倒牌：{player1}"
+    - "昨晚死亡：{player1}、{player2}"
+    - "昨晚是平安夜"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: death_announce
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 死亡公告"
+    tags: [judge, death_announcement, day, broadcast_style]
+
+- entry_id: seed_judge_vote_calling_01
+  title: "投票唱票 — 逐票点名风格"
+  summary: >
+    法官逐票点名投票。锦标赛风格严肃正式，综艺风格有节奏感和互动感。
+    唱票应包含投票者名、第几位、总人数。
+  key_decisions:
+    - "逐票唱名，不跳跃"
+    - "警长投票时标注票权"
+    - "保持节奏，不催促"
+  short_quotes:
+    - "请{name}玩家投票，第{pos}/{total}位"
+    - "轮到{name}，第{pos}位投票~一共{total}位哦"
+    - "{name}，第{pos}/{total}位，请投票"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: vote_calling
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 投票唱票"
+    tags: [judge, vote, day, broadcast_style, vote_calling]
+
+- entry_id: seed_judge_vote_tally_01
+  title: "投票结果 — 票型宣布风格"
+  summary: >
+    法官宣布投票结果。应包括各候选人得票数、警长加权标注、
+    以及最终放逐或平票结果。
+  key_decisions:
+    - "按得票数降序宣布"
+    - "警长票权标注"
+    - "平票时说明进入PK"
+  short_quotes:
+    - "投票结果：{name} {count}票"
+    - "首次平票，进入PK发言"
+    - "再次平票，无人出局"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: vote_result
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 投票结果"
+    tags: [judge, vote, day, broadcast_style, vote_tally]
+
+- entry_id: seed_judge_witch_guide_01
+  title: "女巫引导 — 解药毒药交互"
+  summary: >
+    法官引导女巫使用技能。应告知刀口信息、解药毒药可用状态、
+    并引导女巫做出选择。不替女巫做决定。
+  key_decisions:
+    - "先告知刀口"
+    - "说明解药毒药可用状态"
+    - "不做决策建议"
+  short_quotes:
+    - "女巫请睁眼。今晚{target}倒牌，你要使用解药吗？"
+    - "解药已用，毒药可用。你要使用毒药吗？"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: witch_kill_info
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 女巫引导"
+    tags: [judge, night, witch, skill_guide, broadcast_style]
+
+- entry_id: seed_judge_seer_guide_01
+  title: "预言家引导 — 查验交互"
+  summary: >
+    法官引导预言家选择查验目标。应简洁明确，不透露任何阵营信息。
+  key_decisions:
+    - "告知可查验任意存活玩家"
+    - "不透露阵营信息"
+    - "简洁明了"
+  short_quotes:
+    - "预言家请睁眼，请选择你要查验的玩家"
+    - "你要查验哪位玩家？"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: seer_choose
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 预言家引导"
+    tags: [judge, night, seer, skill_guide, broadcast_style]
+
+- entry_id: seed_judge_hunter_guide_01
+  title: "猎人引导 — 开枪技能交互"
+  summary: >
+    法官引导猎人选择是否开枪及目标。应在猎人死亡后立即触发，
+    告知可开枪或不开枪的选项。
+  key_decisions:
+    - "确认猎人死亡原因（毒杀不能开枪）"
+    - "给出开枪/不开枪选项"
+    - "不催促"
+  short_quotes:
+    - "猎人发动技能，你可以选择带走一名玩家"
+    - "猎人请选择是否开枪"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: hunter_shot_prompt
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 猎人引导"
+    tags: [judge, hunter, skill_guide, broadcast_style]
+
+- entry_id: seed_judge_sheriff_election_01
+  title: "警长竞选 — 选举主持风格"
+  summary: >
+    法官主持警长竞选环节。包括上警报名、竞选发言、退水、投票、
+    最终宣布警长当选或警徽流失。
+  key_decisions:
+    - "宣布竞选开始"
+    - "逐一引导候选人发言"
+    - "宣布投票开始和结果"
+  short_quotes:
+    - "警长竞选开始，请要上警的玩家举手"
+    - "{name}当选警长"
+    - "警徽流失，本局无警长"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: sheriff_registered
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 警长竞选"
+    tags: [judge, sheriff, day, broadcast_style]
+
+- entry_id: seed_judge_exile_announce_01
+  title: "放逐公告 — 淘汰宣布风格"
+  summary: >
+    法官宣布放逐结果。被放逐者出局、遗言权说明、后续流程引导。
+  key_decisions:
+    - "宣布被放逐玩家"
+    - "是否有遗言"
+    - "进入黑夜或继续流程"
+  short_quotes:
+    - "{name}被放逐出局，有遗言"
+    - "{name}被放逐"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: exile
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 放逐公告"
+    tags: [judge, exile, day, broadcast_style]
+
+- entry_id: seed_judge_victory_announce_01
+  title: "胜负宣布 — 游戏结束播报"
+  summary: >
+    法官宣布游戏结束和获胜阵营。应庄重、有仪式感。
+    根据阵营选择不同措辞。
+  key_decisions:
+    - "先宣布游戏结束"
+    - "再宣布获胜阵营"
+    - "可根据人设添加结束语"
+  short_quotes:
+    - "游戏结束，好人阵营获胜！"
+    - "游戏结束，狼人阵营获胜！"
+    - "所有狼人已被消灭"
+    - "狼人完成屠边"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: victory_announce
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 胜负宣布"
+    tags: [judge, victory, game_end, broadcast_style]
+
+- entry_id: seed_judge_wolf_discussion_01
+  title: "狼人夜聊 — 讨论阶段引导"
+  summary: >
+    法官引导狼人进入夜间讨论。应告知讨论时限、要求狼人达成共识。
+    不透露任何具体信息。
+  key_decisions:
+    - "告知讨论开始"
+    - "提醒时限"
+    - "不透露其他信息"
+  short_quotes:
+    - "狼人请睁眼，讨论击杀目标"
+    - "狼人请闭眼"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: wolf_discussion_start
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 狼人夜聊"
+    tags: [judge, night, wolf, broadcast_style]
+
+- entry_id: seed_judge_pk_speech_01
+  title: "PK发言 — 平票处理引导"
+  summary: >
+    法官引导平票玩家进入PK发言环节。应明确说明PK原因、
+    参与PK的玩家、发言顺序。
+  key_decisions:
+    - "说明平票原因"
+    - "列出PK玩家"
+    - "引导发言开始"
+  short_quotes:
+    - "首次平票，{p1}和{p2}进入PK发言"
+    - "请{p1}先发言"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: pk_speech_start
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — PK发言"
+    tags: [judge, pk_speech, day, broadcast_style]
+
+- entry_id: seed_judge_badge_transfer_01
+  title: "警徽移交 — 传徽撕徽引导"
+  summary: >
+    法官引导死亡警长选择传徽或撕徽。应说明可选目标（活着的非白痴玩家）
+    或撕徽选项。
+  key_decisions:
+    - "说明传徽和撕徽选项"
+    - "列出可移交目标"
+    - "不催促"
+  short_quotes:
+    - "警长出局，请选择传徽或撕徽"
+    - "{name}将警徽移交给{target}"
+    - "警徽被撕毁，本局不再有警长"
+  metadata:
+    case_type: speech_template
+    quality_grade: rule_derived_seed
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: badge_decision
+    role_perspective: judge
+    visibility_boundary: public_only
+    source:
+      source_type: manual_entry
+      source_title: "法官广播模板 — 警徽移交"
+    tags: [judge, badge, sheriff, broadcast_style]

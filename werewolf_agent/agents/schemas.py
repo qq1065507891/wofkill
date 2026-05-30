@@ -65,6 +65,13 @@ class TaskType(str, Enum):
     WOLF_DISCUSSION = "wolf_discussion"
     HUNTER_SHOT = "hunter_shot"
     PK_SPEECH = "pk_speech"
+    JUDGE_PHASE = "judge_phase"
+    JUDGE_DEATH = "judge_death"
+    JUDGE_VOTE_CALLING = "judge_vote_calling"
+    JUDGE_VOTE_TALLY = "judge_vote_tally"
+    JUDGE_SKILL_GUIDE = "judge_skill_guide"
+    JUDGE_SHERIFF = "judge_sheriff"
+    JUDGE_EXILE = "judge_exile"
 
 
 class OutputMode(str, Enum):
@@ -201,6 +208,48 @@ class JudgeBroadcast(BaseModel):
     public_data: dict[str, Any] = Field(
         default_factory=dict, description="Structured public data for this broadcast"
     )
+
+
+# ---------------------------------------------------------------------------
+# Judge structured inputs — per-call payloads for judge broadcast methods
+# ---------------------------------------------------------------------------
+
+class JudgeVoteCallingInput(BaseModel):
+    """Input for per-player vote calling (唱票)."""
+    voter_id: str
+    voter_name: str
+    candidates: list[str] = Field(default_factory=list)
+    position: int = Field(ge=1, description="第N位投票者")
+    total: int = Field(ge=1, description="总投票人数")
+    day_number: int = 1
+    sheriff_weight: float = 1.0
+
+
+class JudgeSkillGuideInput(BaseModel):
+    """Input for role-specific skill guidance dialogue."""
+    role: str
+    player_id: str
+    player_name: str
+    available_actions: list[str] = Field(default_factory=list)
+    context_hints: dict[str, Any] = Field(default_factory=dict)
+
+
+class JudgeTallyInput(BaseModel):
+    """Input for vote tally announcement."""
+    tally: dict[str, float] = Field(default_factory=dict)
+    player_names: dict[str, str] = Field(default_factory=dict)
+    sheriff_id: str | None = None
+    sheriff_weight: float = 1.5
+    day_number: int = 1
+
+
+class JudgeExileInput(BaseModel):
+    """Input for exile result announcement."""
+    exiled_player_id: str | None = None
+    exiled_player_name: str = ""
+    reason: str = ""
+    tied_player_ids: list[str] = Field(default_factory=list)
+    day_number: int = 1
 
 
 # ---------------------------------------------------------------------------

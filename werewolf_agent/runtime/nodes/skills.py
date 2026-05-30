@@ -21,6 +21,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _call_agent,
     _dispatch_agent,
     _judge_broadcast,
+    _jb,
     _player_display,
     _sheriff_died_this_batch,
     _timer_expired,
@@ -57,14 +58,21 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         if already_shot:
             continue
 
-        gs, _ = _judge_broadcast(
+        gs, _ = _jb(
+            state,
             phase="hunter_shot_prompt",
             message=f"猎人{_player_display(state, death.player_id)}发动技能，请选择是否开枪",
-            gs=gs,
-            day_number=gs.day_number,
+            gs=gs, day_number=gs.day_number,
             night_number=gs.night_number,
             visibility="public",
-            extra_payload={"hunter_id": death.player_id},
+            extra_payload={
+                "hunter_id": death.player_id,
+                "role": "hunter",
+                "player_id": death.player_id,
+                "player_name": _player_display(state, death.player_id),
+                "available_actions": ["hunter_shot", "no_action"],
+            },
+            judge_method="skill_guide",
         )
         logger.debug(f"  [猎人开枪] 请{_player_display(state, death.player_id)}选择是否开枪")
 
@@ -205,6 +213,16 @@ def sheriff_badge_transfer(state: RuntimeState) -> dict[str, Any]:
 
     if decision is None:
         decision = "tear"
+
+    # Validate transfer target: must be alive and badge_eligible
+    if decision == "transfer" and target_id:
+        target_player = gs.players.get(target_id)
+        if not target_player or not target_player.alive or not target_player.badge_eligible:
+            logger.warning(
+                f"  [警徽] 无效移交目标 {target_id}，回退为撕毁警徽"
+            )
+            decision = "tear"
+            target_id = None
 
     gs = engine.resolve_badge_decision(gs, decision=decision, target_id=target_id)
     event_type = "badge_torn" if decision == "tear" else "badge_transferred"

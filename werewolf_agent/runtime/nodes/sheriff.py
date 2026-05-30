@@ -30,6 +30,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _call_agent,
     _dispatch_agent,
     _judge_broadcast,
+    _jb,
     _ensure_day_incremented,
     _player_display,
     _timer_expired,
@@ -46,7 +47,7 @@ def sheriff_first_day_entry(state: RuntimeState) -> dict[str, Any]:
     Interrupt re-entry (after deaths): day already set, skip increment.
     """
     gs: GameState = state["game_state"]
-    gs, d = _ensure_day_incremented(gs)
+    gs, d = _ensure_day_incremented(state, gs)
     logger.debug(f"\n{'='*60}")
     logger.debug(f"  【警长竞选】开始D{d}警长竞选环节")
     logger.debug(f"{'='*60}")

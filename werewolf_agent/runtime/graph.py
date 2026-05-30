@@ -38,6 +38,7 @@ from werewolf_agent.runtime.nodes._shared import (  # noqa: F401
     _find_role,
     _force_wolf_kill,
     _judge_broadcast,
+    _jb,
     _needs_sheriff_before_deaths,
     _new_engine,
     _player_display,

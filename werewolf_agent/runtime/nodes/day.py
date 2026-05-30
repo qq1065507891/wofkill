@@ -20,6 +20,8 @@ from werewolf_agent.runtime.nodes._shared import (
     _call_agent,
     _dispatch_agent,
     _judge_broadcast,
+    _jb,
+    _hitl_checkpoint,
     _ensure_day_incremented,
     _player_display,
     _public_vote_reason,
@@ -34,11 +36,24 @@ from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_pick_speech_order
 from werewolf_agent.runtime.timeline import phase_label
 
+_REASON_LABELS = {
+    "wolf_kill": "狼杀",
+    "witch_poison": "毒杀",
+    "hunter_shot": "猎人开枪",
+    "exile": "放逐",
+    "self_destruct": "自爆",
+    "unknown": "原因不明",
+}
+
+
+def _death_reason_label(reason: str) -> str:
+    return _REASON_LABELS.get(reason, reason)
+
 
 def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     was_night = gs.phase != "day"
-    gs, d = _ensure_day_incremented(gs)
+    gs, d = _ensure_day_incremented(state, gs)
     label = phase_label("day", d)
 
     # Announce last night's deaths
@@ -47,10 +62,13 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
         if death.timing == "night" and death.resolution_batch == f"night_{gs.night_number}"
     ]
     if night_deaths:
-        dead_names = "、".join(_player_display(state, death.player_id) for death in night_deaths)
+        dead_desc = "、".join(
+            f"{_player_display(state, d.player_id)}({_death_reason_label(d.reason)})"
+            for d in night_deaths
+        )
         gs, _ = _judge_broadcast(
             phase="death_announce",
-            message=f"昨夜死亡: {dead_names}",
+            message=f"昨夜死亡: {dead_desc}",
             gs=gs, day_number=d,
             visibility="public",
         )
@@ -72,6 +90,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     else:
         logger.debug(f"  [死讯] 平安夜，无人死亡")
     logger.debug(f"{'='*60}")
+    _hitl_checkpoint(state, "announce_deaths", "after")
     return {"game_state": gs,
             "revote": False, "speech_index": 0,
             "current_speaker_id": None}
@@ -304,18 +323,19 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
         and gs.players[gs.sheriff_id].alive
     )
     if not _already_announced:
-        gs, _ = _judge_broadcast(
+        gs, _ = _jb(
+            state,
             phase="vote_start",
             message="讨论结束，现在开始投票。所有人同时投票，投票时不能发言。",
             gs=gs, day_number=gs.day_number,
             visibility="public",
         )
 
-    gs, _ = _judge_broadcast(
+    gs, _ = _jb(
+        state,
         phase="vote_collect",
         message="请所有仍在场玩家同时投票",
-        gs=gs,
-        day_number=gs.day_number,
+        gs=gs, day_number=gs.day_number,
         visibility="public",
     )
     same_vote_window = (
@@ -332,24 +352,48 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
     votes: dict[str, str] = {}
     vote_traces: dict[str, Any] = {}
     has_agents = False
+    # Count eligible voters for per-voter calling
+    eligible_voter_ids = [pid for pid, p in gs.players.items() if p.alive and p.vote_enabled]
+    total_voters = len(eligible_voter_ids)
+    sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
     if not existing_votes:
-        for pid, player in gs.players.items():
-            if player.alive and player.vote_enabled:
-                result = _dispatch_agent(
-                    state,
-                    agent_day_vote,
-                    pid,
-                    timeout_override=AGENT_TIMEOUTS.day_vote,
-                )
-                if result is not None:
-                    has_agents = True
-                    if result.get("vote_target"):
-                        votes[pid] = result["vote_target"]
-                        logger.debug(f"    {_player_display(state, pid)} → {_player_display(state, result['vote_target'])}")
-                    else:
-                        logger.debug(f"    {_player_display(state, pid)} 弃票")
-                    if result.get("action_trace"):
-                        vote_traces[pid] = result["action_trace"]
+        for idx, pid in enumerate(eligible_voter_ids, start=1):
+            player = gs.players[pid]
+            # Per-voter judge broadcast (唱票)
+            voter_name = _player_display(state, pid)
+            gs, _ = _jb(
+                state,
+                phase="vote_calling",
+                message=f"请{voter_name}投票，第{idx}/{total_voters}位",
+                gs=gs, day_number=gs.day_number,
+                visibility="public",
+                judge_method="vote_calling",
+                extra_payload={
+                    "voter_id": pid,
+                    "voter_name": voter_name,
+                    "position": idx,
+                    "total": total_voters,
+                    "sheriff_weight": 1.5 if pid == sheriff_id else 1.0,
+                },
+            )
+            result = _dispatch_agent(
+                state,
+                agent_day_vote,
+                pid,
+                timeout_override=AGENT_TIMEOUTS.day_vote,
+            )
+            if result is not None:
+                has_agents = True
+                if result.get("vote_target"):
+                    votes[pid] = result["vote_target"]
+                    logger.debug(f"    {_player_display(state, pid)} → {_player_display(state, result['vote_target'])}")
+                else:
+                    logger.debug(f"    {_player_display(state, pid)} 弃票")
+                if result.get("action_trace"):
+                    vote_traces[pid] = result["action_trace"]
+            else:
+                has_agents = True
+                logger.warning(f"    {_player_display(state, pid)} 投票超时（视为弃票）")
 
         if has_agents:
             gs = _broadcast_vote_details(state, gs, votes)
@@ -377,16 +421,20 @@ def _broadcast_vote_details(
     gs: GameState,
     votes: dict[str, str],
 ) -> GameState:
-    gs, _ = _judge_broadcast(
+    gs, _ = _jb(
+        state,
         phase="vote_end",
         message="投票结束，开始统计票型",
-        gs=gs,
-        day_number=gs.day_number,
+        gs=gs, day_number=gs.day_number,
         visibility="public",
     )
     sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
+    # Build vote tally for structured judge announcement
+    tally: dict[str, float] = {}
     vote_lines = []
     for voter_id, target_id in votes.items():
+        weight = 1.5 if voter_id == sheriff_id else 1.0
+        tally[target_id] = tally.get(target_id, 0.0) + weight
         weight_label = " (警长1.5票)" if voter_id == sheriff_id else ""
         vote_lines.append(
             f"{_player_display(state, voter_id)}{weight_label} 投票给 {_player_display(state, target_id)}"
@@ -396,12 +444,20 @@ def _broadcast_vote_details(
         message += "\n" + "\n".join(vote_lines)
     else:
         message += "无有效票"
-    gs, _ = _judge_broadcast(
+    player_names = {pid: _player_display(state, pid) for pid in gs.players}
+    gs, _ = _jb(
+        state,
         phase="vote_result",
         message=message,
-        gs=gs,
-        day_number=gs.day_number,
+        gs=gs, day_number=gs.day_number,
         visibility="public",
+        judge_method="vote_tally",
+        extra_payload={
+            "tally": tally,
+            "player_names": player_names,
+            "sheriff_id": sheriff_id,
+            "sheriff_weight": 1.5,
+        },
     )
     return gs
 
@@ -559,10 +615,10 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
     gs = replace(gs, events=gs.events + events)
     logger.debug(f"  [放逐] {_player_display(state, exiled_id)}({role_str}) 被放逐出局")
     for ev in events:
-        if ev.type == "idiot_reveal":
+        if ev.type == "idiot_revealed":
             logger.debug(f"  [白痴亮牌] {_player_display(state, exiled_id)} 是白痴，不会被放逐")
             gs, _ = _judge_broadcast(
-                phase="idiot_reveal",
+                phase="idiot_revealed",
                 message=f"{_player_display(state, exiled_id)}亮出白痴身份，不会被放逐，但失去投票权",
                 gs=gs, day_number=gs.day_number,
                 extra_payload={"player_id": exiled_id},
