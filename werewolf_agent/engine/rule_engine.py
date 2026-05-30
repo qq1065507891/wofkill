@@ -410,20 +410,21 @@ class RuleEngine:
             if p.alive and p.role in god_roles
         ]
 
-        # God slaughter
+        # God slaughter: all god roles dead → wolves win
         if not gods_alive:
             return VictoryResult(winner="werewolf", reason="slaughter_gods")
 
-        # Villager slaughter (conditional on hybrid master)
+        # Villager slaughter (conditional on hybrid master faction per design doc §3.5):
+        #   - master = good: must kill 3 villagers + hybrid → hybrid counts as villager
+        #   - master = wolf: must kill 3 villagers only → hybrid does not count
+        #   - master = None (N1 before choice): cannot determine, skip
         if not villagers_alive:
             hybrid = next((p for p in players.values() if p.role == "hybrid"), None)
             master_faction = state.hybrid_master_faction
-            if master_faction is None:
-                pass  # Hybrid hasn't chosen master yet; cannot determine slaughter
-            elif master_faction == "good":
+            if master_faction == "good":
                 if hybrid and not hybrid.alive:
                     return VictoryResult(winner="werewolf", reason="slaughter_villagers")
-            else:
+            elif master_faction is not None:
                 return VictoryResult(winner="werewolf", reason="slaughter_villagers")
 
         return VictoryResult(winner=None, reason=None)

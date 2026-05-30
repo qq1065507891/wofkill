@@ -1315,6 +1315,45 @@ class TestWolfStrategyDirectives:
         seer_entry = next(r for r in ranked if r["target"] == "seer")
         assert seer_entry["value"] >= 6
 
+    def test_fake_seer_self_gets_execution_directive_before_claim(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import _build_wolf_day_speech_directive
+        gs = self._make_wolf_gs()
+        plan = {"fake_seer": "w1", "pusher": "w2"}
+        result = _build_wolf_day_speech_directive(gs, "w1", plan)
+        assert "wolf_fake_seer_execution" in result
+        assert "跳预言家" in result["wolf_fake_seer_execution"]
+        assert "不要犹豫" in result["wolf_fake_seer_execution"]
+
+    def test_fake_seer_self_gets_maintenance_directive_after_claim(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import _build_wolf_day_speech_directive
+        gs = self._make_wolf_gs(events=[
+            GameEvent(type="speech", payload={
+                "speaker": "w1", "text": "我是预言家，查杀v1", "day_number": 1,
+            }),
+        ])
+        plan = {"fake_seer": "w1", "pusher": "w2"}
+        result = _build_wolf_day_speech_directive(gs, "w1", plan)
+        assert "wolf_fake_seer_execution" in result
+        assert "已经" in result["wolf_fake_seer_execution"]
+        assert "继续维护" in result["wolf_fake_seer_execution"]
+
+    def test_fake_seer_rule6_allows_jumping(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import _build_wolf_day_speech_directive
+        gs = self._make_wolf_gs()
+        plan = {"fake_seer": "w1", "pusher": "w2"}
+        result = _build_wolf_day_speech_directive(gs, "w1", plan)
+        rules = result["wolf_universal_rules"]
+        assert "严禁信息穿越" not in rules
+        assert "悍跳狼" in rules
+
+    def test_non_fake_seer_rule6_has_info_leak_guard(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import _build_wolf_day_speech_directive
+        gs = self._make_wolf_gs()
+        plan = {"fake_seer": "w1", "pusher": "w2"}
+        result = _build_wolf_day_speech_directive(gs, "w2", plan)
+        rules = result["wolf_universal_rules"]
+        assert "严禁信息穿越" in rules
+
     def test_unassigned_wolf_gets_generic_strategy(self) -> None:
         from werewolf_agent.runtime.agent_adapter import _build_wolf_day_speech_directive
         gs = self._make_wolf_gs()

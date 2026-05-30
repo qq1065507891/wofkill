@@ -507,15 +507,21 @@ def build_agent_context(
             elif tied:
                 summary_items.append((2, f"[放逐] 平票PK: {', '.join(tied)}"))
 
-        elif e.type == "idiot_reveal":
+        elif e.type == "idiot_revealed":
             summary_items.append((1, f"[白痴] {e.payload.get('player_id', '?')} 亮牌"))
 
         elif e.type == "hunter_shot_public":
-            summary_items.append((1, f"[枪声] 猎人带走了 {e.payload.get('target_id', '?')}"))
+            hunter = e.payload.get("hunter_id", "?")
+            target = e.payload.get("target_id", "?")
+            summary_items.append((1, f"[枪声] 猎人{hunter}带走了{target}"))
 
         elif e.type in ("speech", "sheriff_speech"):
             text = str(e.payload.get("text", ""))
             speaker = e.payload.get("speaker", "")
+            # Mark silent/no-content speeches explicitly to prevent LLM hallucination
+            if "未发表有效言论" in text or not text.strip():
+                summary_items.append((3, f"[沉默] {speaker} 未发表任何有效言论"))
+                continue
             # Extract public seer check claims from speech
             if any(kw in text for kw in ("验了", "查验", "查杀", "金水")):
                 m = re.search(r'(?:第?(\d)夜|N(\d)).*?验[了过]?\s*(p\d+).*?(狼人|查杀|好人|金水)', text)

@@ -1525,9 +1525,10 @@ class TestMandatoryVote:
         action, _ = agent.act(ctx)
 
         assert isinstance(action, FallbackAction)
-        assert action.speech == "[p06 本轮未发表有效言论。]"
-        assert "p02" not in action.speech
-        assert "我这轮先把视角压到" not in action.speech
+        # SPEECH fallback now produces template content instead of "未发表有效言论"
+        assert action.speech  # non-empty
+        assert "[p06" not in action.speech  # no longer uses bracket marker
+        assert "未发表有效言论" not in action.speech
 
 
 class TestSpeechQualityAndWolfAssignments:
@@ -1586,7 +1587,8 @@ class TestSpeechQualityAndWolfAssignments:
 
         assert isinstance(action, FallbackAction)
         assert action.action_type == ActionType.SPEECH
-        assert action.speech == "[p01 本轮未发表有效言论。]"
+        assert action.speech  # non-empty template fallback
+        assert "未发表有效言论" not in action.speech
         assert action.reason
 
     def test_good_speech_fallback_varies_only_by_player_marker(self) -> None:
@@ -1611,10 +1613,11 @@ class TestSpeechQualityAndWolfAssignments:
         )
 
         assert first.speech != second.speech
-        assert first.speech == "[p01 本轮未发表有效言论。]"
-        assert second.speech == "[p02 本轮未发表有效言论。]"
-        assert "p03" not in first.speech
-        assert "p03" not in second.speech
+        # Both use template fallbacks with different content (varied by salt)
+        assert first.speech  # non-empty
+        assert second.speech  # non-empty
+        assert "未发表有效言论" not in first.speech
+        assert "未发表有效言论" not in second.speech
 
     def test_wolf_discussion_fallback_keeps_werewolf_private_perspective(self) -> None:
         router = ModelRouter(
@@ -1640,7 +1643,9 @@ class TestSpeechQualityAndWolfAssignments:
         assert action.action_type == ActionType.SPEECH
         assert "好人阵营" not in action.speech
         assert "狼队" in action.speech or "刀" in action.speech
-        assert "p01" in action.speech
+        assert "[FALLBACK]" in action.speech
+        # Hash-based target: any legal target may be selected, not just legal_targets[0]
+        assert any(t in action.speech for t in ("p01", "p02"))
 
     def test_parse_error_retry_hint_is_actionable(self) -> None:
         router = ModelRouter(

@@ -36,7 +36,7 @@ def test_build_visible_player_state_contains_shared_timeline_and_public_fields()
     assert state["phase_label"] == "D1 / 第一天"
     assert state["timeline_facts"]["previous_phase_label"] == "N1 / 首夜"
     assert state["alive_players"] == ["p01"]
-    assert state["dead_players"] == [{"id": "p02", "reason": "night"}]
+    assert state["dead_players"] == [{"id": "p02", "reason": "wolf_kill"}]
     assert state["sheriff_id"] == "p01"
 
 
@@ -230,3 +230,91 @@ def test_agent_context_uses_private_memory_not_prior_day_full_speech_text() -> N
     assert "逻辑漏洞" not in context.public_summary
     assert "逻辑漏洞" in str(context.visible_world_state["private_memory"])
     assert "p02" in str(context.visible_world_state["private_memory"])
+
+
+def test_public_summary_marks_silent_speech() -> None:
+    engine = RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
+    gs = GameState(
+        game_id="silent_speech_test",
+        phase="day",
+        day_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        },
+        events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p02",
+                "day_number": 1,
+                "text": "未发表有效言论",
+            }),
+        ],
+    )
+
+    context = build_agent_context(engine, gs, "p01", TaskType.SPEECH)
+    assert "[沉默]" in context.public_summary
+    assert "未发表任何有效言论" in context.public_summary
+    # Should NOT extract seer check claims from silent speech
+    assert "seer_check_claims" not in str(
+        context.visible_world_state.get("public_ledger", {})
+    ) or not context.visible_world_state.get("public_ledger", {}).get("seer_check_claims")
+
+
+def test_public_summary_marks_empty_speech_as_silent() -> None:
+    engine = RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
+    gs = GameState(
+        game_id="empty_speech_test",
+        phase="day",
+        day_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        },
+        events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p02",
+                "day_number": 1,
+                "text": "   ",
+            }),
+        ],
+    )
+
+    context = build_agent_context(engine, gs, "p01", TaskType.SPEECH)
+    assert "[沉默]" in context.public_summary
+
+
+def test_visible_state_preserves_death_reasons() -> None:
+    gs = GameState(
+        game_id="death_reasons_test",
+        phase="day",
+        day_number=2,
+        night_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=False),
+            "p03": PlayerState(id="p03", role="seer", alive=False),
+        },
+        events=[
+            GameEvent(type="judge_broadcast", payload={"phase": "death_announce"}),
+        ],
+        deaths=[
+            Death(player_id="p02", reason="wolf_kill", timing="night", resolution_batch="n1"),
+            Death(player_id="p03", reason="witch_poison", timing="night", resolution_batch="n1"),
+        ],
+    )
+
+    state = build_visible_player_state(gs)
+    reasons = {d["id"]: d["reason"] for d in state["dead_players"]}
+    assert reasons["p02"] == "wolf_kill"
+    assert reasons["p03"] == "witch_poison"
+
+
+def test_death_reason_labels_in_broadcast() -> None:
+    from werewolf_agent.runtime.nodes.day import _death_reason_label
+
+    assert _death_reason_label("wolf_kill") == "狼杀"
+    assert _death_reason_label("witch_poison") == "毒杀"
+    assert _death_reason_label("hunter_shot") == "猎人开枪"
+    assert _death_reason_label("exile") == "放逐"
+    assert _death_reason_label("self_destruct") == "自爆"
+    assert _death_reason_label("unknown") == "原因不明"

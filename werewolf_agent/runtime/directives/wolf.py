@@ -77,6 +77,7 @@ def build_wolf_directive(
     )
 
     # Universal wolf speech constraints
+    is_fake_seer = (assignment == "fake_seer")
     parts["wolf_universal_rules"] = (
         "你是狼人。以下规则对所有狼人角色通用：\n"
         "1) 绝对不要提到你的队友是狼人——队友是你的'好人朋友'\n"
@@ -85,10 +86,29 @@ def build_wolf_directive(
         "4) 如果有人指控你的队友，用独立逻辑回应而非本能保护\n"
         "5) 如果你被预言家验出狼人，你需要做出回应：质疑预言家身份、"
         "指出验人逻辑漏洞、或声称被冤枉\n"
-        "6) 【严禁信息穿越】你不能使用你作为狼人的未来信息。"
-        "如果某个队友计划跳预言家但还没发言，你不能提前站边或透露TA的身份。"
-        "你必须表现得像一个不知道谁是预言家的普通好人，等TA发言后才能站边。"
     )
+    if is_fake_seer:
+        parts["wolf_universal_rules"] += (
+            "6) 你是今天负责跳预言家的悍跳狼，应尽快以预言家身份起跳，"
+            "不要等待或犹豫。按你的角色策略执行。"
+        )
+    else:
+        # Check if fake_seer has already publicly claimed — if so, coordination is allowed
+        fake_seer = wolf_team_plan.get("fake_seer") if wolf_team_plan else None
+        fake_seer_spoke = fake_seer and _has_publicly_claimed_seer(gs, fake_seer)
+        if fake_seer_spoke:
+            parts["wolf_universal_rules"] += (
+                "6) 你的队友{fake_seer}已经在公开场合跳了预言家。"
+                "你可以像普通好人一样站边TA、引用TA的查验结果——"
+                "这对其他好人来说是正常的信息接收行为，不会暴露你的身份。"
+                "不要表现出比普通好人更了解TA的真实身份。"
+            ).format(fake_seer=fake_seer)
+        else:
+            parts["wolf_universal_rules"] += (
+                "6) 【严禁信息穿越】你不能使用你作为狼人的未来信息。"
+                "如果某个队友计划跳预言家但还没发言，你不能提前站边或透露TA的身份。"
+                "你必须表现得像一个不知道谁是预言家的普通好人，等TA发言后才能站边。"
+            )
 
     # Day push target from team plan
     if wolf_team_plan:
@@ -101,7 +121,20 @@ def build_wolf_directive(
 
         # Inform about fake seer identity for coordination
         fake_seer = wolf_team_plan.get("fake_seer")
-        if fake_seer and fake_seer != wolf_id:
+        if fake_seer and fake_seer == wolf_id:
+            # fake_seer itself: reinforce execution directive
+            if not _has_publicly_claimed_seer(gs, fake_seer):
+                parts["wolf_fake_seer_execution"] = (
+                    "【执行指令】你是今天负责悍跳预言家的狼人。"
+                    "你必须在本次发言中跳预言家，报出验人结果和警徽流。"
+                    "不要犹豫，不要等待其他队友先发言。你就是那个该站出来的人。"
+                )
+            else:
+                parts["wolf_fake_seer_execution"] = (
+                    "你已经在公开场合跳了预言家。继续维护你的预言家身份，"
+                    "对质疑做出有力回应，保持验人逻辑的一致性。"
+                )
+        elif fake_seer and fake_seer != wolf_id:
             if _has_publicly_claimed_seer(gs, fake_seer):
                 # Teammate has already spoken — coordinate normally
                 parts["wolf_fake_seer_teammate"] = (
