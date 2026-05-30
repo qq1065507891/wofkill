@@ -47,9 +47,8 @@ class GameRunnerConfig:
 
     def __post_init__(self) -> None:
         if self.seed is None:
-            import random
-            import time
-            self.seed = random.Random(time.time()).randrange(0, 2**32)
+            import secrets
+            self.seed = secrets.randbits(32)
 
 
 class GameRunner:
