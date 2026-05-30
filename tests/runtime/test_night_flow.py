@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 from dataclasses import replace
@@ -290,3 +290,49 @@ def test_all_players_on_sheriff_announces_no_sheriff_before_speeches() -> None:
     assert new_gs.sheriff_id is None
     # No death_announce broadcast yet → route to announce_deaths
     assert route_after_sheriff_speech({"game_state": new_gs}) == "announce_deaths"
+
+
+
+
+# ---------------------------------------------------------------------------
+# Night resolution standalone tests
+# ---------------------------------------------------------------------------
+
+def test_resolve_night_node_kills_target() -> None:
+    from werewolf_agent.runtime.graph import resolve_night
+    engine = _new_engine()
+    players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
+    gs = GameState(game_id="rn1", players=players, night_number=1)
+    result = resolve_night({
+        "game_state": gs, "engine": engine,
+        "wolf_kill_target_id": "p01", "use_antidote": False, "poison_target_id": None,
+    })
+    assert result["game_state"].players["p01"].alive is False
+
+def test_resolve_night_node_keeps_witch_potion_events_in_timeline() -> None:
+    from werewolf_agent.runtime.graph import resolve_night
+    engine = _new_engine()
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "v1": PlayerState(id="v1", role="villager"),
+        "witch": PlayerState(id="witch", role="witch"),
+    }
+    gs = GameState(game_id="rn_witch", players=players, night_number=1)
+
+    result = resolve_night({
+        "game_state": gs,
+        "engine": engine,
+        "wolf_kill_target_id": "v1",
+        "use_antidote": True,
+        "poison_target_id": None,
+    })
+
+    assert any(event.type == "witch_antidote_used" for event in result["game_state"].events)
+
+def test_announce_deaths_increments_day() -> None:
+    from werewolf_agent.runtime.graph import announce_deaths
+    engine = _new_engine()
+    players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
+    gs = GameState(game_id="d1", players=players, night_number=1, day_number=0)
+    result = announce_deaths({"game_state": gs, "engine": engine})
+    assert result["game_state"].day_number == 1

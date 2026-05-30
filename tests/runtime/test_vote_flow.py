@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 from dataclasses import replace
@@ -236,3 +236,266 @@ class TestAntiStallPolicy:
         deaths = state["game_state"].deaths
         exile_deaths = [d for d in deaths if d.player_id == "p05" and d.reason == "exile"]
         assert len(exile_deaths) >= 1
+
+
+
+
+# ---------------------------------------------------------------------------
+# Vote resolution standalone tests
+# ---------------------------------------------------------------------------
+
+def test_resolve_vote_keeps_action_traces_out_of_public_result() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    engine = _new_engine()
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+    }
+    gs = GameState(game_id="vote_trace_private", players=players, day_number=1)
+    private_trace = {"parsed_action": {"private_intent": {"true_role": "werewolf"}}}
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": engine,
+        "exile_votes": {"p01": "p02"},
+        "vote_action_traces": {"p01": private_trace},
+        "revote": False,
+    })
+
+    events = result["game_state"].events
+    vote_event = next(event for event in events if event.type == "vote_resolved")
+    audit_event = next(event for event in events if event.type == "action_trace_audit")
+
+    assert "action_traces" not in vote_event.payload
+    assert audit_event.payload["phase"] == "vote"
+    assert audit_event.payload["visibility"] == "moderator_only"
+
+def test_resolve_vote_records_sheriff_weighted_tally() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="villager"),
+        "p03": PlayerState(id="p03", role="werewolf"),
+    }
+    gs = GameState(
+        game_id="sheriff_weighted_vote",
+        players=players,
+        sheriff_id="p01",
+        sheriff_badge_state="active",
+        day_number=2,
+    )
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "exile_votes": {"p01": "p03", "p02": "p02"},
+        "revote": False,
+    })
+
+    vote_event = next(event for event in result["game_state"].events if event.type == "vote_resolved")
+    assert vote_event.payload["sheriff_id"] == "p01"
+    assert vote_event.payload["sheriff_vote_weight"] == 1.5
+    assert vote_event.payload["weighted_tally"] == {"p03": 1.5, "p02": 1.0}
+    assert vote_event.payload["vote_weights"] == {"p01": 1.5, "p02": 1.0}
+
+def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="villager"),
+        "p03": PlayerState(id="p03", role="werewolf"),
+        "p04": PlayerState(id="p04", role="villager"),
+    }
+    gs = GameState(game_id="first_tie_pk", players=players, day_number=2)
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "exile_votes": {"p01": "p03", "p02": "p04"},
+        "revote": False,
+    })
+
+    broadcasts = [
+        event for event in result["game_state"].events
+        if event.type == "judge_broadcast" and event.payload.get("phase") == "vote_tie_pk"
+    ]
+    assert broadcasts
+    assert result["pk_candidates"] == ["p03", "p04"]
+
+def test_vote_action_trace_audit_exposes_structured_private_vote_thought_to_moderator_only(capsys) -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+    from werewolf_agent.runtime.public_ledger import build_public_ledger
+
+    engine = _new_engine()
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+    }
+    gs = GameState(game_id="vote_private_thought", players=players, day_number=1)
+    private_trace = {
+        "parsed_action": {
+            "reason": "公开理由：跟随查杀",
+            "private_reason": "心里想：p02的发言像倒钩狼，先投他试压力",
+            "standing_with_seer": "p03",
+            "suspect_reason": "p02警上站边摇摆，且投票理由跟风",
+            "not_voting_reason": "p04虽然发言短，但没有和悍跳线绑定",
+            "private_intent": {"true_role": "villager"},
+        },
+    }
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": engine,
+        "exile_votes": {"p01": "p02"},
+        "vote_action_traces": {"p01": private_trace},
+        "revote": False,
+    })
+
+    events = result["game_state"].events
+    vote_event = next(event for event in events if event.type == "vote_resolved")
+    audit_event = next(event for event in events if event.type == "action_trace_audit")
+
+    assert audit_event.payload["visibility"] == "moderator_only"
+    assert audit_event.payload["day_number"] == 1
+    assert audit_event.payload["private_vote_thought"] == {
+        "target": "p02",
+        "public_reason": "公开理由：跟随查杀",
+        "standing_with_seer": "p03",
+        "suspect_reason": "p02警上站边摇摆，且投票理由跟风",
+        "not_voting_reason": "p04虽然发言短，但没有和悍跳线绑定",
+        "private_reason": "心里想：p02的发言像倒钩狼，先投他试压力",
+    }
+    assert audit_event.payload["vote_target"] == "p02"
+    assert "private_vote_thought" not in vote_event.payload
+    assert "心里想" not in str(vote_event.payload)
+    assert "心里想" not in str(build_public_ledger(result["game_state"]))
+
+def test_resolve_vote_records_vote_reasons_for_public_ledger() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p02": PlayerState(id="p02", role="villager"),
+        "p08": PlayerState(id="p08", role="werewolf"),
+    }
+    gs = GameState(game_id="vote_public_ledger", players=players, day_number=2)
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "exile_votes": {"p01": "p08", "p02": "p08"},
+        "vote_action_traces": {
+            "p01": {"parsed_action": {"reason": "跟预言家查杀", "private_intent": {"true_role": "villager"}}},
+            "p02": {"reason": "票型跟随"},
+        },
+        "revote": False,
+    })
+
+    vote_event = [
+        event for event in result["game_state"].events
+        if event.type == "vote_resolved"
+    ][0]
+
+    assert vote_event.payload["day_number"] == 2
+    assert vote_event.payload["votes"] == [
+        {"voter": "p01", "target": "p08", "reason": "跟预言家查杀"},
+        {"voter": "p02", "target": "p08", "reason": "票型跟随"},
+    ]
+    assert "private_intent" not in str(vote_event.payload)
+
+def test_resolve_vote_uses_fallback_reason_for_public_ledger() -> None:
+    from werewolf_agent.runtime.graph import resolve_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager"),
+        "p08": PlayerState(id="p08", role="werewolf"),
+    }
+    gs = GameState(game_id="vote_fallback_reason", players=players, day_number=2)
+
+    result = resolve_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "exile_votes": {"p01": "p08"},
+        "vote_action_traces": {
+            "p01": {
+                "parsed_action": None,
+                "fallback_reason": "fallback: 结构化输出失败，按当前可见线索选择p08",
+            },
+        },
+        "revote": False,
+    })
+
+    vote_event = [
+        event for event in result["game_state"].events
+        if event.type == "vote_resolved"
+    ][0]
+
+    assert vote_event.payload["votes"] == [
+        {
+            "voter": "p01",
+            "target": "p08",
+            "reason": "fallback: 结构化输出失败，按当前可见线索选择p08",
+        },
+    ]
+
+def test_agent_day_vote_excludes_voter_from_legal_targets() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_day_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    gs = GameState(game_id="vote_no_self_target", players=players, day_number=1)
+
+    class Agent:
+        def __init__(self) -> None:
+            self.context = None
+
+        def act(self, context):
+            self.context = context
+            return PlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p02",
+                reason="p02 has the weakest public logic",
+            ), RetryInfo()
+
+    agent = Agent()
+
+    class Registry:
+        def get_agent(self, player_id):
+            return agent
+
+    result = agent_day_vote({"game_state": gs}, _new_engine(), Registry(), "p01")
+
+    assert result["vote_target"] == "p02"
+    assert agent.context.legal_targets == ["p02", "p03"]
+
+def test_day_vote_announces_vote_collection_and_end() -> None:
+    from werewolf_agent.runtime.graph import day_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+    }
+    gs = GameState(game_id="vote_broadcasts", players=players, day_number=2, phase="day")
+
+    result = day_vote({
+        "game_state": gs,
+        "agent_registry": None,
+        "exile_votes": {"p01": "p02"},
+        "exile_vote_day": 2,
+        "exile_vote_revote": False,
+        "revote": False,
+    })
+
+    phases = [
+        e.payload.get("phase")
+        for e in result["game_state"].events
+        if e.type == "judge_broadcast"
+    ]
+
+    assert phases == ["vote_start", "vote_collect", "vote_end", "vote_result"]

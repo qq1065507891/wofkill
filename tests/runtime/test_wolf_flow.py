@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 from dataclasses import replace
@@ -269,3 +269,236 @@ class TestWolfFallbackVoteNoTeammate:
         result = choose_vote_fallback_target(gs, "w1", ["w2", "v1", "v2"])
         assert result != "w2", "Wolf fallback vote should not target teammate"
         assert result in ("v1", "v2")
+
+
+
+# ---------------------------------------------------------------------------
+# Wolf consensus scripted tests
+# ---------------------------------------------------------------------------
+
+def test_wolf_consensus_timeout_defaults_to_no_kill_event() -> None:
+    engine = _new_engine()
+    players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
+    gs = GameState(game_id="wolf_timeout", players=players, night_number=1)
+
+    result = wolf_consensus({"game_state": gs, "engine": engine})
+
+    assert result["wolf_kill_target_id"] is None
+    event = _last_non_broadcast_event(result["game_state"])
+    assert event.type == "wolf_no_kill_timeout"
+    assert event.payload["night_number"] == 1
+
+
+def test_wolf_consensus_explicit_no_kill_records_declared_event() -> None:
+    engine = _new_engine()
+    players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
+    gs = GameState(game_id="wolf_no_kill", players=players, night_number=1)
+
+    result = wolf_consensus({
+        "game_state": gs,
+        "engine": engine,
+        "wolf_action": "no_kill",
+        "wolf_action_reason": "create peace-night pressure",
+    })
+
+    assert result["wolf_kill_target_id"] is None
+    event = _last_non_broadcast_event(result["game_state"])
+    assert event.type == "wolf_no_kill_declared"
+    assert event.payload["reason"] == "create peace-night pressure"
+
+
+def test_wolf_consensus_kill_records_selected_target() -> None:
+    engine = _new_engine()
+    players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
+    gs = GameState(game_id="wolf_kill", players=players, night_number=1)
+
+    result = wolf_consensus({
+        "game_state": gs,
+        "engine": engine,
+        "wolf_action": "kill",
+        "wolf_kill_target_id": "p01",
+    })
+
+    assert result["wolf_kill_target_id"] == "p01"
+    event = _last_non_broadcast_event(result["game_state"])
+    assert event.type == "wolf_kill_selected"
+    assert event.payload["target_id"] == "p01"
+
+def test_wolf_discussion_timer_expiration_forces_no_kill_timeout() -> None:
+    from werewolf_agent.runtime.timers import ManualTimer
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf", alive=True),
+        "v1": PlayerState(id="v1", role="villager", alive=True),
+    }
+    gs = GameState(game_id="wolf_timer", players=players, night_number=1)
+
+    result = wolf_consensus({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "wolf_action": "kill",
+        "wolf_kill_target_id": "v1",
+        "runtime_timer": ManualTimer(expired_keys={"wolf_discussion"}),
+    })
+
+    assert result["wolf_kill_target_id"] is None
+    event = _last_non_broadcast_event(result["game_state"])
+    assert event.type == "wolf_no_kill_timeout"
+    assert event.payload["reason"] == "timer_expired"
+
+
+def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monkeypatch) -> None:
+    from werewolf_agent.runtime.nodes import night as night_mod
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "w3": PlayerState(id="w3", role="werewolf"),
+        "w4": PlayerState(id="w4", role="werewolf"),
+        "s1": PlayerState(id="s1", role="seer"),
+        "v1": PlayerState(id="v1", role="villager"),
+    }
+    gs = GameState(game_id="wolf_plan", players=players, night_number=1, phase="night")
+    calls: list[tuple[str, Any]] = []
+
+    def fake_dispatch_agent(_state, _fn, *_extra_args, **_kwargs):
+        wolf_id = _extra_args[0]
+        calls.append((wolf_id, _state.get("wolf_discussion_round")))
+        return {"speech_text": f"{wolf_id} round {_state.get('wolf_discussion_round')}"}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
+
+    result = night_mod.wolf_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+    })
+
+    events = result["game_state"].events
+    round_events = [event for event in events if event.type == "wolf_discussion"]
+    plan_events = [event for event in events if event.type == "wolf_team_plan"]
+    plan = result["wolf_team_plan"]
+
+    assert len(round_events) == 12
+    assert {event.payload["round"] for event in round_events} == {1, 2, 3}
+    assert len(plan_events) == 1
+    assert plan_events[0].payload["visibility"] == "werewolf_team_only"
+    for key in (
+        "fake_seer",
+        "pusher",
+        "hooker",
+        "deep_cover",
+        "public_story",
+    ):
+        assert plan[key]
+    assert plan["night_kill_primary"] is None
+    assert plan["night_kill_backup"] is None
+    assert plan["day_push_target"] is None
+    assert plan["evidence_quality"] == "none"
+
+    assignments = [plan["fake_seer"], plan["pusher"], plan["hooker"], plan["deep_cover"]]
+
+def test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan(monkeypatch) -> None:
+    from werewolf_agent.runtime.nodes import night as night_mod
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "v1": PlayerState(id="v1", role="villager"),
+        "v2": PlayerState(id="v2", role="villager"),
+    }
+    gs = GameState(game_id="wolf_plan_later", players=players, night_number=2, phase="night")
+
+    def fake_dispatch_agent(_state, _fn, *_extra_args, **_kwargs):
+        return {"speech_text": "revise plan"}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
+
+    result = night_mod.wolf_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+        "wolf_team_plan": {"fake_seer": "w1", "pusher": "w2"},
+    })
+
+    round_events = [event for event in result["game_state"].events if event.type == "wolf_discussion"]
+    assert len(round_events) == 4
+    assert {event.payload["round"] for event in round_events} == {1, 2}
+    assert result["wolf_team_plan"]["night_number"] == 2
+
+def test_wolf_discussion_drops_stale_targets_without_current_discussion_evidence(monkeypatch) -> None:
+    from werewolf_agent.runtime.nodes import night as night_mod
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "v1": PlayerState(id="v1", role="villager"),
+        "v2": PlayerState(id="v2", role="villager"),
+    }
+    gs = GameState(game_id="wolf_plan_stale", players=players, night_number=3, phase="night")
+
+    def fake_dispatch_agent(_state, _fn, *_extra_args, **_kwargs):
+        return {"speech_text": "今晚先重新听意见，暂时不点明确刀口。"}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
+
+    result = night_mod.wolf_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+        "wolf_team_plan": {
+            "night_kill_primary": "v1",
+            "night_kill_backup": "v2",
+            "day_push_target": "v1",
+            "evidence_quality": "strong",
+            "evidence_from_discussion": [{"target": "v1", "reason": "old night"}],
+            "fake_seer": "w1",
+            "pusher": "w2",
+        },
+    })
+
+    plan = result["wolf_team_plan"]
+    assert plan["night_kill_primary"] is None
+    assert plan["night_kill_backup"] is None
+    assert plan["day_push_target"] is None
+    assert plan["evidence_quality"] == "none"
+
+def test_wolf_consensus_prefers_planned_primary_then_backup_target() -> None:
+    from werewolf_agent.runtime.graph import wolf_consensus
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "v1": PlayerState(id="v1", role="villager", alive=False),
+        "v2": PlayerState(id="v2", role="villager"),
+    }
+    gs = GameState(game_id="wolf_plan_kill", players=players, night_number=2)
+
+    result = wolf_consensus({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "wolf_team_plan": {
+            "night_kill_primary": "v1",
+            "night_kill_backup": "v2",
+            "evidence_quality": "strong",
+            "evidence_from_discussion": [{"target": "v2"}],
+        },
+    })
+
+    assert result["wolf_kill_target_id"] == "v2"
+    event = _last_non_broadcast_event(result["game_state"])
+    assert event.type == "wolf_kill_selected"
+    assert event.payload["target_id"] == "v2"
+    assert event.payload["reason"] == "wolf_team_plan"

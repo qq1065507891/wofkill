@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 from dataclasses import replace
@@ -307,3 +307,78 @@ class TestSheriffElectionSpeechFallback:
         speech = result["speech_text"]
         assert "警徽流" not in speech
         assert "预言家" not in speech
+
+
+
+
+# ---------------------------------------------------------------------------
+# Sheriff standalone tests
+# ---------------------------------------------------------------------------
+
+def test_sheriff_vote_ignores_candidates_and_withdrew_voters() -> None:
+    from werewolf_agent.runtime.graph import sheriff_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="sheriff_vote_eligibility",
+        players=players,
+        day_number=1,
+        sheriff_candidates=["p01", "p02"],
+    )
+
+    result = sheriff_vote({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "sheriff_withdrawing": ["p03"],
+        "sheriff_votes": {
+            "p01": "p01",  # candidate cannot vote
+            "p03": "p01",  # withdrew candidate still cannot vote
+            "p04": "p02",  # only valid off-sheriff vote
+        },
+    })
+
+    assert result["game_state"].sheriff_id == "p02"
+
+def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypatch) -> None:
+    from werewolf_agent.runtime.nodes import sheriff as sheriff_mod
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+    }
+    gs = GameState(
+        game_id="sheriff_agent",
+        players=players,
+        day_number=1,
+        sheriff_candidates=["p01", "p02"],
+    )
+    private_trace = {"parsed_action": {"private_intent": {"true_role": "werewolf"}}}
+
+    def fake_dispatch_agent(*_args, **_kwargs):
+        return {"speech_text": "我上警竞选警长。", "action_trace": private_trace}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(sheriff_mod, "_dispatch_agent", fake_dispatch_agent)
+
+    result = sheriff_mod.sheriff_speech({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+    })
+
+    events = result["game_state"].events
+    speeches = [event for event in events if event.type == "sheriff_speech"]
+    audits = [event for event in events if event.type == "action_trace_audit"]
+
+    assert sorted(event.payload["speaker"] for event in speeches) == ["p01", "p02"]
+    assert all("action_trace" not in event.payload for event in speeches)
+    assert len(audits) == 2
+    assert all(event.payload["visibility"] == "moderator_only" for event in audits)
