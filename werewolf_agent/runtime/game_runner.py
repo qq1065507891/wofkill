@@ -52,7 +52,7 @@ class GameRunnerConfig:
     judge_persona_config_path: str = ""
     judge_hitl_enabled: bool = False
     judge_hitl_auto_pause_triggers: list[str] | None = None  # e.g. ["death_announce", "exile"]
-    agent_call_delay_ms: int = 10000  # 0 or 10000 = 10s; <0 = no delay; >0 = fixed ms
+    agent_call_delay_ms: int = 0  # -1=no delay, 0=10s, >0=fixed ms
 
     def __post_init__(self) -> None:
         if self.seed is None:
