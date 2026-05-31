@@ -1,6 +1,6 @@
 """Summary and reflection node functions.
 
-- ``summarize_positions`` — deterministic position summary after free discussion
+- ``summarize_positions`` — per-player LLM summarisation after free discussion
 - ``summarize_context`` — daily structured context summary for pruning
 - ``reflection`` — post-game per-player reflection using ReflectionMemory
 """
@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import replace
 from typing import Any
 
@@ -41,11 +42,11 @@ def _route_after_summarize(state: RuntimeState) -> str:
 
 
 def summarize_positions(state: RuntimeState) -> dict[str, Any]:
-    """Summarise each player's stated positions from current day's speeches.
+    """Each alive player independently summarises today's speeches.
 
-    Design doc §6.2: after free_discussion, before day_vote, produce a
-    structured summary of who suspects whom, who trusts whom, and any
-    claimed roles or key claims.
+    Design doc SS6.2: after free_discussion, before day_vote. Each agent receives
+    the full day transcript and produces a personal summary -- who they suspect,
+    trust, and plan to vote for. Deterministic extraction is used as fallback.
     """
     gs: GameState = state["game_state"]
     day = gs.day_number
@@ -55,32 +56,90 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
         if e.type in ("speech", "sheriff_speech")
         and e.payload.get("day_number") == day
     ]
-
     if not speeches:
-        return {"discussion_positions": []}
+        return {"discussion_positions": {}, "_day": day}
 
-    positions: list[dict[str, Any]] = []
+    # Build transcript text for LLM consumption
+    transcript_lines = []
     for ev in speeches:
         speaker = ev.payload.get("speaker", "?")
         text = str(ev.payload.get("text", "") or "")
+        if text.strip():
+            transcript_lines.append(f"[{speaker}]: {text}")
+    transcript_text = "\n".join(transcript_lines)
 
-        # Simple keyword-based position extraction (deterministic, no LLM)
-        suspects = _extract_suspects(text)
-        trusts = _extract_trusts(text)
-        claimed_role = _extract_role_claim(text)
+    # Dispatch each alive player to independently summarize the day
+    positions: dict[str, str] = {}
+    summarizers: list[str] = [pid for pid, p in gs.players.items() if p.alive]
+    for i, pid in enumerate(summarizers):
+        player = gs.players[pid]
+        # 10s gap between LLM calls (serial, no concurrency)
+        if i > 0:
+            time.sleep(10)
+        summary_text = ""
+        try:
+            from werewolf_agent.agents.schemas import TaskType
+            registry = state.get("agent_registry")
+            if registry is not None:
+                agent = registry.get_agent(pid)
+                if agent is not None:
+                    system_prompt = (
+                        f"你是狼人杀玩家{pid}。你的身份是{player.role}。"
+                        "以下是今天所有人的发言记录。请以你的视角总结：\n"
+                        "1) 每个玩家今天说了什么？（每人一句话）\n"
+                        "2) 你怀疑谁？为什么？\n"
+                        "3) 你信任谁？为什么？\n"
+                        "4) 你打算投谁？\n"
+                        "只输出总结，不要编造发言中不存在的内容。"
+                    )
+                    prompt = f"今日发言记录：\n{transcript_text}\n\n请从你的视角总结今天的讨论。"
+                    action = agent.act(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        task_type=TaskType.SPEECH,
+                    )
+                    summary_text = getattr(action, "speech_text", "") or ""
+        except Exception:
+            logger.debug("LLM summarisation failed for %s, using deterministic fallback", pid)
 
-        positions.append({
-            "speaker": speaker,
-            "suspects": suspects,
-            "trusts": trusts,
-            "claimed_role": claimed_role,
-        })
+        if not summary_text:
+            summary_text = _build_deterministic_summary(pid, speeches)
+        positions[pid] = summary_text
 
-    return {"discussion_positions": positions}
+    return {"discussion_positions": positions, "_day": day}
 
+
+def _build_deterministic_summary(player_id: str, speeches: list[GameEvent]) -> str:
+    """Deterministic fallback: extract suspects/trusts/claims from speeches."""
+    parts = []
+    for ev in speeches:
+        speaker = ev.payload.get("speaker", "?")
+        text = str(ev.payload.get("text", "") or "")
+        if not text.strip():
+            continue
+        s = _extract_suspects(text)
+        t = _extract_trusts(text)
+        c = _extract_role_claim(text)
+        v = _extract_vote_intent(text)
+        sn = _first_sentence(text)
+        detail = f"{speaker}: {sn}"
+        if c:
+            detail += f" [声称{c}]"
+        if s:
+            detail += f" 怀疑{','.join(s)}"
+        if t:
+            detail += f" 信任{','.join(t)}"
+        if v:
+            detail += f" 想投{v}"
+        parts.append(detail)
+    return "\n".join(parts) if parts else "今日无有效发言"
+
+
+# ---------------------------------------------------------------------------
+# Helpers: deterministic speech extraction (fallback)
+# ---------------------------------------------------------------------------
 
 def _extract_suspects(text: str) -> list[str]:
-    """Extract suspect mentions from speech text."""
     import re
     suspects: list[str] = []
     for m in re.finditer(r"(?:怀疑|标狼|狼面|定狼|抗推|出)\s*(p\d{2})", text):
@@ -91,7 +150,6 @@ def _extract_suspects(text: str) -> list[str]:
 
 
 def _extract_trusts(text: str) -> list[str]:
-    """Extract trust mentions from speech text."""
     import re
     trusts: list[str] = []
     for m in re.finditer(r"(?:相信|好人|保|银水|金水|认好)\s*(p\d{2})", text):
@@ -102,12 +160,24 @@ def _extract_trusts(text: str) -> list[str]:
 
 
 def _extract_role_claim(text: str) -> str | None:
-    """Extract a claimed role from speech text."""
     import re
     m = re.search(r"(?:我是|跳|身份是|底牌是)\s*(预言家|女巫|猎人|白痴|平民|村民|混血儿)", text)
-    if m:
-        return m.group(1)
-    return None
+    return m.group(1) if m else None
+
+
+def _extract_vote_intent(text: str) -> str | None:
+    import re
+    m = re.search(r"(?:归票|票投|出|投给|投票|上票)\s*(p\d{2})", text)
+    return m.group(1) if m else None
+
+
+def _first_sentence(text: str, max_len: int = 60) -> str:
+    for sep in ("。", "！", "？", "\n"):
+        idx = text.find(sep)
+        if idx > 0:
+            sentence = text[:idx + 1].strip()
+            return sentence[:max_len]
+    return text.strip()[:max_len]
 
 
 # ---------------------------------------------------------------------------
@@ -118,10 +188,9 @@ def _extract_role_claim(text: str) -> str | None:
 def summarize_context(state: RuntimeState) -> dict[str, Any]:
     """Generate structured daily summary for context pruning.
 
-    Design doc §6.2: at the end of each day, produce a summary of
+    Design doc SS6.2: at the end of each day, produce a summary of
     stance changes, vote relationships, key contradictions, and
-    death / skill clues. This summary is stored as a GameEvent and
-    used by future days' agent contexts to keep prompts compact.
+    death / skill clues. Emitted as a GameEvent for audit trail.
     """
     gs: GameState = state["game_state"]
     day = gs.day_number
@@ -156,22 +225,13 @@ def summarize_context(state: RuntimeState) -> dict[str, Any]:
     summary_parts["sheriff"] = {
         "id": gs.sheriff_id,
         "badge_state": gs.sheriff_badge_state,
-        "interrupt_count": gs.sheriff_interrupt_count,
     }
 
-    # Stance changes — compare discussion_positions if present
-    discussion_positions = state.get("discussion_positions") or []
-    if discussion_positions:
-        summary_parts["position_summary"] = {
-            p["speaker"]: {
-                "suspects": p.get("suspects", []),
-                "trusts": p.get("trusts", []),
-                "claimed_role": p.get("claimed_role"),
-            }
-            for p in discussion_positions
-        }
+    # Per-player position summaries
+    discussion = state.get("discussion_positions") or {}
+    if discussion:
+        summary_parts["position_summary"] = discussion
 
-    # Emit as a GameEvent for audit trail
     event = GameEvent(
         type="context_summary",
         payload={"visibility": "public", **summary_parts},
@@ -191,7 +251,7 @@ def summarize_context(state: RuntimeState) -> dict[str, Any]:
 def reflection(state: RuntimeState) -> dict[str, Any]:
     """Post-game per-player reflection.
 
-    Design doc §6.2 node 27, §10.2: each player generates a reflection
+    Design doc SS6.2 node 27, SS10.2: each player generates a reflection
     covering key judgments, mistakes, successful strategies, deception
     experienced, and improvement suggestions. Results are stored into
     ReflectionMemory for future-game retrieval.
@@ -204,7 +264,6 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
     for i, (pid, player) in enumerate(gs.players.items()):
         # 20s between reflection LLM calls to avoid overwhelming the API at game end
         if i > 0:
-            import time
             time.sleep(20)
         reflection_text = ""
         try:

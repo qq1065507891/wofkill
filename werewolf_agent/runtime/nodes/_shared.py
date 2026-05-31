@@ -209,10 +209,10 @@ def _dispatch_agent(
     if not registry:
         return None
     # Inter-call delay: prevent hammering the API during sequential agent calls.
-    # 0 = random 3000-6000ms; >0 = fixed delay in ms; <0 = no delay.
+    # 0 = 10000ms default; >0 = fixed delay in ms; <0 = no delay.
     delay_ms = state.get("agent_call_delay_ms", 0)
     if delay_ms == 0:
-        delay_ms = random.randint(3000, 6000)
+        delay_ms = 10000
     if delay_ms > 0:
         time.sleep(delay_ms / 1000.0)
     engine = state["engine"]

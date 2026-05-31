@@ -183,6 +183,51 @@ def _inject_seed_rag_hints(
         return context
 
 
+# ---------------------------------------------------------------------------
+# Speech position extraction helpers (deterministic, no LLM)
+# ---------------------------------------------------------------------------
+
+def _extract_suspects(text: str) -> list[str]:
+    suspects: list[str] = []
+    for m in re.finditer(r"(?:怀疑|标狼|狼面|定狼|抗推|出)\s*(p\d{2})", text):
+        pid = m.group(1)
+        if pid not in suspects:
+            suspects.append(pid)
+    return suspects
+
+
+def _extract_trusts(text: str) -> list[str]:
+    trusts: list[str] = []
+    for m in re.finditer(r"(?:相信|好人|保|银水|金水|认好)\s*(p\d{2})", text):
+        pid = m.group(1)
+        if pid not in trusts:
+            trusts.append(pid)
+    return trusts
+
+
+def _extract_role_claim(text: str) -> str | None:
+    m = re.search(r"(?:我是|跳|身份是|底牌是)\s*(预言家|女巫|猎人|白痴|平民|村民|混血儿)", text)
+    return m.group(1) if m else None
+
+
+def _extract_vote_intent(text: str) -> str | None:
+    m = re.search(r"(?:归票|票投|出|投给|投票|上票)\s*(p\d{2})", text)
+    return m.group(1) if m else None
+
+
+def _first_sentence(text: str, max_len: int = 60) -> str:
+    for sep in ("。", "！", "？", "\n"):
+        idx = text.find(sep)
+        if idx > 0:
+            sentence = text[:idx + 1].strip()
+            return sentence[:max_len]
+    return text.strip()[:max_len]
+
+
+# ---------------------------------------------------------------------------
+# Cross-game memory hint builders
+# ---------------------------------------------------------------------------
+
 def _profile_memory_hint(profile: Any, role_stats: dict[str, dict[str, int]]) -> dict[str, Any]:
     roles = [
         {"role": role, "games": stats["count"], "wins": stats["wins"]}
@@ -381,6 +426,7 @@ def build_agent_context(
     wolf_team_plan: dict[str, Any] | None = None,
     rag_service: Any | None = None,
     restored_memory: Any | None = None,
+    discussion_positions: dict[str, str] | None = None,
 ) -> AgentContext:
     """Build AgentContext for a player from current game state.
 
@@ -602,6 +648,11 @@ def build_agent_context(
         public_summary = TIMELINE_ORDER_NOTE
         if current_label:
             public_summary = f"{public_summary}\n当前时间点：{current_label}"
+
+    # ── Player's own speech summary (from LLM or deterministic fallback) ──
+    own_summary = (discussion_positions or {}).get(player_id, "")
+    if own_summary:
+        public_summary += f"\n\n--- 你对今日讨论的总结 (D{gs.day_number}) ---\n{own_summary}"
 
     # Build contradiction alerts and belief state from world state
     ctx_alerts: list[dict[str, Any]] = []

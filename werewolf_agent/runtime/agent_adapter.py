@@ -628,6 +628,7 @@ def agent_day_speech(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        discussion_positions=state.get("discussion_positions"),
     )
 
     strategy_directive = context.strategy_directive or {}
