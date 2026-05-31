@@ -52,6 +52,7 @@ class GameRunnerConfig:
     judge_persona_config_path: str = ""
     judge_hitl_enabled: bool = False
     judge_hitl_auto_pause_triggers: list[str] | None = None  # e.g. ["death_announce", "exile"]
+    agent_call_delay_ms: int = 0  # 0 = random 3000-6000ms; >0 = fixed delay in ms
 
     def __post_init__(self) -> None:
         if self.seed is None:
@@ -234,6 +235,7 @@ class GameRunner:
             rt["judge_hitl"] = self._hitl_interface
             rt["judge_hitl_enabled"] = True
             rt["hitl_auto_pause_after"] = self._config.judge_hitl_auto_pause_triggers or []
+        rt["agent_call_delay_ms"] = self._config.agent_call_delay_ms
         if self._rag_service is not None:
             rt["rag_service"] = self._rag_service
         if self._config.agent_call_timeout > 0:
@@ -358,8 +360,10 @@ class GameRunner:
             ):
                 self._step_count += 1
                 self._process_chunk(chunk)
-                # Check if game ended
-                if self._state.phase == "finished" or self._state.winning_faction is not None:
+                # Check if game ended — use phase=="finished" only.
+                # winning_faction is set by check_victory before the reflection
+                # node runs; using it as an exit condition would skip reflection.
+                if self._state.phase == "finished":
                     self._finished = True
                     self._save_memory_snapshot()
                     self._persist_if_configured()
@@ -434,7 +438,7 @@ class GameRunner:
             ):
                 self._step_count += 1
                 self._process_chunk(chunk)
-                if self._state.phase == "finished" or self._state.winning_faction is not None:
+                if self._state.phase == "finished":
                     self._finished = True
                     self._save_memory_snapshot()
                     self._persist_if_configured()
@@ -442,7 +446,7 @@ class GameRunner:
         except Exception as exc:
             logger.warning("Graph execution error in run_scripted() at step %d: %s", self._step_count, exc)
 
-        self._finished = self._state.phase == "finished" or self._state.winning_faction is not None
+        self._finished = self._state.phase == "finished"
         if self._finished:
             self._save_memory_snapshot()
         self._persist_if_configured()
@@ -480,8 +484,9 @@ class GameRunner:
             chunk = next(self._stream_gen)
             self._step_count += 1
             self._process_chunk(chunk)
-            # Check if game ended
-            if self._state.phase == "finished" or self._state.winning_faction is not None:
+            # Check if game ended — phase=="finished" only (not winning_faction;
+            # the reflection node must run after check_victory sets winning_faction)
+            if self._state.phase == "finished":
                 self._finished = True
         except StopIteration:
             # Stream exhausted — game has ended

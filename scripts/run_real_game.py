@@ -390,6 +390,7 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=500, help="Max graph steps")
     parser.add_argument("--timeout", type=float, default=120.0, help="Agent timeout (seconds)")
     parser.add_argument("--no-timeout", action="store_true", help="Disable agent timeout")
+    parser.add_argument("--delay", type=int, default=0, help="Inter-call delay ms (0=random 3-6s, >0=fixed, <0=none)")
     args = parser.parse_args()
 
     load_local_dotenv(ROOT / ".env")
@@ -477,6 +478,7 @@ def main() -> None:
         agent_call_timeout=0 if args.no_timeout else args.timeout,
         repository=game_repo,
         memory_coordinator=memory_coordinator,
+        agent_call_delay_ms=args.delay,
     )
 
     runner = GameRunner(config)

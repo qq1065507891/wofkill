@@ -148,8 +148,8 @@ class ReviewGenerator:
         ground_truth: dict[str, str],
         graph: RelationGraph,
     ) -> None:
-        """Analyze who deceived this player based on relations."""
-        # Find players who defended wolves that this player voted for incorrectly
+        """Analyze who deceived this player based on relations and votes."""
+        # Method 1: Find werewolves who spoke against good players this player voted for
         votes = graph.by_source(player_id)
         votes = [e for e in votes if e.predicate == RelationType.VOTED]
 
@@ -158,9 +158,7 @@ class ReviewGenerator:
             if target is None:
                 continue
             actual_target_role = ground_truth.get(target, "")
-            # Voted out a good player = potentially deceived
             if actual_target_role in ("villager", "seer", "witch", "hunter", "idiot", "hybrid"):
-                # Find who spoke against this good player (pushed the wagon)
                 attacks = graph.query(
                     predicate=RelationType.SPOKE_AGAINST,
                     target=target,
@@ -170,6 +168,20 @@ class ReviewGenerator:
                         attacker_role = ground_truth.get(attack.source, "")
                         if attacker_role == "werewolf":
                             report.deceived_by.append(attack.source)
+
+        # Method 2: Werewolves who voted the same way as this player on a good target
+        if not report.deceived_by:
+            for vote in votes:
+                target = vote.target or ""
+                if ground_truth.get(target, "") in ("villager", "seer", "witch", "hunter", "idiot", "hybrid"):
+                    same_voters = graph.query(
+                        predicate=RelationType.VOTED,
+                        target=target,
+                    )
+                    for v in same_voters:
+                        if v.source != player_id and v.source not in report.deceived_by:
+                            if ground_truth.get(v.source, "") == "werewolf":
+                                report.deceived_by.append(v.source)
 
     def _generate_suggestions(self, report: ReviewReport) -> None:
         """Generate improvement suggestions based on review findings."""
@@ -201,9 +213,14 @@ class ReviewGenerator:
         total = len(report.key_judgments)
         accuracy = f"{correct}/{total}" if total > 0 else "N/A"
         won = "胜利" if report.faction_won else "失败"
-        return (
+        base = (
             f"角色={report.role}，阵营{won}，"
             f"判断准确率={accuracy}，"
             f"被欺骗={len(report.deceived_by)}次，"
             f"错误={len(report.error_analysis)}项"
         )
+        if report.error_analysis:
+            base += f" | 错误分析: {'; '.join(report.error_analysis[:3])}"
+        if report.improvement_suggestions:
+            base += f" | 改进建议: {'; '.join(report.improvement_suggestions[:3])}"
+        return base

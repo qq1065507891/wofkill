@@ -51,7 +51,11 @@ class ReflectionMemory:
         try:
             self._repo.save_reflection(entry.to_dict())
         except Exception:
-            pass
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to persist reflection %s for player %s",
+                entry.entry_id, entry.player_id, exc_info=True,
+            )
 
     # -- CRUD ---------------------------------------------------------------
 

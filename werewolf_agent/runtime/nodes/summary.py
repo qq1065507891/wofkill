@@ -201,7 +201,11 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
 
     # Build per-player reflection via agent calls when registry is available
     reflection_entries: list[dict[str, Any]] = []
-    for pid, player in gs.players.items():
+    for i, (pid, player) in enumerate(gs.players.items()):
+        # 20s between reflection LLM calls to avoid overwhelming the API at game end
+        if i > 0:
+            import time
+            time.sleep(20)
         reflection_text = ""
         try:
             result = _dispatch_agent(state, _agent_reflection, pid)

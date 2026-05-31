@@ -6,6 +6,7 @@ import hashlib
 import logging
 import random
 import re
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -110,6 +111,7 @@ class RuntimeState(TypedDict, total=False):
     judge_hitl: Any
     judge_hitl_enabled: bool
     hitl_auto_pause_after: list[str]
+    agent_call_delay_ms: int
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +203,18 @@ def _dispatch_agent(
     """Helper to dispatch to an agent after checking registry existence.
 
     Consolidates registry validation and wraps standard parameter packing.
+    Introduces a small inter-call delay to avoid overwhelming the API.
     """
     registry = state.get("agent_registry")
     if not registry:
         return None
+    # Inter-call delay: prevent hammering the API during sequential agent calls.
+    # 0 = random 3000-6000ms; >0 = fixed delay in ms; <0 = no delay.
+    delay_ms = state.get("agent_call_delay_ms", 0)
+    if delay_ms == 0:
+        delay_ms = random.randint(3000, 6000)
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
     engine = state["engine"]
     return _call_agent(
         fn,
