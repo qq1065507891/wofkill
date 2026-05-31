@@ -447,16 +447,26 @@ def build_agent_context(
     elif player.role == "hybrid" and gs.hybrid_master_id:
         visible["master_id"] = gs.hybrid_master_id
 
-    # Build recent transcript from public speech events
-    # Include both day speeches and sheriff election speeches
+    # Build recent transcript: speeches + votes (up to 12 items for pattern analysis)
     transcript: list[dict[str, Any]] = []
     for e in reversed(gs.events):
-        if e.type in ("speech", "sheriff_speech") and len(transcript) < 8:
-            transcript.insert(0, {
-                "speaker": e.payload.get("speaker", ""),
-                "text": e.payload.get("text", ""),
-                "type": e.type,
-            })
+        if e.type in ("speech", "sheriff_speech"):
+            if len(transcript) < 10:
+                transcript.insert(0, {
+                    "speaker": e.payload.get("speaker", ""),
+                    "text": e.payload.get("text", ""),
+                    "type": e.type,
+                })
+        elif e.type == "vote_resolved" and len(transcript) < 12:
+            votes_detail = e.payload.get("votes", [])
+            if votes_detail:
+                voter_lines = {v.get("voter", "?"): v.get("target", "弃票") for v in votes_detail}
+                transcript.insert(0, {
+                    "type": "vote_record",
+                    "day": e.payload.get("day_number", "?"),
+                    "result": e.payload.get("exiled") or "无人出局",
+                    "votes": voter_lines,
+                })
 
     # ── Build public summary (A: enriched events, B: smart truncation) ──
     # Priority: 1=critical(death/vote/seer), 2=secondary(PK/sheriff_no), 3=low(separators)
@@ -493,6 +503,7 @@ def build_agent_context(
             tied = e.payload.get("tied", [])
             weighted = e.payload.get("weighted_tally", {})
             day = e.payload.get("day_number", "?")
+            votes_detail = e.payload.get("votes", [])
             if exiled:
                 if weighted:
                     tally_str = "、".join(
@@ -502,10 +513,32 @@ def build_agent_context(
                     summary_items.append((1, f"[放逐] D{day} {exiled}被放逐 ({tally_str})"))
                 else:
                     summary_items.append((1, f"[放逐] D{day} {exiled}被放逐"))
+                # Per-voter breakdown for pattern analysis
+                if votes_detail:
+                    voter_lines = []
+                    for v in votes_detail:
+                        voter = v.get("voter", "?")
+                        target = v.get("target", "弃票") if v.get("target") else "弃票"
+                        voter_lines.append(f"{voter}→{target}")
+                    summary_items.append((1, f"[投票] D{day}: {'，'.join(voter_lines)}"))
             elif reason == "second_tie_no_exile":
                 summary_items.append((1, "[放逐] 二次平票，无人出局"))
+                if votes_detail:
+                    voter_lines = []
+                    for v in votes_detail:
+                        voter = v.get("voter", "?")
+                        target = v.get("target", "弃票") if v.get("target") else "弃票"
+                        voter_lines.append(f"{voter}→{target}")
+                    summary_items.append((1, f"[投票] D{day}: {'，'.join(voter_lines)}"))
             elif tied:
                 summary_items.append((2, f"[放逐] 平票PK: {', '.join(tied)}"))
+                if votes_detail:
+                    voter_lines = []
+                    for v in votes_detail:
+                        voter = v.get("voter", "?")
+                        target = v.get("target", "弃票") if v.get("target") else "弃票"
+                        voter_lines.append(f"{voter}→{target}")
+                    summary_items.append((1, f"[投票] D{day}: {'，'.join(voter_lines)}"))
 
         elif e.type == "idiot_revealed":
             summary_items.append((1, f"[白痴] {e.payload.get('player_id', '?')} 亮牌"))
