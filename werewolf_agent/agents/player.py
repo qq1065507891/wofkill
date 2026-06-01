@@ -472,6 +472,11 @@ class PlayerAgent:
             return action.model_copy(update={"trace": trace}), retry
 
         # Fallback
+        logger.warning(
+            "Agent %s exhausted retries (task=%s, attempts=%d, last_error=%s) → fallback",
+            context.agent_id, context.task_type, attempt,
+            retry.error_code if retry else "none",
+        )
         fallback = self._fallback_action(context)
         trace = self._build_action_trace(
             context,
@@ -820,7 +825,8 @@ class PlayerAgent:
     def _context_clues(self, context: AgentContext) -> str:
         clues: list[str] = []
         sheriff_id = context.visible_world_state.get("sheriff_id")
-        if sheriff_id:
+        alive_players = context.visible_world_state.get("alive_players", [])
+        if sheriff_id and sheriff_id in alive_players:
             clues.append(f"当前警长是{sheriff_id}")
         for item in context.salience_items[:3]:
             if not isinstance(item, dict):

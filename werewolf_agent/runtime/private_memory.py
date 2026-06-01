@@ -43,6 +43,12 @@ VALID_POINT_MARKERS = (
     "对得上",
 )
 
+_ROLE_SELF_DECLAIM_RE = re.compile(
+    r"我(?:的?身份|是|扮演|底牌是|角色是)"
+    r"(?:一名|一个|那只)?"
+    r"(狼人|预言家|女巫|猎人|白痴|混血儿|村民)",
+)
+
 
 def build_private_memory(game_state: GameState, player_id: str) -> dict[str, list[dict[str, Any]]]:
     """Build memory visible only to ``player_id``.
@@ -85,9 +91,9 @@ def _add_private_vote_thought(
         "day": event.payload.get("day_number", 0),
         "target": thought.get("target"),
         "standing_with_seer": thought.get("standing_with_seer", ""),
-        "suspect_reason": _clip(thought.get("suspect_reason", "")),
+        "suspect_reason": _sanitize_role_claims(_clip(thought.get("suspect_reason", ""))),
         "not_voting_reason": _clip(thought.get("not_voting_reason", "")),
-        "private_reason": _clip(thought.get("private_reason", "")),
+        "private_reason": _sanitize_role_claims(_clip(thought.get("private_reason", ""))),
         "source_event": event.type,
     }
     memory["vote_thoughts"].append(item)
@@ -177,3 +183,12 @@ def _split_sentences(text: str) -> list[str]:
 def _clip(value: Any, limit: int = 160) -> str:
     text = str(value or "").strip()
     return text[:limit]
+
+
+def _sanitize_role_claims(text: str) -> str:
+    """Strip explicit role self-declarations from private memory text.
+
+    Prevents LLM from reading its own private_reason (e.g. '我是狼人')
+    and later blurting it out in public speech.
+    """
+    return _ROLE_SELF_DECLAIM_RE.sub("[角色信息已省略]", text)

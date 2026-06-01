@@ -323,7 +323,10 @@ class PlayerPromptBuilder:
             return ""
         return (
             "我的当前局记忆: 以下只代表你在本局形成的观察、站边和私有思考，"
-            "不是公开记录。\n" + self._compact_json(memory)
+            "不是公开记录。"
+            "【严禁】在公开发言中复述以下任何角色身份信息或暗示你从私有记忆中获知的身份。"
+            "你在公开发言中只能使用公开可见的信息。\n"
+            + self._compact_json(memory)
         )
 
     def _build_salience_events(self) -> str:

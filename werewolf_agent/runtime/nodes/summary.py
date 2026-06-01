@@ -14,6 +14,8 @@ from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.agents.schemas import ActionType, TaskType
+from werewolf_agent.runtime.context import build_agent_context
 from werewolf_agent.runtime.agent_adapter import _agent_reflection
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
@@ -69,38 +71,41 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
     transcript_text = "\n".join(transcript_lines)
 
     # Dispatch each alive player to independently summarize the day
+    engine: RuleEngine = state["engine"]
     positions: dict[str, str] = {}
     summarizers: list[str] = [pid for pid, p in gs.players.items() if p.alive]
     for i, pid in enumerate(summarizers):
-        player = gs.players[pid]
         # 10s gap between LLM calls (serial, no concurrency)
         if i > 0:
             time.sleep(10)
         summary_text = ""
         try:
-            from werewolf_agent.agents.schemas import TaskType
             registry = state.get("agent_registry")
             if registry is not None:
                 agent = registry.get_agent(pid)
                 if agent is not None:
-                    system_prompt = (
-                        f"你是狼人杀玩家{pid}。你的身份是{player.role}。"
-                        "以下是今天所有人的发言记录。请以你的视角总结：\n"
-                        "1) 每个玩家今天说了什么？（每人一句话）\n"
-                        "2) 你怀疑谁？为什么？\n"
-                        "3) 你信任谁？为什么？\n"
-                        "4) 你打算投谁？\n"
-                        "只输出总结，不要编造发言中不存在的内容。"
+                    context = build_agent_context(
+                        engine, gs, pid, TaskType.SPEECH,
+                        legal_actions=[ActionType.SPEECH],
+                        wolf_team_plan=state.get("wolf_team_plan"),
+                        discussion_positions=state.get("discussion_positions"),
                     )
-                    prompt = f"今日发言记录：\n{transcript_text}\n\n请从你的视角总结今天的讨论。"
-                    action = agent.act(
-                        prompt=prompt,
-                        system_prompt=system_prompt,
-                        task_type=TaskType.SPEECH,
-                    )
-                    summary_text = getattr(action, "speech_text", "") or ""
+                    extra_directive = {
+                        "summary_task": (
+                            "请总结今天的讨论：1) 每个玩家说了什么（每人一句话）"
+                            "2) 你怀疑谁？为什么？3) 你信任谁？为什么？4) 你打算投谁？"
+                            "只输出总结，不要编造发言中不存在的内容。"
+                        ),
+                        "transcript_text": transcript_text,
+                    }
+                    sd = context.strategy_directive or {}
+                    sd.update(extra_directive)
+                    context = replace(context, strategy_directive=sd)
+
+                    action, _retry_info = agent.act(context)
+                    summary_text = getattr(action, "speech", "") or ""
         except Exception:
-            logger.debug("LLM summarisation failed for %s, using deterministic fallback", pid)
+            logger.debug("LLM summarisation failed for %s, using deterministic fallback", pid, exc_info=True)
 
         if not summary_text:
             summary_text = _build_deterministic_summary(pid, speeches)

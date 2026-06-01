@@ -52,10 +52,34 @@ def build_visible_player_state(game_state: GameState) -> dict[str, Any]:
             {"id": death.player_id, "reason": death.reason}
             for death in deaths
         ],
-        "sheriff_id": game_state.sheriff_id,
-        "badge_state": game_state.sheriff_badge_state,
+        "sheriff_id": _effective_sheriff_id(game_state),
+        "badge_state": _effective_badge_state(game_state),
+        "sheriff_candidates": list(game_state.sheriff_candidates),
         "public_ledger": _compact_public_ledger(build_public_ledger(game_state)),
     }
+
+
+def _effective_sheriff_id(game_state: GameState) -> str | None:
+    """Return sheriff_id only if the sheriff is still alive.
+
+    When the sheriff has died but badge transfer has not yet executed,
+    game_state still holds the dead player's id — hide it so agents
+    don't reference a dead player as '在场'.
+    """
+    sid = game_state.sheriff_id
+    if not sid:
+        return None
+    player = game_state.players.get(sid)
+    if player and not player.alive:
+        return None
+    return sid
+
+
+def _effective_badge_state(game_state: GameState) -> str | None:
+    """Return badge state consistent with _effective_sheriff_id."""
+    if _effective_sheriff_id(game_state) is None:
+        return None
+    return game_state.sheriff_badge_state
 
 
 def _compact_public_ledger(

@@ -538,6 +538,8 @@ def build_agent_context(
                 summary_items.append((1, f"[法官] {msg}"))
             elif phase == "sheriff_elected":
                 summary_items.append((1, f"[警长] {msg}"))
+            elif phase == "sheriff_registered":
+                summary_items.append((1, f"[上警] {msg}"))
             elif phase in ("vote_tie_pk", "vote_second_tie"):
                 summary_items.append((2, f"[法官] {msg}"))
             elif phase == "sheriff_no_election":

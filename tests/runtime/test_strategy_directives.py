@@ -176,7 +176,7 @@ class TestWitchStrategyHints:
         assert "毒药" in hint
 
     def test_witch_poison_requires_hard_evidence(self) -> None:
-        """Witch poison guidance should require hard evidence before using poison."""
+        """Witch poison guidance should encourage using poison with evidence."""
         from werewolf_agent.runtime.agent_adapter import agent_night_witch
         state, engine, registry = self._make_witch_state(night_number=2, poison_used=False)
         agent_night_witch(state, engine, registry)
@@ -184,7 +184,7 @@ class TestWitchStrategyHints:
         directive = ctx.strategy_directive["witch_poison_threshold"]
         assert "查杀" in directive
         assert "强票型" in directive
-        assert "单独开毒" in directive
+        assert "毒药" in directive
 
     def test_poison_used_no_poison_hint(self) -> None:
         """When poison is already used, no poison alternative is mentioned."""

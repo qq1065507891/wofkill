@@ -11,6 +11,7 @@ Strategy evaluation lives in runtime/strategy/.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from typing import Any, Protocol
@@ -223,24 +224,24 @@ def agent_night_witch(
     if not gs.poison_used:
         witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
         witch_directive["witch_poison_threshold"] = (
-            "【毒药硬证据门槛】毒药是好人阵营最容易打出负收益的技能，不能只因为"
-            "“发言像狼”“感觉可疑”“有人带节奏”就单独开毒。优先满足至少一项硬证据："
+            "【毒药决策指引】毒药是好人阵营唯一的主动击杀手段。"
+            "以下情况应优先使用毒药："
             "1) 可信预言家的明确查杀；2) 强票型证据（连续保狼、冲票、关键轮分票）；"
-            "3) 对跳失败或身份逻辑明显破产；4) 多条公开记录互相印证。"
-            "如果证据只停留在泛化怀疑，应在reason里说明为什么暂不单独开毒。"
+            "3) 对跳失败或身份逻辑明显破产；4) 场上存活人数减少，再不用毒药可能来不及。"
+            "如果存在合理怀疑但证据不够硬，应权衡'不用毒药导致好人出局'vs'误毒好人'的风险。"
+            "解药已用后，你每夜只剩毒药或空过——空过意味着好人失去一轮主动权。"
         )
         alive = sum(1 for p in gs.players.values() if p.alive)
         if alive <= 9:
             witch_directive["poison_urgency"] = (
-                f"场上存活{alive}人，你的毒药还未使用。"
-                f"如果存在查杀、强票型或对跳失败目标，建议今晚撒毒；"
-                f"如果只有泛化怀疑，仍应谨慎，避免盲毒好人。"
+                f"场上存活{alive}人，解药已用，你每夜只有毒药和空过两个选项。"
+                f"如果你有怀疑目标（即使证据不够硬），应积极考虑用毒——但需权衡误毒好人的风险。"
             )
         if alive <= 7:
             witch_directive["poison_urgency"] = (
                 f"【紧急】场上仅存活{alive}人！你的毒药还没有使用！"
-                f"若存在查杀、强票型或对跳失败等硬证据，今晚应优先用毒；"
-                f"若仍只有泛化怀疑，必须在reason里说明暂不毒的风险和理由，避免最后一毒误伤好人。"
+                f"好人阵营已经没有犹豫的空间——选择你怀疑度最高的目标用毒。"
+                f"不用毒药很可能意味着好人永远失去主动权。"
             )
 
     witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
@@ -1514,8 +1515,11 @@ def agent_sheriff_election_speech(
         strategy_directive["seer_verification_rationale"] = (
             "【查验理由要求】你每夜的查验目标必须有具体动机。"
             "禁止说'按顺序验'或'随便验的'。正确的说法示例："
-            "'N1验p03是因为他在警下靠前位置，我需要尽早确认他的身份以建立信息基点'。"
-            "如果没有特殊理由，可以说'首夜随机查验，但我选择了发言量较大的位置'。"
+            "'N1验p03是因为他发言内容展现了较强的逻辑分析能力，"
+            "我需要确认他是好人核心还是狼人伪装'。"
+            "查验理由应基于发言内容、投票行为等可观察信息，"
+            "不要使用'警上/警下位置'等你在发言时可能记错的信息。"
+            "如果没有特殊理由，可以说'首夜随机查验，选择了一个发言量较大的位置'。"
         )
 
     # Wolf: inject role-specific strategy from wolf_team_plan
@@ -1595,28 +1599,32 @@ def _agent_reflection(
     if agent is None:
         return {}
 
-    from werewolf_agent.agents.schemas import TaskType
-
-    gs = state["game_state"]
+    gs: GameState = state["game_state"]
     player = gs.players.get(player_id)
-    role = player.role if player else "?"
     winner = gs.winning_faction or "?"
 
-    system_prompt = (
-        "你是刚完成一局狼人杀的玩家，现在进行对局复盘。"
-        f"你的身份是{role}，{'存活到' if (player and player.alive) else '在'}游戏结束。"
-        f"胜利方是{'好人' if winner == 'good' else '狼人'}阵营。"
-        "请反思本局表现：你做了哪些关键判断？哪些是对的？哪些是错的？"
-        "有没有被谁欺骗或误导？下局如何改进？"
-    )
-    prompt = "请给出你的对局复盘。"
-
     try:
-        action = agent.act(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            task_type=TaskType.SPEECH,
+        context = build_agent_context(
+            engine, gs, player_id, TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
         )
-        return {"reflection_text": getattr(action, "speech_text", "") or ""}
+        reflection_directive = {
+            "reflection_task": (
+                "你已完成一局狼人杀，请复盘："
+                "你做了哪些关键判断？哪些是对的？哪些是错的？"
+                "有没有被谁欺骗或误导？下局如何改进？"
+            ),
+            "game_outcome": (
+                f"胜利方是{'好人' if winner == 'good' else '狼人'}阵营。"
+                f"你{'存活到' if (player and player.alive) else '在'}游戏结束。"
+            ),
+        }
+        sd = context.strategy_directive or {}
+        sd.update(reflection_directive)
+        context = dataclasses.replace(context, strategy_directive=sd)
+
+        action, _retry_info = agent.act(context)
+        return {"reflection_text": getattr(action, "speech", "") or ""}
     except Exception:
+        logger.warning("Reflection failed for %s", player_id, exc_info=True)
         return {"reflection_text": ""}

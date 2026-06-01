@@ -441,7 +441,8 @@ def _context_clues(
     """Extract context clues for speech synthesis and fallback reasons."""
     clues: list[str] = []
     sheriff_id = visible_world_state.get("sheriff_id")
-    if sheriff_id:
+    alive_players = visible_world_state.get("alive_players", [])
+    if sheriff_id and sheriff_id in alive_players:
         clues.append(f"当前警长是{sheriff_id}")
     for item in salience_items[:3]:
         if not isinstance(item, dict):

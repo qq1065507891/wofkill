@@ -33,6 +33,9 @@ _SUSPICION_PATTERNS = [
     r"(p\d{2})\s*是狼", r"(p\d{2})\s*有问题",
     r"(p\d{2})\s*发言.*?(?:矛盾|不合理)", r"推\s*(p\d{2})",
     r"(p\d{2})\s*必须出局", r"投\s*(p\d{2})",
+    r"(p\d{2})\s*可疑", r"(p\d{2})\s*狼面",
+    r"(p\d{2})\s*(?:是|像).{0,6}狼", r"标狼\s*(p\d{2})",
+    r"(p\d{2})\s*行为.*?(?:反常|异常|不正常)",
 ]
 
 # Protection/trust indicators
@@ -59,8 +62,15 @@ _EVIDENCE_PATTERNS = [
     (r"警徽流", "badge_flow"),
     (r"对跳", "counterclaim"),
     (r"票数", "vote_tally"),
+    (r"票型", "vote_tally"),
+    (r"投票记录", "vote_tally"),
     (r"之前说", "speech_quote"),
     (r"刚才说", "speech_quote"),
+    (r"依据", "reasoning"),
+    (r"理由", "reasoning"),
+    (r"因为.*?(?:投|票|怀疑|保|杀|出局)", "reasoning"),
+    (r"逻辑.*?(?:链|线|漏洞|矛盾|不通|问题)", "reasoning"),
+    (r"跳(?:了?)?(?:预言家|女巫|猎人|白痴|身份)", "role_claim"),
 ]
 
 # Stance indicators
