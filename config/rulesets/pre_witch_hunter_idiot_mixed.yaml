@@ -312,6 +312,7 @@ sheriff:
   vote_weight: 1.5
   can_choose_speech_order: true
   can_endorse_vote: true
+  first_tie_policy: pk_speech_then_revote
   badge_states:
     - none
     - active

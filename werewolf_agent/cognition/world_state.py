@@ -167,6 +167,15 @@ def _extract_sheriff_vote_tie(event: GameEvent, state: GameState) -> list[Struct
     )]
 
 
+def _extract_sheriff_vote_tie_first(event: GameEvent, state: GameState) -> list[StructuredFact]:
+    tied = event.payload.get("tied", [])
+    return [StructuredFact(
+        fact_type="sheriff_vote_tie_first",
+        value="tie_first",
+        metadata={"tied_players": tied},
+    )]
+
+
 def _extract_badge_transferred(event: GameEvent, state: GameState) -> list[StructuredFact]:
     new_id = event.payload.get("new_sheriff_id", "?")
     return [StructuredFact(
@@ -394,6 +403,7 @@ _EXTRACTORS: dict[str, Any] = {
     "sheriff_registered": _extract_sheriff_registered,
     "sheriff_withdraw": _extract_sheriff_withdraw,
     "sheriff_vote_tie": _extract_sheriff_vote_tie,
+    "sheriff_vote_tie_first": _extract_sheriff_vote_tie_first,
     "badge_transferred": _extract_badge_transferred,
     "badge_torn": _extract_badge_torn,
     "witch_antidote_used": _extract_witch_antidote_used,

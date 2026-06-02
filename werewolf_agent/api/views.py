@@ -151,6 +151,7 @@ _PUBLIC_EVENT_TYPES = {
     "player_died", "player_exiled", "idiot_revealed",
     "werewolf_self_destructed", "sheriff_elected",
     "sheriff_registered", "sheriff_withdraw", "sheriff_vote_tie",
+    "sheriff_vote_tie_first",
     "badge_transferred", "badge_torn", "sheriff_no_election",
     "speech", "vote",
 }

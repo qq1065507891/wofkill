@@ -51,7 +51,7 @@ _PHASE_RELEVANCE: dict[str, set[str]] = {
     "seer_check": {"seer_check"},
     "witch_action": {"witch_antidote_used", "witch_poison_used"},
     "sheriff_registration": {"sheriff_registered", "sheriff_withdraw"},
-    "sheriff_vote": {"sheriff_vote_tie", "sheriff_elected", "sheriff_no_election"},
+    "sheriff_vote": {"sheriff_vote_tie", "sheriff_vote_tie_first", "sheriff_elected", "sheriff_no_election"},
 }
 
 # How many recent days count as "recent" (full weight)

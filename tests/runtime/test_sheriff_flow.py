@@ -393,37 +393,9 @@ class TestSheriffElectionPK:
         from werewolf_agent.runtime.graph import _new_engine
 
         # 4 players, 3 are candidates. p10 is the off-sheriff voter (will produce 1 vote per candidate).
+        # 6 players, 3 candidates, 3 voters, each picks a different candidate → first tie.
         gs = GameState(
             game_id="g_test",
-            players={
-                "p01": PlayerState(id="p01", role="villager", alive=True),
-                "p05": PlayerState(id="p05", role="villager", alive=True),
-                "p08": PlayerState(id="p08", role="villager", alive=True),
-                "p10": PlayerState(id="p10", role="villager", alive=True),
-            },
-            sheriff_candidates=["p01", "p05", "p08"],
-            day_number=1,
-        )
-        state: RuntimeState = {
-            "game_state": gs,
-            "engine": _new_engine(),
-            # p10 splits 3 votes 1-1-1 (need >=3 votes; use 3 voters against 1 non-candidate — but
-            # we only have 1 non-candidate, so simulate 3 voters via voters dict as-is and rely
-            # on filter to keep only p10's valid vote). Use a multi-voter pattern via state.
-            "sheriff_votes": {"p10": "p01"},  # only 1 valid voter → 1 vote → not a tie
-            "sheriff_withdrawing": [],
-        }
-        # Add extra dummy voters; they will be filtered out (not alive/non-candidate).
-        # The engine will see only p10's valid vote, producing a single winner — not a tie.
-        # To force a real tie, we need 3 valid voters all picking 3 different candidates.
-        # But with only 1 non-candidate player, we can't make 3 valid votes.
-        # Therefore we mock the engine by injecting votes directly into the run.
-        # Instead, test the tie behavior by checking the runtime branches via
-        # a closer look at the engine. We use a stub: sheriff_vote -> engine.resolve_sheriff_vote
-        # We construct a 3-candidate, 3-voter scenario.
-        # Re-design: 6 players, 3 candidates, 3 voters, each picks a different candidate.
-        gs2 = GameState(
-            game_id="g_test2",
             players={
                 "p01": PlayerState(id="p01", role="villager", alive=True),
                 "p02": PlayerState(id="p02", role="villager", alive=True),
@@ -435,13 +407,13 @@ class TestSheriffElectionPK:
             sheriff_candidates=["p01", "p05", "p08"],
             day_number=1,
         )
-        state2: RuntimeState = {
-            "game_state": gs2,
+        state: RuntimeState = {
+            "game_state": gs,
             "engine": _new_engine(),
             "sheriff_votes": {"p02": "p01", "p06": "p05", "p09": "p08"},
             "sheriff_withdrawing": [],
         }
-        result = sheriff_vote(state2)
+        result = sheriff_vote(state)
         gs_out = result["game_state"]
         # On first tie, tie_count should be 1, no sheriff, and pk_candidates set
         assert gs_out.sheriff_id is None
