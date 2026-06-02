@@ -209,6 +209,59 @@ class TestVotePressureContext:
         assert ctx["pk_candidates"] == ["p03", "p07"]
 
 
+class TestValidateStructuredVoteAction:
+    """Task 2: Relaxed basis detection — no regex basis defaults to fallback."""
+
+    def test_missing_basis_defaults_to_fallback_not_error(self):
+        """When basis regex finds nothing, default to fallback basis (no error).
+
+        Regression for Issue 5: 6/6 fallback votes in g_3528592081 stemmed from
+        vote_quality / empty_response retries. The strict regex caused LLM
+        retries to repeat the same mistake and triggered fallback. We now
+        default missing basis to "fallback" and let the vote through.
+        """
+        from werewolf_agent.runtime.vote_quality import validate_structured_vote_action
+
+        action = {
+            "action_type": "vote",
+            "target_id": "p07",
+            "speech": "我跟p07的票",
+            "reason": "我没看出什么明显理由",
+            "confidence": 0.5,
+            "seer_stance": "undecided",
+            "vote_basis": "fallback",
+            "standing_with_seer": "",
+            "suspect_reason": "p07的发言节奏有点奇怪",
+            "not_voting_reason": "其他人证据更弱",
+            "private_reason": "保守票",
+        }
+        result = validate_structured_vote_action(action)
+        assert result.get("valid") is True
+        assert result.get("vote_basis") in ("fallback", "speech_logic")
+        assert result.get("seer_stance") in ("undecided", "no_claim")
+
+    def test_missing_basis_with_empty_seer_stance_defaults_to_no_claim(self):
+        """When seer_stance is missing/empty, default to no_claim on no basis."""
+        from werewolf_agent.runtime.vote_quality import validate_structured_vote_action
+
+        action = {
+            "action_type": "vote",
+            "target_id": "p03",
+            "speech": "我跟p03的票",
+            "reason": "没看出依据",
+            "confidence": 0.4,
+            "seer_stance": "",
+            "vote_basis": "fallback",
+            "standing_with_seer": "",
+            "suspect_reason": "p03的立场模糊",
+            "not_voting_reason": "其他人证据更弱",
+            "private_reason": "保守票",
+        }
+        result = validate_structured_vote_action(action)
+        assert result.get("valid") is True
+        assert result.get("seer_stance") in ("no_claim", "undecided")
+
+
 class TestVoteFallbackTarget:
     """Fallback vote target selection should use public evidence when possible."""
 

@@ -27,6 +27,10 @@ VOTE_BASIS_VALUES = {
 SEER_STANCE_VALUES = {"trust", "distrust", "undecided", "no_claim"}
 _UNEXPLAINED_VALUES = {"", "未说明", "无", "没有", "none", "null", "n/a"}
 
+# Public alias used by other modules for retry hints (matches Pydantic enum).
+VALID_VOTE_BASIS_VALUES = frozenset(VOTE_BASIS_VALUES)
+VALID_SEER_STANCE_VALUES = frozenset(SEER_STANCE_VALUES)
+
 
 # Basis detection patterns (Chinese)
 _BASIS_PATTERNS: list[tuple[str, list[str]]] = [
@@ -136,7 +140,13 @@ def validate_structured_vote_action(
     action: dict[str, Any],
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Validate the full structured vote contract used in real games."""
+    """Validate the full structured vote contract used in real games.
+
+    Task 2: relax the basis regex — if no basis pattern is detected, default
+    ``vote_basis`` to "fallback" rather than rejecting the vote. The strict
+    regex caused 6/6 fallback votes in g_3528592081 because LLM retries could
+    not satisfy the regex and the LLM-prompt cycle was wasted.
+    """
     required_reason_fields = [
         ("reason", "投票理由"),
         ("suspect_reason", "怀疑理由"),
@@ -151,45 +161,59 @@ def validate_structured_vote_action(
                 "error_code": "vote_quality",
                 "missing_field": field_name,
                 "detected_bases": [],
-                "hint": f"{label}不能为未说明；必须给出具体玩家、事件或逻辑依据。",
+                "hint": (
+                    f"{label}不能为未说明；必须给出具体玩家、事件或逻辑依据。"
+                    f"有效 vote_basis: {sorted(VALID_VOTE_BASIS_VALUES)}。"
+                    f"有效 seer_stance: {sorted(VALID_SEER_STANCE_VALUES)}。"
+                ),
             }
 
-    seer_stance = _string_value(action.get("seer_stance"))
+    # Normalize empty seer_stance to "no_claim" (the neutral default).
+    raw_seer_stance = _string_value(action.get("seer_stance"))
+    if not raw_seer_stance:
+        action["seer_stance"] = "no_claim"
+        seer_stance = "no_claim"
+    else:
+        seer_stance = raw_seer_stance
     if seer_stance not in SEER_STANCE_VALUES:
         return {
             "valid": False,
             "error_code": "vote_quality",
             "missing_field": "seer_stance",
             "detected_bases": [],
-            "hint": "seer_stance必须是trust、distrust、undecided、no_claim之一。",
-        }
-
-    vote_basis = _string_value(action.get("vote_basis"))
-    if vote_basis not in VOTE_BASIS_VALUES:
-        return {
-            "valid": False,
-            "error_code": "vote_quality",
-            "missing_field": "vote_basis",
-            "detected_bases": [],
             "hint": (
-                "vote_basis必须是seer_check、seer_siding、speech_logic、"
-                "vote_pattern、pressure_test、anti_herd、fallback之一。"
+                f"seer_stance必须是{SEER_STANCE_VALUES}之一。"
+                f"有效 vote_basis: {sorted(VALID_VOTE_BASIS_VALUES)}。"
+                f"有效 seer_stance: {sorted(VALID_SEER_STANCE_VALUES)}。"
             ),
         }
 
+    # Normalize vote_basis: empty or out-of-enum values fall back to "fallback".
+    raw_vote_basis = _string_value(action.get("vote_basis"))
+    if not raw_vote_basis or raw_vote_basis not in VOTE_BASIS_VALUES:
+        action["vote_basis"] = "fallback"
+    else:
+        action["vote_basis"] = raw_vote_basis
+
+    # Task 2: relax the basis regex. If no basis pattern is detected in the
+    # reason/speech text, accept the vote with vote_basis="fallback" rather
+    # than rejecting. Empty votes that already passed the field checks above
+    # are still valid here.
     reason_result = validate_vote_reason(action, context)
+    detected_bases = reason_result.get("detected_bases", [])
     if not reason_result["valid"]:
-        return {
-            **reason_result,
-            "error_code": "vote_quality",
-        }
+        action["vote_basis"] = "fallback"
+        if not _string_value(action.get("seer_stance")):
+            action["seer_stance"] = "no_claim"
 
     return {
         "valid": True,
         "error_code": None,
         "missing_field": None,
-        "detected_bases": reason_result["detected_bases"],
+        "detected_bases": detected_bases,
         "hint": "",
+        "vote_basis": action.get("vote_basis"),
+        "seer_stance": action.get("seer_stance"),
     }
 
 

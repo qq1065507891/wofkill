@@ -567,7 +567,15 @@ class TestPlayerAgentRetryFallback:
         assert action.vote_basis == "seer_check"
         assert retry.error_code is None
 
-    def test_vote_quality_retries_unexplained_vote_when_required(self) -> None:
+    def test_vote_quality_accepts_missing_basis_without_retry(self) -> None:
+        """Task 2: Vote with no detectable basis pattern is accepted with fallback.
+
+        Regression for Issue 5 (g_3528592081): 6/6 fallback votes stemmed from
+        vote_quality retries caused by the strict basis regex. After relaxing
+        ``validate_structured_vote_action`` to default ``vote_basis`` to
+        "fallback" when no basis is detected, an "unexplained" vote is now
+        accepted on the first attempt without retrying the LLM.
+        """
         bad_resp = (
             '{"choice":"A","reason":"未说明",'
             '"seer_stance":"undecided","vote_basis":"fallback",'
@@ -575,16 +583,10 @@ class TestPlayerAgentRetryFallback:
             '"not_voting_reason":"未说明","private_reason":"未说明",'
             '"confidence":0.5}'
         )
-        good_resp = (
-            '{"choice":"A","reason":"p08查杀p07，p07没有回应查杀逻辑",'
-            '"seer_stance":"trust","vote_basis":"seer_check",'
-            '"standing_with_seer":"p08",'
-            '"suspect_reason":"p07被查杀后没有回应核心问题",'
-            '"not_voting_reason":"p06没有查验压力，暂不投",'
-            '"private_reason":"我更信p08的预言家线，所以投p07",'
-            '"confidence":0.8}'
-        )
-        provider = _SequenceJsonProvider([bad_resp, good_resp])
+        # Provider has only one response — if the agent retries, the test
+        # would crash with StopIteration. With the relaxed basis check, the
+        # vote is accepted on the first call.
+        provider = _SequenceJsonProvider([bad_resp])
         router = ModelRouter(
             model_profiles={},
             llm_profiles={},
@@ -605,10 +607,13 @@ class TestPlayerAgentRetryFallback:
 
         assert isinstance(action, PlayerAction)
         assert action.target_id == "p07"
-        assert action.seer_stance == "trust"
-        assert action.vote_basis == "seer_check"
-        assert retry.attempt == 2
-        assert provider.calls == 2
+        # seer_stance and vote_basis kept from response (both already valid).
+        assert action.seer_stance == "undecided"
+        assert action.vote_basis == "fallback"
+        # No retry: the relaxed basis check accepts the vote on attempt 1.
+        assert retry.attempt == 1
+        assert provider.calls == 1
+        assert retry.error_code is None
 
     def test_target_choice_pipeline_assembles_wolf_kill(self) -> None:
         json_resp = '{"choice":"B","reason":"p08像预言家，夜里优先刀掉","confidence":0.76}'

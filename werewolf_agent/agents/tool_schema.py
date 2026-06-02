@@ -239,4 +239,22 @@ def vote_quality_error(
         return None
     if result.get("valid"):
         return None
-    return str(result.get("hint") or "投票必须包含预言家立场、投票基点和具体理由。")
+    hint = result.get("hint")
+    if hint:
+        return str(hint)
+    # Fallback: include valid enum values so the LLM retry has actionable info.
+    try:
+        from werewolf_agent.runtime.vote_quality import (
+            VALID_VOTE_BASIS_VALUES,
+            VALID_SEER_STANCE_VALUES,
+        )
+        basis_list = sorted(VALID_VOTE_BASIS_VALUES)
+        stance_list = sorted(VALID_SEER_STANCE_VALUES)
+    except Exception:
+        basis_list = [b.value for b in VoteBasis]
+        stance_list = [s.value for s in SeerStance]
+    return (
+        "投票必须包含预言家立场、投票基点和具体理由。"
+        f"有效 vote_basis: {basis_list}。"
+        f"有效 seer_stance: {stance_list}。"
+    )
