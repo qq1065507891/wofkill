@@ -131,6 +131,9 @@ class ActionTrace(BaseModel):
     legal_targets: list[str] = Field(default_factory=list)
     retry: dict[str, Any] | None = None
     fallback_reason: str | None = None
+    # Task 1: Track whether a fallback target was used (decoupled from reason string)
+    fallback_target_used: bool = False
+    fallback_target_id: str | None = None
     # Task 9: Structured output metadata
     tool_call_required: bool = False
     tool_call_received: bool = False

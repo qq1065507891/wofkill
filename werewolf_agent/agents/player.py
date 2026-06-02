@@ -93,6 +93,17 @@ class ActionValidator(Protocol):
         ...
 
 
+def _fallback_reason(action: FallbackAction) -> str:
+    """Return a fallback reason that does NOT embed the target_id.
+
+    The caller is responsible for substituting the actual target into the
+    log display. This prevents the audit trail from showing "chose p07" while
+    the actual ``vote_target`` is a different player (the LLM's choice may
+    later override the fallback target in ``agent_day_vote``).
+    """
+    return "fallback: 结构化输出失败，按当前可见线索选择默认目标"
+
+
 class DefaultActionValidator:
     """Validates agent output against RuleEngine-provided legal sets."""
 
@@ -485,6 +496,8 @@ class PlayerAgent:
             final_action_type=fallback.action_type,
             retry=retry,
             fallback_reason=fallback.reason,
+            fallback_target_used=True,
+            fallback_target_id=fallback.target_id,
             tool_call_required=tool_call_required,
             tool_call_received=tool_call_received,
             parse_success=parse_success,
@@ -516,6 +529,8 @@ class PlayerAgent:
         final_action_type: ActionType,
         retry: RetryInfo,
         fallback_reason: str | None = None,
+        fallback_target_used: bool = False,
+        fallback_target_id: str | None = None,
         tool_call_required: bool = False,
         tool_call_received: bool = False,
         parse_success: bool = False,
@@ -535,6 +550,8 @@ class PlayerAgent:
             legal_targets=list(context.legal_targets),
             retry=retry.model_dump(),
             fallback_reason=fallback_reason,
+            fallback_target_used=fallback_target_used,
+            fallback_target_id=fallback_target_id,
             tool_call_required=tool_call_required,
             tool_call_received=tool_call_received,
             tool_call_name="submit_player_action" if tool_call_required else "",
@@ -790,14 +807,18 @@ class PlayerAgent:
         speech = ""
         if safe_action == ActionType.SPEECH:
             speech = self._fallback_speech(context)
-        reason = self._fallback_reason(context, safe_action, safe_target)
 
-        return FallbackAction(
+        # Build a generic fallback action. Reason is computed at the end once
+        # we have the full FallbackAction (which is target-aware) so that the
+        # reason string never embeds the target_id.
+        fallback = FallbackAction(
             action_type=safe_action,
             target_id=safe_target,
             speech=speech,
-            reason=reason,
+            reason="",
         )
+        fallback = fallback.model_copy(update={"reason": _fallback_reason(fallback)})
+        return fallback
 
     def _fallback_reason(
         self,
@@ -805,22 +826,18 @@ class PlayerAgent:
         action_type: ActionType,
         target_id: str | None,
     ) -> str:
-        """Provide an audit-friendly fallback reason instead of an empty/default vote reason."""
-        if action_type in {ActionType.VOTE, ActionType.SHERIFF_VOTE} and target_id:
-            clues = self._context_clues(context)
-            if clues:
-                return f"fallback: 结构化输出失败，按当前可见线索优先选择{target_id}；依据：{clues}"
-            return f"fallback: 结构化输出失败，按合法候选顺序选择{target_id}，后续需要补充站边和排除理由"
-        if action_type in {
-            ActionType.WOLF_KILL,
-            ActionType.USE_POISON,
-            ActionType.CHECK_ALIGNMENT,
-            ActionType.CHOOSE_MASTER,
-            ActionType.HUNTER_SHOT,
-            ActionType.BADGE_TRANSFER,
-        } and target_id:
-            return f"fallback: 结构化输出失败，按当前合法目标选择{target_id}"
-        return "fallback: retries exhausted"
+        """Deprecated wrapper kept for backward compatibility.
+
+        The free function ``_fallback_reason(action)`` is the canonical source
+        of fallback reason text. This method delegates to it but ignores the
+        context-specific overrides that previously embedded the target_id.
+        """
+        return _fallback_reason(
+            FallbackAction(
+                action_type=action_type,
+                target_id=target_id,
+            )
+        )
 
     def _context_clues(self, context: AgentContext) -> str:
         clues: list[str] = []

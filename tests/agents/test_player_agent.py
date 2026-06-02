@@ -1500,7 +1500,12 @@ class TestMandatoryVote:
         assert action.target_id == "p02"
         assert action.reason
         assert action.reason != "fallback: retries exhausted"
-        assert "p02" in action.reason
+        # Task 1 fix: target must NOT be embedded in the reason string.
+        # The audit log records the fallback target via the trace flags.
+        assert "p02" not in action.reason
+        assert action.trace is not None
+        assert action.trace.fallback_target_used is True
+        assert action.trace.fallback_target_id == "p02"
 
     def test_good_speech_fallback_marks_no_effective_public_speech(self) -> None:
         agent = self._make_agent("")
@@ -2162,3 +2167,43 @@ class TestSkillSkipRetry:
         action, retry = agent.act(self._make_skill_context())
         # Even with 3 skip retries, max_retries should not be exhausted
         assert retry.attempt <= retry.max_retries
+
+
+class TestVoteFallbackConsistency:
+    """Vote fallback must not produce a reason mentioning a different target.
+
+    Bug fixed by Task 1: ``_fallback_reason`` embedded the fallback target_id
+    (e.g. "p07") into the reason string, while ``agent_day_vote`` later
+    overwrote the actual ``vote_target`` with the LLM's choice. The audit log
+    then showed a reason referencing a player that the action did not target.
+    """
+
+    def test_fallback_reason_does_not_embed_target(self) -> None:
+        from werewolf_agent.agents.player import _fallback_reason
+        from werewolf_agent.agents.schemas import FallbackAction
+
+        action = FallbackAction(
+            action_type=ActionType.VOTE,
+            target_id="p07",
+            speech="",
+            reason="结构化输出失败",
+        )
+        reason = _fallback_reason(action)
+        import re
+        assert not re.search(r"p\d{2}", reason), (
+            f"fallback reason must not embed target_id, got: {reason!r}"
+        )
+
+    def test_action_trace_has_fallback_target_used_flag(self) -> None:
+        """ActionTrace must expose fallback_target_used and fallback_target_id."""
+        from werewolf_agent.agents.schemas import ActionTrace
+
+        trace = ActionTrace()
+        assert hasattr(trace, "fallback_target_used")
+        assert hasattr(trace, "fallback_target_id")
+        assert trace.fallback_target_used is False
+        assert trace.fallback_target_id is None
+
+        marked = ActionTrace(fallback_target_used=True, fallback_target_id="p07")
+        assert marked.fallback_target_used is True
+        assert marked.fallback_target_id == "p07"
