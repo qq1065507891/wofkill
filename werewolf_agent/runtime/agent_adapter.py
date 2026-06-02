@@ -804,6 +804,29 @@ def agent_day_speech(
             f"我关注{target_hint}的发言，需要更多信息来判断。"
         )
 
+    # Guardrail: enforce the 1-check-per-night rule on public seer claims.
+    # If a wolf (or anyone) generated a speech that violates this rule,
+    # replace it with a sanitized fallback so the bad claim never reaches
+    # the public timeline.
+    if player_role == "werewolf" and speech_text:
+        from werewolf_agent.runtime.seer_claim_validator import validate_seer_claim
+
+        claim_err = validate_seer_claim(speech_text, day_number=gs.day_number)
+        if claim_err:
+            logger.warning(
+                "Wolf %s speech violated seer claim rule: %s — applying fallback",
+                speaker_id, claim_err,
+            )
+            alive_others = [
+                pid for pid, p in gs.players.items()
+                if p.alive and pid != speaker_id
+            ]
+            target_hint = alive_others[0] if alive_others else ""
+            speech_text = (
+                f"我是{speaker_id}，目前信息不足，我需要先观察其他玩家的发言再做判断。"
+                f"我会重点关注{target_hint}的站边和投票倾向。"
+            )
+
     return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}
 
 
