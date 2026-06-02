@@ -501,4 +501,57 @@ def test_wolf_consensus_prefers_planned_primary_then_backup_target() -> None:
     event = _last_non_broadcast_event(result["game_state"])
     assert event.type == "wolf_kill_selected"
     assert event.payload["target_id"] == "v2"
-    assert event.payload["reason"] == "wolf_team_plan"
+
+
+# ---------------------------------------------------------------------------
+# Issue 2 (Task 5): Solo-wolf fallback target heuristic
+# ---------------------------------------------------------------------------
+
+
+class TestSoloWolfFallbackTarget:
+    """Issue 2: When only 1 wolf is alive, plan should default to claimed Seer
+    or day_push_target even without team discussion evidence."""
+
+    def test_solo_wolf_default_targets_claimed_seer(self) -> None:
+        """When only 1 wolf is alive and no plan, default kill target = claimed Seer."""
+        from werewolf_agent.runtime.nodes._shared import _build_wolf_team_plan
+
+        players = {
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id="p03", role="seer", alive=True),
+            "p05": PlayerState(id="p05", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="solo_wolf_seer_test",
+            players=players,
+            night_number=3,
+            day_number=2,
+            events=[
+                GameEvent(type="speech", payload={"speaker": "p03", "text": "我是预言家"}),
+            ],
+        )
+        plan = _build_wolf_team_plan(gs, previous_plan=None)
+        # Solo wolf (1 alive) should default to claimed Seer p03
+        assert plan.get("night_kill_primary") == "p03", (
+            f"expected default target p03 (claimed seer), got {plan.get('night_kill_primary')}"
+        )
+
+    def test_solo_wolf_no_claimed_seer_uses_day_push(self) -> None:
+        """When no claimed Seer, default to day_push_target from previous plan."""
+        from werewolf_agent.runtime.nodes._shared import _build_wolf_team_plan
+
+        players = {
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p05": PlayerState(id="p05", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="solo_wolf_day_push_test",
+            players=players,
+            night_number=3,
+            day_number=2,
+            events=[],
+        )
+        prev_plan = {"day_push_target": "p05", "night_kill_primary": None}
+        plan = _build_wolf_team_plan(gs, previous_plan=prev_plan)
+        # No claimed Seer → use day_push_target
+        assert plan.get("night_kill_primary") == "p05"

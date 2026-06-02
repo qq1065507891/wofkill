@@ -562,7 +562,25 @@ def _build_wolf_team_plan(
     can_reuse_previous = previous_plan.get("evidence_quality") not in (None, "none")
     primary = _first_alive_target(gs, previous_plan.get("night_kill_primary")) if can_reuse_previous else None
     backup = _first_alive_target(gs, previous_plan.get("night_kill_backup")) if can_reuse_previous else None
-    day_push = _first_alive_target(gs, previous_plan.get("day_push_target")) if can_reuse_previous else None
+    # day_push is always extracted (soft recommendation) so solo-wolf fallback
+    # can still use it when evidence is "none" (see Issue 2 / g_3528592081 N3).
+    day_push = _first_alive_target(gs, previous_plan.get("day_push_target"))
+
+    # Solo-wolf fallback (Issue 2): when only 1 wolf is alive and no inherited
+    # primary, default to publicly-claimed Seer (highest strategic value),
+    # then day_push. Prevents the legacy fallback from picking a random
+    # villager when the lone wolf has no team discussion evidence.
+    if len(wolves) == 1 and not primary:
+        from werewolf_agent.runtime.strategy.wolf import has_publicly_claimed_seer
+        claimed_seer_target: str | None = None
+        for pid, p in gs.players.items():
+            if p.alive and p.role != "werewolf" and has_publicly_claimed_seer(gs, pid):
+                claimed_seer_target = pid
+                break
+        if claimed_seer_target:
+            primary = claimed_seer_target
+        elif day_push:
+            primary = day_push
 
     return {
         "night_number": gs.night_number,
