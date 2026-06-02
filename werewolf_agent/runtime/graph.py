@@ -85,6 +85,11 @@ from werewolf_agent.runtime.nodes.sheriff import (  # noqa: F401
     sheriff_withdraw,
 )
 
+from werewolf_agent.runtime.nodes.sheriff_pk import (  # noqa: F401
+    sheriff_pk_speech,
+    sheriff_revote,
+)
+
 from werewolf_agent.runtime.nodes.skills import (  # noqa: F401
     _hunter_shot_target_from_last_words,
     post_exile_skills,
@@ -253,6 +258,24 @@ def route_after_sheriff_vote(state: RuntimeState) -> str:
     wolf_id = state.get("self_destruct_wolf_id")
     if wolf_id and wolf_id in gs.players and gs.players[wolf_id].alive and gs.players[wolf_id].role == "werewolf":
         return "resolve_self_destruct"
+    # If first tie, route to PK speech
+    if gs.sheriff_tie_count == 1 and gs.sheriff_pk_candidates:
+        return "sheriff_pk_speech"
+    if not _deaths_already_announced(gs):
+        return "announce_deaths"
+    return "free_discussion"
+
+
+def route_after_sheriff_pk_speech(state: RuntimeState) -> str:
+    return _route_after_sheriff_phase(state, "sheriff_revote")
+
+
+def route_after_sheriff_revote(state: RuntimeState) -> str:
+    """After revote, go to next phase (deaths or free_discussion)."""
+    gs: GameState = state["game_state"]
+    wolf_id = state.get("self_destruct_wolf_id")
+    if wolf_id and wolf_id in gs.players and gs.players[wolf_id].alive and gs.players[wolf_id].role == "werewolf":
+        return "resolve_self_destruct"
     if not _deaths_already_announced(gs):
         return "announce_deaths"
     return "free_discussion"
@@ -336,6 +359,8 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("sheriff_speech", sheriff_speech)
     graph.add_node("sheriff_withdraw", sheriff_withdraw)
     graph.add_node("sheriff_vote", sheriff_vote)
+    graph.add_node("sheriff_pk_speech", sheriff_pk_speech)
+    graph.add_node("sheriff_revote", sheriff_revote)
     graph.add_node("free_discussion", free_discussion)
     graph.add_node("resolve_self_destruct", resolve_self_destruct_node)
     graph.add_node("day_vote", day_vote)
@@ -397,6 +422,18 @@ def _add_all_edges(graph: StateGraph) -> None:
         "sheriff_vote": "sheriff_vote",
     })
     graph.add_conditional_edges("sheriff_vote", route_after_sheriff_vote, {
+        "resolve_self_destruct": "resolve_self_destruct",
+        "sheriff_pk_speech": "sheriff_pk_speech",
+        "announce_deaths": "announce_deaths",
+        "free_discussion": "free_discussion",
+    })
+    graph.add_conditional_edges("sheriff_pk_speech", route_after_sheriff_pk_speech, {
+        "resolve_self_destruct": "resolve_self_destruct",
+        "sheriff_revote": "sheriff_revote",
+        "announce_deaths": "announce_deaths",
+        "free_discussion": "free_discussion",
+    })
+    graph.add_conditional_edges("sheriff_revote", route_after_sheriff_revote, {
         "resolve_self_destruct": "resolve_self_destruct",
         "announce_deaths": "announce_deaths",
         "free_discussion": "free_discussion",

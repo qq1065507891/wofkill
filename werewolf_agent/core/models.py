@@ -55,9 +55,12 @@ class GameState:
         object.__setattr__(self, "votes", dict(self.votes) if self.votes else {})
         object.__setattr__(self, "private_intents", dict(self.private_intents) if self.private_intents else {})
         object.__setattr__(self, "sheriff_candidates", list(self.sheriff_candidates) if self.sheriff_candidates else [])
+        object.__setattr__(self, "sheriff_pk_candidates", list(self.sheriff_pk_candidates) if self.sheriff_pk_candidates else [])
     hybrid_result: str | None = None
     paused: bool = False
     sheriff_interrupt_count: int = 0
+    sheriff_tie_count: int = 0
+    sheriff_pk_candidates: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

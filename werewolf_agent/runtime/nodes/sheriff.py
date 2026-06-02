@@ -291,13 +291,36 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
         speech_order = choose_sheriff_led_speech_order(gs, elected_id)
         return {"game_state": gs, "speech_order": speech_order}
 
-    # No election from vote tie
+    # No election from vote tie — route to PK on first tie
+    tied = event.payload.get("tied", [])
+    tie_count = gs.sheriff_tie_count
+    if tie_count == 0 and tied:
+        # First tie → enter PK with tied candidates
+        gs = replace(
+            gs,
+            sheriff_tie_count=1,
+            sheriff_pk_candidates=tied,
+            events=gs.events + [GameEvent(
+                type="sheriff_vote_tie_first",
+                payload={"tied": tied},
+            )],
+        )
+        gs, _ = _judge_broadcast(
+            phase="sheriff_vote_tie_first",
+            message=f"警下投票首次平票，{', '.join(_player_display(state, c) for c in tied)} 进入 PK 发言环节",
+            gs=gs, day_number=gs.day_number,
+            visibility="public",
+        )
+        return {"game_state": gs}
+    # Second tie (or no candidates) → no sheriff
     gs, _ = _judge_broadcast(
         phase="sheriff_no_election",
         message="投票未选出警长，警徽流失，本局无警长",
         gs=gs, day_number=gs.day_number,
         visibility="public",
     )
+    # Reset tie_count for next election opportunity (D2 re-election etc.)
+    gs = replace(gs, sheriff_tie_count=0, sheriff_pk_candidates=[])
     speech_order = choose_no_sheriff_speech_order(gs)
     return {"game_state": gs, "speech_order": speech_order}
 

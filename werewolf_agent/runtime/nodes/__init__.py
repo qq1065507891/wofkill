@@ -76,6 +76,11 @@ from werewolf_agent.runtime.nodes.skills import (
     sheriff_badge_transfer,
 )
 
+from werewolf_agent.runtime.nodes.sheriff_pk import (
+    sheriff_pk_speech,
+    sheriff_revote,
+)
+
 from werewolf_agent.runtime.nodes.summary import (
     summarize_positions,
     summarize_context,
@@ -155,4 +160,7 @@ __all__ = [
     "tie_pk_speech",
     "tie_revote",
     "sheriff_badge_transfer",
+    # sheriff_pk
+    "sheriff_pk_speech",
+    "sheriff_revote",
 ]
