@@ -4,10 +4,61 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Judge Role Optimization — All 4 Layers Complete + Code Review Fixes** — 2026-05-31
-- Active task: None (all 4 layers + review fixes complete)
+- Current phase: **g_3528592081 Game Log Post-mortem — Investigation Complete** — 2026-06-02
+- Active task: None (6 issues investigated, ready for prioritization)
 - Task owner: Claude/GLM development session
-- Last updated: 2026-05-31
+- Last updated: 2026-06-02
+
+---
+
+## Game g_3528592081 Post-mortem — 2026-06-02
+
+Analyzed game `game_g_3528592081.json` (finished 2026-06-02 01:59, good wins day 3). Identified 6 issues across RuleEngine, agent prompts, and validation. Skipped: N1 witch antidote waste (agent-level decision, not a bug).
+
+### Findings (file:line + recommendation)
+
+| # | Issue | Root cause | File:line | Recommendation |
+|---|-------|------------|-----------|----------------|
+| 1 | 警徽 tie 未进 PK | `sheriff_vote()` 在 tie 时直接走 no-election 分支，无复投循环 | `werewolf_agent/runtime/nodes/sheriff.py:271-302` + `engine/sheriff.py:60-75` + `graph.py:251-258` | 图中已有 `tie_revote`/`tie_pk_speech` 节点（graph.py:344, 427-428），仅连 day_vote；需在 `route_after_sheriff_vote` 加 tie 分支 + 加 `sheriff_tie_revote` 节点 |
+| 2 | N3 狼队 plan 全空 | `_build_wolf_team_plan` 静态 fallback 无 solo-wolf 击杀启发式；`evidence_quality="none"` 时 `_planned_wolf_kill` 返回 None 走 legacy | `werewolf_agent/runtime/nodes/_shared.py:545-580, 592-616` + `wolf_strategy.py:237-294` | 静态 fallback 加 `night_kill_default = day_push_target or claimed_seer`，证据强度降级时仍保留软推荐 |
+| 3 | 狼悍跳发言自爆 | p08 说"N1 查了 p04 又查了 p09"违反一夜 1 查规则；D1 无依据贴"p04 是倒钩"标签 — **信息穿越**，**不是禁词问题** | `werewolf_agent/runtime/directives/wolf.py:13-22, 81-89` | 修复方向：信息一致性 guardrail — 假预言家 prompt 明确"一夜只查 1 人"；公开发言禁止 D1/D2 无公开来源地给具体玩家贴角色标签。**不要禁金水/倒钩等公开术语**（社区通用行话，禁词会误伤好人） |
+| 4 | 狼队不优先解 seer | `has_publicly_claimed_seer`/`evaluate_wolf_kill_target` 函数存在但**只用于日间发言**，未接入击杀优先级 | `werewolf_agent/runtime/strategy/wolf.py:13-129, 145-153` + `agent_adapter.py:444-470` | 在 `_single_wolf_vote` 后注入 `wolf_high_priority_target` 字段，把已跳预言家的具体 ID 写进狼讨论/击杀 prompt |
+| 5 | 6 次 fallback 投票 | `tool_schema` 强制 6 字段，`vote_quality.validate_vote_reason` 严格正则，correction hint 不附有效 enum 值 | `werewolf_agent/agents/tool_schema.py:152-160` + `runtime/vote_quality.py:81-116, 135-193` + `agents/player.py:449-458` | 基础正则检测不到时默认 `vote_basis=fallback, seer_stance=no_claim`；retry 提示附完整 enum 表 |
+| 6 | p02 私心/公开/fallback 三层割裂 | `_fallback_reason` 把 target 嵌进 reason 字符串；`agent_day_vote` 用 LLM target 覆盖 fallback target，但 reason 仍来自 fallback | `werewolf_agent/agents/player.py:780-823` + `runtime/agent_adapter.py:962-968` | reason 模板不嵌入 target；audit trace 加 `fallback_target_used: bool` 标志；`_with_vote_target_in_trace` 同步 `parsed_action.target_id` |
+
+### Verification
+
+- Source: `game_g_3528592081.json` (433KB, 6 players alive at game end)
+- Roles: p01/p02/p07/p08 狼；p03 seer；p04 hybrid (master=p01)；p05/p06/p10 villager；p09 idiot；p11 witch；p12 hunter
+- Wolf team lost all 4 members by D3, hybrid followed wolf faction to loss
+- Open risks: Issue 1 fix needs design doc confirmation of "first tie → PK" rule
+
+---
+
+## Postmortem Fixes (Issues 0/1/2/3) — 2026-06-02
+
+### Issue 4 (Task 3): Wolf claimed-Seer kill priority — FIXED
+
+**Problem:** `has_publicly_claimed_seer`/`evaluate_wolf_kill_target` existed but were only consulted via `kill_value_assessment` and day-speech directives. The wolf kill/discussion prompts in `runtime/agent_adapter.py` (`_single_wolf_vote`, `agent_wolf_discussion`) used a generic "优先击杀对狼队威胁最大的玩家" instruction and never injected a concrete player ID. In `g_3528592081`, real Seer `p03` publicly claimed D1 but wolves `p01/p02/p07/p08` failed to identify her across 3 nights and instead killed `p09` (idiot), `p06` (villager), `p10` (villager).
+
+**Fix:** Added `_build_wolf_kill_directive(gs, wolf_id=..., plan=...)` in `werewolf_agent/runtime/agent_adapter.py` that:
+1. Names any non-wolf player who has publicly claimed Seer as the top kill target (no role filter — fake-Seer jump is also high-threat info)
+2. Falls back to the wolf team's `night_kill_primary` from the plan
+3. Falls back to top-3 ranked candidates from `evaluate_wolf_kill_target` when no claim exists
+
+The directive is injected as `strategy_directive["wolf_high_priority_target"]` into BOTH `_single_wolf_vote` (kill prompt) and `agent_wolf_discussion` (private discussion prompt), so all wolves converge on the same target.
+
+**Files changed:**
+- `werewolf_agent/runtime/agent_adapter.py` — new `_build_wolf_kill_directive()` + injection in 2 call sites
+- `tests/runtime/test_strategy_directives.py` — new `TestWolfSeerPriorityInjection` (4 tests)
+
+**Verification:**
+- 4 new tests pass: `claimed_seer_appears_in_wolf_kill_directive`, `no_claimed_seer_uses_scored_ranking`, `wolf_kill_prompt_includes_claimed_seer_via_strategy_directive`, `wolf_discussion_prompt_includes_claimed_seer_via_strategy_directive`
+- `tests/runtime/test_strategy_directives.py`: 57 passed
+- `tests/runtime/`: 647 passed
+- `tests/agents/` + `tests/rules/`: 386 passed
+- `tests/integration/test_live_game_flow.py`: 7 passed (~8 min end-to-end)
+- No regressions
 
 ---
 

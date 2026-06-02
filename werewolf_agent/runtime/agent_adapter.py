@@ -11,7 +11,6 @@ Strategy evaluation lives in runtime/strategy/.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import re
 from typing import Any, Protocol
@@ -422,6 +421,70 @@ def agent_wolf_consensus(
             "action_traces": action_traces}
 
 
+def _build_wolf_kill_directive(
+    gs: GameState,
+    *,
+    wolf_id: str,
+    plan: dict[str, Any] | None,
+) -> str:
+    """Build a kill-priority directive for the wolf kill/discussion prompts.
+
+    If any non-wolf player has publicly claimed Seer (using
+    ``has_publicly_claimed_seer``), the directive explicitly names them as the
+    highest-priority kill target. Otherwise it falls back to the top-3 ranked
+    targets from ``evaluate_wolf_kill_target`` so wolves still get concrete
+    suggestions rather than a generic "kill the biggest threat" prompt.
+    """
+    from werewolf_agent.runtime.strategy.wolf import (
+        evaluate_wolf_kill_target,
+        has_publicly_claimed_seer,
+    )
+
+    parts: list[str] = []
+
+    # Highest priority: anyone who has publicly claimed Seer (or any seer-flavored
+    # keyword) must be explicitly named. We do not filter by ``role == "seer"``
+    # because a fake-Seer jump also reveals that player as a top threat.
+    claimed_seers: list[str] = []
+    for pid, p in gs.players.items():
+        if p.alive and p.role != "werewolf" and has_publicly_claimed_seer(gs, pid):
+            claimed_seers.append(pid)
+
+    if claimed_seers:
+        names = ", ".join(claimed_seers)
+        parts.append(
+            f"高优先级击杀目标: {names} —— 该玩家已公开跳预言家，"
+            "对狼队威胁最大，必须作为今晚的首选击杀目标。"
+        )
+
+    # Secondary: the wolf team plan's primary target (if set)
+    if plan and plan.get("night_kill_primary"):
+        primary = plan["night_kill_primary"]
+        if primary in gs.players and gs.players[primary].alive:
+            if primary not in claimed_seers:
+                parts.append(
+                    f"狼队讨论主目标: {primary}（备选: {plan.get('night_kill_backup') or '无'}）"
+                )
+
+    # Tertiary: top scoring candidates from evaluate_wolf_kill_target
+    if not parts or len(claimed_seers) == 0:
+        # No claimed Seer — show top-3 ranked by threat score
+        scores = evaluate_wolf_kill_target(gs, wolf_id, [
+            pid for pid, p in gs.players.items() if p.alive and p.role != "werewolf"
+        ])
+        if scores and scores.get("ranked_targets"):
+            for entry in scores["ranked_targets"][:3]:
+                parts.append(
+                    f"击杀候选: {entry['target']}（威胁分={entry['value']}，"
+                    f"信号: {', '.join(entry.get('signals', [])) or '无'}）"
+                )
+
+    if not parts:
+        return "无明显优先目标，按战术需要自由选择击杀对象。"
+
+    return "\n".join(parts)
+
+
 def _single_wolf_vote(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -452,6 +515,11 @@ def _single_wolf_vote(
             "speech字段留空（夜间行动不需要发言）。"
         ),
     }
+    # Task 3 (Issue 4): explicitly name the claimed Seer as the top kill target
+    # so all wolves converge on the same high-priority player.
+    strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
+        gs, wolf_id=wolf_id, plan=wolf_plan,
+    )
     if kill_assessment:
         strategy_directive["kill_value_assessment"] = kill_assessment
     if wolf_plan and wolf_plan.get("night_kill_primary"):
@@ -574,6 +642,11 @@ def agent_wolf_discussion(
         "wolf_teammates": wolf_teammates,
         "previous_discussion": prev_speeches[-8:],
     }
+    # Task 3 (Issue 4): inject claimed-Seer kill priority so the discussion
+    # can converge on the same high-priority target.
+    strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
+        gs, wolf_id=wolf_id, plan=state.get("wolf_team_plan"),
+    )
 
     context = build_agent_context(
         engine, gs, wolf_id, TaskType.WOLF_DISCUSSION,
@@ -1619,9 +1692,7 @@ def _agent_reflection(
                 f"你{'存活到' if (player and player.alive) else '在'}游戏结束。"
             ),
         }
-        sd = context.strategy_directive or {}
-        sd.update(reflection_directive)
-        context = dataclasses.replace(context, strategy_directive=sd)
+        context = _merge_strategy_directive(context, reflection_directive)
 
         action, _retry_info = agent.act(context)
         return {"reflection_text": getattr(action, "speech", "") or ""}

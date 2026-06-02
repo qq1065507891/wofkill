@@ -1394,3 +1394,183 @@ class TestEmptySpeechGuard:
         result = agent_day_speech(state, engine, registry, "p05")
         assert result is not None
         assert result["speech_text"].strip(), "Speech should not be empty after fallback guard"
+
+
+class TestWolfSeerPriorityInjection:
+    """Task 3 (Issue 4): Wolf kill prompt must name publicly-claimed Seer explicitly."""
+
+    @staticmethod
+    def _make_gs_with_claimant(speaker: str = "p03", role: str = "seer") -> GameState:
+        players = {
+            "p01": PlayerState(id="p01", role="werewolf", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id=speaker, role=role, alive=True),
+            "p05": PlayerState(id="p05", role="villager", alive=True),
+            "p06": PlayerState(id="p06", role="villager", alive=True),
+        }
+        return GameState(
+            game_id="g_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": speaker,
+                    "text": "我是预言家，昨晚查了p05是好人",
+                }),
+            ],
+        )
+
+    def test_claimed_seer_appears_in_wolf_kill_directive(self) -> None:
+        """When a player has publicly claimed Seer, the wolf kill directive
+        must name them explicitly so all wolves converge on the same target."""
+        from werewolf_agent.runtime.strategy.wolf import has_publicly_claimed_seer
+        from werewolf_agent.runtime.agent_adapter import _build_wolf_kill_directive
+
+        gs = self._make_gs_with_claimant()
+        # Sanity check: setup actually has a public Seer claim
+        assert has_publicly_claimed_seer(gs, "p03") is True
+
+        directive = _build_wolf_kill_directive(gs, wolf_id="p01", plan={})
+        assert "p03" in directive, (
+            f"wolf kill directive should explicitly name claimed Seer p03, got: {directive!r}"
+        )
+        # Should mark it as a high-priority target
+        assert "高优先级击杀目标" in directive or "优先击杀" in directive
+
+    def test_no_claimed_seer_uses_scored_ranking(self) -> None:
+        """When no Seer claim exists, the directive falls back to evaluate_wolf_kill_target's
+        top-3 ranking."""
+        from werewolf_agent.runtime.agent_adapter import _build_wolf_kill_directive
+        from werewolf_agent.runtime.strategy.wolf import has_publicly_claimed_seer
+
+        # No claim events — players are villagers, no one speaks
+        players = {
+            "p01": PlayerState(id="p01", role="werewolf", alive=True),
+            "p05": PlayerState(id="p05", role="villager", alive=True),
+            "p06": PlayerState(id="p06", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="g_test_no_claim",
+            players=players,
+            phase="night",
+            night_number=1,
+            events=[],
+        )
+        assert not has_publicly_claimed_seer(gs, "p05")
+
+        directive = _build_wolf_kill_directive(gs, wolf_id="p01", plan={})
+        # Should produce at least one candidate from the scoring fallback
+        assert "击杀候选" in directive
+
+    def test_wolf_kill_prompt_includes_claimed_seer_via_strategy_directive(self) -> None:
+        """_single_wolf_vote must inject wolf_high_priority_target into the
+        strategy directive when a Seer has publicly claimed."""
+        from werewolf_agent.runtime.agent_adapter import _single_wolf_vote
+        from werewolf_agent.agents.schemas import AgentContext, PlayerAction, RetryInfo, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo  # noqa: F811
+
+        gs = self._make_gs_with_claimant()
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+
+            def act(self, context):
+                self.last_context = context
+                return (
+                    PlayerAction(
+                        action_type=ActionType.WOLF_KILL,
+                        target_id="p03",
+                        reason="test",
+                    ),
+                    RetryInfo(),
+                )
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+
+            def get_agent(self, player_id):
+                return self.agent if player_id == "p01" else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        _single_wolf_vote(state, engine, registry, "p01")
+        ctx = registry.agent.last_context
+        assert ctx is not None
+        assert "wolf_high_priority_target" in ctx.strategy_directive
+        assert "p03" in ctx.strategy_directive["wolf_high_priority_target"]
+
+    def test_wolf_discussion_prompt_includes_claimed_seer_via_strategy_directive(self) -> None:
+        """agent_wolf_discussion must also receive wolf_high_priority_target when
+        a Seer has publicly claimed (so private discussion can converge)."""
+        from werewolf_agent.runtime.agent_adapter import agent_wolf_discussion
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        gs = self._make_gs_with_claimant()
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+
+            def act(self, context):
+                self.last_context = context
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH,
+                        speech="建议今晚击杀p03",
+                        reason="test",
+                    ),
+                    RetryInfo(),
+                )
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+
+            def get_agent(self, player_id):
+                return self.agent if player_id == "p01" else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_wolf_discussion(state, engine, registry, "p01")
+        ctx = registry.agent.last_context
+        assert ctx is not None
+        assert "wolf_high_priority_target" in ctx.strategy_directive
+        assert "p03" in ctx.strategy_directive["wolf_high_priority_target"]
