@@ -820,25 +820,6 @@ class PlayerAgent:
         fallback = fallback.model_copy(update={"reason": _fallback_reason(fallback)})
         return fallback
 
-    def _fallback_reason(
-        self,
-        context: AgentContext,
-        action_type: ActionType,
-        target_id: str | None,
-    ) -> str:
-        """Deprecated wrapper kept for backward compatibility.
-
-        The free function ``_fallback_reason(action)`` is the canonical source
-        of fallback reason text. This method delegates to it but ignores the
-        context-specific overrides that previously embedded the target_id.
-        """
-        return _fallback_reason(
-            FallbackAction(
-                action_type=action_type,
-                target_id=target_id,
-            )
-        )
-
     def _context_clues(self, context: AgentContext) -> str:
         clues: list[str] = []
         sheriff_id = context.visible_world_state.get("sheriff_id")
