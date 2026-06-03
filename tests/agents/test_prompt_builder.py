@@ -349,5 +349,196 @@ def test_strategy_directive_still_has_section_prefix():
     )
 
 
+# ---------------------------------------------------------------------------
+# P0-S6: retry hint reordering + error snippet inclusion
+# ---------------------------------------------------------------------------
+#
+# Audit P0-S6 finding: the retry hint used to render BEFORE the task prompt,
+# so the LLM saw "纠正提示..." then later the task description — easy to
+# miss the correction. Now the order is: task → retry → contract, with the
+# error_message snippet prepended so the model sees the specific failure.
+#
+# Game trace g_3528592081 Action 50: p10 had 3 retries with the same
+# parse_error before fallback. Generic hint "只输出JSON..." was not
+# actionable; surfacing the actual error_message gives a concrete signal.
+
+
+def _make_ctx_for_retry_test() -> AgentContext:
+    """Minimal context for retry-hint ordering tests (speech task).
+
+    Uses SPEECH task + [SPEECH] action so the task prompt renders the
+    SPEECH_INTENT pipeline ("发言意图枚举"); the test searches for that
+    distinctive header to locate the task section.
+    """
+    return AgentContext(
+        agent_id="p10",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=[],
+        public_summary="D2 speech",
+    )
+
+
+def test_retry_hint_appears_after_task_prompt():
+    """P0-S6: retry hint must appear AFTER task prompt, before output contract.
+
+    Old order was: ...transcript → retry → task → contract. The LLM saw
+    "纠正提示..." too early and then forgot about it once it read the task.
+    New order is: ...transcript → task → retry → contract, so the
+    correction is the last thing before the output contract.
+    """
+    ctx = _make_ctx_for_retry_test()
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error: missing field 'speech'",
+        correction_hint="只输出JSON，不要解释、不要Markdown代码块。",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    retry_idx = prompt.find("纠正提示")
+    # SPEECH task + [SPEECH] action triggers SPEECH_INTENT pipeline,
+    # which renders "发言意图枚举" as the task prompt header.
+    task_idx = prompt.find("发言意图枚举")
+    contract_idx = prompt.find("最终输出协议")
+    assert retry_idx >= 0, "Prompt must contain the retry hint header"
+    assert task_idx >= 0, "Prompt must contain the task prompt (发言意图枚举)"
+    assert contract_idx >= 0, "Prompt must contain the output contract"
+    assert task_idx < retry_idx, (
+        f"task prompt (idx {task_idx}) must come BEFORE retry hint "
+        f"(idx {retry_idx}); otherwise LLM sees correction before knowing the task"
+    )
+    assert retry_idx < contract_idx, (
+        f"retry hint (idx {retry_idx}) must come BEFORE output contract "
+        f"(idx {contract_idx}); the correction must lead into the contract"
+    )
+
+
+def test_retry_hint_appears_after_task_in_full_action_mode():
+    """P0-S6: ordering also holds for FULL_ACTION mode (e.g., REFLECTION task).
+
+    Covers the non-SPEECH_INTENT branch so the reorder isn't accidentally
+    mode-specific. REFLECTION task uses FULL_ACTION output mode which
+    renders "示例输出" examples in the task prompt.
+    """
+    ctx = AgentContext(
+        agent_id="p10",
+        task_type=TaskType.REFLECTION,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=[],
+        public_summary="D2 reflection",
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error",
+        correction_hint="只输出JSON。",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    retry_idx = prompt.find("纠正提示")
+    task_idx = prompt.find("示例输出")
+    contract_idx = prompt.find("最终输出协议")
+    assert task_idx >= 0, "FULL_ACTION task prompt must render 示例输出"
+    assert task_idx < retry_idx < contract_idx, (
+        f"Order must be task ({task_idx}) → retry ({retry_idx}) "
+        f"→ contract ({contract_idx})"
+    )
+
+
+def test_retry_hint_includes_error_message_snippet():
+    """P0-S6: hint must surface the actual error_message, not just correction_hint.
+
+    Game trace g_3528592081 Action 50 shows p10 hitting the same parse_error
+    3 times. The previous hint only echoed the generic correction_hint, so
+    the LLM had no signal about what specifically failed. The hint must
+    now include (a prefix of) the error_message so the model sees the
+    concrete failure.
+    """
+    ctx = _make_ctx_for_retry_test()
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error: missing field 'speech'",
+        correction_hint="只输出JSON，不要解释。",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    assert "missing field 'speech'" in prompt, (
+        "Retry hint must include the concrete error_message text "
+        "(at minimum its first 100 chars)"
+    )
+
+
+def test_retry_hint_truncates_long_error_message_to_100_chars():
+    """P0-S6: error_message longer than 100 chars must be truncated.
+
+    Keeps the hint focused on the most relevant signal and avoids leaking
+    raw model output / long traces into the next prompt.
+    """
+    ctx = _make_ctx_for_retry_test()
+    long_error = "A" * 50 + "B" * 50 + "C" * 50  # 150 chars
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message=long_error,
+        correction_hint="只输出JSON。",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # First 100 chars: 50 A's + 50 B's
+    expected_snippet = "A" * 50 + "B" * 50
+    assert expected_snippet in prompt, (
+        "First 100 chars of error_message must appear in the hint"
+    )
+    # The C's (chars beyond 100) must NOT appear in the rendered hint
+    # (anywhere in the prompt — they're not present in any other section).
+    assert "C" * 50 not in prompt, (
+        "Chars beyond first 100 of error_message must be truncated"
+    )
+
+
+def test_retry_hint_falls_back_to_correction_hint_when_error_message_empty():
+    """P0-S6: if error_message is None/empty, hint must still render correction_hint.
+
+    Backward compat: not every retry path populates error_message (e.g.,
+    skill-tool nudges with no error code). The hint must still appear so
+    the LLM sees the corrective signal.
+    """
+    ctx = _make_ctx_for_retry_test()
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code=None,
+        error_message=None,
+        correction_hint="请先调用 load_skill('wolf_pit') 再提交行动。",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    assert "纠正提示" in prompt, "Hint header must still render when only correction_hint is set"
+    assert "load_skill('wolf_pit')" in prompt, (
+        "When error_message is None, correction_hint text must still appear"
+    )
+
+
+def test_retry_hint_empty_when_no_correction_and_no_error_message():
+    """P0-S6: with no correction_hint AND no error_message, hint section is omitted.
+
+    First-attempt RetryInfo (attempt=1) has no error info — the hint
+    section should not bloat the prompt with an empty 纠正提示 header.
+    """
+    ctx = _make_ctx_for_retry_test()
+    retry = RetryInfo()  # attempt=1, no error
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    assert "纠正提示" not in prompt, (
+        "First-attempt prompt (no error) must not contain the retry hint header"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

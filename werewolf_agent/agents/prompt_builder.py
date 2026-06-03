@@ -308,8 +308,14 @@ class PlayerPromptBuilder:
         parts.append(self._build_strategy_directive())
         parts.append(self._build_skill_analysis_hints())
         parts.append(self._build_recent_transcript())
-        parts.append(self._build_retry_hint(retry))
+        # P0-S6: retry hint must come AFTER task prompt and BEFORE the
+        # output contract. Old order put retry BEFORE task, so the LLM
+        # read "纠正提示..." and then got distracted by the task
+        # description that followed — easy to miss the correction.
+        # New order (task → retry → contract) makes the correction the
+        # last thing the LLM sees before the output contract.
         parts.append(self._build_task_prompt())
+        parts.append(self._build_retry_hint(retry))
         parts.append(self._build_strict_output_contract())
         return "\n\n".join(p for p in parts if p)
 
@@ -507,12 +513,30 @@ class PlayerPromptBuilder:
         return "\n".join(lines)
 
     def _build_retry_hint(self, retry: RetryInfo) -> str:
-        if not retry.correction_hint:
+        """Render the retry correction hint after task, before contract.
+
+        P0-S6: When the LLM hits 3 retries on the same parse_error
+        (e.g., game trace g_3528592081 Action 50, p10), a generic
+        correction_hint like "只输出JSON..." is not actionable. We now
+        surface the first 100 chars of the actual error_message so the
+        LLM sees what specifically went wrong on the previous attempt.
+        Truncation keeps the hint focused and avoids leaking long traces
+        into the next prompt.
+        """
+        if not retry.correction_hint and not retry.error_message:
             return ""
-        return (
-            f"纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）: {retry.correction_hint}\n"
-            f"错误信息: {retry.error_message}"
-        )
+
+        lines = [
+            f"纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）："
+        ]
+        if retry.error_message:
+            snippet = retry.error_message[:100]
+            if len(retry.error_message) > 100:
+                snippet += "..."
+            lines.append(f"上次错误: {snippet}")
+        if retry.correction_hint:
+            lines.append(f"修正建议: {retry.correction_hint}")
+        return "\n".join(lines)
 
     def _build_task_prompt(self) -> str:
         """Task-specific prompt: choice enum, speech intent, or examples."""
