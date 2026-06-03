@@ -33,6 +33,7 @@ from werewolf_agent.agents.schemas import (
     VoteBasis,
 )
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+from werewolf_agent.agents.metrics_collector import MetricsCollector
 from werewolf_agent.agents.output_parser import (
     repair_json_text as _repair_json_impl,
     extract_json_object_candidates as _extract_json_impl,
@@ -175,6 +176,10 @@ class PlayerAgent:
         self.model_router = model_router
         self.validator = validator or DefaultActionValidator()
         self.max_retries = max_retries
+        # Per-player failure profile: aggregates per-attempt outcomes so
+        # developers can identify which persona's prompt template needs
+        # tuning. Memory-only; not persisted across sessions.
+        self.metrics_collector = MetricsCollector()
 
     def act(self, context: AgentContext) -> tuple[PlayerAction | FallbackAction, RetryInfo]:
         """Generate a constrained player action with retry/fallback."""
@@ -259,6 +264,13 @@ class PlayerAgent:
                     structured_failure_reason=structured_failure_reason,
                 )
                 fallback = fallback.model_copy(update={"trace": trace})
+                self.metrics_collector.record(
+                    player_id=context.agent_id,
+                    task_type=context.task_type.value,
+                    error_code=structured_failure_reason,
+                    fallback_used=True,
+                    retry_count=attempt,
+                )
                 return fallback, retry
 
             raw_text = result.text or ""
@@ -362,6 +374,13 @@ class PlayerAgent:
                         structured_failure_reason=structured_failure_reason,
                     )
                     fallback = fallback.model_copy(update={"trace": trace})
+                    self.metrics_collector.record(
+                        player_id=context.agent_id,
+                        task_type=context.task_type.value,
+                        error_code=retry.error_code if retry else "model_generation_failed",
+                        fallback_used=True,
+                        retry_count=attempt,
+                    )
                     return fallback, retry
                 retry = RetryInfo(
                     attempt=attempt,
@@ -514,6 +533,13 @@ class PlayerAgent:
                 parse_success=parse_success,
                 retry_count=attempt,
             )
+            self.metrics_collector.record(
+                player_id=context.agent_id,
+                task_type=context.task_type.value,
+                error_code=retry.error_code if retry else None,
+                fallback_used=False,
+                retry_count=attempt,
+            )
             return action.model_copy(update={"trace": trace}), retry
 
         # Fallback
@@ -542,6 +568,13 @@ class PlayerAgent:
             structured_failure_reason=structured_failure_reason,
         )
         fallback = fallback.model_copy(update={"trace": trace})
+        self.metrics_collector.record(
+            player_id=context.agent_id,
+            task_type=context.task_type.value,
+            error_code=retry.error_code if retry else "exhausted_retries",
+            fallback_used=True,
+            retry_count=attempt,
+        )
         return fallback, retry
 
     def _latest_generation_failure_reason(self) -> str | None:
