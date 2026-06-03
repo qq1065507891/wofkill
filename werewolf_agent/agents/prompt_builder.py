@@ -73,6 +73,71 @@ _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
 _MAX_SALIENCE_ITEMS = 4
 
+# P0-S5: strategy_directive is split into 3 priority tiers so the LLM can
+# distinguish hard constraints (must obey) from suggestions (recommended) and
+# reference context (background). New keys not listed here default to 参考.
+# Game trace g_3528592081 confirmed directives are received and acted on
+# (e.g., p08 wolf followed `wolf_fake_seer_execution` to claim seer), so
+# the LLM needs explicit priority labels to disambiguate.
+HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
+    # Wolf fake-seer execution plan — set at night, must be acted on
+    "wolf_fake_seer_execution",
+    # Contradiction / role alerts that must be addressed
+    "must_address_alerts",
+    # N1 death identity (forced to be silent or to mention)
+    "first_night_killed",
+    # Speech must be empty / vote must be empty
+    "speech_silent",
+    "vote_silent",
+    # Witch must use / not use antidote/poison this night
+    "witch_night_action",
+    # Per-role alerts (hunter, idiot, etc.)
+    "role_alerts",
+    # Hard vote pressure (e.g., must-vote target)
+    "vote_pressure",
+})
+
+SUGGESTION_KEYS: frozenset[str] = frozenset({
+    # Wolf speech style / universal rules
+    "wolf_speech_directive",
+    "wolf_universal_rules",
+    # Good-side vote quality guard
+    "good_vote_decision_guard",
+    # Anti-herd / sheriff vote push
+    "anti_herd",
+    "sheriff_vote_push",
+    # Speech style suggestions
+    "speech_originality",
+    "seer_speech_directive",
+    "witch_speech_constraint",
+    # Behavioral rules (anti-following, peace-night rule)
+    "anti_following_and_peace_night_rule",
+})
+
+REFERENCE_KEYS: frozenset[str] = frozenset({
+    # Tactical advice from skill analysis (read-only)
+    "skill_tactical_advice",
+    # Wolf target / plan hints (background, not binding)
+    "wolf_day_push_target",
+    "wolf_high_priority_target",
+    "wolf_plan_target",
+    # Hybrid master behavior summary
+    "master_behavior_summary",
+    # Witch pressure / strategy hints
+    "witch_pressure",
+    "witch_strategy_hint",
+    # Public discussion summary
+    "day_discussion_summary",
+    # Vote pressure context (not hard)
+    "vote_pressure_context",
+})
+
+_STRATEGY_GROUP_ORDER: tuple[frozenset[str], str, str] = (
+    (HARD_CONSTRAINT_KEYS, "【硬约束】", "以下指令必须遵守（MUST）："),
+    (SUGGESTION_KEYS, "【建议】", "以下指令为建议（SHOULD），偏离时需有充分理由："),
+    (REFERENCE_KEYS, "【参考】", "以下为背景信息（REFERENCE），仅供决策参考："),
+)
+
 
 class PlayerPromptBuilder:
     """Assembles player prompts as a pipeline of independently-built sections.
@@ -374,10 +439,43 @@ class PlayerPromptBuilder:
         )
 
     def _build_strategy_directive(self) -> str:
+        """Render strategy_directive split into 3 priority sections.
+
+        P0-S5: LLM previously saw a single flat JSON block with 20+ keys
+        and no priority signal — had to guess hard vs soft. Now keys are
+        grouped into 【硬约束】 (MUST), 【建议】 (SHOULD), 【参考】
+        (REFERENCE). Unknown keys fall through to 参考 for forward-compat.
+        """
         ctx = self.context
         if not ctx.strategy_directive:
             return ""
-        return "本轮策略指令: " + self._compact_json(ctx.strategy_directive)
+
+        grouped: dict[str, dict[str, Any]] = {
+            header: {} for _, header, _ in _STRATEGY_GROUP_ORDER
+        }
+        reference_fallback_idx = next(
+            i for i, (keys, header, _) in enumerate(_STRATEGY_GROUP_ORDER)
+            if header == "【参考】"
+        )
+        reference_header = _STRATEGY_GROUP_ORDER[reference_fallback_idx][1]
+
+        for key, value in ctx.strategy_directive.items():
+            placed = False
+            for i, (keys, header, _) in enumerate(_STRATEGY_GROUP_ORDER):
+                if key in keys:
+                    grouped[header][key] = value
+                    placed = True
+                    break
+            if not placed:
+                grouped[reference_header][key] = value
+
+        parts: list[str] = ["本轮策略指令:"]
+        for keys_set, header, label in _STRATEGY_GROUP_ORDER:
+            section = grouped[header]
+            if not section:
+                continue
+            parts.append(f"{header} {label}\n" + self._compact_json(section))
+        return "\n\n".join(parts)
 
     def _build_skill_analysis_hints(self) -> str:
         ctx = self.context
