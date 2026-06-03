@@ -105,6 +105,46 @@ def _fallback_reason(action: FallbackAction) -> str:
     return "fallback: 结构化输出失败，按当前可见线索选择默认目标"
 
 
+def _latency_from_result(result: Any) -> int:
+    """Best-effort latency extraction from a GenerateResult.
+
+    Returns 0 when usage metadata is unavailable (e.g. the router returned
+    an empty GenerateResult after primary+fallback failures). The
+    categorizer treats 0 as "no signal" so it will not falsely report
+    ``timeout``.
+    """
+    usage = getattr(result, "usage", None)
+    if usage is None:
+        return 0
+    return int(getattr(usage, "latency_ms", 0) or 0)
+
+
+def _categorize_failure_category(
+    *,
+    latency_ms: int,
+    raw_error: str | None,
+) -> str | None:
+    """Bridge from player-side signals to the failure_category string.
+
+    Imported lazily so that importing player.py does not require the
+    model_gateway.providers package (some test harnesses mock the
+    router). When the categorizer is unavailable we conservatively
+    return None — the field in RetryInfo will simply be unset.
+    """
+    try:
+        from werewolf_agent.model_gateway.providers.base import (
+            categorize_empty_response,
+        )
+    except ImportError:
+        return None
+    return categorize_empty_response(
+        response_text="",
+        latency_ms=latency_ms,
+        http_status=0,  # not yet surfaced on GenerateResult
+        raw_error=raw_error,
+    )
+
+
 class DefaultActionValidator:
     """Validates agent output against RuleEngine-provided legal sets."""
 
@@ -351,12 +391,20 @@ class PlayerAgent:
                         structured_failure_reason = "structured_output_unsupported"
                     else:
                         structured_failure_reason = "model_generation_failed"
+                    failure_category = _categorize_failure_category(
+                        latency_ms=_latency_from_result(result),
+                        raw_error=failure_reason,
+                    )
                     retry = RetryInfo(
                         attempt=attempt,
                         max_retries=self.max_retries,
                         error_code="model_generation_failed",
                         error_message=failure_reason,
-                        correction_hint="Provider generation failed; using fallback action.",
+                        failure_category=failure_category,
+                        correction_hint=(
+                            f"Provider generation failed (category={failure_category}); "
+                            "using fallback action."
+                        ),
                     )
                     fallback = self._fallback_action(context)
                     trace = self._build_action_trace(
@@ -387,7 +435,14 @@ class PlayerAgent:
                     max_retries=self.max_retries,
                     error_code="empty_response",
                     error_message="Model returned empty text",
-                    correction_hint="Please provide a valid JSON action.",
+                    failure_category=_categorize_failure_category(
+                        latency_ms=_latency_from_result(result),
+                        raw_error=None,
+                    ),
+                    correction_hint=(
+                        "Please provide a valid JSON action. "
+                        "If the model timed out, consider shorter reasoning."
+                    ),
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,

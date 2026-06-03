@@ -271,6 +271,10 @@ class RetryInfo(BaseModel):
     # raw_text[:50]) signature. Saves wasted LLM calls when the model is
     # stuck repeating the same broken output.
     early_exit_reason: str | None = None
+    # Pipeline-optimization Task 3: attribution for empty_response — one of
+    # "timeout", "token_limit", "provider_error", "network_error", "unknown".
+    # None when the response was not empty or the cause could not be inferred.
+    failure_category: str | None = None
 
 
 class FallbackAction(BaseModel):
