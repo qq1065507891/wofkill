@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, TypeAdapter, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +190,17 @@ class PlayerAction(BaseModel):
     exposed for type narrowing and introspection. It is NOT the
     discriminator — we route on ``action_type`` because that is the
     field the LLM already emits natively.
+
+    P0-S8: every variant declares ``extra="forbid"``. Game trace
+    ``g_3528592081`` showed 67 successful speech actions containing
+    ``vote_basis: "fallback"`` even though the speech action doesn't
+    ask for it — the LLM was being defensive. With strict validation,
+    such deflections become a parse error that the retry loop can
+    surface back to the LLM, so it learns to stop filling in fields
+    the prompt never requested.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     action_type: ActionType
     target_id: str | None = Field(
@@ -263,6 +273,7 @@ class PlayerAction(BaseModel):
 class VotePlayerAction(PlayerAction):
     """Day-vote action with the full vote-audit trail (used by the moderator)."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.VOTE] = ActionType.VOTE
     action_kind: Literal["vote"] = "vote"
     target_id: str | None = None
@@ -291,6 +302,7 @@ class VotePlayerAction(PlayerAction):
 class SpeechPlayerAction(PlayerAction):
     """Public speech action — speech text is the primary payload."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.SPEECH] = ActionType.SPEECH
     action_kind: Literal["speech"] = "speech"
 
@@ -298,6 +310,7 @@ class SpeechPlayerAction(PlayerAction):
 class WolfKillPlayerAction(PlayerAction):
     """Wolf-team night-kill target."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.WOLF_KILL] = ActionType.WOLF_KILL
     action_kind: Literal["wolf_kill"] = "wolf_kill"
     target_id: str | None = None
@@ -306,6 +319,7 @@ class WolfKillPlayerAction(PlayerAction):
 class CheckAlignmentPlayerAction(PlayerAction):
     """Seer night-check target."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.CHECK_ALIGNMENT] = ActionType.CHECK_ALIGNMENT
     action_kind: Literal["check_alignment"] = "check_alignment"
     target_id: str | None = None
@@ -314,6 +328,7 @@ class CheckAlignmentPlayerAction(PlayerAction):
 class UsePoisonPlayerAction(PlayerAction):
     """Witch poison target."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.USE_POISON] = ActionType.USE_POISON
     action_kind: Literal["use_poison"] = "use_poison"
     target_id: str | None = None
@@ -322,6 +337,7 @@ class UsePoisonPlayerAction(PlayerAction):
 class ChooseMasterPlayerAction(PlayerAction):
     """Hybrid first-night master choice target."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.CHOOSE_MASTER] = ActionType.CHOOSE_MASTER
     action_kind: Literal["choose_master"] = "choose_master"
     target_id: str | None = None
@@ -330,6 +346,7 @@ class ChooseMasterPlayerAction(PlayerAction):
 class HunterShotPlayerAction(PlayerAction):
     """Hunter shot target (when triggered by death)."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.HUNTER_SHOT] = ActionType.HUNTER_SHOT
     action_kind: Literal["hunter_shot"] = "hunter_shot"
     target_id: str | None = None
@@ -338,6 +355,7 @@ class HunterShotPlayerAction(PlayerAction):
 class BadgeTransferPlayerAction(PlayerAction):
     """Sheriff badge transfer target (when leaving the game)."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.BADGE_TRANSFER] = ActionType.BADGE_TRANSFER
     action_kind: Literal["badge_transfer"] = "badge_transfer"
     target_id: str | None = None
@@ -346,6 +364,7 @@ class BadgeTransferPlayerAction(PlayerAction):
 class SheriffVotePlayerAction(PlayerAction):
     """Sheriff election vote target."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.SHERIFF_VOTE] = ActionType.SHERIFF_VOTE
     action_kind: Literal["sheriff_vote"] = "sheriff_vote"
     target_id: str | None = None
@@ -362,6 +381,7 @@ class NoOpPlayerAction(PlayerAction):
     union can route on it.
     """
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.NO_ACTION] = ActionType.NO_ACTION
     action_kind: Literal["no_action"] = "no_action"
 
@@ -377,6 +397,7 @@ class NoOpPlayerAction(PlayerAction):
 class WolfNoKillPlayerAction(PlayerAction):
     """Wolf team explicitly chooses not to kill tonight."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.WOLF_NO_KILL] = ActionType.WOLF_NO_KILL
     action_kind: Literal["wolf_no_kill"] = "wolf_no_kill"
 
@@ -384,6 +405,7 @@ class WolfNoKillPlayerAction(PlayerAction):
 class UseAntidotePlayerAction(PlayerAction):
     """Witch uses antidote (saves the wolf's victim). Self-targeted by default."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.USE_ANTIDOTE] = ActionType.USE_ANTIDOTE
     action_kind: Literal["use_antidote"] = "use_antidote"
 
@@ -391,6 +413,7 @@ class UseAntidotePlayerAction(PlayerAction):
 class SelfDestructPlayerAction(PlayerAction):
     """Self-destruct action (idiot reveal, etc.). No target."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.SELF_DESTRUCT] = ActionType.SELF_DESTRUCT
     action_kind: Literal["self_destruct"] = "self_destruct"
 
@@ -398,6 +421,7 @@ class SelfDestructPlayerAction(PlayerAction):
 class SheriffRegisterPlayerAction(PlayerAction):
     """Player registers to run for sheriff."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.SHERIFF_REGISTER] = ActionType.SHERIFF_REGISTER
     action_kind: Literal["sheriff_register"] = "sheriff_register"
 
@@ -405,6 +429,7 @@ class SheriffRegisterPlayerAction(PlayerAction):
 class SheriffWithdrawPlayerAction(PlayerAction):
     """Player withdraws from sheriff candidacy."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.SHERIFF_WITHDRAW] = ActionType.SHERIFF_WITHDRAW
     action_kind: Literal["sheriff_withdraw"] = "sheriff_withdraw"
 
@@ -412,6 +437,7 @@ class SheriffWithdrawPlayerAction(PlayerAction):
 class BadgeTearPlayerAction(PlayerAction):
     """Sheriff tears the badge — ends the sheriff role for this game."""
 
+    model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.BADGE_TEAR] = ActionType.BADGE_TEAR
     action_kind: Literal["badge_tear"] = "badge_tear"
 

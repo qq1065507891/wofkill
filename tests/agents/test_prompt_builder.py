@@ -692,5 +692,153 @@ def test_claimed_view_example_no_chinese_natural_language_anywhere():
     assert "我是预言家" not in prompt_wk
 
 
+# ---------------------------------------------------------------------------
+# P0-S8: speech example in the prompt must validate against the strict
+# SpeechPlayerAction schema (and the vote example must validate against
+# VotePlayerAction). With extra="forbid", if the example contains any
+# cross-variant fields, the LLM will copy them too.
+# ---------------------------------------------------------------------------
+
+
+import json as _json
+import re as _re
+
+from werewolf_agent.agents.schemas import (
+    PlayerAction as _PlayerAction,
+    SpeechPlayerAction as _SpeechPlayerAction,
+    VotePlayerAction as _VotePlayerAction,
+)
+
+
+def _extract_first_json_object(prompt: str) -> dict:
+    """Find the first balanced JSON object in the prompt and parse it.
+
+    The prompt contains many JSON examples wrapped in quotes inside
+    Chinese text; we need to find one with a top-level ``action_type``
+    field to test against the schema.
+    """
+    # Greedy first { ... } that contains "action_type" — balance braces.
+    for match in _re.finditer(r"\{", prompt):
+        depth = 0
+        in_string = False
+        escape = False
+        end = -1
+        for idx in range(match.start(), len(prompt)):
+            ch = prompt[idx]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx
+                    break
+        if end < 0:
+            continue
+        try:
+            data = _json.loads(prompt[match.start() : end + 1])
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "action_type" in data:
+            return data
+    raise AssertionError("No JSON object with 'action_type' found in prompt")
+
+
+def test_speech_example_in_prompt_validates_against_strict_schema():
+    """P0-S8: speech example in the prompt must validate SpeechPlayerAction.
+
+    The prompt's speech example is what the LLM copies. With
+    extra="forbid" on SpeechPlayerAction, any cross-variant field in
+    the example would cause the LLM to also fill those fields
+    defensively. We now require the example itself to round-trip
+    cleanly through the strict schema.
+    """
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,  # → FULL_ACTION (multi-action not 1)
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05"],
+        public_summary="D1",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Collect every JSON object in the example section; the speech one
+    # must have action_type="speech" and the vote one must have
+    # action_type="vote".
+    examples: list[dict] = []
+    for match in _re.finditer(r"\{[^{}]*?(?:\{[^{}]*\}[^{}]*?)*\}", prompt, flags=_re.DOTALL):
+        try:
+            data = _json.loads(match.group(0))
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "action_type" in data:
+            examples.append(data)
+
+    speech_examples = [e for e in examples if e.get("action_type") == "speech"]
+    vote_examples = [e for e in examples if e.get("action_type") == "vote"]
+    assert speech_examples, "Expected a speech example in the prompt"
+    assert vote_examples, "Expected a vote example in the prompt"
+
+    for ex in speech_examples:
+        # Round-trip through the strict SpeechPlayerAction schema.
+        _SpeechPlayerAction.model_validate(ex)
+
+    for ex in vote_examples:
+        # Vote example is allowed to carry vote-audit fields.
+        _VotePlayerAction.model_validate(ex)
+
+
+def test_speech_example_does_not_contain_vote_audit_field_names():
+    """P0-S8: the speech example must not name vote-audit fields.
+
+    Even if the field value would be valid, naming the field primes
+    the LLM to fill it. Game trace g_3528592081 showed 67 successful
+    speech actions with ``vote_basis: "fallback"`` after the LLM saw
+    the field name in another branch's example.
+    """
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05"],
+        public_summary="D1",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    for ex in _re.finditer(r"\{\s*\"action_type\":\s*\"speech\".*?\}", prompt, flags=_re.DOTALL):
+        block = ex.group(0)
+        assert "vote_basis" not in block, (
+            "Speech example must not mention vote_basis"
+        )
+        assert "seer_stance" not in block, (
+            "Speech example must not mention seer_stance"
+        )
+        assert "standing_with_seer" not in block, (
+            "Speech example must not mention standing_with_seer"
+        )
+        assert "suspect_reason" not in block, (
+            "Speech example must not mention suspect_reason"
+        )
+        assert "not_voting_reason" not in block, (
+            "Speech example must not mention not_voting_reason"
+        )
+        assert "private_reason" not in block, (
+            "Speech example must not mention private_reason"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

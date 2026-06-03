@@ -762,19 +762,32 @@ def parse_choice_action(
     if repaired is None:
         return None, "Could not map choice to legal target", data
 
-    action = PlayerAction(
-        action_type=legal_actions[0],
-        target_id=repaired["target_id"],
-        speech="",
-        reason=repaired["reason"],
-        confidence=repaired["confidence"],
-        seer_stance=repaired.get("seer_stance", SeerStance.UNDECIDED.value),
-        vote_basis=repaired.get("vote_basis", VoteBasis.FALLBACK.value),
-        standing_with_seer=repaired.get("standing_with_seer", ""),
-        suspect_reason=repaired.get("suspect_reason", ""),
-        not_voting_reason=repaired.get("not_voting_reason", ""),
-        private_reason=repaired.get("private_reason", ""),
-    )
+    # P0-S8: only VOTE actions carry vote-audit fields. With
+    # ``extra="forbid"`` on every variant, passing them to e.g.
+    # WolfKillPlayerAction is now a parse error — so we only attach
+    # them when the action is actually a vote.
+    if legal_actions == [ActionType.VOTE]:
+        action = PlayerAction(
+            action_type=legal_actions[0],
+            target_id=repaired["target_id"],
+            speech="",
+            reason=repaired["reason"],
+            confidence=repaired["confidence"],
+            seer_stance=repaired.get("seer_stance", SeerStance.UNDECIDED.value),
+            vote_basis=repaired.get("vote_basis", VoteBasis.FALLBACK.value),
+            standing_with_seer=repaired.get("standing_with_seer", ""),
+            suspect_reason=repaired.get("suspect_reason", ""),
+            not_voting_reason=repaired.get("not_voting_reason", ""),
+            private_reason=repaired.get("private_reason", ""),
+        )
+    else:
+        action = PlayerAction(
+            action_type=legal_actions[0],
+            target_id=repaired["target_id"],
+            speech="",
+            reason=repaired["reason"],
+            confidence=repaired["confidence"],
+        )
     return action, None, repaired
 
 

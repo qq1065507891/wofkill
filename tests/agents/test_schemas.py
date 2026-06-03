@@ -322,3 +322,136 @@ class TestPlayerActionUnion:
         for at in no_target_types:
             action = PlayerAction(action_type=at)
             assert action.action_type == at
+
+
+# ---------------------------------------------------------------------------
+# P0-S8: PlayerAction variants reject unknown fields (extra="forbid")
+# ---------------------------------------------------------------------------
+#
+# Game trace g_3528592081 shows 67 successful speech actions containing
+# `vote_basis: "fallback"` even though the speech action does not need
+# it — the LLM is being defensive. With ``extra="forbid"`` on each
+# variant, those deflections are now schema errors that the retry loop
+# can report back to the LLM, so it learns to stop filling fields
+# the prompt did not ask for.
+
+
+class TestPlayerActionExtraForbid:
+    """PlayerAction variants reject unknown fields.
+
+    Each discriminated-Union variant declares only the fields that
+    make sense for that action. With ``extra="forbid"``, an LLM that
+    fills in vote-audit fields on a speech action (or any other
+    cross-variant field) is rejected at parse time instead of having
+    those fields silently dropped.
+    """
+
+    def test_speech_action_rejects_vote_basis(self) -> None:
+        # P0-S8: SpeechPlayerAction must NOT silently accept vote_basis
+        # — game trace g_3528592081 had 67 such actions.
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            SpeechPlayerAction(
+                action_type=ActionType.SPEECH,
+                speech="hello",
+                vote_basis="fallback",  # type: ignore[call-arg]
+            )
+
+    def test_speech_action_rejects_seer_stance(self) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            SpeechPlayerAction(
+                action_type=ActionType.SPEECH,
+                speech="hello",
+                seer_stance="trust",  # type: ignore[call-arg]
+            )
+
+    def test_wolf_kill_action_rejects_seer_stance(self) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            WolfKillPlayerAction(
+                action_type=ActionType.WOLF_KILL,
+                target_id="p05",
+                seer_stance="trust",  # type: ignore[call-arg]
+            )
+
+    def test_wolf_kill_action_rejects_vote_basis(self) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            WolfKillPlayerAction(
+                action_type=ActionType.WOLF_KILL,
+                target_id="p05",
+                vote_basis="fallback",  # type: ignore[call-arg]
+            )
+
+    def test_speech_via_model_validate_rejects_vote_basis(self) -> None:
+        # End-to-end through PlayerAction.model_validate (the dispatch
+        # path used by parse_action). vote_basis on a speech is rejected.
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PlayerAction.model_validate({
+                "action_type": "speech",
+                "speech": "hello",
+                "vote_basis": "fallback",
+            })
+
+    def test_speech_via_model_validate_rejects_seer_stance(self) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PlayerAction.model_validate({
+                "action_type": "speech",
+                "speech": "hello",
+                "seer_stance": "trust",
+            })
+
+    def test_wolf_kill_via_model_validate_rejects_vote_basis(self) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PlayerAction.model_validate({
+                "action_type": "wolf_kill",
+                "target_id": "p05",
+                "vote_basis": "fallback",
+            })
+
+    def test_no_action_rejects_vote_basis(self) -> None:
+        # Sanity: even no-action variants (no_target/no_payload) reject
+        # vote-audit fields.
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PlayerAction.model_validate({
+                "action_type": "no_action",
+                "vote_basis": "fallback",
+            })
+
+    def test_vote_action_accepts_vote_basis(self) -> None:
+        # Sanity check: VotePlayerAction is the only variant that
+        # accepts vote-audit fields, and it must still work.
+        action = VotePlayerAction(
+            action_type=ActionType.VOTE,
+            target_id="p07",
+            vote_basis="seer_check",
+            seer_stance="trust",
+            standing_with_seer="p03",
+            suspect_reason="p07没有回应",
+            not_voting_reason="p08没查验",
+            private_reason="我信p03",
+        )
+        assert action.vote_basis == "seer_check"
+        assert action.seer_stance == "trust"
+
+    def test_player_action_base_rejects_unknown(self) -> None:
+        # Direct construction on the base class also routes through the
+        # Union, so an unknown field is rejected.
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PlayerAction(
+                action_type=ActionType.SPEECH,
+                speech="hello",
+                random_unknown_field="x",  # type: ignore[call-arg]
+            )
+
+    def test_all_target_variants_reject_vote_basis(self) -> None:
+        # Sanity sweep: every target-required variant rejects vote_basis.
+        for at in [
+            ActionType.WOLF_KILL, ActionType.USE_POISON,
+            ActionType.CHECK_ALIGNMENT, ActionType.CHOOSE_MASTER,
+            ActionType.HUNTER_SHOT, ActionType.BADGE_TRANSFER,
+            ActionType.SHERIFF_VOTE,
+        ]:
+            with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+                PlayerAction.model_validate({
+                    "action_type": at.value,
+                    "target_id": "p05",
+                    "vote_basis": "fallback",
+                })

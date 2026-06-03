@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Prompt Revamp — Batch 1 in progress — 2026-06-03**
-- Active task: Batch 1 Task 1.5 P0-S7 (claimed_view enum)
+- Active task: Batch 1 Task 1.6 P0-S8 (PlayerAction strict extra=forbid)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-03
 
@@ -25,12 +25,66 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 | 1.2 | P0-M2 sanitize all private text variants | DONE | `43fcfa8` | regex + 4 fields |
 | 1.3 | P0-S5 strategy_directive grouping | DONE | `1195fa0` | 3 priority sections |
 | 1.4 | P0-S6 retry hint reorder + error snippet | DONE | `6c0d107` | task → retry → contract |
-| 1.5 | P0-S7 claimed_view enum | DONE | (this commit) | replace `我是好人` / `我是预言家` with `good_player_without_night_info` / `seer`; fixed pre-existing `example_role` bug |
-| 1.6 | P0-S8 SPEECH example drops vote fields | pending | — | |
+| 1.5 | P0-S7 claimed_view enum | DONE | `609066b` | replace `我是好人` / `我是预言家` with `good_player_without_night_info` / `seer`; fixed pre-existing `example_role` bug |
+| 1.6 | P0-S8 PlayerAction strict extra=forbid | DONE | (this commit) | 16 variants reject unknown fields; fixed `parse_choice_action` to only pass vote fields to VOTE |
 | 1.7 | P0-M3 reflection sort by game_id | pending | — | |
 | 1.8 | P0-M4 profile role-specific win-rate | pending | — | |
 | 1.9 | P0-R2 god prompt shorten | pending | — | |
 | 1.10 | P0-R3 output_parser encoding fix | pending | — | |
+
+### Task 1.6 (P0-S8) — PlayerAction strict extra=forbid 2026-06-03
+
+**Problem:** Game trace `g_3528592081` shows 67 successful speech
+actions all containing `vote_basis: "fallback"` even though the
+speech action doesn't ask for it — the LLM is being defensive and
+fills in vote-audit fields it sees mentioned elsewhere in the
+prompt. The discriminated Union's variants used Pydantic v2 default
+`extra="ignore"`, so those extra fields were silently dropped at
+parse time. The LLM never learned.
+
+**Fix:** Two-pronged.
+1. `werewolf_agent/agents/schemas.py` — added
+   `model_config = ConfigDict(extra="forbid")` to the base
+   `PlayerAction` and all 15 variants (VotePlayerAction,
+   SpeechPlayerAction, WolfKillPlayerAction, CheckAlignmentPlayerAction,
+   UsePoisonPlayerAction, ChooseMasterPlayerAction, HunterShotPlayerAction,
+   BadgeTransferPlayerAction, SheriffVotePlayerAction, NoOpPlayerAction,
+   WolfNoKillPlayerAction, UseAntidotePlayerAction, SelfDestructPlayerAction,
+   SheriffRegisterPlayerAction, SheriffWithdrawPlayerAction,
+   BadgeTearPlayerAction). Cross-variant fields are now a parse error.
+2. `werewolf_agent/agents/output_parser.py:746-790` — `parse_choice_action`
+   was passing vote-audit fields to ALL target-requiring actions, not
+   just VOTE. With the new strictness this would have been a parse
+   error for every wolf_kill, use_poison, check_alignment, etc.
+   call site. Fixed: only attach the vote-audit fields when the
+   action is VOTE.
+
+Speech example in `prompt_builder.py:_format_examples` (line 608)
+was already clean of vote-audit fields after P0-S7, so no change
+needed there. Added 2 regression tests in `test_prompt_builder.py`
+that the speech example round-trips through `SpeechPlayerAction`
+and never names `vote_basis` / `seer_stance` / etc.
+
+**Files changed:**
+- `werewolf_agent/agents/schemas.py` — `ConfigDict(extra="forbid")`
+  on PlayerAction + 15 variants; import `ConfigDict`
+- `werewolf_agent/agents/output_parser.py` — `parse_choice_action`
+  only attaches vote fields when `legal_actions == [VOTE]`
+- `tests/agents/test_schemas.py` — 10 new tests in
+  `TestPlayerActionExtraForbid`
+- `tests/agents/test_prompt_builder.py` — 2 new tests verifying the
+  speech example round-trips through `SpeechPlayerAction` and
+  doesn't name vote-audit fields
+
+**Verification:**
+- `pytest tests/agents/ tests/runtime/ -q`: **1049 passed**, 0 failed
+- `pytest tests/agents/test_schemas.py`: 39/39 passed
+- `pytest tests/agents/test_prompt_builder.py`: 28/28 passed
+- `pytest tests/rules/ tests/storage/`: 220/220 passed
+- `pytest tests/`: 2055/2055 passed (excluding integration)
+- No regressions. The strictness surfaced 1 pre-existing bug in
+  `parse_choice_action` (passing vote fields to non-vote actions
+  relied on `extra="ignore"`); fix lives in the parser, not the tests.
 
 ### Task 1.5 (P0-S7) — claimed_view enum 2026-06-03
 
