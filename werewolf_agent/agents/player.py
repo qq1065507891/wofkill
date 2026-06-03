@@ -32,6 +32,11 @@ from werewolf_agent.agents.schemas import (
     TaskType,
     VoteBasis,
 )
+from werewolf_agent.agents.parse_dispatch import (
+    parse_choice_action as _parse_choice_action,
+    parse_speech_intent_action as _parse_speech_intent_action,
+    select_output_mode as _select_output_mode,
+)
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
 from werewolf_agent.agents.metrics_collector import MetricsCollector
 from werewolf_agent.agents.output_parser import (
@@ -63,10 +68,6 @@ from werewolf_agent.agents.output_parser import (
     infer_seer_stance as _infer_stance_impl,
     infer_vote_basis as _infer_basis_impl,
     default_not_voting_reason as _default_not_voting_impl,
-    parse_choice_action as _parse_choice_impl,
-    parse_speech_intent_action as _parse_speech_impl,
-    uses_choice_pipeline as _uses_choice_impl,
-    uses_speech_intent_pipeline as _uses_speech_impl,
 )
 from werewolf_agent.agents.tool_schema import (
     player_action_tool as _tool_impl,
@@ -75,6 +76,9 @@ from werewolf_agent.agents.tool_schema import (
     speech_quality_phase as _speech_phase_impl,
     vote_quality_error as _vote_quality_impl,
     all_legal_actions_require_target as _all_target_impl,
+)
+from werewolf_agent.agents.trace_builder import (
+    build_action_trace as _build_action_trace,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
 
@@ -289,7 +293,7 @@ class PlayerAgent:
                 # Provider does not support tool_choice
                 structured_failure_reason = "structured_output_unsupported"
                 fallback = self._fallback_action(context)
-                trace = self._build_action_trace(
+                trace = _build_action_trace(
                     context,
                     raw_text="",
                     parsed_action=None,
@@ -407,7 +411,7 @@ class PlayerAgent:
                         ),
                     )
                     fallback = self._fallback_action(context)
-                    trace = self._build_action_trace(
+                    trace = _build_action_trace(
                         context,
                         raw_text="",
                         parsed_action=None,
@@ -490,9 +494,14 @@ class PlayerAgent:
             # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
             # the program maps that choice back into a legal PlayerAction.
             choice_data: dict[str, Any] | None = None
-            output_mode = self._select_output_mode(context)
+            output_mode = _select_output_mode(
+                legal_actions=context.legal_actions,
+                legal_targets=context.legal_targets,
+                task_type=context.task_type,
+                speech_intent_tasks=self._SPEECH_INTENT_TASKS,
+            )
             if output_mode == OutputMode.TARGET_CHOICE:
-                action, parse_error, choice_data = self._parse_choice_action(
+                action, parse_error, choice_data = _parse_choice_action(
                     result.text,
                     context,
                 )
@@ -501,7 +510,7 @@ class PlayerAgent:
             elif output_mode == OutputMode.SPEECH_INTENT:
                 action, parse_error = self._parse_action(result.text)
                 if parse_error and action is None:
-                    action, parse_error, choice_data = self._parse_speech_intent_action(
+                    action, parse_error, choice_data = _parse_speech_intent_action(
                         result.text,
                         context,
                     )
@@ -581,7 +590,7 @@ class PlayerAgent:
                 continue
 
             # Private intent is stored but never written to public timeline
-            trace = self._build_action_trace(
+            trace = _build_action_trace(
                 context,
                 raw_text=raw_text,
                 parsed_action=choice_data or action,
@@ -612,7 +621,7 @@ class PlayerAgent:
             exit_reason,
         )
         fallback = self._fallback_action(context)
-        trace = self._build_action_trace(
+        trace = _build_action_trace(
             context,
             raw_text=raw_text,
             parsed_action=parsed_action,
@@ -679,47 +688,6 @@ class PlayerAgent:
             return True, current_sig
         return False, current_sig
 
-    def _build_action_trace(
-        self,
-        context: AgentContext,
-        *,
-        raw_text: str,
-        parsed_action: PlayerAction | dict[str, Any] | None,
-        final_action_type: ActionType,
-        retry: RetryInfo,
-        fallback_reason: str | None = None,
-        fallback_target_used: bool = False,
-        fallback_target_id: str | None = None,
-        tool_call_required: bool = False,
-        tool_call_received: bool = False,
-        parse_success: bool = False,
-        parse_error: str | None = None,
-        retry_count: int = 0,
-        structured_failure_reason: str | None = None,
-    ) -> ActionTrace:
-        return ActionTrace(
-            raw_text=raw_text,
-            parsed_action=(
-                parsed_action.model_dump(exclude={"trace"})
-                if isinstance(parsed_action, PlayerAction)
-                else parsed_action
-            ),
-            final_action_type=final_action_type.value,
-            legal_actions=[action.value for action in context.legal_actions],
-            legal_targets=list(context.legal_targets),
-            retry=retry.model_dump(),
-            fallback_reason=fallback_reason,
-            fallback_target_used=fallback_target_used,
-            fallback_target_id=fallback_target_id,
-            tool_call_required=tool_call_required,
-            tool_call_received=tool_call_received,
-            tool_call_name="submit_player_action" if tool_call_required else "",
-            parse_success=parse_success,
-            parse_error=parse_error,
-            retry_count=retry_count,
-            structured_failure_reason=structured_failure_reason,
-        )
-
     # ── Delegated to output_parser.py ──
 
     @staticmethod
@@ -737,46 +705,6 @@ class PlayerAgent:
 
     def _extract_parameter_tag_action(self, text: str) -> dict[str, Any] | None:
         return _extract_param_impl(text)
-
-    def _uses_choice_pipeline(self, context: AgentContext) -> bool:
-        return _uses_choice_impl(context.legal_actions, context.legal_targets)
-
-    def _uses_speech_intent_pipeline(self, context: AgentContext) -> bool:
-        return _uses_speech_impl(context.legal_actions, context.task_type, self._SPEECH_INTENT_TASKS)
-
-    def _select_output_mode(self, context: AgentContext) -> OutputMode:
-        if self._uses_choice_pipeline(context):
-            return OutputMode.TARGET_CHOICE
-        if self._uses_speech_intent_pipeline(context):
-            return OutputMode.SPEECH_INTENT
-        return OutputMode.FULL_ACTION
-
-    def _parse_choice_action(
-        self,
-        text: str,
-        context: AgentContext,
-    ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
-        return _parse_choice_impl(
-            text,
-            context.legal_actions,
-            context.legal_targets,
-            context.salience_items,
-        )
-
-    def _parse_speech_intent_action(
-        self,
-        text: str,
-        context: AgentContext,
-    ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
-        return _parse_speech_impl(
-            text,
-            context.agent_id,
-            context.own_role,
-            context.legal_targets,
-            context.salience_items,
-            context.visible_world_state,
-            context.recent_transcript,
-        )
 
     def _extract_decision_data(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
         return _extract_decision_impl(text)
