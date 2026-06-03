@@ -4,10 +4,41 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **g_3528592081 Game Log Post-mortem — Investigation Complete** — 2026-06-02
-- Active task: None (6 issues investigated, ready for prioritization)
+- Current phase: **Prompt Revamp — Batch 0 Complete (Verification) — 2026-06-03**
+- Active task: Batch 1 (P0 quick wins, 10 items)
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-02
+- Last updated: 2026-06-03
+
+---
+
+## Prompt Revamp Plan — 2026-06-03
+
+70 prompt / retry / skill / RAG / memory / directive / info-isolation issues identified via static analysis, design-doc cross-check, and production game trace (g_3528592081 + 2 more, 279 total actions).
+
+Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
+
+### Batch 0 (verification) — COMPLETE 2026-06-03
+
+| Task | Verdict | Action |
+|------|---------|--------|
+| P0-K1 (skill tool dead code) | **0/279 invocations** across 3 games | Drop tool path; keep pre-inject. Fix in Task 2.2. |
+| P0-M8 (BeliefUpdater private leak) | Algorithm is safe; risk is at `cognition_matrix_hint` rendering | Consolidate into Task 3.5 (P0-M9) |
+| P0-S2 (three-step generation) | NOT worth 3x token cost for 10-15% fallback reduction | **DEFER indefinitely.** Better fixes: P0-S1+R2+R3 |
+
+Findings: `docs/audit/2026-06-03-batch0-{k1,m8,s2}-finding.md` (commits `7c92b09`, `7faa5c1`)
+
+### Plan adjustments from Batch 0
+- P0-S2 removed from Batch 2 (Task 2.1 marked DEFERRED).
+- P0-M8 merged into P0-M9 (Task 3.5 absorbs both).
+- Task 3.7 added for P0-I3 (wolf directive leak test).
+- 70 → 69 effective issues.
+
+### Worktree
+- Branch: `prompt-revamp-2026-06` at `.worktrees/prompt-revamp-2026-06`
+- Base: `abe63ca refactor(schemas): PlayerAction as discriminated union of 10 action variants`
+
+### Next: Batch 1 (P0 quick wins, 10 items)
+P0-S1, S5, S6, S7, S8, M2, M3, M4, R2, R3 — sequential, same worktree, TDD per item.
 
 ---
 

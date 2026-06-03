@@ -209,12 +209,12 @@ Goal: Reduce uncertainty on 3 P0 items before committing to fix direction. Each 
 
 **Strategy:** Touches more files. May include backward-incompatible prompt changes. Still sequential in same worktree.
 
-### Task 2.1 (P0-S2): Implement three-step JSON generation (if batch 0.3 confirms)
-- **File:** `werewolf_agent/agents/player.py:228-648` (new three-step path)
-- **Fix:** Add `_act_three_step()` method: step 1 = generate `private_intent` (small JSON), step 2 = generate action+target (function call), step 3 = generate speech (text). Gated by config flag. Per design doc §7.2.
-- **Test:** `tests/agents/test_player_agent.py::test_three_step_generation`, `test_three_step_each_step_isolated`
-- **Dependency:** Task 0.3 must show fallback rate is high and 3-step helps.
-- **Rollback:** If 3-step regresses, gate flag defaults to single-shot.
+### Task 2.1 (P0-S2): ~~Implement three-step JSON generation~~ DEFERRED
+- **File:** ~~`werewolf_agent/agents/player.py:228-648` (new three-step path)~~
+- **Decision:** **DEFER indefinitely.** See `docs/audit/2026-06-03-batch0-s2-finding.md`.
+- **Rationale:** Three-step generation would save ~30-45/279 actions (10-15%) at 3x token cost. Net negative ROI. Better fixes: P0-S1 mode isolation + P0-R2 shorter prompts + P0-R3 encoding repair.
+- **Status:** ~~Active~~ → Deferred. If a future weak-model provider is added, revisit.
+- **No code change for this task.**
 
 ### Task 2.2 (P0-K1): Skill tool single-path (decision from Task 0.1)
 - **File:** `werewolf_agent/runtime/context.py:309-377, 758-766` + `werewolf_agent/agents/prompt_builder.py:181-214, 382-389`
@@ -273,11 +273,9 @@ Goal: Reduce uncertainty on 3 P0 items before committing to fix direction. Each 
 - **Test:** `tests/memory/test_memory.py::test_reflection_query_with_vector_index`, `test_reflection_falls_back_to_exact_match`
 - **Note:** Full embedding-based vector store is a future task. For now, a hash-based bag-of-words vector with cosine similarity satisfies the design contract.
 
-### Task 3.2 (P0-M8): BeliefUpdater private-info audit (action depends on Task 0.2)
-- **File:** `werewolf_agent/cognition/belief.py` + new `werewolf_agent/cognition/belief_signals.py`
-- **Fix:** Based on Task 0.2 finding, either add filter in `BeliefUpdater` to remove private-derived signals, OR add per-viewer role-probability redaction in `cognition_matrix_hint` rendering.
-- **Test:** `tests/memory/test_belief_visibility.py::test_belief_no_private_leak_through_prompt`
-- **Dependency:** Task 0.2.
+### Task 3.2 (P0-M8): ~~BeliefUpdater private-info audit~~ MERGED into 3.5
+- **Decision:** BeliefUpdater algorithm is private-info safe per `docs/audit/2026-06-03-batch0-m8-finding.md`. Risk is at rendering layer.
+- **Merged into Task 3.5** (P0-M9: cognition_matrix_hint rendering fix).
 
 ### Task 3.3 (P0-I1): Add strategy_directive role-gating tests
 - **File:** `tests/integration/test_e2e_info_leak.py` (extend) + new `tests/integration/test_directive_role_gating.py`
@@ -291,15 +289,23 @@ Goal: Reduce uncertainty on 3 P0 items before committing to fix direction. Each 
 - **Test:** `tests/runtime/test_strategy_directives.py::test_hybrid_master_wolf_receives_hidden_wolf_directive`
 - **Evidence:** game trace: p04 hybrid master=p01 wolf, but p04 voted like a villager (analyzed seer logic, voted wolf p07). Mismatch with design intent.
 
-### Task 3.5 (P0-I3): Test that wolf private info doesn't leak via directives
-- **File:** `tests/integration/test_directive_role_gating.py` (extend)
-- **Fix:** For villager/seer/witch/hunter/idiot context, assert `wolf_fake_seer_teammate`, `wolf_day_push_target`, `wolf_plan_target`, `wolf_teammate_exposed`, `wolf_high_priority_target` are NOT in `strategy_directive` or `visible_world_state`.
-- **Test:** new test class `TestDirectiveWolfPrivateNoLeak`.
+### Task 3.5 (P0-M9 + absorbed M8): cognition_matrix_hint rendering fix
+- **File:** `werewolf_agent/runtime/context.py:273-301`, `werewolf_agent/memory/cognition_matrix.py:64-72`
+- **Fix:**
+  1. Render `key_evidence` and `open_questions` as **ID references** (`salience_items#abc123`), not full text.
+  2. Trust/faction_lean/top_role_guess remain as summary statistics (already public-derived).
+  3. Add regression test that wolf and villager with same public facts produce same role_probabilities (per M8 finding).
+- **Test:** `tests/memory/test_belief_visibility.py::test_belief_state_uses_only_public_signals`, `tests/runtime/test_context.py::test_cognition_matrix_no_text_evidence`
 
 ### Task 3.6 (P0-I4): private_intent stance_notes don't enter cross-game memory
 - **File:** `werewolf_agent/memory/reflection.py:62-89` (in `_store_review_reflection` or similar) + `werewolf_agent/runtime/private_memory.py:114-120`
 - **Fix:** When converting `private_memory.stance_notes` to reflection text, strip player IDs. Replace "站边 p03" with "站边预言家" (role-based, not ID-based). Also strip `standing_with_seer` concrete IDs.
 - **Test:** `tests/memory/test_reflection.py::test_reflection_stance_no_player_ids`
+
+### Task 3.7 (P0-I3): Test that wolf private info doesn't leak via directives
+- **File:** `tests/integration/test_directive_role_gating.py` (extend)
+- **Fix:** For villager/seer/witch/hunter/idiot context, assert `wolf_fake_seer_teammate`, `wolf_day_push_target`, `wolf_plan_target`, `wolf_teammate_exposed`, `wolf_high_priority_target` are NOT in `strategy_directive` or `visible_world_state`.
+- **Test:** new test class `TestDirectiveWolfPrivateNoLeak`.
 
 ---
 
