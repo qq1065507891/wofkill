@@ -192,6 +192,10 @@ class PlayerAgent:
 
         attempt = 0
         _MAX_SKILL_SKIP = 3
+        # Pipeline-optimization Task 1: track previous attempt's error signature
+        # ``(error_code, raw_text[:50])`` to short-circuit if the next attempt
+        # produces an identical failure.
+        last_error_signature: tuple[str, str] | None = None
         # Resolve model config once to check text-fallback support.
         # Models that reliably return plain-text JSON don't need forced
         # tool_choice — we let them respond in their native format and
@@ -366,6 +370,11 @@ class PlayerAgent:
                     error_message="Model returned empty text",
                     correction_hint="Please provide a valid JSON action.",
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             allow_text_tool_fallback = bool(
@@ -393,6 +402,11 @@ class PlayerAgent:
                         "不要把JSON写在普通文本内容里。"
                     ),
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
@@ -428,6 +442,11 @@ class PlayerAgent:
                         "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
                     ),
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             parse_success = True
@@ -446,6 +465,11 @@ class PlayerAgent:
                     correction_hint=f"Legal actions: {[a.value for a in context.legal_actions]}. "
                                     f"Legal targets: {context.legal_targets}",
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
             speech_quality_err = self._speech_quality_error(context, action)
             if speech_quality_err:
@@ -456,6 +480,11 @@ class PlayerAgent:
                     error_message=speech_quality_err,
                     correction_hint=speech_quality_err,
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
             vote_quality_err = self._vote_quality_error(context, action)
             if vote_quality_err:
@@ -466,6 +495,11 @@ class PlayerAgent:
                     error_message=vote_quality_err,
                     correction_hint=vote_quality_err,
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             # Private intent is stored but never written to public timeline
@@ -519,6 +553,35 @@ class PlayerAgent:
         if last_record.success or not last_record.fallback_reason:
             return None
         return str(last_record.fallback_reason)
+
+    def _check_repeat_error_signature(
+        self,
+        retry: RetryInfo,
+        raw_text: str,
+        attempt: int,
+        last_signature: tuple[str, str] | None,
+    ) -> tuple[bool, tuple[str, str] | None]:
+        """Pipeline-optimization Task 1: detect repeated retry failures.
+
+        When two consecutive attempts produce the same ``(error_code,
+        raw_text[:50])`` signature the LLM is almost certainly stuck — further
+        retries waste tokens. This helper mutates ``retry.early_exit_reason``
+        in place on a match and returns ``(should_break, updated_signature)``.
+
+        Skill-tool nudges (where ``retry.error_code`` is ``None``) bypass the
+        check so the existing skill-skip retry budget is preserved.
+        """
+        if retry.error_code is None:
+            return False, last_signature
+        raw_text_snippet = (raw_text or "")[:50]
+        current_sig: tuple[str, str] = (retry.error_code, raw_text_snippet)
+        if last_signature is not None and last_signature == current_sig:
+            retry.early_exit_reason = (
+                f"repeat_error_signature: {retry.error_code} on attempts "
+                f"{attempt - 1} and {attempt}"
+            )
+            return True, current_sig
+        return False, current_sig
 
     def _build_action_trace(
         self,

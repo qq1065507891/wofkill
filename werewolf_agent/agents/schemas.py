@@ -266,6 +266,11 @@ class RetryInfo(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     correction_hint: str | None = None
+    # Pipeline-optimization Task 1: set when the retry loop short-circuits
+    # because two consecutive attempts produced the same (error_code,
+    # raw_text[:50]) signature. Saves wasted LLM calls when the model is
+    # stuck repeating the same broken output.
+    early_exit_reason: str | None = None
 
 
 class FallbackAction(BaseModel):
