@@ -517,10 +517,12 @@ class PlayerAgent:
             return action.model_copy(update={"trace": trace}), retry
 
         # Fallback
+        exit_reason = f" early_exit={retry.early_exit_reason}" if retry and retry.early_exit_reason else ""
         logger.warning(
-            "Agent %s exhausted retries (task=%s, attempts=%d, last_error=%s) → fallback",
+            "Agent %s exhausted retries (task=%s, attempts=%d, last_error=%s) → fallback%s",
             context.agent_id, context.task_type, attempt,
             retry.error_code if retry else "none",
+            exit_reason,
         )
         fallback = self._fallback_action(context)
         trace = self._build_action_trace(
