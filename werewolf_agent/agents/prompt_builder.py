@@ -550,6 +550,15 @@ class PlayerPromptBuilder:
     def _format_examples(self) -> str:
         ctx = self.context
         parts: list[str] = []
+        # P0-S7: claimed_view is documented as an identity-perspective
+        # identifier (PrivateIntent schema), not a free-form Chinese
+        # phrase. Use the canonical enum-style values so the LLM copies
+        # a clean identifier instead of "我是好人" / "我是预言家".
+        # Game trace g_3528592081 showed wolves writing
+        # "我是好人，混水摸鱼" — a strategy note in natural Chinese —
+        # when the example primed them to do so.
+        _CLAIMED_VIEW_GOOD = "good_player_without_night_info"
+        _CLAIMED_VIEW_SEER = "seer"
         if ctx.legal_actions and any(
             a in (ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL) for a in ctx.legal_actions
         ):
@@ -560,7 +569,7 @@ class PlayerPromptBuilder:
                 f'"speech": "", '
                 f'"reason": "选择击杀目标", "confidence": 0.8, '
                 f'"private_intent": {{"true_role": "werewolf", '
-                f'"faction_goal": "push_good_player_out", "claimed_view": "我是好人", '
+                f'"faction_goal": "push_good_player_out", "claimed_view": "{_CLAIMED_VIEW_GOOD}", '
                 f'"pressure_target": "{example_target}", "risk_flags": []}}}}'
             )
             parts.append("示例输出（狼人空刀场景）：")
@@ -569,7 +578,7 @@ class PlayerPromptBuilder:
                 '"speech": "", '
                 '"reason": "本轮空刀策略", "confidence": 0.6, '
                 '"private_intent": {"true_role": "werewolf", '
-                '"faction_goal": "confuse_good", "claimed_view": "我是好人", '
+                f'"faction_goal": "confuse_good", "claimed_view": "{_CLAIMED_VIEW_GOOD}", '
                 '"pressure_target": null, "risk_flags": []}}'
             )
         elif ctx.legal_actions and ActionType.SHERIFF_REGISTER in ctx.legal_actions:
@@ -591,11 +600,11 @@ class PlayerPromptBuilder:
             if role == "werewolf":
                 example_role = "werewolf"
                 example_goal = "confuse_good"
-                example_view = "我是好人"
+                example_view = _CLAIMED_VIEW_GOOD
             else:
                 example_role = "villager"
                 example_goal = "find_wolves"
-                example_view = "我是好人"
+                example_view = _CLAIMED_VIEW_GOOD
             parts.append("示例输出（发言场景）：")
             parts.append('{"action_type": "speech", "target_id": null, '
                          '"speech": "我觉得p05很可疑，昨晚他的发言前后矛盾。", '
@@ -604,7 +613,12 @@ class PlayerPromptBuilder:
                          f'"faction_goal": "{example_goal}", "claimed_view": "{example_view}", '
                          '"pressure_target": "p05", "risk_flags": []}}')
             vote_example_goal = "confuse_good" if example_role == "werewolf" else "find_wolves"
-            vote_example_view = "我是好人" if example_role != "seer" else "我是预言家"
+            # P0-S7: check the input role, not example_role. The original
+            # code checked example_role, which was hardcoded to "villager"
+            # for the seer case — so the seer claimed_view branch was
+            # never actually triggered. Using role here makes the
+            # claimed_view match the player's own identity.
+            vote_example_view = _CLAIMED_VIEW_SEER if role == "seer" else _CLAIMED_VIEW_GOOD
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '

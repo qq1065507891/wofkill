@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Prompt Revamp — Batch 0 Complete (Verification) — 2026-06-03**
-- Active task: Batch 1 (P0 quick wins, 10 items)
+- Current phase: **Prompt Revamp — Batch 1 in progress — 2026-06-03**
+- Active task: Batch 1 Task 1.5 P0-S7 (claimed_view enum)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-03
 
@@ -16,6 +16,50 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 70 prompt / retry / skill / RAG / memory / directive / info-isolation issues identified via static analysis, design-doc cross-check, and production game trace (g_3528592081 + 2 more, 279 total actions).
 
 Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
+
+### Batch 1 (P0 quick wins) — IN PROGRESS 2026-06-03
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 1.1 | P0-S1 mode isolation regression tests | DONE | `8fa4850` | test_prompt_mode_isolation.py |
+| 1.2 | P0-M2 sanitize all private text variants | DONE | `43fcfa8` | regex + 4 fields |
+| 1.3 | P0-S5 strategy_directive grouping | DONE | `1195fa0` | 3 priority sections |
+| 1.4 | P0-S6 retry hint reorder + error snippet | DONE | `6c0d107` | task → retry → contract |
+| 1.5 | P0-S7 claimed_view enum | DONE | (this commit) | replace `我是好人` / `我是预言家` with `good_player_without_night_info` / `seer`; fixed pre-existing `example_role` bug |
+| 1.6 | P0-S8 SPEECH example drops vote fields | pending | — | |
+| 1.7 | P0-M3 reflection sort by game_id | pending | — | |
+| 1.8 | P0-M4 profile role-specific win-rate | pending | — | |
+| 1.9 | P0-R2 god prompt shorten | pending | — | |
+| 1.10 | P0-R3 output_parser encoding fix | pending | — | |
+
+### Task 1.5 (P0-S7) — claimed_view enum 2026-06-03
+
+**Problem:** `PrivateIntent.claimed_view` schema documents an identity-perspective
+identifier, but `_format_examples` rendered `"claimed_view": "我是好人"` /
+`"我是预言家"` (whole Chinese phrases). Game trace g_3528592081 shows real
+wolves wrote `claimed_view: "我是好人，混水摸鱼"` — natural-language strategy
+note, not a clean enum.
+
+**Fix:** Replaced the 5 natural-language example values with enum-style
+identifiers: `good_player_without_night_info` for villagers/wolves, `seer`
+for seer. Surgical change in `_format_examples` only.
+
+Also fixed a pre-existing logic bug: the seer branch was checking
+`example_role` (which was hardcoded to `"villager"` for the seer case),
+so the seer claimed_view branch was never actually triggered. Changed to
+check the input `role` directly.
+
+**Files changed:**
+- `werewolf_agent/agents/prompt_builder.py` — `_format_examples` (5 lines)
+- `tests/agents/test_prompt_builder.py` — 4 new tests
+  (`test_claimed_view_example_uses_enum_not_chinese_phrase_default`,
+   `test_claimed_view_example_uses_seer_identifier_for_seer_role`,
+   `test_claimed_view_example_uses_enum_in_wolf_kill_branch`,
+   `test_claimed_view_example_no_chinese_natural_language_anywhere`)
+
+**Verification:**
+- `pytest tests/agents/test_prompt_builder.py -k claimed_view`: 4/4 passed
+- `pytest tests/agents/`: 372/372 passed, 0 regression
 
 ### Batch 0 (verification) — COMPLETE 2026-06-03
 

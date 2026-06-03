@@ -540,5 +540,157 @@ def test_retry_hint_empty_when_no_correction_and_no_error_message():
     )
 
 
+# ---------------------------------------------------------------------------
+# P0-S7: claimed_view examples must use enum-style identifiers
+# ---------------------------------------------------------------------------
+#
+# Audit P0-S7 finding: the PrivateIntent.claimed_view field is documented
+# as "Identity perspective the agent is claiming publicly" — should be a
+# clean identifier, not a natural-language Chinese sentence. But the
+# `_format_examples` method rendered `"claimed_view": "我是好人"` /
+# `"我是预言家"` etc. (whole Chinese phrases).
+#
+# Game trace g_3528592081 confirms the issue: real wolves wrote
+# `claimed_view: "我是好人，混水摸鱼"` — a strategy note in natural
+# Chinese, not an enum value. The LLM is copying the bad example.
+#
+# Fix: change the example value to a known good identifier
+# `good_player_without_night_info` (matches the schema's intent of an
+# identity-perspective enum value) and `seer` (role identifier) for
+# the seer branch. Tests below cover all 4 example-rendering branches.
+
+
+def _make_ctx_for_claimed_view_test(
+    role: str = "villager",
+    legal_actions: list | None = None,
+) -> AgentContext:
+    """Context that exercises `_format_examples` (FULL_ACTION output mode).
+
+    Default branch: legal_actions = [SPEECH] triggers the speech+vote
+    example pair. Pass WOLF_KILL to exercise the wolf-kill branch.
+    """
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.REFLECTION,
+        phase="day",
+        day_number=2,
+        own_role=role,
+        legal_actions=legal_actions if legal_actions is not None else [ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="D2 reflection",
+    )
+
+
+def test_claimed_view_example_uses_enum_not_chinese_phrase_default():
+    """P0-S7: the default-branch example must use an enum-style identifier.
+
+    The Chinese phrase "我是好人" is a free-form natural-language claim,
+    not an enum value. The schema documents `claimed_view` as an
+    "Identity perspective the agent is claiming publicly" — should be a
+    clean identifier. Game trace g_3528592081 showed wolves writing
+    "我是好人，混水摸鱼" — a strategy note, not a structured value.
+    """
+    ctx = _make_ctx_for_claimed_view_test(role="villager")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The example in the prompt must NOT use the Chinese natural-language
+    # phrase "我是好人" as the claimed_view value.
+    assert "我是好人" not in prompt, (
+        "Example claimed_view must not be the Chinese phrase '我是好人'; "
+        "use an enum-style identifier like 'good_player_without_night_info'."
+    )
+    # And it must use a clean English identifier that matches the
+    # schema's intent (identity-perspective enum).
+    assert "good_player_without_night_info" in prompt, (
+        "Example claimed_view should be 'good_player_without_night_info' "
+        "(a clean identity-perspective identifier)."
+    )
+
+
+def test_claimed_view_example_uses_seer_identifier_for_seer_role():
+    """P0-S7: the seer-branch example must use the role identifier 'seer',
+    not the Chinese phrase '我是预言家'.
+    """
+    ctx = _make_ctx_for_claimed_view_test(role="seer")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "我是预言家" not in prompt, (
+        "Example claimed_view for seer must not be '我是预言家'; "
+        "use the role identifier 'seer'."
+    )
+    assert '"claimed_view": "seer"' in prompt, (
+        "Seer example must use 'seer' as the claimed_view identifier."
+    )
+
+
+def test_claimed_view_example_uses_enum_in_wolf_kill_branch():
+    """P0-S7: the wolf-kill example branch must also use the enum value.
+
+    Covers lines 563 and 572 (wolf_kill + wolf_no_kill examples). The
+    example should advertise the same clean identifier the LLM should
+    copy, not natural language.
+    """
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.NIGHT_ACTION,
+        phase="night",
+        night_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
+        legal_targets=["p03", "p05"],
+        public_summary="N2 wolf action",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Both wolf-kill and wolf-no-kill examples previously used
+    # "我是好人" as the claimed_view value. After the fix neither
+    # should appear.
+    assert "我是好人" not in prompt, (
+        "Wolf-kill example branch must not use '我是好人' as claimed_view; "
+        "use the enum-style identifier 'good_player_without_night_info'."
+    )
+    assert "good_player_without_night_info" in prompt, (
+        "Wolf-kill branch example should advertise 'good_player_without_night_info'."
+    )
+
+
+def test_claimed_view_example_no_chinese_natural_language_anywhere():
+    """P0-S7: sweep — no claimed_view value in any branch uses Chinese phrase.
+
+    Final guard: the LLM should never see `我是X` as a claimed_view
+    example value, no matter which output mode the task triggers. The
+    claim must be a structured identifier.
+    """
+    # 1) Default branch (speech + vote examples)
+    ctx_default = _make_ctx_for_claimed_view_test(role="villager")
+    prompt_default = PlayerPromptBuilder(ctx_default).build_user_prompt(RetryInfo())
+    assert "我是好人" not in prompt_default
+    assert "我是预言家" not in prompt_default
+
+    # 2) Seer default branch
+    ctx_seer = _make_ctx_for_claimed_view_test(role="seer")
+    prompt_seer = PlayerPromptBuilder(ctx_seer).build_user_prompt(RetryInfo())
+    assert "我是好人" not in prompt_seer
+    assert "我是预言家" not in prompt_seer
+
+    # 3) Wolf default branch
+    ctx_wolf = _make_ctx_for_claimed_view_test(role="werewolf")
+    prompt_wolf = PlayerPromptBuilder(ctx_wolf).build_user_prompt(RetryInfo())
+    assert "我是好人" not in prompt_wolf
+    assert "我是预言家" not in prompt_wolf
+
+    # 4) Wolf-kill branch
+    ctx_wk = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.NIGHT_ACTION,
+        phase="night",
+        night_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
+        legal_targets=["p03"],
+        public_summary="N2",
+    )
+    prompt_wk = PlayerPromptBuilder(ctx_wk).build_user_prompt(RetryInfo())
+    assert "我是好人" not in prompt_wk
+    assert "我是预言家" not in prompt_wk
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
