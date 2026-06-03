@@ -44,10 +44,43 @@ VALID_POINT_MARKERS = (
 )
 
 _ROLE_SELF_DECLAIM_RE = re.compile(
-    r"我(?:的?身份|是|扮演|底牌是|角色是)"
+    r"我(?:的)?(?:身份|是|扮演|底牌是|角色是|真身是|阵营是)"
     r"(?:一名|一个|那只)?"
-    r"(狼人|预言家|女巫|猎人|白痴|混血儿|村民)",
+    r"(狼人|预言家|女巫|猎人|白痴|混血儿|村民)"
 )
+
+# P0-M2: Catch "X 是我的队友/同伴" patterns (game trace g_3528592081 Action 56 leak)
+_TEAMMATE_DISCLOSURE_RE = re.compile(
+    r"(?:的|是)?(?:队友|同伴|同伙|同党)"
+)
+
+# P0-M2: Catch "我的阵营是X" patterns
+_FACTION_DISCLOSURE_RE = re.compile(
+    r"我(?:的|方)?阵营(?:是|为|属于)?(好人|狼人|神职|平民|村民)"
+)
+
+# P0-M2: Catch "我(发现|看穿|验出)X是(role)" — first-person seer-style leaks
+_FIRST_PERSON_CHECK_RE = re.compile(
+    r"我(?:看穿|发现|看出|验出|查到|查到)(?:了)?\s*(?:[Pp]\d{1,2}|他|她|它)?\s*(?:是)?(狼人|预言家|女巫|猎人|白痴|混血儿|村民)"
+)
+
+
+def _sanitize_role_claims(text: str) -> str:
+    """Strip role/team-mate/faction claims that would leak private info.
+
+    Patterns sanitized (P0-M2 expansion):
+    - 我是/我扮演/我的真身/我的阵营 + role name
+    - 队友/同伴/同伙/同党 (teammate disclosure)
+    - 我看穿/我发现/我验出 + role
+    - 我的阵营 + faction
+    """
+    if not text:
+        return text
+    text = _ROLE_SELF_DECLAIM_RE.sub("[角色信息已省略]", text)
+    text = _TEAMMATE_DISCLOSURE_RE.sub("[角色信息已省略]", text)
+    text = _FACTION_DISCLOSURE_RE.sub("[角色信息已省略]", text)
+    text = _FIRST_PERSON_CHECK_RE.sub("[角色信息已省略]", text)
+    return text
 
 
 def build_private_memory(game_state: GameState, player_id: str) -> dict[str, list[dict[str, Any]]]:
@@ -183,12 +216,3 @@ def _split_sentences(text: str) -> list[str]:
 def _clip(value: Any, limit: int = 160) -> str:
     text = str(value or "").strip()
     return text[:limit]
-
-
-def _sanitize_role_claims(text: str) -> str:
-    """Strip explicit role self-declarations from private memory text.
-
-    Prevents LLM from reading its own private_reason (e.g. '我是狼人')
-    and later blurting it out in public speech.
-    """
-    return _ROLE_SELF_DECLAIM_RE.sub("[角色信息已省略]", text)
