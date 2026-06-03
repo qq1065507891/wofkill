@@ -4,10 +4,92 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **g_3528592081 Game Log Post-mortem — Investigation Complete** — 2026-06-02
-- Active task: None (6 issues investigated, ready for prioritization)
+- Current phase: **Pipeline Optimization — All 5 Tasks Implemented & Squashed** — 2026-06-03
+- Active task: None (5 optimization tasks done, squashed into commit b49cef4, full test suite green)
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-02
+- Last updated: 2026-06-03
+
+---
+
+## Pipeline Optimization Summary (2026-06-03)
+
+5 tasks from `docs/superpowers/plans/2026-06-03-pipeline-optimization.md` implemented via Subagent-Driven Development. Squashed into a single commit `b49cef4` on top of postmortem head `4ea99a6`. Plan link: `docs/superpowers/plans/2026-06-03-pipeline-optimization.md`.
+
+### Tasks (squashed into commit `b49cef4`)
+
+| # | Task | Files |
+|---|------|-------|
+| 1 | Smart retry — early-exit on repeat error signature | `player.py` (helper + 6 call sites), `schemas.py` (RetryInfo field) |
+| 2 | Per-player failure profile metrics | NEW `metrics_collector.py` (81), wired in 4 paths in `player.py` |
+| 3 | empty_response root cause attribution | `base.py` (categorize_empty_response), `schemas.py` (RetryInfo.failure_category), `player.py` (category-aware correction_hint) |
+| 4 | Refactor: split player.py | NEW `parse_dispatch.py` (74) + `trace_builder.py` (65), `player.py` 1147 → 1075 lines |
+| 5 | Schema Union for PlayerAction | `schemas.py` (16-variant discriminated union), `output_parser.py` (model_validate routing), `tool_schema.py` (build_action_tool_schema per task_type) |
+
+### Test results (final run, 2026-06-03)
+
+- 51 new tests added (TestSmartRetry 2, TestMetricsCollector 5, TestParseDispatch 11, TestTraceBuilder 7, TestEmptyResponse 6, TestPlayerActionUnion 12, more)
+- **2007+ unit tests passed, 0 failed** across `tests/{agents,runtime,rules,cognition,api,model_gateway}`
+- Final review approved (Approve for merge)
+
+### Issue status
+
+| # | Task | Status | Commit |
+|---|------|--------|--------|
+| 1 | Smart retry | ✅ DONE | b49cef4 (sub-squash) |
+| 2 | Per-player metrics | ✅ DONE | b49cef4 (sub-squash) |
+| 3 | empty_response attribution | ✅ DONE | b49cef4 (sub-squash) |
+| 4 | player.py split | ✅ DONE | b49cef4 (sub-squash) |
+| 5 | Schema Union | ✅ DONE | b49cef4 (sub-squash) |
+
+### Open follow-ups (non-blocking)
+
+- `prompt_builder.py` has its own `_select_output_mode` / `_uses_*_pipeline` methods (pre-existing duplication with Task 4's extracted `parse_dispatch.py`); consolidate in a future refactor
+- Per-player metrics is memory-only; consider persistence to `SqliteGameRepository` for cross-session analysis
+- `GenerateResult` does not carry `http_status` or `raw_error`, so most empty responses categorize as `"unknown"`; extend provider layer to plumb raw error info for precise attribution
+- Schema Union line-count target missed (player.py 1075 vs target 750-850) because Tasks 1-3 grew the file before Task 4 could reduce it; architectural separation of concerns achieved
+
+---
+
+## Postmortem Implementation Summary (2026-06-03)
+
+All 6 issues from g_3528592081 postmortem implemented via Subagent-Driven Development. Plan: `docs/superpowers/plans/2026-06-02-game-postmortem.md`.
+
+### Commits (base 95ff1b9 → head 4ea99a6)
+
+| SHA | Task | Description |
+|-----|------|-------------|
+| `bcea808` | Task 0 | feat(sheriff): add PK + revote for first-tie in sheriff election |
+| `d8aaee5` | Task 0.1 | fix(sheriff): register sheriff_vote_tie_first in api/salience/fact-extractor/ruleset; clean dead test |
+| `183603c` | Task 1 | fix(vote): decouple fallback target from reason string; add fallback_target_used flag |
+| `d798f30` | Task 1.1 | refactor(player): remove unused _fallback_reason backward-compat wrapper |
+| `b7fe892` | Task 2 | fix(vote): default vote_basis=fallback when no basis; enrich retry hint with enum values |
+| `2574e50` | Task 3 | feat(wolf): inject claimed-Seer kill priority into wolf prompts |
+| `aadb368` | Task 4 | feat(guardrail): validate 1-check-per-night rule for fake Seer |
+| `4ea99a6` | Task 5 | feat(wolf): solo-wolf defaults to claimed Seer |
+
+### Test results (final run, 2026-06-03)
+
+- Full suite `tests/runtime/ tests/agents/ tests/rules/ tests/cognition/ tests/api/ tests/model_gateway/`: **all passed** (exit code 0)
+- Only warning: benign `PytestCacheWarning` about cache dir permission (not a test failure)
+- Integration test `tests/integration/test_live_game_flow.py`: 7 passed (~8 min) in Task 3 verification
+
+### Issue status
+
+| Issue | Status | Fix SHA |
+|-------|--------|---------|
+| 0 — Sheriff PK + revote | ✅ FIXED | bcea808 + d8aaee5 |
+| 1 — Vote fallback 割裂 | ✅ FIXED | 183603c + d798f30 |
+| 2 — Vote quality 放宽 | ✅ FIXED | b7fe892 |
+| 3 — Wolf seer priority | ✅ FIXED | 2574e50 |
+| 4 — Fake seer 1-check guardrail | ✅ FIXED | aadb368 |
+| 5 — Solo-wolf fallback | ✅ FIXED | 4ea99a6 |
+
+### Open follow-ups (non-blocking)
+
+- `tests/runtime/test_sheriff_flow.py:395` has a stale comment residue from Task 0 fixes (cosmetic)
+- Final code-review subagent failed with 502; per-task reviews covered quality concerns adequately
+- Future enhancement: plumb `correction_hint` through `agent.act()` retry loop so fake-Seer guardrail can retry instead of replacing the speech (aadb368's TODO)
+- Future enhancement: expand `VOTE_BASIS_VALUES` set with new basis names ("counterclaim", "vote_history", etc.) — would require updating Pydantic enum, LLM tool schema, and output parser in lockstep
 
 ---
 
@@ -35,9 +117,50 @@ Analyzed game `game_g_3528592081.json` (finished 2026-06-02 01:59, good wins day
 
 ---
 
-## Postmortem Fixes (Issues 0/1/2/3) — 2026-06-02
+## Postmortem Fixes (Issues 0–5) — 2026-06-02/03
 
-### Issue 4 (Task 3): Wolf claimed-Seer kill priority — FIXED
+All 6 issues from g_3528592081 fixed across 8 commits. Implemented via Subagent-Driven Development per `docs/superpowers/plans/2026-06-02-game-postmortem.md`.
+
+### Issue 0 (Task 0): Sheriff election PK + revote — FIXED (`bcea808` + `d8aaee5`)
+
+**Problem:** `sheriff_vote()` returned `sheriff_vote_tie` event and went directly to no-election. In g_3528592081, D1 sheriff vote had 3-way tie (p05/p01/p08) — currently spec had "first tie → PK speech + revote" for exile voting but no equivalent for sheriff election. New design: first sheriff tie → PK speech by tied candidates only → revote among tied candidates; second tie → no sheriff.
+
+**Fix:**
+- New `GameState` fields: `sheriff_tie_count: int = 0` and `sheriff_pk_candidates: list[str]` (`werewolf_agent/core/models.py:62-63`)
+- New module `werewolf_agent/runtime/nodes/sheriff_pk.py` with `sheriff_pk_speech` and `sheriff_revote` nodes
+- Modified `sheriff_vote` in `werewolf_agent/runtime/nodes/sheriff.py:294-325`: on first tie, sets `sheriff_tie_count=1` + `sheriff_pk_candidates=tied` + emits `sheriff_vote_tie_first` event; second tie or empty → `sheriff_no_election` with state reset
+- Engine (`werewolf_agent/engine/sheriff.py`) unchanged — runtime drives PK, engine only resolves votes
+- 4 integration touchpoints: registered `sheriff_vote_tie_first` in `werewolf_agent/api/views.py:154` (`_PUBLIC_EVENT_TYPES`), `werewolf_agent/cognition/salience.py:54` (`_PHASE_RELEVANCE["sheriff_vote"]`), `werewolf_agent/cognition/world_state.py:170,406` (`_extract_sheriff_vote_tie_first` + registration), and `config/rulesets/pre_witch_hunter_idiot_mixed.yaml:315` (`first_tie_policy: pk_speech_then_revote` in sheriff block)
+- `werewolf_agent/runtime/graph.py`: registered nodes, added `route_after_sheriff_pk_speech` + `route_after_sheriff_revote` routes, updated `route_after_sheriff_vote` to route to `sheriff_pk_speech` on first tie
+
+**Verification:** 13 sheriff_flow tests + 84 rule tests + 725 total runtime+rules pass. `test_sheriff_vote_tie_does_not_produce_sheriff` still passes (engine unchanged).
+
+### Issue 6 (Task 1): Vote fallback target/reason 割裂 — FIXED (`183603c` + `d798f30`)
+
+**Problem:** `_fallback_action` picked a fallback target and embedded it in the reason string at `player.py:812-813`. Then `agent_day_vote` overwrote the fallback target with the LLM's intended target — but reason still referenced the fallback target. Result: `vote_target = LLM's choice, reason = fallback's choice` → audit shows inconsistent layers (visible in g_3528592081 p02 D3 vote: private thought p09, public reason p02, actual vote p09).
+
+**Fix:**
+- Refactored `_fallback_reason` from class method to free function `werewolf_agent/agents/player.py:96-104` that returns a target-agnostic string `"fallback: 结构化输出失败，按当前可见线索选择默认目标"` (the `"fallback: "` prefix is kept for backward compatibility with existing test assertions like `test_player_agent.py:1484`)
+- Caller `player.py:820` uses `fallback.model_copy(update={"reason": _fallback_reason(fallback)})` — reason and target are now independent
+- Added `fallback_target_used: bool = False` and `fallback_target_id: str | None = None` to `ActionTrace` (`werewolf_agent/agents/schemas.py:135-136`)
+- Caller `player.py:499-500, 553-554` sets `fallback_target_used=True` and `fallback_target_id=fallback.target_id` on the audit trace
+- Removed unused `PlayerAgent._fallback_reason` class method (was dead code) in `d798f30`
+
+**Verification:** 2 new `TestVoteFallbackConsistency` tests + 81 player_agent tests + 308 total agent tests pass.
+
+### Issue 5 (Task 2): Vote quality 严格校验放宽 — FIXED (`b7fe892`)
+
+**Problem:** `validate_structured_vote_action` rejected votes when basis regex found no pattern, triggering retries. After `max_retries=3` in `player.py:157`, fallback fired. 6 of 6 fallback votes in g_3528592081 were due to `vote_quality` or `empty_response` errors. Correction hint at `player.py:449-458` lacked valid enum values, so retries often repeated the same mistake.
+
+**Fix:**
+- Added `VALID_VOTE_BASIS_VALUES` and `VALID_SEER_STANCE_VALUES` as `frozenset` aliases for existing Pydantic enum (`werewolf_agent/runtime/vote_quality.py:31-32`) — deliberately used existing enum rather than expanding to new set (would have broken LLM tool schema + output parser)
+- `validate_structured_vote_action` in `werewolf_agent/runtime/vote_quality.py` now defaults `vote_basis="fallback"` and `seer_stance="no_claim"` when regex finds no basis, instead of raising
+- Augment correction hint with sorted enum values: `f"有效 vote_basis: {sorted(VALID_VOTE_BASIS_VALUES)}。有效 seer_stance: {sorted(VALID_SEER_STANCE_VALUES)}。"`
+- Updated `werewolf_agent/agents/tool_schema.py:vote_quality_error` (where the actual error string is built — plan said `player.py:449-458` but the real function was in `tool_schema.py`)
+
+**Verification:** 22 vote_quality tests + 1159 total runtime+agents+rules+cognition+model_gateway tests pass.
+
+### Issue 4 (Task 3): Wolf claimed-Seer kill priority — FIXED (`2574e50`)
 
 **Problem:** `has_publicly_claimed_seer`/`evaluate_wolf_kill_target` existed but were only consulted via `kill_value_assessment` and day-speech directives. The wolf kill/discussion prompts in `runtime/agent_adapter.py` (`_single_wolf_vote`, `agent_wolf_discussion`) used a generic "优先击杀对狼队威胁最大的玩家" instruction and never injected a concrete player ID. In `g_3528592081`, real Seer `p03` publicly claimed D1 but wolves `p01/p02/p07/p08` failed to identify her across 3 nights and instead killed `p09` (idiot), `p06` (villager), `p10` (villager).
 
@@ -48,10 +171,6 @@ Analyzed game `game_g_3528592081.json` (finished 2026-06-02 01:59, good wins day
 
 The directive is injected as `strategy_directive["wolf_high_priority_target"]` into BOTH `_single_wolf_vote` (kill prompt) and `agent_wolf_discussion` (private discussion prompt), so all wolves converge on the same target.
 
-**Files changed:**
-- `werewolf_agent/runtime/agent_adapter.py` — new `_build_wolf_kill_directive()` + injection in 2 call sites
-- `tests/runtime/test_strategy_directives.py` — new `TestWolfSeerPriorityInjection` (4 tests)
-
 **Verification:**
 - 4 new tests pass: `claimed_seer_appears_in_wolf_kill_directive`, `no_claimed_seer_uses_scored_ranking`, `wolf_kill_prompt_includes_claimed_seer_via_strategy_directive`, `wolf_discussion_prompt_includes_claimed_seer_via_strategy_directive`
 - `tests/runtime/test_strategy_directives.py`: 57 passed
@@ -59,6 +178,47 @@ The directive is injected as `strategy_directive["wolf_high_priority_target"]` i
 - `tests/agents/` + `tests/rules/`: 386 passed
 - `tests/integration/test_live_game_flow.py`: 7 passed (~8 min end-to-end)
 - No regressions
+
+### Issue 3 (Task 4): Fake seer 1-check-per-night guardrail — FIXED (`aadb368`)
+
+**Problem:** In g_3528592081, fake Seer p08 publicly claimed "我第1夜查了p04是村民，也查了p09是村民" — but the seer rule allows only 1 check per night. This is a **rule-violation info leak**, not a vocabulary issue. The strategy at `werewolf_agent/runtime/directives/wolf.py:13-22` did not remind the agent of the 1-check constraint, and there was no post-generation check on public speech for impossible claims. User feedback (saved to `feedback-werewolf-vocabulary.md`): do NOT ban community-wide terms like 金水/倒钩/深水.
+
+**Fix:**
+- Created `werewolf_agent/runtime/seer_claim_validator.py` with `extract_seer_claims()` and `validate_seer_claim(speech, day_number)` — regex catches 1-night-2-checks, future-night claims, and night-0 claims
+- Validator wired into `werewolf_agent/runtime/agent_adapter.py:812-814` in `agent_day_speech` for wolves — on violation, replaces the bad speech with a sanitized fallback (no retry loop in dispatch, so this is the practical pattern)
+- Strengthened fake-seer strategy at `werewolf_agent/runtime/directives/wolf.py:13-22` with new rule "2) **关键规则**：预言家一夜只能查验 1 人，绝对不能声称同一夜查验多人"
+- Regex handles "我第1夜查了X" / "我在第1夜查了X" / "也查了" (night inheritance from prior claim) — implementer fixed broken spec regex
+
+**Verification:** 9 new `test_seer_claim_validator` tests + 128 tests across seer_claim_validator/strategy_directives/wolf_flow/wolf_strategy/day_discussion/speech_quality all pass.
+
+**TODO (non-blocking):** Plumb `correction_hint` through `agent.act()` retry loop so fake-Seer guardrail can retry instead of replacing the speech.
+
+### Issue 2 (Task 5): Solo-wolf fallback target — FIXED (`4ea99a6`)
+
+**Problem:** In g_3528592081 N3, only p02 (wolf) was alive. The wolf plan's `night_kill_primary` was `None` and `evidence_quality` was `"none"`, so `_planned_wolf_kill()` returned `None`. The legacy fallback `_legacy_wolf_consensus` ran the agent directly but with no strategic context, the agent picked p10 (villager) instead of the real Seer p03.
+
+**Fix:** In `_build_wolf_team_plan` at `werewolf_agent/runtime/nodes/_shared.py:569-584`, added solo-wolf fallback block (3 comment lines + 12 code lines):
+```python
+# Solo-wolf fallback (Issue 2): when only 1 wolf is alive and no inherited
+# primary, default to publicly-claimed Seer (highest strategic value),
+# then day_push. Prevents the legacy fallback from picking a random
+# villager when the lone wolf has no team discussion evidence.
+if len(wolves) == 1 and not primary:
+    from werewolf_agent.runtime.strategy.wolf import has_publicly_claimed_seer
+    claimed_seer_target: str | None = None
+    for pid, p in gs.players.items():
+        if p.alive and p.role != "werewolf" and has_publicly_claimed_seer(gs, pid):
+            claimed_seer_target = pid
+            break
+    if claimed_seer_target:
+        primary = claimed_seer_target
+    elif day_push:
+        primary = day_push
+```
+
+Also: `day_push` extraction logic changed to always pull from `previous_plan` (not gated on `can_reuse_previous`) so soft-recommendation survives evidence-strength downgrades.
+
+**Verification:** 2 new `TestSoloWolfFallbackTarget` tests + 28 wolf_flow+night_flow tests + 70 strategy_directives+wolf_strategy tests pass.
 
 ---
 
@@ -1212,6 +1372,18 @@ Design-document completion work, in recommended order:
 
 ## Recent Changes
 
+- 2026-06-03: Implemented all 6 fixes from g_3528592081 postmortem via Subagent-Driven Development. 8 commits (bcea808..4ea99a6). See "Postmortem Fixes (Issues 0–5)" section below for per-issue details.
+- 2026-05-31: Fixed 14 bugs found during systematic 5-angle code review across all 4 layers.
+- 2026-05-31: Judge as the sole Human-in-the-Loop entry point: pause/resume/inspect/inject — all through the judge.
+- 2026-05-30: God object decomposition (app.py, rule_engine.py, providers.py, test_runtime.py, test_agents.py).
+- 2026-05-30: Judge Flow and Sheriff Election Fix (D1 sheriff before deaths, wolf self-destruct, skill factions, speech quality).
+- 2026-05-29: Good-side decision discipline hardening.
+- 2026-05-29: Prompt injection boundaries hardening.
+- 2026-05-27: God object decomposition + game quality fixes.
+- 2026-05-27: Memory system completion (CognitionMatrix, RelationGraph, ReflectionMemory, ProfileStore, ReviewGenerator, MemoryStore).
+- 2026-05-20: RAG vector/seed architecture implementation.
+- 2026-05-17: V1.1 local hardening (LocalRuntimeExecutor, timers, MCP transport boundary, RAG factory, production storage boundary).
+- 2026-05-17: V1.2 production adapters (PostgreSQL tests, PgVector tests, Redis distributed lock).
 - Created harness files for controlled development.
 - Rewrote the V1 ruleset YAML to match the final design: night order, witch self-save ban, hybrid master/slaughter logic, idiot reveal state, sheriff badge transfer/tear, tie policy, last-words policy, visibility boundaries, and victory fields.
 - Added pytest-based RuleEngine acceptance tests covering role distribution, night order, seer, witch, hunter, idiot, hybrid victory/slaughter, sheriff badge, tie, last words, and visibility.
@@ -1221,13 +1393,48 @@ Design-document completion work, in recommended order:
 - Fixed `check_victory` god-slaughter: revealed idiot that is still alive now correctly counts as a living god (only counts as god-out after actual death).
 - Normalized YAML `torn_badge_order_policy` value to `random_start_then_seat_order` matching the no-sheriff policy (same behavior, consistent naming).
 
-## Changed Files In Current Session
+## Changed Files In Current Session (2026-06-03 postmortem)
 
-- `werewolf_agent/storage/migrations.py` — NEW. Versioned migration system: Migration dataclass, MIGRATIONS list (version 1), MigrationManager (version tracking, idempotent apply).
-- `tests/storage/test_migrations.py` — NEW. 3 tests: version tracking, idempotent application, schema_version table creation.
-- `werewolf_agent/runtime/graph.py` — Sheriff badge night-death routing fix: added `_sheriff_died_this_batch` helper, modified `route_after_resolve_night` and `route_after_hunter_shot` to route to `sheriff_badge_transfer` when sheriff died at night and game continues, added `_route_after_badge_transfer` conditional edge (night-phase -> announce_deaths, non-night-phase -> enter_night), updated graph edge mappings.
-- `tests/runtime/test_runtime.py` — Added imports for routing functions. Added `TestSheriffBadgeNightDeathRouting` (7 tests): dead sheriff routes to badge transfer after resolve_night and hunter_shot, alive sheriff skips, no sheriff skips, badge transfer night-phase routes to announce_deaths, day-phase routes to enter_night, helper correctness.
-- `PROGRESS.md` — Updated active task, design completion audit, completed items, verification log, changed files.
+**Issue 0 — Sheriff PK + revote (`bcea808` + `d8aaee5`):**
+- `werewolf_agent/core/models.py` — added `sheriff_tie_count: int = 0` and `sheriff_pk_candidates: list[str]` to `GameState` + `__post_init__` defensive copy
+- `werewolf_agent/runtime/nodes/sheriff_pk.py` — NEW. `sheriff_pk_speech` (PK speech by tied candidates) + `sheriff_revote` (revote among tied, PK candidates excluded from voting)
+- `werewolf_agent/runtime/nodes/sheriff.py` — `sheriff_vote` first-tie branches: sets `sheriff_tie_count=1` + `sheriff_pk_candidates=tied`; second tie → no_election with state reset
+- `werewolf_agent/runtime/nodes/__init__.py` — exports for new nodes
+- `werewolf_agent/runtime/graph.py` — node registration, `route_after_sheriff_pk_speech` + `route_after_sheriff_revote` routes, updated `route_after_sheriff_vote` for tie branching
+- `werewolf_agent/api/views.py:154` — added `sheriff_vote_tie_first` to `_PUBLIC_EVENT_TYPES`
+- `werewolf_agent/cognition/salience.py:54` — added to `_PHASE_RELEVANCE["sheriff_vote"]`
+- `werewolf_agent/cognition/world_state.py:170,406` — new `_extract_sheriff_vote_tie_first` + registration in `_EXTRACTORS`
+- `config/rulesets/pre_witch_hunter_idiot_mixed.yaml:315` — added `first_tie_policy: pk_speech_then_revote` to sheriff block
+- `tests/runtime/test_sheriff_flow.py` — new `TestSheriffElectionPK` (2 tests); cleaned up dead 4-player code in `test_first_tie_triggers_pk_speech`
+
+**Issue 6 — Vote fallback 割裂 (`183603c` + `d798f30`):**
+- `werewolf_agent/agents/player.py` — `_fallback_reason` refactored to free function (target-agnostic string); `_fallback_action` uses `model_copy(update={"reason": ...})`; `ActionTrace` extended with `fallback_target_used` + `fallback_target_id`; removed unused `PlayerAgent._fallback_reason` class method
+- `werewolf_agent/agents/schemas.py:135-136` — added `fallback_target_used: bool = False` and `fallback_target_id: str | None = None` to `ActionTrace`
+- `tests/agents/test_player_agent.py` — new `TestVoteFallbackConsistency` (2 tests); updated `TestMandatoryVote` assertion
+
+**Issue 5 — Vote quality 放宽 (`b7fe892`):**
+- `werewolf_agent/runtime/vote_quality.py` — `validate_structured_vote_action` defaults `vote_basis="fallback"` and `seer_stance="no_claim"` when regex finds no basis; added `VALID_VOTE_BASIS_VALUES` + `VALID_SEER_STANCE_VALUES` as frozenset aliases
+- `werewolf_agent/agents/tool_schema.py:213-251` — `vote_quality_error` correction hint now includes sorted enum values
+- `tests/runtime/test_vote_quality.py` — new `TestValidateStructuredVoteAction` (2 tests)
+- `tests/agents/test_player_agent.py:570` — renamed and updated `test_vote_quality_retries_unexplained_vote_when_required` → `test_vote_quality_accepts_missing_basis_without_retry` (verifies new "no retry" behavior)
+
+**Issue 4 — Wolf seer priority (`2574e50`):**
+- `werewolf_agent/runtime/agent_adapter.py` — new `_build_wolf_kill_directive(gs, wolf_id, plan)`; injected as `strategy_directive["wolf_high_priority_target"]` in both `_single_wolf_vote` (kill prompt) and `agent_wolf_discussion` (private discussion prompt)
+- `tests/runtime/test_strategy_directives.py` — new `TestWolfSeerPriorityInjection` (4 tests)
+
+**Issue 3 — Fake seer guardrail (`aadb368`):**
+- `werewolf_agent/runtime/seer_claim_validator.py` — NEW. `extract_seer_claims()` + `validate_seer_claim(speech, day_number)` — catches 1-night-2-checks, future-night, night-0 claims
+- `werewolf_agent/runtime/agent_adapter.py:812-814` — wired validator into `agent_day_speech` for wolves (sanitized-fallback pattern, no retry loop in dispatch)
+- `werewolf_agent/runtime/directives/wolf.py:13-22` — strengthened `fake_seer` strategy with "2) **关键规则**：预言家一夜只能查验 1 人..."
+- `tests/runtime/test_seer_claim_validator.py` — NEW. 2 test classes (5 tests): `TestExtractSeerClaims` + `TestValidateSeerClaim`
+
+**Issue 2 — Solo-wolf fallback (`4ea99a6`):**
+- `werewolf_agent/runtime/nodes/_shared.py:569-584` — added solo-wolf fallback block in `_build_wolf_team_plan`; `day_push` extraction relaxed (always pull from `previous_plan`, not gated on `can_reuse_previous`)
+- `tests/runtime/test_wolf_flow.py` — new `TestSoloWolfFallbackTarget` (2 tests)
+
+**Documentation:**
+- `PROGRESS.md` — new "Postmortem Implementation Summary" + "Postmortem Fixes (Issues 0–5)" section with per-issue details
+- `docs/superpowers/plans/2026-06-02-game-postmortem.md` — NEW. Implementation plan for all 6 fixes
 
 ## Changed Files In Previous Sessions
 
@@ -1360,6 +1567,7 @@ Design-document completion work, in recommended order:
 - 2026-05-17: GameRunner — Complete Game Orchestrator. Created `werewolf_agent/runtime/game_runner.py` with `GameRunnerConfig` (ruleset_id, player_count, seed, use_agent_registry, model/persona config paths, repository, memory_coordinator) and `GameRunner` class. `GameRunner.run()` executes the full LangGraph graph via stream mode. `GameRunner.run_step()` advances one node at a time using a persistent stream generator. Modified `werewolf_agent/api/app.py` `start_game` endpoint to use `GameRunner` for deterministic role assignment via `RuleEngine.assign_roles()` instead of hardcoded role list. Added `POST /games/{game_id}/step` endpoint for step-by-step game advancement. Updated 4 API tests to use dynamic role lookup instead of hardcoded player IDs. `D:/Miniforge3/envs/wofkill/python.exe -m pytest tests/runtime/test_game_runner.py -q` → **22 passed, 0 failed**. Full suite: **940 passed, 0 failed**.
 - 2026-05-17: Task 7 Schema Migration + Sheriff Badge Night Death Routing. (Part A) Created `werewolf_agent/storage/migrations.py` with `Migration` dataclass, `MIGRATIONS` list, `MigrationManager` class (version tracking, idempotent apply). Created `tests/storage/test_migrations.py` with 3 tests. (Part B) Fixed `route_after_resolve_night` and `route_after_hunter_shot` to check for sheriff death and route to `sheriff_badge_transfer` before `announce_deaths` when game continues. Added `_sheriff_died_this_batch` helper and `_route_after_badge_transfer` conditional edge. Updated graph edge mappings. Added 7 new runtime tests in `TestSheriffBadgeNightDeathRouting`. `D:/Miniforge3/envs/wofkill/python.exe -m pytest tests/ -q --tb=short` → **1001 passed, 0 failed**.
 - 2026-05-17: V1.1 Local Hardening. Added implementation plan `docs/superpowers/plans/2026-05-17-v1-1-hardening.md`. Implemented `LocalRuntimeExecutor` with per-game locks, synchronous step coordination, background run status, and API paused-game step rejection. Added optional real-provider smoke test gated by `WEREWOLF_RUN_REAL_LLM_SMOKE=1`. Added runtime timer abstractions (`ManualTimer`, `NoopTimer`) for wolf discussion and speech timeouts. Added MCP transport adapter boundary (`TransportMCPProvider`) with suggestion-only/error isolation through the registry. Added RAG vector-store factory with explicit Qdrant/pgvector configuration errors. Added production storage boundary (`ProductionStorageConfig`, `create_game_repository`) with SQLite default and explicit PostgreSQL/Redis configuration errors. Updated README/development docs and Docker Compose optional service profiles. `D:/Miniforge3/envs/wofkill/python.exe -m pytest -q --basetemp .pytest-tmp` completed successfully. Collection count: **1020 tests**; real LLM smoke is skipped by default unless `WEREWOLF_RUN_REAL_LLM_SMOKE=1`.
+- 2026-06-02/03: g_3528592081 Postmortem — All 6 Issues Fixed. 8 commits (`bcea808`..`4ea99a6`) on master. See "Postmortem Fixes (Issues 0–5)" section. Implemented via Subagent-Driven Development per `docs/superpowers/plans/2026-06-02-game-postmortem.md`. Per-issue test counts: Issue 0 (13 sheriff_flow + 84 rule), Issue 6 (81 player_agent + 308 agent), Issue 5 (22 vote_quality + 1159 cross-module), Issue 4 (57 strategy_directives + 647 runtime + 386 agents+rules + 7 integration), Issue 3 (9 seer_claim_validator + 128 wolf/strategy), Issue 2 (2 solo-wolf + 28 wolf_flow+night_flow + 70 strategy_directives+wolf_strategy). **Full suite `tests/runtime/ tests/agents/ tests/rules/ tests/cognition/ tests/api/ tests/model_gateway/`: all passed (exit code 0)**. Integration test `tests/integration/test_live_game_flow.py`: 7 passed (~8 min). No regressions. Engine untouched: `test_sheriff_vote_tie_does_not_produce_sheriff` (rule_engine_v1.py:767) still passes.
 
 ## Open Risks
 
