@@ -5,6 +5,7 @@ Covers:
 - Private intent isolation
 - Judge broadcast schema
 - Default action validator
+- PlayerAction as discriminated Union of 10 action variants
 """
 
 from __future__ import annotations
@@ -14,11 +15,21 @@ from pydantic import ValidationError
 
 from werewolf_agent.agents.schemas import (
     ActionType,
+    BadgeTransferPlayerAction,
+    CheckAlignmentPlayerAction,
+    ChooseMasterPlayerAction,
     FactionGoal,
+    HunterShotPlayerAction,
     JudgeBroadcast,
+    NoOpPlayerAction,
     PlayerAction,
     PrivateIntent,
     RiskFlag,
+    SheriffVotePlayerAction,
+    SpeechPlayerAction,
+    UsePoisonPlayerAction,
+    VotePlayerAction,
+    WolfKillPlayerAction,
 )
 from werewolf_agent.agents.player import (
     DefaultActionValidator,
@@ -175,3 +186,139 @@ class TestDefaultActionValidator:
         )
         assert ok is False
         assert "no legal_targets" in (err or "")
+
+
+# ---------------------------------------------------------------------------
+# PlayerAction discriminated Union tests (pipeline-optimization Task 5)
+# ---------------------------------------------------------------------------
+
+
+class TestPlayerActionUnion:
+    """PlayerAction is a discriminated Union of action-specific variants.
+
+    Each variant carries only the fields that make sense for that action
+    type (e.g. vote_basis only on VotePlayerAction). The discriminator
+    is ``action_type`` — the LLM emits it natively, and each variant's
+    ``action_type`` field is narrowed to a single ``ActionType`` value.
+    """
+
+    def test_vote_action_validates_with_vote_fields(self) -> None:
+        action = VotePlayerAction(
+            action_type=ActionType.VOTE,
+            target_id="p05",
+            vote_basis="speech_logic",
+            seer_stance="undecided",
+        )
+        assert action.action_kind == "vote"
+        assert action.action_type == ActionType.VOTE
+
+    def test_speech_action_does_not_require_vote_fields(self) -> None:
+        action = SpeechPlayerAction(
+            action_type=ActionType.SPEECH,
+            speech="I think p05 is suspicious",
+        )
+        assert action.action_kind == "speech"
+        # vote-only fields are not present on SpeechPlayerAction
+        assert not hasattr(action, "vote_basis") or action.vote_basis is None
+
+    def test_parse_vote_payload_returns_vote_action(self) -> None:
+        data = {
+            "action_type": "vote",
+            "target_id": "p05",
+            "vote_basis": "speech_logic",
+            "seer_stance": "undecided",
+        }
+        action = PlayerAction.model_validate(data)
+        assert isinstance(action, VotePlayerAction)
+        assert action.target_id == "p05"
+
+    def test_parse_speech_payload_returns_speech_action(self) -> None:
+        data = {
+            "action_type": "speech",
+            "speech": "hello world",
+        }
+        action = PlayerAction.model_validate(data)
+        assert isinstance(action, SpeechPlayerAction)
+
+    def test_parse_wolf_kill_payload_returns_wolf_kill_action(self) -> None:
+        data = {"action_type": "wolf_kill", "target_id": "p09"}
+        action = PlayerAction.model_validate(data)
+        assert isinstance(action, WolfKillPlayerAction)
+
+    def test_parse_no_action_returns_no_op_action(self) -> None:
+        data = {"action_type": "no_action"}
+        action = PlayerAction.model_validate(data)
+        assert isinstance(action, NoOpPlayerAction)
+
+    def test_direct_call_dispatches_to_variant(self) -> None:
+        # `PlayerAction(...)` should route to VotePlayerAction when action_type=vote
+        action = PlayerAction(
+            action_type=ActionType.VOTE,
+            target_id="p07",
+            vote_basis="speech_logic",
+            seer_stance="undecided",
+        )
+        assert isinstance(action, VotePlayerAction)
+        assert action.target_id == "p07"
+
+    def test_missing_action_type_raises(self) -> None:
+        # No discriminator → no variant matches → ValidationError
+        with pytest.raises(ValidationError):
+            PlayerAction.model_validate({"target_id": "p05"})
+
+    def test_invalid_action_type_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            PlayerAction.model_validate({"action_type": "made_up_action"})
+
+    def test_vote_variant_requires_target_id(self) -> None:
+        # target-required variants must still fail without target_id
+        with pytest.raises(ValidationError, match="requires target_id"):
+            PlayerAction(action_type=ActionType.VOTE, speech="归票")
+
+    def test_speech_variant_does_not_require_target_id(self) -> None:
+        action = PlayerAction(action_type=ActionType.SPEECH, speech="过")
+        assert isinstance(action, SpeechPlayerAction)
+        assert action.target_id is None
+
+    def test_all_ten_variants_exist_and_are_subclasses(self) -> None:
+        """Sanity check: all 10 variants are importable and are PlayerAction subclasses."""
+        variant_classes = [
+            VotePlayerAction, SpeechPlayerAction, WolfKillPlayerAction,
+            CheckAlignmentPlayerAction, UsePoisonPlayerAction,
+            ChooseMasterPlayerAction, HunterShotPlayerAction,
+            BadgeTransferPlayerAction, SheriffVotePlayerAction,
+            NoOpPlayerAction,
+        ]
+        assert len(variant_classes) == 10
+        for cls in variant_classes:
+            assert issubclass(cls, PlayerAction)
+
+    def test_all_target_requiring_variants_fail_without_target(self) -> None:
+        """Vote, wolf_kill, poison, check, choose_master, hunter_shot, badge_transfer, sheriff_vote."""
+        target_required = [
+            (ActionType.VOTE, "p07"),
+            (ActionType.WOLF_KILL, "p09"),
+            (ActionType.USE_POISON, "p09"),
+            (ActionType.CHECK_ALIGNMENT, "p09"),
+            (ActionType.CHOOSE_MASTER, "p09"),
+            (ActionType.HUNTER_SHOT, "p09"),
+            (ActionType.BADGE_TRANSFER, "p09"),
+            (ActionType.SHERIFF_VOTE, "p07"),
+        ]
+        for action_type, target in target_required:
+            with pytest.raises(ValidationError):
+                PlayerAction(action_type=action_type)
+            # Sanity: with target, it succeeds
+            action = PlayerAction(action_type=action_type, target_id=target)
+            assert action.target_id == target
+
+    def test_all_optional_target_variants_succeed_without_target(self) -> None:
+        """Speech, no_action, and other no-target types work without target_id."""
+        no_target_types = [
+            ActionType.NO_ACTION, ActionType.SPEECH, ActionType.SELF_DESTRUCT,
+            ActionType.BADGE_TEAR, ActionType.SHERIFF_REGISTER,
+            ActionType.SHERIFF_WITHDRAW, ActionType.USE_ANTIDOTE,
+        ]
+        for at in no_target_types:
+            action = PlayerAction(action_type=at)
+            assert action.action_type == at

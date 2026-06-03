@@ -214,14 +214,18 @@ def sanitize_optional_private_fields(data: Any) -> Any:
 
 
 def action_from_data(data: Any) -> tuple[PlayerAction | None, str | None]:
+    # PlayerAction is a discriminated Union of 16 action-type variants
+    # (pipeline-optimization Task 5). ``model_validate`` is overridden on
+    # the base class to route the data through the Union's TypeAdapter,
+    # which dispatches on the ``action_type`` discriminator.
     data = normalize_action_data(data)
     try:
-        return PlayerAction(**data), None
+        return PlayerAction.model_validate(data), None
     except ValidationError as e:
         sanitized = sanitize_optional_private_fields(data)
         if sanitized != data:
             try:
-                return PlayerAction(**sanitized), None
+                return PlayerAction.model_validate(sanitized), None
             except ValidationError:
                 pass
         return None, f"Schema validation error: {e}"
