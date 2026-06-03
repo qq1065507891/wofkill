@@ -536,7 +536,9 @@ class PlayerAgent:
             self.metrics_collector.record(
                 player_id=context.agent_id,
                 task_type=context.task_type.value,
-                error_code=retry.error_code if retry else None,
+                # Success path: any prior retry errors are now resolved — record as success.
+                # A separate counter (retry_count) tracks how many attempts it took.
+                error_code=None,
                 fallback_used=False,
                 retry_count=attempt,
             )
