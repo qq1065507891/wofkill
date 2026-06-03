@@ -430,17 +430,21 @@ class PlayerAgent:
                         retry_count=attempt,
                     )
                     return fallback, retry
+                failure_category = _categorize_failure_category(
+                    latency_ms=_latency_from_result(result),
+                    raw_error=None,
+                )
+                category_hint = (
+                    f" (cause: {failure_category})" if failure_category else ""
+                )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="empty_response",
                     error_message="Model returned empty text",
-                    failure_category=_categorize_failure_category(
-                        latency_ms=_latency_from_result(result),
-                        raw_error=None,
-                    ),
+                    failure_category=failure_category,
                     correction_hint=(
-                        "Please provide a valid JSON action. "
+                        f"Please provide a valid JSON action{category_hint}. "
                         "If the model timed out, consider shorter reasoning."
                     ),
                 )
