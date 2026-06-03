@@ -32,7 +32,13 @@ from werewolf_agent.agents.schemas import (
     TaskType,
     VoteBasis,
 )
+from werewolf_agent.agents.parse_dispatch import (
+    parse_choice_action as _parse_choice_action,
+    parse_speech_intent_action as _parse_speech_intent_action,
+    select_output_mode as _select_output_mode,
+)
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+from werewolf_agent.agents.metrics_collector import MetricsCollector
 from werewolf_agent.agents.output_parser import (
     repair_json_text as _repair_json_impl,
     extract_json_object_candidates as _extract_json_impl,
@@ -62,10 +68,6 @@ from werewolf_agent.agents.output_parser import (
     infer_seer_stance as _infer_stance_impl,
     infer_vote_basis as _infer_basis_impl,
     default_not_voting_reason as _default_not_voting_impl,
-    parse_choice_action as _parse_choice_impl,
-    parse_speech_intent_action as _parse_speech_impl,
-    uses_choice_pipeline as _uses_choice_impl,
-    uses_speech_intent_pipeline as _uses_speech_impl,
 )
 from werewolf_agent.agents.tool_schema import (
     player_action_tool as _tool_impl,
@@ -74,6 +76,9 @@ from werewolf_agent.agents.tool_schema import (
     speech_quality_phase as _speech_phase_impl,
     vote_quality_error as _vote_quality_impl,
     all_legal_actions_require_target as _all_target_impl,
+)
+from werewolf_agent.agents.trace_builder import (
+    build_action_trace as _build_action_trace,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
 
@@ -102,6 +107,46 @@ def _fallback_reason(action: FallbackAction) -> str:
     later override the fallback target in ``agent_day_vote``).
     """
     return "fallback: 结构化输出失败，按当前可见线索选择默认目标"
+
+
+def _latency_from_result(result: Any) -> int:
+    """Best-effort latency extraction from a GenerateResult.
+
+    Returns 0 when usage metadata is unavailable (e.g. the router returned
+    an empty GenerateResult after primary+fallback failures). The
+    categorizer treats 0 as "no signal" so it will not falsely report
+    ``timeout``.
+    """
+    usage = getattr(result, "usage", None)
+    if usage is None:
+        return 0
+    return int(getattr(usage, "latency_ms", 0) or 0)
+
+
+def _categorize_failure_category(
+    *,
+    latency_ms: int,
+    raw_error: str | None,
+) -> str | None:
+    """Bridge from player-side signals to the failure_category string.
+
+    Imported lazily so that importing player.py does not require the
+    model_gateway.providers package (some test harnesses mock the
+    router). When the categorizer is unavailable we conservatively
+    return None — the field in RetryInfo will simply be unset.
+    """
+    try:
+        from werewolf_agent.model_gateway.providers.base import (
+            categorize_empty_response,
+        )
+    except ImportError:
+        return None
+    return categorize_empty_response(
+        response_text="",
+        latency_ms=latency_ms,
+        http_status=0,  # not yet surfaced on GenerateResult
+        raw_error=raw_error,
+    )
 
 
 class DefaultActionValidator:
@@ -175,6 +220,10 @@ class PlayerAgent:
         self.model_router = model_router
         self.validator = validator or DefaultActionValidator()
         self.max_retries = max_retries
+        # Per-player failure profile: aggregates per-attempt outcomes so
+        # developers can identify which persona's prompt template needs
+        # tuning. Memory-only; not persisted across sessions.
+        self.metrics_collector = MetricsCollector()
 
     def act(self, context: AgentContext) -> tuple[PlayerAction | FallbackAction, RetryInfo]:
         """Generate a constrained player action with retry/fallback."""
@@ -192,6 +241,10 @@ class PlayerAgent:
 
         attempt = 0
         _MAX_SKILL_SKIP = 3
+        # Pipeline-optimization Task 1: track previous attempt's error signature
+        # ``(error_code, raw_text[:50])`` to short-circuit if the next attempt
+        # produces an identical failure.
+        last_error_signature: tuple[str, str] | None = None
         # Resolve model config once to check text-fallback support.
         # Models that reliably return plain-text JSON don't need forced
         # tool_choice — we let them respond in their native format and
@@ -240,7 +293,7 @@ class PlayerAgent:
                 # Provider does not support tool_choice
                 structured_failure_reason = "structured_output_unsupported"
                 fallback = self._fallback_action(context)
-                trace = self._build_action_trace(
+                trace = _build_action_trace(
                     context,
                     raw_text="",
                     parsed_action=None,
@@ -255,6 +308,13 @@ class PlayerAgent:
                     structured_failure_reason=structured_failure_reason,
                 )
                 fallback = fallback.model_copy(update={"trace": trace})
+                self.metrics_collector.record(
+                    player_id=context.agent_id,
+                    task_type=context.task_type.value,
+                    error_code=structured_failure_reason,
+                    fallback_used=True,
+                    retry_count=attempt,
+                )
                 return fallback, retry
 
             raw_text = result.text or ""
@@ -335,15 +395,23 @@ class PlayerAgent:
                         structured_failure_reason = "structured_output_unsupported"
                     else:
                         structured_failure_reason = "model_generation_failed"
+                    failure_category = _categorize_failure_category(
+                        latency_ms=_latency_from_result(result),
+                        raw_error=failure_reason,
+                    )
                     retry = RetryInfo(
                         attempt=attempt,
                         max_retries=self.max_retries,
                         error_code="model_generation_failed",
                         error_message=failure_reason,
-                        correction_hint="Provider generation failed; using fallback action.",
+                        failure_category=failure_category,
+                        correction_hint=(
+                            f"Provider generation failed (category={failure_category}); "
+                            "using fallback action."
+                        ),
                     )
                     fallback = self._fallback_action(context)
-                    trace = self._build_action_trace(
+                    trace = _build_action_trace(
                         context,
                         raw_text="",
                         parsed_action=None,
@@ -358,14 +426,37 @@ class PlayerAgent:
                         structured_failure_reason=structured_failure_reason,
                     )
                     fallback = fallback.model_copy(update={"trace": trace})
+                    self.metrics_collector.record(
+                        player_id=context.agent_id,
+                        task_type=context.task_type.value,
+                        error_code=retry.error_code if retry else "model_generation_failed",
+                        fallback_used=True,
+                        retry_count=attempt,
+                    )
                     return fallback, retry
+                failure_category = _categorize_failure_category(
+                    latency_ms=_latency_from_result(result),
+                    raw_error=None,
+                )
+                category_hint = (
+                    f" (cause: {failure_category})" if failure_category else ""
+                )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="empty_response",
                     error_message="Model returned empty text",
-                    correction_hint="Please provide a valid JSON action.",
+                    failure_category=failure_category,
+                    correction_hint=(
+                        f"Please provide a valid JSON action{category_hint}. "
+                        "If the model timed out, consider shorter reasoning."
+                    ),
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             allow_text_tool_fallback = bool(
@@ -393,14 +484,24 @@ class PlayerAgent:
                         "不要把JSON写在普通文本内容里。"
                     ),
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
             # the program maps that choice back into a legal PlayerAction.
             choice_data: dict[str, Any] | None = None
-            output_mode = self._select_output_mode(context)
+            output_mode = _select_output_mode(
+                legal_actions=context.legal_actions,
+                legal_targets=context.legal_targets,
+                task_type=context.task_type,
+                speech_intent_tasks=self._SPEECH_INTENT_TASKS,
+            )
             if output_mode == OutputMode.TARGET_CHOICE:
-                action, parse_error, choice_data = self._parse_choice_action(
+                action, parse_error, choice_data = _parse_choice_action(
                     result.text,
                     context,
                 )
@@ -409,7 +510,7 @@ class PlayerAgent:
             elif output_mode == OutputMode.SPEECH_INTENT:
                 action, parse_error = self._parse_action(result.text)
                 if parse_error and action is None:
-                    action, parse_error, choice_data = self._parse_speech_intent_action(
+                    action, parse_error, choice_data = _parse_speech_intent_action(
                         result.text,
                         context,
                     )
@@ -428,6 +529,11 @@ class PlayerAgent:
                         "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
                     ),
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             parse_success = True
@@ -446,6 +552,11 @@ class PlayerAgent:
                     correction_hint=f"Legal actions: {[a.value for a in context.legal_actions]}. "
                                     f"Legal targets: {context.legal_targets}",
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
             speech_quality_err = self._speech_quality_error(context, action)
             if speech_quality_err:
@@ -456,6 +567,11 @@ class PlayerAgent:
                     error_message=speech_quality_err,
                     correction_hint=speech_quality_err,
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
             vote_quality_err = self._vote_quality_error(context, action)
             if vote_quality_err:
@@ -466,10 +582,15 @@ class PlayerAgent:
                     error_message=vote_quality_err,
                     correction_hint=vote_quality_err,
                 )
+                should_short_circuit, last_error_signature = self._check_repeat_error_signature(
+                    retry, raw_text, attempt, last_error_signature,
+                )
+                if should_short_circuit:
+                    break
                 continue
 
             # Private intent is stored but never written to public timeline
-            trace = self._build_action_trace(
+            trace = _build_action_trace(
                 context,
                 raw_text=raw_text,
                 parsed_action=choice_data or action,
@@ -480,16 +601,27 @@ class PlayerAgent:
                 parse_success=parse_success,
                 retry_count=attempt,
             )
+            self.metrics_collector.record(
+                player_id=context.agent_id,
+                task_type=context.task_type.value,
+                # Success path: any prior retry errors are now resolved — record as success.
+                # A separate counter (retry_count) tracks how many attempts it took.
+                error_code=None,
+                fallback_used=False,
+                retry_count=attempt,
+            )
             return action.model_copy(update={"trace": trace}), retry
 
         # Fallback
+        exit_reason = f" early_exit={retry.early_exit_reason}" if retry and retry.early_exit_reason else ""
         logger.warning(
-            "Agent %s exhausted retries (task=%s, attempts=%d, last_error=%s) → fallback",
+            "Agent %s exhausted retries (task=%s, attempts=%d, last_error=%s) → fallback%s",
             context.agent_id, context.task_type, attempt,
             retry.error_code if retry else "none",
+            exit_reason,
         )
         fallback = self._fallback_action(context)
-        trace = self._build_action_trace(
+        trace = _build_action_trace(
             context,
             raw_text=raw_text,
             parsed_action=parsed_action,
@@ -506,6 +638,13 @@ class PlayerAgent:
             structured_failure_reason=structured_failure_reason,
         )
         fallback = fallback.model_copy(update={"trace": trace})
+        self.metrics_collector.record(
+            player_id=context.agent_id,
+            task_type=context.task_type.value,
+            error_code=retry.error_code if retry else "exhausted_retries",
+            fallback_used=True,
+            retry_count=attempt,
+        )
         return fallback, retry
 
     def _latest_generation_failure_reason(self) -> str | None:
@@ -520,46 +659,34 @@ class PlayerAgent:
             return None
         return str(last_record.fallback_reason)
 
-    def _build_action_trace(
+    def _check_repeat_error_signature(
         self,
-        context: AgentContext,
-        *,
-        raw_text: str,
-        parsed_action: PlayerAction | dict[str, Any] | None,
-        final_action_type: ActionType,
         retry: RetryInfo,
-        fallback_reason: str | None = None,
-        fallback_target_used: bool = False,
-        fallback_target_id: str | None = None,
-        tool_call_required: bool = False,
-        tool_call_received: bool = False,
-        parse_success: bool = False,
-        parse_error: str | None = None,
-        retry_count: int = 0,
-        structured_failure_reason: str | None = None,
-    ) -> ActionTrace:
-        return ActionTrace(
-            raw_text=raw_text,
-            parsed_action=(
-                parsed_action.model_dump(exclude={"trace"})
-                if isinstance(parsed_action, PlayerAction)
-                else parsed_action
-            ),
-            final_action_type=final_action_type.value,
-            legal_actions=[action.value for action in context.legal_actions],
-            legal_targets=list(context.legal_targets),
-            retry=retry.model_dump(),
-            fallback_reason=fallback_reason,
-            fallback_target_used=fallback_target_used,
-            fallback_target_id=fallback_target_id,
-            tool_call_required=tool_call_required,
-            tool_call_received=tool_call_received,
-            tool_call_name="submit_player_action" if tool_call_required else "",
-            parse_success=parse_success,
-            parse_error=parse_error,
-            retry_count=retry_count,
-            structured_failure_reason=structured_failure_reason,
-        )
+        raw_text: str,
+        attempt: int,
+        last_signature: tuple[str, str] | None,
+    ) -> tuple[bool, tuple[str, str] | None]:
+        """Pipeline-optimization Task 1: detect repeated retry failures.
+
+        When two consecutive attempts produce the same ``(error_code,
+        raw_text[:50])`` signature the LLM is almost certainly stuck — further
+        retries waste tokens. This helper mutates ``retry.early_exit_reason``
+        in place on a match and returns ``(should_break, updated_signature)``.
+
+        Skill-tool nudges (where ``retry.error_code`` is ``None``) bypass the
+        check so the existing skill-skip retry budget is preserved.
+        """
+        if retry.error_code is None:
+            return False, last_signature
+        raw_text_snippet = (raw_text or "")[:50]
+        current_sig: tuple[str, str] = (retry.error_code, raw_text_snippet)
+        if last_signature is not None and last_signature == current_sig:
+            retry.early_exit_reason = (
+                f"repeat_error_signature: {retry.error_code} on attempts "
+                f"{attempt - 1} and {attempt}"
+            )
+            return True, current_sig
+        return False, current_sig
 
     # ── Delegated to output_parser.py ──
 
@@ -578,46 +705,6 @@ class PlayerAgent:
 
     def _extract_parameter_tag_action(self, text: str) -> dict[str, Any] | None:
         return _extract_param_impl(text)
-
-    def _uses_choice_pipeline(self, context: AgentContext) -> bool:
-        return _uses_choice_impl(context.legal_actions, context.legal_targets)
-
-    def _uses_speech_intent_pipeline(self, context: AgentContext) -> bool:
-        return _uses_speech_impl(context.legal_actions, context.task_type, self._SPEECH_INTENT_TASKS)
-
-    def _select_output_mode(self, context: AgentContext) -> OutputMode:
-        if self._uses_choice_pipeline(context):
-            return OutputMode.TARGET_CHOICE
-        if self._uses_speech_intent_pipeline(context):
-            return OutputMode.SPEECH_INTENT
-        return OutputMode.FULL_ACTION
-
-    def _parse_choice_action(
-        self,
-        text: str,
-        context: AgentContext,
-    ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
-        return _parse_choice_impl(
-            text,
-            context.legal_actions,
-            context.legal_targets,
-            context.salience_items,
-        )
-
-    def _parse_speech_intent_action(
-        self,
-        text: str,
-        context: AgentContext,
-    ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
-        return _parse_speech_impl(
-            text,
-            context.agent_id,
-            context.own_role,
-            context.legal_targets,
-            context.salience_items,
-            context.visible_world_state,
-            context.recent_transcript,
-        )
 
     def _extract_decision_data(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
         return _extract_decision_impl(text)

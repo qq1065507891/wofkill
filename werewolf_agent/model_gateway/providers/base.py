@@ -2,11 +2,56 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
 from werewolf_agent.model_gateway.router import UsageRecord
+
+# Failure categories for empty LLM responses (pipeline-optimization Task 3).
+# These surface in RetryInfo so the retry loop can give better correction
+# hints. The categorize_empty_response() helper below is the single
+# source of truth for attribution.
+FailureCategory = Literal[
+    "timeout", "token_limit", "provider_error", "network_error", "unknown",
+]
+
+
+def categorize_empty_response(
+    *,
+    response_text: str,
+    latency_ms: int,
+    http_status: int,
+    raw_error: str | None,
+    timeout_threshold_ms: int = 30000,
+) -> FailureCategory | None:
+    """Categorize the cause of an empty LLM response.
+
+    Returns None if the response is non-empty (no attribution needed).
+    Order of checks:
+      1. Non-empty response → None
+      2. High latency → timeout
+      3. Token-shaped error string → token_limit
+      4. HTTP 5xx → provider_error
+      5. HTTP 4xx → provider_error
+      6. Network-shaped error string → network_error
+      7. Otherwise → unknown
+    """
+    if response_text and response_text.strip():
+        return None
+    if latency_ms > timeout_threshold_ms:
+        return "timeout"
+    if raw_error and "token" in raw_error.lower():
+        return "token_limit"
+    if http_status >= 500:
+        return "provider_error"
+    if http_status >= 400:
+        return "provider_error"
+    if raw_error and (
+        "network" in raw_error.lower() or "connection" in raw_error.lower()
+    ):
+        return "network_error"
+    return "unknown"
 
 PROVIDER_DOTENV_KEYS = {
     "ANTHROPIC_API_KEY",

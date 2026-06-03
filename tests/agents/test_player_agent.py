@@ -2212,3 +2212,80 @@ class TestVoteFallbackConsistency:
         marked = ActionTrace(fallback_target_used=True, fallback_target_id="p07")
         assert marked.fallback_target_used is True
         assert marked.fallback_target_id == "p07"
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Optimization Task 1: Smart retry — detect repeated failures
+# ---------------------------------------------------------------------------
+
+
+class TestSmartRetry:
+    """Smart retry should early-exit when LLM repeats the same error signature."""
+
+    def test_repeat_error_signature_triggers_early_exit(self) -> None:
+        """Same error_code + same raw_text across 2 attempts -> skip remaining retries.
+
+        Scenario: provider returns "not json at all" on every call. Attempt 1
+        fails with parse_error; attempt 2 sees an identical (error_code,
+        raw_text[:50]) signature and should short-circuit before attempt 3.
+        """
+        provider = _SequenceJsonProvider(["not json at all"])
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+            legal_targets=["p07", "p08"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        # Early-exit should record the reason on the returned RetryInfo
+        assert retry.early_exit_reason is not None
+        assert "repeat" in retry.early_exit_reason.lower()
+        # Should have stopped at attempt 2 instead of the configured max_retries=3
+        assert provider.calls == 2
+        # Fallback action is still returned to the caller
+        assert isinstance(action, FallbackAction)
+
+    def test_distinct_error_signatures_do_not_early_exit(self) -> None:
+        """Different error_code/raw_text across attempts -> use all retries."""
+        # 3 different broken responses: first two parse errors with distinct text,
+        # third is also broken. All attempts have unique signatures, so no
+        # early-exit; fallback fires after the full max_retries=3.
+        provider = _SequenceJsonProvider([
+            "not json at all",
+            "still not json either",
+            "completely different garbage",
+        ])
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+            legal_targets=["p07", "p08"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert retry.early_exit_reason is None
+        assert provider.calls == 3
+        assert isinstance(action, FallbackAction)

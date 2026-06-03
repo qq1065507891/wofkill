@@ -71,22 +71,31 @@ def vote_audit_tool_properties() -> dict[str, Any]:
     }
 
 
-def player_action_tool(
-    legal_actions: list[ActionType],
-    legal_targets: list[str],
+def build_action_tool_schema(
     task_type: TaskType,
+    action_values: list[str],
+    target_values: list[str | None],
 ) -> dict[str, Any]:
-    action_values = [action.value for action in legal_actions]
-    if not action_values:
-        action_values = [action.value for action in ActionType]
-    target_values: list[str | None] = list(legal_targets)
-    if not all_legal_actions_require_target(legal_actions) and None not in target_values:
-        target_values.append(None)
+    """Build a task-specific input_schema body for the submit_player_action tool.
+
+    Returns only the fields relevant to the current ``task_type``, so the LLM
+    sees a narrower schema (the whole point of the PlayerAction union refactor
+    in Task 5). Callers wrap the result in the standard
+    ``{"name": ..., "description": ..., "input_schema": ...}`` envelope.
+
+    ``action_values`` and ``target_values`` are passed in by the caller because
+    they are derived from per-call ``legal_actions`` / ``legal_targets``; this
+    helper stays purely about *which* fields to advertise for a given task.
+    """
     target_schema: dict[str, Any] = {
         "type": ["string", "null"],
         "description": "Target player id when required; null otherwise.",
     }
-    if legal_targets:
+    # Only constrain target_id to an enum when concrete (non-None) targets
+    # are known. A bare [None] means "any target allowed" and should fall
+    # through to a plain nullable string so the LLM can omit target_id.
+    concrete_targets = [t for t in target_values if t is not None]
+    if concrete_targets:
         target_schema["enum"] = target_values
     properties: dict[str, Any] = {
         "action_type": {
@@ -109,8 +118,17 @@ def player_action_tool(
             "maximum": 1,
         },
     }
+    required = ["action_type", "target_id", "speech", "reason", "confidence"]
     if task_type == TaskType.VOTE:
         properties.update(vote_audit_tool_properties())
+        required.extend([
+            "seer_stance",
+            "vote_basis",
+            "standing_with_seer",
+            "suspect_reason",
+            "not_voting_reason",
+            "private_reason",
+        ])
     elif task_type == TaskType.WOLF_DISCUSSION:
         properties["private_intent"] = {
             "type": ["object", "null"],
@@ -148,25 +166,29 @@ def player_action_tool(
             },
             "required": ["true_role", "faction_goal", "claimed_view"],
         }
-    required = ["action_type", "target_id", "speech", "reason", "confidence"]
-    if task_type == TaskType.VOTE:
-        required.extend([
-            "seer_stance",
-            "vote_basis",
-            "standing_with_seer",
-            "suspect_reason",
-            "not_voting_reason",
-            "private_reason",
-        ])
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def player_action_tool(
+    legal_actions: list[ActionType],
+    legal_targets: list[str],
+    task_type: TaskType,
+) -> dict[str, Any]:
+    action_values = [action.value for action in legal_actions]
+    if not action_values:
+        action_values = [action.value for action in ActionType]
+    target_values: list[str | None] = list(legal_targets)
+    if not all_legal_actions_require_target(legal_actions) and None not in target_values:
+        target_values.append(None)
     return {
         "name": "submit_player_action",
         "description": "Submit exactly one legal Werewolf player action.",
-        "input_schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": properties,
-            "required": required,
-        },
+        "input_schema": build_action_tool_schema(task_type, action_values, target_values),
     }
 
 
