@@ -383,9 +383,18 @@ class PlayerPromptBuilder:
             # (safe default — better to over-warn than to silently
             # hand wolves the team-coordination cue).
             _GOOD_SIDE = {"villager", "seer", "witch", "hunter", "idiot"}
-            _WOLF_SIDE = {"werewolf", "hybrid"}
+            _WOLF_SIDE = {"werewolf"}
             role = ctx.own_role or ""
-            if role in _WOLF_SIDE:
+            # P1-2: hybrid's bucket depends on master_faction. ~50% of
+            # hybrids choose a good-side master and should see the
+            # good-side anti-herd text, not the wolf-side coordination
+            # message. Default to good-side when unset (safe default —
+            # over-warn > silent team-coordination cue leak).
+            if role == "hybrid":
+                is_wolf_side = ctx.hybrid_master_faction == "werewolf"
+            else:
+                is_wolf_side = role in _WOLF_SIDE
+            if is_wolf_side:
                 lines.append(
                     "狼队抱团是正常策略；投票时跟队友一致是预期行为；"
                     "只有在倒钩场景下需独立判断。"

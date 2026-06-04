@@ -583,6 +583,13 @@ class AgentContext(BaseModel):
     night_number: int = 0
     public_summary: str = ""
     own_role: str | None = None
+    # P1-2: hybrid's master faction ("good" or "werewolf") — set by
+    # runtime from gs.hybrid_master_faction. Controls whether the
+    # anti-herd section in the user prompt frames herding as expected
+    # (wolf-side) or warns against it (good-side). Unset/None defaults
+    # to good-side (safe default — over-warn > silent team-coordination
+    # cue leak).
+    hybrid_master_faction: str | None = None
     legal_actions: list[ActionType] = Field(default_factory=list)
     legal_targets: list[str] = Field(default_factory=list)
     visible_world_state: dict[str, Any] = Field(default_factory=dict)
