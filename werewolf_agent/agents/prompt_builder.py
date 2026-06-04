@@ -397,7 +397,11 @@ class PlayerPromptBuilder:
 
     def _build_private_memory_hints(self) -> str:
         ctx = self.context
-        memory = ctx.private_memory_hints or ctx.visible_world_state.get("private_memory", {})
+        # P0-M7: read only from private_memory_hints. The previous code
+        # also fell back to ctx.visible_world_state.get("private_memory"),
+        # which caused duplicate injection if both fields were populated
+        # and risked surfacing stale data from an older code path.
+        memory = ctx.private_memory_hints
         if not memory:
             return ""
         return (

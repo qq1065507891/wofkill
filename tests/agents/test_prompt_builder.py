@@ -1025,5 +1025,73 @@ def test_retry_hint_does_not_force_no_action_for_non_timeout_categories():
     )
 
 
+# ---------------------------------------------------------------------------
+# P0-M7: _build_private_memory_hints reads ONLY from private_memory_hints
+# ---------------------------------------------------------------------------
+
+
+def test_no_private_memory_dual_source():
+    """P0-M7: section must use ctx.private_memory_hints as the only source.
+
+    The previous code did:
+        ctx.private_memory_hints or ctx.visible_world_state.get("private_memory", {})
+    This dual-source caused duplicate injection when both fields were
+    populated, and risked leaking into the prompt content twice.
+
+    Fix: read only from ctx.private_memory_hints. If empty, skip the
+    section entirely (no fallback to visible_world_state).
+    """
+    # Case 1: only visible_world_state["private_memory"] populated.
+    # The section must NOT appear.
+    ctx_visible_only = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="D2 public",
+        private_memory_hints={},  # explicitly empty
+        visible_world_state={
+            "private_memory": {
+                "logic_flaws": [{"day": 1, "speaker": "p02", "point": "should not leak"}],
+            },
+        },
+    )
+    prompt_visible = PlayerPromptBuilder(ctx_visible_only).build_user_prompt(RetryInfo())
+    # The private_memory section label should NOT appear because the
+    # canonical source (private_memory_hints) is empty. The visible fallback
+    # must be ignored.
+    assert "should not leak" not in prompt_visible, (
+        "visible_world_state['private_memory'] fallback must be ignored; "
+        "the section must use private_memory_hints as the only source."
+    )
+
+    # Case 2: only private_memory_hints populated. Section appears once.
+    ctx_hints_only = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="D2 public",
+        private_memory_hints={
+            "logic_flaws": [{"day": 1, "speaker": "p02", "point": "vote flip"}],
+        },
+        visible_world_state={"other_field": "x"},
+    )
+    prompt_hints = PlayerPromptBuilder(ctx_hints_only).build_user_prompt(RetryInfo())
+    # The hint content must appear (via private_memory_hints)
+    assert "vote flip" in prompt_hints
+    # It must appear exactly once (no dual-source duplication)
+    assert prompt_hints.count("vote flip") == 1, (
+        "private_memory content must appear exactly once; dual-source may "
+        "have produced duplicate injection."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
