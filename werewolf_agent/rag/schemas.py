@@ -178,4 +178,3 @@ class RAGQuery(BaseModel):
     case_types: list[CaseType] = Field(default_factory=list)
     max_results: int = 5
     include_god_view: bool = False
-    viewer_role: str = ""

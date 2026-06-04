@@ -11,6 +11,7 @@ Results are ranked by relevance score and filtered by quality/visibility.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from typing import Any
@@ -24,6 +25,9 @@ from werewolf_agent.rag.schemas import (
     SourceType,
     VisibilityBoundary,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +69,33 @@ _QUALITY_ORDER: dict[QualityGrade, int] = {
     QualityGrade.UNREVIEWED: 0,
 }
 
+
+def _quality_priority(grade: QualityGrade, *, entry_id: str = "") -> int:
+    """Return the priority for a QualityGrade, warning on missing.
+
+    R20: previously ``_QUALITY_ORDER.get(missing_grade, 0)`` silently
+    returned 0 when a new ``QualityGrade`` enum value was added
+    without wiring its priority. That made every such entry get
+    filtered out by ``quality_min`` with no log line — operators
+    had no way to notice the gap.
+
+    Now: if the grade is missing from the mapping, emit a WARNING
+    identifying the entry and the grade, then fall through to the
+    lowest priority (0). The behavior of treating the missing
+    grade as 0 is preserved for backward compatibility; the
+    warning is the only new operator-visible signal.
+    """
+    priority = _QUALITY_ORDER.get(grade)
+    if priority is None:
+        logger.warning(
+            "RAG entry '%s' has quality_grade='%s' which is "
+            "unregistered in _QUALITY_ORDER; treating as lowest "
+            "priority (0). Add it to _QUALITY_ORDER in retriever.py.",
+            entry_id, grade.value if hasattr(grade, "value") else grade,
+        )
+        return 0
+    return priority
+
 # Retrieval priority by case type (design doc §9.2)
 _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
     CaseType.EXTERNAL_HIGH_END_CASE: 4,
@@ -101,6 +132,20 @@ _DISPLAY_QUALITY_LABELS: dict[QualityGrade, str] = {
     QualityGrade.COMMUNITY_CASE: "社区案例",
     QualityGrade.SELF_PLAY_CANDIDATE: "实战候选",
     QualityGrade.UNREVIEWED: "未审核",
+}
+
+# R17: human-readable case_type label set for the hit annotation.
+# ``source|quality|case_type`` lets a moderator see at a glance
+# whether the hit is an external high-end case, a tactic, project
+# history, a speech template, or a role strategy — not just the
+# source + quality pair. Chinese-first per the project locale.
+_DISPLAY_CASE_TYPE_LABELS: dict[CaseType, str] = {
+    CaseType.EXTERNAL_HIGH_END_CASE: "高端案例",
+    CaseType.EXTERNAL_TACTICS: "战术",
+    CaseType.PROJECT_HISTORY: "历史",
+    CaseType.PROJECT_REVIEW: "复盘",
+    CaseType.ROLE_STRATEGY: "角色策略",
+    CaseType.SPEECH_TEMPLATE: "模板",
 }
 
 
@@ -313,7 +358,13 @@ class StrategyRetriever:
 
             # Quality minimum
             if query.quality_min:
-                if _QUALITY_ORDER.get(meta.quality_grade, 0) < _QUALITY_ORDER.get(query.quality_min, 0):
+                # R20: route through _quality_priority so a missing
+                # entry's grade emits a WARNING instead of silently
+                # falling through to 0.
+                entry_priority = _quality_priority(
+                    meta.quality_grade, entry_id=entry.entry_id,
+                )
+                if entry_priority < _QUALITY_ORDER.get(query.quality_min, 0):
                     continue
 
             # Source type filter
@@ -338,7 +389,11 @@ class StrategyRetriever:
         score += _CASE_TYPE_PRIORITY.get(meta.case_type, 0) * 0.075
 
         # Quality grade bonus (0.0–0.3)
-        score += _QUALITY_ORDER.get(meta.quality_grade, 0) / 20.0
+        # R20: route through _quality_priority so a missing grade
+        # logs a WARNING rather than silently defaulting to 0.
+        score += _quality_priority(
+            meta.quality_grade, entry_id=entry.entry_id,
+        ) / 20.0
 
         # Role match (0.15)
         if query.role and meta.role_perspective:
@@ -402,13 +457,19 @@ class StrategyRetriever:
         # values are still on RAGHit.source_type / RAGHit.quality_grade
         # for the audit log; this annotation is the moderator-facing
         # one-liner and must read like a phrase.
+        # R17: case_type is appended as a third pipe-delimited slot
+        # so the moderator can tell external-high-end cases apart
+        # from tactics / history / templates at a glance.
         source_label = _DISPLAY_SOURCE_LABELS.get(
             meta.source.source_type, meta.source.source_type.value,
         )
         quality_label = _DISPLAY_QUALITY_LABELS.get(
             meta.quality_grade, meta.quality_grade.value,
         )
-        annotation = f"[{source_label}|{quality_label}]"
+        case_type_label = _DISPLAY_CASE_TYPE_LABELS.get(
+            meta.case_type, meta.case_type.value,
+        )
+        annotation = f"[{source_label}|{quality_label}|{case_type_label}]"
 
         return RAGHit(
             entry_id=entry.entry_id,

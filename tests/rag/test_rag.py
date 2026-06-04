@@ -382,6 +382,28 @@ class TestIngestion:
         ingester = CaseIngester()
         assert ingester.get("nope") is None
 
+    def test_ingestion_scans_metadata_tags(self):
+        """R16: ``metadata.tags`` must be scanned by the forbidden-content
+        check. Before this fix an entry whose tags contained
+        ``moderator_knows`` (or any other FORBIDDEN_RAG_KEYWORDS member)
+        passed ingestion — the keyword was in metadata but not in the
+        concatenated text the validator looked at. The audit contract
+        is "no RAG entry may carry a forbidden keyword anywhere",
+        which includes tags.
+        """
+        ingester = CaseIngester()
+        # Make every other field squeaky clean; only the tags carry
+        # the forbidden keyword. If the validator skips tags, this
+        # would pass — we want it to fail loudly.
+        entry = _make_entry(
+            entry_id="tag_bypass",
+            title="Clean title",
+            summary="Clean summary.",
+            tags=["normal_tag", "moderator_knows"],
+        )
+        with pytest.raises(IngestionError, match="Forbidden keyword"):
+            ingester.ingest(entry)
+
 
 # ===================================================================
 # TestSeedData
@@ -809,6 +831,71 @@ class TestRetriever:
         assert source_part.strip()
         assert quality_part.strip()
 
+    def test_hit_annotation_includes_case_type(self) -> None:
+        """R17: ``display_annotation`` must carry a case_type label so a
+        moderator scanning the annotation can tell at a glance whether
+        this hit is an external high-end case, a tactic, project
+        history, a speech template, or a role strategy — not just the
+        source + quality pair.
+
+        The label is the Chinese display string the design doc
+        mandates (e.g. "高端案例" / "战术" / "历史" / "模板" / "复盘" /
+        "角色策略"); the raw enum value is never used.
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        cases = [
+            (CaseType.EXTERNAL_HIGH_END_CASE, "高端案例"),
+            (CaseType.EXTERNAL_TACTICS, "战术"),
+            (CaseType.PROJECT_HISTORY, "历史"),
+            (CaseType.SPEECH_TEMPLATE, "模板"),
+            (CaseType.ROLE_STRATEGY, "角色策略"),
+            (CaseType.PROJECT_REVIEW, "复盘"),
+        ]
+        for case_type, expected_label in cases:
+            entry = RAGEntry(
+                entry_id=f"r17_{case_type.value}",
+                title=f"R17 案例 {case_type.value}",
+                summary="summary",
+                metadata=CaseMetadata(
+                    case_type=case_type,
+                    quality_grade=QualityGrade.COMMUNITY_CASE,
+                    review_status=ReviewStatus.APPROVED,
+                    reviewer="test",
+                    ruleset_id="pre_witch_hunter_idiot_mixed",
+                    player_count=12,
+                    phase="speech",
+                    role_perspective="seer",
+                    visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                    source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                    tags=["seer"],
+                ),
+            )
+            retriever = StrategyRetriever([entry])
+            hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+            assert hits
+            ann = hits[0].display_annotation
+            assert expected_label in ann, (
+                f"R17: annotation for case_type={case_type.value} must "
+                f"include the case_type label {expected_label!r}. "
+                f"Got annotation: {ann!r}"
+            )
+            # The raw enum value must not leak — same human-readable
+            # contract that P1-G8 enforces for source/quality.
+            assert case_type.value not in ann, (
+                f"R17: raw enum value {case_type.value!r} must not appear "
+                f"in the human-readable annotation. Got: {ann!r}"
+            )
+
     def test_relevance_scores_in_range(self):
         retriever, _ = self._make_retriever()
         query = RAGQuery()
@@ -1045,6 +1132,153 @@ class TestRAGInjector:
             "caller's intent must be preserved"
         )
 
+    def test_inject_seed_rag_hints_uses_build_rag_query_helper(self) -> None:
+        """R18: ``_inject_seed_rag_hints`` must construct its
+        :class:`RAGQuery` via :meth:`RAGInjector.build_rag_query` rather
+        than calling the pydantic constructor directly. The helper is
+        the single source of truth for query defaults (``ruleset_id``,
+        ``max_results``, etc.) and currently duplicates it inline in
+        the runtime — if a default changes in one place it silently
+        drifts from the other.
+        """
+        from unittest import mock
+        from werewolf_agent.agents.schemas import (
+            ActionType,
+            AgentContext,
+            TaskType,
+        )
+        from werewolf_agent.runtime.context import _inject_seed_rag_hints
+
+        ctx = AgentContext(
+            agent_id="p07",
+            task_type=TaskType.SPEECH,
+            phase="speech",
+            day_number=2,
+            own_role="seer",
+            legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        )
+
+        class _FakeRAGService:
+            def retrieve_live_hints(self, query, *, game_id="", player_id=""):
+                return []
+
+            def hits_to_prompt_lines(self, hits, max_items=3):
+                return []
+
+        # Patch RAGInjector.build_rag_query and assert it was called.
+        with mock.patch(
+            "werewolf_agent.rag.injector.RAGInjector.build_rag_query",
+            wraps=lambda *a, **kw: RAGQuery(*a, **kw),
+        ) as build_mock:
+            _inject_seed_rag_hints(
+                ctx,
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                rag_service=_FakeRAGService(),
+                game_id="g_r18",
+                n_alive=8,
+            )
+        assert build_mock.called, (
+            "R18: _inject_seed_rag_hints must call RAGInjector.build_rag_query "
+            "to build its RAGQuery; instead the pydantic constructor was used "
+            "directly and the helper is dead code."
+        )
+
+    def test_quality_min_warns_on_unregistered_grade(self, caplog) -> None:
+        """R20: when an entry's quality_grade is missing from
+        ``_QUALITY_ORDER`` (e.g. someone added a new enum value to
+        ``QualityGrade`` and forgot to wire its priority), the
+        retriever used to silently default the missing grade to 0
+        via ``dict.get(missing, 0)``. That made every such entry get
+        filtered out by ``quality_min`` with no log line, and
+        operators had no way to notice the gap.
+
+        The fix: emit a WARNING log line identifying the offending
+        entry and grade, then fall through to the existing
+        treat-as-lowest behavior (return 0) so the call still
+        completes. The warning is the operator-visible signal.
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        # Build an entry whose grade will be 'unregistered' from the
+        # retriever's point of view. We do that by temporarily
+        # removing PRO_MATCH from _QUALITY_ORDER — the entry's grade
+        # is still a valid QualityGrade enum value, but the retriever
+        # no longer knows its priority.
+        entry = RAGEntry(
+            entry_id="r20_test",
+            title="R20 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.PRO_MATCH,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._QUALITY_ORDER)
+        try:
+            # Drop PRO_MATCH so the entry's grade is 'unregistered'.
+            del _retriever_mod._QUALITY_ORDER[QualityGrade.PRO_MATCH]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                # Use a quality_min that would have dropped the entry
+                # silently under the old behavior (so the warning is
+                # the only operator-visible signal of the gap).
+                retriever.retrieve(
+                    RAGQuery(
+                        role="seer", phase="speech",
+                        quality_min=QualityGrade.HIGH_RANK_GAME,
+                    ),
+                )
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+            ]
+            assert warnings, (
+                "R20: retriever must emit a WARNING log line identifying "
+                "entries whose quality_grade is missing from "
+                "_QUALITY_ORDER, so operators can spot missing-priority "
+                "wiring. "
+                f"Got: {[r.getMessage() for r in caplog.records]}"
+            )
+            # The warning must mention the offending entry and grade
+            # so the operator can find it without grepping.
+            msg = warnings[0].getMessage()
+            assert "r20_test" in msg, (
+                f"R20: warning must identify the offending entry; "
+                f"got {msg!r}"
+            )
+            assert "pro_match" in msg.lower(), (
+                f"R20: warning must identify the missing grade; "
+                f"got {msg!r}"
+            )
+        finally:
+            _retriever_mod._QUALITY_ORDER.clear()
+            _retriever_mod._QUALITY_ORDER.update(original)
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement
@@ -1067,6 +1301,7 @@ class TestRAGBoundaryEnforcement:
                 ingester.ingest(_make_entry(summary=summary))
 
     def test_no_forbidden_keywords(self):
+        """Test that all known forbidden keywords are rejected."""
         """RAG must not contain ground-truth keywords."""
         ingester = CaseIngester()
         forbidden = [

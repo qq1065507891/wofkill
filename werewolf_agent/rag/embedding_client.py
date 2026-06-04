@@ -6,6 +6,7 @@ API key read from SILICONFLOW_API_KEY env var, loaded from .env if present.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any
@@ -13,6 +14,9 @@ from typing import Any
 import httpx
 
 from werewolf_agent.model_gateway.providers import load_local_dotenv
+
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingClientError(RuntimeError):
@@ -69,6 +73,14 @@ class SiliconFlowEmbeddingClient:
             timeout=30,
         )
         elapsed_ms = int((time.monotonic() - start) * 1000)
+        # R15: surface per-call latency to operators running with
+        # log level DEBUG. Embedding is the most latency-sensitive
+        # RAG hot path; the number is the wall-clock time from
+        # request submission to response receipt.
+        logger.debug(
+            "embedding API call: model=%s batch_size=%d elapsed_ms=%d",
+            self._model, len(texts), elapsed_ms,
+        )
         if response.status_code != 200:
             raise EmbeddingClientError(
                 f"Embedding API returned {response.status_code}: "
