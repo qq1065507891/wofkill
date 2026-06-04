@@ -397,6 +397,67 @@ class TestReflectionMemory:
         assert entry2.text == entry.text
         assert entry2.tags == entry.tags
 
+    # P0-M6: vector search support
+    def test_query_with_vector_index(self):
+        """Vector similarity surfaces semantically related entries."""
+        from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+        mem = ReflectionMemory()
+        mem.store(self._make_entry(
+            "r1", text="上次站边预言家被冲爆,票投错了"
+        ))
+        mem.store(self._make_entry(
+            "r2", text="学到的教训:不要轻信金水,要核对查验记录"
+        ))
+        mem.store(self._make_entry(
+            "r3", text="其他话题的内容"
+        ))
+
+        idx = BagOfWordsVectorIndex()
+        idx.add_text("r1", "站边 预言家 票 投错 冲爆")
+        idx.add_text("r2", "金水 轻信 核对 查验")
+        idx.add_text("r3", "其他 话题")
+        idx.finalize()
+
+        results = mem.query(
+            CrossGameQuery(situation="站边 预言家 票型"),
+            vector_index=idx,
+        )
+        # Both r1 and r2 should appear via vector similarity before r3
+        entry_ids = [e.entry_id for e in results]
+        assert "r1" in entry_ids
+        # r1 is most similar to "站边 预言家 票型"
+        assert entry_ids[0] == "r1"
+
+    def test_reflection_falls_back_to_exact_match(self):
+        """Without a vector index, exact-match behavior is preserved."""
+        from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+        mem = ReflectionMemory()
+        mem.store(ReflectionEntry(
+            entry_id="r1", game_id="g1", player_id="p1", role="seer",
+            faction_won=True, text="a", situation="endgame",
+        ))
+        mem.store(ReflectionEntry(
+            entry_id="r2", game_id="g1", player_id="p1", role="seer",
+            faction_won=True, text="b", situation="midgame",
+        ))
+
+        # No vector index provided → exact-match path only
+        results = mem.query(CrossGameQuery(situation="endgame"))
+        assert len(results) == 1
+        assert results[0].entry_id == "r1"
+
+        # Empty vector index → exact-match path only
+        empty_idx = BagOfWordsVectorIndex()
+        empty_idx.finalize()
+        results = mem.query(
+            CrossGameQuery(situation="endgame"),
+            vector_index=empty_idx,
+        )
+        assert len(results) == 1
+        assert results[0].entry_id == "r1"
+
 
 # ---------------------------------------------------------------------------
 # PlayerProfile
