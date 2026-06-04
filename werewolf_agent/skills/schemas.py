@@ -72,6 +72,10 @@ class SkillInput:
     belief_state: Any | None = None
     contradiction_alerts: list[Any] = field(default_factory=list)
     player_id: str = ""
+    # P1-K5: precise task type (e.g. "speech", "vote", "night_action").
+    # Handlers branch on this where it materially changes advice
+    # (push_vote for vote vs speech, bold_claim for speech vs vote).
+    task_type: str = ""
 
 
 @dataclass

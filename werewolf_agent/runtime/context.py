@@ -438,6 +438,8 @@ def _inject_skill_output(
         player_id=player_id,
         legal_targets=legal_targets or [],
         extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
+        # P1-K5: forward task_type so handlers can branch on it.
+        task_type=task_type,
     )
 
     # P0-K2: pass task_type so the new `applies_to_task_types` filter works.
