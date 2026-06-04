@@ -887,7 +887,7 @@ class TestPlayerAgentRetryFallback:
             '{"action_type":"vote","target_id":"p07","speech":"归7",'
             '"reason":"可疑","confidence":0.8,'
             '"private_intent":{"true_role":"werewolf","faction_goal":"push_good_player_out",'
-            '"claimed_view":"villager","pressure_target":"p07",'
+            '"claimed_view":"good_player_without_night_info","pressure_target":"p07",'
             '"risk_flags":["avoid_night_kill_leak"]}}'
         )
         agent = self._make_agent(json_resp)
@@ -2410,11 +2410,18 @@ def test_claimed_view_preserves_valid_enum_value():
 
 
 def test_claimed_view_role_identifier_treated_as_valid():
-    """P1-S7: role identifiers (villager, werewolf, etc.) are valid claimed_views.
+    """P1-S7: role identifiers (werewolf, etc.) are valid claimed_views.
 
-    A wolf claiming to be a villager (default false cover) is a common
-    strategy. The wolf's claimed_view="villager" is a clean enum
+    A wolf claiming to be a good player (default false cover) is a
+    common strategy. The wolf's claimed_view uses a clean enum
     identifier, not natural language — it must pass through.
+
+    P1-3: claimed_view is now Literal-enforced. The valid set is
+    ``{good_player_without_night_info, seer, witch, hunter, idiot,
+    hybrid, werewolf}``. 'villager' is not in the set (a villager
+    does not need to claim an identity — they ARE the default), so
+    the canonical cover for a wolf pretending to be a villager is
+    ``good_player_without_night_info``.
     """
     from werewolf_agent.agents.player import PlayerAgent
     speech_text = (
@@ -2426,7 +2433,7 @@ def test_claimed_view_role_identifier_treated_as_valid():
         f'"speech":"{speech_text}",'
         '"reason":"保守观察","confidence":0.5,'
         '"private_intent":{"true_role":"werewolf","faction_goal":"confuse_good",'
-        '"claimed_view":"villager","pressure_target":"p05",'
+        '"claimed_view":"good_player_without_night_info","pressure_target":"p05",'
         '"risk_flags":[]}}'
     )
     router = ModelRouter(
@@ -2447,8 +2454,8 @@ def test_claimed_view_role_identifier_treated_as_valid():
     action, _ = agent.act(ctx)
     assert isinstance(action, PlayerAction)
     assert action.private_intent is not None
-    assert action.private_intent.claimed_view == "villager", (
-        f"Role identifier 'villager' must be preserved as a valid claimed_view, "
+    assert action.private_intent.claimed_view == "good_player_without_night_info", (
+        f"Enum value 'good_player_without_night_info' must be preserved, "
         f"got: {action.private_intent.claimed_view!r}"
     )
 

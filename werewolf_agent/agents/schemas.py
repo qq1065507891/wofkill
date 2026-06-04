@@ -113,7 +113,22 @@ class PrivateIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
     true_role: str = Field(..., description="Agent's actual role")
     faction_goal: FactionGoal = Field(..., description="Current faction objective")
-    claimed_view: str = Field(
+    # P1-3: enforce enum. P0-S7 added the prompt-side constraint, but
+    # the schema still accepted any string. Game trace g_3528592081
+    # showed wolves writing `claimed_view: "我是好人，混水摸鱼"` (a
+    # natural-language strategy note) and the audit log recording it.
+    # `Literal` over the 7 documented identity-perspective values is
+    # the same approach used by the example-renderer in
+    # prompt_builder._format_examples; both stay in sync.
+    claimed_view: Literal[
+        "good_player_without_night_info",
+        "seer",
+        "witch",
+        "hunter",
+        "idiot",
+        "hybrid",
+        "werewolf",
+    ] = Field(
         ..., description="Identity perspective the agent is claiming publicly"
     )
     pressure_target: str | None = Field(

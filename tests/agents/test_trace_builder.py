@@ -73,7 +73,7 @@ class TestBuildActionTrace:
             private_intent=PrivateIntent(
                 true_role="villager",
                 faction_goal="find_wolves",
-                claimed_view="villager",
+                claimed_view="good_player_without_night_info",
             ),
         )
         trace = build_action_trace(
