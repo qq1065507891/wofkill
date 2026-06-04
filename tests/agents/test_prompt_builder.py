@@ -1557,5 +1557,151 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         )
 
 
+# ---------------------------------------------------------------------------
+# P1-S4: _format_examples (FULL_ACTION mode) examples match the mode
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S4 finding: _format_examples is invoked for FULL_ACTION mode
+# (the speech/vote/sheriff/wolf paths). The LLM copies the example
+# structure, so a leaked `intent` field (SPEECH_INTENT mode) or `choice`
+# field (TARGET_CHOICE mode) would prime the LLM to fill those fields
+# for actions that don't have them. P0-S1 added mode isolation at the
+# parse layer (rejects unknown fields); P0-S8 added extra=forbid on the
+# schema; this is the prompt-side regression to keep the examples clean.
+#
+# Fix: verify the example JSON in each _format_examples branch has no
+# `intent` or `choice` keys. The check scans every JSON example block
+# in the user prompt and fails if either field name appears.
+
+
+def _extract_json_examples(prompt: str) -> list[dict]:
+    """Find every JSON example in the prompt (the action_type-tagged ones)."""
+    examples: list[dict] = []
+    for match in _re.finditer(
+        r"\{[^{}]*?(?:\{[^{}]*\}[^{}]*?)*\}",
+        prompt,
+        flags=_re.DOTALL,
+    ):
+        try:
+            data = _json.loads(match.group(0))
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "action_type" in data:
+            examples.append(data)
+    return examples
+
+
+def test_format_examples_no_intent_field_in_speech_path():
+    """P1-S4: speech-path example must not include `intent` field.
+
+    `intent` is a SPEECH_INTENT-mode field (the enum-style value the
+    LLM picks from a small set). FULL_ACTION mode renders speech
+    directly with action_type=speech, speech=text, reason=..., and
+    never uses `intent`. If the example mentions it, the LLM will
+    defensively fill it for SPEECH actions and the strict schema
+    (extra=forbid, P0-S8) will reject them.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05"],
+        public_summary="D2 vote",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples, "Expected at least one example in the speech path"
+    for ex in examples:
+        assert "intent" not in ex, (
+            f"FULL_ACTION example must not include 'intent' field "
+            f"(that's a SPEECH_INTENT-mode field); example={ex}"
+        )
+
+
+def test_format_examples_no_choice_field_in_speech_path():
+    """P1-S4: speech-path example must not include `choice` field.
+
+    `choice` is a TARGET_CHOICE-mode field (an enum letter A/B/C/...
+    the LLM picks from a small set). FULL_ACTION mode renders the
+    action with action_type=..., target_id=player_id, never with
+    `choice`. If the example mentions it, the LLM will defensively
+    fill it for SPEECH/VOTE/WOLF_KILL actions.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05"],
+        public_summary="D2 vote",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples
+    for ex in examples:
+        assert "choice" not in ex, (
+            f"FULL_ACTION example must not include 'choice' field "
+            f"(that's a TARGET_CHOICE-mode field); example={ex}"
+        )
+
+
+def test_format_examples_no_intent_field_in_wolf_kill_path():
+    """P1-S4: wolf_kill-path examples must not include `intent`.
+
+    Wolf kill is a TARGET_CHOICE-style action (pick a target) but
+    renders in FULL_ACTION mode. The example must not leak the
+    SPEECH_INTENT `intent` field.
+    """
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.NIGHT_ACTION,
+        phase="night",
+        day_number=1,
+        own_role="werewolf",
+        legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
+        legal_targets=["p05", "p07"],
+        public_summary="N1",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples, "Expected wolf_kill / wolf_no_kill examples"
+    for ex in examples:
+        assert "intent" not in ex, (
+            f"Wolf-kill example must not include 'intent' field; example={ex}"
+        )
+        assert "choice" not in ex, (
+            f"Wolf-kill example must not include 'choice' field; example={ex}"
+        )
+
+
+def test_format_examples_no_intent_field_in_sheriff_register_path():
+    """P1-S4: sheriff_register-path example must not include `intent`."""
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.SHERIFF_REGISTRATION,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+        legal_targets=[],
+        public_summary="D1 sheriff election",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples, "Expected sheriff_register / no_action examples"
+    for ex in examples:
+        assert "intent" not in ex, (
+            f"Sheriff-register example must not include 'intent' field; example={ex}"
+        )
+        assert "choice" not in ex, (
+            f"Sheriff-register example must not include 'choice' field; example={ex}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
