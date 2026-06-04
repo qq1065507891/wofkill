@@ -136,6 +136,47 @@ class TestAgentContextLeakage:
             assert "master_id" not in vs, f"{player_role} sees hybrid master_id"
         assert "moderator_full" not in vs
         assert "events" not in vs
+        # P0-I1: also assert that the base ``strategy_directive`` (as
+        # produced by ``build_agent_context``) does not leak role-gated
+        # directive keys for other roles.  Per-role injection is
+        # covered separately in test_directive_role_gating.py.
+        sd = ctx.strategy_directive or {}
+        if player_role != "werewolf":
+            for key in (
+                "wolf_speech_directive", "wolf_universal_rules",
+                "wolf_fake_seer_teammate", "wolf_fake_seer_execution",
+                "wolf_day_push_target", "wolf_plan_target",
+                "wolf_teammate_exposed", "wolf_high_priority_target",
+                "wolf_kill_instruction", "wolf_vote_strategy",
+                "wolf_team_discussion",
+            ):
+                assert key not in sd, (
+                    f"{player_role} base strategy_directive leaks {key}"
+                )
+        if player_role != "witch":
+            for key in (
+                "witch_night_action", "witch_strategy_hint",
+                "witch_poison_deterrent", "witch_poison_threshold",
+            ):
+                assert key not in sd, (
+                    f"{player_role} base strategy_directive leaks {key}"
+                )
+        if player_role != "seer":
+            for key in (
+                "seer_night_check", "check_value_assessment",
+                "badge_flow_plan", "excluded_counterclaiming_seers",
+            ):
+                assert key not in sd, (
+                    f"{player_role} base strategy_directive leaks {key}"
+                )
+        if player_role != "hybrid":
+            for key in (
+                "hybrid_master_choice", "master_assessment",
+                "hybrid_master_dead", "hybrid_vote_strategy",
+            ):
+                assert key not in sd, (
+                    f"{player_role} base strategy_directive leaks {key}"
+                )
 
     def test_villager_context_no_leaks(self, game: tuple) -> None:
         gs, engine = game
