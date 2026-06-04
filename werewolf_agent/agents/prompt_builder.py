@@ -278,6 +278,18 @@ class PlayerPromptBuilder:
     # to avoid double-labeling with the inner P0-S5 sub-group. The
     # P1-5 budget trimmer treats it as a never-dropped section
     # because it carries binding rules.
+    #
+    # P2-7: the proposal to flatten the 3-tier labels into flat
+    # inline `[MUST]/[SHOULD]/[REF]` tags was considered and DROPPED.
+    # Three reasons:
+    #   1. The P1-S3 outer 3-tier drives the budget trimmer — flat
+    #      tags would lose the trim signal.
+    #   2. The LLM has been observed to read section headers more
+    #      reliably than scattered inline tags; the cluster structure
+    #      makes it easier to skim under tight tokens.
+    #   3. The 3-tier format is consistent with the inner P0-S5
+    #      sub-grouping (硬约束/建议/参考), so the LLM does not have
+    #      to learn two priority systems in the same prompt.
     _NEVER_DROP: frozenset[str] = frozenset({
         "_build_strategy_directive",
     })
