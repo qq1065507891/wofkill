@@ -59,6 +59,13 @@ _MAX_JSON_CONTEXT_CHARS = 1800
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
 _MAX_SALIENCE_ITEMS = 4
+# P1-5: global user-prompt budget. ≈ 2,500 CJK tokens at the rough
+# 2.5 chars/token ratio. The 16 user-prompt sections are truncated
+# per-section, but the SUM can still run 3,000-5,000 tokens when many
+# sections have content. The budget cap drops the lowest-priority
+# sections (可选 → 辅助) until the prompt fits. 硬约束 sections are
+# never dropped.
+_USER_PROMPT_BUDGET_CHARS = 6_250
 
 # P0-S5: strategy_directive is split into 3 priority tiers so the LLM can
 # distinguish hard constraints (must obey) from suggestions (recommended) and
@@ -303,44 +310,104 @@ class PlayerPromptBuilder:
         return f"{label} {body}"
 
     def build_user_prompt(self, retry: RetryInfo) -> str:
-        parts: list[str] = []
-        # Boundary marker per s10: above = stable, below = dynamic
-        parts.append("=== DYNAMIC_BOUNDARY ===")
+        # P1-5: build the full prompt first, then enforce the global
+        # token budget by dropping lowest-priority sections until the
+        # prompt fits. Sections are dropped in priority order:
+        #   可选 (transcript) → 辅助 (persona, profile, ...).
+        # 硬约束 (strategy_directive, retry hint, output contract) is
+        # never dropped.
+        parts: list[tuple[str, str]] = []
+        # Boundary marker per s10: above = stable, below = dynamic.
+        # Boundary marker + task prompt are always kept (they are not
+        # sections with a priority label).
+        parts.append(("", "=== DYNAMIC_BOUNDARY ==="))
         # P2-S10: persona (per-turn style/tone hint) lives in the user
         # message, right after the boundary marker, so it stays grouped
         # with other per-turn dynamic context and does not invalidate
         # the system-prompt cache on each turn.
-        parts.append(self._label_section("_build_persona", self._build_persona()))
+        parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
         # P1-S3: each section is wrapped with a [硬约束/辅助/可选]
         # priority label so the LLM can rank attention under tight
         # token budgets. The label is prepended at the section level
         # — internal sub-grouping (e.g., P0-S5 within strategy_directive)
         # is preserved.
-        parts.append(self._label_section("_build_phase_context", self._build_phase_context()))
-        parts.append(self._label_section("_build_belief_state", self._build_belief_state()))
-        parts.append(self._label_section("_build_public_summary", self._build_public_summary()))
-        parts.append(self._label_section("_build_visible_state", self._build_visible_state()))
-        parts.append(self._label_section("_build_private_memory_hints", self._build_private_memory_hints()))
-        parts.append(self._label_section("_build_salience_events", self._build_salience_events()))
-        parts.append(self._label_section("_build_rag_hints", self._build_rag_hints()))
-        parts.append(self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints()))
-        parts.append(self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint()))
-        parts.append(self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint()))
-        parts.append(self._label_section("_build_strategy_directive", self._build_strategy_directive()))
-        parts.append(self._label_section("_build_skill_analysis_hints", self._build_skill_analysis_hints()))
+        parts.append(("_build_phase_context", self._label_section("_build_phase_context", self._build_phase_context())))
+        parts.append(("_build_belief_state", self._label_section("_build_belief_state", self._build_belief_state())))
+        parts.append(("_build_public_summary", self._label_section("_build_public_summary", self._build_public_summary())))
+        parts.append(("_build_visible_state", self._label_section("_build_visible_state", self._build_visible_state())))
+        parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
+        parts.append(("_build_salience_events", self._label_section("_build_salience_events", self._build_salience_events())))
+        parts.append(("_build_rag_hints", self._label_section("_build_rag_hints", self._build_rag_hints())))
+        parts.append(("_build_reflection_memory_hints", self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints())))
+        parts.append(("_build_profile_memory_hint", self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint())))
+        parts.append(("_build_cognition_matrix_hint", self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint())))
+        parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
+        parts.append(("_build_skill_analysis_hints", self._label_section("_build_skill_analysis_hints", self._build_skill_analysis_hints())))
         # P0-K1: skill tool path removed. Skill analyses are pre-injected
         # above (skill_analysis_hints) — no separate tool-catalog section.
-        parts.append(self._label_section("_build_recent_transcript", self._build_recent_transcript()))
+        parts.append(("_build_recent_transcript", self._label_section("_build_recent_transcript", self._build_recent_transcript())))
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM
         # read "纠正提示..." and then got distracted by the task
         # description that followed — easy to miss the correction.
         # New order (task → retry → contract) makes the correction the
         # last thing the LLM sees before the output contract.
-        parts.append(self._build_task_prompt())
-        parts.append(self._label_section("_build_retry_hint", self._build_retry_hint(retry)))
-        parts.append(self._label_section("_build_strict_output_contract", self._build_strict_output_contract()))
-        return "\n\n".join(p for p in parts if p)
+        # task prompt has no priority label — it's the action spec.
+        parts.append(("", self._build_task_prompt()))
+        parts.append(("_build_retry_hint", self._label_section("_build_retry_hint", self._build_retry_hint(retry))))
+        parts.append(("_build_strict_output_contract", self._label_section("_build_strict_output_contract", self._build_strict_output_contract())))
+        return self._enforce_budget(parts)
+
+    def _enforce_budget(
+        self,
+        parts: list[tuple[str, str]],
+    ) -> str:
+        """Join parts with blank-line separator, then trim if over budget.
+
+        P1-5: when the joined prompt exceeds ``_USER_PROMPT_BUDGET_CHARS``,
+        drop the lowest-priority sections (those whose builder_name is
+        labeled 【可选】 then 【辅助】) until it fits. Sections with the
+        【硬约束】 label, the boundary marker, and the task prompt are
+        never dropped.
+        """
+        joined = "\n\n".join(p for _, p in parts if p)
+        if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
+            return joined
+        # Build the drop order: every droppable section in priority
+        # order (lowest first). Skip sections with no label (boundary
+        # marker, task prompt) and sections labeled 【硬约束】.
+        priority = self._SECTION_PRIORITIES
+        droppable: list[tuple[int, int]] = []
+        for idx, (name, _) in enumerate(parts):
+            if not name:
+                continue
+            label = priority.get(name, "")
+            if label == "【硬约束】":
+                continue
+            # 可选 drops first (priority 0), 辅助 drops second (priority 1).
+            tier = 0 if label == "【可选】" else 1
+            droppable.append((tier, idx))
+        # Sort by tier first, then keep original order within a tier.
+        droppable.sort(key=lambda x: x[0])
+        drop_indices = {idx for _, idx in droppable}
+        # Drop from the lowest tier first; within a tier, drop from
+        # the end (most recently added sections are most often the
+        # largest by payload).
+        for tier, idx in droppable:
+            if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
+                break
+            if idx in drop_indices and parts[idx][0]:
+                # Only drop if the section's label is in the matching
+                # tier; otherwise skip and continue.
+                label = priority.get(parts[idx][0], "")
+                expected_tier = 0 if label == "【可选】" else 1
+                if expected_tier != tier:
+                    continue
+                drop_indices.discard(idx)
+                joined = "\n\n".join(
+                    p for i, (_, p) in enumerate(parts) if i not in drop_indices and p
+                )
+        return joined
 
     def _build_phase_context(self) -> str:
         ctx = self.context

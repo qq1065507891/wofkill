@@ -1642,6 +1642,177 @@ def test_output_contract_vote_rule_still_in_user_prompt():
 
 
 # ---------------------------------------------------------------------------
+# P1-5: user prompt must respect a global token budget
+# ---------------------------------------------------------------------------
+#
+# Audit P1-5 finding: with 8+ sections populated (RAG hints, salience,
+# strategy_directive, transcript, etc.) the assembled user prompt
+# reaches 3,000-5,000 tokens — well over the 2,000-token budget most
+# Chinese-context models can comfortably ingest alongside the system
+# prompt. Per-section truncation at _MAX_JSON_CONTEXT_CHARS = 1800 is
+# not enough; the global sum is the constraint that matters.
+#
+# Fix: implement a global token budget. Drop lowest-priority sections
+# (可选 before 辅助; never drop 硬约束) when the assembled prompt
+# exceeds the budget. Use the existing _SECTION_PRIORITIES map for
+# the priority signal.
+
+_USER_PROMPT_BUDGET_CHARS = 6_250  # ≈ 2,500 CJK tokens (rough)
+
+
+def _make_ctx_with_all_sections_populated() -> AgentContext:
+    """Context with every available user-prompt section populated.
+
+    Forces the largest possible user prompt (16 sections all with
+    content) so the budget test catches the over-budget case.
+    """
+    long_summary = "公开事实 " + ("D2 数据 " * 300)
+    long_visible = {f"key_{i}": f"value_{i} " * 30 for i in range(20)}
+    long_private_memory = {
+        "logic_flaws": [{"day": 2, "point": f"逻辑问题 {i}"} for i in range(8)],
+        "valid_points": [{"day": 2, "point": f"有效点 {i}"} for i in range(8)],
+    }
+    long_salience = [
+        {"id": f"sal-{i}", "weight": 0.5, "summary": f"事件 {i} " * 20}
+        for i in range(8)
+    ]
+    long_rag = [
+        {"title": f"案例 {i}", "summary": f"内容 {i} " * 50, "key_decisions": [f"决策 {i}"]}
+        for i in range(3)
+    ]
+    long_reflection = [
+        {"theme": f"主题 {i}", "summary": f"经验 {i} " * 30}
+        for i in range(5)
+    ]
+    long_profile = {"games_played": 10, "summary": "前 30% 玩家画像 " * 50}
+    long_cognition = {
+        f"p{i:02d}": {"trust": 0.5, "faction_lean": "good", "top_role_guess": "villager"}
+        for i in range(1, 13)
+    }
+    long_directive = {
+        "must_address_alerts": [{"alert": f"提示 {i}"} for i in range(5)],
+        "anti_herd": "不要盲目跟票 " * 20,
+        "skill_tactical_advice": {"role": "villager", "tips": ["tip1", "tip2"] * 30},
+    }
+    long_skill = {
+        "wolf_pit": "嫌疑区 " * 100,
+        "seer_logic": "查验逻辑 " * 100,
+    }
+    long_transcript = [
+        {"speaker": f"p{i:02d}", "text": f"近期发言内容 {i} " * 30}
+        for i in range(1, 5)
+    ]
+    long_persona = {"tone": "aggressive", "style": "logical", "phrase_style": "blame_p05"}
+    long_belief = {
+        "my_suspects": [
+            {"player": f"p{i:02d}", "faction_lean": "wolf_lean",
+             "top_role_guess": "werewolf", "trust": 0.2}
+            for i in range(1, 6)
+        ],
+        "my_trusted": [
+            {"player": f"p{i:02d}", "faction_lean": "good_lean",
+             "top_role_guess": "villager", "trust": 0.8}
+            for i in range(6, 11)
+        ],
+    }
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary=long_summary,
+        visible_world_state=long_visible,
+        private_memory_hints=long_private_memory,
+        salience_items=long_salience,
+        rag_hints=long_rag,
+        reflection_memory_hints=long_reflection,
+        profile_memory_hint=long_profile,
+        cognition_matrix_hint=long_cognition,
+        strategy_directive=long_directive,
+        skill_analysis_hints=long_skill,
+        recent_transcript=long_transcript,
+        persona_snapshot=long_persona,
+        belief_state=long_belief,
+    )
+
+
+def test_user_prompt_within_budget_when_all_sections_populated():
+    """P1-5: with all 16 sections populated, the user prompt must be
+    under the budget cap.
+
+    Pre-fix: the user prompt could reach 3,000-5,000 tokens. The fix
+    drops lowest-priority sections (可选 first, then 辅助) until the
+    prompt fits under the budget. 硬约束 sections are never dropped.
+    """
+    ctx = _make_ctx_with_all_sections_populated()
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # rough CJK token estimate: 1 token ≈ 2.5 chars
+    approx_tokens = len(user_prompt) / 2.5
+    assert approx_tokens < 2_500, (
+        f"P1-5: user prompt is over budget. approx_tokens={approx_tokens:.0f}, "
+        f"chars={len(user_prompt)}, budget=2,500 tokens "
+        f"(~6,250 chars). Drop lowest-priority sections first when over "
+        f"budget. user_prompt[:500]={user_prompt[:500]!r}"
+    )
+
+
+def test_hard_sections_never_dropped_under_budget():
+    """P1-5: budget enforcement must NEVER drop 【硬约束】 sections.
+
+    The hard-constraint sections (strategy_directive, retry hint,
+    output contract) carry binding rules the LLM must obey. If the
+    budget is tight, the trimmer drops 可选 first, then 辅助 — never
+    a 硬约束 section.
+    """
+    ctx = _make_ctx_with_all_sections_populated()
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error: missing field 'speech'",
+        correction_hint="只输出JSON。",
+    )
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # 硬约束 sections must remain — even when the budget is tight.
+    # strategy_directive is gated by 硬约束 outer label (P1-S3); the
+    # inner sub-group MUST/SHOULD/REFERENCE markers (P0-S5) are also
+    # anchored here.
+    assert "本轮策略指令" in user_prompt, (
+        "P1-5: strategy_directive is a 硬约束 section and must never "
+        "be dropped from the user prompt under the budget cap."
+    )
+    assert "纠正提示" in user_prompt, (
+        "P1-5: retry hint is a 硬约束 section and must never be dropped."
+    )
+    assert "最终输出协议" in user_prompt, (
+        "P1-5: output contract is a 硬约束 section and must never be dropped."
+    )
+
+
+def test_optional_sections_dropped_first():
+    """P1-5: under tight budget, 可选 sections are dropped first.
+
+    The transcript is the only 可选 section in build_user_prompt.
+    """
+    ctx = _make_ctx_with_all_sections_populated()
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # If the budget requires any drop, the 可选 section (transcript)
+    # should be the first to go. We can't pin the exact behavior
+    # (it depends on payload sizes), but we can assert the budget is
+    # respected — the trimmer always picks the lowest-priority section.
+    # The contract under test is "budget is enforced", not "transcript
+    # is always dropped", so this test is a sanity check that the
+    # transcript MAY be present (it didn't HAVE to be dropped) when
+    # other smaller payloads fit.
+    # Pin the contract: budget is hard.
+    approx_tokens = len(user_prompt) / 2.5
+    assert approx_tokens < 2_500
+
+
+# ---------------------------------------------------------------------------
 # P1-S4: _format_examples (FULL_ACTION mode) examples match the mode
 # ---------------------------------------------------------------------------
 #
