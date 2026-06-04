@@ -232,7 +232,7 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
     result = _dispatch_agent(
         state,
         agent_night_witch,
-        timeout_override=AGENT_TIMEOUTS.witch,
+        timeout_override=AGENT_TIMEOUTS.witch_action,
     )
     if result is not None:
         use_antidote = result.get("use_antidote", False)
@@ -320,7 +320,7 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     result = _dispatch_agent(
         state,
         agent_night_seer,
-        timeout_override=AGENT_TIMEOUTS.seer,
+        timeout_override=AGENT_TIMEOUTS.seer_check,
     )
     if result is not None:
         target = result.get("seer_target_id")
@@ -400,7 +400,7 @@ def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
             state,
             agent_hybrid_choose_master,
             hybrid_id,
-            timeout_override=AGENT_TIMEOUTS.seer,
+            timeout_override=AGENT_TIMEOUTS.seer_check,
         )
         if result and result.get("master_target_id"):
             master_target = result["master_target_id"]

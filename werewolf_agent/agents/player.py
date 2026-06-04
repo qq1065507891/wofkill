@@ -438,9 +438,21 @@ class PlayerAgent:
                     latency_ms=_latency_from_result(result),
                     raw_error=None,
                 )
-                category_hint = (
-                    f" (cause: {failure_category})" if failure_category else ""
-                )
+                # P0-R2: when the empty_response is categorized as a
+                # timeout, the LLM needs explicit permission to take
+                # a safe no-op. Without it, the model either retries
+                # and times out again or fabricates a vote target.
+                # Game trace g_3528592081 Action 57: seer p03 vote hit
+                # 3 empty retries and fell back to a default target —
+                # a '如果超时, 返回 no_action' hint would have let it
+                # safely no-op the second time around.
+                timeout_hint = ""
+                if failure_category == "timeout":
+                    timeout_hint = (
+                        " 如果超时，请直接返回 no_action 而非空响应"
+                        "（action_type='no_action', target_id=null,"
+                        "reason='timeout - safe no-op'）。"
+                    )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
@@ -448,8 +460,9 @@ class PlayerAgent:
                     error_message="Model returned empty text",
                     failure_category=failure_category,
                     correction_hint=(
-                        f"Please provide a valid JSON action{category_hint}. "
-                        "If the model timed out, consider shorter reasoning."
+                        f"Please provide a valid JSON action. "
+                        f"If the model timed out, consider shorter reasoning."
+                        f"{timeout_hint}"
                     ),
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(

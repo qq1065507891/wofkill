@@ -169,7 +169,11 @@ class PlayerPromptBuilder:
         parts.append(self._build_game_rules())
         parts.append(self._build_role_guide())
         parts.append(self._build_reasoning_method())
-        parts.append(self._build_skill_catalog())
+        # P0-R2: skill catalog moved from system to user. The catalog is
+        # role+phase dependent (it filters by `is_applicable(role, phase)`),
+        # so it was always mis-cached as 'stable' system content. Moving
+        # it to the user message cuts the system-prompt cache footprint
+        # and gives the LLM more headroom before the response token limit.
         parts.append(self._build_tool_skill_policy())
         parts.append(self._build_output_contract())
         return "\n\n".join(p for p in parts if p)
@@ -307,6 +311,10 @@ class PlayerPromptBuilder:
         parts.append(self._build_cognition_matrix_hint())
         parts.append(self._build_strategy_directive())
         parts.append(self._build_skill_analysis_hints())
+        # P0-R2: skill catalog now in user prompt. Was system but the
+        # catalog is role+phase dependent (filters by `is_applicable`),
+        # so it always belonged here.
+        parts.append(self._build_skill_catalog())
         parts.append(self._build_recent_transcript())
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM
@@ -522,6 +530,14 @@ class PlayerPromptBuilder:
         LLM sees what specifically went wrong on the previous attempt.
         Truncation keeps the hint focused and avoids leaking long traces
         into the next prompt.
+
+        P0-R2: When failure_category == "timeout" and error_code ==
+        "empty_response", append a Chinese hint giving the LLM explicit
+        permission to return `no_action` as a safe no-op. Without this,
+        the model either retries and times out again or fabricates a
+        vote target. Game trace g_3528592081 Action 57 (seer p03 vote)
+        hit 3 empty retries and fell back to a default target — a
+        '如果超时, 返回 no_action' hint would have let it safely no-op.
         """
         if not retry.correction_hint and not retry.error_message:
             return ""
@@ -536,6 +552,17 @@ class PlayerPromptBuilder:
             lines.append(f"上次错误: {snippet}")
         if retry.correction_hint:
             lines.append(f"修正建议: {retry.correction_hint}")
+        # P0-R2: empty_response + timeout → safe no-op permission.
+        if (
+            retry.error_code == "empty_response"
+            and retry.failure_category == "timeout"
+        ):
+            lines.append(
+                "重要：如果你已经超时，请直接返回 no_action"
+                "（action_type='no_action', target_id=null, "
+                "reason='timeout - safe no-op'），"
+                "不要再尝试长推理或构造JSON。"
+            )
         return "\n".join(lines)
 
     def _build_task_prompt(self) -> str:

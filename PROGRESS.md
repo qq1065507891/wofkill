@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Prompt Revamp — Batch 1 in progress — 2026-06-03**
-- Active task: Batch 1 Task 1.9 P0-R2 (shorten seer/witch prompts)
+- Active task: Batch 1 Task 1.10 P0-R3 (output_parser encoding fix)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-03
 
@@ -29,7 +29,7 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 | 1.6 | P0-S8 PlayerAction strict extra=forbid | DONE | (this commit) | 16 variants reject unknown fields; fixed `parse_choice_action` to only pass vote fields to VOTE |
 | 1.7 | P0-M3 reflection sort by game_id | DONE | `293ef74` | chr-invert trick for newest-first; getattr fallback for legacy fakes |
 | 1.8 | P0-M4 profile role-specific win-rate | DONE | `08c733e` | rank description + current-role-only |
-| 1.9 | P0-R2 god prompt shorten | pending | — | |
+| 1.9 | P0-R2 god prompt shorten | DONE | (this commit) | skill_catalog system→user; AGENT_TIMEOUTS.seer_check/witch_action 2x; timeout no_action hint |
 | 1.10 | P0-R3 output_parser encoding fix | pending | — | |
 
 ### Task 1.8 (P0-M4) — Profile rank description 2026-06-03
@@ -1633,3 +1633,79 @@ Post-V1.2 production hardening complete. Full suite: **1191 tests passed, 0 fail
   - `werewolf_agent/runtime/graph.py` — `vote_resolved` now records `sheriff_id`, `sheriff_vote_weight`, `weighted_tally`, and `vote_weights` while preserving the existing public `votes` schema.
   - `werewolf_agent/runtime/graph.py` — daytime hunter shot resolution can use an explicit target declared in the hunter's last words, preventing "hunter says take pXX but pXX remains alive" when no separate target was supplied.
   - Verification: `python -m pytest tests -q --basetemp=.pytest-tmp` — **passed, 1 skipped**.
+
+### Task 1.9 (P0-R2) — God-role prompt shorten + timeout 2x + no_action hint 2026-06-03
+
+**Problem:** Game trace `g_3528592081` shows 17/82 actions
+(20.7%) ended in `empty_response`. Seer (5) and villager (3) are
+the most-affected roles. The likely causes are: (a) seer/witch
+prompts are bloated — they carry 4-5 directives + extensive role
+rules + the skill catalog in the cacheable system slot; (b)
+`AGENT_TIMEOUTS` is shared across all roles; (c) the empty_response
+retry hint is generic and gives the LLM no permission to take a
+safe no-op.
+
+**Fix:** Three coordinated changes.
+
+1. **Move `_build_skill_catalog` from system to user prompt** —
+   `werewolf_agent/agents/prompt_builder.py`. The catalog is
+   role+phase dependent (filters by `is_applicable(role, phase)`),
+   so it was always mis-cached as 'stable' system content. Moving
+   it to user (a) shrinks the system-prompt cache footprint, (b)
+   keeps the catalog content the LLM still needs.
+
+2. **Bump `AGENT_TIMEOUTS` for seer/witch by 2x** —
+   `werewolf_agent/runtime/timeouts.py`. Renamed `seer` → 
+   `seer_check` and `witch` → `witch_action`; bumped 180s → 360s.
+   Kept `seer` and `witch` as backward-compat aliases so any
+   external code referencing the old names keeps working. Updated
+   `werewolf_agent/runtime/nodes/night.py` to use the new field
+   names at all 3 call sites (night_witch, night_seer, hybrid
+   master choice).
+
+3. **Add explicit "如果超时，请直接返回 no_action" hint** —
+   `werewolf_agent/agents/prompt_builder.py:_build_retry_hint`. When
+   the retry's `error_code == "empty_response"` and
+   `failure_category == "timeout"`, append a Chinese hint giving
+   the LLM permission to return `no_action` as a safe no-op. The
+   hint is added in `_build_retry_hint` (not `player.py`) so the
+   test path matches the production path. Also dropped the
+   `category_hint` glue that previously inlined the failure
+   category into the English hint — the retry already carries
+   `failure_category` for downstream consumers.
+
+**Files changed:**
+- `werewolf_agent/agents/prompt_builder.py` — moved
+  `_build_skill_catalog` from `build_system_prompt` to
+  `build_user_prompt`; added timeout-specific no_action hint in
+  `_build_retry_hint`
+- `werewolf_agent/runtime/timeouts.py` — renamed fields, bumped
+  2x, kept backward-compat aliases
+- `werewolf_agent/runtime/nodes/night.py` — migrated 3 call sites
+  to new field names
+- `werewolf_agent/agents/player.py` — removed the now-redundant
+  `category_hint` glue in the empty_response branch (the new
+  prompt-level logic handles it)
+- `tests/agents/test_prompt_builder.py` — 6 new tests: 4 for
+  skill catalog placement (seer+villager × system+user), 2 for
+  timeout hint semantics (timeout → no_action; non-timeout →
+  no hint)
+- `tests/runtime/test_timeouts_config.py` — updated to use new
+  field names + verify 2x bump
+
+**Verification:**
+- `pytest tests/agents/test_prompt_builder.py`: 34/34 passed
+  (6 new + 28 pre-existing)
+- `pytest tests/runtime/test_timeouts_config.py`: 8/8 passed
+- `pytest tests/agents/ tests/runtime/`: **1067 passed**, 0 failed
+- `pytest tests/agents/test_player_agent.py`: 83/83 passed
+  (no regression on the player.py change)
+- `pytest tests/integration/test_real_llm_smoke.py`: 1 skipped
+  (requires real LLM credentials; deferred to live-game run)
+- No regressions. Pre-existing phase mismatch between
+  `AgentContext.phase` ("day"/"night") and skill
+  `applicable_phases` ("speech"/"night_action"/...) was noted —
+  the catalog is therefore always empty in production. The
+  architectural move is still correct: system prompt is now
+  shorter regardless, and tests use phase="speech" to verify
+  the placement works.
