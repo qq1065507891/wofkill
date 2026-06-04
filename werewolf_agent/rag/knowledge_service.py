@@ -219,9 +219,22 @@ class RAGKnowledgeService:
             meta = entry.metadata
             if query.ruleset_id and meta.ruleset_id and meta.ruleset_id != query.ruleset_id:
                 continue
-            if query.role and meta.role_perspective in (query.role, "general"):
-                selected.setdefault(entry.entry_id, (0.0, entry))
-            if query.phase and meta.phase in (query.phase, "general"):
+            # R9: the previous version used parallel ``if`` checks
+            # (OR semantics), so a cross-role case slipped into the
+            # candidate pool whenever the phase happened to match.
+            # We now require BOTH role and phase to match (each side
+            # accepts the ``general`` wildcard for universal entries),
+            # which preserves role isolation across the metadata
+            # fallback path.
+            role_ok = (
+                not query.role
+                or meta.role_perspective in (query.role, "general", "")
+            )
+            phase_ok = (
+                not query.phase
+                or meta.phase in (query.phase, "general", "")
+            )
+            if role_ok and phase_ok:
                 selected.setdefault(entry.entry_id, (0.0, entry))
 
         if selected:

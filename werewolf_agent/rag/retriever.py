@@ -117,23 +117,32 @@ def _tokenize_situation(situation: str) -> set[str]:
     string ``"抗推预言家"``) still tokenize correctly because there
     is no ``=`` in them and the value side just becomes the whole
     word.
+
+    R7: the no-``=`` branch (chunks like ``'speech']`` produced when
+    the situation is ``actions=['vote', 'speech']``) used to add the
+    chunk verbatim, leaving the trailing ``']`` glued to ``speech``.
+    We now run the same strip-list-syntax step on every chunk so
+    both ``vote`` and ``speech`` are recovered cleanly.
     """
     if not situation:
         return set()
     tokens: set[str] = set()
     for chunk in situation.split():
         if "=" not in chunk:
-            tokens.add(chunk.lower())
-            continue
-        key, _, value = chunk.partition("=")
-        # Drop the key (e.g. "role", "actions") — only the value
-        # tokens are useful for tag overlap. We still keep the key
-        # when the value is empty (e.g. "actions=") so the
-        # token set is non-empty.
-        value = value.strip()
-        if not value:
-            tokens.add(key.lower())
-            continue
+            # R7: even when there is no ``=`` the chunk may still
+            # carry list/quote noise (e.g. ``'speech']`` from a
+            # Python-style actions list). Run it through the same
+            # strip pass so ``speech`` is recoverable.
+            value = chunk
+        else:
+            key, _, value = chunk.partition("=")
+            # Drop the key (e.g. "role", "actions") — only the value
+            # tokens are useful for tag overlap. We still keep the key
+            # when the value is empty (e.g. "actions=") so the
+            # token set is non-empty.
+            if not value.strip():
+                tokens.add(key.lower())
+                continue
         # Strip list / set / dict syntax around the value. We split
         # on common delimiters and quote chars; the leftover pieces
         # are individual tokens (e.g. "vote", "speech", "12").
@@ -207,7 +216,29 @@ class StrategyRetriever:
             (self._merged_score(entry, query), entry)
             for entry in candidates
         ]
-        scored.sort(key=lambda x: x[0], reverse=True)
+        # R12: case_type is a first-class sort key — strictly above
+        # quality — so an EXTERNAL_HIGH_END_CASE outranks a
+        # SPEECH_TEMPLATE regardless of the quality gap. The previous
+        # additive scoring (case_type * 0.075 + quality / 20) let
+        # a high-quality template tie or beat a low-quality external
+        # case, and Python's stable sort then preserved insertion
+        # order — meaning the case_type priority effectively didn't
+        # dominate the final ranking. The new sort is
+        # (case_type_priority desc, quality desc, rule_score desc),
+        # so case_type wins first, then quality, then the rest of
+        # the rule-based signal.
+        scored.sort(
+            key=lambda x: (
+                _CASE_TYPE_PRIORITY.get(
+                    x[1].metadata.case_type, 0
+                ),
+                _QUALITY_ORDER.get(
+                    x[1].metadata.quality_grade, 0
+                ),
+                x[0],
+            ),
+            reverse=True,
+        )
 
         if self._reranker and scored:
             # Take a wider pool for reranking

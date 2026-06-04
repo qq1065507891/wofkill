@@ -598,16 +598,34 @@ class TestRetriever:
             phase="speech",
             situation="预言家 对跳 悍跳位 归票",
             ruleset_id="pre_witch_hunter_idiot_mixed",
-            max_results=5,
+            # R12: case_type is now a first-class sort key above
+            # quality, so the ROLE_STRATEGY/EXPERT_REVIEW seer case
+            # can be pushed out of the top 5 by EXTERNAL_HIGH_END_CASE
+            # and EXTERNAL_TACTICS entries. Use a wider window so
+            # the test still exercises the high-probability-hint
+            # contract (presence + target entry's quality) without
+            # depending on case_type ordering. The original test
+            # also asserted the per-hit quality floor across the
+            # whole window; that floor no longer holds under the
+            # new sort (tutorial/community entries can sneak in
+            # once we widen the window), so we constrain the
+            # quality check to the target entry alone.
+            max_results=20,
         ))
 
-        assert any(h.entry_id == "seed_seer_counterclaim_vote_push_01" for h in hits)
-        for hit in hits:
-            assert hit.quality_grade in (
-                QualityGrade.HIGH_RANK_GAME,
-                QualityGrade.EXPERT_REVIEW,
-                QualityGrade.PRO_MATCH,
-            )
+        target = next(
+            (h for h in hits if h.entry_id == "seed_seer_counterclaim_vote_push_01"),
+            None,
+        )
+        assert target is not None, (
+            "expected the seer counterclaim vote-push hint to be "
+            "retrievable; it was dropped from the wider window"
+        )
+        assert target.quality_grade in (
+            QualityGrade.HIGH_RANK_GAME,
+            QualityGrade.EXPERT_REVIEW,
+            QualityGrade.PRO_MATCH,
+        )
 
     def test_retrieve_by_source_type(self):
         retriever, _ = self._make_retriever()
@@ -945,6 +963,88 @@ class TestRAGInjector:
         hits = injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
         assert len(hits) == 0
 
+    def test_audit_log_bounded(self) -> None:
+        """R8: ``RAGInjector._audit_log`` must NOT grow without bound.
+        A long-running service that calls ``inject`` thousands of times
+        would otherwise leak memory.
+
+        The fix caps the log at 1000 entries via ``collections.deque``
+        with ``maxlen=1000``. The test injects 1500 times and asserts
+        the log length never exceeds 1000 and that the most recent
+        entries are preserved (FIFO eviction).
+        """
+        from werewolf_agent.rag.injector import RAGInjector as _RI
+        from werewolf_agent.rag.retriever import StrategyRetriever as _SR
+
+        # Bypass the seed-dependent injector helper so the test stays
+        # hermetic and fast — we only care about audit-log accounting,
+        # not the retrieval content.
+        injector = _RI(_SR([]))
+        query = RAGQuery(role="seer", phase="speech")
+
+        n_iterations = 1500
+        cap = 1000
+        for i in range(n_iterations):
+            injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
+
+        log = injector.audit_log()
+        assert len(log) <= cap, (
+            f"R8: audit_log grew to {len(log)} after {n_iterations} inject calls; "
+            f"expected cap of {cap}"
+        )
+        # The most recent audit record must still be tracked on
+        # last_audit (FIFO eviction should not affect the latest one).
+        last = injector.last_audit()
+        assert last is not None
+        # When 1500 entries are pushed and cap=1000, the deque keeps
+        # the LAST 1000. The latest record's identity must therefore
+        # be the last pushed one.
+        assert log[-1] is last
+        # And the audit log must be a copy (so external mutations
+        # don't disturb the deque) per the existing contract.
+        assert isinstance(log, list)
+        assert len(log) == cap, (
+            f"R8: with 1500 inserts and cap=1000, the deque should hold exactly {cap} entries; "
+            f"got {len(log)}"
+        )
+
+    def test_injector_does_not_mutate_caller_query(self) -> None:
+        """R6: ``RAGInjector.inject`` must NOT mutate the caller's
+        ``RAGQuery``. Previously the method set
+        ``query.include_god_view = True/False`` directly, which silently
+        changed the caller's query and leaked the injector's internal
+        visibility decision into the caller's state.
+
+        This guard verifies all four injection contexts (LIVE_PLAYER,
+        REVIEW, MODERATOR, SPECTATOR) leave the caller's
+        ``include_god_view`` untouched.
+        """
+        injector = self._make_injector()
+        for ctx in (
+            InjectionContext.LIVE_PLAYER,
+            InjectionContext.REVIEW,
+            InjectionContext.MODERATOR,
+            InjectionContext.SPECTATOR,
+        ):
+            query = RAGQuery(role="seer", phase="speech", include_god_view=False)
+            original_dump = query.model_dump()
+            _ = injector.inject(query, injection_context=ctx)
+            after_dump = query.model_dump()
+            assert after_dump == original_dump, (
+                f"R6: injector mutated caller's query under {ctx!r}; "
+                f"before={original_dump!r} after={after_dump!r}"
+            )
+
+        # Also assert the inverse: a query explicitly carrying
+        # include_god_view=True must stay True after a LIVE_PLAYER
+        # call (live shouldn't downgrade it silently either).
+        query = RAGQuery(role="seer", phase="speech", include_god_view=True)
+        _ = injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
+        assert query.include_god_view is True, (
+            "R6: injector downgraded a True include_god_view to False; "
+            "caller's intent must be preserved"
+        )
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement
@@ -1088,6 +1188,209 @@ class TestRetrieverEdgeCases:
         query = RAGQuery(role="seer", situation="seer claim badge_flow")
         hits = retriever.retrieve(query)
         assert len(hits) > 0
+
+    def test_vector_store_logs_backend(self, caplog) -> None:
+        """R10: ``AutoVectorStore`` must log the selected backend at
+        INFO level on init so operators can see which path is live
+        (siliconflow / embedding / tfidf) without having to query the
+        property. The previous version logged only the warning
+        messages on fallback, never the chosen backend itself."""
+        import logging
+        from werewolf_agent.rag.vector_store import AutoVectorStore
+
+        with caplog.at_level(logging.INFO, logger="werewolf_agent.rag.vector_store"):
+            store = AutoVectorStore()
+
+        # The "vector backend: <name>" INFO line is the new contract.
+        # We look for an INFO record (not WARNING) that names the
+        # backend explicitly so an operator scanning the log can see
+        # the chosen path at a glance.
+        info_records = [
+            r for r in caplog.records
+            if r.levelno == logging.INFO and r.name == "werewolf_agent.rag.vector_store"
+        ]
+        assert any(f"vector backend: {store.backend}" in r.message for r in info_records), (
+            f"R10: AutoVectorStore init did not log "
+            f"'vector backend: {store.backend}' at INFO; got: "
+            f"{[(r.levelname, r.name, r.message) for r in caplog.records]!r}"
+        )
+
+    def test_pg_vector_store_uses_injected_embed_fn(self) -> None:
+        """R11: ``PgVectorStore`` must accept an injected ``embed_fn``
+        so callers can switch to 1024-dim SiliconFlow embeddings
+        instead of the 128-dim hash fallback. With the old code, the
+        embed step was hardcoded to ``_text_to_embedding(text, 128)``
+        and there was no way to override it from outside.
+
+        Test injects a mock ``embed_fn`` that returns a 1024-dim
+        zero vector and asserts the store actually calls it (the
+        pgvector literal is exactly 1024 floats). We don't open a
+        real connection (``initialize=False``) — we directly probe
+        the embed path that the store would have used in add/query.
+        """
+        from werewolf_agent.rag.vector_store import PgVectorStore
+
+        EMBED_DIM = 1024
+
+        def mock_embed_fn(text: str) -> list[float]:
+            return [0.0] * EMBED_DIM
+
+        store = PgVectorStore(
+            dsn="postgresql://localhost:0/test",
+            embed_fn=mock_embed_fn,
+            initialize=False,  # don't open a real connection
+        )
+        # The store's ``dimension`` should reflect the injected
+        # embed fn's output (1024), not the default 128.
+        assert store.dimension == EMBED_DIM, (
+            f"R11: PgVectorStore.dimension should match the injected "
+            f"embed_fn's output ({EMBED_DIM}); got {store.dimension}"
+        )
+
+        # And the embed call path must produce a 1024-dim vector
+        # when given arbitrary text. We invoke the same private
+        # helper the store would call during add/query.
+        embedding = store._embed_text("any text")
+        assert isinstance(embedding, list)
+        assert len(embedding) == EMBED_DIM, (
+            f"R11: injected embed_fn must be used; got vector of "
+            f"len {len(embedding)}, expected {EMBED_DIM}"
+        )
+
+    def test_pg_vector_store_falls_back_to_hash_when_no_embed_fn(self) -> None:
+        """R11 backward compat: when no ``embed_fn`` is injected,
+        ``PgVectorStore`` must keep using the existing 128-dim hash
+        embedding so existing deployments don't break."""
+        from werewolf_agent.rag.vector_store import (
+            PgVectorStore,
+            _EMBEDDING_DIM,
+        )
+
+        store = PgVectorStore(
+            dsn="postgresql://localhost:0/test",
+            initialize=False,
+        )
+        # No embed_fn → default 128-dim hash embedding.
+        assert store.dimension == _EMBEDDING_DIM
+        embedding = store._embed_text("any text")
+        assert len(embedding) == _EMBEDDING_DIM
+
+    def test_case_type_priority_above_quality(self) -> None:
+        """R12: case_type must be a first-class sort key — strictly
+        above quality. An EXTERNAL_HIGH_END_CASE must outrank a
+        SPEECH_TEMPLATE even when the template's quality grade
+        (PRO_MATCH) is at the very top of the quality ladder. The
+        previous additive scoring used ``case_type * 0.075`` (max
+        0.3) and ``quality / 20`` (max 0.3), so a SPEECH_TEMPLATE +
+        PRO_MATCH could tie or beat an EXTERNAL_HIGH_END_CASE +
+        UNREVIEWED — and with Python's stable sort that tie would
+        resolve in insertion order, not by case_type.
+
+        The fix sorts by (case_type_priority desc, quality desc,
+        rule_score desc) so case_type dominates the ordering
+        regardless of the quality gap.
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        # External case with the LOWEST possible quality grade
+        # (UNREVIEWED) so the case_type bonus has to carry it.
+        external = RAGEntry(
+            entry_id="ext_high_end",
+            title="外网高段位赛案例",
+            summary="External high-end case for priority test",
+            metadata=CaseMetadata(
+                case_type=CaseType.EXTERNAL_HIGH_END_CASE,
+                quality_grade=QualityGrade.UNREVIEWED,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.PUBLIC_TOURNAMENT),
+                tags=["seer"],
+            ),
+        )
+        # Speech template with the HIGHEST possible quality grade
+        # (PRO_MATCH) — under the old additive scoring this would
+        # tie with the external case on the case_type+quality
+        # sub-sum (0 + 0.3 vs 0.3 + 0) and stable sort would put it
+        # first because we register the template second… wait,
+        # we register template FIRST on purpose so that the
+        # current stable-sort bug would put the template at the
+        # top. The fix must reorder it.
+        template = RAGEntry(
+            entry_id="tpl_expert",
+            title="高段位演说模板",
+            summary="Speech template with pro_match quality",
+            metadata=CaseMetadata(
+                case_type=CaseType.SPEECH_TEMPLATE,
+                quality_grade=QualityGrade.PRO_MATCH,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        # Register the template first. Under the old additive
+        # scoring the two scores tie at 0.58 and Python's stable
+        # sort keeps the template in slot 0, so the assertion
+        # below would fail. After the fix the case_type sort key
+        # promotes the external case to slot 0.
+        retriever = StrategyRetriever([template, external])
+        hits = retriever.retrieve(
+            RAGQuery(role="seer", phase="speech", max_results=2),
+        )
+        ids = [h.entry_id for h in hits]
+        # R12: external must rank above template despite the
+        # template's higher quality grade, because case_type is a
+        # first-class sort key.
+        assert ids.index("ext_high_end") < ids.index("tpl_expert"), (
+            f"R12: external case must outrank speech template when "
+            f"template quality is higher; got {ids!r}"
+        )
+
+    def test_situation_tokenize_handles_action_list(self) -> None:
+        """R7: ``_tokenize_situation`` must recover every action name
+        from a Python-style ``actions=['vote', 'speech']`` blob, not
+        just the first one. The second chunk ``'speech']`` falls into
+        the no-``=`` branch and is added verbatim with the trailing
+        quote+bracket noise; the first chunk already strips because
+        its value side runs through the regex. Net effect: ``speech``
+        is never available as a tag-overlap target.
+
+        Test asserts both ``vote`` and ``speech`` survive the
+        tokenizer cleanly.
+        """
+        from werewolf_agent.rag.retriever import _tokenize_situation
+
+        tokens = _tokenize_situation("actions=['vote', 'speech']")
+        assert "vote" in tokens, (
+            f"R7: 'vote' missing from tokens; got {tokens!r}"
+        )
+        assert "speech" in tokens, (
+            f"R7: 'speech' missing from tokens; got {tokens!r}"
+        )
+        # No quote / bracket / comma residue should survive.
+        for piece in tokens:
+            assert piece == piece.strip("[](){}',\" \t\n"), (
+                f"R7: token {piece!r} still carries list-syntax noise"
+            )
 
     def test_duplicate_entry_id_overwrites(self):
         retriever = StrategyRetriever()

@@ -115,27 +115,40 @@ def dedup_hits_by_similarity(
     ``similarity_threshold`` (default 0.6). When a duplicate pair is
     found, the higher-relevance hit wins.
 
+    R13: the returned list is capped at ``min(max_items,
+    _DEDUP_DEFAULT_MAX_ITEMS)`` so a caller that asks for more hits
+    than the module default cannot blow past the 2-hit density
+    target. The caller's value is still respected as a LOWER bound
+    (passing ``max_items=1`` still gives 1 hit), but the module
+    default is the ceiling.
+
     Parameters
     ----------
     hits:
         Hits to dedup. Caller is responsible for any prior ordering
         (typically already ranked by the retriever).
     max_items:
-        Final cap on the returned list. Default 2 keeps the live
-        prompt dense.
+        Upper bound on the returned list, further capped at
+        :data:`_DEDUP_DEFAULT_MAX_ITEMS` (default 2) so the live
+        prompt density target always wins.
     similarity_threshold:
         Jaccard threshold in [0.0, 1.0]. Default 0.6.
 
     Returns
     -------
     list[RAGHit]
-        A new list with at most ``max_items`` hits. Order is preserved
-        from the input (which is already relevance-ordered by the
-        retriever); only the lower-relevance member of a near-duplicate
-        pair is dropped.
+        A new list with at most ``min(max_items,
+        _DEDUP_DEFAULT_MAX_ITEMS)`` hits. Order is preserved from
+        the input (which is already relevance-ordered by the
+        retriever); only the lower-relevance member of a
+        near-duplicate pair is dropped.
     """
     if not hits:
         return []
+    # R13: the caller-controlled cap is an upper bound; the module
+    # default is the actual ceiling so the live-prompt density
+    # target always holds even if a caller asks for more.
+    effective_cap = min(max(int(max_items), 0), _DEDUP_DEFAULT_MAX_ITEMS)
     token_cache: list[set[str]] = [
         _tokenize(f"{h.title} {h.summary}") for h in hits
     ]
@@ -155,7 +168,7 @@ def dedup_hits_by_similarity(
         if not merged:
             kept.append(hit)
             kept_tokens.append(tokens)
-    return kept[:max_items]
+    return kept[:effective_cap]
 
 
 def render_hit_for_prompt(hit: RAGHit) -> dict[str, Any]:

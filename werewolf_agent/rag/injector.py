@@ -10,6 +10,7 @@ Enforces:
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,9 +56,16 @@ class InjectionAuditRecord:
 class RAGInjector:
     """Injects RAG hits into agent context with visibility enforcement."""
 
+    # R8: cap the audit log so a long-running service doesn't leak
+    # memory. 1000 is plenty for live debugging (one entry per
+    # inject call) and well under any reasonable heap budget.
+    _AUDIT_LOG_MAXLEN = 1000
+
     def __init__(self, retriever: StrategyRetriever) -> None:
         self._retriever = retriever
-        self._audit_log: list[InjectionAuditRecord] = []
+        self._audit_log: deque[InjectionAuditRecord] = deque(
+            maxlen=self._AUDIT_LOG_MAXLEN,
+        )
         self._last_audit: InjectionAuditRecord | None = None
 
     def inject(
@@ -69,13 +77,21 @@ class RAGInjector:
         player_id: str | None = None,
     ) -> list[RAGHit]:
         """Retrieve and filter RAG hits for the given context."""
-        # God-view only allowed in review/moderator
-        if injection_context in (InjectionContext.REVIEW, InjectionContext.MODERATOR):
-            query.include_god_view = True
-        else:
-            query.include_god_view = False
+        # R6: build a derived query instead of mutating the caller's
+        # RAGQuery. The old code did
+        # ``query.include_god_view = True/False`` which silently
+        # changed the caller's state and leaked the injector's
+        # internal visibility decision into unrelated call sites.
+        want_god_view = injection_context in (
+            InjectionContext.REVIEW,
+            InjectionContext.MODERATOR,
+        )
+        effective_query = (
+            query if query.include_god_view == want_god_view
+            else query.model_copy(update={"include_god_view": want_god_view})
+        )
 
-        hits = self._retriever.retrieve(query)
+        hits = self._retriever.retrieve(effective_query)
 
         # Filter by injection context
         if injection_context == InjectionContext.LIVE_PLAYER:
