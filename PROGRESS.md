@@ -4,10 +4,26 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 4 (P1 RAG area) — STARTING 2026-06-04**
-- Active task: 5 P1 RAG tasks (G4, G5, G6, G7, G8) on branch `p4-rag` in `.worktrees/p4-rag`
+- Current phase: **Batch 4 (P1 RAG area) — COMPLETE 2026-06-04**
+- Active task: 5 P1 RAG tasks (G4, G5, G6, G7, G8) all done on branch `p4-rag` in `.worktrees/p4-rag`
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
+
+---
+
+## Batch 4 (P1 RAG area) — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p4-rag` on branch `p4-rag`. Sibling worktrees (in parallel): p4-prompt, p4-skill, p4-memory, p4-directives.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.9 | P1-G4 RAG summary cap relaxed | DONE | `c1306e1` | summary 300→800 chars, key_decisions uncapped→5. Retriever in `werewolf_agent/rag/retriever.py:_entry_to_hit`. Slim renderer (P0-G1) further caps key_decisions at 3 for live prompts. 3 new tests (2 retriever contract, 1 slim pass-through). |
+| 4.10 | P1-G5 RAG 3 cases dedup / merge | DONE | `71519e3` | New `dedup_hits_by_similarity()` in `werewolf_agent/rag/prompt_renderer.py`. Jaccard on title+summary tokens (CJK char-level + Latin word split). Threshold 0.6, cap 2 hits. `hits_to_prompt_lines` runs dedup before rendering. 5 new tests in `TestNearDuplicateHitsMerged`; 2 existing tests in `TestPromptRenderDropsMetadata` updated for disjoint content. |
+| 4.11 | P1-G6 RAG skipped for reflection / judge | DONE | `2cc7a22` | New `_RAG_SKIPPED_TASK_TYPES` frozenset in `runtime/context.py`. `_inject_seed_rag_hints` early-returns for REFLECTION + 7 JUDGE_* task types (saves an unnecessary embed/rerank call). 4 new tests. |
+| 4.12 | P1-G7 situation more semantic | DONE | `830b716` | Situation changed from raw concat (`"speech day vote speech"`) to key=value blob (`"role=seer phase=day task=speech alive=8 actions=[vote]"`). New `_tokenize_situation()` in `retriever.py` splits on `=` and strips list/quote noise. New optional `n_alive` kwarg on `_inject_seed_rag_hints`; `build_agent_context` passes `sum(1 for p in gs.players.values() if p.alive)`. 2 new tests. |
+| 4.13 | P1-G8 display_annotation simplified | DONE | `77edfb2` | New `_DISPLAY_SOURCE_LABELS` (7 entries) and `_DISPLAY_QUALITY_LABELS` (7 entries) in `retriever.py` — all in Chinese per project locale. `_entry_to_hit` uses the new labels, falling back to raw value when mapping is missing. Raw enum values stay on `RAGHit.source_type` / `RAGHit.quality_grade` for the audit log. 2 new tests. |
+
+**Batch 4 (RAG) results:** 5/5 tasks done. `pytest tests/rag/ tests/agents/ tests/runtime/`: **1260 passed**, 0 failed (2m 32s), 0 regression. 16 new tests added (3 + 5 + 4 + 2 + 2).
 
 ---
 
