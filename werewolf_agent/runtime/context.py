@@ -137,6 +137,23 @@ def _rag_phase_for_task(task_type: TaskType, phase: str) -> str:
     return phase or "general"
 
 
+# P1-G6: RAG retrieval is wasted on REFLECTION (post-game review of
+# the agent's own play — strategy hints are not actionable in that
+# context) and on JUDGE_* tasks (moderator persona; strategy hints
+# don't apply). Skipping them saves an unnecessary embed/rerank call
+# and keeps the live prompt free of irrelevant cases.
+_RAG_SKIPPED_TASK_TYPES: frozenset[TaskType] = frozenset({
+    TaskType.REFLECTION,
+    TaskType.JUDGE_PHASE,
+    TaskType.JUDGE_DEATH,
+    TaskType.JUDGE_VOTE_CALLING,
+    TaskType.JUDGE_VOTE_TALLY,
+    TaskType.JUDGE_SKILL_GUIDE,
+    TaskType.JUDGE_SHERIFF,
+    TaskType.JUDGE_EXILE,
+})
+
+
 def _inject_seed_rag_hints(
     context: AgentContext,
     *,
@@ -145,6 +162,10 @@ def _inject_seed_rag_hints(
     game_id: str = "",
 ) -> AgentContext:
     if not context.own_role:
+        return context
+
+    # P1-G6: skip RAG for non-player task types (reflection + judge).
+    if context.task_type in _RAG_SKIPPED_TASK_TYPES:
         return context
 
     try:
