@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 2 (RAG+Skill+Memory) MERGED — 2026-06-04**
-- Active task: Batch 2 fully merged into prompt-revamp-2026-06; next: Batch 3 (P0 redesign 6 items)
+- Current phase: **Batch 3 (P0 redesign, Memory) MERGED on p3-memory — 2026-06-04**
+- Active task: Batch 3 Memory-area (P0-M6, M9, I4) committed on branch `p3-memory`; awaiting merge into `prompt-revamp-2026-06`. Info-isolation work (I1, I2, I3) is on a separate `p3-info` worktree.
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
@@ -80,6 +80,18 @@ Worktree: `.worktrees/p2-memory` on branch `p2-memory`.
 | 2.M7 | P0-M7: remove `visible_world_state` fallback | DONE | `6fee705` | Read only from `ctx.private_memory_hints`; no dual-source. |
 
 **Memory sub-batch results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1172 passed**, 0 failed. Zero regressions.
+
+#### Memory sub-batch (Batch 3, p3-memory worktree) — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p3-memory` on branch `p3-memory`. Three tasks scoped to the **Memory + cognition matrix** area of Batch 3 (info-isolation tasks I1/I2/I3 live on the parallel `p3-info` worktree).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 3.1 | P0-M6: vector search for reflection memory | DONE | `2d701d6` | New `werewolf_agent/memory/vector_index.py` with a dependency-free `BagOfWordsVectorIndex` (TF + smoothed IDF, L2-normalized cosine). `ReflectionMemory.query` accepts an optional `vector_index` kwarg; hard constraints (player_id/role/tags/faction_won) still filter, vector similarity ranks. Default (no/empty index) preserves pre-P0-M6 exact-match behavior. 2 new tests. |
+| 3.6 | P0-I4: strip concrete player IDs from cross-game stance notes | DONE | `3a56eb5` | New `_resolve_stance_target` in `runtime/private_memory.py` maps stance targets to role-based Chinese labels (e.g. ``预言家``) when the id resolves, else strips pIDs and falls back to ``玩家``. `MemoryStore._store_review_reflection` scrubs pIDs from every text fragment that lands in the long-term reflection. 11 new tests in new file `tests/memory/test_reflection.py`. |
+| 3.5 | P0-M9 + absorbed M8: cognition_matrix_hint renders evidence as ID refs | DONE | `d8b9f8f` | New `_evidence_id_ref` in `runtime/context.py` hashes text into ``salience_items#<hex>``. `_cognition_matrix_hint` no longer surfaces raw `key_evidence` / `open_questions` text; `trust` / `faction_read` summary stats kept (already public-derived). New file `tests/memory/test_belief_visibility.py` (7 tests) covers M8 regression (same public facts ⇒ same role_probabilities for both viewers) and M9 (no text leak). 1 new test in `tests/runtime/test_context.py`. |
+
+**Memory sub-batch (Batch 3) results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1186 passed**, 0 failed, 0 regression.
 
 ### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
 
