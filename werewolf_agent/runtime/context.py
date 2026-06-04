@@ -432,7 +432,7 @@ _SKILL_TOOL_DEFS: dict[str, dict[str, Any]]
 _TOOL_SKILL_NAMES, _SKILL_TOOL_DEFS = _resolve_tool_skills()
 
 
-def _build_skill_tool_defs(role: str, phase: str) -> list[dict[str, Any]]:
+def _build_skill_tool_defs(role: str, task_type: str) -> list[dict[str, Any]]:
     """Build LLM-callable skill tool definitions for applicable on-demand skills."""
     from werewolf_agent.skills.registry import SkillRegistry
 
@@ -440,7 +440,7 @@ def _build_skill_tool_defs(role: str, phase: str) -> list[dict[str, Any]]:
     return [
         _SKILL_TOOL_DEFS[s.name.value]
         for s in registry.all_skills()
-        if s.name.value in _TOOL_SKILL_NAMES and s.is_applicable(role, phase)
+        if s.name.value in _TOOL_SKILL_NAMES and s.is_applicable(role, "", task_type=task_type)
     ]
 
 

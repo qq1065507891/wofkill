@@ -705,8 +705,8 @@ class TestSkillToolDefinitions:
     def test_build_skill_tool_defs_for_context(self):
         from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
 
-        # Villager in speech phase should get wolf_pit and find_power
-        tools = _build_skill_tool_defs(role="villager", phase="speech")
+        # Villager in speech task_type should get wolf_pit and find_power
+        tools = _build_skill_tool_defs(role="villager", task_type="speech")
         tool_names = [t["name"] for t in tools]
         assert "skill_analyze_wolf_pit" in tool_names
         assert "skill_find_power_roles" in tool_names
@@ -715,7 +715,7 @@ class TestSkillToolDefinitions:
         from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
 
         # seer is GOOD faction → gets wolf_pit; find_power now includes seer
-        tools = _build_skill_tool_defs(role="seer", phase="speech")
+        tools = _build_skill_tool_defs(role="seer", task_type="speech")
         tool_names = [t["name"] for t in tools]
         assert "skill_analyze_wolf_pit" in tool_names
         assert "skill_find_power_roles" in tool_names
@@ -723,7 +723,7 @@ class TestSkillToolDefinitions:
     def test_build_skill_tool_defs_empty_for_unrelated_phase(self):
         from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
 
-        tools = _build_skill_tool_defs(role="werewolf", phase="night_action")
+        tools = _build_skill_tool_defs(role="werewolf", task_type="night_action")
         tool_names = [t["name"] for t in tools]
         # last_words is not applicable at night
         assert "skill_analyze_last_words" not in tool_names
