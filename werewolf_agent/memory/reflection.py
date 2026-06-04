@@ -109,32 +109,79 @@ class ReflectionMemory:
 
     # -- Query --------------------------------------------------------------
 
-    def query(self, query: CrossGameQuery) -> list[ReflectionEntry]:
-        """Retrieve reflections matching query criteria."""
-        results = list(self._entries.values())
+    def query(
+        self,
+        query: CrossGameQuery,
+        vector_index: Any | None = None,
+    ) -> list[ReflectionEntry]:
+        """Retrieve reflections matching query criteria.
 
+        P0-M6: when a ``vector_index`` is supplied, the query proceeds
+        in two stages.
+
+        1. **Filter** by hard constraints (player_id, role, tags,
+           faction_won). These are required equality / membership
+           predicates; semantic similarity cannot satisfy them.
+        2. **Rank** by cosine similarity against ``query.situation`` (or
+           ``query.text``). Entries absent from the index fall back to
+           score 0 and are appended after scored entries.
+
+        Without a vector index (or with an empty one) the path is the
+        pure exact-match behavior used before P0-M6.
+        """
+        candidates = self._filter_candidates(query)
+
+        if vector_index is None or not getattr(vector_index, "__len__", lambda: 0)():
+            # P0-M6: when situation is set, keep the pre-existing substring
+            # match against the *situation* field; otherwise no-op.
+            return self._apply_situation_filter(candidates, query)[: query.max_results]
+
+        if hasattr(vector_index, "similarity"):
+            query_text = query.situation or ""
+            scores = vector_index.similarity(query_text)
+        else:  # pragma: no cover - defensive: unsupported index impl
+            scores = {}
+
+        scored: list[tuple[float, int, ReflectionEntry]] = []
+        unindexed: list[ReflectionEntry] = []
+        for idx, entry in enumerate(candidates):
+            score = float(scores.get(entry.entry_id, 0.0))
+            if score > 0.0 or entry.entry_id in scores:
+                scored.append((score, -idx, entry))  # tie-break: original order
+            else:
+                unindexed.append(entry)
+        # Higher similarity first; preserve original order on ties.
+        scored.sort(key=lambda triple: (-triple[0], triple[1]))
+        ranked = [entry for _, _, entry in scored] + unindexed
+        return ranked[: query.max_results]
+
+    def _filter_candidates(self, query: CrossGameQuery) -> list[ReflectionEntry]:
+        """Apply exact-match *filters* (player_id, role, tags, faction_won)."""
+        results = list(self._entries.values())
         if query.player_id:
             results = [e for e in results if e.player_id == query.player_id]
-
         if query.role:
             results = [e for e in results if e.role == query.role]
-
         if query.tags:
             results = [
                 e for e in results
                 if any(t in e.tags for t in query.tags)
             ]
-
-        if query.situation:
-            results = [
-                e for e in results
-                if query.situation.lower() in e.situation.lower()
-            ]
-
         if query.faction_won is not None:
             results = [e for e in results if e.faction_won == query.faction_won]
+        return results
 
-        return results[:query.max_results]
+    def _apply_situation_filter(
+        self,
+        candidates: list[ReflectionEntry],
+        query: CrossGameQuery,
+    ) -> list[ReflectionEntry]:
+        if not query.situation:
+            return list(candidates)
+        return [
+            e for e in candidates
+            if query.situation.lower() in e.situation.lower()
+        ]
 
     def by_player(self, player_id: str) -> list[ReflectionEntry]:
         return [e for e in self._entries.values() if e.player_id == player_id]

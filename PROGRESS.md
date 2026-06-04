@@ -93,6 +93,451 @@ All 6 issues from g_3528592081 postmortem implemented via Subagent-Driven Develo
 
 ---
 
+- Current phase: **Batch 5 P2 polish — Prompt area in progress (p5-prompt)**
+- Active task: P2-S10 (persona system→user), then S12/S13/S14
+- Task owner: Claude/GLM development session
+- Last updated: 2026-06-04
+
+---
+
+## Batch 5 (P2 polish) — Prompt area — IN PROGRESS 2026-06-04
+
+Worktree: `.worktrees/p5-prompt` on branch `p5-prompt`. Parallel siblings: p5-skill (K8), p5-rm (G11, M15, M16).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.9 | P1-G4 RAG summary cap relaxed | DONE | `c1306e1` | summary 300→800 chars, key_decisions uncapped→5. Retriever in `werewolf_agent/rag/retriever.py:_entry_to_hit`. Slim renderer (P0-G1) further caps key_decisions at 3 for live prompts. 3 new tests (2 retriever contract, 1 slim pass-through). |
+| 4.10 | P1-G5 RAG 3 cases dedup / merge | DONE | `71519e3` | New `dedup_hits_by_similarity()` in `werewolf_agent/rag/prompt_renderer.py`. Jaccard on title+summary tokens (CJK char-level + Latin word split). Threshold 0.6, cap 2 hits. `hits_to_prompt_lines` runs dedup before rendering. 5 new tests in `TestNearDuplicateHitsMerged`; 2 existing tests in `TestPromptRenderDropsMetadata` updated for disjoint content. |
+| 4.11 | P1-G6 RAG skipped for reflection / judge | DONE | `2cc7a22` | New `_RAG_SKIPPED_TASK_TYPES` frozenset in `runtime/context.py`. `_inject_seed_rag_hints` early-returns for REFLECTION + 7 JUDGE_* task types (saves an unnecessary embed/rerank call). 4 new tests. |
+| 4.12 | P1-G7 situation more semantic | DONE | `830b716` | Situation changed from raw concat (`"speech day vote speech"`) to key=value blob (`"role=seer phase=day task=speech alive=8 actions=[vote]"`). New `_tokenize_situation()` in `retriever.py` splits on `=` and strips list/quote noise. New optional `n_alive` kwarg on `_inject_seed_rag_hints`; `build_agent_context` passes `sum(1 for p in gs.players.values() if p.alive)`. 2 new tests. |
+| 4.13 | P1-G8 display_annotation simplified | DONE | `77edfb2` | New `_DISPLAY_SOURCE_LABELS` (7 entries) and `_DISPLAY_QUALITY_LABELS` (7 entries) in `retriever.py` — all in Chinese per project locale. `_entry_to_hit` uses the new labels, falling back to raw value when mapping is missing. Raw enum values stay on `RAGHit.source_type` / `RAGHit.quality_grade` for the audit log. 2 new tests. |
+
+**Batch 4 (RAG) results:** 5/5 tasks done. `pytest tests/rag/ tests/agents/ tests/runtime/`: **1260 passed**, 0 failed (2m 32s), 0 regression. 16 new tests added (3 + 5 + 4 + 2 + 2).
+
+---
+
+## Prompt Revamp Plan — 2026-06-03
+
+70 prompt / retry / skill / RAG / memory / directive / info-isolation issues identified via static analysis, design-doc cross-check, and production game trace (g_3528592081 + 2 more, 279 total actions).
+
+Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
+
+### Batch 1 (P0 quick wins) — COMPLETE 2026-06-03
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 1.1 | P0-S1 mode isolation regression tests | DONE | `8fa4850` | test_prompt_mode_isolation.py |
+| 1.2 | P0-M2 sanitize all private text variants | DONE | `43fcfa8` | regex + 4 fields |
+| 1.3 | P0-S5 strategy_directive grouping | DONE | `1195fa0` | 3 priority sections |
+| 1.4 | P0-S6 retry hint reorder + error snippet | DONE | `6c0d107` | task → retry → contract |
+| 1.5 | P0-S7 claimed_view enum | DONE | `609066b` | replace `我是好人` / `我是预言家` with `good_player_without_night_info` / `seer`; fixed pre-existing `example_role` bug |
+| 1.6 | P0-S8 PlayerAction strict extra=forbid | DONE | `d9ba5c4` | 16 variants reject unknown fields; fixed `parse_choice_action` to only pass vote fields to VOTE |
+| 1.7 | P0-M3 reflection sort by game_id | DONE | `293ef74` | chr-invert trick for newest-first; getattr fallback for legacy fakes |
+| 1.8 | P0-M4 profile role-specific win-rate | DONE | `08c733e` | rank description + current-role-only |
+| 1.9 | P0-R2 god prompt shorten | DONE | `d9b7fef` | skill_catalog system→user; AGENT_TIMEOUTS.seer_check/witch_action 2x; timeout no_action hint |
+| 1.10 | P0-R3 output_parser encoding fix | DONE | `d4b9f85` | repair_json_text handles U+FFFD mojibake (latin-1 round-trip + `"` replacement) + trailing commas regression test |
+
+### Batch 1 Bonus — P0 phase mismatch fix (discovered by subagent 1.9)
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 1.B1 | Skill phase/task_type mismatch | DONE | `3f0db27` + `6cd8883` | `is_applicable(role, phase='', task_type='')` accepts both; pre-existing bug — skill catalog was empty in production because SKILL.md `applicable_phases` uses task-type values but call sites passed phase='day'/'night' |
+
+**Batch 1 totals: 11 commits, 70+ new tests, 1158 related tests pass, 0 regression.**
+
+**Batch 1 results:** 10/10 tasks done. `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed. 12 new tests in `tests/agents/test_output_parser.py`. Zero regressions across the project.
+
+### Batch 4 (P1 by area) — Prompt sub-batch — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p4-prompt` on branch `p4-prompt`. Parallel siblings: `p4-skill`, `p4-rag`, `p4-memory`, `p4-directives`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.1 | P1-S3 16 user sections get [硬约束/辅助/可选] priority labels | DONE | `0ed9a34` | New `_SECTION_PRIORITIES` map + `_label_section()` helper in `build_user_prompt`. Wraps 16 sections; empty bodies pass through unchanged. Updated 3 P0-S5 tests to use MUST/SHOULD/REFERENCE markers (P0-S5 inner sub-group discriminators) so the new outer 【硬约束】 label on strategy_directive doesn't break them. |
+| 4.2 | P1-S4 `_format_examples` has no `intent`/`choice` leak | DONE | `7daa9d1` | Audit confirms all 6 example branches (wolf_kill, wolf_no_kill, sheriff_register, no_action, speech, vote) render only FULL_ACTION fields. 4 regression tests scan each branch's JSON examples. |
+| 4.3 | P1-S6 (residual) speech_quality / vote_quality correction_hint is short and specific | DONE | `e68016d` | Split: `error_message` keeps the long field-missing enumeration (audit log + 100-char prompt snippet), `correction_hint` is now a short action-oriented line: speech_quality = "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"; vote_quality = "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)". 4 new tests + 1 updated test. |
+| 4.4 | P1-S7 (residual) sanitize claimed_view to enum in production | DONE | `3123cf4` | `action_from_data` now ALWAYS calls `sanitize_optional_private_fields` (was only on validation failure). New `_VALID_CLAIMED_VIEW_VALUES` frozenset + `_safe_default_claimed_view(true_role)` helper. Non-enum values get replaced: seer → "seer", everything else → "good_player_without_night_info". 4 new tests. |
+| 4.5 | P1-S9 villager role guide added | DONE | `7f3629a` | `_build_role_guide` had entries for 6 roles (hunter, idiot, witch, seer, werewolf, hybrid) but not villager (3 of 12 players). Added 4 day-time decision rules: public stance / contradiction analysis / N1 antidote support / evidence-based voting. 3 new tests + 1 regression test for other roles. |
+
+**Batch 4 (Prompt) results:** 5/5 tasks done. 19 new tests in `tests/agents/test_prompt_builder.py` (3 priority_label + 3 format_examples + 1 villager_present + 1 villager_specific_rules + 1 other_roles_regression + 1 priority_labels_consistent + 1 priority_hard_distinct + 4 speech/vote quality hint tests in `test_player_agent.py` + 4 claimed_view tests in `test_player_agent.py`). `pytest tests/agents/ tests/runtime/`: **1105 passed** in 150s. Zero regressions.
+
+### Batch 3 (P0 redesign) — Info-isolation sub-batch — IN PROGRESS 2026-06-04
+
+Worktree: `.worktrees/p3-info` on branch `p3-info`. Parallel sibling: `.worktrees/p3-memory` (M6, I4, M9).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 3.3 | P0-I1 strategy_directive role-gating | DONE | `71cb6ef` | New `tests/integration/test_directive_role_gating.py::TestDirectiveRoleGating` (7 role tests) + extended `test_e2e_info_leak.py::_assert_no_forbidden_info` to also check the base-context `strategy_directive`. |
+| 3.4 | P0-I2 hybrid follows master's faction post-choice | DONE | `0ba2a31` | `build_hybrid_directive` branches on `gs.hybrid_master_faction` and injects `hybrid_wolf_master_directive` (hidden-ally framing) or `hybrid_good_master_directive` (good-side focus). Pre-fix, both cases fell through to a neutral villager-style block — explains g_3528592081 hybrid p04 (master=p01 wolf) voting like a villager. |
+| 3.7 | P0-I3 wolf private info doesn't leak via directives | DONE | `71cb6ef` | New `tests/integration/test_directive_role_gating.py::TestDirectiveWolfPrivateNoLeak` (6 role tests) — asserts `wolf_fake_seer_teammate`, `wolf_day_push_target`, `wolf_plan_target`, `wolf_teammate_exposed`, `wolf_high_priority_target` are NOT in `strategy_directive` or `visible_world_state` for villager/seer/witch/hunter/idiot/hybrid. |
+
+**Batch 3 (info) results so far:** 3/3 tasks done. 14 new tests added (8 in `TestDirectiveRoleGating`, 6 in `TestDirectiveWolfPrivateNoLeak`) + 3 new hybrid faction tests in `TestHybridStrategyDirectives`. All tests pass; no regressions in `tests/runtime/` (687 passed), `tests/agents/` (399 passed), `tests/integration/test_e2e_info_leak.py` + `test_directive_role_gating.py` (41 passed), or `tests/integration/test_live_game_flow.py` (7 passed, ~7m 40s).
+
+### Batch 2 (P0 structural) — RAG + Skill + Memory sub-batches 2026-06-04
+
+Three parallel worktrees: `p2-rag`, `p2-skill`, `p2-memory`.
+
+#### RAG sub-batch — COMPLETE 2026-06-03
+
+Worktree: `.worktrees/p2-rag` on branch `p2-rag`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 2.4 | P0-G1 slim RAG prompt lines | DONE | `9a850ce` | New `werewolf_agent/rag/prompt_renderer.py` with `hits_to_prompt_lines()` returning only title/summary/key_decisions (cap 3). `RAGInjector.hits_to_prompt_lines()` + `RAGKnowledgeService.hits_to_prompt_lines()` mirror. Runtime `_inject_seed_rag_hints` routes live prompt through slim path. 16 new tests. |
+| 2.5 | P0-G2 hide RAG score/source/quality | DONE | `064b53a` | Defense-in-depth slim filter in `_build_rag_hints`; audit log on injector retains full payload (relevance/quality/source/visibility/case_type). 2 + 2 new tests. |
+| 2.6 | P0-G3 RAG case-vs-current player ID warning | DONE | `01d450e` | Hard-constraint prefix "⚠️ RAG 案例中的玩家 ID 与本局无关；不得直接套用案例中具体玩家的发言或票型。" prepended to 知识库提示 section. 3 new tests. |
+
+**RAG sub-batch results:** 3/3 tasks done. `pytest tests/rag/ tests/agents/ tests/runtime/ --ignore=tests/integration`: **1241 passed**, 0 failed, 0 regression.
+
+#### Skill sub-batch — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p2-skill` on branch `p2-skill`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 2.S1 | P0-K1: drop dead skill tool path | DONE | `30fe291` | Remove `skill_tools` field, `_build_skill_tool_defs`, skill-skip retry logic, on-demand skill loading, tool-skill catalog. Pre-injection (`skill_analyses` → `skill_analysis_hints`) remains the only delivery channel. |
+| 2.S2 | P0-K2: `applies_to_task_types` field | DONE | `eb4cf42` | New `applies_to_task_types: list[str]` on `SkillDefinition`. `is_applicable` and `dispatch_for_role` now filter by task_type. |
+
+**Skill sub-batch results:** 2/2 tasks done. `pytest tests/skills/ tests/agents/ tests/runtime/`: **1160 passed**, 0 failed. Zero regressions.
+
+#### Memory sub-batch — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p2-memory` on branch `p2-memory`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 2.M1 | P0-M1: private_memory labels as 本局·第N轮·私有记忆 | DONE | `9ad25b6` | Tightened `_add_own_speech_notes` markers (drop `矛盾`/`前后不一`). |
+| 2.M5 | P0-M5: profile 6 dims with neutral phrasing | DONE | `5d9b267` | All 6 dims rendered; `learning_rate`/`risk_preference` use neutral phrasing. |
+| 2.M7 | P0-M7: remove `visible_world_state` fallback | DONE | `6fee705` | Read only from `ctx.private_memory_hints`; no dual-source. |
+
+**Memory sub-batch results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1172 passed**, 0 failed. Zero regressions.
+
+#### Memory sub-batch (Batch 3, p3-memory worktree) — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p3-memory` on branch `p3-memory`. Three tasks scoped to the **Memory + cognition matrix** area of Batch 3 (info-isolation tasks I1/I2/I3 live on the parallel `p3-info` worktree).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 3.1 | P0-M6: vector search for reflection memory | DONE | `2d701d6` | New `werewolf_agent/memory/vector_index.py` with a dependency-free `BagOfWordsVectorIndex` (TF + smoothed IDF, L2-normalized cosine). `ReflectionMemory.query` accepts an optional `vector_index` kwarg; hard constraints (player_id/role/tags/faction_won) still filter, vector similarity ranks. Default (no/empty index) preserves pre-P0-M6 exact-match behavior. 2 new tests. |
+| 3.6 | P0-I4: strip concrete player IDs from cross-game stance notes | DONE | `3a56eb5` | New `_resolve_stance_target` in `runtime/private_memory.py` maps stance targets to role-based Chinese labels (e.g. ``预言家``) when the id resolves, else strips pIDs and falls back to ``玩家``. `MemoryStore._store_review_reflection` scrubs pIDs from every text fragment that lands in the long-term reflection. 11 new tests in new file `tests/memory/test_reflection.py`. |
+| 3.5 | P0-M9 + absorbed M8: cognition_matrix_hint renders evidence as ID refs | DONE | `d8b9f8f` | New `_evidence_id_ref` in `runtime/context.py` hashes text into ``salience_items#<hex>``. `_cognition_matrix_hint` no longer surfaces raw `key_evidence` / `open_questions` text; `trust` / `faction_read` summary stats kept (already public-derived). New file `tests/memory/test_belief_visibility.py` (7 tests) covers M8 regression (same public facts ⇒ same role_probabilities for both viewers) and M9 (no text leak). 1 new test in `tests/runtime/test_context.py`. |
+
+**Memory sub-batch (Batch 3) results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1186 passed**, 0 failed, 0 regression.
+
+<<<<<<< HEAD
+### Batch 4 — Memory area (P1-M10, M11, M12, M13, M14) — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p4-memory` on branch `p4-memory`. Five P1 issues scoped to the **Memory** area (parallel worktrees: `p4-prompt`, `p4-skill`, `p4-rag`, `p4-directives`).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.14 | P1-M10: private_memory marker disambiguation | DONE | `2fe85d7` | Added docstrings to `LOGIC_FLAW_MARKERS` and `VALID_POINT_MARKERS` in `runtime/private_memory.py` warning that matches are crude signals, not authoritative verdicts. New `_LLM_AWARE_HINT` constant for prompt renderers. 2 new tests. |
+| 4.15 | P1-M11: profile shows only current-role win rate (regression test) | DONE | `66cf6d2` | Verified the P0-M4 contract with a stricter test: when 3 roles have different win rates, no other role's count (5/3/1) leaks anywhere in the hint. No implementation change. 1 new test. |
+| 4.16 | P1-M12: reflection hint diversity | DONE | `bf4f872` | `_reflection_memory_hints` now caps at 2 hints per role. Priority sort still drives selection; diversity is a filter on top. Pre-existing M3 test (3 seer entries) updated to reflect new contract: 3 inputs → 2 outputs (the 2 newest). 3 new tests. |
+| 4.17 | P1-M13: belief_state.my_suspects excludes dead players (regression test) | DONE | `302affd` | Verified the existing output-stage filter in `build_agent_context` with a full-path test through `build_agent_context`. Dead player p03 must not appear in `belief_state["my_suspects"]` or `["my_trusted"]`. No implementation change. 1 new test. |
+| 4.18 | P1-M14: private_memory priority-ordered truncation | DONE | `0ee3a82` | Replaced per-category `[-12:]` cap with priority-ordered truncation against a 2000-token budget. New `_truncate_by_priority()` drops from the lowest-priority category (valid_points) first, then logic_flaws, then stance_notes, preserving vote_thoughts longest. 4 new tests. |
+
+**Memory sub-batch (Batch 4) results:** 5/5 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1203 passed**, 0 failed, 0 regression. Each task is one commit, independently revertible.
+
+---
+=======
+### Batch 4 (P1 by area) — Directives sub-batch — IN PROGRESS 2026-06-04
+
+Worktree: `.worktrees/p4-directives` on branch `p4-directives`. Parallel siblings: `p4-prompt`, `p4-skill`, `p4-rag`, `p4-memory` (4 other Batch 4 sub-batches running concurrently — do not touch).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.19 | P1-D4 sheriff vote_push fallback (silenced sheriff) | DONE | `549ad99` | New `_is_sheriff_silenced(gs, sheriff_id)` helper checks for a `sheriff_silenced` event and falls back to badge_state `silenced`/`frozen`. In `agent_day_speech`, when the active sheriff is muted, the directive swaps from `sheriff_vote_push` to `sheriff_silent` ("本轮你无法发言；若已提前指定归票目标，通过 [vote_silent] 字段指定；如未指定则由投票开放决定。"). Forward-compatible — future skill resolvers can drive the mute without a core-rules change. 3 new tests in `TestSheriffDirectiveFallback`. |
+| 4.21 | P1-D6 sheriff died badge tear fallback | DONE | `549ad99` | New `sheriff_election_state` directive: when `gs.sheriff_id is None and gs.sheriff_badge_state == "torn"`, every player (not just the previous sheriff) gets "本局无警长；本轮发言顺序随机；无归票人。". Pre-fix, no directive mentioned the torn-badge state, so PK / vote participants kept acting as if a 归票 channel existed. 2 new tests in `TestSheriffDirectiveFallback` (regression: must reach non-good players too). |
+| 4.20 | P1-D5 witch poison directives unified | DONE | `a97727e` | Replaced two contradictory directives (`witch_poison_threshold` + `poison_urgency`) with a single `witch_poison_strategy` dict whose `branch` is one of: `no_pressure_save_for_late` (alive ≥ 10), `evidence_required_threshold` (8-9), `urgency_under_X_alive` (≤ 7). The corresponding `text` and `alive_count` are also included so the LLM gets one coherent decision frame per turn. 4 new tests in `TestWitchPoisonUnifiedDirective`; existing `test_witch_poison_requires_hard_evidence` updated to assert against the new key. |
+
+**Batch 4 (Directives) results so far:** 3/3 tasks done. 9 new tests added. `pytest tests/runtime/ tests/agents/`: **1096 passed** (697 runtime + 399 agents), 0 failed, 0 regression.
+
+### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
+>>>>>>> p4-directives
+
+**Problem:** Game trace `g_3528592081` Action 50 — p10's LLM
+output was `{��intent��:"question_target",...}`. The Chinese
+text got mojibake'd (U+FFFD replacement char adjacent to
+quote-like chars), breaking JSON parse. 3 retries all failed
+with the same error → parser fell back. The current
+`repair_json_text` (output_parser.py:52-83) only handled
+trailing commas, single-quoted strings, unquoted keys, and
+a few other quirks — nothing for encoding.
+
+**Fix:** Two additions to `repair_json_text`, both purely
+additive (no behavior change for valid JSON):
+
+1. **Mojibake detection** via new `_try_repair_mojibake()`
+   helper. Two strategies, tried in order:
+   - **Latin-1 round-trip** (`text.encode('latin-1').decode('utf-8')`):
+     handles double-encoded UTF-8 (the classic case where
+     UTF-8 bytes were decoded as latin-1 then re-encoded as
+     UTF-8, producing 2-3 bytes per original byte). Returns
+     `None` if round-trip would fail (e.g. U+FFFD can't go
+     through latin-1) or produces no change.
+   - **U+FFFD → `"` replacement**: when U+FFFD is present
+     (bytes were replaced with replacement char during a
+     decode failure), replace each with `"`. This is the
+     most common case: mojibaked JSON key delimiters.
+
+2. **Trailing-comma stripping** (already present) is now
+   covered by a regression test (3 tests in
+   `TestRepairJsonTextTrailingComma`).
+
+**Files changed:**
+- `werewolf_agent/agents/output_parser.py` — added
+  `_MOJIBAKE_REPLACEMENT_CHAR` constant, `_try_latin1_roundtrip`
+  helper, `_try_repair_mojibake` helper, and a 9-line
+  mojibake-recovery block inside `repair_json_text`. Existing
+  8-line body preserved verbatim.
+- `tests/agents/test_output_parser.py` — **new file**, 12 tests
+  in 4 classes:
+  - `TestRepairJsonTextMojibake` (3): U+FFFD around single key,
+    U+FFFD in full speech action, latin-1 round-trip
+  - `TestRepairJsonTextTrailingComma` (3): object, array, with
+    spaces
+  - `TestRepairJsonTextPreservesValid` (4): valid JSON,
+    Chinese JSON, empty object, empty array
+  - `TestParseActionMojibake` (2): end-to-end `parse_action`
+    with mojibake'd speech action, plus simple-mojibake
+    schema-validation path
+
+**Verification:**
+- `pytest tests/agents/test_output_parser.py`: 12/12 passed
+  (5 would have failed on baseline, 7 are regression coverage).
+- `pytest tests/agents/ tests/runtime/`: **1079 passed**, 0 failed.
+- `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed.
+- No regressions. The fix is additive — valid JSON is parsed
+  identically to before.
+
+### Task 1.8 (P0-M4) — Profile rank description 2026-06-03
+
+**Problem:** `_profile_memory_hint` exposed raw numeric ability
+floats (`logic=0.7`, `deception=0.6`, `credibility=0.5`) and the
+per-role win rate for every role the player has ever played.
+Audit + design §10.1 cross-check: raw floats anchor LLM
+self-confidence ("I'm a 0.7-logic player, I should be confident")
+or trigger defeatism ("I'm a 0.2-logic player, why bother").
+Design §10.1 lists 6 ability dimensions but prompt only exposed
+3 of them, and the multi-role win rate leaks information that
+should be private to a single role's run.
+
+**Fix:** Surgical change in `_profile_memory_hint` only.
+1. Replace raw `logic/deception/credibility` floats with rank
+   description strings: `前 30%` (> 0.66), `中等` (> 0.33), or
+   `需要提升` (≤ 0.33). Heuristic bins against the 0.0–1.0
+   score range; no population required.
+2. Filter `role_stats` to the current role only — other roles'
+   games/wins never reach the prompt.
+3. Drop `learning_rate` and `risk_preference` (review/judge-only
+   fields per design §10.1).
+4. Keep `games_played` and a Chinese-language `summary` that
+   surfaces counts, current-role win rate (as integer
+   percentage), and rank descriptions — no raw floats.
+5. Function signature now takes `current_role: str`; caller
+   passes `player.role`.
+
+**Files changed:**
+- `werewolf_agent/runtime/context.py` — `_profile_memory_hint`
+  rewritten (~40 lines, rank helper + current-role filter);
+  call site at line 817 passes `player.role`.
+- `tests/runtime/test_context.py` — added 8 tests:
+  `test_profile_hint_logic_high_uses_rank_description_not_raw_float`,
+  `test_profile_hint_logic_mid_uses_medium_rank`,
+  `test_profile_hint_logic_low_uses_needs_improvement_rank`,
+  `test_profile_hint_only_exposes_current_role_win_rate`,
+  `test_profile_hint_no_raw_float_patterns_in_top_level_fields`,
+  `test_profile_hint_does_not_mention_learning_rate_or_risk_preference`,
+  `test_profile_hint_keeps_games_played_and_summary`,
+  `test_profile_hint_handles_missing_current_role_stats`.
+
+**Verification:**
+- `pytest tests/runtime/test_context.py`: 12/12 passed
+  (8 new + 4 pre-existing reflection-sort tests).
+- `pytest tests/runtime/ tests/memory/ tests/agents/`: **1146
+  passed**, 0 failed, 0 regression. Pre-existing
+  `tests/runtime/test_witch_flow.py:698` still asserts
+  `profile_memory_hint["games_played"] == 3` and continues to pass.
+- No changes to `PlayerProfile` schema (review/judge paths keep
+  full raw-float access).
+
+### Task 1.6 (P0-S8) — PlayerAction strict extra=forbid 2026-06-03
+
+**Problem:** Game trace `g_3528592081` shows 67 successful speech
+actions all containing `vote_basis: "fallback"` even though the
+speech action doesn't ask for it — the LLM is being defensive and
+fills in vote-audit fields it sees mentioned elsewhere in the
+prompt. The discriminated Union's variants used Pydantic v2 default
+`extra="ignore"`, so those extra fields were silently dropped at
+parse time. The LLM never learned.
+
+**Fix:** Two-pronged.
+1. `werewolf_agent/agents/schemas.py` — added
+   `model_config = ConfigDict(extra="forbid")` to the base
+   `PlayerAction` and all 15 variants (VotePlayerAction,
+   SpeechPlayerAction, WolfKillPlayerAction, CheckAlignmentPlayerAction,
+   UsePoisonPlayerAction, ChooseMasterPlayerAction, HunterShotPlayerAction,
+   BadgeTransferPlayerAction, SheriffVotePlayerAction, NoOpPlayerAction,
+   WolfNoKillPlayerAction, UseAntidotePlayerAction, SelfDestructPlayerAction,
+   SheriffRegisterPlayerAction, SheriffWithdrawPlayerAction,
+   BadgeTearPlayerAction). Cross-variant fields are now a parse error.
+2. `werewolf_agent/agents/output_parser.py:746-790` — `parse_choice_action`
+   was passing vote-audit fields to ALL target-requiring actions, not
+   just VOTE. With the new strictness this would have been a parse
+   error for every wolf_kill, use_poison, check_alignment, etc.
+   call site. Fixed: only attach the vote-audit fields when the
+   action is VOTE.
+
+Speech example in `prompt_builder.py:_format_examples` (line 608)
+was already clean of vote-audit fields after P0-S7, so no change
+needed there. Added 2 regression tests in `test_prompt_builder.py`
+that the speech example round-trips through `SpeechPlayerAction`
+and never names `vote_basis` / `seer_stance` / etc.
+
+**Files changed:**
+- `werewolf_agent/agents/schemas.py` — `ConfigDict(extra="forbid")`
+  on PlayerAction + 15 variants; import `ConfigDict`
+- `werewolf_agent/agents/output_parser.py` — `parse_choice_action`
+  only attaches vote fields when `legal_actions == [VOTE]`
+- `tests/agents/test_schemas.py` — 10 new tests in
+  `TestPlayerActionExtraForbid`
+- `tests/agents/test_prompt_builder.py` — 2 new tests verifying the
+  speech example round-trips through `SpeechPlayerAction` and
+  doesn't name vote-audit fields
+
+**Verification:**
+- `pytest tests/agents/ tests/runtime/ -q`: **1049 passed**, 0 failed
+- `pytest tests/agents/test_schemas.py`: 39/39 passed
+- `pytest tests/agents/test_prompt_builder.py`: 28/28 passed
+- `pytest tests/rules/ tests/storage/`: 220/220 passed
+- `pytest tests/`: 2055/2055 passed (excluding integration)
+- No regressions. The strictness surfaced 1 pre-existing bug in
+  `parse_choice_action` (passing vote fields to non-vote actions
+  relied on `extra="ignore"`); fix lives in the parser, not the tests.
+
+### Task 1.5 (P0-S7) — claimed_view enum 2026-06-03
+
+**Problem:** `PrivateIntent.claimed_view` schema documents an identity-perspective
+identifier, but `_format_examples` rendered `"claimed_view": "我是好人"` /
+`"我是预言家"` (whole Chinese phrases). Game trace g_3528592081 shows real
+wolves wrote `claimed_view: "我是好人，混水摸鱼"` — natural-language strategy
+note, not a clean enum.
+
+**Fix:** Replaced the 5 natural-language example values with enum-style
+identifiers: `good_player_without_night_info` for villagers/wolves, `seer`
+for seer. Surgical change in `_format_examples` only.
+
+Also fixed a pre-existing logic bug: the seer branch was checking
+`example_role` (which was hardcoded to `"villager"` for the seer case),
+so the seer claimed_view branch was never actually triggered. Changed to
+check the input `role` directly.
+
+**Files changed:**
+- `werewolf_agent/agents/prompt_builder.py` — `_format_examples` (5 lines)
+- `tests/agents/test_prompt_builder.py` — 4 new tests
+  (`test_claimed_view_example_uses_enum_not_chinese_phrase_default`,
+   `test_claimed_view_example_uses_seer_identifier_for_seer_role`,
+   `test_claimed_view_example_uses_enum_in_wolf_kill_branch`,
+   `test_claimed_view_example_no_chinese_natural_language_anywhere`)
+
+**Verification:**
+- `pytest tests/agents/test_prompt_builder.py -k claimed_view`: 4/4 passed
+- `pytest tests/agents/`: 372/372 passed, 0 regression
+
+### Batch 0 (verification) — COMPLETE 2026-06-03
+
+| Task | Verdict | Action |
+|------|---------|--------|
+| P0-K1 (skill tool dead code) | **0/279 invocations** across 3 games | Drop tool path; keep pre-inject. Fix in Task 2.2. |
+| P0-M8 (BeliefUpdater private leak) | Algorithm is safe; risk is at `cognition_matrix_hint` rendering | Consolidate into Task 3.5 (P0-M9) |
+| P0-S2 (three-step generation) | NOT worth 3x token cost for 10-15% fallback reduction | **DEFER indefinitely.** Better fixes: P0-S1+R2+R3 |
+
+Findings: `docs/audit/2026-06-03-batch0-{k1,m8,s2}-finding.md` (commits `7c92b09`, `7faa5c1`)
+
+### Plan adjustments from Batch 0
+- P0-S2 removed from Batch 2 (Task 2.1 marked DEFERRED).
+- P0-M8 merged into P0-M9 (Task 3.5 absorbs both).
+- Task 3.7 added for P0-I3 (wolf directive leak test).
+- 70 → 69 effective issues.
+
+### Worktree
+- Branch: `prompt-revamp-2026-06` at `.worktrees/prompt-revamp-2026-06`
+- Base: `abe63ca refactor(schemas): PlayerAction as discriminated union of 10 action variants`
+
+### Next: Batch 1 (P0 quick wins, 10 items)
+P0-S1, S5, S6, S7, S8, M2, M3, M4, R2, R3 — sequential, same worktree, TDD per item.
+
+---
+
+## Batch 2 — Memory area (P0-M1, M5, M7) — COMPLETE 2026-06-04
+
+### Worktree
+- Branch: `p2-memory` at `.worktrees/p2-memory`
+- Base: `85ece46 docs(progress): mark batch 1 complete`
+- 3 commits, 0 regressions.
+
+### Tasks
+| ID | Description | Commit | Files |
+|----|-------------|--------|-------|
+| P0-M7 | Remove `visible_world_state` fallback for private_memory | `6fee705` | `werewolf_agent/agents/prompt_builder.py`, `tests/agents/test_prompt_builder.py` |
+| P0-M1 | Label private_memory section as 【本局·第N轮·私有记忆】; tighten `_add_own_speech_notes` markers | `9ad25b6` | `werewolf_agent/agents/prompt_builder.py`, `werewolf_agent/runtime/private_memory.py`, `tests/agents/test_prompt_builder.py`, `tests/agents/test_player_agent.py`, `tests/runtime/test_private_memory_sanitize.py` |
+| P0-M5 | Render all 6 profile dims with neutral phrasing for `learning_rate` / `risk_preference` | `5d9b267` | `werewolf_agent/runtime/context.py`, `tests/runtime/test_context.py` |
+
+### Fixes in detail
+
+**P0-M7 (commit `6fee705`):** `_build_private_memory_hints` used
+`ctx.private_memory_hints or ctx.visible_world_state.get("private_memory", {})`.
+The `visible_world_state` fallback duplicated the content (both fields
+were populated from the same source in `build_agent_context`).
+Fix: read only from `private_memory_hints`. Test verifies Case 1
+(visible-only) yields no section, Case 2 (hints-only) yields
+single-copy content.
+
+**P0-M1 (commit `9ad25b6`):**
+- Section label: `我的当前局记忆:` → `【本局·第N轮·私有记忆】`
+  (uses `ctx.day_number`, fallback "首轮"). The "本局" tag and day
+  index make the per-game boundary obvious, reducing the chance the
+  LLM paraphrases private thinking as public speech.
+- Tightened `LOGIC_FLAW_MARKERS` in `_add_own_speech_notes`:
+  removed `矛盾` / `前后不一` / `不一致` (too generic, triggered
+  on most speeches). Kept `站边` (clean public-claim detector).
+- Updated `test_user_prompt_renders_dynamic_sources_as_separate_sections`
+  to assert the new label and pass `day_number=2`.
+
+**P0-M5 (commit `5d9b267`):**
+- Added `_inner_rank()` returning "较高" / "中等" / "偏低" for
+  the 2 inner traits (learning_rate, risk_preference). The 4
+  public traits keep "前 30%" / "中等" / "需要提升" wording.
+- Summary now mentions all 6 dims with neutral phrasing for
+  the inner 2: "你的学习速度处于中等", "你的风险偏好处于中等".
+- Used `getattr(profile, ..., default)` so test fakes / partial
+  profiles still work. Schema unchanged (all 6 fields kept on
+  `PlayerProfile` for review/judge paths).
+- Updated `test_profile_hint_does_not_mention_learning_rate_or_risk_preference`
+  to allow Chinese phrasing in summary (M4 contract: no raw keys
+  exposed; M5 contract: dims surface as Chinese rank tokens).
+
+### Verification
+- `pytest tests/memory/ tests/agents/ tests/runtime/`: **1172 passed**, 0 failed (3m 03s).
+- Pre-existing tests that asserted the old label
+  (`test_user_prompt_renders_dynamic_sources_as_separate_sections`,
+  both in test_player_agent.py and re-exported via test_agents.py)
+  were updated to assert the new `【本局·第2轮·私有记忆】` label.
+- Pre-existing test that asserted the old M4 contract
+  (`test_profile_hint_does_not_mention_learning_rate_or_risk_preference`)
+  was updated to allow M5's Chinese phrasing while preserving the
+  M4 contract that raw snake_case keys are not exposed.
+
+### Notes
+- M1's section label and M7's fallback-removal both touch
+  `_build_private_memory_hints` in the same function. M7 was
+  committed first; M1 layered on top. The two are intentionally
+  in separate commits so each can be reviewed independently.
+- 70 → 67 effective issues (M1, M5, M7 done).
+
+---
+
 ## Game g_3528592081 Post-mortem — 2026-06-02
 
 Analyzed game `game_g_3528592081.json` (finished 2026-06-02 01:59, good wins day 3). Identified 6 issues across RuleEngine, agent prompts, and validation. Skipped: N1 witch antidote waste (agent-level decision, not a bug).
@@ -1661,3 +2106,79 @@ Post-V1.2 production hardening complete. Full suite: **1191 tests passed, 0 fail
   - `werewolf_agent/runtime/graph.py` — `vote_resolved` now records `sheriff_id`, `sheriff_vote_weight`, `weighted_tally`, and `vote_weights` while preserving the existing public `votes` schema.
   - `werewolf_agent/runtime/graph.py` — daytime hunter shot resolution can use an explicit target declared in the hunter's last words, preventing "hunter says take pXX but pXX remains alive" when no separate target was supplied.
   - Verification: `python -m pytest tests -q --basetemp=.pytest-tmp` — **passed, 1 skipped**.
+
+### Task 1.9 (P0-R2) — God-role prompt shorten + timeout 2x + no_action hint 2026-06-03
+
+**Problem:** Game trace `g_3528592081` shows 17/82 actions
+(20.7%) ended in `empty_response`. Seer (5) and villager (3) are
+the most-affected roles. The likely causes are: (a) seer/witch
+prompts are bloated — they carry 4-5 directives + extensive role
+rules + the skill catalog in the cacheable system slot; (b)
+`AGENT_TIMEOUTS` is shared across all roles; (c) the empty_response
+retry hint is generic and gives the LLM no permission to take a
+safe no-op.
+
+**Fix:** Three coordinated changes.
+
+1. **Move `_build_skill_catalog` from system to user prompt** —
+   `werewolf_agent/agents/prompt_builder.py`. The catalog is
+   role+phase dependent (filters by `is_applicable(role, phase)`),
+   so it was always mis-cached as 'stable' system content. Moving
+   it to user (a) shrinks the system-prompt cache footprint, (b)
+   keeps the catalog content the LLM still needs.
+
+2. **Bump `AGENT_TIMEOUTS` for seer/witch by 2x** —
+   `werewolf_agent/runtime/timeouts.py`. Renamed `seer` → 
+   `seer_check` and `witch` → `witch_action`; bumped 180s → 360s.
+   Kept `seer` and `witch` as backward-compat aliases so any
+   external code referencing the old names keeps working. Updated
+   `werewolf_agent/runtime/nodes/night.py` to use the new field
+   names at all 3 call sites (night_witch, night_seer, hybrid
+   master choice).
+
+3. **Add explicit "如果超时，请直接返回 no_action" hint** —
+   `werewolf_agent/agents/prompt_builder.py:_build_retry_hint`. When
+   the retry's `error_code == "empty_response"` and
+   `failure_category == "timeout"`, append a Chinese hint giving
+   the LLM permission to return `no_action` as a safe no-op. The
+   hint is added in `_build_retry_hint` (not `player.py`) so the
+   test path matches the production path. Also dropped the
+   `category_hint` glue that previously inlined the failure
+   category into the English hint — the retry already carries
+   `failure_category` for downstream consumers.
+
+**Files changed:**
+- `werewolf_agent/agents/prompt_builder.py` — moved
+  `_build_skill_catalog` from `build_system_prompt` to
+  `build_user_prompt`; added timeout-specific no_action hint in
+  `_build_retry_hint`
+- `werewolf_agent/runtime/timeouts.py` — renamed fields, bumped
+  2x, kept backward-compat aliases
+- `werewolf_agent/runtime/nodes/night.py` — migrated 3 call sites
+  to new field names
+- `werewolf_agent/agents/player.py` — removed the now-redundant
+  `category_hint` glue in the empty_response branch (the new
+  prompt-level logic handles it)
+- `tests/agents/test_prompt_builder.py` — 6 new tests: 4 for
+  skill catalog placement (seer+villager × system+user), 2 for
+  timeout hint semantics (timeout → no_action; non-timeout →
+  no hint)
+- `tests/runtime/test_timeouts_config.py` — updated to use new
+  field names + verify 2x bump
+
+**Verification:**
+- `pytest tests/agents/test_prompt_builder.py`: 34/34 passed
+  (6 new + 28 pre-existing)
+- `pytest tests/runtime/test_timeouts_config.py`: 8/8 passed
+- `pytest tests/agents/ tests/runtime/`: **1067 passed**, 0 failed
+- `pytest tests/agents/test_player_agent.py`: 83/83 passed
+  (no regression on the player.py change)
+- `pytest tests/integration/test_real_llm_smoke.py`: 1 skipped
+  (requires real LLM credentials; deferred to live-game run)
+- No regressions. Pre-existing phase mismatch between
+  `AgentContext.phase` ("day"/"night") and skill
+  `applicable_phases` ("speech"/"night_action"/...) was noted —
+  the catalog is therefore always empty in production. The
+  architectural move is still correct: system prompt is now
+  shorter regardless, and tests use phase="speech" to verify
+  the placement works.

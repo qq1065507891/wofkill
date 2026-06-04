@@ -12,6 +12,7 @@ This module owns:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -136,25 +137,59 @@ def _rag_phase_for_task(task_type: TaskType, phase: str) -> str:
     return phase or "general"
 
 
+# P1-G6: RAG retrieval is wasted on REFLECTION (post-game review of
+# the agent's own play — strategy hints are not actionable in that
+# context) and on JUDGE_* tasks (moderator persona; strategy hints
+# don't apply). Skipping them saves an unnecessary embed/rerank call
+# and keeps the live prompt free of irrelevant cases.
+_RAG_SKIPPED_TASK_TYPES: frozenset[TaskType] = frozenset({
+    TaskType.REFLECTION,
+    TaskType.JUDGE_PHASE,
+    TaskType.JUDGE_DEATH,
+    TaskType.JUDGE_VOTE_CALLING,
+    TaskType.JUDGE_VOTE_TALLY,
+    TaskType.JUDGE_SKILL_GUIDE,
+    TaskType.JUDGE_SHERIFF,
+    TaskType.JUDGE_EXILE,
+})
+
+
 def _inject_seed_rag_hints(
     context: AgentContext,
     *,
     ruleset_id: str,
     rag_service: Any | None = None,
     game_id: str = "",
+    n_alive: int = 0,
 ) -> AgentContext:
     if not context.own_role:
         return context
 
+    # P1-G6: skip RAG for non-player task types (reflection + judge).
+    if context.task_type in _RAG_SKIPPED_TASK_TYPES:
+        return context
+
+    # P2-G11: rag_service is None is an expected configuration
+    # (RAG disabled / not provisioned). No log noise, no anomaly
+    # count. The retrieval code path simply doesn't run.
+    if rag_service is None:
+        return context
+
     try:
         phase = _rag_phase_for_task(context.task_type, context.phase)
-        situation = " ".join([
-            context.task_type.value,
-            context.phase,
-            " ".join(action.value for action in context.legal_actions),
-        ]).strip()
-        if rag_service is None:
-            return context
+        # P1-G7: the situation is a small semantic key=value blob, not
+        # a raw space-joined concat. The retriever tokenizes on `=`
+        # and weights the tag-overlap score on the value tokens, so
+        # the role/phase/task/alive/actions values reach the scoring
+        # path cleanly. The old format ('speech day vote speech')
+        # carried no semantic structure and the rule-based retriever
+        # essentially never matched.
+        actions = [a.value for a in context.legal_actions]
+        situation = (
+            f"role={context.own_role} phase={context.phase} "
+            f"task={context.task_type.value} alive={n_alive} "
+            f"actions={actions}"
+        )
         from werewolf_agent.rag.schemas import RAGQuery
 
         query = RAGQuery(
@@ -170,7 +205,11 @@ def _inject_seed_rag_hints(
             game_id=game_id,
             player_id=context.agent_id,
         )
-        items = rag_service.hits_to_context_items(hits, max_items=3)
+        # P0-G1: the live prompt must only see title/summary/key_decisions,
+        # never the audit-only fields (relevance, quality, source type,
+        # visibility, display annotation). Audit data stays on the
+        # ``RAGInjector.audit_log()`` side.
+        items = rag_service.hits_to_prompt_lines(hits, max_items=3)
         if not items:
             return context
         existing = [
@@ -179,8 +218,18 @@ def _inject_seed_rag_hints(
         ]
         return context.model_copy(update={"rag_hints": existing + items})
     except Exception:
-        logger.debug("Seed RAG injection failed for %s", context.agent_id, exc_info=True)
-        return context
+        # P2-G11: rag_service.retrieve_live_hints() raised — this is
+        # an anomaly (the service is provisioned but its retrieval
+        # path crashed). Warn-level log so operators notice; bump
+        # rag_anomaly_count on the returned context so metrics can
+        # track repeated failures per game.
+        logger.warning(
+            "RAG retrieval anomaly for %s (game=%s): incrementing rag_anomaly_count",
+            context.agent_id, game_id, exc_info=True,
+        )
+        return context.model_copy(
+            update={"rag_anomaly_count": context.rag_anomaly_count + 1}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -228,28 +277,87 @@ def _first_sentence(text: str, max_len: int = 60) -> str:
 # Cross-game memory hint builders
 # ---------------------------------------------------------------------------
 
-def _profile_memory_hint(profile: Any, role_stats: dict[str, dict[str, int]]) -> dict[str, Any]:
-    roles = [
-        {"role": role, "games": stats["count"], "wins": stats["wins"]}
-        for role, stats in sorted(role_stats.items())
-    ]
+def _profile_memory_hint(
+    profile: Any,
+    role_stats: dict[str, dict[str, int]],
+    current_role: str,
+) -> dict[str, Any]:
+    """Build the profile memory hint for the agent prompt.
+
+    Renders rank description ("前 30%" / "中等" / "需要提升") instead of
+    raw ability floats to avoid biasing LLM self-confidence. Only the
+    current role's win-rate is exposed (other roles' stats are private).
+
+    P0-M5: renders ALL 6 schema dims (logic, deception, leadership,
+    credibility, learning_rate, risk_preference). For the inner
+    traits (learning_rate, risk_preference) uses neutral phrasing
+    ("你的学习速度处于中等") so the LLM does not anchor on a
+    judgmental token like "需要提升" applied to a private trait.
+
+    Rank bins (heuristic, against the 0.0–1.0 score range):
+    - > 0.66  → "前 30%"  (top tier) — for the 4 public traits
+    - > 0.33  → "中等"    (middle tier)
+    - ≤ 0.33  → "需要提升" (needs improvement)
+
+    Inner traits (learning_rate, risk_preference) get a parallel
+    neutral ranker ("较高" / "中等" / "偏低") with phrasing that
+    says "你的 X 处于 Y", never a critical "需要提升".
+    """
+    def _rank(score: float) -> str:
+        if score > 0.66:
+            return "前 30%"
+        if score > 0.33:
+            return "中等"
+        return "需要提升"
+
+    def _inner_rank(score: float) -> str:
+        """Neutral rank for private traits; never sounds like a critique."""
+        if score > 0.66:
+            return "较高"
+        if score > 0.33:
+            return "中等"
+        return "偏低"
+
+    # Filter role stats to current role only; default to zero stats if
+    # the player has never played this role before.
+    stats = role_stats.get(current_role, {"count": 0, "wins": 0})
+    win_rate_pct = (
+        round(100 * stats["wins"] / stats["count"]) if stats["count"] > 0 else 0
+    )
+    # Use getattr so test fakes / partial profiles (e.g. M4-era FakeProfile
+    # that only set logic/deception/credibility) still work. The schema
+    # defaults (PlayerProfile dataclass) supply 0.5 for missing fields.
+    # P2-M15: only the 4 public traits render into the hint. The inner
+    # traits (learning_rate, risk_preference) are review/judge-only per
+    # the M4 contract; they no longer drive a summary line.
+    logic_rank = _rank(float(getattr(profile, "logic", 0.5)))
+    deception_rank = _rank(float(getattr(profile, "deception", 0.5)))
+    leadership_rank = _rank(float(getattr(profile, "leadership", 0.5)))
+    credibility_rank = _rank(float(getattr(profile, "credibility", 0.5)))
+
     return {
         "games_played": profile.games_played,
-        "logic": round(float(profile.logic), 2),
-        "deception": round(float(profile.deception), 2),
-        "credibility": round(float(profile.credibility), 2),
-        "summary": (
-            f"累计{profile.games_played}局 · "
-            f"逻辑{profile.logic*10:.0f}/10 · "
-            f"欺骗{profile.deception*10:.0f}/10 · "
-            f"可信度{profile.credibility*10:.0f}/10"
-        ),
-        "roles": roles,
+        "current_role": current_role,
+        "current_role_games": stats["count"],
+        "current_role_win_rate_pct": win_rate_pct,
+        "logic_rank": logic_rank,
+        "deception_rank": deception_rank,
+        "leadership_rank": leadership_rank,
+        "credibility_rank": credibility_rank,
+        "learning_rate_rank": _inner_rank(float(getattr(profile, "learning_rate", 0.5))),
+        "risk_preference_rank": _inner_rank(float(getattr(profile, "risk_preference", 0.5))),
     }
 
 
 def _reflection_memory_hints(reflections: list[Any], current_role: str, current_faction: str) -> list[dict[str, Any]]:
-    def _ref_score(r: Any) -> tuple[int, Any]:
+    # P1-M12: cap at 2 hints per role so the top 5 surface reflections
+    # from multiple perspectives rather than 5 from the same role /
+    # scenario. The 5-hint output budget is preserved; we only restrict
+    # how many may come from a single role.
+    MAX_PER_ROLE = 2
+    HINT_BUDGET = 5
+
+    def _ref_score(r: Any) -> tuple[int, str, str]:
         priority = 0
         if r.role == current_role:
             priority = 2
@@ -257,10 +365,27 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
             r.role != "werewolf" and current_faction == "good"
         ):
             priority = 1
-        return (-priority, str(r.entry_id))
+        # Include game_id so ties are broken by game recency (newer first).
+        # entry_id alone is unreliable because it's a composite
+        # "reflection_{game_id}_{player_id}" string. Invert char codes so
+        # YYYY-MM-DD values sort newest-first under ascending comparison.
+        # Use getattr so reflection-like test doubles without game_id still work.
+        game_id = getattr(r, "game_id", "") or ""
+        neg_game_id = "".join(chr(0x10FFFF - ord(c)) for c in str(game_id))
+        return (-priority, neg_game_id, str(r.entry_id))
 
+    # Sort by priority (highest first), then by game recency (newest
+    # first). Walk the sorted list and admit each reflection that fits
+    # within the role cap and the total budget.
+    role_counts: dict[str, int] = {}
     hints: list[dict[str, Any]] = []
-    for ref in sorted(reflections, key=_ref_score)[:5]:
+    for ref in sorted(reflections, key=_ref_score):
+        if len(hints) >= HINT_BUDGET:
+            break
+        role = getattr(ref, "role", "") or ""
+        if role_counts.get(role, 0) >= MAX_PER_ROLE:
+            continue
+        role_counts[role] = role_counts.get(role, 0) + 1
         hints.append({
             "role": ref.role,
             "result": "胜" if ref.faction_won else "负",
@@ -268,6 +393,21 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
             "situation": ref.situation,
         })
     return hints
+
+
+def _evidence_id_ref(text: str) -> str:
+    """Render a short, stable ID reference for an evidence/question text.
+
+    P0-M9: the raw text is no longer surfaced in the prompt. We hash
+    the text into a 10-char hex suffix and prefix it with the
+    ``salience_items#`` tag. The viewer can still cross-reference
+    the same item across turns because identical text always maps
+    to the same id.
+    """
+    if not text:
+        return "salience_items#empty"
+    h = hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:10]
+    return f"salience_items#{h}"
 
 
 def _cognition_matrix_hint(restored_memory: Any, player_id: str) -> dict[str, Any]:
@@ -281,12 +421,23 @@ def _cognition_matrix_hint(restored_memory: Any, player_id: str) -> dict[str, An
     suspects: list[dict[str, Any]] = []
     trusted: list[dict[str, Any]] = []
     for entry in matrix.all_entries():
+        # P0-M9: render key_evidence and open_questions as ID references,
+        # never as full text. The summary stats (trust, faction_read)
+        # are already derived from public facts via BeliefUpdater.
+        key_evidence = [
+            _evidence_id_ref(text)
+            for text in list(getattr(entry, "key_evidence", []))[:3]
+        ]
+        open_questions = [
+            _evidence_id_ref(text)
+            for text in list(getattr(entry, "open_questions", []))[:3]
+        ]
         item = {
             "player": entry.player_id,
             "faction_read": entry.faction_read,
             "trust": round(float(entry.trust), 2),
-            "key_evidence": list(getattr(entry, "key_evidence", []))[:3],
-            "open_questions": list(getattr(entry, "open_questions", []))[:3],
+            "key_evidence": key_evidence,
+            "open_questions": open_questions,
         }
         if entry.faction_read == "wolf_lean" or float(entry.trust) < 0.35:
             suspects.append(item)
@@ -316,10 +467,14 @@ def _inject_skill_output(
     phase: str,
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
+    task_type: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Dispatch applicable skills once; inject non-tool advice, collect tool analyses.
 
     Returns (updated strategy_directive, tool_analyses).
+
+    P0-K2: `task_type` is forwarded to `dispatch_for_role` so the
+    `applies_to_task_types` filter can refine the dispatch.
     """
     player = gs.players.get(player_id)
     if not player or not player.alive:
@@ -337,9 +492,14 @@ def _inject_skill_output(
         player_id=player_id,
         legal_targets=legal_targets or [],
         extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
+        # P1-K5: forward task_type so handlers can branch on it.
+        task_type=task_type,
     )
 
-    outputs = registry.dispatch_for_role(player.role, phase, skill_input)
+    # P0-K2: pass task_type so the new `applies_to_task_types` filter works.
+    outputs = registry.dispatch_for_role(
+        player.role, phase, skill_input, task_type=task_type,
+    )
 
     # Filter skills that conflict with wolf team role assignment
     wolf_role = None
@@ -350,16 +510,19 @@ def _inject_skill_output(
                 break
 
     parts: list[str] = []
-    tool_analyses: dict[str, str] = {}
+
+    # P1-K3: do NOT drop on `confidence < 0.4`. Low-confidence output is
+    # often negative-signal advice ("don't do X", "avoid Y") that is
+    # still useful. E.g., bold_claim emits `你不需要悍跳` with
+    # confidence=0.3 when a teammate is already assigned as fake_seer.
+    # Sort by confidence descending so the highest-confidence advice
+    # appears first in the rendered prompt — within the same budget,
+    # the LLM sees the best signal first; actionable low-confidence
+    # advice (e.g. "your teammate already handles X") remains reachable.
+    sortable: list[tuple[float, str]] = []
 
     for o in outputs:
-        if not o.prompt_injectable or o.confidence < 0.4:
-            continue
-        # Collect tool skill outputs for on-demand LLM access
-        if o.skill_name in _TOOL_SKILL_NAMES:
-            tool_def = _SKILL_TOOL_DEFS.get(o.skill_name)
-            if tool_def:
-                tool_analyses[tool_def["name"]] = o.prompt_injectable
+        if not o.prompt_injectable:
             continue
         # Skip bold_claim for non-fake_seer wolves
         if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
@@ -370,38 +533,15 @@ def _inject_skill_output(
         # Skip swing_vote for hooker wolves (conflicts with deep-hook mission)
         if o.skill_name == "swing_vote" and wolf_role == "hooker":
             continue
-        parts.append(o.prompt_injectable)
+        sortable.append((o.confidence, o.prompt_injectable))
+
+    # Sort highest confidence first; stable for ties.
+    sortable.sort(key=lambda x: -x[0])
+    parts = [text for _, text in sortable]
 
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
-    return strategy_directive, tool_analyses
-
-
-# Skill names and definitions loaded from SKILL.md frontmatter.
-def _resolve_tool_skills() -> 'tuple[set[str], dict[str, dict[str, Any]]]':
-    try:
-        from werewolf_agent.skills.werewolf_skills import _load_tool_skills as _lts
-        return _lts()
-    except Exception:
-        logger.warning("Failed to load tool-skill definitions; agents will lack tactical skill advice", exc_info=True)
-        return set(), {}
-
-
-_TOOL_SKILL_NAMES: set[str]
-_SKILL_TOOL_DEFS: dict[str, dict[str, Any]]
-_TOOL_SKILL_NAMES, _SKILL_TOOL_DEFS = _resolve_tool_skills()
-
-
-def _build_skill_tool_defs(role: str, phase: str) -> list[dict[str, Any]]:
-    """Build LLM-callable skill tool definitions for applicable on-demand skills."""
-    from werewolf_agent.skills.registry import SkillRegistry
-
-    registry = SkillRegistry()
-    return [
-        _SKILL_TOOL_DEFS[s.name.value]
-        for s in registry.all_skills()
-        if s.name.value in _TOOL_SKILL_NAMES and s.is_applicable(role, phase)
-    ]
+    return strategy_directive, {}
 
 
 def _merge_strategy_directive(
@@ -753,8 +893,7 @@ def build_agent_context(
     if legal_targets is None:
         legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != player_id]
 
-    # -- Skill-based tactical advice + on-demand tool analyses (single dispatch) --
-    skill_tools: list[dict[str, Any]] = []
+    # -- Skill-based tactical advice (pre-injection path; no tool exposure) --
     skill_analyses: dict[str, str] = {}
     try:
         strategy_directive, skill_analyses = _inject_skill_output(
@@ -763,7 +902,6 @@ def build_agent_context(
             legal_targets=legal_targets,
             wolf_team_plan=wolf_team_plan,
         )
-        skill_tools = _build_skill_tool_defs(player.role, task_type.value)
     except Exception:
         logger.debug("Skill injection failed, skipping", exc_info=True)
 
@@ -807,7 +945,7 @@ def build_agent_context(
                     role_stats[r]["count"] += 1
                     if ref.faction_won:
                         role_stats[r]["wins"] += 1
-                profile_memory_hint = _profile_memory_hint(profile, role_stats)
+                profile_memory_hint = _profile_memory_hint(profile, role_stats, player.role)
 
                 # Inject detailed reflections (self-evolution)
                 all_refs = restored_memory.reflections_by_player(player_id)
@@ -845,7 +983,6 @@ def build_agent_context(
         contradiction_alerts=ctx_alerts,
         belief_state=belief_dict,
         strategy_directive=strategy_directive,
-        skill_tools=skill_tools,
         skill_analyses=skill_analyses,
         skill_analysis_hints=skill_analyses,
     )
@@ -854,4 +991,5 @@ def build_agent_context(
         ruleset_id=gs.ruleset_id,
         rag_service=rag_service,
         game_id=gs.game_id,
+        n_alive=sum(1 for p in gs.players.values() if p.alive),
     )

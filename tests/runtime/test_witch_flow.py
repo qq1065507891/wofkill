@@ -582,6 +582,15 @@ class TestWitchPoisonPressureContext:
                     "allowed_in_live": True,
                 }]
 
+            def hits_to_prompt_lines(self, hits, max_items=3):
+                # P0-G1: live prompt path uses slim lines (title only,
+                # no relevance/quality/source metadata).
+                return [{
+                    "title": "fake",
+                    "summary": "fake-summary",
+                    "key_decisions": ["fake-decision"],
+                }]
+
         players = {"p01": PlayerState(id="p01", role="werewolf")}
         gs = GameState(
             game_id="rag_service_context",
@@ -606,7 +615,13 @@ class TestWitchPoisonPressureContext:
         assert service.last_query.phase == "night_discussion"
         assert service.last_game_id == "rag_service_context"
         assert service.last_player_id == "p01"
-        assert any(item["entry_id"] == "fake" for item in context.rag_hints)
+        # P0-G1: live prompt now uses slim lines; only title/summary/
+        # key_decisions are surfaced, no entry_id or audit metadata.
+        assert any(item["title"] == "fake" for item in context.rag_hints)
+        assert all(
+            set(item.keys()) == {"title", "summary", "key_decisions"}
+            for item in context.rag_hints
+        )
         assert not any(item.get("entry_id") == "fake" for item in context.salience_items)
 
     def test_good_player_cross_game_reflections_include_good_failure_lessons(self) -> None:
@@ -717,7 +732,6 @@ class TestWitchPoisonPressureContext:
             return strategy_directive, {"skill_analyze_wolf_pit": "suspects: p02"}
 
         monkeypatch.setattr(context_mod, "_inject_skill_output", fake_inject_skill_output)
-        monkeypatch.setattr(context_mod, "_build_skill_tool_defs", lambda role, phase: [])
 
         players = {
             "p01": PlayerState(id="p01", role="villager"),

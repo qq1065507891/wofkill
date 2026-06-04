@@ -36,12 +36,9 @@ from werewolf_agent.runtime.context import (
     _TASK_STYLE_HINTS,
     _get_persona_speech_style,
     _get_persona_task_style,
-    _TOOL_SKILL_NAMES,
-    _SKILL_TOOL_DEFS,
     _action_trace_payload,
     _merge_strategy_directive,
     _inject_skill_output,
-    _build_skill_tool_defs,
 )
 
 # Backward-compatible re-exports from runtime.directives package.
@@ -103,6 +100,30 @@ def _action_result_to_dict(
         "speech": getattr(action, "speech", ""),
         "reason": getattr(action, "reason", ""),
     }
+
+
+def _is_sheriff_silenced(gs: GameState, sheriff_id: str) -> bool:
+    """Return True if the active sheriff is currently muted (cannot speak).
+
+    P1-D4: a sheriff may hold the active badge but still be unable to
+    speak — e.g., a witch poison mute or a self-destruct that lands the
+    badge but freezes the day-speech action.  The pre-fix code only
+    checked ``sheriff_id == speaker_id and sheriff_badge_state ==
+    "active"`` and rendered a 归票 directive unconditionally, which
+    contradicted the silence condition.
+
+    The check is forward-compatible:
+    - Looks for a ``sheriff_silenced`` event targeting this sheriff
+      (e.g., emitted by a future skill resolver).
+    - Falls back to badge states ``"silenced"`` / ``"frozen"`` if a
+      caller sets them explicitly.
+    """
+    for ev in gs.events:
+        if ev.type == "sheriff_silenced" and ev.payload.get("sheriff_id") == sheriff_id:
+            return True
+    if gs.sheriff_badge_state in {"silenced", "frozen"}:
+        return True
+    return False
 
 
 def agent_night_witch(
@@ -222,26 +243,40 @@ def agent_night_witch(
         witch_directive["witch_strategy_hint"] = ""
     if not gs.poison_used:
         witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
-        witch_directive["witch_poison_threshold"] = (
-            "【毒药决策指引】毒药是好人阵营唯一的主动击杀手段。"
-            "以下情况应优先使用毒药："
-            "1) 可信预言家的明确查杀；2) 强票型证据（连续保狼、冲票、关键轮分票）；"
-            "3) 对跳失败或身份逻辑明显破产；4) 场上存活人数减少，再不用毒药可能来不及。"
-            "如果存在合理怀疑但证据不够硬，应权衡'不用毒药导致好人出局'vs'误毒好人'的风险。"
-            "解药已用后，你每夜只剩毒药或空过——空过意味着好人失去一轮主动权。"
-        )
+        # P1-D5: unified `witch_poison_strategy` directive.  Pre-fix the
+        # code emitted two separate keys (`witch_poison_threshold` and
+        # `poison_urgency`) that could contradict each other; there was
+        # also no `no_pressure` branch for early game.  Pick ONE branch
+        # per game state and render the matching text.
         alive = sum(1 for p in gs.players.values() if p.alive)
-        if alive <= 9:
-            witch_directive["poison_urgency"] = (
-                f"场上存活{alive}人，解药已用，你每夜只有毒药和空过两个选项。"
-                f"如果你有怀疑目标（即使证据不够硬），应积极考虑用毒——但需权衡误毒好人的风险。"
-            )
         if alive <= 7:
-            witch_directive["poison_urgency"] = (
+            branch = "urgency_under_X_alive"
+            text = (
                 f"【紧急】场上仅存活{alive}人！你的毒药还没有使用！"
                 f"好人阵营已经没有犹豫的空间——选择你怀疑度最高的目标用毒。"
                 f"不用毒药很可能意味着好人永远失去主动权。"
             )
+        elif alive <= 9:
+            branch = "evidence_required_threshold"
+            text = (
+                f"场上存活{alive}人，解药已用，你每夜只有毒药和空过两个选项。"
+                f"如果你有怀疑目标（即使证据不够硬），应积极考虑用毒——但需权衡误毒好人的风险。"
+            )
+        else:
+            branch = "no_pressure_save_for_late"
+            text = (
+                "【毒药决策指引】毒药是好人阵营唯一的主动击杀手段。"
+                "以下情况应优先使用毒药："
+                "1) 可信预言家的明确查杀；2) 强票型证据（连续保狼、冲票、关键轮分票）；"
+                "3) 对跳失败或身份逻辑明显破产；4) 场上存活人数减少，再不用毒药可能来不及。"
+                "如果存在合理怀疑但证据不够硬，应权衡'不用毒药导致好人出局'vs'误毒好人'的风险。"
+                "解药已用后，你每夜只剩毒药或空过——空过意味着好人失去一轮主动权。"
+            )
+        witch_directive["witch_poison_strategy"] = {
+            "branch": branch,
+            "alive_count": alive,
+            "text": text,
+        }
 
     witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
 
@@ -757,15 +792,34 @@ def agent_day_speech(
     elif player_role == "villager":
         strategy_directive.update(_build_villager_day_speech_directive(gs, speaker_id))
 
-    # Sheriff gets 归票 (vote push) directive
+    # Sheriff gets 归票 (vote push) directive — with silence fallback
+    # (P1-D4) and torn-badge election-state directive (P1-D6).
     if gs.sheriff_id == speaker_id and gs.sheriff_badge_state == "active":
         alive_others = [pid for pid, p in gs.players.items() if p.alive and pid != speaker_id]
-        strategy_directive["sheriff_vote_push"] = (
-            "你是警长，你的发言需要归票：总结本轮讨论的关键信息点，"
-            "明确表态你怀疑谁、要推谁，号召大家集中投票。"
-            "警长归票是核心职责，不能含糊其辞。"
+        if _is_sheriff_silenced(gs, speaker_id):
+            # Sheriff is alive with the active badge but is currently
+            # muted (e.g., poisoned by witch, self-destructed on a prior
+            # turn) and cannot speak.  The pre-fix code still told them
+            # to 明确归票, which would have been a hallucination.
+            strategy_directive["sheriff_silent"] = (
+                "本轮你无法发言；若已提前指定归票目标，通过 [vote_silent] 字段指定；"
+                "如未指定则由投票开放决定。"
+            )
+        else:
+            strategy_directive["sheriff_vote_push"] = (
+                "你是警长，你的发言需要归票：总结本轮讨论的关键信息点，"
+                "明确表态你怀疑谁、要推谁，号召大家集中投票。"
+                "警长归票是核心职责，不能含糊其辞。"
+            )
+            strategy_directive["sheriff_alive_others"] = alive_others
+
+    # After badge tear → no sheriff for the rest of the game.  Every
+    # player (not just the previous sheriff) must know there is no
+    # 归票人 and that speech order is now random (design doc §警长规则).
+    if gs.sheriff_id is None and gs.sheriff_badge_state == "torn":
+        strategy_directive["sheriff_election_state"] = (
+            "本局无警长；本轮发言顺序随机；无归票人。"
         )
-        strategy_directive["sheriff_alive_others"] = alive_others
 
     # Include sheriff election speeches as salience items for day 1 discussion
     sheriff_speeches = []

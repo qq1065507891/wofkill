@@ -28,21 +28,8 @@ _ROLE_NAMES = {
     "hybrid": "混血儿",
 }
 
-# Skill catalog: lightweight name + one-line description
-_SKILL_CATALOG: dict[str, dict[str, str]] = {
-    "wolf_pit": {
-        "name": "盘狼坑",
-        "desc": "系统性分析场上可能的狼人分布，输出嫌疑人区和排除区",
-    },
-    "find_power": {
-        "name": "找神",
-        "desc": "分析场上哪些玩家可能是神职（预言家/女巫/猎人等）",
-    },
-    "last_words": {
-        "name": "分析遗言",
-        "desc": "分析刚出局玩家的遗言，判断其身份可信度",
-    },
-}
+# P0-K1: skill catalog removed (tool path is dead code). Skill analyses
+# are pre-injected via skill_analysis_hints — no separate tool catalog.
 
 # Choice pipeline constants
 _CHOICE_TARGET_ACTIONS = {
@@ -73,6 +60,71 @@ _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
 _MAX_SALIENCE_ITEMS = 4
 
+# P0-S5: strategy_directive is split into 3 priority tiers so the LLM can
+# distinguish hard constraints (must obey) from suggestions (recommended) and
+# reference context (background). New keys not listed here default to 参考.
+# Game trace g_3528592081 confirmed directives are received and acted on
+# (e.g., p08 wolf followed `wolf_fake_seer_execution` to claim seer), so
+# the LLM needs explicit priority labels to disambiguate.
+HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
+    # Wolf fake-seer execution plan — set at night, must be acted on
+    "wolf_fake_seer_execution",
+    # Contradiction / role alerts that must be addressed
+    "must_address_alerts",
+    # N1 death identity (forced to be silent or to mention)
+    "first_night_killed",
+    # Speech must be empty / vote must be empty
+    "speech_silent",
+    "vote_silent",
+    # Witch must use / not use antidote/poison this night
+    "witch_night_action",
+    # Per-role alerts (hunter, idiot, etc.)
+    "role_alerts",
+    # Hard vote pressure (e.g., must-vote target)
+    "vote_pressure",
+})
+
+SUGGESTION_KEYS: frozenset[str] = frozenset({
+    # Wolf speech style / universal rules
+    "wolf_speech_directive",
+    "wolf_universal_rules",
+    # Good-side vote quality guard
+    "good_vote_decision_guard",
+    # Anti-herd / sheriff vote push
+    "anti_herd",
+    "sheriff_vote_push",
+    # Speech style suggestions
+    "speech_originality",
+    "seer_speech_directive",
+    "witch_speech_constraint",
+    # Behavioral rules (anti-following, peace-night rule)
+    "anti_following_and_peace_night_rule",
+})
+
+REFERENCE_KEYS: frozenset[str] = frozenset({
+    # Tactical advice from skill analysis (read-only)
+    "skill_tactical_advice",
+    # Wolf target / plan hints (background, not binding)
+    "wolf_day_push_target",
+    "wolf_high_priority_target",
+    "wolf_plan_target",
+    # Hybrid master behavior summary
+    "master_behavior_summary",
+    # Witch pressure / strategy hints
+    "witch_pressure",
+    "witch_strategy_hint",
+    # Public discussion summary
+    "day_discussion_summary",
+    # Vote pressure context (not hard)
+    "vote_pressure_context",
+})
+
+_STRATEGY_GROUP_ORDER: tuple[frozenset[str], str, str] = (
+    (HARD_CONSTRAINT_KEYS, "【硬约束】", "以下指令必须遵守（MUST）："),
+    (SUGGESTION_KEYS, "【建议】", "以下指令为建议（SHOULD），偏离时需有充分理由："),
+    (REFERENCE_KEYS, "【参考】", "以下为背景信息（REFERENCE），仅供决策参考："),
+)
+
 
 class PlayerPromptBuilder:
     """Assembles player prompts as a pipeline of independently-built sections.
@@ -99,13 +151,17 @@ class PlayerPromptBuilder:
     def build_system_prompt(self) -> str:
         parts: list[str] = []
         parts.append(self._build_core_identity())
-        parts.append(self._build_persona())
+        # P2-S10: _build_persona() moved to build_user_prompt() — persona
+        # is per-turn (situation-driven) and should be a dynamic section
+        # grouped with other per-turn context, not a stable section in
+        # the system prompt.
         parts.append(self._build_information_boundaries())
         parts.append(self._build_game_rules())
         parts.append(self._build_role_guide())
         parts.append(self._build_reasoning_method())
-        parts.append(self._build_skill_catalog())
-        parts.append(self._build_tool_skill_policy())
+        # P0-K1: skill tool path removed; policy about calling skill tools
+        # is gone. Skill analyses are pre-injected (skill_analysis_hints).
+        parts.append(self._build_skill_policy())
         parts.append(self._build_output_contract())
         return "\n\n".join(p for p in parts if p)
 
@@ -155,17 +211,23 @@ class PlayerPromptBuilder:
             "允许保留不确定性，但行动必须给出当前最优理由。"
         )
 
-    def _build_tool_skill_policy(self) -> str:
+    def _build_skill_policy(self) -> str:
         return (
-            "【工具与技能使用规范】当存在相关 skill 工具时，优先调用 skill 获取分析，再提交行动。"
-            "skill 分析不是裁判真相，必须结合当前局可见事实判断。"
-            "如果 skill 分析和公开事实冲突，以公开事实为准。"
-            "提交行动时要吸收 skill 结论形成自己的判断，不要机械复述。"
+            "【技能与建议】系统会在你的回合前注入已计算的技能分析结果，"
+            "请基于这些分析与当前局可见事实形成自己的判断，不要机械复述。"
+            "技能分析不是裁判真相；如果与公开事实冲突，以公开事实为准。"
         )
 
     def _build_role_guide(self) -> str:
         lines: list[str] = []
         role = self.context.own_role or ""
+        # P1-S9: villager (3 of 12 players in V1) was missing from this
+        # map. Audit identified this as a major gap — villagers were
+        # seeing only the generic reasoning / information-boundary
+        # sections, with no concrete day-time decision guidance.
+        # Rules cover 4 day-time decision dimensions per the audit:
+        # public stance, contradiction analysis, N1 antidote support,
+        # and evidence-based voting.
         role_rules = {
             "hunter": "猎人规则：被狼人杀死或被放逐时可以开枪带走一人；被女巫毒杀时不能开枪。夜间无法自保。",
             "idiot": "白痴规则：被放逐时亮出身份免死，但失去投票权且不能再被放逐；之后被狼人杀死才算真正死亡。夜间无法自保。",
@@ -173,45 +235,16 @@ class PlayerPromptBuilder:
             "seer": "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。上警时必须留两夜警徽流。",
             "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
             "hybrid": "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。主人死亡后阵营不再改变。",
+            "villager": (
+                "村民规则：身份公开时积极表明好人立场；"
+                "分析发言矛盾/票型关系；"
+                "N1 用药决策推动解药救人；"
+                "归票基于公开证据链而非情绪。"
+            ),
         }
         if role in role_rules:
             lines.append(role_rules[role])
         return "\n".join(lines) if lines else ""
-
-    def _build_skill_catalog(self) -> str:
-        """Build the lightweight skill catalog (name + one-line desc only).
-
-        Full analysis lives behind load_skill tool — injected on demand.
-        """
-        from werewolf_agent.skills.registry import SkillRegistry, faction_for_role
-        from werewolf_agent.runtime.agent_adapter import _TOOL_SKILL_NAMES
-
-        registry = SkillRegistry()
-        role = self.context.own_role or ""
-        phase = self.context.phase or ""
-        role_faction = faction_for_role(role)
-        allowed = {"common", "universal", role_faction.value}
-
-        lines: list[str] = []
-        for skill in registry.all_skills():
-            if skill.faction.value not in allowed:
-                continue
-            if not skill.is_applicable(role, phase):
-                continue
-            name = skill.name.value
-            if name not in _TOOL_SKILL_NAMES:
-                continue
-            catalog = _SKILL_CATALOG.get(name)
-            if catalog:
-                lines.append(f"- {catalog['name']}: {catalog['desc']}")
-
-        if lines:
-            return (
-                "【可用技能目录】以下技能可通过 load_skill 工具按需加载完整分析：\n"
-                + "\n".join(lines)
-                + "\n在提交行动前，建议先调用 load_skill 加载相关分析以获得更准确的信息。"
-            )
-        return ""
 
     def _build_output_contract(self) -> str:
         """Stable output format rules — same regardless of phase."""
@@ -226,26 +259,87 @@ class PlayerPromptBuilder:
     #  User prompt: per-turn dynamic context (system reminder)
     # ═══════════════════════════════════════════════════════════════
 
+    # P1-S3: section-level priority labels so the LLM can rank which
+    # sections to attend to under tight token budget. The labels group
+    # the 16 user-prompt sections into three priority tiers:
+    #   - 硬约束 (HARD):     must be addressed / must be obeyed
+    #   - 辅助 (AUXILIARY):  background context, ignore non-relevant
+    #   - 可选 (OPTIONAL):   reference, may be skimmed or dropped
+    # Note: this is the OUTER section label, distinct from the inner
+    # 硬约束/建议/参考 sub-grouping already in P0-S5 for strategy_directive.
+    _SECTION_PRIORITIES: dict[str, str] = {
+        "_build_persona": "【辅助】",
+        "_build_phase_context": "【辅助】",
+        "_build_belief_state": "【辅助】",
+        "_build_public_summary": "【辅助】",
+        "_build_visible_state": "【辅助】",
+        "_build_private_memory_hints": "【辅助】",
+        "_build_salience_events": "【辅助】",
+        "_build_rag_hints": "【辅助】",
+        "_build_reflection_memory_hints": "【辅助】",
+        "_build_profile_memory_hint": "【辅助】",
+        "_build_cognition_matrix_hint": "【辅助】",
+        "_build_strategy_directive": "【硬约束】",
+        "_build_skill_analysis_hints": "【辅助】",
+        "_build_recent_transcript": "【可选】",
+        "_build_retry_hint": "【硬约束】",
+        "_build_strict_output_contract": "【硬约束】",
+        # Note: _build_task_prompt is intentionally unlabeled — the
+        # task prompt is the action spec the LLM is executing.
+    }
+
+    def _label_section(self, builder_name: str, body: str) -> str:
+        """Prepend the priority label to a section's body.
+
+        P1-S3: Empty bodies are returned unchanged so the section
+        just disappears from the prompt (preserving the existing
+        `for p in parts if p` filter behavior).
+        """
+        if not body:
+            return body
+        label = self._SECTION_PRIORITIES.get(builder_name, "")
+        if not label:
+            return body
+        return f"{label} {body}"
+
     def build_user_prompt(self, retry: RetryInfo) -> str:
         parts: list[str] = []
         # Boundary marker per s10: above = stable, below = dynamic
         parts.append("=== DYNAMIC_BOUNDARY ===")
-        parts.append(self._build_phase_context())
-        parts.append(self._build_belief_state())
-        parts.append(self._build_public_summary())
-        parts.append(self._build_visible_state())
-        parts.append(self._build_private_memory_hints())
-        parts.append(self._build_salience_events())
-        parts.append(self._build_rag_hints())
-        parts.append(self._build_reflection_memory_hints())
-        parts.append(self._build_profile_memory_hint())
-        parts.append(self._build_cognition_matrix_hint())
-        parts.append(self._build_strategy_directive())
-        parts.append(self._build_skill_analysis_hints())
-        parts.append(self._build_recent_transcript())
-        parts.append(self._build_retry_hint(retry))
+        # P2-S10: persona (per-turn style/tone hint) lives in the user
+        # message, right after the boundary marker, so it stays grouped
+        # with other per-turn dynamic context and does not invalidate
+        # the system-prompt cache on each turn.
+        parts.append(self._label_section("_build_persona", self._build_persona()))
+        # P1-S3: each section is wrapped with a [硬约束/辅助/可选]
+        # priority label so the LLM can rank attention under tight
+        # token budgets. The label is prepended at the section level
+        # — internal sub-grouping (e.g., P0-S5 within strategy_directive)
+        # is preserved.
+        parts.append(self._label_section("_build_phase_context", self._build_phase_context()))
+        parts.append(self._label_section("_build_belief_state", self._build_belief_state()))
+        parts.append(self._label_section("_build_public_summary", self._build_public_summary()))
+        parts.append(self._label_section("_build_visible_state", self._build_visible_state()))
+        parts.append(self._label_section("_build_private_memory_hints", self._build_private_memory_hints()))
+        parts.append(self._label_section("_build_salience_events", self._build_salience_events()))
+        parts.append(self._label_section("_build_rag_hints", self._build_rag_hints()))
+        parts.append(self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints()))
+        parts.append(self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint()))
+        parts.append(self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint()))
+        parts.append(self._label_section("_build_strategy_directive", self._build_strategy_directive()))
+        parts.append(self._label_section("_build_skill_analysis_hints", self._build_skill_analysis_hints()))
+        # P0-K1: skill tool path removed. Skill analyses are pre-injected
+        # above (skill_analysis_hints) — no separate tool-catalog section.
+        parts.append(self._label_section("_build_recent_transcript", self._build_recent_transcript()))
+        # P0-S6: retry hint must come AFTER task prompt and BEFORE the
+        # output contract. Old order put retry BEFORE task, so the LLM
+        # read "纠正提示..." and then got distracted by the task
+        # description that followed — easy to miss the correction.
+        # New order (task → retry → contract) makes the correction the
+        # last thing the LLM sees before the output contract.
         parts.append(self._build_task_prompt())
-        parts.append(self._build_strict_output_contract())
+        parts.append(self._label_section("_build_retry_hint", self._build_retry_hint(retry)))
+        parts.append(self._label_section("_build_strict_output_contract", self._build_strict_output_contract()))
         return "\n\n".join(p for p in parts if p)
 
     def _build_phase_context(self) -> str:
@@ -271,10 +365,37 @@ class PlayerPromptBuilder:
                 "private_reason（完整内心活动：为什么投他、担心什么、最终如何决定）。"
                 "这些字段不会公开发言，只给主持人审计。"
             )
-            lines.append(
-                "反跟票警告：不要无条件跟随任何人的归票。如果多人集中投同一人，"
-                "检查是否可能是狼人抱团。独立判断优先级：发言逻辑矛盾 > 票型异常 > 谁说了什么。"
-            )
+            # P1-K6: anti-herd advice is role-gated. 抱团 (herding) is the
+            # wolves' core day-vote coordination strategy — non-fake_seer
+            # wolves are EXPECTED to follow the fake_seer's lead. Telling
+            # wolves to be wary of herding inverts the wolf team's
+            # actual coordination goal.
+            #
+            # Good-side roles (villager / seer / witch / hunter / idiot):
+            # the existing anti-herd text — independent judgment is the
+            # whole point of being a good player.
+            #
+            # Wolf-side roles (werewolf / hybrid, regardless of master):
+            # a wolf-specific message that frames 抱团 as expected
+            # coordination, with the 倒钩 (deep-hook) exception noted.
+            #
+            # Unknown / unset role: fall back to the good-side text
+            # (safe default — better to over-warn than to silently
+            # hand wolves the team-coordination cue).
+            _GOOD_SIDE = {"villager", "seer", "witch", "hunter", "idiot"}
+            _WOLF_SIDE = {"werewolf", "hybrid"}
+            role = ctx.own_role or ""
+            if role in _WOLF_SIDE:
+                lines.append(
+                    "狼队抱团是正常策略；投票时跟队友一致是预期行为；"
+                    "只有在倒钩场景下需独立判断。"
+                )
+            else:
+                # Good side + unknown role (safe default).
+                lines.append(
+                    "反跟票警告：不要无条件跟随任何人的归票。如果多人集中投同一人，"
+                    "检查是否可能是狼人抱团。独立判断优先级：发言逻辑矛盾 > 票型异常 > 谁说了什么。"
+                )
         return "\n".join(lines)
 
     def _build_belief_state(self) -> str:
@@ -318,11 +439,19 @@ class PlayerPromptBuilder:
 
     def _build_private_memory_hints(self) -> str:
         ctx = self.context
-        memory = ctx.private_memory_hints or ctx.visible_world_state.get("private_memory", {})
+        # P0-M7: read only from private_memory_hints. The previous code
+        # also fell back to ctx.visible_world_state.get("private_memory"),
+        # which caused duplicate injection if both fields were populated
+        # and risked surfacing stale data from an older code path.
+        memory = ctx.private_memory_hints
         if not memory:
             return ""
+        # P0-M1: prepend a "本局·第N轮·私有记忆" label so the LLM cannot
+        # confuse this section with cross-game reflection memory or
+        # with public speech.
+        day_label = f"第{ctx.day_number}轮" if ctx.day_number else "首轮"
         return (
-            "我的当前局记忆: 以下只代表你在本局形成的观察、站边和私有思考，"
+            f"【本局·{day_label}·私有记忆】以下只代表你在本局形成的观察、站边和私有思考，"
             "不是公开记录。"
             "【严禁】在公开发言中复述以下任何角色身份信息或暗示你从私有记忆中获知的身份。"
             "你在公开发言中只能使用公开可见的信息。\n"
@@ -341,10 +470,50 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.rag_hints:
             return ""
+        # P0-G2 defense in depth: even if a non-production code path
+        # leaks full audit items into ``ctx.rag_hints``, the live prompt
+        # must only see title / summary / key_decisions. Audit data
+        # (relevance, quality, source, visibility, display annotation)
+        # belongs in the audit log, not the LLM context window.
+        slim_items = self._slim_rag_hint_items(ctx.rag_hints[:3])
+        # P0-G3: hard-constraint prefix MUST come before the JSON
+        # payload. Without this the LLM has been observed to parrot
+        # case-specific player IDs (e.g., p04 / p09 in seed cases) as
+        # if they were this game's player IDs, which is information
+        # leakage and tactical error.
+        warning = (
+            "⚠️ RAG 案例中的玩家 ID 与本局无关；"
+            "不得直接套用案例中具体玩家的发言或票型。\n"
+        )
         return (
             "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
-            + self._compact_json(ctx.rag_hints[:3])
+            + warning
+            + self._compact_json(slim_items)
         )
+
+    @staticmethod
+    def _slim_rag_hint_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop audit-only fields from RAG hint items in the live prompt.
+
+        Mirrors :func:`werewolf_agent.rag.prompt_renderer.hits_to_prompt_lines`
+        but operates on already-rendered dicts (so it works even when
+        ``ctx.rag_hints`` was populated by a test or a non-default
+        code path that bypassed :class:`RAGKnowledgeService`).
+
+        The renderer treats a dict as a "slim line" if it already only
+        has the three prompt-safe keys; otherwise it picks out those
+        three keys, falling back to ``""`` / ``""`` / ``[]`` if absent.
+        """
+        slim: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            slim.append({
+                "title": str(item.get("title", "") or ""),
+                "summary": str(item.get("summary", "") or ""),
+                "key_decisions": list(item.get("key_decisions") or [])[:3],
+            })
+        return slim
 
     def _build_reflection_memory_hints(self) -> str:
         ctx = self.context
@@ -374,10 +543,43 @@ class PlayerPromptBuilder:
         )
 
     def _build_strategy_directive(self) -> str:
+        """Render strategy_directive split into 3 priority sections.
+
+        P0-S5: LLM previously saw a single flat JSON block with 20+ keys
+        and no priority signal — had to guess hard vs soft. Now keys are
+        grouped into 【硬约束】 (MUST), 【建议】 (SHOULD), 【参考】
+        (REFERENCE). Unknown keys fall through to 参考 for forward-compat.
+        """
         ctx = self.context
         if not ctx.strategy_directive:
             return ""
-        return "本轮策略指令: " + self._compact_json(ctx.strategy_directive)
+
+        grouped: dict[str, dict[str, Any]] = {
+            header: {} for _, header, _ in _STRATEGY_GROUP_ORDER
+        }
+        reference_fallback_idx = next(
+            i for i, (keys, header, _) in enumerate(_STRATEGY_GROUP_ORDER)
+            if header == "【参考】"
+        )
+        reference_header = _STRATEGY_GROUP_ORDER[reference_fallback_idx][1]
+
+        for key, value in ctx.strategy_directive.items():
+            placed = False
+            for i, (keys, header, _) in enumerate(_STRATEGY_GROUP_ORDER):
+                if key in keys:
+                    grouped[header][key] = value
+                    placed = True
+                    break
+            if not placed:
+                grouped[reference_header][key] = value
+
+        parts: list[str] = ["本轮策略指令:"]
+        for keys_set, header, label in _STRATEGY_GROUP_ORDER:
+            section = grouped[header]
+            if not section:
+                continue
+            parts.append(f"{header} {label}\n" + self._compact_json(section))
+        return "\n\n".join(parts)
 
     def _build_skill_analysis_hints(self) -> str:
         ctx = self.context
@@ -409,12 +611,49 @@ class PlayerPromptBuilder:
         return "\n".join(lines)
 
     def _build_retry_hint(self, retry: RetryInfo) -> str:
-        if not retry.correction_hint:
+        """Render the retry correction hint after task, before contract.
+
+        P0-S6: When the LLM hits 3 retries on the same parse_error
+        (e.g., game trace g_3528592081 Action 50, p10), a generic
+        correction_hint like "只输出JSON..." is not actionable. We now
+        surface the first 100 chars of the actual error_message so the
+        LLM sees what specifically went wrong on the previous attempt.
+        Truncation keeps the hint focused and avoids leaking long traces
+        into the next prompt.
+
+        P0-R2: When failure_category == "timeout" and error_code ==
+        "empty_response", append a Chinese hint giving the LLM explicit
+        permission to return `no_action` as a safe no-op. Without this,
+        the model either retries and times out again or fabricates a
+        vote target. Game trace g_3528592081 Action 57 (seer p03 vote)
+        hit 3 empty retries and fell back to a default target — a
+        '如果超时, 返回 no_action' hint would have let it safely no-op.
+        """
+        if not retry.correction_hint and not retry.error_message:
             return ""
-        return (
-            f"纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）: {retry.correction_hint}\n"
-            f"错误信息: {retry.error_message}"
-        )
+
+        lines = [
+            f"纠正提示（第{retry.attempt}/{retry.max_retries}次尝试）："
+        ]
+        if retry.error_message:
+            snippet = retry.error_message[:100]
+            if len(retry.error_message) > 100:
+                snippet += "..."
+            lines.append(f"上次错误: {snippet}")
+        if retry.correction_hint:
+            lines.append(f"修正建议: {retry.correction_hint}")
+        # P0-R2: empty_response + timeout → safe no-op permission.
+        if (
+            retry.error_code == "empty_response"
+            and retry.failure_category == "timeout"
+        ):
+            lines.append(
+                "重要：如果你已经超时，请直接返回 no_action"
+                "（action_type='no_action', target_id=null, "
+                "reason='timeout - safe no-op'），"
+                "不要再尝试长推理或构造JSON。"
+            )
+        return "\n".join(lines)
 
     def _build_task_prompt(self) -> str:
         """Task-specific prompt: choice enum, speech intent, or examples."""
@@ -428,6 +667,15 @@ class PlayerPromptBuilder:
     def _format_examples(self) -> str:
         ctx = self.context
         parts: list[str] = []
+        # P0-S7: claimed_view is documented as an identity-perspective
+        # identifier (PrivateIntent schema), not a free-form Chinese
+        # phrase. Use the canonical enum-style values so the LLM copies
+        # a clean identifier instead of "我是好人" / "我是预言家".
+        # Game trace g_3528592081 showed wolves writing
+        # "我是好人，混水摸鱼" — a strategy note in natural Chinese —
+        # when the example primed them to do so.
+        _CLAIMED_VIEW_GOOD = "good_player_without_night_info"
+        _CLAIMED_VIEW_SEER = "seer"
         if ctx.legal_actions and any(
             a in (ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL) for a in ctx.legal_actions
         ):
@@ -438,7 +686,7 @@ class PlayerPromptBuilder:
                 f'"speech": "", '
                 f'"reason": "选择击杀目标", "confidence": 0.8, '
                 f'"private_intent": {{"true_role": "werewolf", '
-                f'"faction_goal": "push_good_player_out", "claimed_view": "我是好人", '
+                f'"faction_goal": "push_good_player_out", "claimed_view": "{_CLAIMED_VIEW_GOOD}", '
                 f'"pressure_target": "{example_target}", "risk_flags": []}}}}'
             )
             parts.append("示例输出（狼人空刀场景）：")
@@ -447,7 +695,7 @@ class PlayerPromptBuilder:
                 '"speech": "", '
                 '"reason": "本轮空刀策略", "confidence": 0.6, '
                 '"private_intent": {"true_role": "werewolf", '
-                '"faction_goal": "confuse_good", "claimed_view": "我是好人", '
+                f'"faction_goal": "confuse_good", "claimed_view": "{_CLAIMED_VIEW_GOOD}", '
                 '"pressure_target": null, "risk_flags": []}}'
             )
         elif ctx.legal_actions and ActionType.SHERIFF_REGISTER in ctx.legal_actions:
@@ -469,11 +717,11 @@ class PlayerPromptBuilder:
             if role == "werewolf":
                 example_role = "werewolf"
                 example_goal = "confuse_good"
-                example_view = "我是好人"
+                example_view = _CLAIMED_VIEW_GOOD
             else:
                 example_role = "villager"
                 example_goal = "find_wolves"
-                example_view = "我是好人"
+                example_view = _CLAIMED_VIEW_GOOD
             parts.append("示例输出（发言场景）：")
             parts.append('{"action_type": "speech", "target_id": null, '
                          '"speech": "我觉得p05很可疑，昨晚他的发言前后矛盾。", '
@@ -482,7 +730,12 @@ class PlayerPromptBuilder:
                          f'"faction_goal": "{example_goal}", "claimed_view": "{example_view}", '
                          '"pressure_target": "p05", "risk_flags": []}}')
             vote_example_goal = "confuse_good" if example_role == "werewolf" else "find_wolves"
-            vote_example_view = "我是好人" if example_role != "seer" else "我是预言家"
+            # P0-S7: check the input role, not example_role. The original
+            # code checked example_role, which was hardcoded to "villager"
+            # for the seer case — so the seer claimed_view branch was
+            # never actually triggered. Using role here makes the
+            # claimed_view match the player's own identity.
+            vote_example_view = _CLAIMED_VIEW_SEER if role == "seer" else _CLAIMED_VIEW_GOOD
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '

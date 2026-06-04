@@ -682,62 +682,16 @@ class TestSkillIntegration:
 # ---------------------------------------------------------------------------
 
 class TestSkillToolDefinitions:
+    """P0-K1: skill tool path removed.
 
-    def test_agent_context_accepts_skill_fields(self):
-        from werewolf_agent.agents.schemas import AgentContext, TaskType
-
-        ctx = AgentContext(
-            agent_id="p01",
-            task_type=TaskType.SPEECH,
-            skill_tools=[{"name": "skill_analyze_wolf_pit"}],
-            skill_analyses={"skill_analyze_wolf_pit": "分析结果"},
-        )
-        assert len(ctx.skill_tools) == 1
-        assert ctx.skill_analyses["skill_analyze_wolf_pit"] == "分析结果"
+    After K1: `_build_skill_tool_defs` no longer exists, and the
+    AgentContext no longer carries a `skill_tools` field. Skill analyses
+    are pre-injected via `skill_analyses` / `skill_analysis_hints`.
+    """
 
     def test_skill_fields_default_empty(self):
         from werewolf_agent.agents.schemas import AgentContext, TaskType
 
         ctx = AgentContext(agent_id="p01", task_type=TaskType.VOTE)
-        assert ctx.skill_tools == []
         assert ctx.skill_analyses == {}
-
-    def test_build_skill_tool_defs_for_context(self):
-        from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
-
-        # Villager in speech phase should get wolf_pit and find_power
-        tools = _build_skill_tool_defs(role="villager", phase="speech")
-        tool_names = [t["name"] for t in tools]
-        assert "skill_analyze_wolf_pit" in tool_names
-        assert "skill_find_power_roles" in tool_names
-
-    def test_build_skill_tool_defs_seer_role(self):
-        from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
-
-        # seer is GOOD faction → gets wolf_pit; find_power now includes seer
-        tools = _build_skill_tool_defs(role="seer", phase="speech")
-        tool_names = [t["name"] for t in tools]
-        assert "skill_analyze_wolf_pit" in tool_names
-        assert "skill_find_power_roles" in tool_names
-
-    def test_build_skill_tool_defs_empty_for_unrelated_phase(self):
-        from werewolf_agent.runtime.agent_adapter import _build_skill_tool_defs
-
-        tools = _build_skill_tool_defs(role="werewolf", phase="night_action")
-        tool_names = [t["name"] for t in tools]
-        # last_words is not applicable at night
-        assert "skill_analyze_last_words" not in tool_names
-
-    def test_tool_skills_excluded_from_prompt_injection(self):
-        """Tool skills should NOT appear in skill_tactical_advice."""
-        from werewolf_agent.runtime.agent_adapter import _inject_skill_output
-
-        gs = _make_skill_gs(day=1)
-        ws, bs, alerts = _build_cognition(gs, "p04")
-        result, _ = _inject_skill_output(
-            {}, gs, "p04", ws, bs, alerts, "speech",
-        )
-        advice = result.get("skill_tactical_advice", "")
-        # wolf_pit/find_power/last_words should NOT be in injected advice
-        assert "盘狼坑" not in advice
-        assert "找神" not in advice
+        assert ctx.skill_analysis_hints == {}

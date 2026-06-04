@@ -32,7 +32,6 @@ from tests.agents.test_player_agent import (  # noqa: F401
     TestProviderCapabilityFailure,
     TestStructuredOutputMetadata,
     TestSpeechMustAnswerVisibleContradictionAlert,
-    TestSkillSkipRetry,
 )
 
 # Player agent mocks
@@ -50,9 +49,6 @@ from tests.agents.test_player_agent import (  # noqa: F401
     TextOnlyProvider,
     TextJsonProvider,
     NoToolProvider,
-    SkipThenSubmit,
-    SkillThenSubmit,
-    DirectSubmit,
 )
 
 # Model router

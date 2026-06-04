@@ -6,6 +6,7 @@ long-term reflection memory, and player profiles.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from werewolf_agent.cognition.belief import BeliefState
@@ -22,6 +23,25 @@ from werewolf_agent.memory.schemas import (
     RelationEvent,
     ReviewReport,
 )
+
+# P0-I4: scrub concrete player ids (e.g. ``p03``) from any text that
+# gets written into long-term reflection. Cross-game memory must not
+# carry concrete game identities — only role-based labels survive.
+# Note: do NOT use \b — `\b` does not match between an ASCII letter and
+# a CJK character, so "p03的预言家" wouldn't be detected.
+_REFLECTION_PLAYER_ID_RE = re.compile(r"[Pp]\d{1,2}")
+_REFLECTION_ID_REPLACEMENT = "[玩家ID已省略]"
+
+
+def _scrub_player_ids(text: str) -> str:
+    """Replace any ``p\\d{1,2}`` token with a neutral placeholder."""
+    if not text:
+        return text
+    return _REFLECTION_PLAYER_ID_RE.sub(_REFLECTION_ID_REPLACEMENT, text)
+
+
+def _scrub_player_ids_in_list(items: list[str]) -> list[str]:
+    return [_scrub_player_ids(s) for s in items]
 
 
 class MemoryStore:
@@ -181,15 +201,31 @@ class MemoryStore:
         if report.deceived_by:
             tags.append("deceived")
 
+        # P0-I4: scrub concrete player ids from every text fragment
+        # that will land in the long-term reflection entry. ``player_id``
+        # itself is the only structural id we keep (it identifies the
+        # reflection owner, not the targets named in the text).
         text_parts = []
         if report.summary:
-            text_parts.append(report.summary)
+            text_parts.append(_scrub_player_ids(report.summary))
         if report.error_analysis:
-            text_parts.append("错误分析: " + "; ".join(report.error_analysis[:3]))
+            text_parts.append(
+                "错误分析: " + "; ".join(
+                    _scrub_player_ids_in_list(report.error_analysis[:3])
+                )
+            )
         if report.successful_strategies:
-            text_parts.append("成功策略: " + "; ".join(report.successful_strategies[:3]))
+            text_parts.append(
+                "成功策略: " + "; ".join(
+                    _scrub_player_ids_in_list(report.successful_strategies[:3])
+                )
+            )
         if report.improvement_suggestions:
-            text_parts.append("改进建议: " + "; ".join(report.improvement_suggestions[:3]))
+            text_parts.append(
+                "改进建议: " + "; ".join(
+                    _scrub_player_ids_in_list(report.improvement_suggestions[:3])
+                )
+            )
 
         entry = ReflectionEntry(
             entry_id=f"reflection_{report.game_id}_{report.player_id}",
@@ -199,7 +235,7 @@ class MemoryStore:
             faction_won=report.faction_won,
             text=" | ".join(text_parts),
             tags=tags,
-            situation=report.summary,
+            situation=_scrub_player_ids(report.summary),
         )
         self.reflections.store(entry)
 

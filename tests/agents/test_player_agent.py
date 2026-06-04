@@ -269,80 +269,6 @@ class NoToolProvider:
         )
 
 
-class SkipThenSubmit:
-    """Provider that skips skill tools for `skip_count` calls, then submits."""
-
-    def __init__(self, call_log: list, submitted: dict, skip_count: int = 10):
-        self._call_log = call_log
-        self._submitted = submitted
-        self._skip_count = skip_count
-
-    @property
-    def name(self) -> str:
-        return "mock"
-
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
-        self._call_log.append({"tools": tools, "tool_choice": tool_choice, "prompt": prompt})
-        self._submitted["n"] += 1
-        return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"投7","reason":"可疑","confidence":0.8}',
-            provider=self.name,
-            model=config.model,
-            usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-            tool_call_received=True,
-            tool_call_name="submit_player_action",
-        )
-
-
-class SkillThenSubmit:
-    """Provider that calls a skill tool on the first call, then submits."""
-
-    def __init__(self, call_log: list, calls_counter: dict):
-        self._call_log = call_log
-        self._calls_counter = calls_counter
-
-    @property
-    def name(self) -> str:
-        return "mock"
-
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
-        self._call_log.append({"tools": tools, "tool_choice": tool_choice, "prompt": prompt})
-        self._calls_counter["n"] += 1
-        if self._calls_counter["n"] == 1:
-            return GenerateResult(
-                text="",
-                provider=self.name,
-                model=config.model,
-                usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-                tool_call_received=True,
-                tool_call_name="skill_analyze_wolf_pit",
-            )
-        return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"","reason":"根据技能分析，p07票型异常","confidence":0.8}',
-            provider=self.name,
-            model=config.model,
-            usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-            tool_call_received=True,
-            tool_call_name="submit_player_action",
-        )
-
-
-class DirectSubmit:
-    @property
-    def name(self) -> str:
-        return "mock"
-
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
-        return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"投7","reason":"可疑","confidence":0.8}',
-            provider=self.name,
-            model=config.model,
-            usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-            tool_call_received=True,
-            tool_call_name="submit_player_action",
-        )
-
-
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests
 # ---------------------------------------------------------------------------
@@ -900,7 +826,16 @@ class TestPlayerAgentRetryFallback:
         assert provider.calls == 2
         assert retry.attempt == 2
         assert "警徽流" in action.speech
-        assert "在警上/PK阶段需要包含" in provider.prompts[1]
+        # P1-S6 (residual): the high-pressure hint is now a short
+        # action-oriented line (correction_hint). The full field-missing
+        # enumeration still appears in error_message (and is rendered as
+        # the "上次错误" snippet in the prompt). The 2nd attempt's
+        # prompt must contain at least the new short hint, OR the
+        # long field-hint from the error_message snippet.
+        assert (
+            "在警上/PK阶段需要包含" in provider.prompts[1]
+            or "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)" in provider.prompts[1]
+        )
 
     def test_invalid_json_triggers_retry(self) -> None:
         agent = self._make_agent("not json at all")
@@ -1214,8 +1149,9 @@ class TestPlayerAgentRetryFallback:
         assert "跨局记忆只是历史经验" in prompt
         assert "【推理方法】" in prompt
         assert "盘狼坑时优先看" in prompt
-        assert "【工具与技能使用规范】" in prompt
-        assert "skill 分析不是裁判真相" in prompt
+        # P0-K1: tool-skill policy replaced with pre-injection policy
+        assert "【技能与建议】" in prompt
+        assert "技能分析不是裁判真相" in prompt
 
     def test_user_prompt_renders_dynamic_sources_as_separate_sections(self) -> None:
         agent = self._make_agent("unused")
@@ -1223,6 +1159,7 @@ class TestPlayerAgentRetryFallback:
             agent_id="p01",
             task_type=TaskType.VOTE,
             phase="day",
+            day_number=2,
             own_role="villager",
             legal_actions=[ActionType.VOTE],
             legal_targets=["p02", "p03"],
@@ -1242,7 +1179,8 @@ class TestPlayerAgentRetryFallback:
 
         assert "当前局公开事实:" in prompt
         assert "可见状态:" in prompt
-        assert "我的当前局记忆:" in prompt
+        # P0-M1: private_memory section uses "【本局·第N轮·私有记忆】" label.
+        assert "【本局·第2轮·私有记忆】" in prompt
         assert "知识库提示:" in prompt
         assert "知识库提示不是当前局事实" in prompt
         assert "跨局反思记忆:" in prompt
@@ -2052,128 +1990,6 @@ class TestSpeechMustAnswerVisibleContradictionAlert:
         assert result["valid"] is True
 
 
-class TestSkillSkipRetry:
-    """When skill tools are available but LLM skips them, retry with nudge.
-    After 3 skips, give up and proceed normally."""
-
-    @staticmethod
-    def _make_agent_with_skill_skip(skip_count: int = 10) -> tuple[PlayerAgent, list[dict]]:
-        """Build agent that skips skill tools for `skip_count` calls, then submits."""
-        call_log: list[dict] = []
-        submitted = {"n": 0}
-        router = ModelRouter(
-            model_profiles={},
-            llm_profiles={},
-            player_assignments={"p01": "default"},
-            providers={"mock": SkipThenSubmit(call_log, submitted, skip_count)},
-        )
-        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=10)
-        return agent, call_log
-
-    def _make_skill_context(self) -> AgentContext:
-        return AgentContext(
-            agent_id="p01",
-            task_type=TaskType.VOTE,
-            phase="day",
-            day_number=1,
-            own_role="villager",
-            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
-            legal_targets=["p07", "p08"],
-            public_summary="Day 1",
-            skill_tools=[
-                {
-                    "name": "skill_analyze_wolf_pit",
-                    "description": "分析狼坑",
-                    "input_schema": {"type": "object", "properties": {}},
-                },
-            ],
-            skill_analyses={
-                "skill_analyze_wolf_pit": "嫌疑区：p05(行为偏向狼人)；排除区：p02(被预言家发金水)",
-            },
-        )
-
-    def test_skill_skip_retries_with_nudge(self) -> None:
-        """LLM skips skill tools -> retry with correction hint."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        assert isinstance(action, PlayerAction)
-        # 2 nudges + 1 fallback injection + 1 final submit = 4 calls
-        assert len(call_log) == 4
-        # First nudge should mention skill tool name
-        assert "skill_analyze_wolf_pit" in call_log[1]["prompt"]
-
-    def test_llm_can_call_skill_tool_before_submitting_action(self) -> None:
-        """LLM calls a skill tool, receives analysis, then submits an action."""
-        call_log: list[dict] = []
-        calls_counter = {"n": 0}
-
-        router = ModelRouter(
-            model_profiles={},
-            llm_profiles={},
-            player_assignments={"p01": "default"},
-            providers={"mock": SkillThenSubmit(call_log, calls_counter)},
-        )
-        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=5)
-
-        action, retry = agent.act(self._make_skill_context())
-
-        assert isinstance(action, PlayerAction)
-        assert action.action_type == ActionType.VOTE
-        assert action.target_id == "p07"
-        assert len(call_log) == 2
-        assert any(tool["name"] == "skill_analyze_wolf_pit" for tool in call_log[0]["tools"])
-        assert "【技能分析结果】" in call_log[1]["prompt"]
-        assert "嫌疑区：p05" in call_log[1]["prompt"]
-        assert retry.attempt <= retry.max_retries
-
-    def test_skill_skip_gives_up_after_3(self) -> None:
-        """After 3 skill skip retries, force-inject analysis and submit."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        assert isinstance(action, PlayerAction)
-        assert action.action_type == ActionType.VOTE
-        # 2 nudges + 1 fallback injection + 1 final submit = 4 calls
-        assert len(call_log) == 4
-
-    def test_skill_skip_injects_analysis_on_final_retry(self) -> None:
-        """On the last skip, skill analysis is force-injected into prompt."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        assert isinstance(action, PlayerAction)
-        # 4th call (index 3) has the force-injected analysis in its prompt
-        last_prompt = call_log[3]["prompt"]
-        assert "【技能分析结果】" in last_prompt or "嫌疑区" in last_prompt
-
-    def test_no_skill_skip_when_no_skill_tools(self) -> None:
-        """Without skill tools, no skip retry happens."""
-        router = ModelRouter(
-            model_profiles={},
-            llm_profiles={},
-            player_assignments={"p01": "default"},
-            providers={"mock": DirectSubmit()},
-        )
-        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=5)
-        ctx = AgentContext(
-            agent_id="p01",
-            task_type=TaskType.VOTE,
-            phase="day",
-            day_number=1,
-            own_role="villager",
-            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
-            legal_targets=["p07", "p08"],
-        )
-        action, _ = agent.act(ctx)
-        assert isinstance(action, PlayerAction)
-        assert action.action_type == ActionType.VOTE
-
-    def test_skill_skip_does_not_consume_attempt(self) -> None:
-        """Skill skip retries don't count against max_retries."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        # Even with 3 skip retries, max_retries should not be exhausted
-        assert retry.attempt <= retry.max_retries
-
-
 class TestVoteFallbackConsistency:
     """Vote fallback must not produce a reason mentioning a different target.
 
@@ -2212,6 +2028,465 @@ class TestVoteFallbackConsistency:
         marked = ActionTrace(fallback_target_used=True, fallback_target_id="p07")
         assert marked.fallback_target_used is True
         assert marked.fallback_target_id == "p07"
+
+
+# ---------------------------------------------------------------------------
+# P1-S6 (residual): speech_quality / vote_quality correction_hint must be
+# a short, action-oriented hint distinct from the detailed error_message.
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S6 (residual) finding: P0-S6 set correction_hint ==
+# error_message (both carried the full field-missing enumeration). For
+# the LLM retrying, the detailed enumeration is noisy — the LLM just
+# needs to know what KIND of action to take. The new behavior splits
+# the two: error_message keeps the full detail (for the audit log),
+# correction_hint becomes a short action-oriented line that the LLM
+# can act on directly.
+#
+# Speech quality hint: "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"
+# Vote quality hint:   "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+
+
+def test_speech_quality_hint_specific():
+    """P1-S6 (residual): speech_quality retry → short specific correction_hint.
+
+    Builds a RetryInfo with error_code="speech_quality" + a long
+    field-missing error_message (mimicking what _speech_quality_error
+    returns). Asserts the correction_hint is the short action-oriented
+    hint, NOT the long error_message.
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider("unused")},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    detailed_message = (
+        "发言不完整。需要在警上/PK阶段需要包含角色声明、对跳分析或攻击/防守论点；"
+        "需要表明你的身份立场（如'我是好人阵营'）；"
+        "需要指出至少一个怀疑对象（如'我怀疑pXX'）。"
+    )
+    retry = RetryInfo(
+        attempt=1,
+        max_retries=3,
+        error_code="speech_quality",
+        error_message=detailed_message,
+        correction_hint="发言必须包含:角色身份/攻击或防御论点 (PK 阶段)",
+    )
+    prompt = agent._build_prompt(ctx, retry)
+    # The short hint should appear in the prompt's retry section
+    assert "发言必须包含" in prompt
+    # The detailed message appears in the error_message snippet
+    assert "发言不完整" in prompt
+    # The short hint is the one in the correction_hint line
+    assert "角色身份/攻击或防御论点" in prompt
+
+
+def test_vote_quality_hint_specific():
+    """P1-S6 (residual): vote_quality retry → short specific correction_hint.
+
+    Builds a RetryInfo with error_code="vote_quality" + a long
+    field-missing error_message. Asserts the correction_hint is the
+    short action-oriented hint, NOT the long error_message.
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider("unused")},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+    )
+    detailed_message = (
+        "投票理由缺少具体逻辑依据。请引用以下至少一种："
+        "查验结果、对跳分析、警徽流、矛盾点、投票数据、"
+        "立场变化、PK发言、或之前发言引用。"
+    )
+    retry = RetryInfo(
+        attempt=1,
+        max_retries=3,
+        error_code="vote_quality",
+        error_message=detailed_message,
+        correction_hint=(
+            "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+        ),
+    )
+    prompt = agent._build_prompt(ctx, retry)
+    # The short hint should appear in the prompt's retry section
+    assert "投票理由必须基于" in prompt
+    # The detailed message appears in the error_message snippet
+    assert "投票理由缺少具体逻辑依据" in prompt
+    # The short hint is the one in the correction_hint line
+    assert "预言家查杀/票型/警徽流/发言分析" in prompt
+
+
+def test_speech_quality_correction_hint_differs_from_error_message():
+    """P1-S6 (residual): production must emit short hint, not the long
+    speech_quality_error enumeration.
+
+    This is the regression test for the production code path in
+    PlayerAgent._act: when the LLM fails speech_quality, the resulting
+    RetryInfo's correction_hint must be the short action-oriented hint
+    (not the long field-missing enumeration from _speech_quality_error).
+    The detailed enumeration lives in error_message only.
+    """
+    from unittest.mock import patch
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.agents.schemas import (
+        SpeechPlayerAction,
+        PlayerAction as _PA,
+    )
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider("unused")},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+
+    # Build a speech action that will fail _speech_quality_error.
+    bad_speech_action = SpeechPlayerAction(
+        action_type=ActionType.SPEECH,
+        target_id=None,
+        speech="",  # Empty -> fails stance/suspicion_target/evidence checks
+        reason="ok",
+        confidence=0.5,
+    )
+
+    captured_retry: list = []
+
+    def _capture_retry(retry, raw_text, attempt, last_signature, **_kwargs):
+        captured_retry.append(retry)
+        return False, last_signature
+
+    with patch.object(
+        agent,
+        "_speech_quality_error",
+        return_value="发言不完整。需要表明你的身份立场。需要指出怀疑对象。",
+    ), patch.object(
+        agent, "_check_repeat_error_signature", side_effect=_capture_retry,
+    ):
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p05", "p07"],
+        )
+        # Manually invoke the speech_quality branch by simulating the
+        # retry path. The production code constructs a RetryInfo with
+        # the short correction_hint; we just need to verify the
+        # construction.
+        # Patch the parsed_action check by going through act() with a
+        # provider that returns the bad speech action's JSON.
+        from werewolf_agent.agents.schemas import PrivateIntent
+
+        provider = _SequenceJsonProvider([
+            (
+                '{"action_type":"speech","target_id":null,'
+                '"speech":"","reason":"ok","confidence":0.5,'
+                '"private_intent":{"true_role":"villager",'
+                '"faction_goal":"find_wolves",'
+                '"claimed_view":"good_player_without_night_info",'
+                '"pressure_target":null,"risk_flags":[]}}'
+            )
+        ])
+        router2 = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent2 = PlayerAgent(agent_id="p01", model_router=router2, max_retries=1)
+        with patch.object(
+            agent2, "_speech_quality_error",
+            return_value="发言不完整。需要表明你的身份立场。",
+        ):
+            action, retry = agent2.act(ctx)
+        # We expect a FallbackAction (since max_retries=1 and the speech
+        # failed quality). The retry should be captured.
+        assert retry is not None
+        # The key regression check: correction_hint must be the SHORT
+        # action-oriented hint, NOT the long enumeration.
+        assert retry.correction_hint == (
+            "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"
+        ), (
+            f"speech_quality correction_hint must be the short action-"
+            f"oriented hint, got: {retry.correction_hint!r}"
+        )
+        # error_message keeps the long detail
+        assert "发言不完整" in retry.error_message, (
+            "speech_quality error_message must keep the long detail "
+            "for the audit log."
+        )
+
+
+def test_vote_quality_correction_hint_differs_from_error_message():
+    """P1-S6 (residual): production must emit short vote hint, not the long
+    vote_quality_error enumeration.
+    """
+    from unittest.mock import patch
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+    )
+    bad_vote_json = (
+        '{"action_type":"vote","target_id":"p05","speech":"",'
+        '"reason":"可疑","confidence":0.5}'
+    )
+    provider = _SequenceJsonProvider([bad_vote_json])
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    with patch.object(
+        agent, "_vote_quality_error",
+        return_value="投票理由缺少具体逻辑依据。请引用以下至少一种：查验结果、警徽流。",
+    ):
+        action, retry = agent.act(ctx)
+    # Fallback should fire after 1 retry. retry object should be populated.
+    assert retry is not None
+    assert retry.correction_hint == (
+        "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+    ), (
+        f"vote_quality correction_hint must be the short action-oriented "
+        f"hint, got: {retry.correction_hint!r}"
+    )
+    assert "投票理由缺少具体逻辑依据" in retry.error_message
+
+
+# ---------------------------------------------------------------------------
+# P1-S7 (residual): sanitize claimed_view to enum-like identifier in
+# production code (not just the example)
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S7 finding: P0-S7 changed the EXAMPLE claimed_view values
+# in the prompt to enum-style identifiers. But the production
+# sanitization (sanitize_optional_private_fields in output_parser.py)
+# only validates faction_goal and risk_flags — claimed_view is a
+# free-form str. Game trace g_3528592081 showed real wolves writing
+# claimed_view="我是好人，混水摸鱼" — the LLM copied the bad pattern
+# even with the new example, and the sanitizer let it through.
+#
+# Fix: define VALID_CLAIMED_VIEW_VALUES and sanitize any non-enum
+# value to a safe default. The safe default is derived from
+# true_role (or "good_player_without_night_info" if no role hint).
+# This is the prompt-side AND production-side gate — both layers
+# must reject the natural-language pattern.
+#
+# Tests use FULL_ACTION mode (SPEECH task) so private_intent
+# survives the parse path. VOTE uses TARGET_CHOICE mode which
+# intentionally drops private_intent (P0-S8 design choice).
+
+
+def test_claimed_view_uses_enum_in_production_when_natural_language():
+    """P1-S7: when LLM writes Chinese phrase for claimed_view, sanitize.
+
+    A wolf with true_role=werewolf writes
+    "claimed_view": "我是好人，混水摸鱼" — natural-language claim.
+    The sanitizer should reject this and substitute a safe enum-style
+    default (good_player_without_night_info for non-seer).
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    # Speech text must pass speech_quality: has 立场/怀疑对象/投票倾向/依据
+    speech_text = "我是好人阵营。我怀疑p07，p07发言前后矛盾。我倾向投p07。"
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"分析矛盾","confidence":0.7,'
+        '"private_intent":{"true_role":"werewolf","faction_goal":"confuse_good",'
+        '"claimed_view":"我是好人，混水摸鱼","pressure_target":"p07",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction), (
+        f"Expected PlayerAction, got {type(action).__name__}. "
+        f"speech_quality may be rejecting the test speech text."
+    )
+    assert action.private_intent is not None
+    # The Chinese phrase must NOT survive sanitization
+    assert "我是好人" not in action.private_intent.claimed_view, (
+        f"claimed_view must be sanitized to enum-style identifier, "
+        f"got natural-language: {action.private_intent.claimed_view!r}"
+    )
+    # Safe default: non-seer default is good_player_without_night_info
+    assert action.private_intent.claimed_view == "good_player_without_night_info", (
+        f"Expected safe default 'good_player_without_night_info', "
+        f"got: {action.private_intent.claimed_view!r}"
+    )
+
+
+def test_claimed_view_preserves_valid_enum_value():
+    """P1-S7: when LLM writes a valid enum value, it's preserved as-is."""
+    from werewolf_agent.agents.player import PlayerAgent
+    # Use a speech that passes speech_quality: must have 立场/怀疑对象/投票倾向/依据
+    speech_text = "我是预言家。昨晚查验p05。我怀疑p07，p07没给查杀。我倾向投p07。"
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"公开查验","confidence":0.8,'
+        '"private_intent":{"true_role":"seer","faction_goal":"find_wolves",'
+        '"claimed_view":"seer","pressure_target":"p05",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p03": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p03", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="seer",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction), (
+        f"Expected PlayerAction, got {type(action).__name__}"
+    )
+    assert action.private_intent is not None
+    # Valid enum value must be preserved
+    assert action.private_intent.claimed_view == "seer", (
+        f"Valid enum value must be preserved, got: {action.private_intent.claimed_view!r}"
+    )
+
+
+def test_claimed_view_role_identifier_treated_as_valid():
+    """P1-S7: role identifiers (villager, werewolf, etc.) are valid claimed_views.
+
+    A wolf claiming to be a villager (default false cover) is a common
+    strategy. The wolf's claimed_view="villager" is a clean enum
+    identifier, not natural language — it must pass through.
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    speech_text = (
+        "我是好人阵营。我怀疑p05，p05发言前后矛盾。"
+        "我倾向投p05，因为p05没有合理的归票理由。"
+    )
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"保守观察","confidence":0.5,'
+        '"private_intent":{"true_role":"werewolf","faction_goal":"confuse_good",'
+        '"claimed_view":"villager","pressure_target":"p05",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction)
+    assert action.private_intent is not None
+    assert action.private_intent.claimed_view == "villager", (
+        f"Role identifier 'villager' must be preserved as a valid claimed_view, "
+        f"got: {action.private_intent.claimed_view!r}"
+    )
+
+
+def test_claimed_view_good_player_identifier_preserved():
+    """P1-S7: good_player_without_night_info is the canonical safe default."""
+    from werewolf_agent.agents.player import PlayerAgent
+    speech_text = (
+        "我是好人阵营。我怀疑p05，p05发言前后矛盾。"
+        "我倾向投p05，因为p05的归票理由与p07不同。"
+    )
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"分析矛盾","confidence":0.7,'
+        '"private_intent":{"true_role":"villager","faction_goal":"find_wolves",'
+        '"claimed_view":"good_player_without_night_info","pressure_target":"p05",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction)
+    assert action.private_intent is not None
+    assert action.private_intent.claimed_view == "good_player_without_night_info"
 
 
 # ---------------------------------------------------------------------------

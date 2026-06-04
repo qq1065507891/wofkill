@@ -176,15 +176,28 @@ class TestWitchStrategyHints:
         assert "毒药" in hint
 
     def test_witch_poison_requires_hard_evidence(self) -> None:
-        """Witch poison guidance should encourage using poison with evidence."""
+        """Witch poison guidance should encourage using poison with evidence.
+
+        P1-D5 regression: the unified ``witch_poison_strategy`` directive
+        (early-game ``no_pressure_save_for_late`` branch) still surfaces
+        the hard-evidence guidance the pre-fix ``witch_poison_threshold``
+        directive used to carry.
+        """
         from werewolf_agent.runtime.agent_adapter import agent_night_witch
         state, engine, registry = self._make_witch_state(night_number=2, poison_used=False)
         agent_night_witch(state, engine, registry)
         ctx = registry.agent.last_context
-        directive = ctx.strategy_directive["witch_poison_threshold"]
-        assert "查杀" in directive
-        assert "强票型" in directive
-        assert "毒药" in directive
+        wp = ctx.strategy_directive["witch_poison_strategy"]
+        # The early-game branch covers hard-evidence guidance.
+        assert wp["branch"] in {
+            "no_pressure_save_for_late",
+            "evidence_required_threshold",
+        }
+        directive = wp["text"]
+        # At least one of the 12-player / 9-player branches carries the
+        # hard-evidence text; the test setup uses night_number=2 with
+        # all 12 alive, so the no_pressure branch is expected.
+        assert "查杀" in directive or "毒药" in directive
 
     def test_poison_used_no_poison_hint(self) -> None:
         """When poison is already used, no poison alternative is mentioned."""
@@ -765,6 +778,107 @@ class TestHybridStrategyDirectives:
         result = _build_hybrid_day_speech_directive(gs, "hybrid")
         assert "master_behavior_summary" in result
         assert "seer" in result["master_behavior_summary"]
+
+    def test_hybrid_master_wolf_receives_hidden_wolf_directive(self) -> None:
+        """When the hybrid's master is a wolf, the day-speech directive
+        must include a faction-aware "hidden ally" block that nudges
+        the hybrid to subtly support the wolf team without breaking
+        cover.  Pre-fix, the directive was identical to the good-master
+        case, which is why hybrid p04 in g_3528592081 (master=p01
+        wolf) voted like a villager.
+
+        P0-I2 regression test.
+        """
+        from werewolf_agent.runtime.agent_adapter import _build_hybrid_day_speech_directive
+        players = {
+            "hybrid": PlayerState(id="hybrid", role="hybrid"),
+            "w1": PlayerState(id="w1", role="werewolf"),
+            "v1": PlayerState(id="v1", role="villager"),
+            "seer": PlayerState(id="seer", role="seer"),
+        }
+        gs = GameState(
+            game_id="hybrid_wolf_master_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            hybrid_master_id="w1",
+            hybrid_master_faction="werewolf",
+        )
+        result = _build_hybrid_day_speech_directive(gs, "hybrid")
+        # The directive should expose a faction-specific block so the
+        # hybrid can adjust its day-speech behavior.
+        assert "hybrid_wolf_master_directive" in result, (
+            "Hybrid with wolf master must receive hidden-ally directive; "
+            f"got keys: {sorted(result.keys())}"
+        )
+        wolf_directive = result["hybrid_wolf_master_directive"]
+        # The text must mention the wolf team or hidden-ally framing.
+        assert ("狼" in wolf_directive) or ("wolf" in wolf_directive.lower()), (
+            f"wolf-master directive should reference wolf/狼; got: {wolf_directive!r}"
+        )
+        # And it must warn against identity-revealing behavior.
+        assert "暴露" in wolf_directive or "隐藏" in wolf_directive, (
+            f"wolf-master directive must include cover discipline; got: {wolf_directive!r}"
+        )
+
+    def test_hybrid_master_good_receives_good_side_focus(self) -> None:
+        """When the hybrid's master is on the good side, the day-speech
+        directive must include a faction-aware block that explicitly
+        nudges the hybrid to help the good team.  Pre-fix, the
+        directive was neutral and gave no faction guidance.
+
+        P0-I2 regression test (companion to wolf-master test).
+        """
+        from werewolf_agent.runtime.agent_adapter import _build_hybrid_day_speech_directive
+        players = {
+            "hybrid": PlayerState(id="hybrid", role="hybrid"),
+            "w1": PlayerState(id="w1", role="werewolf"),
+            "v1": PlayerState(id="v1", role="villager"),
+            "seer": PlayerState(id="seer", role="seer"),
+        }
+        gs = GameState(
+            game_id="hybrid_good_master_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            hybrid_master_id="seer",
+            hybrid_master_faction="good",
+        )
+        result = _build_hybrid_day_speech_directive(gs, "hybrid")
+        assert "hybrid_good_master_directive" in result, (
+            "Hybrid with good master must receive good-side focus; "
+            f"got keys: {sorted(result.keys())}"
+        )
+        good_directive = result["hybrid_good_master_directive"]
+        # The text must mention good side framing.
+        assert "好人" in good_directive or "good" in good_directive.lower(), (
+            f"good-master directive should reference 好人/good; got: {good_directive!r}"
+        )
+
+    def test_hybrid_master_unknown_faction_falls_through_neutral(self) -> None:
+        """If the hybrid has not yet chosen a master, neither the
+        wolf-master nor the good-master block should appear (this
+        preserves the pre-fix behavior for the
+        ``master-not-chosen-yet`` window).  P0-I2 must not regress
+        the existing test that exercises the master-not-chosen state.
+        """
+        from werewolf_agent.runtime.agent_adapter import _build_hybrid_day_speech_directive
+        players = {
+            "hybrid": PlayerState(id="hybrid", role="hybrid"),
+            "seer": PlayerState(id="seer", role="seer"),
+        }
+        gs = GameState(
+            game_id="hybrid_no_master_test",
+            players=players,
+            phase="night",
+            night_number=1,
+        )
+        result = _build_hybrid_day_speech_directive(gs, "hybrid")
+        # Without a chosen master, neither faction block should be set.
+        assert "hybrid_wolf_master_directive" not in result
+        assert "hybrid_good_master_directive" not in result
+        # The neutral identity-disguise directive must still be there.
+        assert "hybrid_speech_directive" in result
 
     def test_hybrid_vote_has_master_strategy(self) -> None:
         """Hybrid vote must receive master-aligned voting strategy."""
@@ -1574,3 +1688,337 @@ class TestWolfSeerPriorityInjection:
         assert ctx is not None
         assert "wolf_high_priority_target" in ctx.strategy_directive
         assert "p03" in ctx.strategy_directive["wolf_high_priority_target"]
+
+
+class TestSheriffDirectiveFallback:
+    """P1-D4 / P1-D6: sheriff vote_push fallback + no-sheriff-after-tear directive.
+
+    When the sheriff is silenced (e.g., muted by poison/self-destruct) or
+    when the badge is torn (no sheriff for the rest of the game), the
+    directive must adapt so players don't keep acting on a stale
+    "明确归票" instruction.
+    """
+
+    @staticmethod
+    def _make_sheriff_gs(
+        *,
+        sheriff_id: str | None = "p03",
+        sheriff_badge_state: str = "active",
+        silenced: bool = False,
+        alive: bool = True,
+    ) -> GameState:
+        players = {
+            "p01": PlayerState(id="p01", role="werewolf", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id="p03", role="villager", alive=alive),
+            "p04": PlayerState(id="p04", role="seer", alive=True),
+            "p05": PlayerState(id="p05", role="witch", alive=True),
+            "p06": PlayerState(id="p06", role="hunter", alive=True),
+        }
+        events: list[GameEvent] = []
+        if silenced and sheriff_id:
+            events.append(
+                GameEvent(
+                    type="sheriff_silenced",
+                    payload={"sheriff_id": sheriff_id, "reason": "witch_poison"},
+                ),
+            )
+        return GameState(
+            game_id="sheriff_fallback_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            sheriff_id=sheriff_id,
+            sheriff_badge_state=sheriff_badge_state,
+            events=events,
+        )
+
+    def _invoke_day_speech(self, gs: GameState, speaker_id: str):
+        """Run agent_day_speech and return the captured strategy_directive."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_speech
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+
+            def act(self, context):
+                self.last_context = context
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH, speech="test", reason="test",
+                    ),
+                    RetryInfo(),
+                )
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+
+            def get_agent(self, player_id):
+                return self.agent if player_id == speaker_id else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_day_speech(state, engine, registry, speaker_id)
+        return registry.agent.last_context.strategy_directive
+
+    def test_sheriff_silent_fallback(self) -> None:
+        """P1-D4: when the active sheriff is silenced (e.g., by witch poison
+        or self-destruct), the directive must swap `sheriff_vote_push` for
+        `sheriff_silent` so the model doesn't tell a muted player to
+        "明确归票".
+
+        Pre-fix: ``sheriff_vote_push`` was rendered unconditionally for
+        the active sheriff, contradicting the silence condition.
+        """
+        gs = self._make_sheriff_gs(silenced=True)
+        directive = self._invoke_day_speech(gs, "p03")
+        assert "sheriff_silent" in directive, (
+            "silenced sheriff must receive `sheriff_silent` directive; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        # The old vote_push directive must NOT appear when silenced.
+        assert "sheriff_vote_push" not in directive, (
+            "silenced sheriff must not receive `sheriff_vote_push`; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        # The fallback text should tell the player they can't speak and
+        # nudge them to use vote_silent / open voting.
+        text = directive["sheriff_silent"]
+        assert "无法发言" in text or "不能发言" in text
+        assert "vote_silent" in text or "投票" in text
+
+    def test_active_sheriff_without_silence_still_gets_vote_push(self) -> None:
+        """Sanity: when the sheriff is NOT silenced, the original
+        `sheriff_vote_push` directive must still be present (regression
+        guard for P1-D4)."""
+        gs = self._make_sheriff_gs(silenced=False)
+        directive = self._invoke_day_speech(gs, "p03")
+        assert "sheriff_vote_push" in directive
+        assert "sheriff_silent" not in directive
+
+    def test_no_sheriff_after_tear(self) -> None:
+        """P1-D6: when the badge has been torn (no sheriff for the rest
+        of the game), every player must receive a `sheriff_election_state`
+        directive so PK / vote participants know there is no 归票人 and
+        speech order is random.
+
+        Pre-fix: no directive mentioned the torn-badge state, so players
+        acted as if a sheriff still existed.
+        """
+        gs = self._make_sheriff_gs(sheriff_id=None, sheriff_badge_state="torn")
+        # Speaker is a normal villager, not the (now absent) sheriff.
+        directive = self._invoke_day_speech(gs, "p04")
+        assert "sheriff_election_state" in directive, (
+            "after badge tear, every player must receive `sheriff_election_state`; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        text = directive["sheriff_election_state"]
+        # The directive should explicitly state there's no sheriff and
+        # that speech order is random.
+        assert "无警长" in text
+        assert "随机" in text
+        # And the no-sheriff state must NOT also carry the vote_push
+        # directive (otherwise the model is doubly confused).
+        assert "sheriff_vote_push" not in directive
+        assert "sheriff_silent" not in directive
+
+    def test_no_sheriff_after_tear_renders_for_wolf_too(self) -> None:
+        """P1-D6 regression: the torn-badge directive must reach non-good
+        players too (wolves should also know there's no sheriff to push
+        votes through, otherwise they may still try to coordinate as if
+        a 归票 channel existed)."""
+        gs = self._make_sheriff_gs(sheriff_id=None, sheriff_badge_state="torn")
+        directive = self._invoke_day_speech(gs, "p01")
+        assert "sheriff_election_state" in directive
+
+    def test_active_sheriff_state_does_not_emit_election_state(self) -> None:
+        """Sanity: when the sheriff is active, the `sheriff_election_state`
+        directive must NOT appear (it would be contradictory)."""
+        gs = self._make_sheriff_gs(silenced=False)
+        directive = self._invoke_day_speech(gs, "p03")
+        assert "sheriff_election_state" not in directive
+
+
+class TestWitchPoisonUnifiedDirective:
+    """P1-D5: witch poison guidance must be unified into a single
+    `witch_poison_strategy` directive with 3 context-aware branches.
+
+    Pre-fix: `witch_poison_threshold` and `poison_urgency` could both be
+    rendered (and contradict each other); there was no `no_pressure`
+    branch for early game.  The unified directive must:
+      1) `no_pressure_save_for_late` — early game, no pressure
+      2) `urgency_under_X_alive` — low alive count, urgent
+      3) `evidence_required_threshold` — mid game, need hard evidence
+    """
+
+    def _make_witch_gs(
+        self,
+        *,
+        night_number: int = 1,
+        alive_count: int = 12,
+        poison_used: bool = False,
+    ) -> GameState:
+        players: dict[str, PlayerState] = {}
+        # All 12 players with standard roles; we'll mark some as dead
+        # to hit the requested alive_count.  The witch is always
+        # ``p09`` (power-role slot) and stays alive so the test
+        # can call ``agent_night_witch``.
+        all_roles = (
+            ["werewolf"] * 4
+            + ["villager"] * 3
+            + ["seer", "witch", "hunter", "idiot", "hybrid"]
+        )
+        for i, role in enumerate(all_roles, start=1):
+            players[f"p{i:02d}"] = PlayerState(
+                id=f"p{i:02d}", role=role, alive=True,
+            )
+        # Mark some non-witch players as dead until alive_count is hit.
+        witch_id = "p09"
+        # Kill from the back (p12, p11, ...) so roles stay stable.
+        kill_order = ["p12", "p11", "p10", "p08", "p07", "p06",
+                      "p05", "p04", "p03", "p02", "p01"]
+        for pid in kill_order:
+            if sum(1 for p in players.values() if p.alive) <= alive_count:
+                break
+            players[pid] = PlayerState(
+                id=pid, role=players[pid].role, alive=False,
+            )
+        return GameState(
+            game_id="witch_poison_unified_test",
+            players=players,
+            phase="night",
+            night_number=night_number,
+            poison_used=poison_used,
+        )
+
+    def _invoke_witch(self, gs: GameState) -> dict:
+        from werewolf_agent.runtime.agent_adapter import agent_night_witch
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+
+            def act(self, context):
+                self.last_context = context
+                return (
+                    PlayerAction(action_type=ActionType.NO_ACTION, reason="test"),
+                    RetryInfo(),
+                )
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+
+            def get_agent(self, player_id):
+                witch_id = next(
+                    pid for pid, p in gs.players.items()
+                    if p.role == "witch" and p.alive
+                )
+                return self.agent if player_id == witch_id else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        witch_id = next(
+            pid for pid, p in gs.players.items()
+            if p.role == "witch" and p.alive
+        )
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": "p01",
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_night_witch(state, engine, registry)
+        return registry.agent.last_context.strategy_directive
+
+    def test_witch_poison_unified_branch(self) -> None:
+        """P1-D5: the strategy_directive must carry a single
+        `witch_poison_strategy` dict whose ``branch`` is one of the three
+        documented branches, picked by game state.
+
+        Pre-fix: ``witch_poison_threshold`` and ``poison_urgency`` could
+        both fire, contradicting each other; there was no
+        ``no_pressure_save_for_late`` branch.
+        """
+        gs = self._make_witch_gs(alive_count=12, poison_used=False)
+        directive = self._invoke_witch(gs)
+        assert "witch_poison_strategy" in directive, (
+            "witch must receive unified `witch_poison_strategy` directive; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        wp = directive["witch_poison_strategy"]
+        assert "branch" in wp, (
+            f"witch_poison_strategy must have a 'branch' field; got: {wp!r}"
+        )
+        assert wp["branch"] in {
+            "no_pressure_save_for_late",
+            "urgency_under_X_alive",
+            "evidence_required_threshold",
+        }, f"unexpected branch value: {wp['branch']!r}"
+        # The old split keys must NOT appear alongside the unified one.
+        assert "witch_poison_threshold" not in directive
+        assert "poison_urgency" not in directive
+
+    def test_witch_poison_urgency_branch_under_low_alive(self) -> None:
+        """When alive count is low (≤ 7), the branch must escalate to
+        `urgency_under_X_alive`."""
+        gs = self._make_witch_gs(alive_count=6, poison_used=False)
+        directive = self._invoke_witch(gs)
+        wp = directive["witch_poison_strategy"]
+        assert wp["branch"] == "urgency_under_X_alive", (
+            f"low alive count must trigger urgency branch; got: {wp['branch']!r}"
+        )
+        # The directive text should mention urgency / 紧急.
+        text = wp.get("text", "") + wp.get("advice", "")
+        assert "紧急" in text or "urgency" in text.lower() or "不用毒药" in text
+
+    def test_witch_poison_evidence_branch_mid_game(self) -> None:
+        """Mid game (8-9 alive) with no urgency should land on
+        `evidence_required_threshold`."""
+        gs = self._make_witch_gs(alive_count=9, poison_used=False)
+        directive = self._invoke_witch(gs)
+        wp = directive["witch_poison_strategy"]
+        assert wp["branch"] == "evidence_required_threshold", (
+            f"mid game must trigger evidence_required_threshold branch; "
+            f"got: {wp['branch']!r}"
+        )
+
+    def test_witch_poison_no_pressure_branch_early_game(self) -> None:
+        """Early game (10+ alive, poison unused) should land on
+        `no_pressure_save_for_late`."""
+        gs = self._make_witch_gs(alive_count=11, poison_used=False)
+        directive = self._invoke_witch(gs)
+        wp = directive["witch_poison_strategy"]
+        assert wp["branch"] == "no_pressure_save_for_late", (
+            f"early game with no pressure must trigger no_pressure branch; "
+            f"got: {wp['branch']!r}"
+        )

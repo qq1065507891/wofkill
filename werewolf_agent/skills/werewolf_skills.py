@@ -95,36 +95,7 @@ def _load_manifests() -> list[SkillDefinition]:
     return result
 
 
-def _load_tool_skills() -> tuple[set[str], dict[str, dict[str, Any]]]:
-    """Load tool-skill metadata from SKILL.md frontmatter."""
-    from pathlib import Path
-
-    _root = Path(__file__).resolve().parent
-    names: set[str] = set()
-    tools: dict[str, dict[str, Any]] = {}
-    for skill_dir in sorted(_root.iterdir()):
-        if not skill_dir.is_dir() or skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
-            continue
-        if skill_dir.name == "manifests":
-            continue
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.exists():
-            continue
-        data = _parse_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
-        if not data:
-            continue
-        if data.get("is_tool_skill") and data.get("tool_name"):
-            names.add(data["name"])
-            tools[data["name"]] = {
-                "name": data["tool_name"],
-                "description": data.get("tool_description", ""),
-                "input_schema": {"type": "object", "properties": {}},
-            }
-    return names, tools
-
-
 SKILL_DEFINITIONS: list[SkillDefinition] = _load_manifests()
-
 
 
 # ---------------------------------------------------------------------------
@@ -430,16 +401,37 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
 @register_handler(SkillName.PUSH_VOTE)
 def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
+    # P1-K5: branch on task_type. push_vote during VOTE phase = "who to
+    # actually vote for". push_vote during SPEECH phase = "how to
+    # rhetorically rally others to vote for X". The two need different
+    # advice and confidence framing.
+    is_vote_task = inp.task_type == "vote"
+    is_speech_task = inp.task_type == "speech"
     if gs is None:
-        # static fallback
+        # static fallback — task_type-specific phrasing
+        if is_vote_task:
+            prompt = (
+                "归票建议（投票阶段）：根据发言逻辑和验人信息，"
+                "选择嫌疑最大的人作为你的投票目标。"
+            )
+            speech = ["确认你的最终投票目标", "回顾其嫌疑证据", "准备投出选票"]
+            action = "vote"
+        else:
+            # Default (and speech-task): rhetoric-focused push.
+            prompt = (
+                "归票建议：根据发言逻辑和验人信息，选择嫌疑最大的人归票。"
+                "陈述理由时需要有理有据，号召全场跟随。"
+            )
+            speech = ["陈述归票理由", "分析目标嫌疑", "号召全场归票"]
+            action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="vote",
-            speech_structure=["陈述归票理由", "分析目标嫌疑", "号召全场归票"],
+            recommended_action=action,
+            speech_structure=speech,
             risk_alerts=["归票错误目标可能导致好人损失"],
             confidence=0.6,
             reasoning="归票需要有充分的逻辑依据和说服力",
-            prompt_injectable="归票建议：根据发言逻辑和验人信息，选择嫌疑最大的人归票。陈述理由时需要有理有据，号召全场跟随。",
+            prompt_injectable=prompt,
         )
     # dynamic analysis
     ws = inp.world_state
@@ -449,12 +441,27 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     day = gs.day_number
 
     if not top_suspects:
+        if is_vote_task:
+            prompt = (
+                "归票建议（投票阶段）：当前信息不足，没有明确嫌疑目标。"
+                "选择一个相对最可疑的目标投票，避免弃票。"
+            )
+            action = "vote"
+        elif is_speech_task:
+            prompt = (
+                "归票建议（发言阶段）：当前信息不足，没有明确嫌疑目标。"
+                "在发言中表示需要观察，避免无依据地号召归票。"
+            )
+            action = "speech"
+        else:
+            prompt = "归票建议：当前信息不足，建议观察发言后再决定归票方向。"
+            action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="vote",
+            recommended_action=action,
             confidence=0.4,
             reasoning="当前无明确嫌疑目标",
-            prompt_injectable="归票建议：当前信息不足，建议观察发言后再决定归票方向。",
+            prompt_injectable=prompt,
         )
 
     primary, lean, trust = top_suspects[0]
@@ -475,19 +482,46 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         reasons.append(f"已有多人({len(votes_on)}票)指向该玩家")
 
     reason_text = "；".join(reasons) if reasons else "综合行为分析"
-    prompt = (
-        f"归票建议：根据场上信息，{primary} 的嫌疑最大。"
-        f"理由：{reason_text}。号召全场集中票数归出 {primary}。"
-    )
+    if is_vote_task:
+        # Vote phase: emphasize the target pick + evidence, no rhetoric.
+        prompt = (
+            f"归票建议（投票阶段）：{primary} 的嫌疑最大。"
+            f"理由：{reason_text}。"
+            f"请直接选 {primary} 作为你的投票目标。"
+        )
+        action = "vote"
+        speech = [f"确认{primary}为最终投票目标", f"回顾{primary}的嫌疑证据", "投出选票"]
+        risks = ["归票错误目标可能导致好人损失"]
+    elif is_speech_task:
+        # Speech phase: emphasize rhetoric, herd rallying.
+        prompt = (
+            f"归票建议（发言阶段）：{primary} 的嫌疑最大。"
+            f"理由：{reason_text}。"
+            f"在发言中陈述理由，号召全场集中票数归出 {primary}。"
+        )
+        action = "speech"
+        speech = [f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"]
+        risks = ["归票错误目标可能导致好人损失"]
+    else:
+        # Unknown / default: keep original generic phrasing.
+        prompt = (
+            f"归票建议：根据场上信息，{primary} 的嫌疑最大。"
+            f"理由：{reason_text}。号召全场集中票数归出 {primary}。"
+        )
+        action = "vote"
+        speech = [f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"]
+        risks = ["归票错误目标可能导致好人损失"]
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="vote",
+        recommended_action=action,
         recommended_target=primary,
-        speech_structure=[f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"],
-        risk_alerts=["归票错误目标可能导致好人损失"],
+        speech_structure=speech,
+        risk_alerts=risks,
         confidence=0.6 + min(0.2, len(reasons) * 0.05),
-        reasoning=f"动态分析：{primary} 有{len(reasons)}个嫌疑信号",
+        reasoning=f"动态分析：{primary} 有{len(reasons)}个嫌疑信号"
+                  + ("（vote task）" if is_vote_task else
+                     "（speech task）" if is_speech_task else ""),
         prompt_injectable=prompt,
     )
 
