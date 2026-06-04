@@ -985,6 +985,89 @@ def test_rag_hints_empty_when_no_hints():
     assert "知识库提示" not in prompt
 
 
+def test_rag_hints_include_player_id_warning():
+    """P0-G3: live prompt must include a hard-constraint warning that
+    RAG case player IDs are NOT this game's players — the LLM must not
+    parrot case-specific speech or vote patterns as if they were
+    current-game events.
+
+    Without this prefix the LLM has been observed in g_3528592081 to
+    treat case player IDs (e.g., p04 / p09) as current-game player
+    IDs and align votes / speech to those concrete IDs, which is
+    information leakage and tactical error.
+    """
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [{
+            "title": "京城大师赛 250415 抗推预言家",
+            "summary": "狼队在白天通过抗推预言家获得票数优势。",
+            "key_decisions": ["白天全力归票预言家"],
+        }],
+    })
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The exact prefix the plan specifies.
+    expected_prefix = (
+        "⚠️ RAG 案例中的玩家 ID 与本局无关；"
+        "不得直接套用案例中具体玩家的发言或票型。"
+    )
+    assert expected_prefix in prompt, (
+        f"P0-G3: the RAG hints section must include the hard-constraint "
+        f"prefix about case-vs-current player IDs. "
+        f"Expected: {expected_prefix!r}\nGot prompt excerpt:\n"
+        + prompt[prompt.find("知识库提示"):prompt.find("知识库提示") + 400]
+    )
+    # The warning must be in the 知识库提示 section, not buried elsewhere.
+    rag_section_start = prompt.find("知识库提示")
+    rag_section_end = prompt.find("\n\n", rag_section_start)
+    if rag_section_end == -1:
+        rag_section_end = len(prompt)
+    rag_section = prompt[rag_section_start:rag_section_end]
+    assert expected_prefix in rag_section, (
+        "P0-G3: the warning must live inside the 知识库提示 section, "
+        "not in some other section of the prompt."
+    )
+
+
+def test_rag_hints_player_id_warning_appears_before_json_payload():
+    """P0-G3: the warning must be the FIRST line of the 知识库提示
+    section, before the JSON payload. Otherwise an LLM that reads
+    the section top-to-bottom might process the JSON before seeing
+    the warning, and the whole point of the prefix is to set the
+    "do not parrot" frame BEFORE the model sees the case data.
+    """
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [{
+            "title": "案例标题",
+            "summary": "案例摘要。",
+            "key_decisions": ["决策1"],
+        }],
+    })
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    rag_start = prompt.find("知识库提示")
+    after_header = prompt[rag_start:]
+    # The warning must precede the first JSON key in the section.
+    json_start = after_header.find('"title"')
+    warning_start = after_header.find("⚠️")
+    assert warning_start != -1, "P0-G3: warning prefix must be present"
+    assert json_start != -1, "P0-G3: JSON payload must still be present"
+    assert warning_start < json_start, (
+        "P0-G3: the warning must come BEFORE the JSON payload in the "
+        "知识库提示 section."
+    )
+
+
+def test_rag_hints_no_warning_when_no_hints():
+    """P0-G3: the warning is a hard-constraint prefix that only makes
+    sense when there ARE RAG hints. With no hints, the section is
+    omitted entirely (existing behavior) and the warning must not
+    leak into other sections."""
+    ctx = _make_villager_context()
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "RAG 案例中的玩家 ID" not in prompt
+    assert "⚠️" not in prompt or "RAG 案例" not in prompt
+
+
 def test_skill_catalog_not_in_system_prompt_for_seer():
     """P0-R2: seer system prompt must not include the skill catalog.
 

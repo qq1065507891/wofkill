@@ -426,8 +426,18 @@ class PlayerPromptBuilder:
         # (relevance, quality, source, visibility, display annotation)
         # belongs in the audit log, not the LLM context window.
         slim_items = self._slim_rag_hint_items(ctx.rag_hints[:3])
+        # P0-G3: hard-constraint prefix MUST come before the JSON
+        # payload. Without this the LLM has been observed to parrot
+        # case-specific player IDs (e.g., p04 / p09 in seed cases) as
+        # if they were this game's player IDs, which is information
+        # leakage and tactical error.
+        warning = (
+            "⚠️ RAG 案例中的玩家 ID 与本局无关；"
+            "不得直接套用案例中具体玩家的发言或票型。\n"
+        )
         return (
             "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
+            + warning
             + self._compact_json(slim_items)
         )
 
