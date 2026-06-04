@@ -1126,6 +1126,33 @@ class TestRetrieverEdgeCases:
         hits = retriever.retrieve(query)
         assert len(hits) > 0
 
+    def test_situation_tokenize_handles_action_list(self) -> None:
+        """R7: ``_tokenize_situation`` must recover every action name
+        from a Python-style ``actions=['vote', 'speech']`` blob, not
+        just the first one. The second chunk ``'speech']`` falls into
+        the no-``=`` branch and is added verbatim with the trailing
+        quote+bracket noise; the first chunk already strips because
+        its value side runs through the regex. Net effect: ``speech``
+        is never available as a tag-overlap target.
+
+        Test asserts both ``vote`` and ``speech`` survive the
+        tokenizer cleanly.
+        """
+        from werewolf_agent.rag.retriever import _tokenize_situation
+
+        tokens = _tokenize_situation("actions=['vote', 'speech']")
+        assert "vote" in tokens, (
+            f"R7: 'vote' missing from tokens; got {tokens!r}"
+        )
+        assert "speech" in tokens, (
+            f"R7: 'speech' missing from tokens; got {tokens!r}"
+        )
+        # No quote / bracket / comma residue should survive.
+        for piece in tokens:
+            assert piece == piece.strip("[](){}',\" \t\n"), (
+                f"R7: token {piece!r} still carries list-syntax noise"
+            )
+
     def test_duplicate_entry_id_overwrites(self):
         retriever = StrategyRetriever()
         retriever.add_entry(_make_entry(entry_id="dup", title="First"))

@@ -117,23 +117,32 @@ def _tokenize_situation(situation: str) -> set[str]:
     string ``"抗推预言家"``) still tokenize correctly because there
     is no ``=`` in them and the value side just becomes the whole
     word.
+
+    R7: the no-``=`` branch (chunks like ``'speech']`` produced when
+    the situation is ``actions=['vote', 'speech']``) used to add the
+    chunk verbatim, leaving the trailing ``']`` glued to ``speech``.
+    We now run the same strip-list-syntax step on every chunk so
+    both ``vote`` and ``speech`` are recovered cleanly.
     """
     if not situation:
         return set()
     tokens: set[str] = set()
     for chunk in situation.split():
         if "=" not in chunk:
-            tokens.add(chunk.lower())
-            continue
-        key, _, value = chunk.partition("=")
-        # Drop the key (e.g. "role", "actions") — only the value
-        # tokens are useful for tag overlap. We still keep the key
-        # when the value is empty (e.g. "actions=") so the
-        # token set is non-empty.
-        value = value.strip()
-        if not value:
-            tokens.add(key.lower())
-            continue
+            # R7: even when there is no ``=`` the chunk may still
+            # carry list/quote noise (e.g. ``'speech']`` from a
+            # Python-style actions list). Run it through the same
+            # strip pass so ``speech`` is recoverable.
+            value = chunk
+        else:
+            key, _, value = chunk.partition("=")
+            # Drop the key (e.g. "role", "actions") — only the value
+            # tokens are useful for tag overlap. We still keep the key
+            # when the value is empty (e.g. "actions=") so the
+            # token set is non-empty.
+            if not value.strip():
+                tokens.add(key.lower())
+                continue
         # Strip list / set / dict syntax around the value. We split
         # on common delimiters and quote chars; the leftover pieces
         # are individual tokens (e.g. "vote", "speech", "12").
