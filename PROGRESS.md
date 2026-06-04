@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 3 (Memory + Info) MERGED — 2026-06-04**
-- Active task: All 7 batch-3 P0 redesign tasks done (M6, I4, M9, I1, I2, I3). Next: Batch 4 (P1 30 items by 5 area).
+- Current phase: **Batch 4 (P1 Skill) IN PROGRESS — 2026-06-04**
+- Active task: P1-K3 (low-confidence skill not dropped) — TDD red-green cycle.
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
