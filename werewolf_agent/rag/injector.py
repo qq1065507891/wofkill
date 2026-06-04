@@ -10,6 +10,7 @@ Enforces:
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,9 +56,16 @@ class InjectionAuditRecord:
 class RAGInjector:
     """Injects RAG hits into agent context with visibility enforcement."""
 
+    # R8: cap the audit log so a long-running service doesn't leak
+    # memory. 1000 is plenty for live debugging (one entry per
+    # inject call) and well under any reasonable heap budget.
+    _AUDIT_LOG_MAXLEN = 1000
+
     def __init__(self, retriever: StrategyRetriever) -> None:
         self._retriever = retriever
-        self._audit_log: list[InjectionAuditRecord] = []
+        self._audit_log: deque[InjectionAuditRecord] = deque(
+            maxlen=self._AUDIT_LOG_MAXLEN,
+        )
         self._last_audit: InjectionAuditRecord | None = None
 
     def inject(

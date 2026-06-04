@@ -945,6 +945,51 @@ class TestRAGInjector:
         hits = injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
         assert len(hits) == 0
 
+    def test_audit_log_bounded(self) -> None:
+        """R8: ``RAGInjector._audit_log`` must NOT grow without bound.
+        A long-running service that calls ``inject`` thousands of times
+        would otherwise leak memory.
+
+        The fix caps the log at 1000 entries via ``collections.deque``
+        with ``maxlen=1000``. The test injects 1500 times and asserts
+        the log length never exceeds 1000 and that the most recent
+        entries are preserved (FIFO eviction).
+        """
+        from werewolf_agent.rag.injector import RAGInjector as _RI
+        from werewolf_agent.rag.retriever import StrategyRetriever as _SR
+
+        # Bypass the seed-dependent injector helper so the test stays
+        # hermetic and fast — we only care about audit-log accounting,
+        # not the retrieval content.
+        injector = _RI(_SR([]))
+        query = RAGQuery(role="seer", phase="speech")
+
+        n_iterations = 1500
+        cap = 1000
+        for i in range(n_iterations):
+            injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
+
+        log = injector.audit_log()
+        assert len(log) <= cap, (
+            f"R8: audit_log grew to {len(log)} after {n_iterations} inject calls; "
+            f"expected cap of {cap}"
+        )
+        # The most recent audit record must still be tracked on
+        # last_audit (FIFO eviction should not affect the latest one).
+        last = injector.last_audit()
+        assert last is not None
+        # When 1500 entries are pushed and cap=1000, the deque keeps
+        # the LAST 1000. The latest record's identity must therefore
+        # be the last pushed one.
+        assert log[-1] is last
+        # And the audit log must be a copy (so external mutations
+        # don't disturb the deque) per the existing contract.
+        assert isinstance(log, list)
+        assert len(log) == cap, (
+            f"R8: with 1500 inserts and cap=1000, the deque should hold exactly {cap} entries; "
+            f"got {len(log)}"
+        )
+
     def test_injector_does_not_mutate_caller_query(self) -> None:
         """R6: ``RAGInjector.inject`` must NOT mutate the caller's
         ``RAGQuery``. Previously the method set
