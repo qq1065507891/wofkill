@@ -95,36 +95,7 @@ def _load_manifests() -> list[SkillDefinition]:
     return result
 
 
-def _load_tool_skills() -> tuple[set[str], dict[str, dict[str, Any]]]:
-    """Load tool-skill metadata from SKILL.md frontmatter."""
-    from pathlib import Path
-
-    _root = Path(__file__).resolve().parent
-    names: set[str] = set()
-    tools: dict[str, dict[str, Any]] = {}
-    for skill_dir in sorted(_root.iterdir()):
-        if not skill_dir.is_dir() or skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
-            continue
-        if skill_dir.name == "manifests":
-            continue
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.exists():
-            continue
-        data = _parse_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
-        if not data:
-            continue
-        if data.get("is_tool_skill") and data.get("tool_name"):
-            names.add(data["name"])
-            tools[data["name"]] = {
-                "name": data["tool_name"],
-                "description": data.get("tool_description", ""),
-                "input_schema": {"type": "object", "properties": {}},
-            }
-    return names, tools
-
-
 SKILL_DEFINITIONS: list[SkillDefinition] = _load_manifests()
-
 
 
 # ---------------------------------------------------------------------------
