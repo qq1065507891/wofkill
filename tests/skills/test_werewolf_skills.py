@@ -402,6 +402,47 @@ def test_prompt_injectable_length_cap_forces_marker_on_long_input():
 
 
 # ---------------------------------------------------------------------------
+# S-14: bold_claim_handler does NOT name the fake_seer teammate.
+# ---------------------------------------------------------------------------
+
+def test_bold_claim_no_teammate_name():
+    """S-14: bold_claim's teammate-skip path must use role-neutral
+    phrasing. Naming the fake_seer leaks teammate identity into the
+    prompt (a wolf team secret).
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="werewolf", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    # Player p01 is a non-fake_seer wolf (deep cover), teammate p05 is fake_seer.
+    inp = SkillInput(
+        role="werewolf", phase="speech", day=1,
+        game_state=gs, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+        extra={"wolf_team_plan": {"fake_seer": "p05"}},
+    )
+    out = apply_skill(SkillName.BOLD_CLAIM, inp)
+    # prompt_injectable must NOT contain p05 (teammate's player_id).
+    assert "p05" not in out.prompt_injectable, (
+        f"S-14: bold_claim must not name the fake_seer teammate; "
+        f"got: {out.prompt_injectable!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # S-11: protect_power includes idiot in power_roles.
 # ---------------------------------------------------------------------------
 

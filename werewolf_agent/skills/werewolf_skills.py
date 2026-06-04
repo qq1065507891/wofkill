@@ -310,12 +310,18 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     # If wolf_team_plan assigns a different wolf as fake_seer, skip bold claim advice
     wolf_plan = inp.extra.get("wolf_team_plan") if inp.extra else None
     if wolf_plan and wolf_plan.get("fake_seer") and wolf_plan["fake_seer"] != inp.player_id:
+        # S-14: do NOT name the fake_seer teammate.  Role-neutral
+        # phrasing — the teammate's player_id is a wolf-team secret
+        # and must not leak into a prompt that may be inspected by
+        # good-faction analysis tools.
         return SkillOutput(
             skill_name=skill.name.value,
             confidence=0.3,
-            reasoning=f"队友 {wolf_plan['fake_seer']} 负责悍跳，你不需要悍跳",
-            prompt_injectable=f"悍跳建议：你的队友 {wolf_plan['fake_seer']} 负责悍跳预言家，"
-                              f"你不需要悍跳。配合TA的预言家身份进行站边和推人。",
+            reasoning="已有队友占据预言家身份，你不需要悍跳",
+            prompt_injectable=_cap_prompt_injectable(
+                "悍跳建议：已有队友占据预言家身份，你不需要悍跳。"
+                "配合TA的预言家身份进行站边和推人即可。"
+            ),
         )
 
     risks: list[str] = ["悍跳风险：如果对跳方是真预言家，可信度会大幅下降"]
