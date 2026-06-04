@@ -382,6 +382,28 @@ class TestIngestion:
         ingester = CaseIngester()
         assert ingester.get("nope") is None
 
+    def test_ingestion_scans_metadata_tags(self):
+        """R16: ``metadata.tags`` must be scanned by the forbidden-content
+        check. Before this fix an entry whose tags contained
+        ``moderator_knows`` (or any other FORBIDDEN_RAG_KEYWORDS member)
+        passed ingestion — the keyword was in metadata but not in the
+        concatenated text the validator looked at. The audit contract
+        is "no RAG entry may carry a forbidden keyword anywhere",
+        which includes tags.
+        """
+        ingester = CaseIngester()
+        # Make every other field squeaky clean; only the tags carry
+        # the forbidden keyword. If the validator skips tags, this
+        # would pass — we want it to fail loudly.
+        entry = _make_entry(
+            entry_id="tag_bypass",
+            title="Clean title",
+            summary="Clean summary.",
+            tags=["normal_tag", "moderator_knows"],
+        )
+        with pytest.raises(IngestionError, match="Forbidden keyword"):
+            ingester.ingest(entry)
+
 
 # ===================================================================
 # TestSeedData

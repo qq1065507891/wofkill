@@ -63,7 +63,17 @@ class CaseIngester:
 
     def _validate_forbidden_content(self, entry: RAGEntry) -> None:
         """Check entry content for forbidden patterns."""
-        text = f"{entry.title} {entry.summary} {' '.join(entry.key_decisions)} {' '.join(entry.short_quotes)}"
+        # R16: also scan ``metadata.tags``. The audit contract is
+        # "no RAG entry may carry a forbidden keyword anywhere" —
+        # tags are user-supplied free text and used to be silently
+        # skipped, which let an entry with a clean title/summary
+        # but a ``moderator_knows`` tag pass ingestion.
+        text = (
+            f"{entry.title} {entry.summary} "
+            f"{' '.join(entry.key_decisions)} "
+            f"{' '.join(entry.short_quotes)} "
+            f"{' '.join(entry.metadata.tags)}"
+        )
         text_lower = text.lower()
         for kw in FORBIDDEN_RAG_KEYWORDS:
             if kw in text_lower:
