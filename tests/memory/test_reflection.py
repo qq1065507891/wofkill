@@ -376,6 +376,80 @@ def test_vector_fallback_warns(caplog):
 
 
 # ---------------------------------------------------------------------------
+# MEM-28: ReflectionEntry.tags must be bounded to prevent JSON
+# blow-up. A 1000-tag entry (one per speech fragment, say) would
+# serialize to a 30KB JSON blob per reflection, and the cost
+# compounds in the vector index's per-entry IDF. The fix caps
+# tags at 20 entries, each ≤ 64 chars.
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_entry_rejects_too_many_tags():
+    """MEM-28: constructing a ReflectionEntry with 21 tags must
+    raise (ValueError). The cap is 20 tags per entry."""
+    import pytest
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    tags = [f"tag{i:02d}" for i in range(21)]
+    with pytest.raises(ValueError, match="tags"):
+        ReflectionEntry(
+            entry_id="r1", game_id="g1", player_id="p1",
+            role="seer", faction_won=True, text="t",
+            tags=tags,
+        )
+
+
+def test_reflection_entry_accepts_max_tags():
+    """MEM-28 (regression guard): exactly 20 tags is allowed."""
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    tags = [f"tag{i:02d}" for i in range(20)]
+    entry = ReflectionEntry(
+        entry_id="r1", game_id="g1", player_id="p1",
+        role="seer", faction_won=True, text="t",
+        tags=tags,
+    )
+    assert len(entry.tags) == 20
+
+
+def test_reflection_entry_rejects_too_long_tag():
+    """MEM-28: a single tag > 64 chars is rejected."""
+    import pytest
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    with pytest.raises(ValueError, match="tag"):
+        ReflectionEntry(
+            entry_id="r1", game_id="g1", player_id="p1",
+            role="seer", faction_won=True, text="t",
+            tags=["ok", "x" * 65],
+        )
+
+
+def test_reflection_entry_accepts_max_length_tag():
+    """MEM-28 (regression guard): a 64-char tag is allowed."""
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    entry = ReflectionEntry(
+        entry_id="r1", game_id="g1", player_id="p1",
+        role="seer", faction_won=True, text="t",
+        tags=["x" * 64],
+    )
+    assert entry.tags == ["x" * 64]
+
+
+def test_reflection_entry_accepts_empty_tags():
+    """MEM-28 (regression guard): zero tags is the natural default;
+    the cap must not block that."""
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    entry = ReflectionEntry(
+        entry_id="r1", game_id="g1", player_id="p1",
+        role="seer", faction_won=True, text="t", tags=[],
+    )
+    assert entry.tags == []
+
+
+# ---------------------------------------------------------------------------
 # MEM-25: ReflectionMemory._persist swallows DB write failures by
 # default, which is fine for fire-and-forget logging in production
 # but makes it impossible to detect broken repo implementations
