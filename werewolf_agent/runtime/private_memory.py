@@ -49,6 +49,14 @@ LOGIC_FLAW_MARKERS = (
     "没有解释",
     "站边摇摆",
 )
+"""Markers that suggest a logical flaw in a speech (P1-M10 caveat below).
+
+P1-M10: these are CRUDE SIGNALS, not authoritative verdicts. Many
+non-logic speeches contain words like "漏洞" / "没解释" in a neutral
+or self-referential way ("我没解释清楚" / "这里没有解释"). The LLM
+must NOT treat a match as proof of a logical flaw. Cross-check with
+the actual sentence content before tagging a speaker as flawed.
+"""
 
 VALID_POINT_MARKERS = (
     "合理",
@@ -57,6 +65,25 @@ VALID_POINT_MARKERS = (
     "成立",
     "可信",
     "对得上",
+)
+"""Markers that suggest a valid point in a speech (P1-M10 caveat below).
+
+P1-M10: these are CRUDE SIGNALS, not authoritative verdicts. Words
+like "合理" / "可信" / "说得通" are commonly used in casual
+endorsement ("听起来合理" / "你说的可信") without genuine logical
+validation. The LLM must NOT treat a match as proof the point is
+sound. Cross-check with the actual argument structure before
+endorsing a speaker.
+"""
+
+# P1-M10: an explicit hint string that prompt renderers can append
+# near any private-memory section. Carries the same caveat as the
+# per-marker docstrings, in a form that survives code review even
+# when the marker constants are skimmed.
+_LLM_AWARE_HINT = (
+    "【P1-M10 提示】私有记忆中的'逻辑漏洞'与'合理点'是基于关键词"
+    "（如'漏洞'/'合理'/'可信'）的粗粒度信号，并非权威判定。LLM 在"
+    "引用这些条目时，必须结合原句上下文判断，不可直接当作逻辑结论。"
 )
 
 _ROLE_SELF_DECLAIM_RE = re.compile(

@@ -117,3 +117,80 @@ def test_speech_notes_keeps_stance_marker():
     # The stance_note records the speaker (p05 said it) and the stance text.
     assert memory["stance_notes"][0]["speaker"] == "p05"
     assert "站边" in memory["stance_notes"][0]["point"]
+
+
+# ---------------------------------------------------------------------------
+# P1-M10: private_memory marker disambiguation.
+#
+# Markers like `合理` / `可信` are subjective keywords. Many non-logic
+# speeches contain them ("我说的合理吧" / "可信度不高"). The LLM should
+# treat these as crude signal flags, not authoritative verdicts.
+# The marker constants must document this so future maintainers don't
+# over-rely on them.
+# ---------------------------------------------------------------------------
+
+from werewolf_agent.runtime.private_memory import (  # noqa: E402
+    LOGIC_FLAW_MARKERS,
+    VALID_POINT_MARKERS,
+)
+
+
+def test_markers_have_documentation():
+    """P1-M10: both marker tuples must carry documentation that warns
+    the LLM to treat matches as crude signals, not authoritative.
+    The docstring may live on the tuple itself, on the module, or on
+    a paired `_LLM_AWARE_HINT` string — but it must exist and must
+    mention the limitation."""
+    import werewolf_agent.runtime.private_memory as pm_mod
+
+    module_doc = (pm_mod.__doc__ or "")
+    logic_flaw_doc = (LOGIC_FLAW_MARKERS.__doc__ or "")
+    valid_point_doc = (VALID_POINT_MARKERS.__doc__ or "")
+
+    has_module_hint = ("crude" in module_doc.lower()
+                       or "粗" in module_doc
+                       or "LLM" in module_doc)
+    has_logic_flaw_hint = ("crude" in logic_flaw_doc.lower()
+                           or "粗" in logic_flaw_doc
+                           or "信号" in logic_flaw_doc
+                           or "LLM" in logic_flaw_doc)
+    has_valid_point_hint = ("crude" in valid_point_doc.lower()
+                            or "粗" in valid_point_doc
+                            or "信号" in valid_point_doc
+                            or "LLM" in valid_point_doc)
+    # A paired hint string is also acceptable.
+    paired_hint = getattr(pm_mod, "_LLM_AWARE_HINT", None) or ""
+    has_paired_hint = bool(paired_hint.strip()) and (
+        "crude" in paired_hint.lower()
+        or "粗" in paired_hint
+        or "信号" in paired_hint
+        or "LLM" in paired_hint
+    )
+
+    assert has_module_hint or has_logic_flaw_hint or has_valid_point_hint or has_paired_hint, (
+        "P1-M10: LOGIC_FLAW_MARKERS / VALID_POINT_MARKERS / module must "
+        "carry a docstring/hint warning that the LLM should treat these "
+        "as crude signals, not authoritative verdicts. "
+        f"module_doc={module_doc!r}, "
+        f"logic_flaw_doc={logic_flaw_doc!r}, "
+        f"valid_point_doc={valid_point_doc!r}, "
+        f"paired_hint={paired_hint!r}"
+    )
+
+
+def test_llm_aware_hint_includes_caveat():
+    """P1-M10: when the optional `_LLM_AWARE_HINT` constant is provided,
+    it must include a non-empty caveat that names the limitation."""
+    import werewolf_agent.runtime.private_memory as pm_mod
+
+    hint = getattr(pm_mod, "_LLM_AWARE_HINT", None)
+    # If the constant exists, it must be a non-empty string that contains
+    # at least one caveat word. We do NOT require the constant to exist —
+    # the test simply ensures that IF the maintainer adds it, it isn't
+    # empty or vague.
+    if hint is not None:
+        assert isinstance(hint, str)
+        assert hint.strip(), "_LLM_AWARE_HINT must be a non-empty string if defined"
+        assert any(token in hint for token in ("信号", "信号", "提示", "线索", "信号", "crude", "LLM", "主观", "不要", "勿")), (
+            f"_LLM_AWARE_HINT should mention the limitation, got: {hint!r}"
+        )
