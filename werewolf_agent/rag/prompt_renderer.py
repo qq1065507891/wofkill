@@ -51,6 +51,12 @@ _FORBIDDEN_LIVE_FIELDS: frozenset[str] = frozenset({
 # Maximum number of key_decisions surfaced in the live prompt. The slim
 # renderer's whole point is to give the LLM actionable takeaways without
 # dumping the full entry; cap is intentionally small.
+#
+# R4: this 3-cap is intentional and distinct from the retriever's 5-cap
+# in ``_entry_to_hit`` (``retriever.py:key_decisions=entry.key_decisions[:5]``).
+# The retriever keeps 5 for the audit JSON / review tooling; the prompt
+# renderer further trims to 3 so the LLM only sees the top 3 decisions.
+# Do not unify the two — they serve different audiences (audit vs. LLM).
 _MAX_KEY_DECISIONS_IN_PROMPT = 3
 
 

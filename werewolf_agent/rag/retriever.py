@@ -355,7 +355,7 @@ class StrategyRetriever:
             case_type=meta.case_type,
             role_perspective=meta.role_perspective,
             phase=meta.phase,
-            key_decisions=entry.key_decisions[:5],
+            key_decisions=entry.key_decisions[:5],  # R4: audit 5 / prompt 3 is intentional — prompt_renderer caps at 3 for the live LLM, but the audit JSON keeps the full 5 for review.
             short_quotes=entry.short_quotes,
             tags=meta.tags,
             allowed_in_live_context=allowed_in_live,
