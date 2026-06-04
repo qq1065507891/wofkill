@@ -1814,5 +1814,82 @@ def test_other_roles_still_have_their_guides():
         )
 
 
+# ---------------------------------------------------------------------------
+# P2-S10: persona lives in user_prompt, not system_prompt
+# ---------------------------------------------------------------------------
+#
+# Audit P2-S10 finding: `_build_persona` was originally placed in
+# `build_system_prompt()`. Persona is per-turn (e.g., tone / style hints
+# driven by the situation), but system_prompt is supposed to be stable
+# (s10 architecture). Mixed placement defeats prompt caching on the
+# system side. Fix: move `_build_persona()` invocation from
+# `build_system_prompt()` to `build_user_prompt()`, right after the
+# DYNAMIC_BOUNDARY marker so the persona is grouped with other
+# per-turn dynamic context.
+
+
+def test_persona_in_user_prompt_not_system():
+    """P2-S10: persona must live in user_prompt, not system_prompt.
+
+    The `persona_snapshot` field is per-turn (situation-driven) and
+    should be a dynamic section in the user message, not a stable
+    section in the system prompt. Pre-fix, `_build_persona()` was
+    called from `build_system_prompt()`, so every persona change
+    invalidated the system-prompt cache and could change role
+    behavior mid-game.
+    """
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p07"],
+        public_summary="D2",
+        persona_snapshot={"tone": "aggressive", "style": "blame_p07"},
+    )
+    builder = PlayerPromptBuilder(ctx)
+    system_prompt = builder.build_system_prompt()
+    user_prompt = builder.build_user_prompt(RetryInfo())
+
+    # Persona MUST be in the user prompt.
+    assert "人格设定" in user_prompt, (
+        "persona must appear in user_prompt after P2-S10. "
+        f"user_prompt[:500]={user_prompt[:500]!r}"
+    )
+    # Persona MUST NOT be in the system prompt.
+    assert "人格设定" not in system_prompt, (
+        "persona must NOT appear in system_prompt after P2-S10 "
+        "(per s10 architecture, system_prompt holds stable sections only). "
+        f"system_prompt={system_prompt!r}"
+    )
+
+
+def test_persona_empty_snapshot_is_noop():
+    """P2-S10: empty persona_snapshot renders as no section in either prompt.
+
+    When the persona is empty, the section should be silently dropped
+    in both system and user prompt (consistent with the empty-body
+    pass-through behavior of the rest of the pipeline).
+    """
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p07"],
+        public_summary="D2",
+        # persona_snapshot defaults to {} (empty dict)
+    )
+    builder = PlayerPromptBuilder(ctx)
+    system_prompt = builder.build_system_prompt()
+    user_prompt = builder.build_user_prompt(RetryInfo())
+    assert "人格设定" not in system_prompt
+    assert "人格设定" not in user_prompt
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

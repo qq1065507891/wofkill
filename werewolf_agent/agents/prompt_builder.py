@@ -151,7 +151,10 @@ class PlayerPromptBuilder:
     def build_system_prompt(self) -> str:
         parts: list[str] = []
         parts.append(self._build_core_identity())
-        parts.append(self._build_persona())
+        # P2-S10: _build_persona() moved to build_user_prompt() — persona
+        # is per-turn (situation-driven) and should be a dynamic section
+        # grouped with other per-turn context, not a stable section in
+        # the system prompt.
         parts.append(self._build_information_boundaries())
         parts.append(self._build_game_rules())
         parts.append(self._build_role_guide())
@@ -265,6 +268,7 @@ class PlayerPromptBuilder:
     # Note: this is the OUTER section label, distinct from the inner
     # 硬约束/建议/参考 sub-grouping already in P0-S5 for strategy_directive.
     _SECTION_PRIORITIES: dict[str, str] = {
+        "_build_persona": "【辅助】",
         "_build_phase_context": "【辅助】",
         "_build_belief_state": "【辅助】",
         "_build_public_summary": "【辅助】",
@@ -280,9 +284,8 @@ class PlayerPromptBuilder:
         "_build_recent_transcript": "【可选】",
         "_build_retry_hint": "【硬约束】",
         "_build_strict_output_contract": "【硬约束】",
-        # Note: _build_task_prompt and _build_persona are intentionally
-        # unlabeled — task prompt is the action spec the LLM is
-        # executing; persona lives in the system prompt.
+        # Note: _build_task_prompt is intentionally unlabeled — the
+        # task prompt is the action spec the LLM is executing.
     }
 
     def _label_section(self, builder_name: str, body: str) -> str:
@@ -303,6 +306,11 @@ class PlayerPromptBuilder:
         parts: list[str] = []
         # Boundary marker per s10: above = stable, below = dynamic
         parts.append("=== DYNAMIC_BOUNDARY ===")
+        # P2-S10: persona (per-turn style/tone hint) lives in the user
+        # message, right after the boundary marker, so it stays grouped
+        # with other per-turn dynamic context and does not invalidate
+        # the system-prompt cache on each turn.
+        parts.append(self._label_section("_build_persona", self._build_persona()))
         # P1-S3: each section is wrapped with a [硬约束/辅助/可选]
         # priority label so the LLM can rank attention under tight
         # token budgets. The label is prepended at the section level
