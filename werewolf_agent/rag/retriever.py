@@ -103,6 +103,20 @@ _DISPLAY_QUALITY_LABELS: dict[QualityGrade, str] = {
     QualityGrade.UNREVIEWED: "未审核",
 }
 
+# R17: human-readable case_type label set for the hit annotation.
+# ``source|quality|case_type`` lets a moderator see at a glance
+# whether the hit is an external high-end case, a tactic, project
+# history, a speech template, or a role strategy — not just the
+# source + quality pair. Chinese-first per the project locale.
+_DISPLAY_CASE_TYPE_LABELS: dict[CaseType, str] = {
+    CaseType.EXTERNAL_HIGH_END_CASE: "高端案例",
+    CaseType.EXTERNAL_TACTICS: "战术",
+    CaseType.PROJECT_HISTORY: "历史",
+    CaseType.PROJECT_REVIEW: "复盘",
+    CaseType.ROLE_STRATEGY: "角色策略",
+    CaseType.SPEECH_TEMPLATE: "模板",
+}
+
 
 def _tokenize_situation(situation: str) -> set[str]:
     """P1-G7: turn a key=value situation blob into a token set.
@@ -402,13 +416,19 @@ class StrategyRetriever:
         # values are still on RAGHit.source_type / RAGHit.quality_grade
         # for the audit log; this annotation is the moderator-facing
         # one-liner and must read like a phrase.
+        # R17: case_type is appended as a third pipe-delimited slot
+        # so the moderator can tell external-high-end cases apart
+        # from tactics / history / templates at a glance.
         source_label = _DISPLAY_SOURCE_LABELS.get(
             meta.source.source_type, meta.source.source_type.value,
         )
         quality_label = _DISPLAY_QUALITY_LABELS.get(
             meta.quality_grade, meta.quality_grade.value,
         )
-        annotation = f"[{source_label}|{quality_label}]"
+        case_type_label = _DISPLAY_CASE_TYPE_LABELS.get(
+            meta.case_type, meta.case_type.value,
+        )
+        annotation = f"[{source_label}|{quality_label}|{case_type_label}]"
 
         return RAGHit(
             entry_id=entry.entry_id,

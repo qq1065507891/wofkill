@@ -831,6 +831,71 @@ class TestRetriever:
         assert source_part.strip()
         assert quality_part.strip()
 
+    def test_hit_annotation_includes_case_type(self) -> None:
+        """R17: ``display_annotation`` must carry a case_type label so a
+        moderator scanning the annotation can tell at a glance whether
+        this hit is an external high-end case, a tactic, project
+        history, a speech template, or a role strategy — not just the
+        source + quality pair.
+
+        The label is the Chinese display string the design doc
+        mandates (e.g. "高端案例" / "战术" / "历史" / "模板" / "复盘" /
+        "角色策略"); the raw enum value is never used.
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        cases = [
+            (CaseType.EXTERNAL_HIGH_END_CASE, "高端案例"),
+            (CaseType.EXTERNAL_TACTICS, "战术"),
+            (CaseType.PROJECT_HISTORY, "历史"),
+            (CaseType.SPEECH_TEMPLATE, "模板"),
+            (CaseType.ROLE_STRATEGY, "角色策略"),
+            (CaseType.PROJECT_REVIEW, "复盘"),
+        ]
+        for case_type, expected_label in cases:
+            entry = RAGEntry(
+                entry_id=f"r17_{case_type.value}",
+                title=f"R17 案例 {case_type.value}",
+                summary="summary",
+                metadata=CaseMetadata(
+                    case_type=case_type,
+                    quality_grade=QualityGrade.COMMUNITY_CASE,
+                    review_status=ReviewStatus.APPROVED,
+                    reviewer="test",
+                    ruleset_id="pre_witch_hunter_idiot_mixed",
+                    player_count=12,
+                    phase="speech",
+                    role_perspective="seer",
+                    visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                    source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                    tags=["seer"],
+                ),
+            )
+            retriever = StrategyRetriever([entry])
+            hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+            assert hits
+            ann = hits[0].display_annotation
+            assert expected_label in ann, (
+                f"R17: annotation for case_type={case_type.value} must "
+                f"include the case_type label {expected_label!r}. "
+                f"Got annotation: {ann!r}"
+            )
+            # The raw enum value must not leak — same human-readable
+            # contract that P1-G8 enforces for source/quality.
+            assert case_type.value not in ann, (
+                f"R17: raw enum value {case_type.value!r} must not appear "
+                f"in the human-readable annotation. Got: {ann!r}"
+            )
+
     def test_relevance_scores_in_range(self):
         retriever, _ = self._make_retriever()
         query = RAGQuery()
