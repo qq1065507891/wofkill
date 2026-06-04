@@ -293,6 +293,105 @@ def test_truncation_omits_caveat_when_no_keyword_signals():
 
 
 # ---------------------------------------------------------------------------
+# MEM-23: action_trace_audit events can be skipped via a config option.
+#
+# Per-action events accumulate over a game's lifetime; the
+# vote_thoughts derived from them only retain the newest entry, so the
+# older ones are pure storage overhead. The fix adds an
+# ``include_action_trace_audit`` flag (default True) on
+# ``build_private_memory`` so callers can opt out.
+# ---------------------------------------------------------------------------
+
+
+def test_skip_action_trace_audit_when_disabled():
+    """MEM-23: build_private_memory(include_action_trace_audit=False)
+    must drop every action_trace_audit event from the resulting
+    memory. vote_thoughts, logic_flaws, valid_points, and stance_notes
+    should all be empty (since the only source of these in the
+    fixture is the audit events)."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    gs = GameState(
+        game_id="g_test_mem23",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "player_id": "p01",
+                    "day_number": 1,
+                    "private_vote_thought": {
+                        "target": "p05",
+                        "standing_with_seer": "p03",
+                        "suspect_reason": "推理有漏洞",
+                        "not_voting_reason": "听起来合理",
+                        "private_reason": "我观察了 p05",
+                    },
+                },
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01", include_action_trace_audit=False)
+
+    for category in ("vote_thoughts", "logic_flaws", "valid_points", "stance_notes"):
+        assert not memory.get(category), (
+            f"MEM-23: {category} must be empty when "
+            f"include_action_trace_audit=False; got {memory.get(category)!r}"
+        )
+    # The whole memory dict is empty (no caveat either, since no
+    # keyword signals survived).
+    assert memory == {}, (
+        f"MEM-23: full memory dict must be empty when audit events "
+        f"are skipped; got {memory!r}"
+    )
+
+
+def test_action_trace_audit_enabled_by_default():
+    """MEM-23 (regression guard): the default behavior (no flag) must
+    still include action_trace_audit events."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    gs = GameState(
+        game_id="g_test_mem23_default",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "player_id": "p01",
+                    "day_number": 1,
+                    "private_vote_thought": {
+                        "target": "p05",
+                        "standing_with_seer": "",
+                        "suspect_reason": "推理有漏洞",
+                        "not_voting_reason": "",
+                        "private_reason": "",
+                    },
+                },
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01")
+    # With audit enabled, the suspect_reason "漏洞" produces a logic_flaw.
+    assert memory.get("logic_flaws"), (
+        f"MEM-23: default behavior must include action_trace_audit "
+        f"events; got {memory!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # P1-M14: private_memory priority-ordered truncation.
 #
 # Currently each category is truncated to 12 entries (`[-12:]`) in

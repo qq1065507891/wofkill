@@ -311,7 +311,11 @@ def _truncate_by_priority(
     return result
 
 
-def build_private_memory(game_state: GameState, player_id: str) -> dict[str, list[dict[str, Any]]]:
+def build_private_memory(
+    game_state: GameState,
+    player_id: str,
+    include_action_trace_audit: bool = True,
+) -> dict[str, list[dict[str, Any]]]:
     """Build memory visible only to ``player_id``.
 
     This intentionally uses only the player's own public statements and private
@@ -320,6 +324,13 @@ def build_private_memory(game_state: GameState, player_id: str) -> dict[str, lis
     P1-M14: when the per-category total exceeds ``_MAX_PRIVATE_MEMORY_TOKENS``,
     drop from the lowest-priority category first. Within a category, keep the
     most recent entries.
+
+    MEM-23: ``include_action_trace_audit`` lets callers opt out of the
+    action_trace_audit event stream. Per-action events accumulate
+    rapidly over a game's lifetime; the ``vote_thoughts`` derived
+    from them only retain the newest entry (older ones are pure
+    storage overhead). The default is True to preserve backwards
+    compatibility with callers that have not been audited.
     """
     memory: dict[str, list[dict[str, Any]]] = {
         "logic_flaws": [],
@@ -331,6 +342,8 @@ def build_private_memory(game_state: GameState, player_id: str) -> dict[str, lis
         if event.type not in MEMORY_EVENT_TYPES:
             continue
         if event.type == "action_trace_audit":
+            if not include_action_trace_audit:
+                continue
             _add_private_vote_thought(memory, event, player_id, game_state)
             continue
         if event.payload.get("visibility") in PRIVATE_VISIBILITIES:
@@ -339,16 +352,10 @@ def build_private_memory(game_state: GameState, player_id: str) -> dict[str, lis
     # P1-M14: priority-ordered truncation replaces the previous
     # `[-12:]` per-category cap. The 12-entry cap is no longer needed
     # because the token budget enforces a more meaningful constraint.
+    # MEM-20: _truncate_by_priority now self-contains the P1-M10
+    # caveat append, so the caller no longer needs to re-add it.
     truncated = _truncate_by_priority(memory, max_tokens=_MAX_PRIVATE_MEMORY_TOKENS)
     result = {key: value for key, value in truncated.items() if value}
-    # MEM-02: surface the P1-M10 caveat when keyword-based signal
-    # categories (logic_flaws / valid_points) survived truncation.
-    # The renderer extracts this from the dict and surfaces it as a
-    # separate prompt line so the LLM treats the entries as crude
-    # signals, not authoritative verdicts. Omit when both categories
-    # are empty to avoid noise.
-    if result.get("logic_flaws") or result.get("valid_points"):
-        result["_llm_aware_hint"] = _LLM_AWARE_HINT
     return result
 
 
