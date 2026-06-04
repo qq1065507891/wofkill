@@ -51,6 +51,9 @@ class TestPlayerActionSchema:
             speech="我归7。",
             reason="7的视角不对",
             confidence=0.72,
+            suspect_reason="p07的视角不对",
+            not_voting_reason="p08也没充分证据",
+            private_reason="我信p03的查杀",
             private_intent=PrivateIntent(
                 true_role="werewolf",
                 faction_goal=FactionGoal.PUSH_GOOD_PLAYER_OUT,
@@ -238,6 +241,89 @@ class TestP2_1ExtraForbid:
 
 
 # ---------------------------------------------------------------------------
+# P2-6: VotePlayerAction must reject empty reason fields
+# ---------------------------------------------------------------------------
+#
+# Audit P2-6 finding: ``suspect_reason`` / ``not_voting_reason`` /
+# ``private_reason`` default to ``""``, but the user prompt says
+# "理由字段不能写「未说明」" — the validator never enforced the
+# rule. A vote with empty reasons slipped through and the audit
+# log happily recorded it. We add a model_validator that rejects
+# empty-string reason fields when ``action_type == VOTE``.
+#
+# Note: ``standing_with_seer`` is intentionally NOT in the rejection
+# list — a seer stands with their OWN check (own ID is implicit),
+# so empty string is the documented default for them. Non-seer roles
+# that legitimately have no seer claim to stand with also pass
+# empty. Only the three reason fields are required to be non-empty.
+
+
+class TestVoteActionRejectsEmptyReason:
+    """P2-6: VotePlayerAction must reject empty suspect_reason,
+    not_voting_reason, private_reason. The prompt explicitly
+    forbids writing 「未说明」 — the schema must enforce it.
+    """
+
+    def test_vote_action_rejects_empty_reason(self) -> None:
+        """P2-6: empty suspect_reason on a vote raises ValidationError."""
+        with pytest.raises(ValidationError, match="suspect_reason|non-empty"):
+            VotePlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p05",
+                suspect_reason="",
+                not_voting_reason="x",
+                private_reason="y",
+            )
+
+    def test_vote_action_rejects_empty_not_voting_reason(self) -> None:
+        with pytest.raises(ValidationError, match="not_voting_reason|non-empty"):
+            VotePlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p05",
+                suspect_reason="x",
+                not_voting_reason="",
+                private_reason="y",
+            )
+
+    def test_vote_action_rejects_empty_private_reason(self) -> None:
+        with pytest.raises(ValidationError, match="private_reason|non-empty"):
+            VotePlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p05",
+                suspect_reason="x",
+                not_voting_reason="y",
+                private_reason="",
+            )
+
+    def test_vote_action_accepts_filled_reasons(self) -> None:
+        """Regression: a vote with all three reason fields filled
+        must still validate."""
+        action = VotePlayerAction(
+            action_type=ActionType.VOTE,
+            target_id="p05",
+            suspect_reason="p05没有回应p03的查杀逻辑",
+            not_voting_reason="p07虽然被踩但无明确证据",
+            private_reason="心里活动：更信p03的预言家线",
+        )
+        assert action.suspect_reason == "p05没有回应p03的查杀逻辑"
+
+    def test_vote_action_allows_empty_standing_with_seer(self) -> None:
+        """P2-6: ``standing_with_seer`` is intentionally NOT in the
+        rejection list — a seer stands with their OWN check (own
+        ID is implicit, so empty string is the documented default).
+        """
+        action = VotePlayerAction(
+            action_type=ActionType.VOTE,
+            target_id="p05",
+            standing_with_seer="",
+            suspect_reason="x",
+            not_voting_reason="y",
+            private_reason="z",
+        )
+        assert action.standing_with_seer == ""
+
+
+# ---------------------------------------------------------------------------
 # Action validator tests
 # ---------------------------------------------------------------------------
 
@@ -311,6 +397,9 @@ class TestPlayerActionUnion:
             target_id="p05",
             vote_basis="speech_logic",
             seer_stance="undecided",
+            suspect_reason="p05发言矛盾",
+            not_voting_reason="p07没有明显证据",
+            private_reason="我投p05",
         )
         assert action.action_kind == "vote"
         assert action.action_type == ActionType.VOTE
@@ -330,6 +419,9 @@ class TestPlayerActionUnion:
             "target_id": "p05",
             "vote_basis": "speech_logic",
             "seer_stance": "undecided",
+            "suspect_reason": "p05发言矛盾",
+            "not_voting_reason": "p07没有明显证据",
+            "private_reason": "我投p05",
         }
         action = PlayerAction.model_validate(data)
         assert isinstance(action, VotePlayerAction)
@@ -360,6 +452,9 @@ class TestPlayerActionUnion:
             target_id="p07",
             vote_basis="speech_logic",
             seer_stance="undecided",
+            suspect_reason="p07的视角不对",
+            not_voting_reason="p08没明显证据",
+            private_reason="我信p03的查杀",
         )
         assert isinstance(action, VotePlayerAction)
         assert action.target_id == "p07"
@@ -411,8 +506,18 @@ class TestPlayerActionUnion:
         for action_type, target in target_required:
             with pytest.raises(ValidationError):
                 PlayerAction(action_type=action_type)
-            # Sanity: with target, it succeeds
-            action = PlayerAction(action_type=action_type, target_id=target)
+            # Sanity: with target, it succeeds. Vote also requires
+            # the three reason fields (P2-6); fill them in here.
+            if action_type == ActionType.VOTE:
+                action = PlayerAction(
+                    action_type=action_type,
+                    target_id=target,
+                    suspect_reason="x",
+                    not_voting_reason="y",
+                    private_reason="z",
+                )
+            else:
+                action = PlayerAction(action_type=action_type, target_id=target)
             assert action.target_id == target
 
     def test_all_optional_target_variants_succeed_without_target(self) -> None:

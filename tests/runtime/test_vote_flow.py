@@ -461,6 +461,9 @@ def test_agent_day_vote_excludes_voter_from_legal_targets() -> None:
                 action_type=ActionType.VOTE,
                 target_id="p02",
                 reason="p02 has the weakest public logic",
+                suspect_reason="p02发言前后矛盾",
+                not_voting_reason="其他人没明显证据",
+                private_reason="我投p02",
             ), RetryInfo()
 
     agent = Agent()

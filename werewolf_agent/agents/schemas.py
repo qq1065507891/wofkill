@@ -319,6 +319,32 @@ class VotePlayerAction(PlayerAction):
         default="", description="Private vote audit: full non-public reasoning for moderator audit"
     )
 
+    @model_validator(mode="after")
+    def _validate_reason_fields_non_empty(self) -> "VotePlayerAction":
+        # P2-6: the user prompt forbids writing 「未说明」 in the three
+        # reason fields — enforce that at the schema level so the
+        # retry loop can surface the parse error and the LLM learns
+        # to fill in actual reasoning. ``standing_with_seer`` is
+        # intentionally NOT validated: a seer stands with their OWN
+        # check (own ID is implicit, so empty is the documented
+        # default for them) and non-seer roles with no seer claim
+        # to stand with also pass empty.
+        empty_fields = [
+            name
+            for name, value in (
+                ("suspect_reason", self.suspect_reason),
+                ("not_voting_reason", self.not_voting_reason),
+                ("private_reason", self.private_reason),
+            )
+            if not value or not value.strip()
+        ]
+        if empty_fields:
+            raise ValueError(
+                "vote action reason fields must be non-empty (the prompt "
+                "forbids 「未说明」): " + ", ".join(empty_fields)
+            )
+        return self
+
 
 class SpeechPlayerAction(PlayerAction):
     """Public speech action — speech text is the primary payload."""

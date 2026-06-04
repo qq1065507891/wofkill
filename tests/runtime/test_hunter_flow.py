@@ -67,12 +67,12 @@ class _HunterMockAgent:
                 reason="shoot",
                 confidence=0.9,
                 private_intent=None,
-            ), RetryInfo(attempts=0, errors=[])
+            ), RetryInfo(attempt=1, max_retries=3)
         return FallbackAction(
             action_type=ActionType.NO_ACTION,
             target_id=None,
             reason="no shot",
-        ), RetryInfo(attempts=0, errors=[])
+        ), RetryInfo(attempt=1, max_retries=3)
 
 class TestHunterShotTiming:
     """Design doc §3.2: hunter can shoot when killed by wolves or exiled,
