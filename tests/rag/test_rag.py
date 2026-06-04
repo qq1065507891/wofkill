@@ -631,6 +631,166 @@ class TestRetriever:
             assert hit.display_annotation  # Non-empty
             assert "|" in hit.display_annotation  # Contains source|quality format
 
+    def test_display_annotation_human_readable(self) -> None:
+        """P1-G8: display_annotation uses human-readable Chinese /
+        English labels, not the raw enum values like
+        'self_play_candidate' or 'public_tournament'. The raw
+        values stay on RAGHit.source_type / RAGHit.quality_grade
+        for the audit log.
+
+        The annotation is shown to the moderator and the live LLM
+        must not see it anyway (it's stripped by the slim renderer);
+        but the audit path keeps it for human reading. Generic
+        English tokens like 'candidate' / 'tournament' are not
+        what a moderator wants to scan.
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        # Build one entry per (source_type, quality_grade) pair that
+        # we know used to produce the ugly raw-value annotation.
+        from werewolf_agent.rag.retriever import (
+            _DISPLAY_SOURCE_LABELS,
+            _DISPLAY_QUALITY_LABELS,
+        )
+
+        # Sanity check: the mapping tables must exist and must NOT
+        # contain any raw enum value verbatim (except for cases
+        # where the English short label happens to be the same as
+        # the value).
+        for raw in (
+            SourceType.PUBLIC_TOURNAMENT,
+            SourceType.SELF_PLAY,
+            SourceType.MANUAL_ENTRY,
+            SourceType.RULE_DERIVED,
+        ):
+            label = _DISPLAY_SOURCE_LABELS.get(raw)
+            assert label is not None, f"missing mapping for {raw}"
+            assert label != raw.value, (
+                f"P1-G8: {raw.value!r} should map to a human-readable "
+                f"label, not the raw enum value"
+            )
+
+        for raw in (
+            QualityGrade.SELF_PLAY_CANDIDATE,
+            QualityGrade.HIGH_RANK_GAME,
+            QualityGrade.PRO_MATCH,
+        ):
+            label = _DISPLAY_QUALITY_LABELS.get(raw)
+            assert label is not None, f"missing mapping for {raw}"
+            assert label != raw.value, (
+                f"P1-G8: {raw.value!r} should map to a human-readable "
+                f"label, not the raw enum value"
+            )
+
+        # End-to-end: a SELF_PLAY + SELF_PLAY_CANDIDATE entry used to
+        # produce "[self_play|self_play_candidate]"; the new
+        # annotation must not contain those raw tokens.
+        entry = RAGEntry(
+            entry_id="g8_test",
+            title="G8 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.SELF_PLAY_CANDIDATE,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.SELF_PLAY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+        assert hits
+        ann = hits[0].display_annotation
+        assert "self_play" not in ann
+        assert "self_play_candidate" not in ann
+
+        # Same check for the common high-end case.
+        entry2 = RAGEntry(
+            entry_id="g8_test2",
+            title="G8 高端案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.EXTERNAL_HIGH_END_CASE,
+                quality_grade=QualityGrade.HIGH_RANK_GAME,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.PUBLIC_TOURNAMENT),
+                tags=["seer"],
+            ),
+        )
+        retriever2 = StrategyRetriever([entry2])
+        hits2 = retriever2.retrieve(RAGQuery(role="seer", phase="speech"))
+        assert hits2
+        ann2 = hits2[0].display_annotation
+        assert "public_tournament" not in ann2
+        assert "high_rank_game" not in ann2
+
+    def test_display_annotation_keeps_pipe_separator(self) -> None:
+        """P1-G8: the annotation still uses '|' to separate source
+        from quality — the human-readable mapping must preserve the
+        existing delimiter convention so downstream consumers that
+        parse the annotation don't break."""
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        entry = RAGEntry(
+            entry_id="g8_pipe",
+            title="G8 pipe 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.SELF_PLAY_CANDIDATE,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.SELF_PLAY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+        ann = hits[0].display_annotation
+        assert ann.startswith("[")
+        assert ann.endswith("]")
+        assert "|" in ann
+        # Source label and quality label are non-empty.
+        inner = ann[1:-1]
+        source_part, quality_part = inner.split("|", 1)
+        assert source_part.strip()
+        assert quality_part.strip()
+
     def test_relevance_scores_in_range(self):
         retriever, _ = self._make_retriever()
         query = RAGQuery()
