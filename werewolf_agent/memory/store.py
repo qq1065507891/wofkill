@@ -118,8 +118,15 @@ class MemoryStore:
         faction_won: bool,
         ground_truth: dict[str, str],
         generate_reflection: bool = True,
+        faction: str | None = None,
     ) -> ReviewReport:
-        """Generate review for a player, optionally storing reflection."""
+        """Generate review for a player, optionally storing reflection.
+
+        MEM-08: pass ``faction`` to override the default role-based
+        classification (used for hybrid whose master is on a known
+        side). Callers should pass ``_player_faction(role,
+        master_faction)`` for hybrid.
+        """
         matrix = self.cognition_matrices.get(player_id)
 
         report = self._review_generator.generate(
@@ -139,6 +146,7 @@ class MemoryStore:
             faction_won=faction_won,
             ability_deltas=report.ability_deltas,
             review_id=f"{game_id}_{player_id}",
+            faction=faction,
         )
 
         # Store reflection
@@ -186,6 +194,7 @@ class MemoryStore:
                 role=role,
                 faction_won=faction_won,
                 ground_truth=ground_truth,
+                faction=pf,
             )
             reports.append(report)
         return reports

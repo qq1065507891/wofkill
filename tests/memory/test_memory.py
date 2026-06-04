@@ -919,6 +919,65 @@ def test_review_reflection_no_text_situation_redundancy():
 
 
 # ---------------------------------------------------------------------------
+# MEM-08: hybrid role with wolf master must be counted as wolf, not good.
+#
+# The legacy profile.update_after_game classified every non-"werewolf"
+# role as good, which silently mis-classified hybrid (who wins with
+# master's original faction). After the fix, callers pass an explicit
+# ``faction`` argument and the profile increments games_as_wolf vs
+# games_as_good accordingly.
+# ---------------------------------------------------------------------------
+
+
+def test_profile_hybrid_with_wolf_master_counted_as_wolf():
+    """MEM-08: a hybrid whose master is on the wolf team must count
+    in games_as_wolf (because hybrid wins with master's original
+    faction) and not in games_as_good."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    store = ProfileStore()
+    p = store.update_after_game(
+        "p1", role="hybrid", faction_won=True, faction="werewolf",
+    )
+    assert p.games_played == 1
+    assert p.games_as_wolf == 1, (
+        f"MEM-08: hybrid with wolf master must count as wolf; "
+        f"got games_as_wolf={p.games_as_wolf}, games_as_good={p.games_as_good}"
+    )
+    assert p.games_as_good == 0
+    assert p.wolf_wins == 1
+
+
+def test_profile_hybrid_with_good_master_counted_as_good():
+    """MEM-08: hybrid with good master counts as good, not wolf."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    store = ProfileStore()
+    p = store.update_after_game(
+        "p1", role="hybrid", faction_won=True, faction="good",
+    )
+    assert p.games_played == 1
+    assert p.games_as_good == 1
+    assert p.games_as_wolf == 0
+    assert p.good_wins == 1
+
+
+def test_profile_hybrid_with_unknown_master_does_not_double_count():
+    """MEM-08: if faction is unknown (e.g. master not yet determined),
+    the game still counts in games_played but not in either
+    games_as_wolf or games_as_good."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    store = ProfileStore()
+    p = store.update_after_game(
+        "p1", role="hybrid", faction_won=False, faction="unknown",
+    )
+    assert p.games_played == 1
+    assert p.games_as_wolf == 0
+    assert p.games_as_good == 0
+
+
+# ---------------------------------------------------------------------------
 # Boundary: structured data not vectors
 # ---------------------------------------------------------------------------
 

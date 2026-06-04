@@ -42,15 +42,38 @@ class ProfileStore:
         faction_won: bool,
         ability_deltas: dict[str, float] | None = None,
         review_id: str = "",
+        faction: str | None = None,
     ) -> PlayerProfile:
-        """Update profile after a game completes."""
+        """Update profile after a game completes.
+
+        MEM-08: ``faction`` overrides the default role-based
+        classification. Pass ``_player_faction(role, master_faction)``
+        for hybrid players so a hybrid with a wolf master counts
+        as wolf, not good.
+        """
         profile = self.get_or_create(player_id)
         profile.games_played += 1
 
-        if role == "werewolf":
+        # MEM-08: explicit faction wins; otherwise fall back to the
+        # role-based default. The default treats hybrid as unknown
+        # to avoid double-counting when the master is not yet
+        # determined.
+        if faction == "werewolf":
             profile.games_as_wolf += 1
             if faction_won:
                 profile.wolf_wins += 1
+        elif faction == "good":
+            profile.games_as_good += 1
+            if faction_won:
+                profile.good_wins += 1
+        elif role == "werewolf":
+            profile.games_as_wolf += 1
+            if faction_won:
+                profile.wolf_wins += 1
+        elif role == "hybrid":
+            # Hybrid with no explicit faction: do not count in
+            # either bucket (master not yet determined).
+            pass
         else:
             profile.games_as_good += 1
             if faction_won:
