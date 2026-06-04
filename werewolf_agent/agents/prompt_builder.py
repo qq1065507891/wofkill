@@ -357,10 +357,37 @@ class PlayerPromptBuilder:
                 "private_reason（完整内心活动：为什么投他、担心什么、最终如何决定）。"
                 "这些字段不会公开发言，只给主持人审计。"
             )
-            lines.append(
-                "反跟票警告：不要无条件跟随任何人的归票。如果多人集中投同一人，"
-                "检查是否可能是狼人抱团。独立判断优先级：发言逻辑矛盾 > 票型异常 > 谁说了什么。"
-            )
+            # P1-K6: anti-herd advice is role-gated. 抱团 (herding) is the
+            # wolves' core day-vote coordination strategy — non-fake_seer
+            # wolves are EXPECTED to follow the fake_seer's lead. Telling
+            # wolves to be wary of herding inverts the wolf team's
+            # actual coordination goal.
+            #
+            # Good-side roles (villager / seer / witch / hunter / idiot):
+            # the existing anti-herd text — independent judgment is the
+            # whole point of being a good player.
+            #
+            # Wolf-side roles (werewolf / hybrid, regardless of master):
+            # a wolf-specific message that frames 抱团 as expected
+            # coordination, with the 倒钩 (deep-hook) exception noted.
+            #
+            # Unknown / unset role: fall back to the good-side text
+            # (safe default — better to over-warn than to silently
+            # hand wolves the team-coordination cue).
+            _GOOD_SIDE = {"villager", "seer", "witch", "hunter", "idiot"}
+            _WOLF_SIDE = {"werewolf", "hybrid"}
+            role = ctx.own_role or ""
+            if role in _WOLF_SIDE:
+                lines.append(
+                    "狼队抱团是正常策略；投票时跟队友一致是预期行为；"
+                    "只有在倒钩场景下需独立判断。"
+                )
+            else:
+                # Good side + unknown role (safe default).
+                lines.append(
+                    "反跟票警告：不要无条件跟随任何人的归票。如果多人集中投同一人，"
+                    "检查是否可能是狼人抱团。独立判断优先级：发言逻辑矛盾 > 票型异常 > 谁说了什么。"
+                )
         return "\n".join(lines)
 
     def _build_belief_state(self) -> str:

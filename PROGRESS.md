@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 4 (P1 by area) Prompt sub-batch COMPLETE — 2026-06-04**
-- Active task: All 5 batch-4 Prompt P1 tasks done (S3, S4, S6, S7, S9). Next: parallel batches 4-skill/4-rag/4-memory/4-directives.
+- Current phase: **Batch 4 (P1 by area) Prompt + Skill sub-batches MERGED — 2026-06-04**
+- Active task: 8/21 batch-4 P1 done (Prompt 5/5, Skill 3/3 merged). Awaiting rag/memory/directives merges.
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 

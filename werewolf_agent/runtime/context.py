@@ -438,6 +438,8 @@ def _inject_skill_output(
         player_id=player_id,
         legal_targets=legal_targets or [],
         extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
+        # P1-K5: forward task_type so handlers can branch on it.
+        task_type=task_type,
     )
 
     # P0-K2: pass task_type so the new `applies_to_task_types` filter works.
@@ -455,8 +457,18 @@ def _inject_skill_output(
 
     parts: list[str] = []
 
+    # P1-K3: do NOT drop on `confidence < 0.4`. Low-confidence output is
+    # often negative-signal advice ("don't do X", "avoid Y") that is
+    # still useful. E.g., bold_claim emits `你不需要悍跳` with
+    # confidence=0.3 when a teammate is already assigned as fake_seer.
+    # Sort by confidence descending so the highest-confidence advice
+    # appears first in the rendered prompt — within the same budget,
+    # the LLM sees the best signal first; actionable low-confidence
+    # advice (e.g. "your teammate already handles X") remains reachable.
+    sortable: list[tuple[float, str]] = []
+
     for o in outputs:
-        if not o.prompt_injectable or o.confidence < 0.4:
+        if not o.prompt_injectable:
             continue
         # Skip bold_claim for non-fake_seer wolves
         if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
@@ -467,7 +479,11 @@ def _inject_skill_output(
         # Skip swing_vote for hooker wolves (conflicts with deep-hook mission)
         if o.skill_name == "swing_vote" and wolf_role == "hooker":
             continue
-        parts.append(o.prompt_injectable)
+        sortable.append((o.confidence, o.prompt_injectable))
+
+    # Sort highest confidence first; stable for ties.
+    sortable.sort(key=lambda x: -x[0])
+    parts = [text for _, text in sortable]
 
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
