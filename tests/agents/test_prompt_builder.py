@@ -2104,5 +2104,172 @@ def test_format_examples_non_seer_vote_keeps_p03_example():
             )
 
 
+# ---------------------------------------------------------------------------
+# P0-2 (defense): _build_salience_events must whitelist public fields only
+# ---------------------------------------------------------------------------
+#
+# Audit P0-2 (defense) finding: `_build_salience_events` dumps
+# `ctx.salience_items` into the prompt without filtering private keys.
+# The runtime (`runtime/context.py:build_agent_context`) currently doesn't
+# populate private keys into salience_items, but a future change could
+# easily leak `seer_result`, `witch_target`, `wolf_team`, etc. into
+# the player-visible salience. Defense in depth: the renderer should
+# explicitly allow only the public fields and silently drop any item
+# containing private keys.
+#
+# Allowed public fields: weight, bucket, fact_type, source, target, value,
+# day, phase, event_type.
+# Private keys that must be dropped: seer_result, witch_target, wolf_team,
+# private_intent, moderator_full.
+
+
+_SALIENCE_PUBLIC_FIELDS = frozenset({
+    "weight", "bucket", "fact_type", "source", "target", "value",
+    "day", "phase", "event_type",
+})
+
+_SALIENCE_PRIVATE_KEYS = (
+    "seer_result", "witch_target", "wolf_team",
+    "private_intent", "moderator_full",
+)
+
+
+def _make_ctx_with_salience(items: list[dict]) -> AgentContext:
+    """Build a context with the given salience_items populated.
+
+    Used by P0-2 (defense) tests to feed salience payloads of varying
+    contamination level.
+    """
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="D2",
+        salience_items=items,
+    )
+
+
+def test_salience_events_strips_private_keys():
+    """P0-2: an item with a private key (e.g., seer_result) must not leak.
+
+    Defense in depth: even if a future change in the runtime
+    accidentally puts a `seer_result` field into a salience item,
+    the rendered prompt must not contain that substring. The
+    renderer should either drop the offending item entirely or
+    strip the private key — but the private value must NOT appear
+    in the user prompt.
+    """
+    leaked_item = {
+        "weight": 0.7,
+        "bucket": "vote_pattern",
+        "fact_type": "vote_resolved",
+        "source": "p03",
+        "target": "p07",
+        "value": "p07 voted p03",
+        "day": 2,
+        "phase": "day",
+        "event_type": "vote_resolved",
+        # Private key that must NOT appear in the rendered prompt.
+        "seer_result": "werewolf",
+    }
+    ctx = _make_ctx_with_salience([leaked_item])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The private KEY name must not appear (we don't know which side
+    # of the leak was rendered, but either way no "seer_result" should
+    # be in the user prompt).
+    assert "seer_result" not in prompt, (
+        "P0-2 (defense): private key 'seer_result' leaked into the "
+        "rendered user prompt via salience_events. The renderer must "
+        "strip private keys before serializing salience items."
+    )
+    # The private VALUE must not appear either ("werewolf" is allowed
+    # to appear elsewhere in the prompt, so we check for the exact
+    # seer_result=werewolf pairing).
+    assert '"seer_result":"werewolf"' not in prompt
+    assert "'seer_result': 'werewolf'" not in prompt
+
+
+def test_salience_events_strips_all_private_keys():
+    """P0-2: every documented private key must be stripped.
+
+    Sweep: the renderer must drop every private key in the audit
+    boundary, not just `seer_result`. Covers witch_target, wolf_team,
+    private_intent, and moderator_full.
+    """
+    leaked_item = {
+        "weight": 0.5,
+        "bucket": "b",
+        "fact_type": "f",
+        "source": "p08",
+        "target": "p05",
+        "value": "v",
+        "day": 2,
+        "phase": "day",
+        "event_type": "e",
+        # Pile of private keys — none should reach the prompt.
+        "seer_result": "werewolf",
+        "witch_target": "p07",
+        "wolf_team": ["p01", "p08", "p11"],
+        "private_intent": {"true_role": "werewolf"},
+        "moderator_full": "FULL STATE",
+    }
+    ctx = _make_ctx_with_salience([leaked_item])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    for private_key in _SALIENCE_PRIVATE_KEYS:
+        assert private_key not in prompt, (
+            f"P0-2 (defense): private key {private_key!r} leaked into the "
+            f"rendered user prompt via salience_events."
+        )
+
+
+def test_salience_events_keeps_public_fields():
+    """P0-2: a clean salience item (public fields only) passes through.
+
+    Confirms the whitelist is not so aggressive that it drops valid
+    public salience items. The renderer's `_compact_json` output
+    must include the public fields that drive the LLM's reasoning.
+    """
+    clean_item = {
+        "weight": 0.8,
+        "bucket": "vote_pattern",
+        "fact_type": "vote_resolved",
+        "source": "p03",
+        "target": "p07",
+        "value": "p07 voted p03 on D2",
+        "day": 2,
+        "phase": "day",
+        "event_type": "vote_resolved",
+    }
+    ctx = _make_ctx_with_salience([clean_item])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # All public field names and at least some public values should appear.
+    assert "关键事件" in prompt, (
+        "Salience section header must be present for non-empty salience_items"
+    )
+    # Spot-check public values pass through the JSON serialization.
+    assert "p07 voted p03 on D2" in prompt, (
+        "Public 'value' field of salience item must pass through to prompt"
+    )
+    assert "vote_resolved" in prompt, (
+        "Public 'event_type' / 'fact_type' field must pass through to prompt"
+    )
+
+
+def test_salience_events_section_absent_when_empty():
+    """P0-2: empty salience_items → no salience section in the prompt.
+
+    Sanity: the existing empty-path behavior must be preserved.
+    """
+    ctx = _make_ctx_with_salience([])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "关键事件" not in prompt, (
+        "Empty salience_items must not produce a salience section in the prompt"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
