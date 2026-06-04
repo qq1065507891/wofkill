@@ -313,6 +313,13 @@ def _profile_memory_hint(
 
 
 def _reflection_memory_hints(reflections: list[Any], current_role: str, current_faction: str) -> list[dict[str, Any]]:
+    # P1-M12: cap at 2 hints per role so the top 5 surface reflections
+    # from multiple perspectives rather than 5 from the same role /
+    # scenario. The 5-hint output budget is preserved; we only restrict
+    # how many may come from a single role.
+    MAX_PER_ROLE = 2
+    HINT_BUDGET = 5
+
     def _ref_score(r: Any) -> tuple[int, str, str]:
         priority = 0
         if r.role == current_role:
@@ -330,8 +337,18 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
         neg_game_id = "".join(chr(0x10FFFF - ord(c)) for c in str(game_id))
         return (-priority, neg_game_id, str(r.entry_id))
 
+    # Sort by priority (highest first), then by game recency (newest
+    # first). Walk the sorted list and admit each reflection that fits
+    # within the role cap and the total budget.
+    role_counts: dict[str, int] = {}
     hints: list[dict[str, Any]] = []
-    for ref in sorted(reflections, key=_ref_score)[:5]:
+    for ref in sorted(reflections, key=_ref_score):
+        if len(hints) >= HINT_BUDGET:
+            break
+        role = getattr(ref, "role", "") or ""
+        if role_counts.get(role, 0) >= MAX_PER_ROLE:
+            continue
+        role_counts[role] = role_counts.get(role, 0) + 1
         hints.append({
             "role": ref.role,
             "result": "胜" if ref.faction_won else "负",

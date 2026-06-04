@@ -29,7 +29,9 @@ def _make_reflection(
 
 
 def test_reflection_hints_orders_newer_game_id_first_within_same_priority() -> None:
-    """Within same priority bucket, newer game_id should sort first."""
+    """Within same priority bucket, newer game_id should sort first.
+    P1-M12 caps at 2 hints per role, so the 2 newest are kept and
+    the 3rd is dropped."""
     refs = [
         _make_reflection(game_id="2024-12-01", role="seer", text="old"),
         _make_reflection(game_id="2024-12-02", role="seer", text="middle"),
@@ -38,7 +40,8 @@ def test_reflection_hints_orders_newer_game_id_first_within_same_priority() -> N
 
     hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
 
-    assert [h["text"] for h in hints] == ["new", "middle", "old"]
+    # 3 inputs → 2 outputs (cap=2 per role), in newest-first order.
+    assert [h["text"] for h in hints] == ["new", "middle"]
 
 
 def test_reflection_hints_tie_broken_by_game_id_descending() -> None:
@@ -492,3 +495,134 @@ def test_cognition_matrix_no_text_evidence_in_context() -> None:
     assert suspect["open_questions"], "open_questions refs should not be empty"
     for ref in suspect["key_evidence"] + suspect["open_questions"]:
         assert ref.startswith("salience_items#")
+
+
+# ---------------------------------------------------------------------------
+# P1-M12: reflection hint diversity.
+#
+# `_reflection_memory_hints` previously took the top 5 reflections with
+# the same priority — they could all be from the same role and tag.
+# Add a diversity filter so a single role can contribute at most
+# MAX_PER_ROLE hints, then per-tag diversity, so the prompt sees
+# reflections from multiple perspectives.
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_hints_capped_per_role() -> None:
+    """P1-M12: at most 2 reflections per role are surfaced, even when
+    the top 5 priority entries are all from the same role."""
+    # Build 6 reflections all from the same role (seer), all same
+    # priority (priority 2 — same role as current). They have
+    # different game_ids so they would all be in the top 5 before
+    # diversity filtering.
+    refs = [
+        _make_reflection(game_id="2024-12-01", role="seer", text="seer-1"),
+        _make_reflection(game_id="2024-12-02", role="seer", text="seer-2"),
+        _make_reflection(game_id="2024-12-03", role="seer", text="seer-3"),
+        _make_reflection(game_id="2024-12-04", role="seer", text="seer-4"),
+        _make_reflection(game_id="2024-12-05", role="seer", text="seer-5"),
+        _make_reflection(game_id="2024-12-06", role="seer", text="seer-6"),
+        # Plus 2 villager reflections at the same priority (priority 1,
+        # same faction). Without diversity, the top 5 could be all
+        # seer; with diversity, the cap forces at least one villager in.
+        _make_reflection(game_id="2024-12-10", role="villager", text="villager-1"),
+        _make_reflection(game_id="2024-12-11", role="villager", text="villager-2"),
+    ]
+
+    hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
+
+    # Total returned must not exceed the existing 5-hint cap.
+    assert len(hints) <= 5, f"hint cap violated: got {len(hints)} hints"
+
+    # No single role may contribute more than 2 hints.
+    role_counts: dict[str, int] = {}
+    for h in hints:
+        role_counts[h["role"]] = role_counts.get(h["role"], 0) + 1
+    for role, count in role_counts.items():
+        assert count <= 2, (
+            f"P1-M12: role {role!r} contributed {count} hints; "
+            f"max 2 allowed. Role counts: {role_counts!r}"
+        )
+
+    # The 2 newest seer reflections should be present (priority 2
+    # beats priority 1, and within priority 2 newest game wins).
+    seer_texts = {h["text"] for h in hints if h["role"] == "seer"}
+    assert "seer-6" in seer_texts, (
+        f"newest seer reflection (seer-6) should be present; got: {seer_texts!r}"
+    )
+    assert "seer-5" in seer_texts, (
+        f"second-newest seer reflection (seer-5) should be present; got: {seer_texts!r}"
+    )
+    # At most 2 seer hints in the output
+    assert len(seer_texts) <= 2, (
+        f"At most 2 seer hints allowed; got: {seer_texts!r}"
+    )
+
+
+def test_reflection_hints_diversity_when_no_other_role_available() -> None:
+    """P1-M12: when all candidate reflections are from a single role,
+    the cap is still respected (no more than 2 from that role)."""
+    refs = [
+        _make_reflection(game_id="2024-12-01", role="seer", text="a"),
+        _make_reflection(game_id="2024-12-02", role="seer", text="b"),
+        _make_reflection(game_id="2024-12-03", role="seer", text="c"),
+    ]
+
+    hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
+
+    role_counts: dict[str, int] = {}
+    for h in hints:
+        role_counts[h["role"]] = role_counts.get(h["role"], 0) + 1
+    # Cap at 2 even when no other role is available.
+    assert role_counts.get("seer", 0) <= 2, (
+        f"P1-M12: even with no other role, seer cap must hold; "
+        f"got: {role_counts!r}"
+    )
+
+
+def test_reflection_hints_diversity_preserves_priority_order() -> None:
+    """P1-M12: diversity is a filter ON TOP of priority sorting, not a
+    replacement. The newest top-priority reflections still beat older
+    lower-priority reflections, capped per role.
+
+    Setup: 5 seer candidates (priority 2, all same role) + 1 villager
+    candidate (priority 1, different role). The cap of 2-per-role
+    should kick in: only 2 seer are kept, then 1 villager fills the
+    third slot. The villager (priority 1) beats the third seer
+    (priority 2, but at-cap) — that is, we do NOT swap in a third
+    seer just because priority 2 is higher than priority 1; we
+    respect the diversity cap.
+    """
+    refs = [
+        # priority 2 (same role as current) — 5 of these
+        _make_reflection(game_id="2024-12-10", role="seer", text="seer-1"),
+        _make_reflection(game_id="2024-12-11", role="seer", text="seer-2"),
+        _make_reflection(game_id="2024-12-12", role="seer", text="seer-3"),
+        _make_reflection(game_id="2024-12-13", role="seer", text="seer-4"),
+        _make_reflection(game_id="2024-12-14", role="seer", text="seer-5"),
+        # priority 1 (same faction, different role) — 1 of these
+        _make_reflection(game_id="2024-12-20", role="villager", text="villager-1"),
+    ]
+
+    hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
+
+    # At most 2 seer hints in the output.
+    seer_count = sum(1 for h in hints if h["role"] == "seer")
+    assert seer_count <= 2, (
+        f"P1-M12: seer cap of 2 violated; got {seer_count} seer hints. "
+        f"Hints: {hints!r}"
+    )
+
+    # Villager is present (priority 1 + different role fills the slot).
+    roles_present = [h["role"] for h in hints]
+    assert "villager" in roles_present, (
+        f"Villager should fill the third slot after the 2 seer. "
+        f"Got: {roles_present!r}"
+    )
+
+    # The 2 newest seer reflections should be present.
+    seer_texts = {h["text"] for h in hints if h["role"] == "seer"}
+    assert seer_texts == {"seer-4", "seer-5"}, (
+        f"Two newest seer (seer-4, seer-5) should be selected over older "
+        f"ones. Got: {seer_texts!r}"
+    )
