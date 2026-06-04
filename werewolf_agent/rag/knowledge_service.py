@@ -29,10 +29,14 @@ class RAGKnowledgeService:
         repository: Any | None = None,
         vector_store: Any | None = None,
         seed_provider: Callable[[], list[RAGEntry]] = create_seed_entries,
+        reranker: Any | None = None,
     ) -> None:
         self._repository = repository
         self._vector_store = vector_store
         self._seed_provider = seed_provider
+        # R1: the reranker is wired into every StrategyRetriever the service
+        # builds; defaulting to None preserves the rule-based-only path.
+        self._reranker = reranker
         self._seed_entries: list[RAGEntry] | None = None
         self._entries_cache: dict[str, RAGEntry] | None = None
         self._last_audit: Any | None = None
@@ -76,7 +80,7 @@ class RAGKnowledgeService:
         if self._vector_store is not None:
             candidate_entries = self._vector_candidates(query, entries)
 
-        injector = RAGInjector(StrategyRetriever(candidate_entries))
+        injector = RAGInjector(StrategyRetriever(candidate_entries, reranker=self._reranker))
         hits = injector.inject(
             query,
             injection_context=InjectionContext.LIVE_PLAYER,
