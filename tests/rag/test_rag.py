@@ -598,16 +598,34 @@ class TestRetriever:
             phase="speech",
             situation="预言家 对跳 悍跳位 归票",
             ruleset_id="pre_witch_hunter_idiot_mixed",
-            max_results=5,
+            # R12: case_type is now a first-class sort key above
+            # quality, so the ROLE_STRATEGY/EXPERT_REVIEW seer case
+            # can be pushed out of the top 5 by EXTERNAL_HIGH_END_CASE
+            # and EXTERNAL_TACTICS entries. Use a wider window so
+            # the test still exercises the high-probability-hint
+            # contract (presence + target entry's quality) without
+            # depending on case_type ordering. The original test
+            # also asserted the per-hit quality floor across the
+            # whole window; that floor no longer holds under the
+            # new sort (tutorial/community entries can sneak in
+            # once we widen the window), so we constrain the
+            # quality check to the target entry alone.
+            max_results=20,
         ))
 
-        assert any(h.entry_id == "seed_seer_counterclaim_vote_push_01" for h in hits)
-        for hit in hits:
-            assert hit.quality_grade in (
-                QualityGrade.HIGH_RANK_GAME,
-                QualityGrade.EXPERT_REVIEW,
-                QualityGrade.PRO_MATCH,
-            )
+        target = next(
+            (h for h in hits if h.entry_id == "seed_seer_counterclaim_vote_push_01"),
+            None,
+        )
+        assert target is not None, (
+            "expected the seer counterclaim vote-push hint to be "
+            "retrievable; it was dropped from the wider window"
+        )
+        assert target.quality_grade in (
+            QualityGrade.HIGH_RANK_GAME,
+            QualityGrade.EXPERT_REVIEW,
+            QualityGrade.PRO_MATCH,
+        )
 
     def test_retrieve_by_source_type(self):
         retriever, _ = self._make_retriever()
@@ -1256,6 +1274,96 @@ class TestRetrieverEdgeCases:
         assert store.dimension == _EMBEDDING_DIM
         embedding = store._embed_text("any text")
         assert len(embedding) == _EMBEDDING_DIM
+
+    def test_case_type_priority_above_quality(self) -> None:
+        """R12: case_type must be a first-class sort key — strictly
+        above quality. An EXTERNAL_HIGH_END_CASE must outrank a
+        SPEECH_TEMPLATE even when the template's quality grade
+        (PRO_MATCH) is at the very top of the quality ladder. The
+        previous additive scoring used ``case_type * 0.075`` (max
+        0.3) and ``quality / 20`` (max 0.3), so a SPEECH_TEMPLATE +
+        PRO_MATCH could tie or beat an EXTERNAL_HIGH_END_CASE +
+        UNREVIEWED — and with Python's stable sort that tie would
+        resolve in insertion order, not by case_type.
+
+        The fix sorts by (case_type_priority desc, quality desc,
+        rule_score desc) so case_type dominates the ordering
+        regardless of the quality gap.
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        # External case with the LOWEST possible quality grade
+        # (UNREVIEWED) so the case_type bonus has to carry it.
+        external = RAGEntry(
+            entry_id="ext_high_end",
+            title="外网高段位赛案例",
+            summary="External high-end case for priority test",
+            metadata=CaseMetadata(
+                case_type=CaseType.EXTERNAL_HIGH_END_CASE,
+                quality_grade=QualityGrade.UNREVIEWED,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.PUBLIC_TOURNAMENT),
+                tags=["seer"],
+            ),
+        )
+        # Speech template with the HIGHEST possible quality grade
+        # (PRO_MATCH) — under the old additive scoring this would
+        # tie with the external case on the case_type+quality
+        # sub-sum (0 + 0.3 vs 0.3 + 0) and stable sort would put it
+        # first because we register the template second… wait,
+        # we register template FIRST on purpose so that the
+        # current stable-sort bug would put the template at the
+        # top. The fix must reorder it.
+        template = RAGEntry(
+            entry_id="tpl_expert",
+            title="高段位演说模板",
+            summary="Speech template with pro_match quality",
+            metadata=CaseMetadata(
+                case_type=CaseType.SPEECH_TEMPLATE,
+                quality_grade=QualityGrade.PRO_MATCH,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        # Register the template first. Under the old additive
+        # scoring the two scores tie at 0.58 and Python's stable
+        # sort keeps the template in slot 0, so the assertion
+        # below would fail. After the fix the case_type sort key
+        # promotes the external case to slot 0.
+        retriever = StrategyRetriever([template, external])
+        hits = retriever.retrieve(
+            RAGQuery(role="seer", phase="speech", max_results=2),
+        )
+        ids = [h.entry_id for h in hits]
+        # R12: external must rank above template despite the
+        # template's higher quality grade, because case_type is a
+        # first-class sort key.
+        assert ids.index("ext_high_end") < ids.index("tpl_expert"), (
+            f"R12: external case must outrank speech template when "
+            f"template quality is higher; got {ids!r}"
+        )
 
     def test_situation_tokenize_handles_action_list(self) -> None:
         """R7: ``_tokenize_situation`` must recover every action name

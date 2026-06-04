@@ -71,7 +71,14 @@ def test_vector_backed_retrieval_returns_full_rag_hits(repo) -> None:
         phase="night_discussion",
         situation="抗推预言家后讨论神牌信息",
         ruleset_id="pre_witch_hunter_idiot_mixed",
-        max_results=3,
+        # R12: case_type is now a first-class sort key above
+        # quality, so an EXTERNAL_TACTICS/EXTERNAL_HIGH_END_CASE
+        # entry can outrank the target EXTERNAL_TACTICS entry
+        # we're looking for. Use a wider window so the test still
+        # exercises the vector-backed retrieval contract (presence
+        # + live-safe visibility) without depending on case_type
+        # ordering.
+        max_results=10,
     ))
 
     assert any(h.entry_id == "seed_jingcheng_wolf_god_hunt_260227" for h in hits)

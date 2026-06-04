@@ -216,7 +216,29 @@ class StrategyRetriever:
             (self._merged_score(entry, query), entry)
             for entry in candidates
         ]
-        scored.sort(key=lambda x: x[0], reverse=True)
+        # R12: case_type is a first-class sort key — strictly above
+        # quality — so an EXTERNAL_HIGH_END_CASE outranks a
+        # SPEECH_TEMPLATE regardless of the quality gap. The previous
+        # additive scoring (case_type * 0.075 + quality / 20) let
+        # a high-quality template tie or beat a low-quality external
+        # case, and Python's stable sort then preserved insertion
+        # order — meaning the case_type priority effectively didn't
+        # dominate the final ranking. The new sort is
+        # (case_type_priority desc, quality desc, rule_score desc),
+        # so case_type wins first, then quality, then the rest of
+        # the rule-based signal.
+        scored.sort(
+            key=lambda x: (
+                _CASE_TYPE_PRIORITY.get(
+                    x[1].metadata.case_type, 0
+                ),
+                _QUALITY_ORDER.get(
+                    x[1].metadata.quality_grade, 0
+                ),
+                x[0],
+            ),
+            reverse=True,
+        )
 
         if self._reranker and scored:
             # Take a wider pool for reranking
