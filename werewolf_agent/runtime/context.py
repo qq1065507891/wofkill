@@ -238,13 +238,21 @@ def _profile_memory_hint(
     Renders rank description ("前 30%" / "中等" / "需要提升") instead of
     raw ability floats to avoid biasing LLM self-confidence. Only the
     current role's win-rate is exposed (other roles' stats are private).
-    ``learning_rate`` and ``risk_preference`` are review/judge-only and
-    never appear in the live prompt.
+
+    P0-M5: renders ALL 6 schema dims (logic, deception, leadership,
+    credibility, learning_rate, risk_preference). For the inner
+    traits (learning_rate, risk_preference) uses neutral phrasing
+    ("你的学习速度处于中等") so the LLM does not anchor on a
+    judgmental token like "需要提升" applied to a private trait.
 
     Rank bins (heuristic, against the 0.0–1.0 score range):
-    - > 0.66  → "前 30%"  (top tier)
+    - > 0.66  → "前 30%"  (top tier) — for the 4 public traits
     - > 0.33  → "中等"    (middle tier)
     - ≤ 0.33  → "需要提升" (needs improvement)
+
+    Inner traits (learning_rate, risk_preference) get a parallel
+    neutral ranker ("较高" / "中等" / "偏低") with phrasing that
+    says "你的 X 处于 Y", never a critical "需要提升".
     """
     def _rank(score: float) -> str:
         if score > 0.66:
@@ -253,15 +261,29 @@ def _profile_memory_hint(
             return "中等"
         return "需要提升"
 
+    def _inner_rank(score: float) -> str:
+        """Neutral rank for private traits; never sounds like a critique."""
+        if score > 0.66:
+            return "较高"
+        if score > 0.33:
+            return "中等"
+        return "偏低"
+
     # Filter role stats to current role only; default to zero stats if
     # the player has never played this role before.
     stats = role_stats.get(current_role, {"count": 0, "wins": 0})
     win_rate_pct = (
         round(100 * stats["wins"] / stats["count"]) if stats["count"] > 0 else 0
     )
-    logic_rank = _rank(float(profile.logic))
-    deception_rank = _rank(float(profile.deception))
-    credibility_rank = _rank(float(profile.credibility))
+    # Use getattr so test fakes / partial profiles (e.g. M4-era FakeProfile
+    # that only set logic/deception/credibility) still work. The schema
+    # defaults (PlayerProfile dataclass) supply 0.5 for missing fields.
+    logic_rank = _rank(float(getattr(profile, "logic", 0.5)))
+    deception_rank = _rank(float(getattr(profile, "deception", 0.5)))
+    leadership_rank = _rank(float(getattr(profile, "leadership", 0.5)))
+    credibility_rank = _rank(float(getattr(profile, "credibility", 0.5)))
+    learning_rank = _inner_rank(float(getattr(profile, "learning_rate", 0.1)))
+    risk_rank = _inner_rank(float(getattr(profile, "risk_preference", 0.5)))
 
     return {
         "games_played": profile.games_played,
@@ -270,13 +292,17 @@ def _profile_memory_hint(
         "current_role_win_rate_pct": win_rate_pct,
         "logic_rank": logic_rank,
         "deception_rank": deception_rank,
+        "leadership_rank": leadership_rank,
         "credibility_rank": credibility_rank,
         "summary": (
             f"累计{profile.games_played}局 · "
             f"当前角色{current_role} {stats['count']}局胜率{win_rate_pct}% · "
             f"逻辑{logic_rank} · "
             f"欺骗{deception_rank} · "
-            f"可信度{credibility_rank}"
+            f"领导{leadership_rank} · "
+            f"可信度{credibility_rank} · "
+            f"你的学习速度处于{learning_rank} · "
+            f"你的风险偏好处于{risk_rank}"
         ),
     }
 
