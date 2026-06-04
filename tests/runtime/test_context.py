@@ -626,3 +626,99 @@ def test_reflection_hints_diversity_preserves_priority_order() -> None:
         f"Two newest seer (seer-4, seer-5) should be selected over older "
         f"ones. Got: {seer_texts!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P1-M13: belief_state.my_suspects / my_trusted must exclude dead players.
+#
+# The belief_state is initialized with all 12 player IDs (alive AND
+# dead). Without an explicit filter, dead players leak into the agent
+# prompt as candidates for suspicion / trust — which is confusing at
+# best, since the player can no longer act on that info.
+# ---------------------------------------------------------------------------
+
+
+def test_belief_state_excludes_dead_players() -> None:
+    """P1-M13: belief_dict["my_suspects"] and belief_dict["my_trusted"]
+    must NOT contain any player whose gs.players[pid].alive is False.
+
+    Test setup: 3 players in a 3-player game.
+    - p01 (self, alive, role seer)
+    - p02 (alive, role wolf) — should appear in my_suspects
+    - p03 (DEAD, role villager) — must NOT appear in either list
+
+    The filter is at the output stage of build_agent_context: when
+    iterating belief_state.beliefs, dead players are skipped before
+    being added to suspect_list or trust_list.
+    """
+    from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+    from werewolf_agent.runtime.context import build_agent_context
+    from werewolf_agent.agents.schemas import TaskType
+    from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
+
+    # Build a minimal GameState with 3 players. p03 is dead from the
+    # start; p02 is alive and a known wolf (high-suspicion).
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=False),
+    }
+    gs = GameState(
+        game_id="g_test_p1m13",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=2,
+        night_number=2,
+        phase="day",
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "我站边 p01 的预言家。",
+                    "day_number": 1,
+                    "visibility": "public",
+                },
+            ),
+            GameEvent(
+                type="seer_check",
+                payload={
+                    "target_id": "p02",
+                    "alignment": "wolf",
+                    "night_number": 1,
+                },
+            ),
+        ],
+    )
+
+    # Use the real RuleEngine. We just need build_agent_context to
+    # populate belief_dict from the visible facts.
+    ruleset = Ruleset(raw={
+        "player_count": 3,
+        "roles": {
+            "werewolf": {"count": 1},
+            "villager": {"count": 1},
+            "seer": {"count": 1},
+        },
+    })
+    engine = RuleEngine(ruleset=ruleset)
+    ctx = build_agent_context(
+        engine=engine,
+        gs=gs,
+        player_id="p01",
+        task_type=TaskType.SPEECH,
+    )
+
+    suspect_players = {entry["player"] for entry in ctx.belief_state["my_suspects"]}
+    trusted_players = {entry["player"] for entry in ctx.belief_state["my_trusted"]}
+
+    # p03 (dead) must not appear in either list.
+    assert "p03" not in suspect_players, (
+        f"P1-M13: dead player p03 leaked into my_suspects: {suspect_players!r}"
+    )
+    assert "p03" not in trusted_players, (
+        f"P1-M13: dead player p03 leaked into my_trusted: {trusted_players!r}"
+    )
+    # p01 (self) must not appear in either list.
+    assert "p01" not in suspect_players
+    assert "p01" not in trusted_players
