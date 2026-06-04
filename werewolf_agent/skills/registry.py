@@ -113,15 +113,21 @@ class SkillRegistry:
         role: str,
         phase: str,
         skill_input: SkillInput,
+        task_type: str = "",
     ) -> list[SkillOutput]:
-        """Dispatch all faction-applicable skills for a role in a given phase."""
+        """Dispatch all faction-applicable skills for a role in a given phase.
+
+        P0-K2: when `task_type` is provided, the dispatch is filtered by
+        `SkillDefinition.applies_to_task_types` (in addition to the
+        existing `applicable_phases` / `applicable_roles` checks).
+        """
         role_faction = faction_for_role(role)
         allowed = {SkillFaction.COMMON, SkillFaction.UNIVERSAL}
         allowed.add(role_faction)
         skills = [
             s for s in self._skills.values()
             if s.faction in allowed
-            and s.is_applicable(role, phase)
+            and s.is_applicable(role, phase, task_type=task_type)
         ]
         return [self.dispatch(s.name, skill_input) for s in skills]
 

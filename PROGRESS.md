@@ -4,10 +4,10 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 1 COMPLETE — Batch 2 in progress — 2026-06-03**
-- Active task: Batch 2 (P0 structural 8 items + 1 deferred S2)
+- Current phase: **Batch 2 — Skill area (K1, K2) COMPLETE — 2026-06-04**
+- Active task: Batch 2 Skill subagent (P0-K1, P0-K2) DONE; awaiting merge
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-03
+- Last updated: 2026-06-04
 
 ---
 
@@ -42,7 +42,11 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 
 **Batch 1 results:** 10/10 tasks done. `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed. 12 new tests in `tests/agents/test_output_parser.py`. Zero regressions across the project.
 
-### Batch 2 (P0 structural) — RAG sub-batch IN PROGRESS 2026-06-03
+### Batch 2 (P0 structural) — RAG + Skill + Memory sub-batches 2026-06-04
+
+Three parallel worktrees: `p2-rag`, `p2-skill`, `p2-memory`.
+
+#### RAG sub-batch — COMPLETE 2026-06-03
 
 Worktree: `.worktrees/p2-rag` on branch `p2-rag`.
 
@@ -50,9 +54,32 @@ Worktree: `.worktrees/p2-rag` on branch `p2-rag`.
 |------|----|--------|--------|-------|
 | 2.4 | P0-G1 slim RAG prompt lines | DONE | `9a850ce` | New `werewolf_agent/rag/prompt_renderer.py` with `hits_to_prompt_lines()` returning only title/summary/key_decisions (cap 3). `RAGInjector.hits_to_prompt_lines()` + `RAGKnowledgeService.hits_to_prompt_lines()` mirror. Runtime `_inject_seed_rag_hints` routes live prompt through slim path. 16 new tests. |
 | 2.5 | P0-G2 hide RAG score/source/quality | DONE | `064b53a` | Defense-in-depth slim filter in `_build_rag_hints`; audit log on injector retains full payload (relevance/quality/source/visibility/case_type). 2 + 2 new tests. |
-| 2.6 | P0-G3 RAG case-vs-current player ID warning | DONE | `01d450e` | Hard-constraint prefix "⚠️ RAG 案例中的玩家 ID 与本局无关；不得直接套用案例中具体玩家的发言或票型。" prepended to 知识库提示 section. 3 new tests (presence, ordering, empty-path sanity). |
+| 2.6 | P0-G3 RAG case-vs-current player ID warning | DONE | `01d450e` | Hard-constraint prefix "⚠️ RAG 案例中的玩家 ID 与本局无关；不得直接套用案例中具体玩家的发言或票型。" prepended to 知识库提示 section. 3 new tests. |
 
-**RAG sub-batch results:** 3/3 tasks done. 21 new tests across `test_prompt_renderer.py` (18) and `test_prompt_builder.py` RAG class (5). `pytest tests/rag/ tests/agents/ tests/runtime/ --ignore=tests/integration`: **1241 passed**, 0 failed, 0 regression.
+**RAG sub-batch results:** 3/3 tasks done. `pytest tests/rag/ tests/agents/ tests/runtime/ --ignore=tests/integration`: **1241 passed**, 0 failed, 0 regression.
+
+#### Skill sub-batch — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p2-skill` on branch `p2-skill`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 2.S1 | P0-K1: drop dead skill tool path | DONE | `30fe291` | Remove `skill_tools` field, `_build_skill_tool_defs`, skill-skip retry logic, on-demand skill loading, tool-skill catalog. Pre-injection (`skill_analyses` → `skill_analysis_hints`) remains the only delivery channel. |
+| 2.S2 | P0-K2: `applies_to_task_types` field | DONE | `eb4cf42` | New `applies_to_task_types: list[str]` on `SkillDefinition`. `is_applicable` and `dispatch_for_role` now filter by task_type. |
+
+**Skill sub-batch results:** 2/2 tasks done. `pytest tests/skills/ tests/agents/ tests/runtime/`: **1160 passed**, 0 failed. Zero regressions.
+
+#### Memory sub-batch — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p2-memory` on branch `p2-memory`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 2.M1 | P0-M1: private_memory labels as 本局·第N轮·私有记忆 | DONE | `9ad25b6` | Tightened `_add_own_speech_notes` markers (drop `矛盾`/`前后不一`). |
+| 2.M5 | P0-M5: profile 6 dims with neutral phrasing | DONE | `5d9b267` | All 6 dims rendered; `learning_rate`/`risk_preference` use neutral phrasing. |
+| 2.M7 | P0-M7: remove `visible_world_state` fallback | DONE | `6fee705` | Read only from `ctx.private_memory_hints`; no dual-source. |
+
+**Memory sub-batch results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1172 passed**, 0 failed. Zero regressions.
 
 ### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
 

@@ -593,10 +593,6 @@ class AgentContext(BaseModel):
     model_config_snapshot: dict[str, Any] = Field(default_factory=dict)
     recent_transcript: list[dict[str, Any]] = Field(default_factory=list)
     output_schema_hint: str = ""
-    skill_tools: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Optional skill analysis tools for LLM to call on-demand.",
-    )
     skill_analyses: dict[str, str] = Field(
         default_factory=dict,
         description="Pre-computed skill analysis results keyed by tool name.",

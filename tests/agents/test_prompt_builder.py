@@ -1084,26 +1084,34 @@ def test_skill_catalog_not_in_system_prompt_for_seer():
     )
 
 
-def test_skill_catalog_in_user_prompt_for_seer():
-    """P0-R2: seer user prompt must still include the skill catalog.
+def test_skill_analysis_hints_in_user_prompt_for_seer():
+    """P0-K1: seer user prompt must include the pre-injected skill analysis.
 
-    The catalog content is still important (it tells the LLM which
-    skills are available) — only the *placement* changes.
+    The catalog (tool path) is removed. Skill analyses are delivered
+    via the `skill_analysis_hints` pre-injection path.
     """
-    ctx = _make_seer_check_context()
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.SPEECH,
+        phase="speech",
+        day_number=2,
+        own_role="seer",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 seer speech",
+        skill_analysis_hints={"wolf_pit": "嫌疑区: p05"},
+    )
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "可用技能目录" in user_prompt, (
-        "Seer user prompt must include the skill catalog header — "
-        "it moved from system, but the LLM still needs the catalog."
+    assert "技能分析结果" in user_prompt, (
+        "Seer user prompt must include the pre-injected skill analysis section."
     )
 
 
 def test_skill_catalog_not_in_system_prompt_for_villager():
-    """P0-R2: villager system prompt must not include the skill catalog.
+    """P0-K1: villager system prompt must not include the tool-skill catalog.
 
-    Game trace g_3528592081 also showed empty_responses on villager
-    actions — villager prompts were also bloated. Move the catalog
-    out of the system slot for the same reason.
+    The tool path is dead code. The catalog (which referenced load_skill
+    tools) is removed entirely from the prompt.
     """
     ctx = _make_villager_context()
     system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
@@ -1112,11 +1120,21 @@ def test_skill_catalog_not_in_system_prompt_for_villager():
     )
 
 
-def test_skill_catalog_in_user_prompt_for_villager():
-    """P0-R2: villager user prompt must include the skill catalog."""
-    ctx = _make_villager_context()
+def test_skill_analysis_hints_in_user_prompt_for_villager():
+    """P0-K1: villager user prompt must include the pre-injected skill analyses."""
+    ctx = AgentContext(
+        agent_id="p10",
+        task_type=TaskType.SPEECH,
+        phase="speech",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 vote",
+        skill_analysis_hints={"wolf_pit": "嫌疑区: p07"},
+    )
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "可用技能目录" in user_prompt
+    assert "技能分析结果" in user_prompt
 
 
 # ---------------------------------------------------------------------------

@@ -360,10 +360,14 @@ def _inject_skill_output(
     phase: str,
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
+    task_type: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Dispatch applicable skills once; inject non-tool advice, collect tool analyses.
 
     Returns (updated strategy_directive, tool_analyses).
+
+    P0-K2: `task_type` is forwarded to `dispatch_for_role` so the
+    `applies_to_task_types` filter can refine the dispatch.
     """
     player = gs.players.get(player_id)
     if not player or not player.alive:
@@ -383,7 +387,10 @@ def _inject_skill_output(
         extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
     )
 
-    outputs = registry.dispatch_for_role(player.role, phase, skill_input)
+    # P0-K2: pass task_type so the new `applies_to_task_types` filter works.
+    outputs = registry.dispatch_for_role(
+        player.role, phase, skill_input, task_type=task_type,
+    )
 
     # Filter skills that conflict with wolf team role assignment
     wolf_role = None
@@ -394,16 +401,9 @@ def _inject_skill_output(
                 break
 
     parts: list[str] = []
-    tool_analyses: dict[str, str] = {}
 
     for o in outputs:
         if not o.prompt_injectable or o.confidence < 0.4:
-            continue
-        # Collect tool skill outputs for on-demand LLM access
-        if o.skill_name in _TOOL_SKILL_NAMES:
-            tool_def = _SKILL_TOOL_DEFS.get(o.skill_name)
-            if tool_def:
-                tool_analyses[tool_def["name"]] = o.prompt_injectable
             continue
         # Skip bold_claim for non-fake_seer wolves
         if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
@@ -418,34 +418,7 @@ def _inject_skill_output(
 
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
-    return strategy_directive, tool_analyses
-
-
-# Skill names and definitions loaded from SKILL.md frontmatter.
-def _resolve_tool_skills() -> 'tuple[set[str], dict[str, dict[str, Any]]]':
-    try:
-        from werewolf_agent.skills.werewolf_skills import _load_tool_skills as _lts
-        return _lts()
-    except Exception:
-        logger.warning("Failed to load tool-skill definitions; agents will lack tactical skill advice", exc_info=True)
-        return set(), {}
-
-
-_TOOL_SKILL_NAMES: set[str]
-_SKILL_TOOL_DEFS: dict[str, dict[str, Any]]
-_TOOL_SKILL_NAMES, _SKILL_TOOL_DEFS = _resolve_tool_skills()
-
-
-def _build_skill_tool_defs(role: str, task_type: str) -> list[dict[str, Any]]:
-    """Build LLM-callable skill tool definitions for applicable on-demand skills."""
-    from werewolf_agent.skills.registry import SkillRegistry
-
-    registry = SkillRegistry()
-    return [
-        _SKILL_TOOL_DEFS[s.name.value]
-        for s in registry.all_skills()
-        if s.name.value in _TOOL_SKILL_NAMES and s.is_applicable(role, "", task_type=task_type)
-    ]
+    return strategy_directive, {}
 
 
 def _merge_strategy_directive(
@@ -797,8 +770,7 @@ def build_agent_context(
     if legal_targets is None:
         legal_targets = [pid for pid, p in gs.players.items() if p.alive and pid != player_id]
 
-    # -- Skill-based tactical advice + on-demand tool analyses (single dispatch) --
-    skill_tools: list[dict[str, Any]] = []
+    # -- Skill-based tactical advice (pre-injection path; no tool exposure) --
     skill_analyses: dict[str, str] = {}
     try:
         strategy_directive, skill_analyses = _inject_skill_output(
@@ -807,7 +779,6 @@ def build_agent_context(
             legal_targets=legal_targets,
             wolf_team_plan=wolf_team_plan,
         )
-        skill_tools = _build_skill_tool_defs(player.role, task_type.value)
     except Exception:
         logger.debug("Skill injection failed, skipping", exc_info=True)
 
@@ -889,7 +860,6 @@ def build_agent_context(
         contradiction_alerts=ctx_alerts,
         belief_state=belief_dict,
         strategy_directive=strategy_directive,
-        skill_tools=skill_tools,
         skill_analyses=skill_analyses,
         skill_analysis_hints=skill_analyses,
     )
