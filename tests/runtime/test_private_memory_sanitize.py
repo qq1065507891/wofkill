@@ -197,6 +197,201 @@ def test_llm_aware_hint_includes_caveat():
 
 
 # ---------------------------------------------------------------------------
+# MEM-20: _truncate_by_priority must preserve the P1-M10 caveat when
+# logic_flaws or valid_points survive the truncation. The legacy
+# caller (build_private_memory) had to re-check the categories and
+# add the hint as a second pass, which is brittle — anyone calling
+# _truncate_by_priority directly (e.g. unit tests, or new callers)
+# silently lost the caveat and the LLM would treat the entries as
+# authoritative.
+#
+# Fix: _truncate_by_priority itself force-appends the hint meta
+# field when logic_flaws or valid_points is non-empty in the
+# returned dict, so the function is self-contained.
+# ---------------------------------------------------------------------------
+
+
+def test_truncation_preserves_caveat():
+    """MEM-20: feeding a memory that triggers truncation (e.g. huge
+    valid_points) must still emit the P1-M10 caveat hint as long as
+    logic_flaws / valid_points survived."""
+    from werewolf_agent.runtime.private_memory import (
+        _LLM_AWARE_HINT,
+        _truncate_by_priority,
+    )
+
+    memory = {
+        "vote_thoughts": [
+            {"day": 1, "point": "v1", "source_event": "action_trace_audit"},
+        ],
+        "stance_notes": [],
+        # 50 small logic_flaw entries force truncation; budget
+        # small enough that valid_points gets dropped, but a few
+        # logic_flaws survive.
+        "logic_flaws": [
+            {"day": i, "point": f"flaw {i} 漏洞", "source_event": "speech"}
+            for i in range(50)
+        ],
+        "valid_points": [
+            {"day": i, "point": f"valid {i} " * 30, "source_event": "speech"}
+            for i in range(50)
+        ],
+    }
+
+    truncated = _truncate_by_priority(memory, max_tokens=200)
+
+    # Truncation actually happened.
+    assert len(truncated.get("valid_points", [])) < 50 or (
+        len(truncated.get("logic_flaws", [])) < 50
+    ), "setup: truncation should have dropped some content"
+    # And the surviving keyword-signal category is non-empty.
+    keyword_signals_present = bool(
+        truncated.get("logic_flaws") or truncated.get("valid_points")
+    )
+    assert keyword_signals_present, (
+        f"setup: at least one of logic_flaws / valid_points must "
+        f"survive truncation; got {truncated!r}"
+    )
+
+    # MEM-20: the caveat hint must be present in the truncated result.
+    assert truncated.get("_llm_aware_hint") == _LLM_AWARE_HINT, (
+        f"MEM-20: _truncate_by_priority must force-append the caveat "
+        f"hint when logic_flaws/valid_points survive truncation; "
+        f"got hint={truncated.get('_llm_aware_hint')!r}, "
+        f"truncated={truncated!r}"
+    )
+
+
+def test_truncation_omits_caveat_when_no_keyword_signals():
+    """MEM-20: if truncation drops BOTH logic_flaws and valid_points
+    to empty, the caveat hint must NOT be present (avoids prompt
+    noise when there is nothing to caveat)."""
+    from werewolf_agent.runtime.private_memory import _truncate_by_priority
+
+    memory = {
+        "vote_thoughts": [
+            {"day": 1, "point": "v1", "source_event": "action_trace_audit"},
+        ],
+        "stance_notes": [
+            {"day": 1, "point": f"stance {i} " * 30, "source_event": "speech"}
+            for i in range(50)
+        ],
+        "logic_flaws": [],   # empty input
+        "valid_points": [],  # empty input
+    }
+
+    truncated = _truncate_by_priority(memory, max_tokens=200)
+
+    # No keyword signals at all.
+    assert not truncated.get("logic_flaws")
+    assert not truncated.get("valid_points")
+    # And the hint is omitted.
+    assert "_llm_aware_hint" not in truncated, (
+        f"MEM-20: caveat must be omitted when no keyword signals "
+        f"survive; got {truncated!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-23: action_trace_audit events can be skipped via a config option.
+#
+# Per-action events accumulate over a game's lifetime; the
+# vote_thoughts derived from them only retain the newest entry, so the
+# older ones are pure storage overhead. The fix adds an
+# ``include_action_trace_audit`` flag (default True) on
+# ``build_private_memory`` so callers can opt out.
+# ---------------------------------------------------------------------------
+
+
+def test_skip_action_trace_audit_when_disabled():
+    """MEM-23: build_private_memory(include_action_trace_audit=False)
+    must drop every action_trace_audit event from the resulting
+    memory. vote_thoughts, logic_flaws, valid_points, and stance_notes
+    should all be empty (since the only source of these in the
+    fixture is the audit events)."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    gs = GameState(
+        game_id="g_test_mem23",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "player_id": "p01",
+                    "day_number": 1,
+                    "private_vote_thought": {
+                        "target": "p05",
+                        "standing_with_seer": "p03",
+                        "suspect_reason": "推理有漏洞",
+                        "not_voting_reason": "听起来合理",
+                        "private_reason": "我观察了 p05",
+                    },
+                },
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01", include_action_trace_audit=False)
+
+    for category in ("vote_thoughts", "logic_flaws", "valid_points", "stance_notes"):
+        assert not memory.get(category), (
+            f"MEM-23: {category} must be empty when "
+            f"include_action_trace_audit=False; got {memory.get(category)!r}"
+        )
+    # The whole memory dict is empty (no caveat either, since no
+    # keyword signals survived).
+    assert memory == {}, (
+        f"MEM-23: full memory dict must be empty when audit events "
+        f"are skipped; got {memory!r}"
+    )
+
+
+def test_action_trace_audit_enabled_by_default():
+    """MEM-23 (regression guard): the default behavior (no flag) must
+    still include action_trace_audit events."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    gs = GameState(
+        game_id="g_test_mem23_default",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "player_id": "p01",
+                    "day_number": 1,
+                    "private_vote_thought": {
+                        "target": "p05",
+                        "standing_with_seer": "",
+                        "suspect_reason": "推理有漏洞",
+                        "not_voting_reason": "",
+                        "private_reason": "",
+                    },
+                },
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01")
+    # With audit enabled, the suspect_reason "漏洞" produces a logic_flaw.
+    assert memory.get("logic_flaws"), (
+        f"MEM-23: default behavior must include action_trace_audit "
+        f"events; got {memory!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # P1-M14: private_memory priority-ordered truncation.
 #
 # Currently each category is truncated to 12 entries (`[-12:]`) in

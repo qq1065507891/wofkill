@@ -49,14 +49,20 @@ class ReflectionMemory:
             except Exception:
                 pass
 
-    def _persist(self, entry: ReflectionEntry) -> None:
+    def _persist(self, entry: ReflectionEntry, raise_on_failure: bool = False) -> None:
         if self._repo is None:
             return
         try:
             self._repo.save_reflection(entry.to_dict())
         except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
+            # MEM-25: by default, keep the legacy silent-on-failure
+            # behavior so production callers don't start seeing new
+            # exceptions after a dependency upgrade. Tests /
+            # migration scripts can opt in via raise_on_failure=True
+            # to surface the underlying error.
+            if raise_on_failure:
+                raise
+            _LOG.warning(
                 "Failed to persist reflection %s for player %s",
                 entry.entry_id, entry.player_id, exc_info=True,
             )
@@ -73,8 +79,15 @@ class ReflectionMemory:
         text: str = "",
         tags: list[str] | None = None,
         situation: str | dict | None = None,
+        raise_on_failure: bool = False,
     ) -> None:
-        """Store a reflection entry. Accepts either a ReflectionEntry or keyword args."""
+        """Store a reflection entry. Accepts either a ReflectionEntry or keyword args.
+
+        MEM-25: ``raise_on_failure`` is forwarded to ``_persist``;
+        when True, a DB write failure propagates out of ``store``
+        instead of being logged. Default is False to preserve the
+        legacy silent-on-failure behavior.
+        """
         if isinstance(entry_or_game_id, ReflectionEntry):
             entry = entry_or_game_id
         else:
@@ -89,7 +102,7 @@ class ReflectionMemory:
                 situation=json.dumps(situation, ensure_ascii=False) if isinstance(situation, dict) else str(situation or ""),
             )
         self._entries[entry.entry_id] = entry
-        self._persist(entry)
+        self._persist(entry, raise_on_failure=raise_on_failure)
 
     def get(self, entry_id: str) -> ReflectionEntry | None:
         return self._entries.get(entry_id)

@@ -553,6 +553,72 @@ class TestProfileStore:
         assert top[0].player_id == "p1"
         assert top[1].player_id == "p3"
 
+    def test_top_by_stable_order(self):
+        """MEM-17: when multiple profiles share the same attribute value,
+        ``top_by`` must produce a stable, player_id-keyed ordering across
+        repeated calls AND independent of dict insertion order.
+
+        Without the secondary ``player_id`` tie-breaker, the result
+        depends on the order profiles were first added to the store —
+        which is unstable for entries hydrated from a database (rows may
+        come back in any order) or for code paths that ``get_or_create``
+        different players in different sequences.
+
+        The fix sorts by ``(attribute, player_id)`` so the result is
+        deterministic regardless of insertion order.
+        """
+        from werewolf_agent.memory.profile import ProfileStore
+
+        # Build a store with NON-alphabetical insertion order so the
+        # ``player_id`` tie-breaker actually has to fire. All three
+        # profiles share the same logic value, so the order MUST come
+        # from player_id alone.
+        store = ProfileStore()
+        # Insert in reverse-alphabetical order: p3, then p2, then p1.
+        for pid in ("p3", "p2", "p1"):
+            store.get_or_create(pid).logic = 0.5
+
+        first = store.top_by("logic", limit=10)
+        second = store.top_by("logic", limit=10)
+
+        ids_first = [p.player_id for p in first]
+        ids_second = [p.player_id for p in second]
+
+        # Stable across repeated calls.
+        assert ids_first == ids_second, (
+            f"MEM-17: top_by must be stable across calls; "
+            f"got first={ids_first} second={ids_second}"
+        )
+        # And the order is the alphabetical (player_id) order, not
+        # the insertion order. Insertion was p3→p2→p1; result must
+        # be p1→p2→p3 because the secondary key is player_id.
+        assert ids_first == ["p1", "p2", "p3"], (
+            f"MEM-17: with tied attribute, top_by must sort by "
+            f"player_id as secondary key; got {ids_first} (insertion "
+            f"order was p3, p2, p1)"
+        )
+
+    def test_top_by_stable_order_with_tied_pair(self):
+        """MEM-17: when a top value is unique and the rest tie, the
+        top still wins and the tied remainder is player_id-ordered."""
+        from werewolf_agent.memory.profile import ProfileStore
+
+        store = ProfileStore()
+        # Insert p3 first, then p1 (winner), then p2 — p2 and p3
+        # are tied at 0.5, p1 is uniquely highest.
+        for pid in ("p3", "p1", "p2"):
+            store.get_or_create(pid).logic = 0.5
+        store.get_or_create("p1").logic = 0.9
+
+        result = store.top_by("logic", limit=10)
+        ids = [p.player_id for p in result]
+        # p1 is the unique top; p2 and p3 tie and the tie-breaker
+        # by player_id puts p2 first.
+        assert ids == ["p1", "p2", "p3"], (
+            f"MEM-17: unique top + tied remainder must be player_id "
+            f"ordered on the tie; got {ids}"
+        )
+
     def test_summary_empty(self):
         store = ProfileStore()
         s = store.summary()
@@ -1066,8 +1132,185 @@ def test_add_text_after_finalize_invalidates():
 
 
 # ---------------------------------------------------------------------------
-# Boundary: structured data not vectors
+# MEM-18: vector_index.similarity must cache the per-query work
+# (q_tokenize, q_norm, q_weights) so that repeated calls with the
+# same query string do not re-do the O(|query|) work each time.
+# Without the cache, hot paths that re-query the same string pay
+# the tokenization + IDF-lookup cost on every call.
 # ---------------------------------------------------------------------------
+
+
+def test_vector_similarity_caches_query():
+    """MEM-18: two similarity() calls with the SAME query string must
+    share the cached q_norm / q_weights. We assert the cache by
+    checking the internal ``_query_cache`` dict hits on the second
+    call. We also assert the score is identical (cache must not
+    change semantics)."""
+    from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+    idx = BagOfWordsVectorIndex()
+    idx.add_text("r1", "站边 预言家 票 投错")
+    idx.add_text("r2", "金水 轻信 核对")
+    idx.finalize()
+
+    # Pre-condition: cache should be empty before the first call.
+    cache = getattr(idx, "_query_cache", None)
+    assert cache is not None, (
+        "MEM-18: BagOfWordsVectorIndex must expose a _query_cache "
+        "attribute (or equivalent) so repeated calls can be deduped"
+    )
+    assert len(cache) == 0, (
+        f"MEM-18: query cache must be empty before first call; got {cache!r}"
+    )
+
+    # First call populates the cache.
+    scores_first = idx.similarity("站边 预言家")
+    assert len(cache) == 1, (
+        f"MEM-18: query cache must be populated after first call; got {cache!r}"
+    )
+    cached_key, cached_entry = next(iter(cache.items()))
+    assert cached_entry.get("q_norm") is not None
+    assert cached_entry.get("q_weights") is not None
+
+    # Second call with the SAME query string must hit the cache.
+    scores_second = idx.similarity("站边 预言家")
+    assert len(cache) == 1, (
+        f"MEM-18: cache must not grow on repeated identical queries; got {cache!r}"
+    )
+    # And the scores are byte-identical.
+    assert scores_first == scores_second, (
+        f"MEM-18: cached call must produce identical scores; "
+        f"first={scores_first} second={scores_second}"
+    )
+
+
+def test_vector_similarity_cache_invalidated_on_finalize():
+    """MEM-18: when the index is re-finalized (e.g. after a post-
+    finalize add_text per MEM-14), the query cache must be cleared so
+    the next similarity() call does not reuse the stale q_weights."""
+    from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+    idx = BagOfWordsVectorIndex()
+    idx.add_text("r1", "站边 预言家")
+    idx.finalize()
+    idx.similarity("站边")  # populate cache
+    cache = idx._query_cache
+    assert len(cache) == 1
+
+    # MEM-14 path: add_text after finalize invalidates _finalized,
+    # so the next finalize() will re-do the IDF computation. With
+    # MEM-18, that re-finalize must also clear the query cache.
+    idx.add_text("r2", "金水 轻信")
+    assert idx._finalized is False
+    idx.finalize()  # re-finalize with the new doc included
+    assert len(cache) == 0, (
+        f"MEM-18: re-finalize (after post-finalize add_text) must "
+        f"invalidate the query cache; got {cache!r}"
+    )
+
+
+def test_vector_similarity_cache_distinct_queries():
+    """MEM-18: two different query strings must produce two cache
+    entries, and each returns the correct scores."""
+    from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+    idx = BagOfWordsVectorIndex()
+    idx.add_text("r1", "站边 预言家 票")
+    idx.add_text("r2", "金水 轻信 核对")
+    idx.finalize()
+
+    s1 = idx.similarity("站边")
+    s2 = idx.similarity("金水")
+    assert len(idx._query_cache) == 2
+    # r1 dominates on 站边; r2 dominates on 金水.
+    assert s1["r1"] > s1["r2"]
+    assert s2["r2"] > s2["r1"]
+
+
+# ---------------------------------------------------------------------------
+# MEM-22: generate_reviews_for_game must log a warning when
+# ground_truth is missing entries for some player_ids. The legacy
+# behavior was a silent skip via ``roles.get(pid, "unknown")`` — the
+# missing ground-truth entry was treated as ``"unknown"`` and the
+# review was generated with no actual ground truth for that player.
+# The fix surfaces the discrepancy so the upstream caller can fix
+# the input.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_reviews_warns_on_missing_ground_truth(caplog):
+    """MEM-22: when ground_truth is missing one of the player_ids,
+    ``generate_reviews_for_game`` must emit a logger.warning that
+    names the missing players. The reports themselves are still
+    generated (we don't fail the call), but the mismatch is loud."""
+    import logging
+
+    from werewolf_agent.memory.store import MemoryStore
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    store = MemoryStore()
+    player_ids = ["p1", "p2", "p3"]
+    roles = {"p1": "seer", "p2": "werewolf", "p3": "villager"}
+    # ground_truth missing p3.
+    ground_truth = {"p1": "seer", "p2": "werewolf"}
+    winning_faction = "good"
+
+    with caplog.at_level(logging.WARNING, logger="werewolf_agent.memory.store"):
+        reports = store.generate_reviews_for_game(
+            game_id="g_test_mem22",
+            player_ids=player_ids,
+            roles=roles,
+            winning_faction=winning_faction,
+            ground_truth=ground_truth,
+        )
+
+    # The function still produced reports for all player_ids.
+    assert len(reports) == 3
+    assert all(isinstance(r, ReviewReport) for r in reports)
+    # But a warning was logged naming the missing player.
+    matching = [
+        r for r in caplog.records
+        if "p3" in r.getMessage() and r.levelno == logging.WARNING
+    ]
+    assert matching, (
+        f"MEM-22: missing ground_truth must emit a warning naming "
+        f"the missing player p3; got records: "
+        f"{[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_generate_reviews_no_warning_when_ground_truth_complete(caplog):
+    """MEM-22 (regression guard): when ground_truth contains all
+    player_ids, NO warning is emitted."""
+    import logging
+
+    from werewolf_agent.memory.store import MemoryStore
+
+    store = MemoryStore()
+    player_ids = ["p1", "p2"]
+    roles = {"p1": "seer", "p2": "werewolf"}
+    ground_truth = {"p1": "seer", "p2": "werewolf"}
+
+    with caplog.at_level(logging.WARNING, logger="werewolf_agent.memory.store"):
+        store.generate_reviews_for_game(
+            game_id="g_test_mem22_ok",
+            player_ids=player_ids,
+            roles=roles,
+            winning_faction="good",
+            ground_truth=ground_truth,
+        )
+
+    warnings = [
+        r for r in caplog.records
+        if "ground_truth" in r.getMessage().lower() or "missing" in r.getMessage().lower()
+    ]
+    assert not warnings, (
+        f"MEM-22: no warning expected when ground_truth is complete; "
+        f"got: {[r.getMessage() for r in warnings]}"
+    )
+
+
+
 
 class TestStructuredDataBoundary:
 

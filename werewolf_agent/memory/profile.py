@@ -88,9 +88,21 @@ class ProfileStore:
         return profile
 
     def top_by(self, attribute: str, limit: int = 10) -> list[PlayerProfile]:
-        """Return profiles sorted descending by an ability attribute."""
+        """Return profiles sorted descending by an ability attribute.
+
+        MEM-17: the secondary sort key is ``player_id`` so that ties
+        resolve to a deterministic order regardless of the dict
+        insertion order. This matters when the store is hydrated
+        from a database (rows may come back in any order) or when
+        callers ``get_or_create`` different players in different
+        sequences. Without the secondary key, two profiles with the
+        same ability value can swap places across runs, breaking
+        downstream consumers that expect a stable ranking.
+        """
         valid = list(self._profiles.values())
-        valid.sort(key=lambda p: getattr(p, attribute, 0.0), reverse=True)
+        # Sort ASCENDING by ``(-attribute, player_id)`` to get
+        # descending by attribute and ascending by player_id on ties.
+        valid.sort(key=lambda p: (-getattr(p, attribute, 0.0), p.player_id))
         return valid[:limit]
 
     def summary(self) -> dict[str, Any]:

@@ -214,6 +214,42 @@ class ReviewReport:
 # Reflection — long-term unstructured experience
 # ---------------------------------------------------------------------------
 
+# MEM-28: caps on the tags field of ReflectionEntry. A 1000-tag
+# entry serializes to a multi-KB JSON blob per reflection, and the
+# cost compounds in the vector index's per-entry IDF bookkeeping.
+# 20 tags × 64 chars is plenty for any meaningful reflection label
+# (role, win/loss, error class, strategy class) without bloating
+# storage.
+_MAX_REFLECTION_TAGS = 20
+_MAX_REFLECTION_TAG_LEN = 64
+
+
+def _validate_reflection_tags(tags: list[str]) -> None:
+    """MEM-28: enforce the tag-count and per-tag-length caps.
+
+    Raises ValueError with a descriptive message so the caller can
+    see which limit was violated. Empty tag strings are allowed
+    (callers may strip / normalize upstream), but very long strings
+    and very large lists are not.
+    """
+    if len(tags) > _MAX_REFLECTION_TAGS:
+        raise ValueError(
+            f"ReflectionEntry.tags accepts at most "
+            f"{_MAX_REFLECTION_TAGS} tags, got {len(tags)}"
+        )
+    for i, tag in enumerate(tags):
+        if not isinstance(tag, str):
+            raise ValueError(
+                f"ReflectionEntry.tags[{i}] must be a string, "
+                f"got {type(tag).__name__}"
+            )
+        if len(tag) > _MAX_REFLECTION_TAG_LEN:
+            raise ValueError(
+                f"ReflectionEntry.tags[{i}] is {len(tag)} chars, "
+                f"max is {_MAX_REFLECTION_TAG_LEN}"
+            )
+
+
 @dataclass
 class ReflectionEntry:
     entry_id: str
@@ -224,6 +260,12 @@ class ReflectionEntry:
     text: str
     tags: list[str] = field(default_factory=list)
     situation: str = ""
+
+    def __post_init__(self) -> None:
+        # MEM-28: bound the tags list to prevent JSON blow-up.
+        # Run after the dataclass __init__ so ``self.tags`` is the
+        # final list (or factory default).
+        _validate_reflection_tags(self.tags)
 
     def to_dict(self) -> dict[str, Any]:
         return {
