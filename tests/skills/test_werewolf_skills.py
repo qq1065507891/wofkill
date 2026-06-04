@@ -184,14 +184,14 @@ class TestPushVoteHandlerBranchesOnTaskType:
         ws, bs, alerts = _build_cognition(gs, "p04")  # villager
 
         # Vote task: rendered advice should mention 投票阶段.
+        # S-05: the 7th positional param is `task_type` (renamed from
+        # the misnamed `phase`). Pass the task_type value directly.
         result_vote, _ = _inject_skill_output(
-            {}, gs, "p04", ws, bs, alerts, "day",
-            task_type="vote",
+            {}, gs, "p04", ws, bs, alerts, "vote",
         )
         # Speech task: rendered advice should mention 发言阶段.
         result_speech, _ = _inject_skill_output(
             {}, gs, "p04", ws, bs, alerts, "speech",
-            task_type="speech",
         )
 
         vote_advice = result_vote.get("skill_tactical_advice", "")

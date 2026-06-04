@@ -1304,7 +1304,6 @@ def test_skill_analyses_field_populated() -> None:
 
     _strategy_directive, analyses = _inject_skill_output(
         {}, gs, "p01", world_state, belief, alerts, "speech",
-        task_type="speech",
     )
 
     # S-04: the analyses dict must be populated — at minimum, it must
@@ -1332,4 +1331,83 @@ def test_skill_analyses_field_populated() -> None:
     assert context.skill_analyses, (
         f"S-04: AgentContext.skill_analyses must be non-empty when "
         f"skills fire; got {context.skill_analyses!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# S-05: _inject_skill_output's 7th param is `task_type`, not `phase`.
+# ---------------------------------------------------------------------------
+
+def test_inject_skill_output_receives_task_type(monkeypatch) -> None:
+    """S-05: the 7th parameter of `_inject_skill_output` is `task_type`,
+    not `phase`. The production call site passes `task_type.value` to
+    it; inside the function, that value must be forwarded to
+    `dispatch_for_role`'s `task_type` keyword (so the P0-K2
+    `applies_to_task_types` filter actually fires).
+
+    Pre-fix: the parameter was named `phase` (misnamed) and the call
+    passed `task_type.value` to it. The function forwarded the value
+    as the `phase` arg of `dispatch_for_role` and the local `task_type`
+    was "" — so the precise task-type filter never fired.
+
+    Post-fix: the parameter is renamed to `task_type`. We mock
+    `dispatch_for_role` and assert it was called with the right
+    `task_type` keyword.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime import context as context_mod
+
+    # Mock SkillRegistry.dispatch_for_role to capture the kwargs.
+    captured: dict[str, Any] = {}
+
+    class _FakeRegistry:
+        def dispatch_for_role(
+            self, role, phase, skill_input, task_type="", gs=None
+        ):
+            captured["role"] = role
+            captured["phase"] = phase
+            captured["task_type"] = task_type
+            captured["gs"] = gs
+            return []
+
+    monkeypatch.setattr(context_mod, "SkillRegistry", _FakeRegistry)
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="s05_test",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.cognition.world_state import build_world_state
+
+    world_state = build_world_state(gs)
+    belief = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    belief = BeliefUpdater().update(belief, world_state.facts, gs.day_number)
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+
+    # Call with the renamed parameter as a keyword argument. This is
+    # the new contract: `task_type="speech"` is the 7th positional /
+    # `task_type` keyword.
+    _directive, _ = context_mod._inject_skill_output(
+        {}, gs, "p01", world_state, belief, alerts,
+        task_type="speech",
+    )
+
+    # S-05: dispatch_for_role must receive the task_type value as its
+    # `task_type` keyword. Pre-fix this was "" (the local var was never
+    # set; the value was bound to the misnamed `phase` param instead).
+    assert captured.get("task_type") == "speech", (
+        f"S-05: dispatch_for_role must receive task_type='speech'; "
+        f"got task_type={captured.get('task_type')!r}. The 7th param "
+        f"of _inject_skill_output is misnamed — it should be task_type, "
+        f"not phase."
     )

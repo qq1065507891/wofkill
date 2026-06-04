@@ -464,14 +464,21 @@ def _inject_skill_output(
     world_state: Any,
     belief_state: Any,
     contradiction_alerts: list[Any],
-    phase: str,
+    task_type: str,
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
-    task_type: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Dispatch applicable skills once; inject non-tool advice, collect tool analyses.
 
     Returns (updated strategy_directive, tool_analyses).
+
+    S-05: the 7th positional parameter is `task_type` (renamed from the
+    misnamed `phase`). The production call site (`build_agent_context`)
+    passes `task_type.value` here — that's the precise task-type value
+    (e.g. "speech", "vote", "night_action", "wolf_discussion"). The
+    older `phase: str` parameter shadowed the kwarg `task_type: str`
+    below; the kwarg was never set, so `dispatch_for_role` always saw
+    `task_type=""` and the P0-K2 precise filter never fired.
 
     P0-K2: `task_type` is forwarded to `dispatch_for_role` so the
     `applies_to_task_types` filter can refine the dispatch.
@@ -483,7 +490,12 @@ def _inject_skill_output(
     registry = SkillRegistry()
     skill_input = SkillInput(
         role=player.role,
-        phase=phase,
+        # S-05: the 7th param IS the task_type; SkillInput.phase
+        # historically received it (a task-type value rendered as
+        # phase). We pass it through for backward compatibility
+        # with handlers that still read inp.phase as a coarse phase
+        # hint. New handlers should branch on inp.task_type.
+        phase=task_type,
         day=gs.day_number,
         game_state=gs,
         world_state=world_state,
@@ -496,9 +508,11 @@ def _inject_skill_output(
         task_type=task_type,
     )
 
-    # P0-K2: pass task_type so the new `applies_to_task_types` filter works.
+    # S-05: dispatch_for_role receives the task_type value as both
+    # `phase` (2nd positional — backward compat with the older API)
+    # and `task_type` (kwarg — used by the P0-K2 precise filter).
     outputs = registry.dispatch_for_role(
-        player.role, phase, skill_input, task_type=task_type,
+        player.role, task_type, skill_input, task_type=task_type,
     )
 
     # Filter skills that conflict with wolf team role assignment
