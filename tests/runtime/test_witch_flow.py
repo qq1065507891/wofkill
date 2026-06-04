@@ -717,7 +717,6 @@ class TestWitchPoisonPressureContext:
             return strategy_directive, {"skill_analyze_wolf_pit": "suspects: p02"}
 
         monkeypatch.setattr(context_mod, "_inject_skill_output", fake_inject_skill_output)
-        monkeypatch.setattr(context_mod, "_build_skill_tool_defs", lambda role, phase: [])
 
         players = {
             "p01": PlayerState(id="p01", role="villager"),

@@ -28,21 +28,8 @@ _ROLE_NAMES = {
     "hybrid": "混血儿",
 }
 
-# Skill catalog: lightweight name + one-line description
-_SKILL_CATALOG: dict[str, dict[str, str]] = {
-    "wolf_pit": {
-        "name": "盘狼坑",
-        "desc": "系统性分析场上可能的狼人分布，输出嫌疑人区和排除区",
-    },
-    "find_power": {
-        "name": "找神",
-        "desc": "分析场上哪些玩家可能是神职（预言家/女巫/猎人等）",
-    },
-    "last_words": {
-        "name": "分析遗言",
-        "desc": "分析刚出局玩家的遗言，判断其身份可信度",
-    },
-}
+# P0-K1: skill catalog removed (tool path is dead code). Skill analyses
+# are pre-injected via skill_analysis_hints — no separate tool catalog.
 
 # Choice pipeline constants
 _CHOICE_TARGET_ACTIONS = {
@@ -169,12 +156,9 @@ class PlayerPromptBuilder:
         parts.append(self._build_game_rules())
         parts.append(self._build_role_guide())
         parts.append(self._build_reasoning_method())
-        # P0-R2: skill catalog moved from system to user. The catalog is
-        # role+phase dependent (it filters by `is_applicable(role, phase)`),
-        # so it was always mis-cached as 'stable' system content. Moving
-        # it to the user message cuts the system-prompt cache footprint
-        # and gives the LLM more headroom before the response token limit.
-        parts.append(self._build_tool_skill_policy())
+        # P0-K1: skill tool path removed; policy about calling skill tools
+        # is gone. Skill analyses are pre-injected (skill_analysis_hints).
+        parts.append(self._build_skill_policy())
         parts.append(self._build_output_contract())
         return "\n\n".join(p for p in parts if p)
 
@@ -224,12 +208,11 @@ class PlayerPromptBuilder:
             "允许保留不确定性，但行动必须给出当前最优理由。"
         )
 
-    def _build_tool_skill_policy(self) -> str:
+    def _build_skill_policy(self) -> str:
         return (
-            "【工具与技能使用规范】当存在相关 skill 工具时，优先调用 skill 获取分析，再提交行动。"
-            "skill 分析不是裁判真相，必须结合当前局可见事实判断。"
-            "如果 skill 分析和公开事实冲突，以公开事实为准。"
-            "提交行动时要吸收 skill 结论形成自己的判断，不要机械复述。"
+            "【技能与建议】系统会在你的回合前注入已计算的技能分析结果，"
+            "请基于这些分析与当前局可见事实形成自己的判断，不要机械复述。"
+            "技能分析不是裁判真相；如果与公开事实冲突，以公开事实为准。"
         )
 
     def _build_role_guide(self) -> str:
@@ -246,41 +229,6 @@ class PlayerPromptBuilder:
         if role in role_rules:
             lines.append(role_rules[role])
         return "\n".join(lines) if lines else ""
-
-    def _build_skill_catalog(self) -> str:
-        """Build the lightweight skill catalog (name + one-line desc only).
-
-        Full analysis lives behind load_skill tool — injected on demand.
-        """
-        from werewolf_agent.skills.registry import SkillRegistry, faction_for_role
-        from werewolf_agent.runtime.agent_adapter import _TOOL_SKILL_NAMES
-
-        registry = SkillRegistry()
-        role = self.context.own_role or ""
-        phase = self.context.phase or ""
-        role_faction = faction_for_role(role)
-        allowed = {"common", "universal", role_faction.value}
-
-        lines: list[str] = []
-        for skill in registry.all_skills():
-            if skill.faction.value not in allowed:
-                continue
-            if not skill.is_applicable(role, phase, task_type=self.context.task_type.value):
-                continue
-            name = skill.name.value
-            if name not in _TOOL_SKILL_NAMES:
-                continue
-            catalog = _SKILL_CATALOG.get(name)
-            if catalog:
-                lines.append(f"- {catalog['name']}: {catalog['desc']}")
-
-        if lines:
-            return (
-                "【可用技能目录】以下技能可通过 load_skill 工具按需加载完整分析：\n"
-                + "\n".join(lines)
-                + "\n在提交行动前，建议先调用 load_skill 加载相关分析以获得更准确的信息。"
-            )
-        return ""
 
     def _build_output_contract(self) -> str:
         """Stable output format rules — same regardless of phase."""
@@ -311,10 +259,8 @@ class PlayerPromptBuilder:
         parts.append(self._build_cognition_matrix_hint())
         parts.append(self._build_strategy_directive())
         parts.append(self._build_skill_analysis_hints())
-        # P0-R2: skill catalog now in user prompt. Was system but the
-        # catalog is role+phase dependent (filters by `is_applicable`),
-        # so it always belonged here.
-        parts.append(self._build_skill_catalog())
+        # P0-K1: skill tool path removed. Skill analyses are pre-injected
+        # above (skill_analysis_hints) — no separate tool-catalog section.
         parts.append(self._build_recent_transcript())
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM

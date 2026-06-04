@@ -36,12 +36,9 @@ from werewolf_agent.runtime.context import (
     _TASK_STYLE_HINTS,
     _get_persona_speech_style,
     _get_persona_task_style,
-    _TOOL_SKILL_NAMES,
-    _SKILL_TOOL_DEFS,
     _action_trace_payload,
     _merge_strategy_directive,
     _inject_skill_output,
-    _build_skill_tool_defs,
 )
 
 # Backward-compatible re-exports from runtime.directives package.

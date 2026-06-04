@@ -236,11 +236,8 @@ class PlayerAgent:
         parse_success = False
         parse_error_str: str | None = None
         structured_failure_reason: str | None = None
-        skill_call_count = 0  # cap total on-demand skill injections per act()
-        skill_skip_count = 0  # track times LLM skipped skill tools
 
         attempt = 0
-        _MAX_SKILL_SKIP = 3
         # Pipeline-optimization Task 1: track previous attempt's error signature
         # ``(error_code, raw_text[:50])`` to short-circuit if the next attempt
         # produces an identical failure.
@@ -264,14 +261,9 @@ class PlayerAgent:
                 correction_hint=retry.correction_hint,
             )
 
-            # Build tool list: always include submit_player_action; optionally
-            # include skill analysis tools for the LLM to call on-demand.
+            # Build tool list: always include submit_player_action.
             tools = [self._player_action_tool(context)]
-            has_skill_tools = bool(context.skill_tools)
-            if has_skill_tools:
-                tools.extend(context.skill_tools)
-                tool_choice_val: dict[str, Any] | None = {"type": "auto"}
-            elif _model_text_fallback:
+            if _model_text_fallback:
                 # This model returns plain-text JSON natively — no need
                 # to force tool_choice. Let the provider decide format.
                 tool_choice_val = None
@@ -320,73 +312,6 @@ class PlayerAgent:
             raw_text = result.text or ""
 
             tool_call_received = bool(getattr(result, "tool_call_received", False))
-
-            # ── On-demand skill loading (load_skill tool pattern) ──
-            # The model calls a skill analysis tool → inject analysis body.
-            called_tool = getattr(result, "tool_call_name", "") or ""
-            if called_tool and called_tool in context.skill_analyses and skill_call_count < 2:
-                skill_call_count += 1
-                analysis = context.skill_analyses.get(called_tool, "")
-                if analysis:
-                    hint = (
-                        f"【技能分析结果】\n{analysis}\n\n"
-                        "请基于以上分析，通过 submit_player_action 提交你的行动。"
-                    )
-                else:
-                    hint = "技能分析暂无结果，请直接通过 submit_player_action 提交你的行动。"
-                retry = RetryInfo(
-                    attempt=attempt,
-                    max_retries=self.max_retries,
-                    correction_hint=hint,
-                )
-                attempt -= 1  # skill tool 调用不消耗重试次数
-                continue
-
-            # ── Skill skip detection: LLM submitted action without calling any skill tool ──
-            # When skill tools are available but the LLM went straight to submit_player_action,
-            # nudge it to call an analysis tool first.  After _MAX_SKIP attempts, force-inject
-            # all skill analyses directly into the prompt so good players still get the info.
-            _called_skill_tool = called_tool and called_tool in context.skill_analyses
-            if (
-                has_skill_tools
-                and tool_call_received
-                and not _called_skill_tool
-                and skill_call_count == 0
-                and context.skill_analyses
-                and skill_skip_count < _MAX_SKILL_SKIP
-            ):
-                skill_skip_count += 1
-                if skill_skip_count >= _MAX_SKILL_SKIP:
-                    # Fallback: LLM won't call skill tools — inject analyses directly
-                    all_analyses = "\n\n".join(
-                        v for v in context.skill_analyses.values() if v
-                    )
-                    if not all_analyses:
-                        break  # nothing to inject, proceed normally
-                    retry = RetryInfo(
-                        attempt=attempt,
-                        max_retries=self.max_retries,
-                        correction_hint=(
-                            f"【技能分析结果】\n{all_analyses}\n\n"
-                            "请基于以上分析，通过 submit_player_action 提交你的行动。"
-                        ),
-                    )
-                    attempt -= 1
-                    continue
-                skill_names = ", ".join(
-                    t.get("name", "") for t in context.skill_tools
-                )
-                retry = RetryInfo(
-                    attempt=attempt,
-                    max_retries=self.max_retries,
-                    correction_hint=(
-                        f"请先调用分析工具（{skill_names}）获取局势分析，"
-                        "然后再通过 submit_player_action 提交行动。"
-                        "不要跳过分析直接提交。"
-                    ),
-                )
-                attempt -= 1  # skill skip retry 不消耗重试次数
-                continue
 
             if not result.text:
                 failure_reason = self._latest_generation_failure_reason()

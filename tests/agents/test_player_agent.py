@@ -269,80 +269,6 @@ class NoToolProvider:
         )
 
 
-class SkipThenSubmit:
-    """Provider that skips skill tools for `skip_count` calls, then submits."""
-
-    def __init__(self, call_log: list, submitted: dict, skip_count: int = 10):
-        self._call_log = call_log
-        self._submitted = submitted
-        self._skip_count = skip_count
-
-    @property
-    def name(self) -> str:
-        return "mock"
-
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
-        self._call_log.append({"tools": tools, "tool_choice": tool_choice, "prompt": prompt})
-        self._submitted["n"] += 1
-        return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"投7","reason":"可疑","confidence":0.8}',
-            provider=self.name,
-            model=config.model,
-            usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-            tool_call_received=True,
-            tool_call_name="submit_player_action",
-        )
-
-
-class SkillThenSubmit:
-    """Provider that calls a skill tool on the first call, then submits."""
-
-    def __init__(self, call_log: list, calls_counter: dict):
-        self._call_log = call_log
-        self._calls_counter = calls_counter
-
-    @property
-    def name(self) -> str:
-        return "mock"
-
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
-        self._call_log.append({"tools": tools, "tool_choice": tool_choice, "prompt": prompt})
-        self._calls_counter["n"] += 1
-        if self._calls_counter["n"] == 1:
-            return GenerateResult(
-                text="",
-                provider=self.name,
-                model=config.model,
-                usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-                tool_call_received=True,
-                tool_call_name="skill_analyze_wolf_pit",
-            )
-        return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"","reason":"根据技能分析，p07票型异常","confidence":0.8}',
-            provider=self.name,
-            model=config.model,
-            usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-            tool_call_received=True,
-            tool_call_name="submit_player_action",
-        )
-
-
-class DirectSubmit:
-    @property
-    def name(self) -> str:
-        return "mock"
-
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
-        return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"投7","reason":"可疑","confidence":0.8}',
-            provider=self.name,
-            model=config.model,
-            usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
-            tool_call_received=True,
-            tool_call_name="submit_player_action",
-        )
-
-
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests
 # ---------------------------------------------------------------------------
@@ -1214,8 +1140,9 @@ class TestPlayerAgentRetryFallback:
         assert "跨局记忆只是历史经验" in prompt
         assert "【推理方法】" in prompt
         assert "盘狼坑时优先看" in prompt
-        assert "【工具与技能使用规范】" in prompt
-        assert "skill 分析不是裁判真相" in prompt
+        # P0-K1: tool-skill policy replaced with pre-injection policy
+        assert "【技能与建议】" in prompt
+        assert "技能分析不是裁判真相" in prompt
 
     def test_user_prompt_renders_dynamic_sources_as_separate_sections(self) -> None:
         agent = self._make_agent("unused")
@@ -2050,128 +1977,6 @@ class TestSpeechMustAnswerVisibleContradictionAlert:
         speech = "p01和p05对跳预言家，我站p01这边。我怀疑p03是狼人，投p03。"
         result = validate_public_speech(speech, phase="day_discussion", context=context)
         assert result["valid"] is True
-
-
-class TestSkillSkipRetry:
-    """When skill tools are available but LLM skips them, retry with nudge.
-    After 3 skips, give up and proceed normally."""
-
-    @staticmethod
-    def _make_agent_with_skill_skip(skip_count: int = 10) -> tuple[PlayerAgent, list[dict]]:
-        """Build agent that skips skill tools for `skip_count` calls, then submits."""
-        call_log: list[dict] = []
-        submitted = {"n": 0}
-        router = ModelRouter(
-            model_profiles={},
-            llm_profiles={},
-            player_assignments={"p01": "default"},
-            providers={"mock": SkipThenSubmit(call_log, submitted, skip_count)},
-        )
-        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=10)
-        return agent, call_log
-
-    def _make_skill_context(self) -> AgentContext:
-        return AgentContext(
-            agent_id="p01",
-            task_type=TaskType.VOTE,
-            phase="day",
-            day_number=1,
-            own_role="villager",
-            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
-            legal_targets=["p07", "p08"],
-            public_summary="Day 1",
-            skill_tools=[
-                {
-                    "name": "skill_analyze_wolf_pit",
-                    "description": "分析狼坑",
-                    "input_schema": {"type": "object", "properties": {}},
-                },
-            ],
-            skill_analyses={
-                "skill_analyze_wolf_pit": "嫌疑区：p05(行为偏向狼人)；排除区：p02(被预言家发金水)",
-            },
-        )
-
-    def test_skill_skip_retries_with_nudge(self) -> None:
-        """LLM skips skill tools -> retry with correction hint."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        assert isinstance(action, PlayerAction)
-        # 2 nudges + 1 fallback injection + 1 final submit = 4 calls
-        assert len(call_log) == 4
-        # First nudge should mention skill tool name
-        assert "skill_analyze_wolf_pit" in call_log[1]["prompt"]
-
-    def test_llm_can_call_skill_tool_before_submitting_action(self) -> None:
-        """LLM calls a skill tool, receives analysis, then submits an action."""
-        call_log: list[dict] = []
-        calls_counter = {"n": 0}
-
-        router = ModelRouter(
-            model_profiles={},
-            llm_profiles={},
-            player_assignments={"p01": "default"},
-            providers={"mock": SkillThenSubmit(call_log, calls_counter)},
-        )
-        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=5)
-
-        action, retry = agent.act(self._make_skill_context())
-
-        assert isinstance(action, PlayerAction)
-        assert action.action_type == ActionType.VOTE
-        assert action.target_id == "p07"
-        assert len(call_log) == 2
-        assert any(tool["name"] == "skill_analyze_wolf_pit" for tool in call_log[0]["tools"])
-        assert "【技能分析结果】" in call_log[1]["prompt"]
-        assert "嫌疑区：p05" in call_log[1]["prompt"]
-        assert retry.attempt <= retry.max_retries
-
-    def test_skill_skip_gives_up_after_3(self) -> None:
-        """After 3 skill skip retries, force-inject analysis and submit."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        assert isinstance(action, PlayerAction)
-        assert action.action_type == ActionType.VOTE
-        # 2 nudges + 1 fallback injection + 1 final submit = 4 calls
-        assert len(call_log) == 4
-
-    def test_skill_skip_injects_analysis_on_final_retry(self) -> None:
-        """On the last skip, skill analysis is force-injected into prompt."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        assert isinstance(action, PlayerAction)
-        # 4th call (index 3) has the force-injected analysis in its prompt
-        last_prompt = call_log[3]["prompt"]
-        assert "【技能分析结果】" in last_prompt or "嫌疑区" in last_prompt
-
-    def test_no_skill_skip_when_no_skill_tools(self) -> None:
-        """Without skill tools, no skip retry happens."""
-        router = ModelRouter(
-            model_profiles={},
-            llm_profiles={},
-            player_assignments={"p01": "default"},
-            providers={"mock": DirectSubmit()},
-        )
-        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=5)
-        ctx = AgentContext(
-            agent_id="p01",
-            task_type=TaskType.VOTE,
-            phase="day",
-            day_number=1,
-            own_role="villager",
-            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
-            legal_targets=["p07", "p08"],
-        )
-        action, _ = agent.act(ctx)
-        assert isinstance(action, PlayerAction)
-        assert action.action_type == ActionType.VOTE
-
-    def test_skill_skip_does_not_consume_attempt(self) -> None:
-        """Skill skip retries don't count against max_retries."""
-        agent, call_log = self._make_agent_with_skill_skip(skip_count=10)
-        action, retry = agent.act(self._make_skill_context())
-        # Even with 3 skip retries, max_retries should not be exhausted
-        assert retry.attempt <= retry.max_retries
 
 
 class TestVoteFallbackConsistency:
