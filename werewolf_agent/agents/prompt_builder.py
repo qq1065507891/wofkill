@@ -301,7 +301,13 @@ class PlayerPromptBuilder:
         "_build_strategy_directive": "【策略指令】",
         "_build_skill_analysis_hints": "【辅助】",
         "_build_recent_transcript": "【可选】",
-        "_build_retry_hint": "【硬约束】",
+        # P1-9: retry hint is descriptive/advisory (correction hint
+        # text is a soft signal), not a hard rule. Only the
+        # timeout-no-op permission is a true hard constraint, and it
+        # is enforced by the runtime (FallbackAction), not by the
+        # LLM obeying the prompt. The whole section is therefore
+        # 【辅助】, not 【硬约束】.
+        "_build_retry_hint": "【辅助】",
         "_build_strict_output_contract": "【硬约束】",
         # Note: _build_task_prompt is intentionally unlabeled — the
         # task prompt is the action spec the LLM is executing.

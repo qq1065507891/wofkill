@@ -1480,13 +1480,12 @@ def test_sections_have_priority_labels():
     # Verify the label is followed by the section's own header text so
     # the LLM sees 【硬约束】 X then the actual content.
     # The retry hint header is "纠正提示" — confirm the label is
-    # immediately before it (within 50 chars to allow the section
-    # label spacing).
+    # 【辅助】 (P1-9: retry hint is advisory, not a hard constraint).
     retry_idx = prompt.find("纠正提示")
     assert retry_idx > 0, "Retry hint should still render in the user prompt"
     preceding = prompt[max(0, retry_idx - 60):retry_idx]
-    assert "【硬约束】" in preceding, (
-        f"Retry hint must be preceded by 【硬约束】 label, got: {preceding!r}"
+    assert "【辅助】" in preceding, (
+        f"P1-9: retry hint must be preceded by 【辅助】 label, got: {preceding!r}"
     )
 
     # P1-6: Strategy directive header is "本轮策略指令". Its outer
@@ -1771,12 +1770,13 @@ def test_user_prompt_within_budget_when_all_sections_populated():
 
 
 def test_hard_sections_never_dropped_under_budget():
-    """P1-5: budget enforcement must NEVER drop 【硬约束】 sections.
+    """P1-5: budget enforcement must NEVER drop truly-binding sections.
 
-    The hard-constraint sections (strategy_directive, retry hint,
-    output contract) carry binding rules the LLM must obey. If the
-    budget is tight, the trimmer drops 可选 first, then 辅助 — never
-    a 硬约束 section.
+    P1-9: retry hint is now 【辅助】 (advisory), so under extreme
+    budget pressure it may be dropped — the runtime FallbackAction
+    handles the safety case regardless. strategy_directive and
+    output contract are the two truly-binding sections that the
+    LLM must always see; the trimmer must never drop them.
     """
     ctx = _make_ctx_with_all_sections_populated()
     retry = RetryInfo(
@@ -1787,17 +1787,14 @@ def test_hard_sections_never_dropped_under_budget():
         correction_hint="只输出JSON。",
     )
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
-    # 硬约束 sections must remain — even when the budget is tight.
-    # strategy_directive is gated by 硬约束 outer label (P1-S3); the
-    # inner sub-group MUST/SHOULD/REFERENCE markers (P0-S5) are also
-    # anchored here.
+    # strategy_directive is gated by 硬约束-equivalent policy: it
+    # carries binding rules the LLM must obey (the inner P0-S5
+    # MUST/SHOULD/REFERENCE sub-group keys).
     assert "本轮策略指令" in user_prompt, (
-        "P1-5: strategy_directive is a 硬约束 section and must never "
-        "be dropped from the user prompt under the budget cap."
+        "P1-5: strategy_directive carries binding rules and must "
+        "never be dropped from the user prompt under the budget cap."
     )
-    assert "纠正提示" in user_prompt, (
-        "P1-5: retry hint is a 硬约束 section and must never be dropped."
-    )
+    # Output contract is 【硬约束】 and must never be dropped.
     assert "最终输出协议" in user_prompt, (
         "P1-5: output contract is a 硬约束 section and must never be dropped."
     )
@@ -2054,6 +2051,92 @@ def test_vote_example_non_seer_uses_seer_siding(role: str):
             f"vote_basis='seer_siding' (no own check), got "
             f"{ex.get('vote_basis')!r}. Full example: {ex}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P1-9: retry hint section is 【辅助】, not 【硬约束】
+# ---------------------------------------------------------------------------
+#
+# Audit P1-9 finding: ``_build_retry_hint`` is wrapped with the
+# 【硬约束】 outer label, but the content is mostly descriptive /
+# advisory (the error_message snippet and the correction_hint). Only
+# the timeout-no-op permission ("如果你已经超时, 请直接返回 no_action")
+# is a true binding rule, and even that is enforced by the runtime
+# FallbackAction path, not by the LLM obeying the prompt.
+#
+# Fix: use 【辅助】 for the retry hint section. The no-op permission
+# line still appears (the LLM needs to see it), but the section
+# wrapper is no longer over-labeled as MUST-obey.
+
+
+def test_retry_hint_labeled_as_辅助():
+    """P1-9: retry hint outer section label is 【辅助】, not 【硬约束】.
+
+    The retry hint content is descriptive (error_message snippet) and
+    advisory (correction_hint, timeout-no-op permission). Treating
+    the whole section as a binding hard constraint is over-labeling.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error",
+        correction_hint="只输出JSON。",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # The retry hint header is "纠正提示" — confirm the OUTER label
+    # is 【辅助】, not 【硬约束】.
+    retry_idx = prompt.find("纠正提示")
+    assert retry_idx > 0, "Retry hint should still render in the user prompt"
+    preceding = prompt[max(0, retry_idx - 60):retry_idx]
+    assert "【辅助】" in preceding, (
+        "P1-9: retry hint section must be labeled 【辅助】 "
+        "(advisory content, not a hard constraint). Got preceding: "
+        f"{preceding!r}"
+    )
+
+
+def test_retry_hint_timeout_permission_line_still_present():
+    """P1-9 regression: the timeout-no-op permission line must still
+    appear in the retry hint even after relabeling the section.
+
+    The line is a useful advisory signal that the LLM should take
+    a safe no-op on timeout. The runtime FallbackAction enforces
+    safety; the prompt signal is the soft guidance.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="empty_response",
+        failure_category="timeout",
+        correction_hint="Please provide a valid JSON action",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # The no-op permission line is still in the rendered retry hint.
+    assert "no_action" in prompt, (
+        "P1-9 regression: timeout-no-op permission line must still "
+        "appear in the retry hint (the LLM still needs the signal)."
+    )
 
 
 # ---------------------------------------------------------------------------
