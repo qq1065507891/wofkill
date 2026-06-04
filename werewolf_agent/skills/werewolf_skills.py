@@ -54,19 +54,24 @@ def _parse_skill_frontmatter(text: str) -> dict[str, Any]:
     return yaml.safe_load(parts[1]) or {}
 
 
-def _load_manifests() -> list[SkillDefinition]:
+def _load_manifests(root: "Path | None" = None) -> list[SkillDefinition]:
     """Load skill metadata from SKILL.md files under skill directories.
 
     Each skill directory contains a SKILL.md with YAML frontmatter
     (name, description, applicable roles/phases, faction, tags).
     The dynamic analysis logic lives in Python handlers — only static
     metadata is stored here.
+
+    The `root` parameter is a test seam: production callers omit it
+    (it defaults to this module's parent directory); tests pass a
+    `tmp_path` to load fixtures in isolation.
     """
     from pathlib import Path
 
-    _root = Path(__file__).resolve().parent
+    if root is None:
+        root = Path(__file__).resolve().parent
     result: list[SkillDefinition] = []
-    for skill_dir in sorted(_root.iterdir()):
+    for skill_dir in sorted(root.iterdir()):
         if not skill_dir.is_dir() or skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
             continue
         if skill_dir.name == "manifests":
@@ -84,6 +89,11 @@ def _load_manifests() -> list[SkillDefinition]:
                 description=data.get("description", ""),
                 applicable_roles=data.get("applicable_roles", []),
                 applicable_phases=data.get("applicable_phases", []),
+                # S-01: precise task-type filter (P0-K2). Frontmatter
+                # may declare `applies_to_task_types: [speech, ...]`
+                # to scope the skill to specific task types instead
+                # of cramming them into `applicable_phases`.
+                applies_to_task_types=data.get("applies_to_task_types", []),
                 faction=SkillFaction(data.get("faction", "common")),
                 tags=data.get("tags", []),
             ))
