@@ -269,6 +269,12 @@ def _truncate_by_priority(
     Returns a NEW dict; the input is not mutated. Empty categories
     are still included (with empty lists) so the caller can rely on
     the schema.
+
+    MEM-20: the P1-M10 caveat hint is force-appended to the returned
+    dict when logic_flaws or valid_points survives the truncation.
+    This keeps the function self-contained — callers no longer need
+    a second pass to re-add the hint, and direct callers (unit tests,
+    new renderers) can't accidentally drop it.
     """
     result: dict[str, list[dict[str, Any]]] = {
         category: list(memory.get(category, []))
@@ -280,6 +286,12 @@ def _truncate_by_priority(
 
     # Already fits: return as-is.
     if _total_tokens() <= max_tokens:
+        # MEM-20: caveat must still be applied if keyword signals
+        # are present (the original caller logic in
+        # ``build_private_memory`` does the same; keeping it here
+        # means the contract is local to one function).
+        if result.get("logic_flaws") or result.get("valid_points"):
+            result["_llm_aware_hint"] = _LLM_AWARE_HINT
         return result
 
     # Walk categories in REVERSE priority order (lowest priority first).
@@ -291,6 +303,11 @@ def _truncate_by_priority(
         while result[category] and _total_tokens() > max_tokens:
             result[category].pop(0)
 
+    # MEM-20: after truncation, if any keyword-signal category
+    # survives, surface the P1-M10 caveat so the LLM treats those
+    # entries as crude signals, not authoritative verdicts.
+    if result.get("logic_flaws") or result.get("valid_points"):
+        result["_llm_aware_hint"] = _LLM_AWARE_HINT
     return result
 
 
