@@ -101,9 +101,31 @@ class SkillDefinition:
     faction: SkillFaction = SkillFaction.COMMON
     tags: list[str] = field(default_factory=list)
 
-    def is_applicable(self, role: str, phase: str) -> bool:
+    def is_applicable(
+        self,
+        role: str,
+        phase: str = "",
+        task_type: str = "",
+    ) -> bool:
+        """Check if this skill applies given role, phase, and task_type.
+
+        SKILL.md frontmatter `applicable_phases` typically lists task-type
+        values ('speech', 'night_action', 'sheriff_speech', etc.).
+        Call sites can also pass `phase` ('day'/'night') as a coarse
+        match, and `task_type` for precise phase-like matching.
+
+        Match rule: the skill is applicable iff EITHER:
+        - `phase` is in `applicable_phases` (coarse day/night match), OR
+        - `task_type` is in `applicable_phases` (precise task-type match)
+
+        If `applicable_phases` is empty, the skill applies always (subject
+        to role filter).
+        """
         if self.applicable_roles and role not in self.applicable_roles:
             return False
-        if self.applicable_phases and phase not in self.applicable_phases:
-            return False
+        if self.applicable_phases:
+            phase_match = phase in self.applicable_phases
+            task_match = task_type in self.applicable_phases
+            if not (phase_match or task_match):
+                return False
         return True

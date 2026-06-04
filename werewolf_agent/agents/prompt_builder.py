@@ -265,7 +265,7 @@ class PlayerPromptBuilder:
         for skill in registry.all_skills():
             if skill.faction.value not in allowed:
                 continue
-            if not skill.is_applicable(role, phase):
+            if not skill.is_applicable(role, phase, task_type=self.context.task_type.value):
                 continue
             name = skill.name.value
             if name not in _TOOL_SKILL_NAMES:
