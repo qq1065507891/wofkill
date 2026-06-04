@@ -283,5 +283,102 @@ class TestSlimRendererIndependence:
         ]
 
 
+# ===================================================================
+# P0-G2: slim path vs. audit log — both must coexist correctly
+# ===================================================================
+
+
+class TestSlimAndAuditCoexist:
+    """P0-G2: the slim prompt renderer must strip audit metadata, while
+    the audit log on the injector retains the full data. Both paths
+    must run in the same inject() call without one stomping on the
+    other."""
+
+    def test_injector_audit_log_keeps_full_metadata(self) -> None:
+        """End-to-end: when the injector runs, the audit log records
+        relevance/quality/source/visibility/case_type, even though the
+        slim prompt renderer strips them. This is the G2 contract.
+        """
+        from werewolf_agent.rag.injector import InjectionContext, RAGInjector
+        from werewolf_agent.rag.retriever import StrategyRetriever
+        from werewolf_agent.rag.schemas import RAGQuery
+
+        hit = _make_hit(
+            entry_id="audit_check_001",
+            relevance=0.83,
+            quality=QualityGrade.HIGH_RANK_GAME,
+            source=SourceType.PUBLIC_TOURNAMENT,
+            visibility=VisibilityBoundary.PLAYER_PERSPECTIVE,
+        )
+        # Use a StrategyRetriever built directly from one hit so the
+        # test is hermetic (no ingestion / seed dependency).
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+        )
+
+        entry = RAGEntry(
+            entry_id="audit_check_001",
+            title=hit.title,
+            summary=hit.summary,
+            key_decisions=hit.key_decisions,
+            metadata=CaseMetadata(
+                case_type=CaseType.EXTERNAL_HIGH_END_CASE,
+                quality_grade=QualityGrade.HIGH_RANK_GAME,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="werewolf",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.PUBLIC_TOURNAMENT),
+                tags=["抗推"],
+            ),
+        )
+        injector = RAGInjector(StrategyRetriever([entry]))
+
+        hits = injector.inject(
+            RAGQuery(role="werewolf", phase="speech"),
+            injection_context=InjectionContext.LIVE_PLAYER,
+            game_id="g_test",
+            player_id="p08",
+        )
+        # Slim path
+        slim_lines = injector.hits_to_prompt_lines(hits, max_items=1)
+        assert slim_lines, "slim path must still return the hit"
+        assert set(slim_lines[0].keys()) == {"title", "summary", "key_decisions"}
+
+        # Audit path: full data preserved.
+        audit = injector.last_audit()
+        assert audit is not None
+        assert audit.injection_context == "live_player"
+        assert audit.game_id == "g_test"
+        assert audit.player_id == "p08"
+        assert len(audit.hits) == 1
+        audit_hit = audit.hits[0]
+        # Full audit payload must include relevance/quality/source/
+        # visibility — none of which the slim path exposes.
+        assert audit_hit["entry_id"] == "audit_check_001"
+        assert audit_hit["relevance_score"] == pytest.approx(0.5, abs=0.5)
+        assert audit_hit["quality_grade"] == "high_rank_game"
+        assert audit_hit["source_type"] == "public_tournament"
+        assert audit_hit["visibility_boundary"] == "player_perspective"
+        assert audit_hit["case_type"] == "external_high_end_case"
+
+    def test_slim_renderer_does_not_mutate_hit(self) -> None:
+        """Slim rendering is a pure function — the input RAGHit must be
+        unchanged after the call, so the audit log can still record the
+        full payload."""
+        hit = _make_hit()
+        before = hit.model_dump()
+        _ = render_hit_for_prompt(hit)
+        after = hit.model_dump()
+        assert before == after
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

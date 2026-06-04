@@ -420,10 +420,40 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.rag_hints:
             return ""
+        # P0-G2 defense in depth: even if a non-production code path
+        # leaks full audit items into ``ctx.rag_hints``, the live prompt
+        # must only see title / summary / key_decisions. Audit data
+        # (relevance, quality, source, visibility, display annotation)
+        # belongs in the audit log, not the LLM context window.
+        slim_items = self._slim_rag_hint_items(ctx.rag_hints[:3])
         return (
             "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
-            + self._compact_json(ctx.rag_hints[:3])
+            + self._compact_json(slim_items)
         )
+
+    @staticmethod
+    def _slim_rag_hint_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop audit-only fields from RAG hint items in the live prompt.
+
+        Mirrors :func:`werewolf_agent.rag.prompt_renderer.hits_to_prompt_lines`
+        but operates on already-rendered dicts (so it works even when
+        ``ctx.rag_hints`` was populated by a test or a non-default
+        code path that bypassed :class:`RAGKnowledgeService`).
+
+        The renderer treats a dict as a "slim line" if it already only
+        has the three prompt-safe keys; otherwise it picks out those
+        three keys, falling back to ``""`` / ``""`` / ``[]`` if absent.
+        """
+        slim: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            slim.append({
+                "title": str(item.get("title", "") or ""),
+                "summary": str(item.get("summary", "") or ""),
+                "key_decisions": list(item.get("key_decisions") or [])[:3],
+            })
+        return slim
 
     def _build_reflection_memory_hints(self) -> str:
         ctx = self.context

@@ -898,6 +898,93 @@ def _make_villager_context() -> AgentContext:
     )
 
 
+def test_rag_hints_strip_audit_metadata_in_live_prompt():
+    """P0-G2 defense in depth: even if a non-production code path
+    populates ``ctx.rag_hints`` with the full audit payload
+    (relevance, quality, source, visibility, display annotation),
+    the rendered prompt must NOT include any of those fields.
+
+    The runtime now produces slim lines via
+    :class:`RAGKnowledgeService.hits_to_prompt_lines`, so this path
+    is only hit when a test or future code path populates the audit
+    shape directly. The slim filter in
+    :meth:`PlayerPromptBuilder._build_rag_hints` is the last line of
+    defense.
+    """
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [{
+            "type": "rag_hit",
+            "entry_id": "leaked_audit_item",
+            "title": "京城大师赛 250415 抗推预言家",
+            "summary": "狼队在白天通过抗推预言家获得票数优势。",
+            "key_decisions": [
+                "白天全力归票预言家",
+                "预言家抗推后改换身份打深钩",
+                "夜里优先解神牌",
+                "不应当出现",
+            ],
+            "relevance": 0.83,
+            "quality": "high_rank_game",
+            "source_type": "public_tournament",
+            "visibility": "player_perspective",
+            "visibility_boundary": "player_perspective",
+            "annotation": "[public_tournament|high_rank_game]",
+            "display_annotation": "[public_tournament|high_rank_game]",
+            "allowed_in_live": True,
+            "allowed_in_live_context": True,
+            "case_type": "external_high_end_case",
+            "role_perspective": "werewolf",
+            "tags": ["抗推", "预言家"],
+            "short_quotes": ["p04 票型抱团"],
+            "phase": "speech",
+        }],
+    })
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Audit field NAMES must not appear in the prompt.
+    for forbidden_name in (
+        "relevance",
+        "relevance_score",
+        "quality",
+        "quality_grade",
+        "source_type",
+        "visibility",
+        "visibility_boundary",
+        "annotation",
+        "display_annotation",
+        "allowed_in_live",
+        "allowed_in_live_context",
+        "case_type",
+        "role_perspective",
+        "tags",
+        "short_quotes",
+        "entry_id",
+    ):
+        assert forbidden_name not in prompt, (
+            f"Audit-only field name {forbidden_name!r} leaked into live prompt"
+        )
+    # Audit field VALUES must not appear either.
+    assert "0.83" not in prompt
+    assert "high_rank_game" not in prompt
+    assert "public_tournament" not in prompt
+    assert "player_perspective" not in prompt
+    assert "leaked_audit_item" not in prompt
+    # The slim payload fields ARE present.
+    assert "京城大师赛 250415 抗推预言家" in prompt
+    assert "狼队在白天通过抗推预言家获得票数优势。" in prompt
+    assert "白天全力归票预言家" in prompt
+    # key_decisions truncated to 3.
+    assert "不应当出现" not in prompt
+
+
+def test_rag_hints_empty_when_no_hints():
+    """P0-G2: with no rag_hints, the prompt must not include the
+    知识库提示 header. Sanity check on the empty path."""
+    ctx = _make_villager_context()
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "知识库提示" not in prompt
+
+
 def test_skill_catalog_not_in_system_prompt_for_seer():
     """P0-R2: seer system prompt must not include the skill catalog.
 
