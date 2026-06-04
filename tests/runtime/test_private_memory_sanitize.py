@@ -695,3 +695,69 @@ def test_token_estimator_ascii_unchanged_or_higher():
         f"MEM-04: ASCII estimator should be sane; got {estimated} "
         f"for 200-char ASCII input"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-11: events whose payload.visibility == "moderator_full" must be
+# excluded from the player's private memory. moderator_full is the
+# debug / moderator view and exposes every private fact; players
+# must never see it. The renderer consults ``PRIVATE_VISIBILITIES``
+# to filter these events out.
+# ---------------------------------------------------------------------------
+
+
+def test_moderator_full_visibility_filtered():
+    """MEM-11: a speech event with visibility='moderator_full' must
+    not contribute to ANY private memory category."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    gs = GameState(
+        game_id="g_test_mem11",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "逻辑漏洞很多，明显是狼坑",
+                    "day_number": 1,
+                    "visibility": "moderator_full",
+                },
+            ),
+        ],
+    )
+    memory = build_private_memory(gs, "p01")
+
+    # No category should contain content derived from the
+    # moderator_full event.
+    for category in ("logic_flaws", "valid_points", "stance_notes", "vote_thoughts"):
+        for entry in memory.get(category, []):
+            point_or_reason = " ".join(str(v) for v in entry.values())
+            assert "逻辑漏洞" not in point_or_reason, (
+                f"MEM-11: {category} leaked moderator_full content; "
+                f"entry: {entry!r}"
+            )
+    # And the whole private memory must be effectively empty (no
+    # categories survived, so the dict is empty / contains only the
+    # hint metadata which is also absent).
+    assert not memory.get("logic_flaws")
+    assert not memory.get("valid_points")
+    assert not memory.get("stance_notes")
+    assert not memory.get("vote_thoughts")
+
+
+def test_moderator_full_in_private_visibilities_set():
+    """MEM-11: the runtime filter set must include 'moderator_full' so
+    the renderer drops those events. This is a regression guard
+    against accidentally removing the entry from the module."""
+    from werewolf_agent.runtime.private_memory import PRIVATE_VISIBILITIES
+
+    assert "moderator_full" in PRIVATE_VISIBILITIES, (
+        "MEM-11: 'moderator_full' must be in PRIVATE_VISIBILITIES "
+        "so private memory excludes moderator debug events."
+    )

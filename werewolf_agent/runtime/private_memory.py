@@ -39,6 +39,10 @@ PRIVATE_VISIBILITIES = {
     "moderator_only",
     "seer_private",
     "witch_private",
+    # MEM-11: ``moderator_full`` is a debug / moderator-only view
+    # that exposes every private fact. Player agents must never
+    # see it; the renderer filters it out by including it here.
+    "moderator_full",
 }
 
 LOGIC_FLAW_MARKERS = (
