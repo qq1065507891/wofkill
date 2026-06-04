@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.memory.reflection import ReflectionMemory
-from werewolf_agent.memory.schemas import CrossGameQuery, ReviewReport
+from werewolf_agent.memory.schemas import CrossGameQuery, ReflectionEntry, ReviewReport
 from werewolf_agent.memory.store import MemoryStore
 from werewolf_agent.runtime.private_memory import (
     _resolve_stance_target,
@@ -253,3 +253,36 @@ def test_reflection_stance_strip_via_store_review_reflection():
     # The raw ID should not appear in cross-game reflection text.
     # (We allow it to appear in the player_id field, but not in text.)
     assert "p03" not in text, f"reflection text leaks p03: {text}"
+
+
+# ---------------------------------------------------------------------------
+# MEM-06: reflection candidates must be sorted by recency (newest first)
+# before truncation. The legacy code filtered by hard constraints but
+# kept insertion order, so old entries could dominate a max_results
+# limit and the agent would see stale experience first.
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_query_returns_newest_first():
+    """MEM-06: query with max_results=3 on 5 reflections across
+    game_ids 1-5 must return game_ids 5, 4, 3 (newest first)."""
+    mem = ReflectionMemory()
+    for gid in range(1, 6):
+        mem.store(ReflectionEntry(
+            entry_id=f"r{gid}",
+            game_id=f"g{gid}",
+            player_id="p1",
+            role="seer",
+            faction_won=True,
+            text=f"reflection for game {gid}",
+            tags=["seer", "win"],
+        ))
+
+    # Query with max_results=3
+    results = mem.query(CrossGameQuery(player_id="p1", max_results=3))
+    assert len(results) == 3
+    # Newest first: game_ids 5, 4, 3
+    assert [r.game_id for r in results] == ["g5", "g4", "g3"], (
+        f"MEM-06: expected newest-first ordering g5,g4,g3; "
+        f"got {[r.game_id for r in results]}"
+    )
