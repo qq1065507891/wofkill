@@ -174,8 +174,15 @@ def render_hit_for_prompt(hit: RAGHit) -> dict[str, Any]:
         :data:`_MAX_KEY_DECISIONS_IN_PROMPT`).
     """
     return {
+        # R3: the ``type`` discriminator is what
+        # ``runtime.context._inject_seed_rag_hints`` uses to clear
+        # previous rag_hit slim items between turns. Without it, the
+        # filter ``[item for item in ctx.rag_hints if item.get("type")
+        # != "rag_hit"]`` is a no-op and old slim items accumulate.
+        "type": "rag_hit",
         "title": hit.title,
         "summary": hit.summary,
+        # [:3] is the prompt cap; full 5 (audit) is kept in retriever.
         "key_decisions": list(hit.key_decisions)[:_MAX_KEY_DECISIONS_IN_PROMPT],
     }
 

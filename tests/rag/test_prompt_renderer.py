@@ -92,7 +92,24 @@ class TestPromptRenderDropsMetadata:
     def test_render_hit_for_prompt_has_only_three_keys(self) -> None:
         hit = _make_hit()
         line = render_hit_for_prompt(hit)
-        assert set(line.keys()) == {"title", "summary", "key_decisions"}
+        # R3: the slim renderer adds a ``type`` discriminator so the
+        # context layer can identify and clear previous rag_hit items
+        # between turns. The four keys are: type, title, summary,
+        # key_decisions.
+        assert set(line.keys()) == {"type", "title", "summary", "key_decisions"}
+
+    def test_render_hit_for_prompt_includes_type_field(self) -> None:
+        """R3: every slim prompt line must carry ``type == "rag_hit"`` so
+        the context layer's filter
+        ``[item for item in ctx.rag_hints if item.get("type") != "rag_hit"]``
+        actually drops previous rag hits. Without the discriminator
+        the filter is a no-op and old slim items pile up across turns.
+        """
+        hit = _make_hit()
+        line = render_hit_for_prompt(hit)
+        assert line.get("type") == "rag_hit", (
+            f"R3: slim line must carry type='rag_hit'; got {line!r}"
+        )
 
     def test_render_hit_preserves_title_summary(self) -> None:
         hit = _make_hit(
@@ -250,7 +267,14 @@ class TestNoMetadataInLivePrompt:
         )
         encoded = hits_to_prompt_lines_json([hit], max_items=1)
         decoded = json.loads(encoded)
-        assert decoded == [{"title": hit.title, "summary": hit.summary, "key_decisions": hit.key_decisions}]
+        # R3: ``type`` is the slim-line discriminator so the context layer
+        # can clear previous rag_hit items between turns.
+        assert decoded == [{
+            "type": "rag_hit",
+            "title": hit.title,
+            "summary": hit.summary,
+            "key_decisions": hit.key_decisions,
+        }]
         # None of the audit field names should appear in the JSON string.
         for forbidden_name in (
             "relevance_score",
@@ -363,7 +387,10 @@ class TestSlimAndAuditCoexist:
         # Slim path
         slim_lines = injector.hits_to_prompt_lines(hits, max_items=1)
         assert slim_lines, "slim path must still return the hit"
-        assert set(slim_lines[0].keys()) == {"title", "summary", "key_decisions"}
+        # R3: type=rag_hit is the discriminator the context layer uses
+        # to clear previous slim items between turns.
+        assert set(slim_lines[0].keys()) == {"type", "title", "summary", "key_decisions"}
+        assert slim_lines[0]["type"] == "rag_hit"
 
         # Audit path: full data preserved.
         audit = injector.last_audit()
