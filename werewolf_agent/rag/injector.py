@@ -127,7 +127,14 @@ class RAGInjector:
     ) -> list[dict[str, Any]]:
         """Convert RAG hits to context items for AgentContext injection.
 
-        Each item includes source annotation for spectating/audit.
+        Each item includes source annotation for spectating/audit. The
+        returned items carry the full audit payload (relevance, quality,
+        source_type, visibility, display annotation, etc.) — use this
+        path when populating an audit log or a moderator/review view.
+
+        For the live-player prompt, prefer :func:`hits_to_prompt_lines`
+        (or :meth:`RAGInjector.hits_to_prompt_lines`) which strips the
+        audit-only fields and keeps only title/summary/key_decisions.
         """
         items: list[dict[str, Any]] = []
         for hit in hits[:max_items]:
@@ -145,6 +152,26 @@ class RAGInjector:
                 "allowed_in_live": hit.allowed_in_live_context,
             })
         return items
+
+    @staticmethod
+    def hits_to_prompt_lines(
+        hits: list[RAGHit],
+        max_items: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Convert RAG hits to slim prompt lines for the live player.
+
+        P0-G1: only title, summary, and a truncated ``key_decisions``
+        list are returned. All audit-only fields (relevance, quality,
+        source, visibility, display annotation) stay on the
+        :class:`RAGHit` and in :attr:`audit_log` — they are dropped
+        here to keep the live prompt focused on actionable takeaways.
+
+        Use this when populating ``AgentContext.rag_hints`` for a live
+        player. Use :meth:`hits_to_context_items` for audit /
+        moderator / review views.
+        """
+        from werewolf_agent.rag.prompt_renderer import hits_to_prompt_lines
+        return hits_to_prompt_lines(hits, max_items=max_items)
 
     def build_rag_query(
         self,
