@@ -58,7 +58,7 @@ _SPEECH_INTENTS = {
 _MAX_JSON_CONTEXT_CHARS = 1800
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
-_MAX_SALIENCE_ITEMS = 4
+_MAX_SALIENCE_ITEMS = 3
 # P1-5: global user-prompt budget. ≈ 2,500 CJK tokens at the rough
 # 2.5 chars/token ratio. The 16 user-prompt sections are truncated
 # per-section, but the SUM can still run 3,000-5,000 tokens when many
@@ -249,8 +249,24 @@ class PlayerPromptBuilder:
                 "归票基于公开证据链而非情绪。"
             ),
         }
+        # P2-9: non-wolf roles need a one-line note on which vote_basis
+        # enum value to use. The 7-value enum (seer_check / seer_siding
+        # / speech_logic / vote_pattern / pressure_test / anti_herd /
+        # fallback) is too wide to guess without guidance. Only the
+        # seer legitimately uses ``seer_check`` (their own check);
+        # every other role uses speech_logic / vote_pattern /
+        # seer_siding.
+        _VOTE_BASIS_GUIDANCE = (
+            "【投票时 vote_basis 选用 speech_logic / vote_pattern / "
+            "seer_siding，不要用 seer_check。】"
+        )
         if role in role_rules:
             lines.append(role_rules[role])
+            # Seer stands with their OWN check (own ID is implicit),
+            # so the "don't use seer_check" guidance doesn't apply
+            # to them — they should use seer_check.
+            if role != "seer":
+                lines.append(_VOTE_BASIS_GUIDANCE)
         return "\n".join(lines) if lines else ""
 
     def _build_output_contract(self) -> str:
@@ -278,6 +294,18 @@ class PlayerPromptBuilder:
     # to avoid double-labeling with the inner P0-S5 sub-group. The
     # P1-5 budget trimmer treats it as a never-dropped section
     # because it carries binding rules.
+    #
+    # P2-7: the proposal to flatten the 3-tier labels into flat
+    # inline `[MUST]/[SHOULD]/[REF]` tags was considered and DROPPED.
+    # Three reasons:
+    #   1. The P1-S3 outer 3-tier drives the budget trimmer — flat
+    #      tags would lose the trim signal.
+    #   2. The LLM has been observed to read section headers more
+    #      reliably than scattered inline tags; the cluster structure
+    #      makes it easier to skim under tight tokens.
+    #   3. The 3-tier format is consistent with the inner P0-S5
+    #      sub-grouping (硬约束/建议/参考), so the LLM does not have
+    #      to learn two priority systems in the same prompt.
     _NEVER_DROP: frozenset[str] = frozenset({
         "_build_strategy_directive",
     })
@@ -488,6 +516,7 @@ class PlayerPromptBuilder:
                 lines.append(
                     "狼队抱团是正常策略；投票时跟队友一致是预期行为；"
                     "只有在倒钩场景下需独立判断。"
+                    "P2-5: 悍跳狼应跟悍跳队友的归票走，而非原狼队的票型。"
                 )
             else:
                 # Good side + unknown role (safe default).
@@ -501,19 +530,23 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.belief_state:
             return ""
+        # P2-8: cap at top 3 suspects / top 3 trusted (was 5+5 = 10).
+        # Combined with 3 salience items, the section stays under
+        # 150 tokens in the typical case (was 200-400 with 5+5+4).
+        _MAX_BELIEF_ITEMS = 3
         suspects = ctx.belief_state.get("my_suspects", [])
         trusted = ctx.belief_state.get("my_trusted", [])
         belief_lines = []
         if suspects:
             suspect_desc = ", ".join(
                 f"{s['player']}(嫌疑{s['faction_lean']}, 猜{s['top_role_guess']})"
-                for s in suspects[:5]
+                for s in suspects[:_MAX_BELIEF_ITEMS]
             )
             belief_lines.append(f"我怀疑的玩家: {suspect_desc}")
         if trusted:
             trust_desc = ", ".join(
                 f"{t['player']}(倾向{t['faction_lean']}, 信任{t['trust']})"
-                for t in trusted[:5]
+                for t in trusted[:_MAX_BELIEF_ITEMS]
             )
             belief_lines.append(f"我信任的玩家: {trust_desc}")
         if belief_lines:
@@ -821,6 +854,19 @@ class PlayerPromptBuilder:
                 '"speech": "我报名竞选警长。", '
                 '"reason": "希望参与警上发言并争取带队", "confidence": 0.6}'
             )
+            # P2-3: explicit sheriff_withdraw example so the LLM has a
+            # template to copy when the player decides to pull out of
+            # the sheriff race. Game trace g_3528592081 action 41 (p05)
+            # showed the LLM emitting `sheriff_register` when it meant
+            # to withdraw — adding this example gives the model the
+            # right action_type to pattern-match.
+            if ActionType.SHERIFF_WITHDRAW in ctx.legal_actions:
+                parts.append("示例输出（退警场景）：")
+                parts.append(
+                    '{"action_type": "sheriff_withdraw", "target_id": null, '
+                    '"speech": "我退水，把警徽给更需要的人。", '
+                    '"reason": "评估后觉得不适合继续竞选", "confidence": 0.6}'
+                )
             if ActionType.NO_ACTION in ctx.legal_actions:
                 parts.append("示例输出（不上警场景）：")
                 parts.append(
@@ -1100,9 +1146,18 @@ class PlayerPromptBuilder:
 
     @staticmethod
     def _truncate_text(text: str, max_chars: int) -> str:
+        # P2-4: when truncated, append a clearly visible `<已截断>`
+        # marker. Truncation may cut mid-string, mid-array, or mid-object,
+        # so the JSON is no longer parseable — the marker is a
+        # signal to the LLM (and to the parse-failure handler) that
+        # the snippet was intentionally cut and is not expected to
+        # round-trip through json.loads. This is an acceptable
+        # compromise: making the cut land on a valid JSON boundary
+        # would require a much larger refactor (re-serialize with
+        # the original document structure in mind).
         if len(text) <= max_chars:
             return text
-        return text[:max_chars] + f"...（已截断，原长度{len(text)}）"
+        return text[:max_chars] + "...<已截断>"
 
 
 # P0-2 (defense): explicit field whitelist for salience items. The

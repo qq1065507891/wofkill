@@ -127,7 +127,7 @@ class TestAgentIntegration:
         assert config.provider != ""
 
         # Create agent and act
-        json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"逻辑链完整","confidence":0.85}'
+        json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"逻辑链完整","confidence":0.85,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}'
         # Override provider to return valid JSON
         model_router._providers[config.provider] = _JsonProvider(json_resp)
 

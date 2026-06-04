@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from werewolf_agent.agents.schemas import (
     ActionType,
+    AgentContext,
     BadgeTransferPlayerAction,
     CheckAlignmentPlayerAction,
     ChooseMasterPlayerAction,
@@ -27,6 +28,7 @@ from werewolf_agent.agents.schemas import (
     RiskFlag,
     SheriffVotePlayerAction,
     SpeechPlayerAction,
+    TaskType,
     UsePoisonPlayerAction,
     VotePlayerAction,
     WolfKillPlayerAction,
@@ -49,6 +51,9 @@ class TestPlayerActionSchema:
             speech="我归7。",
             reason="7的视角不对",
             confidence=0.72,
+            suspect_reason="p07的视角不对",
+            not_voting_reason="p08也没充分证据",
+            private_reason="我信p03的查杀",
             private_intent=PrivateIntent(
                 true_role="werewolf",
                 faction_goal=FactionGoal.PUSH_GOOD_PLAYER_OUT,
@@ -133,6 +138,190 @@ class TestJudgeBroadcastSchema:
         b = JudgeBroadcast(broadcast_type="phase", message="test", phase="night")
         assert b.day_number == 0
 
+    def test_judge_broadcast_rejects_unknown_fields(self) -> None:
+        """P2-1: JudgeBroadcast is LLM-generated; unknown fields must raise."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            JudgeBroadcast(
+                broadcast_type="phase",
+                message="x",
+                phase="day",
+                extra_unwanted_field="value",  # type: ignore[call-arg]
+            )
+
+
+# ---------------------------------------------------------------------------
+# P2-1: JudgeBroadcast/RetryInfo/FallbackAction/AgentContext must reject
+# unknown fields (extra="forbid").
+# ---------------------------------------------------------------------------
+#
+# Audit P2-1 finding: 4 schema classes were constructed without
+# ``extra="forbid"``. JudgeBroadcast is LLM-generated (so unknown
+# fields leak LLM-defensive noise into the broadcast payload).
+# RetryInfo / FallbackAction / AgentContext are populated by upstream
+# code, but without the strict field guard a typo or future regression
+# silently writes an unknown key that downstream consumers won't
+# notice. Mirror the pattern already applied to PrivateIntent (P1-1)
+# and the PlayerAction variants (P0-S8).
+#
+# AgentContext is constructed in 100+ call sites — adding extra="forbid"
+# requires the call-site audit done in P2-1 prep. All 24 kwargs used
+# by callers (`agent_id`, `belief_state`, `cognition_matrix_hint`,
+# `contradiction_alerts`, `day_number`, `hybrid_master_faction`,
+# `legal_actions`, `legal_targets`, `night_number`, `own_role`,
+# `persona_snapshot`, `phase`, `private_memory_caveat`,
+# `private_memory_hints`, `profile_memory_hint`, `public_summary`,
+# `rag_hints`, `recent_transcript`, `reflection_memory_hints`,
+# `salience_items`, `skill_analyses`, `skill_analysis_hints`,
+# `strategy_directive`, `task_type`, `visible_world_state`) are
+# schema fields, so the audit passes.
+
+class TestP2_1ExtraForbid:
+    """P2-1: 4 schema classes must reject unknown fields."""
+
+    def test_retry_info_rejects_unknown_fields(self) -> None:
+        from werewolf_agent.agents.schemas import RetryInfo
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            RetryInfo(
+                attempt=1,
+                unknown_field="x",  # type: ignore[call-arg]
+            )
+
+    def test_fallback_action_rejects_unknown_fields(self) -> None:
+        from werewolf_agent.agents.schemas import FallbackAction
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            FallbackAction(
+                action_type=ActionType.NO_ACTION,
+                unknown_field="x",  # type: ignore[call-arg]
+            )
+
+    def test_agent_context_rejects_unknown_fields(self) -> None:
+        """P2-1: AgentContext is synthesized for tests/audit; unknown
+        fields must raise. The test only asserts on a synthesized
+        instance, not on real call sites (which were audited in P2-1
+        prep and confirmed to only use schema-defined keys)."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            AgentContext(
+                agent_id="p01",
+                task_type=TaskType.SPEECH,
+                unknown_field="x",  # type: ignore[call-arg]
+            )
+
+    def test_agent_context_accepts_known_fields(self) -> None:
+        """Regression: all 25 documented AgentContext fields still validate."""
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=1,
+            night_number=0,
+            public_summary="x",
+            own_role="villager",
+            hybrid_master_faction="good",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+            visible_world_state={},
+            salience_items=[],
+            rag_hints=[],
+            private_memory_hints={},
+            private_memory_caveat="",
+            reflection_memory_hints=[],
+            profile_memory_hint={},
+            cognition_matrix_hint={},
+            belief_state={},
+            contradiction_alerts=[],
+            strategy_directive={},
+            persona_snapshot={},
+            model_config_snapshot={},
+            recent_transcript=[],
+            output_schema_hint="",
+            skill_analyses={},
+            skill_analysis_hints={},
+            rag_anomaly_count=0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# P2-6: VotePlayerAction must reject empty reason fields
+# ---------------------------------------------------------------------------
+#
+# Audit P2-6 finding: ``suspect_reason`` / ``not_voting_reason`` /
+# ``private_reason`` default to ``""``, but the user prompt says
+# "理由字段不能写「未说明」" — the validator never enforced the
+# rule. A vote with empty reasons slipped through and the audit
+# log happily recorded it. We add a model_validator that rejects
+# empty-string reason fields when ``action_type == VOTE``.
+#
+# Note: ``standing_with_seer`` is intentionally NOT in the rejection
+# list — a seer stands with their OWN check (own ID is implicit),
+# so empty string is the documented default for them. Non-seer roles
+# that legitimately have no seer claim to stand with also pass
+# empty. Only the three reason fields are required to be non-empty.
+
+
+class TestVoteActionRejectsEmptyReason:
+    """P2-6: VotePlayerAction must reject empty suspect_reason,
+    not_voting_reason, private_reason. The prompt explicitly
+    forbids writing 「未说明」 — the schema must enforce it.
+    """
+
+    def test_vote_action_rejects_empty_reason(self) -> None:
+        """P2-6: empty suspect_reason on a vote raises ValidationError."""
+        with pytest.raises(ValidationError, match="suspect_reason|non-empty"):
+            VotePlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p05",
+                suspect_reason="",
+                not_voting_reason="x",
+                private_reason="y",
+            )
+
+    def test_vote_action_rejects_empty_not_voting_reason(self) -> None:
+        with pytest.raises(ValidationError, match="not_voting_reason|non-empty"):
+            VotePlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p05",
+                suspect_reason="x",
+                not_voting_reason="",
+                private_reason="y",
+            )
+
+    def test_vote_action_rejects_empty_private_reason(self) -> None:
+        with pytest.raises(ValidationError, match="private_reason|non-empty"):
+            VotePlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p05",
+                suspect_reason="x",
+                not_voting_reason="y",
+                private_reason="",
+            )
+
+    def test_vote_action_accepts_filled_reasons(self) -> None:
+        """Regression: a vote with all three reason fields filled
+        must still validate."""
+        action = VotePlayerAction(
+            action_type=ActionType.VOTE,
+            target_id="p05",
+            suspect_reason="p05没有回应p03的查杀逻辑",
+            not_voting_reason="p07虽然被踩但无明确证据",
+            private_reason="心里活动：更信p03的预言家线",
+        )
+        assert action.suspect_reason == "p05没有回应p03的查杀逻辑"
+
+    def test_vote_action_allows_empty_standing_with_seer(self) -> None:
+        """P2-6: ``standing_with_seer`` is intentionally NOT in the
+        rejection list — a seer stands with their OWN check (own
+        ID is implicit, so empty string is the documented default).
+        """
+        action = VotePlayerAction(
+            action_type=ActionType.VOTE,
+            target_id="p05",
+            standing_with_seer="",
+            suspect_reason="x",
+            not_voting_reason="y",
+            private_reason="z",
+        )
+        assert action.standing_with_seer == ""
+
 
 # ---------------------------------------------------------------------------
 # Action validator tests
@@ -208,6 +397,9 @@ class TestPlayerActionUnion:
             target_id="p05",
             vote_basis="speech_logic",
             seer_stance="undecided",
+            suspect_reason="p05发言矛盾",
+            not_voting_reason="p07没有明显证据",
+            private_reason="我投p05",
         )
         assert action.action_kind == "vote"
         assert action.action_type == ActionType.VOTE
@@ -227,6 +419,9 @@ class TestPlayerActionUnion:
             "target_id": "p05",
             "vote_basis": "speech_logic",
             "seer_stance": "undecided",
+            "suspect_reason": "p05发言矛盾",
+            "not_voting_reason": "p07没有明显证据",
+            "private_reason": "我投p05",
         }
         action = PlayerAction.model_validate(data)
         assert isinstance(action, VotePlayerAction)
@@ -257,6 +452,9 @@ class TestPlayerActionUnion:
             target_id="p07",
             vote_basis="speech_logic",
             seer_stance="undecided",
+            suspect_reason="p07的视角不对",
+            not_voting_reason="p08没明显证据",
+            private_reason="我信p03的查杀",
         )
         assert isinstance(action, VotePlayerAction)
         assert action.target_id == "p07"
@@ -308,8 +506,18 @@ class TestPlayerActionUnion:
         for action_type, target in target_required:
             with pytest.raises(ValidationError):
                 PlayerAction(action_type=action_type)
-            # Sanity: with target, it succeeds
-            action = PlayerAction(action_type=action_type, target_id=target)
+            # Sanity: with target, it succeeds. Vote also requires
+            # the three reason fields (P2-6); fill them in here.
+            if action_type == ActionType.VOTE:
+                action = PlayerAction(
+                    action_type=action_type,
+                    target_id=target,
+                    suspect_reason="x",
+                    not_voting_reason="y",
+                    private_reason="z",
+                )
+            else:
+                action = PlayerAction(action_type=action_type, target_id=target)
             assert action.target_id == target
 
     def test_all_optional_target_variants_succeed_without_target(self) -> None:

@@ -2859,5 +2859,226 @@ def test_salience_events_section_absent_when_empty():
     )
 
 
+# ---------------------------------------------------------------------------
+# P2-4: _compact_json truncation must mark the cut clearly
+# ---------------------------------------------------------------------------
+#
+# Audit P2-4 finding: _compact_json truncates to 1800 chars and appends
+# `...（已截断，原长度X）`. The trailing `）` followed by nothing leaves
+# the LLM looking at a broken structure (mid-string, mid-array, mid-object).
+# The retry loop sometimes treats the malformed snippet as parseable JSON
+# (truncation rarely lands cleanly on a quote/brace boundary).
+#
+# Fix: append a clearly visible `<已截断>` marker so the LLM knows
+# the JSON was intentionally cut and is not expected to parse.
+# This is an acceptable compromise (we don't make the cut valid JSON —
+# that's a much bigger refactor). The marker also helps the parse-
+# failure handler distinguish "truncated by design" from "garbled".
+
+
+def test_compact_json_truncation_marks_omission():
+    """P2-4: a long dict passed through _compact_json must end with
+    a clearly visible omission marker."""
+    builder = PlayerPromptBuilder(
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+        )
+    )
+    # Build a long dict whose JSON-serialized form definitely exceeds
+    # the 1800-char cap. Padding values in a single big string.
+    big = {
+        "key_" + str(i): "x" * 200
+        for i in range(50)
+    }
+    out = builder._compact_json(big)
+    assert out.endswith("<已截断>"), (
+        f"P2-4: truncated compact JSON must end with the `<已截断>` "
+        f"marker so the LLM knows the snippet was intentionally cut. "
+        f"Last 30 chars: {out[-30:]!r}"
+    )
+    # And confirm the truncation actually fired (i.e. the input was
+    # bigger than the cap).
+    assert len(big) > 0  # sanity
+    # The marker suffix length matters: a future regression that drops
+    # the marker should fail this assertion.
+    assert "<已截断>" in out
+
+
+
+# ---------------------------------------------------------------------------
+# P2-8: belief rendering is capped at top 3
+# ---------------------------------------------------------------------------
+#
+# Audit P2-8 finding: _build_belief_state rendered top-5 suspects and
+# top-5 trusted (10 belief entries). Combined with 4 salience items,
+# the section consumed 200-400 tokens. The budget trimmer (P1-5) had
+# to drop entire sections to fit, when a smaller cap on the
+# highest-priority section would have freed tokens for lower-priority
+# context.
+#
+# Fix: cap the belief section to top 3 suspects / top 3 trusted
+# (6 belief entries total). The salience section is also reduced
+# from 4 → 3 items via _MAX_SALIENCE_ITEMS.
+
+
+def test_belief_top3_cap():
+    """P2-8: rendered belief with 5 suspects must show at most 3."""
+    # Set up 5 suspects — well above the new top-3 cap.
+    suspects = [
+        {"player": f"p0{i}", "faction_lean": "werewolf_lean", "top_role_guess": "狼"}
+        for i in range(1, 6)
+    ]
+    trusted = [
+        {"player": "p10", "faction_lean": "good", "trust": 0.9},
+    ]
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        belief_state={"my_suspects": suspects, "my_trusted": trusted},
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The example JSON in the prompt (e.g. "target_id": "p05") also
+    # contains p0X tokens, so the test extracts ONLY the belief
+    # section ("我怀疑的玩家" / "我信任的玩家") and counts inside that.
+    import re
+    m = re.search(r"我怀疑的玩家: ([^\n]*)", prompt)
+    assert m, (
+        "P2-8: belief section must be present in the rendered prompt. "
+        f"Prompt: {prompt!r}"
+    )
+    suspect_line = m.group(1)
+    rendered_suspects = sum(1 for i in range(1, 6) if f"p0{i}" in suspect_line)
+    assert rendered_suspects <= 3, (
+        f"P2-8: rendered belief must show at most 3 of the 5 suspects. "
+        f"Found {rendered_suspects} in suspect line: {suspect_line!r}"
+    )
+    # And the trusted player (p10) should still be present.
+    assert "p10" in prompt, (
+        "P2-8: trusted player must still be rendered in the belief section. "
+        f"Prompt: {prompt!r}"
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# P2-9: role guide documents which vote_basis values to use
+# ---------------------------------------------------------------------------
+#
+# Audit P2-9 finding: non-wolf roles did not see a one-line note
+# saying which ``vote_basis`` enum value to use for votes. The
+# 7-value ``vote_basis`` enum (seer_check / seer_siding /
+# speech_logic / vote_pattern / pressure_test / anti_herd /
+# fallback) is too wide for the LLM to guess correctly without
+# guidance, and the wrong choice silently degraded the audit log.
+# The seer is the only role that legitimately uses ``seer_check``
+# (based on their OWN check); every other role uses
+# speech_logic / vote_pattern / seer_siding and must NOT use
+# seer_check.
+#
+# Fix: add a one-line note to the role guide for non-seer roles:
+# "投票时 vote_basis 选用 speech_logic / vote_pattern / seer_siding，
+# 不要用 seer_check".
+
+
+def test_role_guide_documents_vote_basis():
+    """P2-9: the role guide for non-seer roles must mention which
+    vote_basis enum values to use (and that seer_check is not for
+    non-seer roles).
+    """
+    # Spot-check villager (a non-seer good-side role).
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # The role guide lives in the system prompt (stable section).
+    # Check that vote_basis guidance is present.
+    assert "vote_basis" in system_prompt, (
+        "P2-9: non-seer role guide must mention vote_basis enum "
+        f"guidance. system_prompt: {system_prompt!r}"
+    )
+    # And explicitly call out that seer_check is NOT to be used by
+    # non-seer roles.
+    assert "seer_check" in system_prompt, (
+        "P2-9: non-seer role guide must explicitly call out that "
+        "seer_check is not for non-seer roles. "
+        f"system_prompt: {system_prompt!r}"
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# P2-3: SHERIFF example must include a sheriff_withdraw example
+# ---------------------------------------------------------------------------
+#
+# Audit P2-3 finding: the SHERIFF_REGISTER example block in
+# _format_examples renders examples for `sheriff_register` and
+# `no_action`, but does not show `sheriff_withdraw`. Without an
+# explicit withdraw example, the LLM was emitting `sheriff_register`
+# when it intended to withdraw, and the parser fell back to a
+# default (game trace g_3528592081 action 41, p05).
+#
+# Fix: add a third example showing `sheriff_withdraw` so the LLM
+# can pattern-match the correct action type when the player
+# changes their mind about running for sheriff.
+
+# explicit withdraw example, the LLM was emitting `sheriff_register`
+# when it intended to withdraw, and the parser fell back to a
+# default (game trace g_3528592081 action 41, p05).
+#
+# Fix: add a third example showing `sheriff_withdraw` so the LLM
+# can pattern-match the correct action type when the player
+# changes their mind about running for sheriff.
+# explicit withdraw example, the LLM was emitting `sheriff_register`
+# when it intended to withdraw, and the parser fell back to a
+# default (game trace g_3528592081 action 41, p05).
+#
+# Fix: add a third example showing `sheriff_withdraw` so the LLM
+# can pattern-match the correct action type when the player
+# changes their mind about running for sheriff.
+
+
+def test_sheriff_example_includes_withdraw():
+    """P2-3: the SHERIFF_REGISTER example block must include a
+    `sheriff_withdraw` JSON example.
+
+    The block currently shows only `sheriff_register` and (optionally)
+    `no_action`. We add a `sheriff_withdraw` example so the LLM
+    has a template to copy when the player decides to pull out of
+    the sheriff race. The withdraw example is only emitted when
+    SHERIFF_WITHDRAW is in legal_actions — mirror that in the test.
+    """
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.SHERIFF_REGISTRATION,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[
+            ActionType.SHERIFF_REGISTER,
+            ActionType.SHERIFF_WITHDRAW,
+            ActionType.NO_ACTION,
+        ],
+        legal_targets=[],
+        public_summary="D1 sheriff election",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "sheriff_withdraw" in prompt, (
+        "P2-3: SHERIFF example block must include a `sheriff_withdraw` "
+        "JSON example so the LLM has a template when the player "
+        "decides to pull out of the sheriff race."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

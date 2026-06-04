@@ -357,6 +357,10 @@ class TestPKRevoteRestrictsTargets:
                 return PlayerAction(
                     action_type=ActionType.VOTE,
                     target_id="p03",
+                    reason="pk_test",
+                    suspect_reason="p03发言矛盾",
+                    not_voting_reason="p07没明显证据",
+                    private_reason="pk_test",
                 ), RetryInfo()
 
         class Registry:
@@ -434,6 +438,10 @@ class TestPKRevoteRestrictsTargets:
                 return PlayerAction(
                     action_type=ActionType.VOTE,
                     target_id="p03",
+                    reason="pk_test",
+                    suspect_reason="p03发言矛盾",
+                    not_voting_reason="p07没明显证据",
+                    private_reason="pk_test",
                 ), RetryInfo()
 
         class Registry:
@@ -470,6 +478,10 @@ class TestPKRevoteRestrictsTargets:
                 return PlayerAction(
                     action_type=ActionType.VOTE,
                     target_id="p07",
+                    reason="pk_test",
+                    suspect_reason="p07发言矛盾",
+                    not_voting_reason="p03没明显证据",
+                    private_reason="pk_test",
                 ), RetryInfo()
 
         class Registry:

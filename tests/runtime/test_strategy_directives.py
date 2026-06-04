@@ -908,6 +908,9 @@ class TestHybridStrategyDirectives:
                     action_type=ActionType.VOTE,
                     target_id="w1",
                     reason="test",
+                    suspect_reason="w1是测试目标",
+                    not_voting_reason="其他人没明显证据",
+                    private_reason="测试用例",
                 ), RetryInfo())
 
         class CaptureRegistry:
@@ -1034,6 +1037,9 @@ class TestVillagerStrategyDirectives:
                     action_type=ActionType.VOTE,
                     target_id="w1",
                     reason="test",
+                    suspect_reason="w1是测试目标",
+                    not_voting_reason="其他人没明显证据",
+                    private_reason="测试用例",
                 ), RetryInfo())
 
         class CaptureRegistry:

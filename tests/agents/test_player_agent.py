@@ -138,7 +138,7 @@ class ToolAwareProvider:
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
         self.calls.append({"tools": tools, "tool_choice": tool_choice})
         return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8}',
+            text='{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}',
             provider=self.name,
             model=config.model,
             usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
@@ -222,7 +222,7 @@ class TextOnlyProvider:
 
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
         return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"","reason":"x","confidence":0.8}',
+            text='{"action_type":"vote","target_id":"p07","speech":"","reason":"x","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}',
             provider=self.name,
             model=config.model,
             tool_call_required=bool(tool_choice),
@@ -297,7 +297,7 @@ class TestPlayerAgentRetryFallback:
         )
 
     def test_valid_action_no_retry(self) -> None:
-        json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8}'
+        json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}'
         agent = self._make_agent(json_resp)
         action, retry = agent.act(self._make_context())
         assert isinstance(action, PlayerAction)
@@ -852,7 +852,7 @@ class TestPlayerAgentRetryFallback:
         assert retry.error_code == "illegal_action"
 
     def test_illegal_target_triggers_retry(self) -> None:
-        json_resp = '{"action_type":"vote","target_id":"p99","speech":"test","reason":"test","confidence":0.5}'
+        json_resp = '{"action_type":"vote","target_id":"p99","speech":"test","reason":"test","confidence":0.5,"suspect_reason":"p99发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p99"}'
         agent = self._make_agent(json_resp)
         action, retry = agent.act(self._make_context())
         assert isinstance(action, FallbackAction)
@@ -886,6 +886,9 @@ class TestPlayerAgentRetryFallback:
         json_resp = (
             '{"action_type":"vote","target_id":"p07","speech":"归7",'
             '"reason":"可疑","confidence":0.8,'
+            '"suspect_reason":"p07发言矛盾",'
+            '"not_voting_reason":"p08没有证据",'
+            '"private_reason":"我投p07",'
             '"private_intent":{"true_role":"werewolf","faction_goal":"push_good_player_out",'
             '"claimed_view":"good_player_without_night_info","pressure_target":"p07",'
             '"risk_flags":["avoid_night_kill_leak"]}}'
@@ -990,7 +993,7 @@ class TestPlayerAgentRetryFallback:
         assert retry.error_code is None
 
     def test_code_fence_stripping(self) -> None:
-        json_resp = '```json\n{"action_type":"vote","target_id":"p07","speech":"test","reason":"test","confidence":0.5}\n```'
+        json_resp = '```json\n{"action_type":"vote","target_id":"p07","speech":"test","reason":"test","confidence":0.5,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}\n```'
         agent = self._make_agent(json_resp)
         action, retry = agent.act(self._make_context())
         assert isinstance(action, PlayerAction)
@@ -1000,7 +1003,10 @@ class TestPlayerAgentRetryFallback:
         json_resp = (
             '<minimax:tool_call name="submit_player_action">'
             '<parameters>{"action_type":"vote","target_id":"p07",'
-            '"speech":"归票p07","reason":"p07发言矛盾","confidence":0.72}'
+            '"speech":"归票p07","reason":"p07发言矛盾","confidence":0.72,'
+            '"suspect_reason":"p07发言矛盾",'
+            '"not_voting_reason":"p08没有证据",'
+            '"private_reason":"我投p07"}'
             '</parameters></minimax:tool_call>'
         )
         agent = self._make_agent(json_resp)
@@ -1016,7 +1022,10 @@ class TestPlayerAgentRetryFallback:
         json_resp = (
             '<invoke name="submit_player_action">'
             '<tool_input>{"action_type":"vote","target_id":"p08",'
-            '"speech":"我倾向投p08","reason":"p08票型不合理","confidence":0.66}'
+            '"speech":"我倾向投p08","reason":"p08票型不合理","confidence":0.66,'
+            '"suspect_reason":"p08票型不合理",'
+            '"not_voting_reason":"p07没有证据",'
+            '"private_reason":"我投p08"}'
             '</tool_input></invoke>'
         )
         agent = self._make_agent(json_resp)
@@ -1715,7 +1724,10 @@ class TestPlainTextRejection:
             player_assignments={"p01": "default"},
             providers={"mock": _JsonProvider(
                 '{"action_type": "vote", "target_id": "p07", '
-                '"speech": "test", "reason": "test", "confidence": 0.8}'
+                '"speech": "test", "reason": "test", "confidence": 0.8,'
+                '"suspect_reason":"p07发言矛盾",'
+                '"not_voting_reason":"p08没有证据",'
+                '"private_reason":"我投p07"}'
             )},
         )
         agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
@@ -1894,7 +1906,10 @@ class TestStructuredOutputMetadata:
             player_assignments={"p01": "default"},
             providers={"mock": _JsonProvider(
                 '{"action_type":"vote","target_id":"p07",'
-                '"speech":"归7","reason":"可疑","confidence":0.8}'
+                '"speech":"归7","reason":"可疑","confidence":0.8,'
+                '"suspect_reason":"p07发言矛盾",'
+                '"not_voting_reason":"p08没有证据",'
+                '"private_reason":"我投p07"}'
             )},
         )
         agent = PlayerAgent(agent_id="p01", model_router=router)

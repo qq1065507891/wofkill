@@ -70,6 +70,9 @@ class TestBuildActionTrace:
             speech="",
             reason="r",
             confidence=0.5,
+            suspect_reason="p07发言矛盾",
+            not_voting_reason="p08没有证据",
+            private_reason="我投p07",
             private_intent=PrivateIntent(
                 true_role="villager",
                 faction_goal="find_wolves",
