@@ -983,3 +983,183 @@ def test_belief_state_excludes_dead_players() -> None:
     # p01 (self) must not appear in either list.
     assert "p01" not in suspect_players
     assert "p01" not in trusted_players
+
+
+# ---------------------------------------------------------------------------
+# MEM-02: _LLM_AWARE_HINT must reach the LLM prompt.
+#
+# The P1-M10 fix defined `_LLM_AWARE_HINT` as a constant but never wired
+# it to the prompt renderer. MEM-02 plumbs it from
+# `build_private_memory` -> `build_agent_context` ->
+# `AgentContext.private_memory_caveat` -> `prompt_builder._build_private_memory_hints`.
+#
+# This end-to-end test verifies the full chain: a GameState with public
+# speeches containing 逻辑漏洞 markers produces a logic_flaw entry, the
+# build_private_memory helper injects the hint, build_agent_context puts
+# it on the context, and the prompt builder surfaces it as a line in
+# the final user prompt.
+# ---------------------------------------------------------------------------
+
+
+def _make_mem02_player(id: str, role: str, alive: bool = True) -> Any:
+    from werewolf_agent.core.models import PlayerState
+
+    return PlayerState(id=id, role=role, alive=alive)
+
+
+def test_private_memory_caveat_reaches_prompt() -> None:
+    """MEM-02: a public speech containing '逻辑漏洞' must produce a
+    logic_flaw entry, which in turn causes build_private_memory to
+    emit `_llm_aware_hint`. build_agent_context plumbs that onto
+    AgentContext.private_memory_caveat, and the prompt builder must
+    surface it as a line in the rendered user prompt."""
+    from werewolf_agent.core.models import GameEvent, GameState
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.schemas import RetryInfo, TaskType
+    from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
+    from werewolf_agent.runtime.context import build_agent_context
+    from werewolf_agent.runtime.private_memory import _LLM_AWARE_HINT
+
+    # Build a minimal GameState where p02 (a different player) publicly
+    # claims p03 has a logic flaw. This must produce a logic_flaw in
+    # p01's private memory, which in turn triggers the caveat.
+    players = {
+        "p01": _make_mem02_player("p01", "seer"),
+        "p02": _make_mem02_player("p02", "villager"),
+        "p03": _make_mem02_player("p03", "werewolf"),
+    }
+    gs = GameState(
+        game_id="g_test_mem02_e2e",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "p03 发言有明显的逻辑漏洞，没解释清楚",
+                    "day_number": 1,
+                    "visibility": "public",
+                },
+            ),
+        ],
+    )
+
+    ruleset = Ruleset(raw={
+        "player_count": 3,
+        "roles": {
+            "werewolf": {"count": 1},
+            "villager": {"count": 1},
+            "seer": {"count": 1},
+        },
+    })
+    engine = RuleEngine(ruleset=ruleset)
+
+    ctx = build_agent_context(
+        engine=engine,
+        gs=gs,
+        player_id="p01",
+        task_type=TaskType.SPEECH,
+    )
+
+    # The hint should now live on AgentContext.private_memory_caveat.
+    assert ctx.private_memory_caveat == _LLM_AWARE_HINT, (
+        f"MEM-02: build_agent_context must plumb the P1-M10 caveat onto "
+        f"AgentContext.private_memory_caveat; got: "
+        f"{ctx.private_memory_caveat!r}"
+    )
+    # And the memory dict that downstream renderers consume must NOT
+    # contain the meta key (it's a renderer signal, not memory).
+    assert "_llm_aware_hint" not in ctx.private_memory_hints, (
+        f"MEM-02: meta key must be popped from private_memory_hints "
+        f"before reaching renderers; got: {ctx.private_memory_hints!r}"
+    )
+    # And the same for the visible state.
+    visible_mem = ctx.visible_world_state.get("private_memory", {}) or {}
+    assert "_llm_aware_hint" not in visible_mem, (
+        f"MEM-02: meta key must be popped from visible.private_memory; "
+        f"got: {visible_mem!r}"
+    )
+
+    # End-to-end: the prompt builder must include the caveat in the
+    # rendered user prompt. We build the full prompt to make sure the
+    # caveat actually surfaces in the LLM-facing text.
+    builder = PlayerPromptBuilder(ctx)
+    user_prompt = builder.build_user_prompt(RetryInfo())
+
+    assert _LLM_AWARE_HINT in user_prompt, (
+        f"MEM-02: _LLM_AWARE_HINT must appear in the rendered user prompt. "
+        f"Expected substring: {_LLM_AWARE_HINT!r}. "
+        f"Got user prompt (excerpt around '私有记忆'): "
+        f"{user_prompt[max(0, user_prompt.find('私有记忆') - 50): user_prompt.find('私有记忆') + 500]!r}"
+    )
+
+
+def test_private_memory_caveat_omitted_when_logic_flaws_empty() -> None:
+    """MEM-02: when public speeches contain NO logic_flaw / valid_point
+    markers, the AgentContext.private_memory_caveat must be empty and
+    the prompt must NOT contain the caveat. (Avoids noise when there
+    is nothing to caveat.)"""
+    from werewolf_agent.core.models import GameEvent, GameState
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.schemas import RetryInfo, TaskType
+    from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
+    from werewolf_agent.runtime.context import build_agent_context
+    from werewolf_agent.runtime.private_memory import _LLM_AWARE_HINT
+
+    players = {
+        "p01": _make_mem02_player("p01", "seer"),
+        "p02": _make_mem02_player("p02", "villager"),
+    }
+    gs = GameState(
+        game_id="g_test_mem02_empty_e2e",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "我随便聊几句",
+                    "day_number": 1,
+                    "visibility": "public",
+                },
+            ),
+        ],
+    )
+
+    ruleset = Ruleset(raw={
+        "player_count": 2,
+        "roles": {
+            "villager": {"count": 1},
+            "seer": {"count": 1},
+        },
+    })
+    engine = RuleEngine(ruleset=ruleset)
+
+    ctx = build_agent_context(
+        engine=engine,
+        gs=gs,
+        player_id="p01",
+        task_type=TaskType.SPEECH,
+    )
+
+    # No caveat when there is nothing to caveat.
+    assert ctx.private_memory_caveat == "", (
+        f"MEM-02: caveat must be empty when logic_flaws / valid_points "
+        f"are both empty; got: {ctx.private_memory_caveat!r}"
+    )
+    # And the rendered prompt does not contain it.
+    builder = PlayerPromptBuilder(ctx)
+    user_prompt = builder.build_user_prompt(RetryInfo())
+    assert _LLM_AWARE_HINT not in user_prompt, (
+        f"MEM-02: caveat must NOT appear in the rendered user prompt "
+        f"when there is nothing to caveat. Got excerpt: "
+        f"{user_prompt[:500]!r}"
+    )

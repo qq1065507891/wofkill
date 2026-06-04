@@ -450,11 +450,18 @@ class PlayerPromptBuilder:
         # confuse this section with cross-game reflection memory or
         # with public speech.
         day_label = f"第{ctx.day_number}轮" if ctx.day_number else "首轮"
+        # MEM-02: emit the P1-M10 caveat BEFORE the JSON payload so
+        # the LLM sees the warning in the same paragraph as the
+        # keyword-signal categories. Omitted when logic_flaws /
+        # valid_points are both empty (caveat would be noise).
+        caveat = ctx.private_memory_caveat or ""
+        caveat_block = f"{caveat}\n" if caveat else ""
         return (
             f"【本局·{day_label}·私有记忆】以下只代表你在本局形成的观察、站边和私有思考，"
             "不是公开记录。"
             "【严禁】在公开发言中复述以下任何角色身份信息或暗示你从私有记忆中获知的身份。"
             "你在公开发言中只能使用公开可见的信息。\n"
+            + caveat_block
             + self._compact_json(memory)
         )
 

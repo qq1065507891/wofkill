@@ -288,7 +288,16 @@ def build_private_memory(game_state: GameState, player_id: str) -> dict[str, lis
     # `[-12:]` per-category cap. The 12-entry cap is no longer needed
     # because the token budget enforces a more meaningful constraint.
     truncated = _truncate_by_priority(memory, max_tokens=_MAX_PRIVATE_MEMORY_TOKENS)
-    return {key: value for key, value in truncated.items() if value}
+    result = {key: value for key, value in truncated.items() if value}
+    # MEM-02: surface the P1-M10 caveat when keyword-based signal
+    # categories (logic_flaws / valid_points) survived truncation.
+    # The renderer extracts this from the dict and surfaces it as a
+    # separate prompt line so the LLM treats the entries as crude
+    # signals, not authoritative verdicts. Omit when both categories
+    # are empty to avoid noise.
+    if result.get("logic_flaws") or result.get("valid_points"):
+        result["_llm_aware_hint"] = _LLM_AWARE_HINT
+    return result
 
 
 def _add_private_vote_thought(
@@ -375,21 +384,21 @@ def _add_own_speech_notes(
             memory["logic_flaws"].append({
                 "day": day,
                 "speaker": speaker,
-                "point": _clip(sentence),
+                "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
         if any(marker in sentence for marker in VALID_POINT_MARKERS):
             memory["valid_points"].append({
                 "day": day,
                 "speaker": speaker,
-                "point": _clip(sentence),
+                "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
         if "站边" in sentence:
             memory["stance_notes"].append({
                 "day": day,
                 "speaker": speaker,
-                "point": _clip(sentence),
+                "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
 
