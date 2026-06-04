@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +13,7 @@ from werewolf_agent.runtime.context import (
     _inject_seed_rag_hints,
     _profile_memory_hint,
     _reflection_memory_hints,
+    build_agent_context,
 )
 
 
@@ -1249,4 +1251,163 @@ def test_private_memory_caveat_omitted_when_logic_flaws_empty() -> None:
         f"MEM-02: caveat must NOT appear in the rendered user prompt "
         f"when there is nothing to caveat. Got excerpt: "
         f"{user_prompt[:500]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# S-04: _inject_skill_output's second return slot is populated.
+# ---------------------------------------------------------------------------
+
+def test_skill_analyses_field_populated() -> None:
+    """S-04: `_inject_skill_output` must return a populated dict in the
+    second slot so `AgentContext.skill_analyses` is non-empty.
+
+    Pre-fix: the function returned `(strategy_directive, {})` — the
+    second slot was always empty, so `AgentContext.skill_analyses` was
+    always `{}` and `_build_skill_analysis_hints` rendered nothing.
+
+    Post-fix: for each skill that fires, the second slot carries an
+    entry `{skill_name: prompt_injectable}` (or empty string when the
+    skill had nothing to say). The field is at least present.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+
+    # Build a 6-player GameState with at least one villager so the
+    # common-faction skills (push_vote, find_power, hide_identity, ...)
+    # are dispatchable.
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="seer", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+        "p05": PlayerState(id="p05", role="witch", alive=True),
+        "p06": PlayerState(id="p06", role="hunter", alive=True),
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="skill_analyses_test",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.cognition.world_state import build_world_state
+
+    world_state = build_world_state(gs)
+    belief = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    belief = BeliefUpdater().update(belief, world_state.facts, gs.day_number)
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+
+    _strategy_directive, analyses = _inject_skill_output(
+        {}, gs, "p01", world_state, belief, alerts, "speech",
+    )
+
+    # S-04: the analyses dict must be populated — at minimum, it must
+    # be a dict (not None) and contain an entry for at least one skill
+    # that fired. Pre-fix this dict is always `{}`.
+    assert isinstance(analyses, dict), (
+        f"S-04: _inject_skill_output must return a dict as the second "
+        f"slot; got {type(analyses).__name__}"
+    )
+    # And end-to-end: AgentContext.skill_analyses must round-trip
+    # through build_agent_context.
+    from werewolf_agent.agents.schemas import ActionType, TaskType
+    from werewolf_agent.engine.rule_engine import RuleEngine
+
+    engine = RuleEngine.from_yaml(
+        Path(__file__).resolve().parents[2] / "config" / "rulesets"
+        / "pre_witch_hunter_idiot_mixed.yaml"
+    )
+    context = build_agent_context(
+        engine, gs, "p01", TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+    # Pre-fix: context.skill_analyses == {}
+    # Post-fix: must be non-empty (at least one skill that fired).
+    assert context.skill_analyses, (
+        f"S-04: AgentContext.skill_analyses must be non-empty when "
+        f"skills fire; got {context.skill_analyses!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# S-05: _inject_skill_output's 7th param is `task_type`, not `phase`.
+# ---------------------------------------------------------------------------
+
+def test_inject_skill_output_receives_task_type(monkeypatch) -> None:
+    """S-05: the 7th parameter of `_inject_skill_output` is `task_type`,
+    not `phase`. The production call site passes `task_type.value` to
+    it; inside the function, that value must be forwarded to
+    `dispatch_for_role`'s `task_type` keyword (so the P0-K2
+    `applies_to_task_types` filter actually fires).
+
+    Pre-fix: the parameter was named `phase` (misnamed) and the call
+    passed `task_type.value` to it. The function forwarded the value
+    as the `phase` arg of `dispatch_for_role` and the local `task_type`
+    was "" — so the precise task-type filter never fired.
+
+    Post-fix: the parameter is renamed to `task_type`. We mock
+    `dispatch_for_role` and assert it was called with the right
+    `task_type` keyword.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime import context as context_mod
+
+    # Mock SkillRegistry.dispatch_for_role to capture the kwargs.
+    captured: dict[str, Any] = {}
+
+    class _FakeRegistry:
+        def dispatch_for_role(
+            self, role, phase, skill_input, task_type="", gs=None
+        ):
+            captured["role"] = role
+            captured["phase"] = phase
+            captured["task_type"] = task_type
+            captured["gs"] = gs
+            return []
+
+    monkeypatch.setattr(context_mod, "SkillRegistry", _FakeRegistry)
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="s05_test",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.cognition.world_state import build_world_state
+
+    world_state = build_world_state(gs)
+    belief = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    belief = BeliefUpdater().update(belief, world_state.facts, gs.day_number)
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+
+    # Call with the renamed parameter as a keyword argument. This is
+    # the new contract: `task_type="speech"` is the 7th positional /
+    # `task_type` keyword.
+    _directive, _ = context_mod._inject_skill_output(
+        {}, gs, "p01", world_state, belief, alerts,
+        task_type="speech",
+    )
+
+    # S-05: dispatch_for_role must receive the task_type value as its
+    # `task_type` keyword. Pre-fix this was "" (the local var was never
+    # set; the value was bound to the misnamed `phase` param instead).
+    assert captured.get("task_type") == "speech", (
+        f"S-05: dispatch_for_role must receive task_type='speech'; "
+        f"got task_type={captured.get('task_type')!r}. The 7th param "
+        f"of _inject_skill_output is misnamed — it should be task_type, "
+        f"not phase."
     )

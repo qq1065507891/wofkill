@@ -468,14 +468,21 @@ def _inject_skill_output(
     world_state: Any,
     belief_state: Any,
     contradiction_alerts: list[Any],
-    phase: str,
+    task_type: str,
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
-    task_type: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Dispatch applicable skills once; inject non-tool advice, collect tool analyses.
 
     Returns (updated strategy_directive, tool_analyses).
+
+    S-05: the 7th positional parameter is `task_type` (renamed from the
+    misnamed `phase`). The production call site (`build_agent_context`)
+    passes `task_type.value` here — that's the precise task-type value
+    (e.g. "speech", "vote", "night_action", "wolf_discussion"). The
+    older `phase: str` parameter shadowed the kwarg `task_type: str`
+    below; the kwarg was never set, so `dispatch_for_role` always saw
+    `task_type=""` and the P0-K2 precise filter never fired.
 
     P0-K2: `task_type` is forwarded to `dispatch_for_role` so the
     `applies_to_task_types` filter can refine the dispatch.
@@ -487,7 +494,12 @@ def _inject_skill_output(
     registry = SkillRegistry()
     skill_input = SkillInput(
         role=player.role,
-        phase=phase,
+        # S-05: the 7th param IS the task_type; SkillInput.phase
+        # historically received it (a task-type value rendered as
+        # phase). We pass it through for backward compatibility
+        # with handlers that still read inp.phase as a coarse phase
+        # hint. New handlers should branch on inp.task_type.
+        phase=task_type,
         day=gs.day_number,
         game_state=gs,
         world_state=world_state,
@@ -500,9 +512,11 @@ def _inject_skill_output(
         task_type=task_type,
     )
 
-    # P0-K2: pass task_type so the new `applies_to_task_types` filter works.
+    # S-05: dispatch_for_role receives the task_type value as both
+    # `phase` (2nd positional — backward compat with the older API)
+    # and `task_type` (kwarg — used by the P0-K2 precise filter).
     outputs = registry.dispatch_for_role(
-        player.role, phase, skill_input, task_type=task_type,
+        player.role, task_type, skill_input, task_type=task_type,
     )
 
     # Filter skills that conflict with wolf team role assignment
@@ -525,8 +539,19 @@ def _inject_skill_output(
     # advice (e.g. "your teammate already handles X") remains reachable.
     sortable: list[tuple[float, str]] = []
 
+    # S-04: collect per-skill output keyed by skill_name. Each entry
+    # is the skill's prompt_injectable (or empty string if the skill
+    # didn't produce advice). The dict is non-empty whenever at
+    # least one skill fires — the contract that downstream
+    # `AgentContext.skill_analyses` depends on.
+    skill_analyses: dict[str, str] = {}
+
     for o in outputs:
         if not o.prompt_injectable:
+            # Still record the skill in the analyses dict so callers
+            # can see which skills were considered but produced no
+            # advice (confidence=0.0, empty prompt).
+            skill_analyses.setdefault(o.skill_name, o.prompt_injectable or "")
             continue
         # Skip bold_claim for non-fake_seer wolves
         if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
@@ -537,6 +562,7 @@ def _inject_skill_output(
         # Skip swing_vote for hooker wolves (conflicts with deep-hook mission)
         if o.skill_name == "swing_vote" and wolf_role == "hooker":
             continue
+        skill_analyses[o.skill_name] = o.prompt_injectable
         sortable.append((o.confidence, o.prompt_injectable))
 
     # Sort highest confidence first; stable for ties.
@@ -545,7 +571,7 @@ def _inject_skill_output(
 
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
-    return strategy_directive, {}
+    return strategy_directive, skill_analyses
 
 
 def _merge_strategy_directive(

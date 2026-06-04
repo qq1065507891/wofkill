@@ -13,6 +13,8 @@ When phase is 'day' or 'night', also match against task_type.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from werewolf_agent.skills.schemas import SkillDefinition, SkillFaction, SkillName
 
 
@@ -104,3 +106,56 @@ def test_prompt_builder_skill_analysis_hints_rendered_for_speech_role():
     # The pre-injection section is rendered when analyses are present.
     assert "技能分析结果" in prompt
     assert "嫌疑区" in prompt
+
+
+# ---------------------------------------------------------------------------
+# S-01: applies_to_task_types is read from YAML frontmatter.
+# ---------------------------------------------------------------------------
+
+def test_applies_to_task_types_loaded_from_yaml(tmp_path):
+    """S-01: `applies_to_task_types` declared in SKILL.md frontmatter must
+    populate `SkillDefinition.applies_to_task_types` on load.
+
+    Bug: the dataclass field exists, but `_load_manifests` did not read
+    the YAML key — so any SKILL.md declaring the field would still load
+    as an empty list. The P0-K2 precise filter would never fire.
+
+    We use a temp skill directory and call `_load_manifests(root=...)`
+    (a small refactor that lets the test inject the scan root).
+    """
+    from werewolf_agent.skills import werewolf_skills
+
+    # Build a fresh skill directory with a SKILL.md that declares
+    # applies_to_task_types: [speech].
+    skill_dir = tmp_path / "test_skill_s01"
+    skill_dir.mkdir()
+    skill_md_content = (
+        "---\n"
+        "name: bold_claim\n"
+        "display_name: 悍跳\n"
+        "description: test\n"
+        "applicable_roles:\n"
+        "  - werewolf\n"
+        "applicable_phases:\n"
+        "  - speech\n"
+        "applies_to_task_types:\n"
+        "  - speech\n"
+        "faction: wolf\n"
+        "tags:\n"
+        "  - test\n"
+        "---\n"
+    )
+    (skill_dir / "SKILL.md").write_text(skill_md_content, encoding="utf-8")
+
+    # Call the real loader pointed at our temp dir.
+    loaded = werewolf_skills._load_manifests(root=tmp_path)
+    assert len(loaded) == 1, f"expected exactly 1 loaded skill, got {len(loaded)}"
+    skill = loaded[0]
+    assert skill.applies_to_task_types == ["speech"], (
+        f"S-01 regression: applies_to_task_types from YAML must be loaded; "
+        f"got {skill.applies_to_task_types!r}"
+    )
+
+    # And end-to-end: the precise task-type filter actually fires.
+    assert skill.is_applicable("werewolf", phase="speech", task_type="speech") is True
+    assert skill.is_applicable("werewolf", phase="speech", task_type="vote") is False

@@ -184,14 +184,14 @@ class TestPushVoteHandlerBranchesOnTaskType:
         ws, bs, alerts = _build_cognition(gs, "p04")  # villager
 
         # Vote task: rendered advice should mention 投票阶段.
+        # S-05: the 7th positional param is `task_type` (renamed from
+        # the misnamed `phase`). Pass the task_type value directly.
         result_vote, _ = _inject_skill_output(
-            {}, gs, "p04", ws, bs, alerts, "day",
-            task_type="vote",
+            {}, gs, "p04", ws, bs, alerts, "vote",
         )
         # Speech task: rendered advice should mention 发言阶段.
         result_speech, _ = _inject_skill_output(
             {}, gs, "p04", ws, bs, alerts, "speech",
-            task_type="speech",
         )
 
         vote_advice = result_vote.get("skill_tactical_advice", "")
@@ -215,3 +215,104 @@ class TestPushVoteHandlerBranchesOnTaskType:
             f"speech-task rendered advice should mention 发言阶段; "
             f"got: {speech_advice!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# S-02: hybrid faction dispatches wolf-only skills when master is wolf.
+# ---------------------------------------------------------------------------
+
+def test_hybrid_with_wolf_master_dispatches_wolf_skills():
+    """S-02: when hybrid's master is a werewolf, the hybrid must be able
+    to dispatch WOLF-faction skills (e.g. bold_claim, deep_hook, swing_vote).
+
+    Pre-fix: `faction_for_role("hybrid")` unconditionally returns GOOD,
+    so a hybrid-with-wolf-master can't see wolf-only advice and ends up
+    with the GOOD skills (wolf_pit, protect_power) — wrong for a
+    wolf-aligned hybrid.
+
+    Post-fix: `faction_for_role("hybrid", gs=gs)` checks
+    `gs.hybrid_master_faction` and returns WOLF when master is werewolf.
+    Callers must thread `gs` through to the faction lookup.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.registry import (
+        SkillRegistry, faction_for_role,
+    )
+    from werewolf_agent.skills.schemas import SkillFaction, SkillInput
+
+    # 6-player game with hybrid whose master is a werewolf.
+    gs = GameState(
+        ruleset_id="test",
+        game_id="test_game",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="werewolf", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id="p03", role="hybrid", alive=True),
+            "p04": PlayerState(id="p04", role="villager", alive=True),
+            "p05": PlayerState(id="p05", role="villager", alive=True),
+            "p06": PlayerState(id="p06", role="seer", alive=True),
+        },
+        # Hybrid's master is a werewolf → hybrid fights on the wolf side.
+        hybrid_master_id="p01",
+        hybrid_master_faction="werewolf",
+    )
+
+    # The faction lookup itself must surface WOLF for hybrid-with-wolf-master.
+    assert faction_for_role("hybrid", gs=gs) == SkillFaction.WOLF, (
+        "S-02: hybrid with wolf master must map to WOLF faction; got "
+        f"{faction_for_role('hybrid', gs=gs)!r}"
+    )
+
+    # The dispatch path: dispatch_for_role must include bold_claim
+    # (a WOLF-faction skill) for a hybrid-with-wolf-master in a speech phase.
+    reg = SkillRegistry()
+    skill_input = SkillInput(
+        role="hybrid", phase="speech", day=1,
+        game_state=gs, player_id="p03",
+    )
+    outputs = reg.dispatch_for_role("hybrid", "speech", skill_input, gs=gs)
+    skill_names = {o.skill_name for o in outputs}
+    assert "bold_claim" in skill_names, (
+        f"S-02: hybrid-with-wolf-master should dispatch bold_claim in speech; "
+        f"got {skill_names!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# S-03: swing_vote_handler recommends night_kill in wolf_discussion.
+# ---------------------------------------------------------------------------
+
+def test_swing_vote_handler_wolf_discussion_recommends_night_kill():
+    """S-03: `swing_vote_handler` in `wolf_discussion` is a NIGHT phase:
+    the wolves are picking a night-kill target, not a day-vote target.
+
+    Pre-fix: the handler always returns `recommended_action="vote"` even
+    when `task_type == "wolf_discussion"`, which the wolf-discussion
+    prompt builder would interpret as "vote for this player during the
+    day" — wrong; the wolf needs a night-kill recommendation.
+
+    Post-fix: branch on `inp.task_type`; for `wolf_discussion`, set
+    `recommended_action="night_kill"` and rephrase the prompt to make
+    the night-kill semantics explicit.
+    """
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    gs = _make_skill_gs(day=1)
+    # Build a wolf-discussion skill input. Day=1, role=werewolf, and
+    # task_type=wolf_discussion. The handler receives an empty/no
+    # fact-filled world state, so pressure-based logic still works.
+    inp = SkillInput(
+        role="werewolf", phase="night", day=1,
+        game_state=gs, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="wolf_discussion",
+    )
+    out = apply_skill(SkillName.SWING_VOTE, inp)
+    assert out.recommended_action == "night_kill", (
+        f"S-03: swing_vote in wolf_discussion should recommend night_kill; "
+        f"got {out.recommended_action!r}"
+    )
