@@ -2295,6 +2295,201 @@ def test_vote_quality_correction_hint_differs_from_error_message():
 
 
 # ---------------------------------------------------------------------------
+# P1-S7 (residual): sanitize claimed_view to enum-like identifier in
+# production code (not just the example)
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S7 finding: P0-S7 changed the EXAMPLE claimed_view values
+# in the prompt to enum-style identifiers. But the production
+# sanitization (sanitize_optional_private_fields in output_parser.py)
+# only validates faction_goal and risk_flags — claimed_view is a
+# free-form str. Game trace g_3528592081 showed real wolves writing
+# claimed_view="我是好人，混水摸鱼" — the LLM copied the bad pattern
+# even with the new example, and the sanitizer let it through.
+#
+# Fix: define VALID_CLAIMED_VIEW_VALUES and sanitize any non-enum
+# value to a safe default. The safe default is derived from
+# true_role (or "good_player_without_night_info" if no role hint).
+# This is the prompt-side AND production-side gate — both layers
+# must reject the natural-language pattern.
+#
+# Tests use FULL_ACTION mode (SPEECH task) so private_intent
+# survives the parse path. VOTE uses TARGET_CHOICE mode which
+# intentionally drops private_intent (P0-S8 design choice).
+
+
+def test_claimed_view_uses_enum_in_production_when_natural_language():
+    """P1-S7: when LLM writes Chinese phrase for claimed_view, sanitize.
+
+    A wolf with true_role=werewolf writes
+    "claimed_view": "我是好人，混水摸鱼" — natural-language claim.
+    The sanitizer should reject this and substitute a safe enum-style
+    default (good_player_without_night_info for non-seer).
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    # Speech text must pass speech_quality: has 立场/怀疑对象/投票倾向/依据
+    speech_text = "我是好人阵营。我怀疑p07，p07发言前后矛盾。我倾向投p07。"
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"分析矛盾","confidence":0.7,'
+        '"private_intent":{"true_role":"werewolf","faction_goal":"confuse_good",'
+        '"claimed_view":"我是好人，混水摸鱼","pressure_target":"p07",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction), (
+        f"Expected PlayerAction, got {type(action).__name__}. "
+        f"speech_quality may be rejecting the test speech text."
+    )
+    assert action.private_intent is not None
+    # The Chinese phrase must NOT survive sanitization
+    assert "我是好人" not in action.private_intent.claimed_view, (
+        f"claimed_view must be sanitized to enum-style identifier, "
+        f"got natural-language: {action.private_intent.claimed_view!r}"
+    )
+    # Safe default: non-seer default is good_player_without_night_info
+    assert action.private_intent.claimed_view == "good_player_without_night_info", (
+        f"Expected safe default 'good_player_without_night_info', "
+        f"got: {action.private_intent.claimed_view!r}"
+    )
+
+
+def test_claimed_view_preserves_valid_enum_value():
+    """P1-S7: when LLM writes a valid enum value, it's preserved as-is."""
+    from werewolf_agent.agents.player import PlayerAgent
+    # Use a speech that passes speech_quality: must have 立场/怀疑对象/投票倾向/依据
+    speech_text = "我是预言家。昨晚查验p05。我怀疑p07，p07没给查杀。我倾向投p07。"
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"公开查验","confidence":0.8,'
+        '"private_intent":{"true_role":"seer","faction_goal":"find_wolves",'
+        '"claimed_view":"seer","pressure_target":"p05",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p03": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p03", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="seer",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction), (
+        f"Expected PlayerAction, got {type(action).__name__}"
+    )
+    assert action.private_intent is not None
+    # Valid enum value must be preserved
+    assert action.private_intent.claimed_view == "seer", (
+        f"Valid enum value must be preserved, got: {action.private_intent.claimed_view!r}"
+    )
+
+
+def test_claimed_view_role_identifier_treated_as_valid():
+    """P1-S7: role identifiers (villager, werewolf, etc.) are valid claimed_views.
+
+    A wolf claiming to be a villager (default false cover) is a common
+    strategy. The wolf's claimed_view="villager" is a clean enum
+    identifier, not natural language — it must pass through.
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    speech_text = (
+        "我是好人阵营。我怀疑p05，p05发言前后矛盾。"
+        "我倾向投p05，因为p05没有合理的归票理由。"
+    )
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"保守观察","confidence":0.5,'
+        '"private_intent":{"true_role":"werewolf","faction_goal":"confuse_good",'
+        '"claimed_view":"villager","pressure_target":"p05",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="werewolf",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction)
+    assert action.private_intent is not None
+    assert action.private_intent.claimed_view == "villager", (
+        f"Role identifier 'villager' must be preserved as a valid claimed_view, "
+        f"got: {action.private_intent.claimed_view!r}"
+    )
+
+
+def test_claimed_view_good_player_identifier_preserved():
+    """P1-S7: good_player_without_night_info is the canonical safe default."""
+    from werewolf_agent.agents.player import PlayerAgent
+    speech_text = (
+        "我是好人阵营。我怀疑p05，p05发言前后矛盾。"
+        "我倾向投p05，因为p05的归票理由与p07不同。"
+    )
+    json_resp = (
+        '{"action_type":"speech","target_id":null,'
+        f'"speech":"{speech_text}",'
+        '"reason":"分析矛盾","confidence":0.7,'
+        '"private_intent":{"true_role":"villager","faction_goal":"find_wolves",'
+        '"claimed_view":"good_player_without_night_info","pressure_target":"p05",'
+        '"risk_flags":[]}}'
+    )
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider(json_resp)},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    action, _ = agent.act(ctx)
+    assert isinstance(action, PlayerAction)
+    assert action.private_intent is not None
+    assert action.private_intent.claimed_view == "good_player_without_night_info"
+
+
+# ---------------------------------------------------------------------------
 # Pipeline Optimization Task 1: Smart retry — detect repeated failures
 # ---------------------------------------------------------------------------
 
