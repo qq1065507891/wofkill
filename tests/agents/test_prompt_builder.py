@@ -1703,5 +1703,116 @@ def test_format_examples_no_intent_field_in_sheriff_register_path():
         )
 
 
+# ---------------------------------------------------------------------------
+# P1-S9: villager role guide is present in system_prompt
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S9 finding: _build_role_guide has entries for hunter, idiot,
+# witch, seer, werewolf, hybrid — but NOT for villager. Villagers are
+# 3 of 12 players in V1, so the role guide has been silently skipping
+# them. Villagers see only the generic reasoning/information-boundary
+# sections, missing concrete day-time decision guidance.
+#
+# Fix: add villager role guide with 4 specific behavioral rules:
+#   1. When publicly identified, actively state good-side stance
+#   2. Analyze speech contradictions / vote patterns
+#   3. N1: support the witch using the antidote to save people
+#   4. Vote based on public evidence chain, not emotion
+
+
+def test_villager_role_guide_present():
+    """P1-S9: villager role guide must be present in the system prompt.
+
+    The villager role guide is rendered inside _build_role_guide and
+    should appear in build_system_prompt. Other 5 roles (hunter, idiot,
+    witch, seer, werewolf, hybrid) all have guides; villager must too.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07"],
+        public_summary="D2",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # The role guide header marker for villager — must mention 村民规则
+    # OR a specific villager-behavior directive.
+    assert "村民规则" in system_prompt, (
+        "Villager role guide must be present in system_prompt. "
+        f"system_prompt: {system_prompt[:500]!r}"
+    )
+
+
+def test_villager_role_guide_specific_rules():
+    """P1-S9: villager role guide must include the 4 specific rules.
+
+    The 4 rules per the audit:
+    1. Public identity → actively state good-side stance
+    2. Analyze speech contradictions / vote patterns
+    3. N1: support antidote-saving
+    4. Vote based on public evidence chain, not emotion
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07"],
+        public_summary="D2",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # Check key phrases from each rule
+    assert "好人立场" in system_prompt or "好人阵营" in system_prompt, (
+        "Rule 1 (public stance) must be in the villager role guide."
+    )
+    assert "矛盾" in system_prompt, (
+        "Rule 2 (analyze contradictions) must be in the villager role guide."
+    )
+    assert "解药" in system_prompt, (
+        "Rule 3 (N1 antidote support) must be in the villager role guide."
+    )
+    assert "公开" in system_prompt, (
+        "Rule 4 (vote based on public evidence) must be in the villager role guide."
+    )
+
+
+def test_other_roles_still_have_their_guides():
+    """P1-S9: adding the villager guide must not remove the other 6 guides.
+
+    Regression check: each of the 6 existing role guides must still
+    appear in their respective system_prompts. Adding villager is
+    additive, not a replacement.
+    """
+    role_expected = {
+        "hunter": "猎人规则",
+        "idiot": "白痴规则",
+        "witch": "女巫规则",
+        "seer": "预言家规则",
+        "werewolf": "狼人规则",
+        "hybrid": "混血儿规则",
+    }
+    for role, expected_phrase in role_expected.items():
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role=role,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+            public_summary="D2",
+        )
+        system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+        assert expected_phrase in system_prompt, (
+            f"Role guide for {role!r} must still be present after P1-S9 "
+            f"villager addition. Expected phrase: {expected_phrase!r}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

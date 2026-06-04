@@ -218,6 +218,13 @@ class PlayerPromptBuilder:
     def _build_role_guide(self) -> str:
         lines: list[str] = []
         role = self.context.own_role or ""
+        # P1-S9: villager (3 of 12 players in V1) was missing from this
+        # map. Audit identified this as a major gap — villagers were
+        # seeing only the generic reasoning / information-boundary
+        # sections, with no concrete day-time decision guidance.
+        # Rules cover 4 day-time decision dimensions per the audit:
+        # public stance, contradiction analysis, N1 antidote support,
+        # and evidence-based voting.
         role_rules = {
             "hunter": "猎人规则：被狼人杀死或被放逐时可以开枪带走一人；被女巫毒杀时不能开枪。夜间无法自保。",
             "idiot": "白痴规则：被放逐时亮出身份免死，但失去投票权且不能再被放逐；之后被狼人杀死才算真正死亡。夜间无法自保。",
@@ -225,6 +232,12 @@ class PlayerPromptBuilder:
             "seer": "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。上警时必须留两夜警徽流。",
             "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
             "hybrid": "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。主人死亡后阵营不再改变。",
+            "villager": (
+                "村民规则：身份公开时积极表明好人立场；"
+                "分析发言矛盾/票型关系；"
+                "N1 用药决策推动解药救人；"
+                "归票基于公开证据链而非情绪。"
+            ),
         }
         if role in role_rules:
             lines.append(role_rules[role])
