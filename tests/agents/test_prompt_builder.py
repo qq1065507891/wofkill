@@ -1093,5 +1093,64 @@ def test_no_private_memory_dual_source():
     )
 
 
+# ---------------------------------------------------------------------------
+# P0-M1: private_memory section is labeled as "本局·第N轮·私有记忆"
+# ---------------------------------------------------------------------------
+
+
+def _make_ctx_with_private_memory(
+    private_memory: dict,
+    day_number: int = 2,
+) -> AgentContext:
+    """Build an AgentContext whose private_memory_hints is populated."""
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=day_number,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="D2 public",
+        private_memory_hints=private_memory,
+    )
+
+
+def test_private_memory_labeled_as_current_game():
+    """P0-M1: private_memory section must be prefixed with the current-game
+    label 【本局·第N轮·私有记忆】 so the LLM cannot confuse it with
+    cross-game reflection memory.
+
+    Without the label, the LLM might treat a sentence from its own
+    private memory as a public statement, leaking the thinking to
+    other players.
+    """
+    ctx = _make_ctx_with_private_memory(
+        private_memory={
+            "logic_flaws": [{"day": 1, "speaker": "p02", "point": "vote flip"}],
+        },
+        day_number=2,
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The label must include the day number and the "私有记忆" / "本局" tag.
+    assert "【本局·第2轮·私有记忆】" in prompt, (
+        "private_memory section must be labeled 【本局·第N轮·私有记忆】 "
+        "where N is ctx.day_number; prompt did not contain expected label."
+    )
+
+
+def test_private_memory_label_uses_day_number_correctly():
+    """The day number in the label must come from ctx.day_number, not be
+    hardcoded. Day 3 must produce 【本局·第3轮·私有记忆】."""
+    ctx = _make_ctx_with_private_memory(
+        private_memory={"vote_thoughts": [{"day": 3, "target": "p02"}]},
+        day_number=3,
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "【本局·第3轮·私有记忆】" in prompt
+    # Day 2 label must NOT appear in a day-3 prompt
+    assert "【本局·第2轮·私有记忆】" not in prompt
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

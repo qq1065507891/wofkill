@@ -25,9 +25,6 @@ PRIVATE_VISIBILITIES = {
 LOGIC_FLAW_MARKERS = (
     "逻辑漏洞",
     "漏洞",
-    "矛盾",
-    "前后不一",
-    "不一致",
     "没解释",
     "沒有解释",
     "没有解释",

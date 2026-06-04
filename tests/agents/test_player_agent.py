@@ -1223,6 +1223,7 @@ class TestPlayerAgentRetryFallback:
             agent_id="p01",
             task_type=TaskType.VOTE,
             phase="day",
+            day_number=2,
             own_role="villager",
             legal_actions=[ActionType.VOTE],
             legal_targets=["p02", "p03"],
@@ -1242,7 +1243,8 @@ class TestPlayerAgentRetryFallback:
 
         assert "当前局公开事实:" in prompt
         assert "可见状态:" in prompt
-        assert "我的当前局记忆:" in prompt
+        # P0-M1: private_memory section uses "【本局·第N轮·私有记忆】" label.
+        assert "【本局·第2轮·私有记忆】" in prompt
         assert "知识库提示:" in prompt
         assert "知识库提示不是当前局事实" in prompt
         assert "跨局反思记忆:" in prompt
