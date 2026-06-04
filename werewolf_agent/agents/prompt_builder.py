@@ -343,11 +343,19 @@ class PlayerPromptBuilder:
 
     def _build_private_memory_hints(self) -> str:
         ctx = self.context
-        memory = ctx.private_memory_hints or ctx.visible_world_state.get("private_memory", {})
+        # P0-M7: read only from private_memory_hints. The previous code
+        # also fell back to ctx.visible_world_state.get("private_memory"),
+        # which caused duplicate injection if both fields were populated
+        # and risked surfacing stale data from an older code path.
+        memory = ctx.private_memory_hints
         if not memory:
             return ""
+        # P0-M1: prepend a "本局·第N轮·私有记忆" label so the LLM cannot
+        # confuse this section with cross-game reflection memory or
+        # with public speech.
+        day_label = f"第{ctx.day_number}轮" if ctx.day_number else "首轮"
         return (
-            "我的当前局记忆: 以下只代表你在本局形成的观察、站边和私有思考，"
+            f"【本局·{day_label}·私有记忆】以下只代表你在本局形成的观察、站边和私有思考，"
             "不是公开记录。"
             "【严禁】在公开发言中复述以下任何角色身份信息或暗示你从私有记忆中获知的身份。"
             "你在公开发言中只能使用公开可见的信息。\n"
