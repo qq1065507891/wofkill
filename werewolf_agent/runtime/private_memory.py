@@ -7,6 +7,25 @@ from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
 
+# P0-I4: player-ID pattern. We strip any p\d{1,2} token (e.g. p03, p11)
+# from cross-game-facing strings to prevent concrete game identities from
+# leaking across runs.
+# Note: do NOT use \b — `\b` does not match between an ASCII letter and a
+# CJK character, so a token like "p03的预言家" wouldn't be detected.
+_PLAYER_ID_RE = re.compile(r"[Pp]\d{1,2}")
+
+# Mapping from internal role id → Chinese role label. Used when a stance
+# target resolves to a known player.
+_ROLE_LABEL_CN = {
+    "villager": "村民",
+    "seer": "预言家",
+    "witch": "女巫",
+    "hunter": "猎人",
+    "idiot": "白痴",
+    "werewolf": "狼人",
+    "hybrid": "混血儿",
+}
+
 MEMORY_EVENT_TYPES = {
     "speech",
     "sheriff_speech",
@@ -80,6 +99,65 @@ def _sanitize_role_claims(text: str) -> str:
     return text
 
 
+# P0-I4: Resolve a stance target to a role-based label, stripping
+# concrete player IDs. This is the only safe way to carry
+# ``standing_with_seer`` text from the in-game ``private_memory`` into
+# the long-term ``ReflectionEntry`` — game-to-game identity leakage
+# would otherwise reveal that "I stood with player 03 in game A and
+# player 07 in game B" — i.e. a stable, identifiable target.
+def _resolve_stance_target(target: str, game_state: GameState | None) -> str:
+    """Return a role-based label for ``target``.
+
+    Resolution order:
+      1. If ``target`` is a known player id in ``game_state.players``,
+         map their role to a Chinese label (e.g. ``预言家``).
+      2. If ``target`` contains a player-id substring (e.g. ``p03的
+         预言家``), look up the embedded id, and if it resolves to a
+         role, return that role.
+      3. Strip any remaining pIDs from the residual text. If the
+         residual is empty or unresolvable, fall back to a neutral
+         ``玩家`` placeholder. Concrete pIDs are never echoed back.
+    """
+    if not target:
+        return "玩家"
+    text = str(target).strip()
+    if not text:
+        return "玩家"
+    # Try direct lookup first: target is exactly a player id.
+    if game_state is not None:
+        player = game_state.players.get(text)
+        if player is not None:
+            return _ROLE_LABEL_CN.get(player.role, "玩家")
+    # Look for any embedded p\d{1,2} tokens. If exactly one is found
+    # and it resolves to a known player, use that role.
+    embedded_ids = _PLAYER_ID_RE.findall(text)
+    had_embedded_id = bool(embedded_ids)
+    if had_embedded_id and game_state is not None:
+        # Use the first id (rare to have multiple).
+        pid = embedded_ids[0].lower()
+        player = game_state.players.get(pid) or game_state.players.get(embedded_ids[0])
+        if player is not None:
+            return _ROLE_LABEL_CN.get(player.role, "玩家")
+    # Otherwise, strip any embedded p\d{1,2} tokens and re-resolve
+    # whatever role hint remains.
+    stripped = _PLAYER_ID_RE.sub("", text).strip() if had_embedded_id else text
+    if not stripped:
+        return "玩家"
+    # If the residual is already a known role (Chinese or English),
+    # normalize to Chinese label.
+    normalized = stripped.lower()
+    if normalized in _ROLE_LABEL_CN:
+        return _ROLE_LABEL_CN[normalized]
+    if stripped in _ROLE_LABEL_CN.values():
+        return stripped
+    # If we never found a pID, the input must be a role label or hint
+    # already. Just return it as-is (still no IDs to leak).
+    if not had_embedded_id:
+        return stripped
+    # Generic non-empty role hint: keep it (still no IDs).
+    return stripped
+
+
 def build_private_memory(game_state: GameState, player_id: str) -> dict[str, list[dict[str, Any]]]:
     """Build memory visible only to ``player_id``.
 
@@ -96,7 +174,7 @@ def build_private_memory(game_state: GameState, player_id: str) -> dict[str, lis
         if event.type not in MEMORY_EVENT_TYPES:
             continue
         if event.type == "action_trace_audit":
-            _add_private_vote_thought(memory, event, player_id)
+            _add_private_vote_thought(memory, event, player_id, game_state)
             continue
         if event.payload.get("visibility") in PRIVATE_VISIBILITIES:
             continue
@@ -108,6 +186,7 @@ def _add_private_vote_thought(
     memory: dict[str, list[dict[str, Any]]],
     event: GameEvent,
     player_id: str,
+    game_state: GameState | None = None,
 ) -> None:
     actor = event.payload.get("player_id") or event.payload.get("agent_id")
     if actor != player_id:
@@ -142,12 +221,16 @@ def _add_private_vote_thought(
             "source_event": event.type,
         })
     if item["standing_with_seer"]:
+        # P0-I4: replace the raw player id with a role-based label so
+        # this stance note is safe to carry into cross-game reflection.
+        label = _resolve_stance_target(item["standing_with_seer"], game_state)
         memory["stance_notes"].append({
             "day": item["day"],
             "speaker": player_id,
-            "point": f"站边 {item['standing_with_seer']}",
+            "point": f"站边 {label}",
             "source_event": event.type,
         })
+
 
 
 def _private_vote_thought_from_trace(trace: Any) -> dict[str, Any]:

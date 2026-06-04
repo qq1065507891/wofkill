@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from typing import Any
 
 from werewolf_agent.memory.schemas import PlayerProfile, ReflectionEntry
-from werewolf_agent.runtime.context import _profile_memory_hint, _reflection_memory_hints
+from werewolf_agent.runtime.context import (
+    _cognition_matrix_hint,
+    _profile_memory_hint,
+    _reflection_memory_hints,
+)
 
 
 def _make_reflection(
@@ -350,3 +355,56 @@ def test_all_six_profile_dims_learning_rate_low_uses_neutral_phrasing() -> None:
             f"learning_rate phrasing should use neutral '处于 X' style; "
             f"got window: {window!r} in summary: {summary!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P0-M9: _cognition_matrix_hint renders evidence/questions as ID refs.
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_matrix_for_context_test(entries: list[dict[str, Any]]) -> SimpleNamespace:
+    """Build a fake restored_memory with a get_matrix that returns a
+    CognitionMatrix populated with the given entries."""
+
+    from werewolf_agent.memory.cognition_matrix import CognitionMatrix
+
+    matrix = CognitionMatrix("p01")
+    matrix.initialize(["p01", "p02", "p03", "p04"])
+    for e in entries:
+        entry = matrix.get(e["player_id"])
+        if entry is None:
+            continue
+        entry.faction_read = e.get("faction_read", "unknown")
+        entry.trust = e.get("trust", 0.5)
+        entry.key_evidence = list(e.get("key_evidence", []))
+        entry.open_questions = list(e.get("open_questions", []))
+
+    return SimpleNamespace(get_matrix=lambda _pid: matrix)
+
+
+def test_cognition_matrix_no_text_evidence_in_context() -> None:
+    """P0-M9: key_evidence text never reaches the rendered hint."""
+    private_evidence = "p02 私下说 p07 是狼人"
+    private_question = "p02 是否在倒钩"
+    store = _make_fake_matrix_for_context_test([
+        {
+            "player_id": "p02",
+            "faction_read": "wolf_lean",
+            "trust": 0.2,
+            "key_evidence": [private_evidence],
+            "open_questions": [private_question],
+        },
+    ])
+
+    hint = _cognition_matrix_hint(store, "p01")
+    assert "suspects" in hint
+    suspect = hint["suspects"][0]
+    # The raw text must not appear in the rendered hint
+    serialized = repr(hint)
+    assert private_evidence not in serialized
+    assert private_question not in serialized
+    # And the lists are non-empty id refs
+    assert suspect["key_evidence"], "key_evidence refs should not be empty"
+    assert suspect["open_questions"], "open_questions refs should not be empty"
+    for ref in suspect["key_evidence"] + suspect["open_questions"]:
+        assert ref.startswith("salience_items#")

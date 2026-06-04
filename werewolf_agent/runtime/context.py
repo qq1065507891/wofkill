@@ -12,6 +12,7 @@ This module owns:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -340,6 +341,21 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
     return hints
 
 
+def _evidence_id_ref(text: str) -> str:
+    """Render a short, stable ID reference for an evidence/question text.
+
+    P0-M9: the raw text is no longer surfaced in the prompt. We hash
+    the text into a 10-char hex suffix and prefix it with the
+    ``salience_items#`` tag. The viewer can still cross-reference
+    the same item across turns because identical text always maps
+    to the same id.
+    """
+    if not text:
+        return "salience_items#empty"
+    h = hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:10]
+    return f"salience_items#{h}"
+
+
 def _cognition_matrix_hint(restored_memory: Any, player_id: str) -> dict[str, Any]:
     get_matrix = getattr(restored_memory, "get_matrix", None)
     if not callable(get_matrix):
@@ -351,12 +367,23 @@ def _cognition_matrix_hint(restored_memory: Any, player_id: str) -> dict[str, An
     suspects: list[dict[str, Any]] = []
     trusted: list[dict[str, Any]] = []
     for entry in matrix.all_entries():
+        # P0-M9: render key_evidence and open_questions as ID references,
+        # never as full text. The summary stats (trust, faction_read)
+        # are already derived from public facts via BeliefUpdater.
+        key_evidence = [
+            _evidence_id_ref(text)
+            for text in list(getattr(entry, "key_evidence", []))[:3]
+        ]
+        open_questions = [
+            _evidence_id_ref(text)
+            for text in list(getattr(entry, "open_questions", []))[:3]
+        ]
         item = {
             "player": entry.player_id,
             "faction_read": entry.faction_read,
             "trust": round(float(entry.trust), 2),
-            "key_evidence": list(getattr(entry, "key_evidence", []))[:3],
-            "open_questions": list(getattr(entry, "open_questions", []))[:3],
+            "key_evidence": key_evidence,
+            "open_questions": open_questions,
         }
         if entry.faction_read == "wolf_lean" or float(entry.trust) < 0.35:
             suspects.append(item)
