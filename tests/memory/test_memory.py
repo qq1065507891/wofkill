@@ -865,6 +865,55 @@ class TestMemoryStore:
 
 
 # ---------------------------------------------------------------------------
+# MEM-05: situation/text redundancy in _store_review_reflection.
+#
+# The review-reflection path used to copy the scrubbed summary into
+# BOTH ``entry.text`` AND ``entry.situation``. The two fields carried
+# the same content, doubling the per-entry storage and (with
+# _estimate_entry_tokens) the truncation cost. The fix keeps
+# ``text`` as the primary reflection body and leaves ``situation``
+# to carry only the game-context (day / role / game_id) snapshot,
+# not the summary.
+# ---------------------------------------------------------------------------
+
+
+def test_review_reflection_no_text_situation_redundancy():
+    """MEM-05: after a review, the resulting ReflectionEntry must not
+    have the same content in both ``text`` and ``situation``.
+
+    text = reflection body (summary / lessons / etc.)
+    situation = structured game context, not a summary duplicate
+    """
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    store = MemoryStore()
+    store.init_matrix("p1", ["p1", "p2"])
+    report = ReviewReport(
+        game_id="g_test_mem05",
+        player_id="p1",
+        role="seer",
+        faction_won=True,
+        summary="本局游戏的关键教训:谨慎金水,核对查验记录,不要轻信情绪化发言。",
+    )
+    store._store_review_reflection(report)
+    reflections = store.reflections_by_player("p1")
+    assert len(reflections) == 1
+    entry = reflections[0]
+    # The summary text must appear in `text`.
+    assert "谨慎金水" in entry.text
+    # And the situation field must NOT duplicate the summary.
+    assert entry.situation != entry.text, (
+        f"MEM-05: situation and text carry the same content; "
+        f"text={entry.text!r} situation={entry.situation!r}"
+    )
+    # And the situation should NOT contain the full summary body.
+    assert "谨慎金水" not in entry.situation, (
+        f"MEM-05: situation duplicates the summary body; "
+        f"situation={entry.situation!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Boundary: structured data not vectors
 # ---------------------------------------------------------------------------
 

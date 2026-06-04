@@ -235,7 +235,14 @@ class MemoryStore:
             faction_won=report.faction_won,
             text=" | ".join(text_parts),
             tags=tags,
-            situation=_scrub_player_ids(report.summary),
+            # MEM-05: situation now holds the structured game context
+            # (game_id / role / won) instead of duplicating the
+            # summary. Previously it was a copy of ``summary`` and
+            # doubled the per-entry storage cost.
+            situation=(
+                f"game={report.game_id} role={report.role} "
+                f"won={report.faction_won}"
+            ),
         )
         self.reflections.store(entry)
 
