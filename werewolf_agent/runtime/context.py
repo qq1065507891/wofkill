@@ -521,8 +521,19 @@ def _inject_skill_output(
     # advice (e.g. "your teammate already handles X") remains reachable.
     sortable: list[tuple[float, str]] = []
 
+    # S-04: collect per-skill output keyed by skill_name. Each entry
+    # is the skill's prompt_injectable (or empty string if the skill
+    # didn't produce advice). The dict is non-empty whenever at
+    # least one skill fires — the contract that downstream
+    # `AgentContext.skill_analyses` depends on.
+    skill_analyses: dict[str, str] = {}
+
     for o in outputs:
         if not o.prompt_injectable:
+            # Still record the skill in the analyses dict so callers
+            # can see which skills were considered but produced no
+            # advice (confidence=0.0, empty prompt).
+            skill_analyses.setdefault(o.skill_name, o.prompt_injectable or "")
             continue
         # Skip bold_claim for non-fake_seer wolves
         if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
@@ -533,6 +544,7 @@ def _inject_skill_output(
         # Skip swing_vote for hooker wolves (conflicts with deep-hook mission)
         if o.skill_name == "swing_vote" and wolf_role == "hooker":
             continue
+        skill_analyses[o.skill_name] = o.prompt_injectable
         sortable.append((o.confidence, o.prompt_injectable))
 
     # Sort highest confidence first; stable for ties.
@@ -541,7 +553,7 @@ def _inject_skill_output(
 
     if parts:
         strategy_directive["skill_tactical_advice"] = "\n".join(parts)
-    return strategy_directive, {}
+    return strategy_directive, skill_analyses
 
 
 def _merge_strategy_directive(
