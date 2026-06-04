@@ -1197,6 +1197,66 @@ class TestRetrieverEdgeCases:
             f"{[(r.levelname, r.name, r.message) for r in caplog.records]!r}"
         )
 
+    def test_pg_vector_store_uses_injected_embed_fn(self) -> None:
+        """R11: ``PgVectorStore`` must accept an injected ``embed_fn``
+        so callers can switch to 1024-dim SiliconFlow embeddings
+        instead of the 128-dim hash fallback. With the old code, the
+        embed step was hardcoded to ``_text_to_embedding(text, 128)``
+        and there was no way to override it from outside.
+
+        Test injects a mock ``embed_fn`` that returns a 1024-dim
+        zero vector and asserts the store actually calls it (the
+        pgvector literal is exactly 1024 floats). We don't open a
+        real connection (``initialize=False``) — we directly probe
+        the embed path that the store would have used in add/query.
+        """
+        from werewolf_agent.rag.vector_store import PgVectorStore
+
+        EMBED_DIM = 1024
+
+        def mock_embed_fn(text: str) -> list[float]:
+            return [0.0] * EMBED_DIM
+
+        store = PgVectorStore(
+            dsn="postgresql://localhost:0/test",
+            embed_fn=mock_embed_fn,
+            initialize=False,  # don't open a real connection
+        )
+        # The store's ``dimension`` should reflect the injected
+        # embed fn's output (1024), not the default 128.
+        assert store.dimension == EMBED_DIM, (
+            f"R11: PgVectorStore.dimension should match the injected "
+            f"embed_fn's output ({EMBED_DIM}); got {store.dimension}"
+        )
+
+        # And the embed call path must produce a 1024-dim vector
+        # when given arbitrary text. We invoke the same private
+        # helper the store would call during add/query.
+        embedding = store._embed_text("any text")
+        assert isinstance(embedding, list)
+        assert len(embedding) == EMBED_DIM, (
+            f"R11: injected embed_fn must be used; got vector of "
+            f"len {len(embedding)}, expected {EMBED_DIM}"
+        )
+
+    def test_pg_vector_store_falls_back_to_hash_when_no_embed_fn(self) -> None:
+        """R11 backward compat: when no ``embed_fn`` is injected,
+        ``PgVectorStore`` must keep using the existing 128-dim hash
+        embedding so existing deployments don't break."""
+        from werewolf_agent.rag.vector_store import (
+            PgVectorStore,
+            _EMBEDDING_DIM,
+        )
+
+        store = PgVectorStore(
+            dsn="postgresql://localhost:0/test",
+            initialize=False,
+        )
+        # No embed_fn → default 128-dim hash embedding.
+        assert store.dimension == _EMBEDDING_DIM
+        embedding = store._embed_text("any text")
+        assert len(embedding) == _EMBEDDING_DIM
+
     def test_situation_tokenize_handles_action_list(self) -> None:
         """R7: ``_tokenize_situation`` must recover every action name
         from a Python-style ``actions=['vote', 'speech']`` blob, not

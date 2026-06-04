@@ -15,7 +15,7 @@ import json
 import math
 import os
 import re
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 class VectorStoreConfigError(RuntimeError):
@@ -360,9 +360,24 @@ class PgVectorStore:
         dim: int = _EMBEDDING_DIM,
         table_name: str = "rag_vectors",
         initialize: bool = True,
+        embed_fn: Callable[[str], list[float]] | None = None,
     ) -> None:
+        # R11: callers can inject a custom ``embed_fn`` (e.g. a 1024-dim
+        # SiliconFlow client) to override the default 128-dim hash
+        # embedding. The injected function wins; when omitted, the
+        # legacy 128-dim hash is preserved so existing deployments
+        # keep working without a code change.
+        self._embed_fn = embed_fn
         self._dsn = dsn
-        self._dim = dim
+        # When an embed_fn is injected, prefer its output dimension
+        # over the parameter so the schema matches the embeddings
+        # actually written. We probe a single empty string to learn
+        # the dim; the call cost is negligible at construction time.
+        if embed_fn is not None:
+            probe = embed_fn("")
+            self._dim = len(probe)
+        else:
+            self._dim = dim
         self._table_name = table_name
         self._conn: Any | None = None
         if initialize:
@@ -377,8 +392,22 @@ class PgVectorStore:
     def dimension(self) -> int:
         return self._dim
 
+    def _embed_text(self, text: str) -> list[float]:
+        """R11: return an embedding vector for ``text``.
+
+        Uses the injected ``embed_fn`` when one was provided at
+        construction time (e.g. a 1024-dim SiliconFlow client);
+        otherwise falls back to the legacy 128-dim hash embedding.
+        This is the single embed path used by ``add`` and
+        ``query`` so the schema dimension and the written vector
+        always agree.
+        """
+        if self._embed_fn is not None:
+            return self._embed_fn(text)
+        return _text_to_embedding(text, self._dim)
+
     def add(self, doc_id: str, text: str, metadata: dict[str, Any]) -> None:
-        embedding = _text_to_embedding(text, self._dim)
+        embedding = self._embed_text(text)
         vector = _to_pgvector_literal(embedding)
         conn = self._connect()
         conn.execute(
@@ -395,7 +424,7 @@ class PgVectorStore:
         conn.commit()
 
     def query(self, query_text: str, top_k: int = 5) -> list[dict[str, Any]]:
-        vector = _to_pgvector_literal(_text_to_embedding(query_text, self._dim))
+        vector = _to_pgvector_literal(self._embed_text(query_text))
         conn = self._connect()
         rows = conn.execute(
             f"""
