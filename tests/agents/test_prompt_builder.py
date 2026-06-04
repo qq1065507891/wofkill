@@ -1975,6 +1975,88 @@ def test_villager_role_guide_no_witch_decision_authority():
 
 
 # ---------------------------------------------------------------------------
+# P1-8: vote example's vote_basis must be role-appropriate
+# ---------------------------------------------------------------------------
+#
+# Audit P1-8 finding: every non-seer role (villager / witch / hunter /
+# idiot / hybrid / werewolf) sees the same vote example with
+# `vote_basis="seer_check"`. But only a seer has a check. Non-seer
+# roles don't have their own check — they are siding with another
+# player's seer claim. The example's vote_basis should reflect that:
+#   - seer       → "seer_check"   (own check)
+#   - non-seer   → "seer_siding"  (standing with another seer)
+#
+# Fix: make vote_basis role-dependent in the example. Use the
+# `role` variable already in scope.
+
+
+def test_vote_example_role_appropriate_basis():
+    """P1-8: non-seer roles' vote example uses ``seer_siding``, not ``seer_check``.
+
+    Only a seer has a check of their own. Non-seer roles do not
+    have a check — they side with a (claimed) seer. The example's
+    ``vote_basis`` must reflect that distinction so the LLM doesn't
+    fabricate a non-existent check.
+    """
+    ctx = _make_full_action_ctx("villager")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples, "Expected a vote example in the prompt"
+    for ex in vote_examples:
+        # P1-8: villager must use seer_siding, not seer_check.
+        assert ex.get("vote_basis") == "seer_siding", (
+            "P1-8: villager vote example must use vote_basis='seer_siding' "
+            "(villager has no check of their own — they side with a seer). "
+            f"Got vote_basis={ex.get('vote_basis')!r}. Full example: {ex}"
+        )
+
+
+def test_vote_example_seer_basis_unchanged():
+    """P1-8 regression: seer role still uses vote_basis='seer_check'.
+
+    A seer has their own check — the example must keep the
+    ``seer_check`` value (P0-4 already fixed ``standing_with_seer``
+    to be empty for the seer branch). The P1-8 change is for
+    non-seer roles only.
+    """
+    ctx = _make_full_action_ctx("seer")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples
+    for ex in vote_examples:
+        assert ex.get("vote_basis") == "seer_check", (
+            f"P1-8 regression: seer vote example must still use "
+            f"vote_basis='seer_check', got {ex.get('vote_basis')!r}"
+        )
+
+
+@pytest.mark.parametrize("role", [
+    "witch", "hunter", "idiot", "hybrid", "werewolf",
+])
+def test_vote_example_non_seer_uses_seer_siding(role: str):
+    """P1-8: every non-seer role (good and wolf) uses ``seer_siding``."""
+    ctx = _make_full_action_ctx(role)
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples, f"Expected a vote example for role={role!r}"
+    for ex in vote_examples:
+        assert ex.get("vote_basis") == "seer_siding", (
+            f"P1-8: non-seer role={role!r} vote example must use "
+            f"vote_basis='seer_siding' (no own check), got "
+            f"{ex.get('vote_basis')!r}. Full example: {ex}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # P1-S4: _format_examples (FULL_ACTION mode) examples match the mode
 # ---------------------------------------------------------------------------
 #
@@ -2491,12 +2573,14 @@ def test_format_examples_seer_vote_uses_own_check():
 
 
 def test_format_examples_non_seer_vote_keeps_p03_example():
-    """P0-4: non-seer roles keep the p03 / seer_check example.
+    """P0-4 / P1-8: non-seer roles keep the p03 / seer_siding example.
 
     Regression: the seer-specific fix must NOT remove the original
-    p03 / seer_check example for non-seer roles (villager, witch,
-    hunter, idiot, hybrid, werewolf). Those roles DO side with an
-    external seer claim, so the example is still meaningful.
+    p03 example for non-seer roles (villager, witch, hunter, idiot,
+    hybrid, werewolf). Those roles DO side with an external seer
+    claim, so the example is still meaningful. P1-8 updated
+    ``vote_basis`` from "seer_check" (own check, only seers have
+    that) to "seer_siding" (standing with another seer).
     """
     for role in ("villager", "witch", "hunter", "idiot", "hybrid", "werewolf"):
         ctx = _make_full_action_ctx(role)
@@ -2509,14 +2593,18 @@ def test_format_examples_non_seer_vote_keeps_p03_example():
             f"Expected a vote example for role={role!r}"
         )
         for ex in vote_examples:
-            # Non-seer roles still see the p03 / seer_check example.
+            # Non-seer roles still see the p03 standing-with-seer
+            # example (they side with an external seer).
             assert ex.get("standing_with_seer") == "p03", (
                 f"Non-seer role={role!r} must keep the 'p03' example "
                 f"for standing_with_seer (they side with an external seer), "
                 f"got {ex.get('standing_with_seer')!r}. Full example: {ex}"
             )
-            assert ex.get("vote_basis") == "seer_check", (
-                f"Non-seer role={role!r} must keep vote_basis='seer_check', "
+            # P1-8: vote_basis is "seer_siding" for non-seer roles
+            # (they have no check of their own).
+            assert ex.get("vote_basis") == "seer_siding", (
+                f"Non-seer role={role!r} must use vote_basis='seer_siding' "
+                f"(P1-8: they have no check of their own), "
                 f"got {ex.get('vote_basis')!r}. Full example: {ex}"
             )
 

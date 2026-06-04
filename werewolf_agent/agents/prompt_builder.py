@@ -859,14 +859,19 @@ class PlayerPromptBuilder:
             # since they do side with an external seer claim.
             if role == "seer":
                 vote_standing_with_seer = ""
+                # P1-8: only a seer has a check. Non-seer roles don't —
+                # they are standing with a (claimed) seer, so their
+                # vote_basis is "seer_siding" not "seer_check".
+                vote_basis = "seer_check"
             else:
                 vote_standing_with_seer = "p03"
+                vote_basis = "seer_siding"
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '
                          '"reason": "公开理由：p05发言可疑", '
                          '"seer_stance": "trust", '
-                         '"vote_basis": "seer_check", '
+                         f'"vote_basis": "{vote_basis}", '
                          f'"standing_with_seer": "{vote_standing_with_seer}", '
                          '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
                          '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
