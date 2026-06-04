@@ -502,6 +502,12 @@ _PLAYER_ACTION_ADAPTER: TypeAdapter = TypeAdapter(
 
 class JudgeBroadcast(BaseModel):
     """Structured output from the judge agent."""
+    # P2-1: LLM-generated; unknown fields must raise. Mirrors the
+    # pattern applied to PrivateIntent (P1-1) and the PlayerAction
+    # variants (P0-S8). Without this, the judge LLM was stuffing
+    # defensive fields (e.g. ``moderator_internal_notes``) into the
+    # broadcast payload and the audit log happily recorded them.
+    model_config = ConfigDict(extra="forbid")
     broadcast_type: str = Field(..., description="Phase announcement type")
     message: str = Field(..., description="Natural language broadcast")
     phase: str = Field(..., description="Current game phase")
@@ -560,6 +566,10 @@ class JudgeExileInput(BaseModel):
 
 class RetryInfo(BaseModel):
     """Tracks retry attempts for illegal/invalid outputs."""
+    # P2-1: populated by upstream code, but without the strict field
+    # guard a typo or future regression silently writes an unknown
+    # key that downstream consumers won't notice.
+    model_config = ConfigDict(extra="forbid")
     attempt: int = 1
     max_retries: int = 3
     error_code: str | None = None
@@ -578,6 +588,8 @@ class RetryInfo(BaseModel):
 
 class FallbackAction(BaseModel):
     """Fallback when retries are exhausted."""
+    # P2-1: populated by upstream code; unknown fields must raise.
+    model_config = ConfigDict(extra="forbid")
     action_type: ActionType = ActionType.NO_ACTION
     target_id: str | None = None
     speech: str = ""
@@ -591,6 +603,19 @@ class FallbackAction(BaseModel):
 
 class AgentContext(BaseModel):
     """Input context for a player or judge agent call."""
+    # P2-1: AgentContext is constructed in 100+ call sites (cognition,
+    # runtime, tests). Adding extra="forbid" required auditing every
+    # call site — all 24 kwargs used by callers (agent_id,
+    # belief_state, cognition_matrix_hint, contradiction_alerts,
+    # day_number, hybrid_master_faction, legal_actions, legal_targets,
+    # night_number, own_role, persona_snapshot, phase,
+    # private_memory_caveat, private_memory_hints, profile_memory_hint,
+    # public_summary, rag_hints, recent_transcript,
+    # reflection_memory_hints, salience_items, skill_analyses,
+    # skill_analysis_hints, strategy_directive, task_type,
+    # visible_world_state) are schema-defined. The strict guard
+    # surfaces typos and unintended fields at construction time.
+    model_config = ConfigDict(extra="forbid")
     agent_id: str
     task_type: TaskType
     phase: str = ""

@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from werewolf_agent.agents.schemas import (
     ActionType,
+    AgentContext,
     BadgeTransferPlayerAction,
     CheckAlignmentPlayerAction,
     ChooseMasterPlayerAction,
@@ -27,6 +28,7 @@ from werewolf_agent.agents.schemas import (
     RiskFlag,
     SheriffVotePlayerAction,
     SpeechPlayerAction,
+    TaskType,
     UsePoisonPlayerAction,
     VotePlayerAction,
     WolfKillPlayerAction,
@@ -132,6 +134,107 @@ class TestJudgeBroadcastSchema:
     def test_minimal_broadcast(self) -> None:
         b = JudgeBroadcast(broadcast_type="phase", message="test", phase="night")
         assert b.day_number == 0
+
+    def test_judge_broadcast_rejects_unknown_fields(self) -> None:
+        """P2-1: JudgeBroadcast is LLM-generated; unknown fields must raise."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            JudgeBroadcast(
+                broadcast_type="phase",
+                message="x",
+                phase="day",
+                extra_unwanted_field="value",  # type: ignore[call-arg]
+            )
+
+
+# ---------------------------------------------------------------------------
+# P2-1: JudgeBroadcast/RetryInfo/FallbackAction/AgentContext must reject
+# unknown fields (extra="forbid").
+# ---------------------------------------------------------------------------
+#
+# Audit P2-1 finding: 4 schema classes were constructed without
+# ``extra="forbid"``. JudgeBroadcast is LLM-generated (so unknown
+# fields leak LLM-defensive noise into the broadcast payload).
+# RetryInfo / FallbackAction / AgentContext are populated by upstream
+# code, but without the strict field guard a typo or future regression
+# silently writes an unknown key that downstream consumers won't
+# notice. Mirror the pattern already applied to PrivateIntent (P1-1)
+# and the PlayerAction variants (P0-S8).
+#
+# AgentContext is constructed in 100+ call sites — adding extra="forbid"
+# requires the call-site audit done in P2-1 prep. All 24 kwargs used
+# by callers (`agent_id`, `belief_state`, `cognition_matrix_hint`,
+# `contradiction_alerts`, `day_number`, `hybrid_master_faction`,
+# `legal_actions`, `legal_targets`, `night_number`, `own_role`,
+# `persona_snapshot`, `phase`, `private_memory_caveat`,
+# `private_memory_hints`, `profile_memory_hint`, `public_summary`,
+# `rag_hints`, `recent_transcript`, `reflection_memory_hints`,
+# `salience_items`, `skill_analyses`, `skill_analysis_hints`,
+# `strategy_directive`, `task_type`, `visible_world_state`) are
+# schema fields, so the audit passes.
+
+class TestP2_1ExtraForbid:
+    """P2-1: 4 schema classes must reject unknown fields."""
+
+    def test_retry_info_rejects_unknown_fields(self) -> None:
+        from werewolf_agent.agents.schemas import RetryInfo
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            RetryInfo(
+                attempt=1,
+                unknown_field="x",  # type: ignore[call-arg]
+            )
+
+    def test_fallback_action_rejects_unknown_fields(self) -> None:
+        from werewolf_agent.agents.schemas import FallbackAction
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            FallbackAction(
+                action_type=ActionType.NO_ACTION,
+                unknown_field="x",  # type: ignore[call-arg]
+            )
+
+    def test_agent_context_rejects_unknown_fields(self) -> None:
+        """P2-1: AgentContext is synthesized for tests/audit; unknown
+        fields must raise. The test only asserts on a synthesized
+        instance, not on real call sites (which were audited in P2-1
+        prep and confirmed to only use schema-defined keys)."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            AgentContext(
+                agent_id="p01",
+                task_type=TaskType.SPEECH,
+                unknown_field="x",  # type: ignore[call-arg]
+            )
+
+    def test_agent_context_accepts_known_fields(self) -> None:
+        """Regression: all 25 documented AgentContext fields still validate."""
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=1,
+            night_number=0,
+            public_summary="x",
+            own_role="villager",
+            hybrid_master_faction="good",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07"],
+            visible_world_state={},
+            salience_items=[],
+            rag_hints=[],
+            private_memory_hints={},
+            private_memory_caveat="",
+            reflection_memory_hints=[],
+            profile_memory_hint={},
+            cognition_matrix_hint={},
+            belief_state={},
+            contradiction_alerts=[],
+            strategy_directive={},
+            persona_snapshot={},
+            model_config_snapshot={},
+            recent_transcript=[],
+            output_schema_hint="",
+            skill_analyses={},
+            skill_analysis_hints={},
+            rag_anomaly_count=0,
+        )
 
 
 # ---------------------------------------------------------------------------
