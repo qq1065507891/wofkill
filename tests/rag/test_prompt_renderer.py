@@ -24,6 +24,7 @@ import pytest
 from werewolf_agent.rag.prompt_renderer import (
     _FORBIDDEN_LIVE_FIELDS,
     _MAX_KEY_DECISIONS_IN_PROMPT,
+    dedup_hits_by_similarity,
     hits_to_prompt_lines,
     hits_to_prompt_lines_json,
     render_hit_for_prompt,
@@ -126,18 +127,30 @@ class TestPromptRenderDropsMetadata:
         assert line["key_decisions"] == []
 
     def test_hits_to_prompt_lines_respects_max_items(self) -> None:
+        # P1-G5: distinct titles + distinct summaries with zero token
+        # overlap so the dedup pass doesn't collapse them.
         hits = [
-            _make_hit(entry_id=f"ext_{i:03d}", title=f"案例{i}")
+            _make_hit(
+                entry_id=f"ext_{i:03d}",
+                title=f"甲{i}",
+                summary=f"乙{i}",
+            )
             for i in range(5)
         ]
         lines = hits_to_prompt_lines(hits, max_items=2)
         assert len(lines) == 2
-        assert lines[0]["title"] == "案例0"
-        assert lines[1]["title"] == "案例1"
+        assert lines[0]["title"] == "甲0"
+        assert lines[1]["title"] == "甲1"
 
     def test_hits_to_prompt_lines_default_max_is_three(self) -> None:
+        # P1-G5: distinct titles + distinct summaries with zero token
+        # overlap so the dedup pass doesn't collapse them.
         hits = [
-            _make_hit(entry_id=f"ext_{i:03d}", title=f"案例{i}")
+            _make_hit(
+                entry_id=f"ext_{i:03d}",
+                title=f"甲{i}",
+                summary=f"乙{i}",
+            )
             for i in range(5)
         ]
         lines = hits_to_prompt_lines(hits)
@@ -404,6 +417,110 @@ class TestSummaryTruncation800Chars:
         # renderer).
         assert line["summary"] == long_summary
         assert len(line["summary"]) == 800
+
+
+# ===================================================================
+# P1-G5: near-duplicate RAG hits merged
+# ===================================================================
+
+
+class TestNearDuplicateHitsMerged:
+    """P1-G5: When two RAG hits cover the same tactic, dedup by Jaccard
+    similarity on title+summary tokens. Threshold 0.6 — keep the higher
+    relevance_score. Cap the final list at 2 hits to keep prompt
+    density high."""
+
+    def test_near_duplicate_hits_merged(self) -> None:
+        """Two hits that share most of their tokens (>0.6 Jaccard) must
+        be deduped; the higher-relevance one is kept."""
+        hit_a = _make_hit(
+            entry_id="case_a",
+            title="狼队白天抗推预言家的票型策略",
+            summary="白天全力归票预言家形成票数优势，狼队利用预言家抗推制造混乱。",
+            relevance=0.7,
+        )
+        # Near-duplicate: very high token overlap with hit_a.
+        hit_b = _make_hit(
+            entry_id="case_b",
+            title="狼队白天抗推预言家票型策略与执行",
+            summary="白天全力归票预言家形成票数优势，狼队利用预言家抗推执行制造混乱。",
+            relevance=0.9,  # higher relevance, should win
+        )
+        # A clearly distinct hit (low Jaccard with the above two).
+        hit_c = _make_hit(
+            entry_id="case_c",
+            title="女巫首夜解药保护预言家",
+            summary="女巫首夜使用解药保护关键神牌，避免狼队夜里刀掉预言家。",
+            relevance=0.6,
+        )
+
+        deduped = dedup_hits_by_similarity(
+            [hit_a, hit_b, hit_c],
+            max_items=2,
+            similarity_threshold=0.6,
+        )
+        # hit_b wins (higher relevance), hit_c is distinct, hit_a dropped.
+        ids = [h.entry_id for h in deduped]
+        assert "case_b" in ids
+        assert "case_a" not in ids
+        assert "case_c" in ids
+        assert len(deduped) == 2
+
+    def test_distinct_hits_preserved(self) -> None:
+        """When no two hits exceed the similarity threshold, all are kept
+        (capped at max_items). The caller is responsible for relevance
+        ordering — the helper preserves input order."""
+        # Distinct titles + summaries with zero token overlap.
+        hit_a = _make_hit(
+            entry_id="a",
+            title="狼推",
+            summary="白天票",
+            relevance=0.5,
+        )
+        hit_b = _make_hit(
+            entry_id="b",
+            title="女巫",
+            summary="夜里药",
+            relevance=0.6,
+        )
+        hit_c = _make_hit(
+            entry_id="c",
+            title="猎人",
+            summary="开枪带",
+            relevance=0.7,
+        )
+        # Pass them in relevance-descending order (caller's job).
+        deduped = dedup_hits_by_similarity(
+            [hit_c, hit_b, hit_a],
+            max_items=2,
+        )
+        assert len(deduped) == 2
+        # Highest-relevance hits first.
+        assert deduped[0].entry_id == "c"
+        assert deduped[1].entry_id == "b"
+
+    def test_dedup_caps_at_max_items(self) -> None:
+        """Dedup never returns more than ``max_items`` hits."""
+        # Each hit's title+summary uses a disjoint single token so the
+        # Jaccard similarity is exactly 0 (well below threshold).
+        hits = [
+            _make_hit(
+                entry_id=f"x{i}",
+                title=f"甲{i}",
+                summary=f"乙{i}",
+                relevance=0.5 - i * 0.01,
+            )
+            for i in range(5)
+        ]
+        deduped = dedup_hits_by_similarity(hits, max_items=2)
+        assert len(deduped) == 2
+
+    def test_dedup_empty_input(self) -> None:
+        assert dedup_hits_by_similarity([], max_items=2) == []
+
+    def test_dedup_single_hit(self) -> None:
+        hit = _make_hit(entry_id="solo")
+        assert dedup_hits_by_similarity([hit], max_items=2) == [hit]
 
 
 if __name__ == "__main__":
