@@ -4,16 +4,16 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 4 (all 5 sub-batches) MERGED — 2026-06-04**
-- Active task: All 21 batch-4 P1 done. Next: Batch 5 (P2 polish 14 items).
+- Current phase: **Batch 5 P2 polish — Prompt area in progress (p5-prompt)**
+- Active task: P2-S10 (persona system→user), then S12/S13/S14
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
 ---
 
-## Batch 4 (P1 RAG area) — COMPLETE 2026-06-04
+## Batch 5 (P2 polish) — Prompt area — IN PROGRESS 2026-06-04
 
-Worktree: `.worktrees/p4-rag` on branch `p4-rag`. Sibling worktrees (in parallel): p4-prompt, p4-skill, p4-memory, p4-directives.
+Worktree: `.worktrees/p5-prompt` on branch `p5-prompt`. Parallel siblings: p5-skill (K8), p5-rm (G11, M15, M16).
 
 | Task | ID | Status | Commit | Notes |
 |------|----|--------|--------|-------|
