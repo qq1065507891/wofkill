@@ -1891,5 +1891,135 @@ def test_persona_empty_snapshot_is_noop():
     assert "人格设定" not in user_prompt
 
 
+# ---------------------------------------------------------------------------
+# P0-1: _format_examples else branch must follow ctx.own_role for true_role
+# ---------------------------------------------------------------------------
+#
+# Audit P0-1 finding: in `_format_examples` (the FULL_ACTION default branch
+# used by speech/vote), the `example_role` variable that becomes
+# `private_intent.true_role` was hardcoded to "villager" for every non-wolf
+# role. That meant a seer / witch / hunter / idiot / hybrid agent saw an
+# example that misrepresented their actual role in the audit log —
+# the LLM would copy the structure and emit `private_intent.true_role =
+# "villager"` even though `ctx.own_role` was something else.
+#
+# Fix: the variable that drives `true_role` in the example's
+# `private_intent` should be `ctx.own_role` (or a sensible mapping
+# for roles that have no clean "team" parallel in the example's
+# faction_goal). Tests below cover all 5 non-wolf roles and assert
+# the example's `private_intent.true_role` reflects `own_role`.
+
+
+def _find_example_true_roles(prompt: str) -> list[str]:
+    """Extract every `true_role` value in the rendered example JSON.
+
+    Walks the prompt for JSON example objects (those carrying
+    ``action_type``) and returns the value of their nested
+    ``private_intent.true_role`` field. Used by P0-1 tests to verify
+    the example role matches `own_role` rather than the hardcoded
+    "villager".
+    """
+    true_roles: list[str] = []
+    for match in _re.finditer(
+        r"\{[^{}]*?(?:\{[^{}]*\}[^{}]*?)*\}",
+        prompt,
+        flags=_re.DOTALL,
+    ):
+        try:
+            data = _json.loads(match.group(0))
+        except _json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or "action_type" not in data:
+            continue
+        pi = data.get("private_intent")
+        if isinstance(pi, dict) and "true_role" in pi:
+            true_roles.append(str(pi["true_role"]))
+    return true_roles
+
+
+def _make_full_action_ctx(role: str) -> AgentContext:
+    """Build a context that triggers _format_examples (FULL_ACTION mode).
+
+    Uses REFLECTION task + [SPEECH, VOTE] legal actions so the
+    FULL_ACTION default branch renders both the speech and vote
+    example pair. own_role is parameterized.
+    """
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.REFLECTION,
+        phase="day",
+        day_number=2,
+        own_role=role,
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 reflection",
+    )
+
+
+@pytest.mark.parametrize("role", ["seer", "witch", "hunter", "idiot", "hybrid"])
+def test_format_examples_private_intent_matches_own_role(role: str):
+    """P0-1: example's private_intent.true_role must equal ctx.own_role.
+
+    For seer / witch / hunter / idiot / hybrid (the 5 non-werewolf,
+    non-villager roles that the bug was hardcoding to "villager"),
+    the example rendered by _format_examples must use the agent's
+    own role, not a hardcoded "villager". Otherwise the LLM copies
+    the example and the audit log records `true_role="villager"`
+    for a seer — a real bug observed in production traces.
+    """
+    ctx = _make_full_action_ctx(role)
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    true_roles = _find_example_true_roles(prompt)
+    # Both the speech and vote examples should advertise the role.
+    assert true_roles, (
+        f"No example private_intent.true_role found in prompt for role={role!r}"
+    )
+    for tr in true_roles:
+        assert tr == role, (
+            f"Example private_intent.true_role must equal own_role={role!r}, "
+            f"got {tr!r}. The example hardcodes the wrong role, "
+            f"priming the LLM to copy a wrong audit value."
+        )
+    # Explicit anti-regression: the hardcoded "villager" must NOT appear
+    # as a true_role for any non-villager role.
+    assert "villager" not in true_roles, (
+        f"Example must not advertise true_role='villager' for own_role={role!r}; "
+        f"observed true_roles={true_roles}."
+    )
+
+
+def test_format_examples_villager_role_still_uses_villager():
+    """P0-1: regression — villager example must still use 'villager'.
+
+    Confirms the fix didn't accidentally break the villager branch
+    (where example_role was already 'villager' before the fix).
+    """
+    ctx = _make_full_action_ctx("villager")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    true_roles = _find_example_true_roles(prompt)
+    assert true_roles, "Expected example true_roles for villager branch"
+    for tr in true_roles:
+        assert tr == "villager", (
+            f"Villager branch must still use true_role='villager', got {tr!r}"
+        )
+
+
+def test_format_examples_werewolf_branch_still_uses_werewolf():
+    """P0-1: regression — werewolf example must still use 'werewolf'.
+
+    The bug fix only affects non-werewolf roles (the else branch).
+    The werewolf branch (line ~717-718) was already correct and
+    must remain so. Confirms no regression on the wolf example.
+    """
+    ctx = _make_full_action_ctx("werewolf")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    true_roles = _find_example_true_roles(prompt)
+    assert true_roles, "Expected example true_roles for werewolf branch"
+    for tr in true_roles:
+        assert tr == "werewolf", (
+            f"Werewolf branch must still use true_role='werewolf', got {tr!r}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

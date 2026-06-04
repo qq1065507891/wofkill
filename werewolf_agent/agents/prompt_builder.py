@@ -714,12 +714,17 @@ class PlayerPromptBuilder:
                 )
         else:
             role = ctx.own_role or "villager"
+            # P0-1: example_role now follows ctx.own_role so the example's
+            # `private_intent.true_role` reflects the agent's actual role
+            # instead of being hardcoded to "villager". Wolves still get
+            # the wolf-style example; every other role uses their own
+            # role identifier. faction_goal and claimed_view stay role-aware.
             if role == "werewolf":
                 example_role = "werewolf"
                 example_goal = "confuse_good"
                 example_view = _CLAIMED_VIEW_GOOD
             else:
-                example_role = "villager"
+                example_role = role
                 example_goal = "find_wolves"
                 example_view = _CLAIMED_VIEW_GOOD
             parts.append("示例输出（发言场景）：")
