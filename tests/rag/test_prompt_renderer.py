@@ -162,6 +162,14 @@ class TestPromptRenderDropsMetadata:
     def test_hits_to_prompt_lines_default_max_is_three(self) -> None:
         # P1-G5: distinct titles + distinct summaries with zero token
         # overlap so the dedup pass doesn't collapse them.
+        # R13: ``hits_to_prompt_lines`` caps the dedup pass at the
+        # module default (2). The ``max_items=3`` argument to
+        # ``hits_to_prompt_lines`` is honored for the *final render*
+        # (it is the contract callers see on the public helper), but
+        # the internal dedup pass now floors at 2. The two-step
+        # ``hits_to_prompt_lines`` -> ``dedup_hits_by_similarity``
+        # call path therefore returns at most 2 entries regardless
+        # of the caller's ``max_items``.
         hits = [
             _make_hit(
                 entry_id=f"ext_{i:03d}",
@@ -171,7 +179,7 @@ class TestPromptRenderDropsMetadata:
             for i in range(5)
         ]
         lines = hits_to_prompt_lines(hits)
-        assert len(lines) == 3
+        assert len(lines) == 2
 
     def test_hits_to_prompt_lines_empty(self) -> None:
         assert hits_to_prompt_lines([]) == []
@@ -541,6 +549,39 @@ class TestNearDuplicateHitsMerged:
         ]
         deduped = dedup_hits_by_similarity(hits, max_items=2)
         assert len(deduped) == 2
+
+    def test_dedup_caps_at_default(self) -> None:
+        """R13: ``dedup_hits_by_similarity`` must cap the output at
+        the module default (_DEDUP_DEFAULT_MAX_ITEMS=2) regardless
+        of a larger ``max_items`` value passed by the caller. The
+        previous code took the caller's ``max_items`` as the final
+        cap, so a caller that asked for 5 hits could blow past the
+        2-hit density target and waste live-prompt context.
+
+        Test passes ``max_items=5`` with five distinct hits (no
+        near-duplicates) and asserts the returned list has at most
+        the default cap of 2 items.
+        """
+        from werewolf_agent.rag.prompt_renderer import (
+            _DEDUP_DEFAULT_MAX_ITEMS,
+        )
+
+        hits = [
+            _make_hit(
+                entry_id=f"d{i}",
+                title=f"甲{i}",
+                summary=f"乙{i}",
+                relevance=0.5 - i * 0.01,
+            )
+            for i in range(5)
+        ]
+        deduped = dedup_hits_by_similarity(hits, max_items=5)
+        assert len(deduped) <= _DEDUP_DEFAULT_MAX_ITEMS, (
+            f"R13: dedup must cap at the module default "
+            f"({_DEDUP_DEFAULT_MAX_ITEMS}); got {len(deduped)} items "
+            f"with max_items=5"
+        )
+        assert len(deduped) == _DEDUP_DEFAULT_MAX_ITEMS
 
     def test_dedup_empty_input(self) -> None:
         assert dedup_hits_by_similarity([], max_items=2) == []
