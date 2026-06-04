@@ -356,10 +356,14 @@ def _inject_skill_output(
     phase: str,
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
+    task_type: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Dispatch applicable skills once; inject non-tool advice, collect tool analyses.
 
     Returns (updated strategy_directive, tool_analyses).
+
+    P0-K2: `task_type` is forwarded to `dispatch_for_role` so the
+    `applies_to_task_types` filter can refine the dispatch.
     """
     player = gs.players.get(player_id)
     if not player or not player.alive:
@@ -379,7 +383,10 @@ def _inject_skill_output(
         extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
     )
 
-    outputs = registry.dispatch_for_role(player.role, phase, skill_input)
+    # P0-K2: pass task_type so the new `applies_to_task_types` filter works.
+    outputs = registry.dispatch_for_role(
+        player.role, phase, skill_input, task_type=task_type,
+    )
 
     # Filter skills that conflict with wolf team role assignment
     wolf_role = None
