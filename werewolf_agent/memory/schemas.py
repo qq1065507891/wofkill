@@ -39,12 +39,55 @@ class RelationEvent:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class EvidenceItem:
+    """Structured evidence reference carried in CognitionMatrixEntry.key_evidence.
+
+    MEM-07: a bare ``str`` evidence entry has no provenance, claim,
+    or confidence — making it impossible to debug, filter, or weight
+    observations downstream. The structured form carries:
+
+    * ``claim`` — the human-readable assertion (e.g. "p03 is wolf")
+    * ``source_event`` — the GameEvent.type that produced the claim
+    * ``day`` — the game day the claim originated on
+    * ``confidence`` — the producer's confidence in [0.0, 1.0]
+    * ``speaker`` — optional actor (player id) the claim is about
+
+    The dataclass is plain (not frozen) to allow in-place edits; use
+    ``to_dict`` / ``from_dict`` for serialization.
+    """
+    claim: str
+    source_event: str = ""
+    day: int = 0
+    confidence: float = 0.5
+    speaker: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "claim": self.claim,
+            "source_event": self.source_event,
+            "day": self.day,
+            "confidence": self.confidence,
+            "speaker": self.speaker,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EvidenceItem":
+        return cls(
+            claim=data.get("claim", str(data)),
+            source_event=data.get("source_event", ""),
+            day=data.get("day", 0),
+            confidence=data.get("confidence", 0.5),
+            speaker=data.get("speaker"),
+        )
+
+
+@dataclass
 class CognitionMatrixEntry:
     player_id: str
     role_probabilities: dict[str, float] = field(default_factory=dict)
     faction_read: str = "unknown"
     trust: float = 0.5
-    key_evidence: list[str] = field(default_factory=list)
+    key_evidence: list[Any] = field(default_factory=list)  # EvidenceItem (or str for back-compat)
     open_questions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,18 +96,27 @@ class CognitionMatrixEntry:
             "role_probabilities": dict(self.role_probabilities),
             "faction_read": self.faction_read,
             "trust": self.trust,
-            "key_evidence": list(self.key_evidence),
+            "key_evidence": [
+                e.to_dict() if isinstance(e, EvidenceItem) else e
+                for e in self.key_evidence
+            ],
             "open_questions": list(self.open_questions),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CognitionMatrixEntry":
+        evidence = []
+        for e in data.get("key_evidence", []):
+            if isinstance(e, dict):
+                evidence.append(EvidenceItem.from_dict(e))
+            else:
+                evidence.append(e)  # back-compat: keep bare str
         return cls(
             player_id=data["player_id"],
             role_probabilities=data.get("role_probabilities", {}),
             faction_read=data.get("faction_read", "unknown"),
             trust=data.get("trust", 0.5),
-            key_evidence=data.get("key_evidence", []),
+            key_evidence=evidence,
             open_questions=data.get("open_questions", []),
         )
 

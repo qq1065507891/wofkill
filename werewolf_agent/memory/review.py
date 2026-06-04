@@ -79,12 +79,18 @@ class ReviewGenerator:
             guessed, confidence = self._top_role_guess(entry)
             correct = guessed == actual
 
+            # MEM-07: key_evidence items may now be EvidenceItem or
+            # bare str (back-compat). Render the claim string either way.
+            evidence_claims = []
+            for e in entry.key_evidence[-3:]:
+                claim = getattr(e, "claim", None)
+                evidence_claims.append(claim if claim is not None else str(e))
             report.key_judgments.append(ReviewJudgment(
                 target_player=entry.player_id,
                 judgment="correct" if correct else "incorrect",
                 actual_role=actual,
                 guessed_role=guessed,
-                evidence="; ".join(entry.key_evidence[-3:]) if entry.key_evidence else "",
+                evidence="; ".join(evidence_claims),
             ))
 
             if not correct and confidence > 0.3:

@@ -46,7 +46,10 @@ class TestCognitionMatrixPersistence:
         assert restored.viewer_id == "viewer1"
         entry = restored.get("p1")
         assert entry is not None
-        assert "claimed seer" in entry.key_evidence
+        # MEM-07: bare str is wrapped into an EvidenceItem whose
+        # claim equals the original string.
+        assert len(entry.key_evidence) == 1
+        assert entry.key_evidence[0].claim == "claimed seer"
 
     def test_matrix_json_roundtrip(self) -> None:
         matrix = CognitionMatrix("viewer2")

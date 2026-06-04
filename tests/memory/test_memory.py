@@ -83,7 +83,10 @@ class TestCognitionMatrix:
         cm.initialize(["p1", "p2"])
         cm.add_evidence("p2", "day1_voted_player_03")
         entry = cm.get("p2")
-        assert "day1_voted_player_03" in entry.key_evidence
+        # MEM-07: bare str is wrapped into an EvidenceItem whose
+        # claim equals the original string.
+        assert len(entry.key_evidence) == 1
+        assert entry.key_evidence[0].claim == "day1_voted_player_03"
 
     def test_add_open_question(self):
         cm = CognitionMatrix("p1")
@@ -102,7 +105,9 @@ class TestCognitionMatrix:
         cm2 = CognitionMatrix.from_dict(data)
         assert cm2.viewer_id == "p1"
         assert set(cm2.player_ids()) == {"p2", "p3"}
-        assert "ev1" in cm2.get("p2").key_evidence
+        # MEM-07: bare str is wrapped into an EvidenceItem.
+        assert len(cm2.get("p2").key_evidence) == 1
+        assert cm2.get("p2").key_evidence[0].claim == "ev1"
         assert "q1" in cm2.get("p3").open_questions
 
     def test_get_nonexistent(self):
