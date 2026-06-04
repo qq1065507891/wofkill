@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 2 (RAG+Skill+Memory) MERGED — 2026-06-04**
-- Active task: Batch 2 fully merged into prompt-revamp-2026-06; next: Batch 3 (P0 redesign 6 items)
+- Current phase: **Batch 3 (Info isolation + Memory-cognition) IN PROGRESS — 2026-06-04**
+- Active task: Batch 3 P0 info-isolation sub-batch (I1, I2, I3) complete on `p3-info` branch
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
@@ -41,6 +41,18 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 **Batch 1 totals: 11 commits, 70+ new tests, 1158 related tests pass, 0 regression.**
 
 **Batch 1 results:** 10/10 tasks done. `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed. 12 new tests in `tests/agents/test_output_parser.py`. Zero regressions across the project.
+
+### Batch 3 (P0 redesign) — Info-isolation sub-batch — IN PROGRESS 2026-06-04
+
+Worktree: `.worktrees/p3-info` on branch `p3-info`. Parallel sibling: `.worktrees/p3-memory` (M6, I4, M9).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 3.3 | P0-I1 strategy_directive role-gating | DONE | `71cb6ef` | New `tests/integration/test_directive_role_gating.py::TestDirectiveRoleGating` (7 role tests) + extended `test_e2e_info_leak.py::_assert_no_forbidden_info` to also check the base-context `strategy_directive`. |
+| 3.4 | P0-I2 hybrid follows master's faction post-choice | DONE | `0ba2a31` | `build_hybrid_directive` branches on `gs.hybrid_master_faction` and injects `hybrid_wolf_master_directive` (hidden-ally framing) or `hybrid_good_master_directive` (good-side focus). Pre-fix, both cases fell through to a neutral villager-style block — explains g_3528592081 hybrid p04 (master=p01 wolf) voting like a villager. |
+| 3.7 | P0-I3 wolf private info doesn't leak via directives | DONE | `71cb6ef` | New `tests/integration/test_directive_role_gating.py::TestDirectiveWolfPrivateNoLeak` (6 role tests) — asserts `wolf_fake_seer_teammate`, `wolf_day_push_target`, `wolf_plan_target`, `wolf_teammate_exposed`, `wolf_high_priority_target` are NOT in `strategy_directive` or `visible_world_state` for villager/seer/witch/hunter/idiot/hybrid. |
+
+**Batch 3 (info) results so far:** 3/3 tasks done. 14 new tests added (8 in `TestDirectiveRoleGating`, 6 in `TestDirectiveWolfPrivateNoLeak`) + 3 new hybrid faction tests in `TestHybridStrategyDirectives`. All tests pass; no regressions in `tests/runtime/` (687 passed), `tests/agents/` (399 passed), `tests/integration/test_e2e_info_leak.py` + `test_directive_role_gating.py` (41 passed), or `tests/integration/test_live_game_flow.py` (7 passed, ~7m 40s).
 
 ### Batch 2 (P0 structural) — RAG + Skill + Memory sub-batches 2026-06-04
 
