@@ -766,6 +766,107 @@ class TestHybridStrategyDirectives:
         assert "master_behavior_summary" in result
         assert "seer" in result["master_behavior_summary"]
 
+    def test_hybrid_master_wolf_receives_hidden_wolf_directive(self) -> None:
+        """When the hybrid's master is a wolf, the day-speech directive
+        must include a faction-aware "hidden ally" block that nudges
+        the hybrid to subtly support the wolf team without breaking
+        cover.  Pre-fix, the directive was identical to the good-master
+        case, which is why hybrid p04 in g_3528592081 (master=p01
+        wolf) voted like a villager.
+
+        P0-I2 regression test.
+        """
+        from werewolf_agent.runtime.agent_adapter import _build_hybrid_day_speech_directive
+        players = {
+            "hybrid": PlayerState(id="hybrid", role="hybrid"),
+            "w1": PlayerState(id="w1", role="werewolf"),
+            "v1": PlayerState(id="v1", role="villager"),
+            "seer": PlayerState(id="seer", role="seer"),
+        }
+        gs = GameState(
+            game_id="hybrid_wolf_master_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            hybrid_master_id="w1",
+            hybrid_master_faction="werewolf",
+        )
+        result = _build_hybrid_day_speech_directive(gs, "hybrid")
+        # The directive should expose a faction-specific block so the
+        # hybrid can adjust its day-speech behavior.
+        assert "hybrid_wolf_master_directive" in result, (
+            "Hybrid with wolf master must receive hidden-ally directive; "
+            f"got keys: {sorted(result.keys())}"
+        )
+        wolf_directive = result["hybrid_wolf_master_directive"]
+        # The text must mention the wolf team or hidden-ally framing.
+        assert ("狼" in wolf_directive) or ("wolf" in wolf_directive.lower()), (
+            f"wolf-master directive should reference wolf/狼; got: {wolf_directive!r}"
+        )
+        # And it must warn against identity-revealing behavior.
+        assert "暴露" in wolf_directive or "隐藏" in wolf_directive, (
+            f"wolf-master directive must include cover discipline; got: {wolf_directive!r}"
+        )
+
+    def test_hybrid_master_good_receives_good_side_focus(self) -> None:
+        """When the hybrid's master is on the good side, the day-speech
+        directive must include a faction-aware block that explicitly
+        nudges the hybrid to help the good team.  Pre-fix, the
+        directive was neutral and gave no faction guidance.
+
+        P0-I2 regression test (companion to wolf-master test).
+        """
+        from werewolf_agent.runtime.agent_adapter import _build_hybrid_day_speech_directive
+        players = {
+            "hybrid": PlayerState(id="hybrid", role="hybrid"),
+            "w1": PlayerState(id="w1", role="werewolf"),
+            "v1": PlayerState(id="v1", role="villager"),
+            "seer": PlayerState(id="seer", role="seer"),
+        }
+        gs = GameState(
+            game_id="hybrid_good_master_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            hybrid_master_id="seer",
+            hybrid_master_faction="good",
+        )
+        result = _build_hybrid_day_speech_directive(gs, "hybrid")
+        assert "hybrid_good_master_directive" in result, (
+            "Hybrid with good master must receive good-side focus; "
+            f"got keys: {sorted(result.keys())}"
+        )
+        good_directive = result["hybrid_good_master_directive"]
+        # The text must mention good side framing.
+        assert "好人" in good_directive or "good" in good_directive.lower(), (
+            f"good-master directive should reference 好人/good; got: {good_directive!r}"
+        )
+
+    def test_hybrid_master_unknown_faction_falls_through_neutral(self) -> None:
+        """If the hybrid has not yet chosen a master, neither the
+        wolf-master nor the good-master block should appear (this
+        preserves the pre-fix behavior for the
+        ``master-not-chosen-yet`` window).  P0-I2 must not regress
+        the existing test that exercises the master-not-chosen state.
+        """
+        from werewolf_agent.runtime.agent_adapter import _build_hybrid_day_speech_directive
+        players = {
+            "hybrid": PlayerState(id="hybrid", role="hybrid"),
+            "seer": PlayerState(id="seer", role="seer"),
+        }
+        gs = GameState(
+            game_id="hybrid_no_master_test",
+            players=players,
+            phase="night",
+            night_number=1,
+        )
+        result = _build_hybrid_day_speech_directive(gs, "hybrid")
+        # Without a chosen master, neither faction block should be set.
+        assert "hybrid_wolf_master_directive" not in result
+        assert "hybrid_good_master_directive" not in result
+        # The neutral identity-disguise directive must still be there.
+        assert "hybrid_speech_directive" in result
+
     def test_hybrid_vote_has_master_strategy(self) -> None:
         """Hybrid vote must receive master-aligned voting strategy."""
         from werewolf_agent.runtime.agent_adapter import agent_day_vote
