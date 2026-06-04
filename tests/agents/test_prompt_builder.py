@@ -1456,10 +1456,13 @@ def test_sections_have_priority_labels():
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
 
     # Hard sections must be labeled 【硬约束】.
+    # P1-6: strategy_directive's outer label is now 【策略指令】 (neutral)
+    # to avoid double-labeling. Retry hint and output contract are
+    # still 【硬约束】, so 2 hard labels remain.
     hard_label_count = prompt.count("【硬约束】")
-    assert hard_label_count >= 3, (
-        f"Expected at least 3 【硬约束】 labels "
-        f"(strategy_directive, retry hint, output contract), got {hard_label_count}."
+    assert hard_label_count >= 2, (
+        f"Expected at least 2 【硬约束】 labels "
+        f"(retry hint, output contract), got {hard_label_count}."
     )
 
     # The 辅助 sections must collectively produce multiple 【辅助】 labels.
@@ -1486,12 +1489,15 @@ def test_sections_have_priority_labels():
         f"Retry hint must be preceded by 【硬约束】 label, got: {preceding!r}"
     )
 
-    # Strategy directive header is "本轮策略指令" — same check.
+    # P1-6: Strategy directive header is "本轮策略指令". Its outer
+    # section label is now 【策略指令】 (neutral), NOT 【硬约束】.
     directive_idx = prompt.find("本轮策略指令")
     assert directive_idx > 0
     preceding = prompt[max(0, directive_idx - 60):directive_idx]
-    assert "【硬约束】" in preceding, (
-        f"Strategy directive must be preceded by 【硬约束】 label, got: {preceding!r}"
+    assert "【策略指令】" in preceding, (
+        f"Strategy directive must be preceded by 【策略指令】 label "
+        f"(P1-6: neutral outer label, inner P0-S5 sub-group carries "
+        f"the priority signal). Got: {preceding!r}"
     )
 
     # Transcript is the only 可选 section — its header is "近期发言".
@@ -1504,22 +1510,27 @@ def test_sections_have_priority_labels():
 
 
 def test_priority_labels_for_hard_sections_distinct_from_internal_directive_groups():
-    """P1-S3: the section-level 【硬约束】 label for strategy_directive is
-    the OUTER section label, distinct from the inner 【硬约束】 sub-group
-    that already exists in P0-S5.
+    """P1-S3: the inner P0-S5 【硬约束】 sub-group must still render
+    inside the strategy_directive section, even after P1-6 changed
+    the OUTER section label to 【策略指令】.
 
-    The section-level label signals "this section is hard, attend to it
-    first". The inner sub-group signals "this key is hard within the
-    directive". Both can coexist.
+    The inner sub-group signals "this key is hard within the directive"
+    (MUST-obey). The outer section label is now neutral (【策略指令】).
+    The inner P0-S5 sub-group MUST/SHOULD/REFERENCE markers must still
+    be present so the LLM knows which directive keys are binding.
     """
     ctx = _make_ctx_for_priority_label_test()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The directive section already has its own 【硬约束】 sub-section
-    # (from P0-S5 grouping). The new outer label is also 【硬约束】.
-    # Confirm both can appear.
-    assert prompt.count("【硬约束】") >= 2, (
-        "Expected at least 2 occurrences of 【硬约束】: the outer section "
-        "label AND the inner P0-S5 sub-group label."
+    # The directive section now has the outer label 【策略指令】. The
+    # inner P0-S5 sub-group still has its 【硬约束】 MUST marker.
+    assert "以下指令必须遵守（MUST）" in prompt, (
+        "P0-S5 inner MUST marker must still render (the keys with "
+        "hard priority still need their binding signal)"
+    )
+    # Sanity: the inner marker is 【硬约束】 (P0-S5 unchanged).
+    assert "【硬约束】" in prompt, (
+        "P0-S5 inner 【硬约束】 sub-group header must still render "
+        "in the directive section."
     )
 
 
@@ -1810,6 +1821,100 @@ def test_optional_sections_dropped_first():
     # Pin the contract: budget is hard.
     approx_tokens = len(user_prompt) / 2.5
     assert approx_tokens < 2_500
+
+
+# ---------------------------------------------------------------------------
+# P1-6: strategy_directive section label is neutral, not 【硬约束】
+# ---------------------------------------------------------------------------
+#
+# Audit P1-6 finding: ``_build_strategy_directive`` is wrapped with the
+# outer section label 【硬约束】, but the function internally splits its
+# content into 【硬约束】/【建议】/【参考】 sub-headers. The double-labeling
+# is contradictory — the LLM sees "this whole section is MUST" but then
+# sees the inner header saying "this subsection is just REFERENCE".
+#
+# Fix: use a neutral section label 【策略指令】 for the OUTER wrapper.
+# The inner sub-headers (【硬约束】/【建议】/【参考】) carry the actual
+# priority signal for the keys inside.
+
+
+def test_strategy_directive_section_label_neutral():
+    """P1-6: strategy_directive outer section label is 【策略指令】,
+    not 【硬约束】. The inner sub-headers (P0-S5) carry the priority signal.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+        strategy_directive={
+            "must_address_alerts": ["p07 accused me"],
+            "anti_herd": "do not follow the herd",
+        },
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Pin the contract: the strategy_directive section is wrapped with
+    # 【策略指令】, NOT 【硬约束】, at the outer level.
+    directive_idx = prompt.find("本轮策略指令")
+    assert directive_idx >= 0, "strategy_directive section must still render"
+    preceding = prompt[max(0, directive_idx - 60):directive_idx]
+    assert "【策略指令】" in preceding, (
+        "P1-6: strategy_directive outer section label must be 【策略指令】 "
+        "(neutral), not 【硬约束】. The inner P0-S5 sub-headers carry the "
+        "priority signal. Got preceding text: " + repr(preceding)
+    )
+    # The outer label must NOT be 【硬约束】 (the inner sub-group
+    # header is also 【硬约束】, but the OUTER wrapper is the one
+    # immediately before "本轮策略指令").
+    outer_label = preceding.strip().split("\n")[-1].strip()
+    assert "【硬约束】" not in outer_label, (
+        "P1-6: outer strategy_directive section label must NOT be "
+        "【硬约束】 (the inner sub-group is already 【硬约束】). "
+        f"Got outer label: {outer_label!r}"
+    )
+
+
+def test_strategy_directive_inner_subgroups_still_three_tiers():
+    """P1-6 regression: changing the outer label must not remove the
+    inner P0-S5 sub-grouping (MUST / SHOULD / REFERENCE).
+
+    The inner sub-headers carry the priority signal for the directive
+    keys. With hard+soft+reference keys present, all 3 inner headers
+    must still render.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+        strategy_directive={
+            # hard
+            "must_address_alerts": ["p07 accused me"],
+            # suggestion
+            "anti_herd": "do not follow the herd",
+            # reference
+            "master_behavior_summary": "master last round attacked p05",
+        },
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Inner P0-S5 sub-group markers must still be present.
+    assert "以下指令必须遵守（MUST）" in prompt, (
+        "P1-6 regression: P0-S5 inner MUST marker must still render"
+    )
+    assert "以下指令为建议（SHOULD）" in prompt, (
+        "P1-6 regression: P0-S5 inner SHOULD marker must still render"
+    )
+    assert "以下为背景信息（REFERENCE）" in prompt, (
+        "P1-6 regression: P0-S5 inner REFERENCE marker must still render"
+    )
 
 
 # ---------------------------------------------------------------------------

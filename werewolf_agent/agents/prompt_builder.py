@@ -274,6 +274,13 @@ class PlayerPromptBuilder:
     #   - 可选 (OPTIONAL):   reference, may be skimmed or dropped
     # Note: this is the OUTER section label, distinct from the inner
     # 硬约束/建议/参考 sub-grouping already in P0-S5 for strategy_directive.
+    # P1-6: strategy_directive's outer label is 【策略指令】 (neutral)
+    # to avoid double-labeling with the inner P0-S5 sub-group. The
+    # P1-5 budget trimmer treats it as a never-dropped section
+    # because it carries binding rules.
+    _NEVER_DROP: frozenset[str] = frozenset({
+        "_build_strategy_directive",
+    })
     _SECTION_PRIORITIES: dict[str, str] = {
         "_build_persona": "【辅助】",
         "_build_phase_context": "【辅助】",
@@ -286,7 +293,12 @@ class PlayerPromptBuilder:
         "_build_reflection_memory_hints": "【辅助】",
         "_build_profile_memory_hint": "【辅助】",
         "_build_cognition_matrix_hint": "【辅助】",
-        "_build_strategy_directive": "【硬约束】",
+        # P1-6: strategy_directive outer label is NEUTRAL. The
+        # function internally splits keys into 【硬约束】/【建议】/【参考】
+        # sub-headers (P0-S5) that carry the priority signal. The
+        # outer section label cannot also be 【硬约束】 (double-labeling
+        # contradicts the inner "REFERENCE" sub-group).
+        "_build_strategy_directive": "【策略指令】",
         "_build_skill_analysis_hints": "【辅助】",
         "_build_recent_transcript": "【可选】",
         "_build_retry_hint": "【硬约束】",
@@ -375,11 +387,16 @@ class PlayerPromptBuilder:
             return joined
         # Build the drop order: every droppable section in priority
         # order (lowest first). Skip sections with no label (boundary
-        # marker, task prompt) and sections labeled 【硬约束】.
+        # marker, task prompt), sections labeled 【硬约束】, and
+        # sections in _NEVER_DROP (e.g., strategy_directive — the
+        # outer label is 【策略指令】 per P1-6 but the section is
+        # never dropped because it carries binding rules).
         priority = self._SECTION_PRIORITIES
         droppable: list[tuple[int, int]] = []
         for idx, (name, _) in enumerate(parts):
             if not name:
+                continue
+            if name in self._NEVER_DROP:
                 continue
             label = priority.get(name, "")
             if label == "【硬约束】":
