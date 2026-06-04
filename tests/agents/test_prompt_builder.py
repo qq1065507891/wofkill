@@ -1918,6 +1918,63 @@ def test_strategy_directive_inner_subgroups_still_three_tiers():
 
 
 # ---------------------------------------------------------------------------
+# P1-7: villager role guide must not claim authority over witch's potions
+# ---------------------------------------------------------------------------
+#
+# Audit P1-7 finding: the villager role guide contains the rule
+# "N1 用药决策推动解药救人" (N1: drive the antidote-saving decision).
+# But villagers have NO authority over witch's potions — that decision
+# is exclusively the witch's. The rule confuses villagers into thinking
+# they can direct the witch, which is a known role-rule violation.
+#
+# Fix: reword to "N1 公开讨论中支持解药救人（如有女巫报银水线索）" —
+# villagers can argue in PUBLIC discussion that the witch should save
+# (if there's a silver-water lead), but they cannot "push a decision".
+
+
+def test_villager_role_guide_no_witch_decision_authority():
+    """P1-7: the villager role guide must not claim authority over
+    the witch's potion decisions.
+
+    Pre-fix text: "N1 用药决策推动解药救人" — implies villagers can
+    drive the witch's potion use. Villagers have no such authority
+    (witch's potions are exclusively the witch's decision per
+    design doc Chapter 3).
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07"],
+        public_summary="D2",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # The villager role guide must not say "N1 用药决策" — that
+    # phrasing implies authority over the witch's potions.
+    assert "N1 用药决策" not in system_prompt, (
+        "P1-7: villager role guide must not say 'N1 用药决策' "
+        "(implies authority over witch's potions). Got: "
+        + system_prompt[system_prompt.find("村民规则"):system_prompt.find("村民规则") + 200]
+    )
+    # The new framing should be "支持" (support) or similar —
+    # describing what villagers can do in PUBLIC discussion, not
+    # what they can drive as a decision.
+    villager_rule_idx = system_prompt.find("村民规则")
+    assert villager_rule_idx >= 0, "villager role guide must be present"
+    rule_window = system_prompt[villager_rule_idx:villager_rule_idx + 300]
+    # The guide should reference the witch's decision context
+    # (支持 / 银水 / 公开讨论) rather than claiming authority
+    # (用药决策 / 推动).
+    assert "解药" in rule_window, (
+        "P1-7: villager guide should still mention the antidote "
+        "(just framed as supporting, not deciding)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # P1-S4: _format_examples (FULL_ACTION mode) examples match the mode
 # ---------------------------------------------------------------------------
 #
