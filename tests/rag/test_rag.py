@@ -1238,3 +1238,102 @@ class TestVectorScoreMerge:
         assert ids.index("vec_a") < ids.index("vec_b"), (
             f"R2 end-to-end: vector score should reorder ties; got {ids!r}"
         )
+
+
+# ===================================================================
+# R5: negative reranker scores must clamp to a valid pydantic range
+# ===================================================================
+
+
+class _ConstantScoreReranker:
+    """Reranker stub that stamps every doc with a fixed rerank_score.
+
+    Used to simulate BGE-reranker-v2-m3 emitting a negative logit; the
+    real client returns the raw model output, which can be < 0 when the
+    document is judged irrelevant.
+    """
+
+    def __init__(self, score: float) -> None:
+        self._score = score
+
+    def rerank_hits(self, *, query, documents, text_key="text", top_n=None):
+        out = []
+        for d in documents[: top_n or len(documents)]:
+            new = dict(d)
+            new["rerank_score"] = self._score
+            out.append(new)
+        return out
+
+
+class TestRerankerNegativeScore:
+    """R5: negative reranker scores were being averaged into the final
+    score and then fed straight into ``RAGHit.relevance_score`` which is
+    pydantic-constrained to [0,1]. A negative-dominant merge would crash
+    the live path with a pydantic ValidationError. Sigmoid + clamp keeps
+    the merge well-defined for all real-world reranker outputs.
+    """
+
+    def test_rerank_negative_score_clamps_to_valid_range(self) -> None:
+        """A very negative reranker score (-5.0) must NOT crash the
+        pydantic ``RAGHit.relevance_score`` validator (ge=0). After
+        the sigmoid + clamp, the merged score is in [0,1]."""
+        entry = _make_entry(
+            entry_id="neg_rerank_001",
+            title="neg case",
+            summary="summary",
+            role="seer",
+            phase="speech",
+        )
+        retriever = StrategyRetriever(
+            [entry],
+            reranker=_ConstantScoreReranker(score=-5.0),
+        )
+        # No crash means the negative score was normalized into the
+        # valid [0,1] range before reaching RAGHit construction.
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=1))
+        assert hits, "retriever should still return the candidate"
+        assert 0.0 <= hits[0].relevance_score <= 1.0, (
+            f"R5: relevance_score must be clamped to [0,1]; "
+            f"got {hits[0].relevance_score}"
+        )
+
+    def test_rerank_positive_score_passes_through(self) -> None:
+        """Sanity: a positive reranker score must still drive a non-zero
+        relevance, not be accidentally zeroed by an over-aggressive
+        clamp."""
+        entry = _make_entry(
+            entry_id="pos_rerank_001",
+            title="pos case",
+            summary="summary",
+            role="seer",
+            phase="speech",
+        )
+        retriever = StrategyRetriever(
+            [entry],
+            reranker=_ConstantScoreReranker(score=5.0),
+        )
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=1))
+        assert hits
+        assert hits[0].relevance_score > 0.0, (
+            f"R5: positive rerank score must produce non-zero relevance; "
+            f"got {hits[0].relevance_score}"
+        )
+        assert hits[0].relevance_score <= 1.0
+
+    def test_rerank_zero_score_does_not_crash(self) -> None:
+        """Edge case: rerank_score=0 means the sigmoid output is 0.5;
+        the merge math must still produce a valid relevance score."""
+        entry = _make_entry(
+            entry_id="zero_rerank_001",
+            title="zero case",
+            summary="summary",
+            role="seer",
+            phase="speech",
+        )
+        retriever = StrategyRetriever(
+            [entry],
+            reranker=_ConstantScoreReranker(score=0.0),
+        )
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=1))
+        assert hits
+        assert 0.0 <= hits[0].relevance_score <= 1.0

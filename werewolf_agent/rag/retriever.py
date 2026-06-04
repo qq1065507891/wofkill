@@ -11,6 +11,7 @@ Results are ranked by relevance score and filtered by quality/visibility.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -23,6 +24,31 @@ from werewolf_agent.rag.schemas import (
     SourceType,
     VisibilityBoundary,
 )
+
+
+# ---------------------------------------------------------------------------
+# Reranker score normalization
+# ---------------------------------------------------------------------------
+#
+# R5: BGE-reranker-v2-m3 emits raw logits, which can be negative when the
+# document is judged irrelevant. The merge formula
+# ``(rerank + rule) / 2`` then pumped a negative number into
+# ``RAGHit.relevance_score`` (pydantic ``Field(ge=0.0)``), crashing the
+# live path. Sigmoid maps any real number into (0, 1) cleanly:
+#   - very negative → near 0   (effectively ignored)
+#   - 0             → 0.5      (neutral)
+#   - very positive → near 1   (strong endorsement)
+# After merging, we also clamp to [0,1] as a belt-and-suspenders guard
+# in case some other component sneaks an out-of-range value through.
+
+
+def _sigmoid(x: float) -> float:
+    """Numerically-stable sigmoid that survives both extreme tails."""
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +228,19 @@ class StrategyRetriever:
             results: list[RAGHit] = []
             for doc in reranked:
                 entry = doc["entry"]
-                combined_score = min(
-                    (doc.get("rerank_score", 0) + doc.get("score", 0)) / 2,
-                    1.0,
-                )
+                # R5: sigmoid-normalize the raw reranker logit before
+                # merging so a negative score (which BGE emits for
+                # judged-irrelevant docs) doesn't push the combined
+                # score below 0 and crash RAGHit pydantic validation.
+                raw_rerank = float(doc.get("rerank_score", 0.0))
+                normalized_rerank = _sigmoid(raw_rerank)
+                rule_score = float(doc.get("score", 0.0))
+                combined_score = (normalized_rerank + rule_score) / 2.0
+                # Belt and suspenders: clamp to [0,1] even though
+                # sigmoid already lives in (0,1) and rule_score lives
+                # in [0,1] — a future tweak to either side could
+                # break the invariant without this guard.
+                combined_score = max(0.0, min(1.0, combined_score))
                 hit = self._entry_to_hit(entry, round(combined_score, 3), query)
                 results.append(hit)
             return results
