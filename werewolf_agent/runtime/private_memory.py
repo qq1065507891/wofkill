@@ -230,14 +230,26 @@ _PRIORITY_ORDER = (
 def _estimate_entry_tokens(entry: dict[str, Any]) -> int:
     """Rough token estimate for a single memory entry.
 
-    Counts characters of the JSON-serialized entry, divided by 2 as a
-    rough proxy for token count (CJK characters are typically 1-2
-    tokens each; ASCII words are ~1 token per 4 chars). The exact
-    ratio matters less than getting the relative ordering right.
+    MEM-04: legacy ``len(serialized) // 2`` treated CJK as 0.5 tokens
+    per character, but real BPE is closer to 1.5-2 tokens per CJK
+    character (each Hanzi may split into 2-3 sub-tokens). Use a
+    rough CJK+BPE-aware heuristic: count CJK characters separately
+    (2 tokens each) and ASCII letters/digits separately (1 token
+    per 4 chars). Other bytes (punctuation, whitespace) are
+    negligible.
+
+    The exact ratio matters less than getting the relative ordering
+    right; the per-category priority drop depends on accurate
+    relative sizes, not on absolute accuracy.
     """
     import json as _json
     serialized = _json.dumps(entry, ensure_ascii=False, sort_keys=True)
-    return max(1, len(serialized) // 2)
+    cjk_chars = sum(1 for ch in serialized if '一' <= ch <= '鿿')
+    ascii_chars = sum(
+        1 for ch in serialized
+        if ch.isascii() and ch.isprintable() and not ch.isspace()
+    )
+    return max(1, cjk_chars * 2 + ascii_chars // 4)
 
 
 def _truncate_by_priority(

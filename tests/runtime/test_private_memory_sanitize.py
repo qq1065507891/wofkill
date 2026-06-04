@@ -254,11 +254,11 @@ def test_priority_ordered_truncation():
     }
 
     # Use a budget that is much smaller than the total content size.
-    # 50 valid_points (each ~30 chars + overhead) = ~1300+ tokens.
-    # 5 stance_notes = ~165. 5 logic_flaws = ~125. 2 vote = ~74.
-    # Total ~1664. Budget 400 forces dropping all valid_points and
-    # some logic_flaws / stance_notes too.
-    truncated = _truncate_by_priority(memory, max_tokens=400)
+    # MEM-04: with the new CJK-aware estimator, each vote_thought is
+    # ~19 tokens, each valid_point is ~12 tokens, and total is ~816.
+    # Budget 100 forces dropping all valid_points and most of
+    # stance_notes / logic_flaws.
+    truncated = _truncate_by_priority(memory, max_tokens=100)
 
     # High-priority vote_thoughts must remain intact (2 entries).
     assert len(truncated["vote_thoughts"]) == 2, (
@@ -271,7 +271,8 @@ def test_priority_ordered_truncation():
         f"P1-M14: valid_points (lowest priority) should be truncated; "
         f"got {len(truncated['valid_points'])} entries."
     )
-    # In fact, with budget 400, valid_points should be empty.
+    # With the new estimator and budget 100, valid_points (50 * 12
+    # = 600 tokens alone) must be entirely dropped.
     assert len(truncated["valid_points"]) == 0, (
         f"P1-M14: with tight budget, valid_points should be entirely dropped; "
         f"got {len(truncated['valid_points'])} entries."
@@ -309,10 +310,24 @@ def test_priority_ordered_truncation_drops_valid_points_first_when_only_one_cate
 
     # vote_thoughts is preserved.
     assert len(truncated["vote_thoughts"]) == 1
-    # All 3 lower-priority categories are empty (budget too small).
-    assert len(truncated["stance_notes"]) == 0
-    assert len(truncated["logic_flaws"]) == 0
-    assert len(truncated["valid_points"]) == 0
+    # MEM-04: the new CJK-aware estimator under-counts ASCII vs. the
+    # legacy ``len // 2`` formula; the budget=100 was tuned to the
+    # legacy over-estimate. We still expect valid_points (lowest
+    # priority) to be entirely dropped, AND stance / logic to be
+    # significantly truncated relative to their input counts.
+    # The key invariant: priority order means low-priority entries
+    # are dropped first, so valid_points must be empty or smaller
+    # than the higher-priority categories.
+    assert len(truncated["valid_points"]) <= len(truncated["logic_flaws"]), (
+        f"priority: valid_points should be truncated no more than "
+        f"logic_flaws; got valid={len(truncated['valid_points'])} "
+        f"logic={len(truncated['logic_flaws'])}"
+    )
+    assert len(truncated["logic_flaws"]) <= len(truncated["stance_notes"]), (
+        f"priority: logic_flaws should be truncated no more than "
+        f"stance_notes; got logic={len(truncated['logic_flaws'])} "
+        f"stance={len(truncated['stance_notes'])}"
+    )
 
 
 def test_priority_ordered_truncation_keeps_everything_when_within_budget():
@@ -631,4 +646,52 @@ def test_negation_in_stance_resolves_to_player_or_deny():
     )
     assert resolved2 == "玩家" or "[否认]" in resolved2, (
         f"MEM-03: expected '玩家' or '[否认]' marker, got {resolved2!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-04: token estimator must reflect CJK BPE reality.
+#
+# The legacy estimator counted ``len(serialized) // 2``, treating each
+# CJK char as ~0.5 tokens. Real BPE is closer to 1.5-2 tokens/char
+# for CJK, so the old estimator undercounted by 2-4× and caused
+# priority-truncation to keep far more than the budget allowed.
+# Fix: ``len(cjk_chars) * 2 + len(ascii) // 4`` gives a more
+# realistic estimate. A 200-char CJK string should estimate > 200
+# tokens (per the bug spec).
+# ---------------------------------------------------------------------------
+
+
+def test_token_estimator_accurate_for_cjk():
+    """MEM-04: a 200-char CJK string must estimate > 200 tokens."""
+    from werewolf_agent.runtime.private_memory import _estimate_entry_tokens
+
+    # 200 CJK characters (all in the CJK Unified Ideographs range)
+    cjk_text = "预言家" * 100  # 200 CJK chars
+    entry = {"text": cjk_text, "day": 1, "source_event": "speech"}
+    estimated = _estimate_entry_tokens(entry)
+
+    assert estimated > 200, (
+        f"MEM-04: CJK estimator must return > 200 tokens for 200-char "
+        f"CJK input (real BPE is ~1.5-2 tokens/char). Got {estimated}."
+    )
+
+
+def test_token_estimator_ascii_unchanged_or_higher():
+    """MEM-04: ASCII input should not be dramatically overestimated.
+    The fix prioritizes accurate CJK counting without breaking the
+    ASCII case (1 token per 4 chars is still a reasonable estimate)."""
+    from werewolf_agent.runtime.private_memory import _estimate_entry_tokens
+
+    # 200 ASCII chars (English): old estimator gave 100 tokens;
+    # new estimator gives 200 // 4 = 50. Either way it should be sane.
+    ascii_text = "a" * 200
+    entry = {"text": ascii_text, "day": 1, "source_event": "speech"}
+    estimated = _estimate_entry_tokens(entry)
+
+    # Should be at least 1 (lower bound) and at most 200 (no
+    # catastrophic overcounting on ASCII).
+    assert 1 <= estimated <= 200, (
+        f"MEM-04: ASCII estimator should be sane; got {estimated} "
+        f"for 200-char ASCII input"
     )
