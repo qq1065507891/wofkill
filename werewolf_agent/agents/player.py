@@ -498,12 +498,20 @@ class PlayerAgent:
                 continue
             speech_quality_err = self._speech_quality_error(context, action)
             if speech_quality_err:
+                # P1-S6 (residual): error_message keeps the full field-missing
+                # enumeration (for the audit log + prompt snippet via
+                # _build_retry_hint), but correction_hint is a short
+                # action-oriented line so the LLM knows what KIND of action
+                # to take. The detailed enumeration is too noisy to copy
+                # back into the LLM as a "do this" instruction.
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="speech_quality",
                     error_message=speech_quality_err,
-                    correction_hint=speech_quality_err,
+                    correction_hint=(
+                        "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"
+                    ),
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
@@ -513,12 +521,17 @@ class PlayerAgent:
                 continue
             vote_quality_err = self._vote_quality_error(context, action)
             if vote_quality_err:
+                # P1-S6 (residual): see note above. Short action-oriented
+                # hint so the LLM knows the categories of evidence to cite
+                # in the vote reason field.
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="vote_quality",
                     error_message=vote_quality_err,
-                    correction_hint=vote_quality_err,
+                    correction_hint=(
+                        "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+                    ),
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,

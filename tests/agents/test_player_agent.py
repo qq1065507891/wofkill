@@ -826,7 +826,16 @@ class TestPlayerAgentRetryFallback:
         assert provider.calls == 2
         assert retry.attempt == 2
         assert "警徽流" in action.speech
-        assert "在警上/PK阶段需要包含" in provider.prompts[1]
+        # P1-S6 (residual): the high-pressure hint is now a short
+        # action-oriented line (correction_hint). The full field-missing
+        # enumeration still appears in error_message (and is rendered as
+        # the "上次错误" snippet in the prompt). The 2nd attempt's
+        # prompt must contain at least the new short hint, OR the
+        # long field-hint from the error_message snippet.
+        assert (
+            "在警上/PK阶段需要包含" in provider.prompts[1]
+            or "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)" in provider.prompts[1]
+        )
 
     def test_invalid_json_triggers_retry(self) -> None:
         agent = self._make_agent("not json at all")
@@ -2019,6 +2028,270 @@ class TestVoteFallbackConsistency:
         marked = ActionTrace(fallback_target_used=True, fallback_target_id="p07")
         assert marked.fallback_target_used is True
         assert marked.fallback_target_id == "p07"
+
+
+# ---------------------------------------------------------------------------
+# P1-S6 (residual): speech_quality / vote_quality correction_hint must be
+# a short, action-oriented hint distinct from the detailed error_message.
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S6 (residual) finding: P0-S6 set correction_hint ==
+# error_message (both carried the full field-missing enumeration). For
+# the LLM retrying, the detailed enumeration is noisy — the LLM just
+# needs to know what KIND of action to take. The new behavior splits
+# the two: error_message keeps the full detail (for the audit log),
+# correction_hint becomes a short action-oriented line that the LLM
+# can act on directly.
+#
+# Speech quality hint: "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"
+# Vote quality hint:   "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+
+
+def test_speech_quality_hint_specific():
+    """P1-S6 (residual): speech_quality retry → short specific correction_hint.
+
+    Builds a RetryInfo with error_code="speech_quality" + a long
+    field-missing error_message (mimicking what _speech_quality_error
+    returns). Asserts the correction_hint is the short action-oriented
+    hint, NOT the long error_message.
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider("unused")},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+    detailed_message = (
+        "发言不完整。需要在警上/PK阶段需要包含角色声明、对跳分析或攻击/防守论点；"
+        "需要表明你的身份立场（如'我是好人阵营'）；"
+        "需要指出至少一个怀疑对象（如'我怀疑pXX'）。"
+    )
+    retry = RetryInfo(
+        attempt=1,
+        max_retries=3,
+        error_code="speech_quality",
+        error_message=detailed_message,
+        correction_hint="发言必须包含:角色身份/攻击或防御论点 (PK 阶段)",
+    )
+    prompt = agent._build_prompt(ctx, retry)
+    # The short hint should appear in the prompt's retry section
+    assert "发言必须包含" in prompt
+    # The detailed message appears in the error_message snippet
+    assert "发言不完整" in prompt
+    # The short hint is the one in the correction_hint line
+    assert "角色身份/攻击或防御论点" in prompt
+
+
+def test_vote_quality_hint_specific():
+    """P1-S6 (residual): vote_quality retry → short specific correction_hint.
+
+    Builds a RetryInfo with error_code="vote_quality" + a long
+    field-missing error_message. Asserts the correction_hint is the
+    short action-oriented hint, NOT the long error_message.
+    """
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider("unused")},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+    )
+    detailed_message = (
+        "投票理由缺少具体逻辑依据。请引用以下至少一种："
+        "查验结果、对跳分析、警徽流、矛盾点、投票数据、"
+        "立场变化、PK发言、或之前发言引用。"
+    )
+    retry = RetryInfo(
+        attempt=1,
+        max_retries=3,
+        error_code="vote_quality",
+        error_message=detailed_message,
+        correction_hint=(
+            "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+        ),
+    )
+    prompt = agent._build_prompt(ctx, retry)
+    # The short hint should appear in the prompt's retry section
+    assert "投票理由必须基于" in prompt
+    # The detailed message appears in the error_message snippet
+    assert "投票理由缺少具体逻辑依据" in prompt
+    # The short hint is the one in the correction_hint line
+    assert "预言家查杀/票型/警徽流/发言分析" in prompt
+
+
+def test_speech_quality_correction_hint_differs_from_error_message():
+    """P1-S6 (residual): production must emit short hint, not the long
+    speech_quality_error enumeration.
+
+    This is the regression test for the production code path in
+    PlayerAgent._act: when the LLM fails speech_quality, the resulting
+    RetryInfo's correction_hint must be the short action-oriented hint
+    (not the long field-missing enumeration from _speech_quality_error).
+    The detailed enumeration lives in error_message only.
+    """
+    from unittest.mock import patch
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.agents.schemas import (
+        SpeechPlayerAction,
+        PlayerAction as _PA,
+    )
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": _JsonProvider("unused")},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+
+    # Build a speech action that will fail _speech_quality_error.
+    bad_speech_action = SpeechPlayerAction(
+        action_type=ActionType.SPEECH,
+        target_id=None,
+        speech="",  # Empty -> fails stance/suspicion_target/evidence checks
+        reason="ok",
+        confidence=0.5,
+    )
+
+    captured_retry: list = []
+
+    def _capture_retry(retry, raw_text, attempt, last_signature, **_kwargs):
+        captured_retry.append(retry)
+        return False, last_signature
+
+    with patch.object(
+        agent,
+        "_speech_quality_error",
+        return_value="发言不完整。需要表明你的身份立场。需要指出怀疑对象。",
+    ), patch.object(
+        agent, "_check_repeat_error_signature", side_effect=_capture_retry,
+    ):
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p05", "p07"],
+        )
+        # Manually invoke the speech_quality branch by simulating the
+        # retry path. The production code constructs a RetryInfo with
+        # the short correction_hint; we just need to verify the
+        # construction.
+        # Patch the parsed_action check by going through act() with a
+        # provider that returns the bad speech action's JSON.
+        from werewolf_agent.agents.schemas import PrivateIntent
+
+        provider = _SequenceJsonProvider([
+            (
+                '{"action_type":"speech","target_id":null,'
+                '"speech":"","reason":"ok","confidence":0.5,'
+                '"private_intent":{"true_role":"villager",'
+                '"faction_goal":"find_wolves",'
+                '"claimed_view":"good_player_without_night_info",'
+                '"pressure_target":null,"risk_flags":[]}}'
+            )
+        ])
+        router2 = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p01": "default"},
+            providers={"mock": provider},
+        )
+        agent2 = PlayerAgent(agent_id="p01", model_router=router2, max_retries=1)
+        with patch.object(
+            agent2, "_speech_quality_error",
+            return_value="发言不完整。需要表明你的身份立场。",
+        ):
+            action, retry = agent2.act(ctx)
+        # We expect a FallbackAction (since max_retries=1 and the speech
+        # failed quality). The retry should be captured.
+        assert retry is not None
+        # The key regression check: correction_hint must be the SHORT
+        # action-oriented hint, NOT the long enumeration.
+        assert retry.correction_hint == (
+            "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"
+        ), (
+            f"speech_quality correction_hint must be the short action-"
+            f"oriented hint, got: {retry.correction_hint!r}"
+        )
+        # error_message keeps the long detail
+        assert "发言不完整" in retry.error_message, (
+            "speech_quality error_message must keep the long detail "
+            "for the audit log."
+        )
+
+
+def test_vote_quality_correction_hint_differs_from_error_message():
+    """P1-S6 (residual): production must emit short vote hint, not the long
+    vote_quality_error enumeration.
+    """
+    from unittest.mock import patch
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+    )
+    bad_vote_json = (
+        '{"action_type":"vote","target_id":"p05","speech":"",'
+        '"reason":"可疑","confidence":0.5}'
+    )
+    provider = _SequenceJsonProvider([bad_vote_json])
+    router = ModelRouter(
+        model_profiles={},
+        llm_profiles={},
+        player_assignments={"p01": "default"},
+        providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    with patch.object(
+        agent, "_vote_quality_error",
+        return_value="投票理由缺少具体逻辑依据。请引用以下至少一种：查验结果、警徽流。",
+    ):
+        action, retry = agent.act(ctx)
+    # Fallback should fire after 1 retry. retry object should be populated.
+    assert retry is not None
+    assert retry.correction_hint == (
+        "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+    ), (
+        f"vote_quality correction_hint must be the short action-oriented "
+        f"hint, got: {retry.correction_hint!r}"
+    )
+    assert "投票理由缺少具体逻辑依据" in retry.error_message
 
 
 # ---------------------------------------------------------------------------
