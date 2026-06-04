@@ -11,6 +11,7 @@ Results are ranked by relevance score and filtered by quality/visibility.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from werewolf_agent.rag.schemas import (
@@ -47,6 +48,74 @@ _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
     CaseType.ROLE_STRATEGY: 1,
     CaseType.SPEECH_TEMPLATE: 0,
 }
+
+
+# P1-G8: human-readable display labels for the RAG hit's
+# ``display_annotation`` field. The raw enum values stay on
+# RAGHit.source_type / RAGHit.quality_grade for the audit log; the
+# annotation is the moderator-facing one-liner and must read like
+# a sentence, not a snake_case dump. Chinese-first per the project
+# locale; English for the term that has a widely-recognized English
+# rendering (e.g. 实战 / 公开赛 / 高段位赛).
+_DISPLAY_SOURCE_LABELS: dict[SourceType, str] = {
+    SourceType.PUBLIC_TOURNAMENT: "公开赛",
+    SourceType.PUBLIC_REVIEW: "公开复盘",
+    SourceType.EXPERT_COMMENTARY: "专家解说",
+    SourceType.TRAINING_SESSION: "训练赛",
+    SourceType.SELF_PLAY: "实战",
+    SourceType.RULE_DERIVED: "规则推导",
+    SourceType.MANUAL_ENTRY: "人工录入",
+}
+
+_DISPLAY_QUALITY_LABELS: dict[QualityGrade, str] = {
+    QualityGrade.PRO_MATCH: "职业级",
+    QualityGrade.EXPERT_REVIEW: "专家审核",
+    QualityGrade.HIGH_RANK_GAME: "高段位赛",
+    QualityGrade.RULE_DERIVED_SEED: "规则种子",
+    QualityGrade.COMMUNITY_CASE: "社区案例",
+    QualityGrade.SELF_PLAY_CANDIDATE: "实战候选",
+    QualityGrade.UNREVIEWED: "未审核",
+}
+
+
+def _tokenize_situation(situation: str) -> set[str]:
+    """P1-G7: turn a key=value situation blob into a token set.
+
+    The new format (``"role=seer phase=day task=speech actions=['vote']"``)
+    is noisy: the raw whitespace split would emit tokens like
+    ``"actions=['vote']"`` that never match any tag. Splitting on
+    ``=`` first, then stripping list/quote noise from the value side,
+    yields a clean token set that the tag-overlap scorer can use.
+
+    Backward compatible: legacy space-joined situations (e.g. the
+    string ``"抗推预言家"``) still tokenize correctly because there
+    is no ``=`` in them and the value side just becomes the whole
+    word.
+    """
+    if not situation:
+        return set()
+    tokens: set[str] = set()
+    for chunk in situation.split():
+        if "=" not in chunk:
+            tokens.add(chunk.lower())
+            continue
+        key, _, value = chunk.partition("=")
+        # Drop the key (e.g. "role", "actions") — only the value
+        # tokens are useful for tag overlap. We still keep the key
+        # when the value is empty (e.g. "actions=") so the
+        # token set is non-empty.
+        value = value.strip()
+        if not value:
+            tokens.add(key.lower())
+            continue
+        # Strip list / set / dict syntax around the value. We split
+        # on common delimiters and quote chars; the leftover pieces
+        # are individual tokens (e.g. "vote", "speech", "12").
+        for piece in re.split(r"[\[\]\(\)\{\},'\"\s]+", value):
+            piece = piece.strip().lower()
+            if piece:
+                tokens.add(piece)
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +266,13 @@ class StrategyRetriever:
 
         # Tag overlap (0.1)
         if query.situation:
-            situation_words = set(query.situation.lower().split())
+            # P1-G7: situation is a key=value blob (e.g.
+            # "role=seer phase=day task=speech actions=['vote']").
+            # Tokenize on '=' to recover the value tokens that the
+            # rule-based scorer can match against the entry's tag
+            # list. We keep both keys and values, but strip the
+            # list-bracket/list-comma noise around action values.
+            situation_words = _tokenize_situation(query.situation)
             tag_words = set(" ".join(meta.tags).lower().split())
             overlap = len(situation_words & tag_words)
             if overlap > 0:
@@ -214,14 +289,23 @@ class StrategyRetriever:
         )
 
         # Build display annotation
-        source_label = meta.source.source_type.value
-        quality_label = meta.quality_grade.value
+        # P1-G8: human-readable labels instead of raw enum values
+        # like "[public_tournament|self_play_candidate]". The raw
+        # values are still on RAGHit.source_type / RAGHit.quality_grade
+        # for the audit log; this annotation is the moderator-facing
+        # one-liner and must read like a phrase.
+        source_label = _DISPLAY_SOURCE_LABELS.get(
+            meta.source.source_type, meta.source.source_type.value,
+        )
+        quality_label = _DISPLAY_QUALITY_LABELS.get(
+            meta.quality_grade, meta.quality_grade.value,
+        )
         annotation = f"[{source_label}|{quality_label}]"
 
         return RAGHit(
             entry_id=entry.entry_id,
             title=entry.title,
-            summary=entry.summary[:300],
+            summary=entry.summary[:800],
             relevance_score=round(score, 3),
             quality_grade=meta.quality_grade,
             source_type=meta.source.source_type,
@@ -229,7 +313,7 @@ class StrategyRetriever:
             case_type=meta.case_type,
             role_perspective=meta.role_perspective,
             phase=meta.phase,
-            key_decisions=entry.key_decisions,
+            key_decisions=entry.key_decisions[:5],
             short_quotes=entry.short_quotes,
             tags=meta.tags,
             allowed_in_live_context=allowed_in_live,

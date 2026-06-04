@@ -9,6 +9,7 @@ from typing import Any
 from werewolf_agent.memory.schemas import PlayerProfile, ReflectionEntry
 from werewolf_agent.runtime.context import (
     _cognition_matrix_hint,
+    _inject_seed_rag_hints,
     _profile_memory_hint,
     _reflection_memory_hints,
 )
@@ -408,3 +409,131 @@ def test_cognition_matrix_no_text_evidence_in_context() -> None:
     assert suspect["open_questions"], "open_questions refs should not be empty"
     for ref in suspect["key_evidence"] + suspect["open_questions"]:
         assert ref.startswith("salience_items#")
+
+
+# ---------------------------------------------------------------------------
+# P1-G6: RAG injection skipped for REFLECTION and JUDGE_* task types
+# ---------------------------------------------------------------------------
+
+
+class _FakeRAGService:
+    """Records every retrieve_live_hints call. Used to assert that
+    _inject_seed_rag_hints skips non-player task types entirely."""
+
+    def __init__(self, hits=None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._hits = hits or []
+
+    def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+        self.calls.append(
+            {
+                "role": query.role,
+                "phase": query.phase,
+                "situation": query.situation,
+                "viewer_role": query.viewer_role,
+                "game_id": game_id,
+                "player_id": player_id,
+            }
+        )
+        return list(self._hits)
+
+    def hits_to_prompt_lines(self, hits, max_items: int = 3):
+        return [
+            {"title": h.title, "summary": h.summary, "key_decisions": h.key_decisions}
+            for h in hits[:max_items]
+        ]
+
+
+def _make_ctx(task_type, own_role: str = "seer", phase: str = "night"):
+    from werewolf_agent.agents.schemas import AgentContext, TaskType
+
+    return AgentContext(
+        agent_id="p01",
+        task_type=task_type,
+        phase=phase,
+        own_role=own_role,
+    )
+
+
+def test_rag_injection_skipped_for_reflection() -> None:
+    """P1-G6: REFLECTION task is a post-game review of the agent's own
+    play; it does not benefit from RAG strategy hints and must skip
+    retrieval entirely (saves the cost of an unnecessary embed/rerank).
+    """
+    from werewolf_agent.agents.schemas import TaskType
+
+    fake = _FakeRAGService()
+    ctx = _make_ctx(TaskType.REFLECTION)
+    out = _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    assert fake.calls == [], (
+        f"P1-G6: REFLECTION must not call retrieve_live_hints; got {fake.calls!r}"
+    )
+    # Context returned unchanged.
+    assert out.rag_hints == ctx.rag_hints
+
+
+def test_rag_injection_skipped_for_judge_phase() -> None:
+    """P1-G6: JUDGE_PHASE is a moderator persona; no player strategy
+    hints, so retrieval is skipped."""
+    from werewolf_agent.agents.schemas import TaskType
+
+    fake = _FakeRAGService()
+    ctx = _make_ctx(TaskType.JUDGE_PHASE)
+    out = _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    assert fake.calls == []
+    assert out.rag_hints == ctx.rag_hints
+
+
+def test_rag_injection_skipped_for_all_judge_tasks() -> None:
+    """P1-G6: every JUDGE_* task type skips RAG retrieval."""
+    from werewolf_agent.agents.schemas import TaskType
+
+    judge_tasks = [
+        TaskType.JUDGE_PHASE,
+        TaskType.JUDGE_DEATH,
+        TaskType.JUDGE_VOTE_CALLING,
+        TaskType.JUDGE_VOTE_TALLY,
+        TaskType.JUDGE_SKILL_GUIDE,
+        TaskType.JUDGE_SHERIFF,
+        TaskType.JUDGE_EXILE,
+    ]
+    for task in judge_tasks:
+        fake = _FakeRAGService()
+        ctx = _make_ctx(task)
+        _inject_seed_rag_hints(
+            ctx,
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            rag_service=fake,
+            game_id="g_test",
+        )
+        assert fake.calls == [], (
+            f"P1-G6: {task.value!r} must not call retrieve_live_hints; "
+            f"got {fake.calls!r}"
+        )
+
+
+def test_rag_injection_still_runs_for_player_speech() -> None:
+    """Sanity: P1-G6 only skips REFLECTION and JUDGE_*. Player tasks
+    (e.g. SPEECH) still call retrieve_live_hints."""
+    from werewolf_agent.agents.schemas import TaskType
+
+    fake = _FakeRAGService()
+    ctx = _make_ctx(TaskType.SPEECH)
+    _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["role"] == "seer"
