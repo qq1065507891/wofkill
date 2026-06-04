@@ -259,6 +259,10 @@ class ReflectionEntry:
 class CrossGameQuery:
     player_id: str = ""
     role: str = ""
+    # OR semantics: entry matches if any tag in this list is in
+    # entry.tags. CrossGameQuery combines this with player_id/role/
+    # faction_won equality, all of which are AND-joined. Within
+    # ``tags`` itself, the match is OR (i.e. union).
     tags: list[str] = field(default_factory=list)
     situation: str = ""
     max_results: int = 5

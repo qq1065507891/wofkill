@@ -373,3 +373,39 @@ def test_vector_fallback_warns(caplog):
         f"MEM-13: vector fallback must emit a logger.warning; "
         f"got records: {[r.getMessage() for r in caplog.records]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-15: CrossGameQuery.tags uses OR semantics — an entry matches if
+# ANY tag in the query is in the entry's tags. The docstring must
+# state this so callers don't assume AND.
+# ---------------------------------------------------------------------------
+
+
+def test_tag_filter_or_semantics_documented():
+    """MEM-15: CrossGameQuery.tags field must carry a docstring
+    documenting OR semantics (entry matches if any tag is in query.tags)."""
+    from werewolf_agent.memory.schemas import CrossGameQuery
+
+    field_doc = (CrossGameQuery.__dataclass_fields__["tags"].metadata or {})  # type: ignore[attr-defined]
+    # The standard way to document dataclass fields in Python 3.10+
+    # is missing metadata support, so we read the field's repr / doc.
+    # Most dataclass field docstrings live on the class itself or on
+    # the surrounding # comment. Accept either:
+    #   - a metadata entry whose string value contains 'OR'
+    #   - a comment on the class / field that names OR
+    src = ""
+    try:
+        # Python 3.10+ ``field(...)`` does not preserve a docstring
+        # natively. We therefore allow the comment-style hint to live
+        # in the docstring of the class or in any ``help()`` output.
+        import inspect
+        src = inspect.getsource(CrossGameQuery)
+    except (OSError, TypeError):
+        pass
+    # The class docstring / source must mention "OR".
+    cls_doc = (CrossGameQuery.__doc__ or "")
+    assert ("OR" in cls_doc) or ("OR" in src) or ("or semantics" in src.lower()), (
+        f"MEM-15: CrossGameQuery.tags must document OR semantics in "
+        f"the class docstring / source. cls_doc={cls_doc!r}, src={src!r}"
+    )
