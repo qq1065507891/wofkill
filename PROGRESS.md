@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Prompt Revamp — Batch 1 in progress — 2026-06-03**
-- Active task: Batch 1 Task 1.10 P0-R3 (output_parser encoding fix)
+- Current phase: **Batch 1 COMPLETE — Batch 2 in progress — 2026-06-03**
+- Active task: Batch 2 (P0 structural 8 items + 1 deferred S2)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-03
 
@@ -17,7 +17,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 
-### Batch 1 (P0 quick wins) — IN PROGRESS 2026-06-03
+### Batch 1 (P0 quick wins) — COMPLETE 2026-06-03
 
 | Task | ID | Status | Commit | Notes |
 |------|----|--------|--------|-------|
@@ -26,11 +26,78 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 | 1.3 | P0-S5 strategy_directive grouping | DONE | `1195fa0` | 3 priority sections |
 | 1.4 | P0-S6 retry hint reorder + error snippet | DONE | `6c0d107` | task → retry → contract |
 | 1.5 | P0-S7 claimed_view enum | DONE | `609066b` | replace `我是好人` / `我是预言家` with `good_player_without_night_info` / `seer`; fixed pre-existing `example_role` bug |
-| 1.6 | P0-S8 PlayerAction strict extra=forbid | DONE | (this commit) | 16 variants reject unknown fields; fixed `parse_choice_action` to only pass vote fields to VOTE |
+| 1.6 | P0-S8 PlayerAction strict extra=forbid | DONE | `d9ba5c4` | 16 variants reject unknown fields; fixed `parse_choice_action` to only pass vote fields to VOTE |
 | 1.7 | P0-M3 reflection sort by game_id | DONE | `293ef74` | chr-invert trick for newest-first; getattr fallback for legacy fakes |
 | 1.8 | P0-M4 profile role-specific win-rate | DONE | `08c733e` | rank description + current-role-only |
-| 1.9 | P0-R2 god prompt shorten | DONE | (this commit) | skill_catalog system→user; AGENT_TIMEOUTS.seer_check/witch_action 2x; timeout no_action hint |
-| 1.10 | P0-R3 output_parser encoding fix | pending | — | |
+| 1.9 | P0-R2 god prompt shorten | DONE | `d9b7fef` | skill_catalog system→user; AGENT_TIMEOUTS.seer_check/witch_action 2x; timeout no_action hint |
+| 1.10 | P0-R3 output_parser encoding fix | DONE | `d4b9f85` | repair_json_text handles U+FFFD mojibake (latin-1 round-trip + `"` replacement) + trailing commas regression test |
+
+### Batch 1 Bonus — P0 phase mismatch fix (discovered by subagent 1.9)
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 1.B1 | Skill phase/task_type mismatch | DONE | `3f0db27` + `6cd8883` | `is_applicable(role, phase='', task_type='')` accepts both; pre-existing bug — skill catalog was empty in production because SKILL.md `applicable_phases` uses task-type values but call sites passed phase='day'/'night' |
+
+**Batch 1 totals: 11 commits, 70+ new tests, 1158 related tests pass, 0 regression.**
+
+**Batch 1 results:** 10/10 tasks done. `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed. 12 new tests in `tests/agents/test_output_parser.py`. Zero regressions across the project.
+
+### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
+
+**Problem:** Game trace `g_3528592081` Action 50 — p10's LLM
+output was `{��intent��:"question_target",...}`. The Chinese
+text got mojibake'd (U+FFFD replacement char adjacent to
+quote-like chars), breaking JSON parse. 3 retries all failed
+with the same error → parser fell back. The current
+`repair_json_text` (output_parser.py:52-83) only handled
+trailing commas, single-quoted strings, unquoted keys, and
+a few other quirks — nothing for encoding.
+
+**Fix:** Two additions to `repair_json_text`, both purely
+additive (no behavior change for valid JSON):
+
+1. **Mojibake detection** via new `_try_repair_mojibake()`
+   helper. Two strategies, tried in order:
+   - **Latin-1 round-trip** (`text.encode('latin-1').decode('utf-8')`):
+     handles double-encoded UTF-8 (the classic case where
+     UTF-8 bytes were decoded as latin-1 then re-encoded as
+     UTF-8, producing 2-3 bytes per original byte). Returns
+     `None` if round-trip would fail (e.g. U+FFFD can't go
+     through latin-1) or produces no change.
+   - **U+FFFD → `"` replacement**: when U+FFFD is present
+     (bytes were replaced with replacement char during a
+     decode failure), replace each with `"`. This is the
+     most common case: mojibaked JSON key delimiters.
+
+2. **Trailing-comma stripping** (already present) is now
+   covered by a regression test (3 tests in
+   `TestRepairJsonTextTrailingComma`).
+
+**Files changed:**
+- `werewolf_agent/agents/output_parser.py` — added
+  `_MOJIBAKE_REPLACEMENT_CHAR` constant, `_try_latin1_roundtrip`
+  helper, `_try_repair_mojibake` helper, and a 9-line
+  mojibake-recovery block inside `repair_json_text`. Existing
+  8-line body preserved verbatim.
+- `tests/agents/test_output_parser.py` — **new file**, 12 tests
+  in 4 classes:
+  - `TestRepairJsonTextMojibake` (3): U+FFFD around single key,
+    U+FFFD in full speech action, latin-1 round-trip
+  - `TestRepairJsonTextTrailingComma` (3): object, array, with
+    spaces
+  - `TestRepairJsonTextPreservesValid` (4): valid JSON,
+    Chinese JSON, empty object, empty array
+  - `TestParseActionMojibake` (2): end-to-end `parse_action`
+    with mojibake'd speech action, plus simple-mojibake
+    schema-validation path
+
+**Verification:**
+- `pytest tests/agents/test_output_parser.py`: 12/12 passed
+  (5 would have failed on baseline, 7 are regression coverage).
+- `pytest tests/agents/ tests/runtime/`: **1079 passed**, 0 failed.
+- `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed.
+- No regressions. The fix is additive — valid JSON is parsed
+  identically to before.
 
 ### Task 1.8 (P0-M4) — Profile rank description 2026-06-03
 
