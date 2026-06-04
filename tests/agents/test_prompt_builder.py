@@ -2021,5 +2021,88 @@ def test_format_examples_werewolf_branch_still_uses_werewolf():
         )
 
 
+# ---------------------------------------------------------------------------
+# P0-4: vote example standing_with_seer must use own ID for seer agent
+# ---------------------------------------------------------------------------
+#
+# Audit P0-4 finding: in `_format_examples`, the vote example hardcodes
+# `"standing_with_seer": "p03"` for every role. For a seer agent this
+# is wrong — a seer stands with their OWN check, not with another seer.
+# A seer voting based on its own check should report `standing_with_seer
+# = ""` (own ID is implicit) with `vote_basis = "seer_check"` meaning
+# "based on my own check".
+#
+# Fix: when `ctx.own_role == "seer"`, the example vote should set
+# `standing_with_seer=""` (own ID is implicit). For non-seer roles
+# the existing `p03` example stands.
+
+
+def test_format_examples_seer_vote_uses_own_check():
+    """P0-4: a seer agent's vote example must stand with own check (empty seer ID).
+
+    The vote example in the prompt primes the LLM on what fields to
+    fill. For a seer, `standing_with_seer` is the seer ID the agent
+    sides with — a seer is THE seer, so the field should be empty
+    (own ID is implicit) and `vote_basis` stays "seer_check" meaning
+    "based on my own check". Otherwise the LLM copies the example
+    and the seer reports a phantom "p03" allegiance it doesn't have.
+    """
+    ctx = _make_full_action_ctx("seer")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Find the vote example (action_type="vote") and inspect its
+    # standing_with_seer field.
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples, "Expected a vote example in the prompt"
+    for ex in vote_examples:
+        # P0-4 fix: seer's vote example must stand with own check.
+        assert ex.get("standing_with_seer") == "", (
+            f"Seer vote example must have standing_with_seer='' "
+            f"(own check, no other seer to side with), "
+            f"got {ex.get('standing_with_seer')!r}. "
+            f"Full example: {ex}"
+        )
+        # vote_basis must remain "seer_check" — meaning "based on my
+        # own check", not "based on someone else's seer_check".
+        assert ex.get("vote_basis") == "seer_check", (
+            f"Seer vote example must keep vote_basis='seer_check' "
+            f"(now meaning own check), got {ex.get('vote_basis')!r}. "
+            f"Full example: {ex}"
+        )
+
+
+def test_format_examples_non_seer_vote_keeps_p03_example():
+    """P0-4: non-seer roles keep the p03 / seer_check example.
+
+    Regression: the seer-specific fix must NOT remove the original
+    p03 / seer_check example for non-seer roles (villager, witch,
+    hunter, idiot, hybrid, werewolf). Those roles DO side with an
+    external seer claim, so the example is still meaningful.
+    """
+    for role in ("villager", "witch", "hunter", "idiot", "hybrid", "werewolf"):
+        ctx = _make_full_action_ctx(role)
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        vote_examples = [
+            ex for ex in _extract_json_examples(prompt)
+            if ex.get("action_type") == "vote"
+        ]
+        assert vote_examples, (
+            f"Expected a vote example for role={role!r}"
+        )
+        for ex in vote_examples:
+            # Non-seer roles still see the p03 / seer_check example.
+            assert ex.get("standing_with_seer") == "p03", (
+                f"Non-seer role={role!r} must keep the 'p03' example "
+                f"for standing_with_seer (they side with an external seer), "
+                f"got {ex.get('standing_with_seer')!r}. Full example: {ex}"
+            )
+            assert ex.get("vote_basis") == "seer_check", (
+                f"Non-seer role={role!r} must keep vote_basis='seer_check', "
+                f"got {ex.get('vote_basis')!r}. Full example: {ex}"
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

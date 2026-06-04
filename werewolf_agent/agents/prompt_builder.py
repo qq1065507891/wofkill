@@ -741,13 +741,23 @@ class PlayerPromptBuilder:
             # never actually triggered. Using role here makes the
             # claimed_view match the player's own identity.
             vote_example_view = _CLAIMED_VIEW_SEER if role == "seer" else _CLAIMED_VIEW_GOOD
+            # P0-4: a seer agent stands with their OWN check, not with
+            # another seer. The example must therefore set
+            # `standing_with_seer=""` (own ID is implicit) and keep
+            # `vote_basis="seer_check"` (now meaning "based on my own
+            # check"). Non-seer roles continue to see the p03 example
+            # since they do side with an external seer claim.
+            if role == "seer":
+                vote_standing_with_seer = ""
+            else:
+                vote_standing_with_seer = "p03"
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '
                          '"reason": "公开理由：p05发言可疑", '
                          '"seer_stance": "trust", '
                          '"vote_basis": "seer_check", '
-                         '"standing_with_seer": "p03", '
+                         f'"standing_with_seer": "{vote_standing_with_seer}", '
                          '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
                          '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
                          '"private_reason": "心里活动：我更信p03的预言家线，p05像狼队抗推失败后的防守位，所以投p05。", '
