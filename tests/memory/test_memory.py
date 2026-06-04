@@ -1003,6 +1003,25 @@ def test_apply_deltas_warns_on_unknown_attr(caplog):
 
 
 # ---------------------------------------------------------------------------
+# MEM-10: ProfileStore.summary is observability-only and must be
+# documented as such so future callers don't feed the aggregate into a
+# player prompt (would leak the relative skill of every other player).
+# ---------------------------------------------------------------------------
+
+
+def test_profile_summary_documented_as_observability_only():
+    """MEM-10: ProfileStore.summary's docstring must contain the word
+    'observability' to flag it as not for prompt context."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    doc = (ProfileStore.summary.__doc__ or "")
+    assert "observability" in doc.lower(), (
+        f"MEM-10: ProfileStore.summary docstring must mark this as "
+        f"observability-only; got doc={doc!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Boundary: structured data not vectors
 # ---------------------------------------------------------------------------
 
