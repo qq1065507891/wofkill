@@ -761,3 +761,35 @@ def test_moderator_full_in_private_visibilities_set():
         "MEM-11: 'moderator_full' must be in PRIVATE_VISIBILITIES "
         "so private memory excludes moderator debug events."
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-16: stance negation in _add_own_speech_notes.
+#
+# "我不站边 p03" / "p03 不站边 预言家" must NOT trigger a stance_note
+# — the speaker is actively disclaiming alignment. Reuse the
+# MEM-03 negation marker list to detect the denial.
+# ---------------------------------------------------------------------------
+
+
+def test_speech_stance_negation_skipped():
+    """MEM-16: a sentence containing '站边' together with a negation
+    marker (e.g. '不站') must NOT produce a stance_notes entry."""
+    memory: dict = {"logic_flaws": [], "valid_points": [], "stance_notes": [], "vote_thoughts": []}
+    event = _make_speech_event("我不站边 p03 的预言家", speaker="p05")
+    _add_own_speech_notes(memory, event, player_id="p05")
+    assert memory["stance_notes"] == [], (
+        f"MEM-16: '我不站边 ...' must not produce a stance_note; "
+        f"got: {memory['stance_notes']!r}"
+    )
+
+
+def test_speech_stance_positive_still_triggers():
+    """MEM-16 (regression guard): a positive '我站边 ...' WITHOUT
+    negation must still create a stance_note."""
+    memory: dict = {"logic_flaws": [], "valid_points": [], "stance_notes": [], "vote_thoughts": []}
+    event = _make_speech_event("我站边 p03 的预言家", speaker="p05")
+    _add_own_speech_notes(memory, event, player_id="p05")
+    assert len(memory["stance_notes"]) == 1, (
+        f"MEM-16: positive '站边' must still trigger; got: {memory['stance_notes']!r}"
+    )

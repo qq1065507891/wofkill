@@ -429,7 +429,13 @@ def _add_own_speech_notes(
                 "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
-        if "站边" in sentence:
+        # MEM-16: a stance negation ('我不站边 p03', 'p03 不站边 预言家')
+        # must NOT trigger a stance_notes entry — the speaker is
+        # actively disclaiming alignment, not declaring it. Reuse
+        # the negation marker list from MEM-03.
+        if "站边" in sentence and not any(
+            marker in sentence for marker in _NEGATION_MARKERS
+        ):
             memory["stance_notes"].append({
                 "day": day,
                 "speaker": speaker,
