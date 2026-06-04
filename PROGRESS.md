@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Prompt Revamp — Batch 1 in progress — 2026-06-03**
-- Active task: Batch 1 Task 1.8 P0-M4 (profile role-specific win-rate)
+- Active task: Batch 1 Task 1.9 P0-R2 (shorten seer/witch prompts)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-03
 
@@ -28,9 +28,60 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 | 1.5 | P0-S7 claimed_view enum | DONE | `609066b` | replace `我是好人` / `我是预言家` with `good_player_without_night_info` / `seer`; fixed pre-existing `example_role` bug |
 | 1.6 | P0-S8 PlayerAction strict extra=forbid | DONE | (this commit) | 16 variants reject unknown fields; fixed `parse_choice_action` to only pass vote fields to VOTE |
 | 1.7 | P0-M3 reflection sort by game_id | DONE | `293ef74` | chr-invert trick for newest-first; getattr fallback for legacy fakes |
-| 1.8 | P0-M4 profile role-specific win-rate | pending | — | |
+| 1.8 | P0-M4 profile role-specific win-rate | DONE | `08c733e` | rank description + current-role-only |
 | 1.9 | P0-R2 god prompt shorten | pending | — | |
 | 1.10 | P0-R3 output_parser encoding fix | pending | — | |
+
+### Task 1.8 (P0-M4) — Profile rank description 2026-06-03
+
+**Problem:** `_profile_memory_hint` exposed raw numeric ability
+floats (`logic=0.7`, `deception=0.6`, `credibility=0.5`) and the
+per-role win rate for every role the player has ever played.
+Audit + design §10.1 cross-check: raw floats anchor LLM
+self-confidence ("I'm a 0.7-logic player, I should be confident")
+or trigger defeatism ("I'm a 0.2-logic player, why bother").
+Design §10.1 lists 6 ability dimensions but prompt only exposed
+3 of them, and the multi-role win rate leaks information that
+should be private to a single role's run.
+
+**Fix:** Surgical change in `_profile_memory_hint` only.
+1. Replace raw `logic/deception/credibility` floats with rank
+   description strings: `前 30%` (> 0.66), `中等` (> 0.33), or
+   `需要提升` (≤ 0.33). Heuristic bins against the 0.0–1.0
+   score range; no population required.
+2. Filter `role_stats` to the current role only — other roles'
+   games/wins never reach the prompt.
+3. Drop `learning_rate` and `risk_preference` (review/judge-only
+   fields per design §10.1).
+4. Keep `games_played` and a Chinese-language `summary` that
+   surfaces counts, current-role win rate (as integer
+   percentage), and rank descriptions — no raw floats.
+5. Function signature now takes `current_role: str`; caller
+   passes `player.role`.
+
+**Files changed:**
+- `werewolf_agent/runtime/context.py` — `_profile_memory_hint`
+  rewritten (~40 lines, rank helper + current-role filter);
+  call site at line 817 passes `player.role`.
+- `tests/runtime/test_context.py` — added 8 tests:
+  `test_profile_hint_logic_high_uses_rank_description_not_raw_float`,
+  `test_profile_hint_logic_mid_uses_medium_rank`,
+  `test_profile_hint_logic_low_uses_needs_improvement_rank`,
+  `test_profile_hint_only_exposes_current_role_win_rate`,
+  `test_profile_hint_no_raw_float_patterns_in_top_level_fields`,
+  `test_profile_hint_does_not_mention_learning_rate_or_risk_preference`,
+  `test_profile_hint_keeps_games_played_and_summary`,
+  `test_profile_hint_handles_missing_current_role_stats`.
+
+**Verification:**
+- `pytest tests/runtime/test_context.py`: 12/12 passed
+  (8 new + 4 pre-existing reflection-sort tests).
+- `pytest tests/runtime/ tests/memory/ tests/agents/`: **1146
+  passed**, 0 failed, 0 regression. Pre-existing
+  `tests/runtime/test_witch_flow.py:698` still asserts
+  `profile_memory_hint["games_played"] == 3` and continues to pass.
+- No changes to `PlayerProfile` schema (review/judge paths keep
+  full raw-float access).
 
 ### Task 1.6 (P0-S8) — PlayerAction strict extra=forbid 2026-06-03
 
