@@ -584,3 +584,51 @@ def test_build_private_memory_omits_caveat_when_empty():
         f"MEM-02: hint must be omitted when both logic_flaws and "
         f"valid_points are empty; got: {memory!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-03: negation in stance text must NOT resolve to the role label.
+#
+# "p03 不是预言家" / "我不信 p03 是预言家" both say "X is NOT seer",
+# but the current code strips the negation and resolves to "站边 预言家"
+# — flipping the meaning. After the fix, such negation patterns must
+# resolve to a denial / "玩家" placeholder instead of the role label.
+# ---------------------------------------------------------------------------
+
+
+def test_negation_in_stance_resolves_to_player_or_deny():
+    """MEM-03: 'p03 不是预言家' / '我不信 p03 是预言家' must NOT
+    resolve to the role label. Stance target should be a denial
+    ('玩家' fallback or contains '[否认]')."""
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.private_memory import _resolve_stance_target
+
+    gs = GameState(
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="seer", alive=True),
+        }
+    )
+
+    # Case 1: explicit "不是" negation
+    target1 = "p03 不是预言家"
+    resolved1 = _resolve_stance_target(target1, gs)
+    assert "预言家" not in resolved1, (
+        f"MEM-03: '不是' negation must not resolve to role label; "
+        f"got {resolved1!r}"
+    )
+    # Either the neutral '玩家' fallback or a denial marker
+    assert resolved1 == "玩家" or "[否认]" in resolved1, (
+        f"MEM-03: expected '玩家' or '[否认]' marker, got {resolved1!r}"
+    )
+
+    # Case 2: '我不信 ... 是预言家'
+    target2 = "我不信 p03 是预言家"
+    resolved2 = _resolve_stance_target(target2, gs)
+    assert "预言家" not in resolved2, (
+        f"MEM-03: '不信' negation must not resolve to role label; "
+        f"got {resolved2!r}"
+    )
+    assert resolved2 == "玩家" or "[否认]" in resolved2, (
+        f"MEM-03: expected '玩家' or '[否认]' marker, got {resolved2!r}"
+    )

@@ -107,6 +107,19 @@ _FIRST_PERSON_CHECK_RE = re.compile(
     r"我(?:看穿|发现|看出|验出|查到|查到)(?:了)?\s*(?:[Pp]\d{1,2}|他|她|它)?\s*(?:是)?(狼人|预言家|女巫|猎人|白痴|混血儿|村民)"
 )
 
+# MEM-03: negation markers used to detect stance-deny patterns. These
+# flip a positive "X 是 角色" claim into a denial, so the resolved
+# stance target must NOT echo the role label.
+_NEGATION_MARKERS = (
+    "不是",
+    "不信",
+    "不站",
+    "否认",
+    "反",
+    "否定",
+    "不认为",
+)
+
 
 def _sanitize_role_claims(text: str) -> str:
     """Strip role/team-mate/faction claims that would leak private info.
@@ -150,6 +163,12 @@ def _resolve_stance_target(target: str, game_state: GameState | None) -> str:
     text = str(target).strip()
     if not text:
         return "玩家"
+    # MEM-03: if the stance text contains a negation marker, the
+    # speaker is denying the role claim — do NOT echo the role label.
+    # Mark as denial so the downstream note reflects the negation.
+    for marker in _NEGATION_MARKERS:
+        if marker in text:
+            return "[否认]"
     # Try direct lookup first: target is exactly a player id.
     if game_state is not None:
         player = game_state.players.get(text)
