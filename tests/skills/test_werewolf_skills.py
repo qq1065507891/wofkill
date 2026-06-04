@@ -282,6 +282,29 @@ def test_hybrid_with_wolf_master_dispatches_wolf_skills():
 
 
 # ---------------------------------------------------------------------------
+# S-13: SkillOutput no longer has recommended_action / recommended_target.
+# ---------------------------------------------------------------------------
+
+def test_skill_output_no_recommended_fields():
+    """S-13: remove dead `recommended_action` and `recommended_target`
+    fields from SkillOutput (populated by all 12 handlers but never
+    read by any consumer).
+    """
+    from dataclasses import fields
+    from werewolf_agent.skills.schemas import SkillOutput
+
+    field_names = {f.name for f in fields(SkillOutput)}
+    assert "recommended_action" not in field_names, (
+        f"S-13: SkillOutput should not have recommended_action; "
+        f"got fields={field_names!r}"
+    )
+    assert "recommended_target" not in field_names, (
+        f"S-13: SkillOutput should not have recommended_target; "
+        f"got fields={field_names!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # S-03: swing_vote_handler recommends night_kill in wolf_discussion.
 # ---------------------------------------------------------------------------
 

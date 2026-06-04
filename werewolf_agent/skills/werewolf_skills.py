@@ -246,7 +246,6 @@ def _find_definition(name: SkillName) -> SkillDefinition | None:
 def _default_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="analyze",
         confidence=0.5,
         reasoning=f"技能 {skill.display_name} 适用，需要更多局势信息",
     )
@@ -266,7 +265,6 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         prompt = "悍跳建议：尽早跳预言家并报出假查验结果。构建完整的时间线和警徽流。" if conf >= 0.5 else "晚期悍跳风险极高，不建议此时悍跳。"
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="claim_role",
             speech_structure=["报查验结果", "声明警徽流", "攻击对立面逻辑"],
             risk_alerts=risks,
             confidence=conf,
@@ -284,7 +282,6 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     if wolf_plan and wolf_plan.get("fake_seer") and wolf_plan["fake_seer"] != inp.player_id:
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="speech",
             confidence=0.3,
             reasoning=f"队友 {wolf_plan['fake_seer']} 负责悍跳，你不需要悍跳",
             prompt_injectable=f"悍跳建议：你的队友 {wolf_plan['fake_seer']} 负责悍跳预言家，"
@@ -333,8 +330,6 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="claim_role" if seer_count <= 1 else "speech",
-        recommended_target=fake_target,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=conf,
@@ -353,7 +348,6 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risks = ["对跳风险：真预言家对跳时好人会倾向真预言家"]
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="counter_claim",
             speech_structure=["指出对方漏洞", "报自身查验信息", "建立时间线对比"],
             risk_alerts=risks,
             confidence=0.55,
@@ -368,7 +362,6 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     if not claimants:
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="speech",
             confidence=0.35,
             reasoning="场上无人跳预言家，无需对跳",
         )
@@ -396,8 +389,6 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="counter_claim",
-        recommended_target=target,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=conf,
@@ -436,7 +427,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action=action,
             speech_structure=speech,
             risk_alerts=["归票错误目标可能导致好人损失"],
             confidence=0.6,
@@ -468,7 +458,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action=action,
             confidence=0.4,
             reasoning="当前无明确嫌疑目标",
             prompt_injectable=prompt,
@@ -524,8 +513,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action=action,
-        recommended_target=primary,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=0.6 + min(0.2, len(reasons) * 0.05),
@@ -552,7 +539,6 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         if is_wolf_discussion:
             return SkillOutput(
                 skill_name=skill.name.value,
-                recommended_action="night_kill",
                 speech_structure=["在狼讨论中提出冲刀目标", "分析目标的投票压力", "协调队友分散或集中夜杀"],
                 risk_alerts=risks,
                 confidence=0.5,
@@ -564,7 +550,6 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             )
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="vote",
             speech_structure=["在狼讨论中提出冲票目标", "分析目标的投票压力", "协调队友分散或集中票"],
             risk_alerts=risks,
             confidence=0.5,
@@ -624,8 +609,6 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             conf = 0.35
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="night_kill",
-            recommended_target=best_target if best_pressure > 0 else None,
             risk_alerts=risks,
             confidence=conf,
             reasoning=(
@@ -647,8 +630,6 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="vote",
-        recommended_target=best_target if best_pressure > 0 else None,
         risk_alerts=risks,
         confidence=conf,
         reasoning=f"动态分析：{best_target} 有{best_pressure}个压力信号，{wolf_count}狼存活",
@@ -665,7 +646,6 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         # static fallback
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="speech",
             speech_structure=["站边好人逻辑", "适度攻击可疑队友", "建立可信度"],
             risk_alerts=["倒钩策略需要长期维持一致性", "过度攻击队友可能被识别"],
             confidence=0.55,
@@ -690,7 +670,6 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         if my_role_key in ("fake_seer", "pusher"):
             return SkillOutput(
                 skill_name=skill.name.value,
-                recommended_action="speech",
                 confidence=0.3,
                 reasoning=f"你是{my_role_key}，不需要倒钩策略",
                 prompt_injectable="倒钩建议：你的角色分工是冲锋/悍跳，不需要倒钩。专注于你的主要任务。",
@@ -731,8 +710,6 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="speech",
-        recommended_target=hook_target,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=conf,
@@ -750,7 +727,6 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         # static fallback
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="analyze",
             speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
             confidence=0.5,
             reasoning="找神需要综合多个信号源进行推断",
@@ -795,7 +771,6 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     if not unique:
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="analyze",
             confidence=0.3,
             reasoning="暂无足够信号推断神职",
             prompt_injectable="找神分析：当前信息不足，建议继续观察发言信息量和投票模式。",
@@ -808,8 +783,6 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="analyze",
-        recommended_target=unique[0]["player"] if unique else None,
         speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
         confidence=0.5 + min(0.2, len(unique) * 0.05),
         reasoning=f"动态分析：识别到{len(unique)}个疑似神职信号",
@@ -827,7 +800,6 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risks = ["藏身份过久可能导致无法在关键时刻发挥作用"]
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="speech",
             speech_structure=["保持中立发言", "避免暴露信息优势", "控制发言节奏"],
             risk_alerts=risks,
             confidence=0.6,
@@ -879,7 +851,6 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="speech",
         speech_structure=["保持中立发言", "避免暴露信息优势", "控制发言节奏"],
         risk_alerts=risks,
         confidence=conf,
@@ -897,7 +868,6 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         # static fallback
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="defense_speech",
             speech_structure=["承认疑虑合理性", "逻辑反驳关键指控", "提出建设性站边"],
             risk_alerts=["过度防御可能加深怀疑", "攻击质疑者会适得其反"],
             confidence=0.55,
@@ -956,8 +926,6 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="defense_speech",
-        recommended_target=pushers[0] if pushers else None,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=conf,
@@ -975,7 +943,6 @@ def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         # static fallback
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="analyze",
             speech_structure=["列出嫌疑人", "分析各嫌疑人证据", "排除法缩小范围"],
             confidence=0.5,
             reasoning="盘狼坑需要系统性分析所有嫌疑人的行为链",
@@ -1040,7 +1007,6 @@ def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="analyze",
         speech_structure=["列出嫌疑人及其证据", "分析排除区", "缩小嫌疑范围"],
         confidence=0.5 + min(0.2, len(unique_suspects) * 0.05),
         reasoning=f"动态分析：{len(unique_suspects)}个嫌疑人，{len(unique_excluded)}个排除",
@@ -1057,7 +1023,6 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         # static fallback
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="speech",
             speech_structure=["暗示关键角色需要保护", "引导怀疑方向远离神职", "分散狼队注意力"],
             risk_alerts=["过度保护某个玩家反而暴露其身份"],
             confidence=0.5,
@@ -1113,8 +1078,6 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="speech",
-        recommended_target=at_risk[0]["player"] if at_risk else None,
         speech_structure=["引导怀疑方向远离", "提出替代嫌疑人", "隐蔽保护"],
         risk_alerts=risks,
         confidence=conf,
@@ -1132,7 +1095,6 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         # static fallback
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="analyze",
             speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
             confidence=0.55,
             reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
@@ -1146,7 +1108,6 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         # Reuse static fallback when world_state is also missing
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="analyze",
             speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
             confidence=0.55,
             reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
@@ -1159,7 +1120,6 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     if not recent_deaths:
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="analyze",
             confidence=0.3,
             reasoning="暂无死亡事件可分析",
             prompt_injectable="遗言分析：当前无遗言可分析。",
@@ -1207,7 +1167,6 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     if not all_prompts:
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="analyze",
             confidence=0.3,
             reasoning="无有效遗言数据",
             prompt_injectable="遗言分析：无有效遗言可分析。",
@@ -1218,8 +1177,6 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="analyze",
-        recommended_target=last_dead_player,
         speech_structure=["提取遗言关键信息", "对比已知信息一致性", "评估可信度"],
         risk_alerts=["遗言可能是狼人的误导"] if has_contradiction else [],
         confidence=0.55 if not has_contradiction else 0.65,
@@ -1237,7 +1194,6 @@ def review_correction_handler(inp: SkillInput, skill: SkillDefinition) -> SkillO
         # static fallback
         return SkillOutput(
             skill_name=skill.name.value,
-            recommended_action="review",
             speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
             confidence=0.7,
             reasoning="复盘纠错以事实为基础，系统性地回顾决策过程",
@@ -1316,7 +1272,6 @@ def review_correction_handler(inp: SkillInput, skill: SkillDefinition) -> SkillO
 
     return SkillOutput(
         skill_name=skill.name.value,
-        recommended_action="review",
         speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
         confidence=conf,
         reasoning="动态分析：基于投票准确率和事件时间线进行复盘",

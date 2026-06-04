@@ -115,7 +115,6 @@ class TestSkillOutput:
     def test_creation(self):
         out = SkillOutput(
             skill_name="bold_claim",
-            recommended_action="claim_role",
             confidence=0.6,
         )
         assert out.skill_name == "bold_claim"
@@ -132,7 +131,6 @@ class TestSkillDispatch:
         inp = SkillInput(role="werewolf", phase="speech", day=1)
         out = apply_skill(SkillName.BOLD_CLAIM, inp)
         assert out.skill_name == "bold_claim"
-        assert out.recommended_action == "claim_role"
         assert len(out.speech_structure) > 0
         assert len(out.risk_alerts) > 0
         assert out.confidence > 0
@@ -145,22 +143,18 @@ class TestSkillDispatch:
     def test_deep_hook_handler(self):
         out = apply_skill(SkillName.DEEP_HOOK, SkillInput(role="werewolf", phase="speech"))
         assert out.skill_name == "deep_hook"
-        assert out.recommended_action == "speech"
 
     def test_push_vote_handler(self):
         out = apply_skill(SkillName.PUSH_VOTE, SkillInput(role="seer", phase="speech"))
         assert out.skill_name == "push_vote"
-        assert out.recommended_action == "vote"
 
     def test_resist_push_handler(self):
         out = apply_skill(SkillName.RESIST_PUSH, SkillInput(role="werewolf", phase="defense_speech"))
         assert out.skill_name == "resist_push"
-        assert out.recommended_action == "defense_speech"
 
     def test_wolf_pit_handler(self):
         out = apply_skill(SkillName.WOLF_PIT_ANALYSIS, SkillInput(role="villager", phase="speech"))
         assert out.skill_name == "wolf_pit"
-        assert out.recommended_action == "analyze"
 
     def test_review_correction_handler(self):
         out = apply_skill(SkillName.REVIEW_CORRECTION, SkillInput(role="seer", phase="review"))
