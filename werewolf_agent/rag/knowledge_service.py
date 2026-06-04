@@ -76,11 +76,30 @@ class RAGKnowledgeService:
         if not entries:
             return []
 
-        candidate_entries = entries
+        # R2: when a vector store is wired, _vector_candidates now
+        # returns (score, entry) tuples so the BGE-m3 semantic signal
+        # reaches the StrategyRetriever instead of being discarded
+        # after filtering.
+        candidate_entries: list[RAGEntry] = entries
+        vector_scores: dict[str, float] | None = None
         if self._vector_store is not None:
-            candidate_entries = self._vector_candidates(query, entries)
+            scored = self._vector_candidates(query, entries)
+            candidate_entries = [entry for _, entry in scored]
+            # Build the entry_id → score map for the retriever's merge
+            # step. Entries that came from the metadata fallback path
+            # carry score 0.0; the merge math treats them as "no
+            # vector signal" and uses pure rule-based ranking.
+            vector_scores = {
+                entry.entry_id: score for score, entry in scored if score > 0.0
+            }
 
-        injector = RAGInjector(StrategyRetriever(candidate_entries, reranker=self._reranker))
+        injector = RAGInjector(
+            StrategyRetriever(
+                candidate_entries,
+                reranker=self._reranker,
+                vector_scores=vector_scores,
+            )
+        )
         hits = injector.inject(
             query,
             injection_context=InjectionContext.LIVE_PLAYER,
@@ -157,7 +176,15 @@ class RAGKnowledgeService:
         self,
         query: RAGQuery,
         entries: list[RAGEntry],
-    ) -> list[RAGEntry]:
+    ) -> list[tuple[float, RAGEntry]]:
+        """Return (vector_score, entry) candidates for the StrategyRetriever.
+
+        R2: the vector score (when available) is propagated alongside the
+        entry so the retriever can fold it into the final rank. Entries
+        admitted via the metadata fallback path (no vector hit) carry
+        score 0.0 — the retriever treats those as "no vector signal" and
+        falls back to pure rule-based ranking.
+        """
         by_id = {entry.entry_id: entry for entry in entries}
         query_text = " ".join(
             part for part in (
@@ -168,13 +195,23 @@ class RAGKnowledgeService:
             )
             if part
         )
-        selected: dict[str, RAGEntry] = {}
+        selected: dict[str, tuple[float, RAGEntry]] = {}
         try:
             vector_results = self._vector_store.query(query_text, top_k=max(query.max_results * 6, 20))
-            for result in vector_results:
+            # Normalize raw vector scores to [0,1] so the merge math in
+            # the retriever stays in the same scale as the rule-based
+            # score. The LocalVectorStore can emit scores > 1.0 because
+            # IDF is unbounded; a hash-based embedding store could emit
+            # negative similarities. Divide each by the per-call max so
+            # the top hit anchors at 1.0 and ordering is preserved.
+            raw_scores = [float(r.get("score", 0.0)) for r in vector_results]
+            score_max = max((s for s in raw_scores if s > 0.0), default=1.0)
+            for result, raw in zip(vector_results, raw_scores):
                 entry = by_id.get(result.get("doc_id"))
-                if entry is not None:
-                    selected[entry.entry_id] = entry
+                if entry is None:
+                    continue
+                normalized = max(0.0, min(1.0, raw / score_max)) if score_max > 0 else 0.0
+                selected[entry.entry_id] = (normalized, entry)
         except Exception:
             logger.warning("Vector RAG query failed; using metadata candidates", exc_info=True)
 
@@ -183,11 +220,16 @@ class RAGKnowledgeService:
             if query.ruleset_id and meta.ruleset_id and meta.ruleset_id != query.ruleset_id:
                 continue
             if query.role and meta.role_perspective in (query.role, "general"):
-                selected[entry.entry_id] = entry
+                selected.setdefault(entry.entry_id, (0.0, entry))
             if query.phase and meta.phase in (query.phase, "general"):
-                selected[entry.entry_id] = entry
+                selected.setdefault(entry.entry_id, (0.0, entry))
 
-        return list(selected.values()) if selected else entries
+        if selected:
+            return list(selected.values())
+        # Final fallback: no vector hit and no metadata match. Return all
+        # entries with score 0.0 so the retriever's rule-based path can
+        # still produce ordering.
+        return [(0.0, entry) for entry in entries]
 
     def _index_entry(self, entry: RAGEntry) -> None:
         text = "\n".join([

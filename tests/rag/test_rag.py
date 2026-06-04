@@ -1096,3 +1096,145 @@ class TestRetrieverEdgeCases:
         hits = retriever.retrieve(RAGQuery(max_results=10))
         assert len(hits) == 1
         assert hits[0].title == "Second"
+
+
+# ===================================================================
+# R2: vector scores must be folded into the final rank
+# ===================================================================
+
+
+class TestVectorScoreMerge:
+    """R2: BGE-m3 vector recall provides a semantic similarity signal
+    that must influence the final rank. Without it, the retriever
+    degrades to a metadata filter and the vector store wastes its
+    semantic score.
+    """
+
+    def _make_seer_entry(self, entry_id: str, title: str) -> RAGEntry:
+        return _make_entry(
+            entry_id=entry_id,
+            title=title,
+            summary="test summary",
+            role="seer",
+            phase="speech",
+        )
+
+    def test_vector_score_merged_into_final_rank(self) -> None:
+        """When the retriever receives vector scores, high-vector
+        entries must outrank low-vector entries — even when their
+        rule-based scores would tie or favor a different ordering.
+        """
+        # Three entries with identical rule-based score (same role,
+        # phase, tags, quality, case_type). Differences will come
+        # entirely from the injected vector score.
+        e_high = self._make_seer_entry("vec_high", "vec-high")
+        e_mid = self._make_seer_entry("vec_mid", "vec-mid")
+        e_low = self._make_seer_entry("vec_low", "vec-low")
+
+        retriever = StrategyRetriever(
+            [e_high, e_mid, e_low],
+            merge_vector_score=0.5,
+            vector_scores={
+                "vec_high": 0.9,
+                "vec_mid": 0.5,
+                "vec_low": 0.1,
+            },
+        )
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=3))
+
+        ids = [h.entry_id for h in hits]
+        # With merge_vector_score=0.5, the high-vector hit must rank
+        # first and the low-vector hit must rank last.
+        assert ids.index("vec_high") < ids.index("vec_mid") < ids.index("vec_low"), (
+            f"R2: vector score must reorder the rule-tied entries; got {ids!r}"
+        )
+
+    def test_vector_score_not_used_when_no_vector_results(self) -> None:
+        """Backward compat: when no vector_scores are supplied, the
+        retriever behaves exactly like before (pure rule-based)."""
+        e_a = self._make_seer_entry("a", "alpha")
+        e_b = self._make_seer_entry("b", "beta")
+
+        retriever = StrategyRetriever([e_a, e_b])  # no vector_scores
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=2))
+        # Both hits still returned; we don't care about order — only
+        # that nothing crashed and the rule-based path still works.
+        assert {h.entry_id for h in hits} == {"a", "b"}
+
+    def test_vector_candidates_returns_score_entry_tuples(self) -> None:
+        """_vector_candidates must return (score, entry) tuples when
+        the vector store is available so RAGKnowledgeService can pass
+        the scores into the StrategyRetriever."""
+        from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+        class _FakeVectorStore:
+            def query(self, text: str, top_k: int = 5):
+                return [
+                    {"doc_id": "seed_jingcheng_wolf_god_hunt_260227", "score": 0.7},
+                ]
+
+        service = RAGKnowledgeService(vector_store=_FakeVectorStore())
+        entries = service._load_entries()
+        out = service._vector_candidates(
+            RAGQuery(role="werewolf", phase="night_discussion"),
+            entries,
+        )
+        # All elements must be (score, entry) tuples.
+        assert out, "vector candidates must not be empty when vector store hits"
+        for item in out:
+            assert isinstance(item, tuple)
+            assert len(item) == 2
+            score, entry = item
+            assert isinstance(score, float)
+            assert isinstance(entry, RAGEntry)
+        # The vector hit's score must be > 0.
+        scored = {e.entry_id: s for s, e in out}
+        assert scored.get("seed_jingcheng_wolf_god_hunt_260227", 0.0) > 0.0
+
+    def test_vector_score_actually_reaches_retriever_in_service(self) -> None:
+        """End-to-end: the score returned by the vector store must
+        survive the trip through RAGKnowledgeService.retrieve_live_hints
+        and influence the final hit ordering when present."""
+        from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+        # Synthetic vector store that always returns the same two
+        # entry IDs with very different scores.
+        class _StubVectorStore:
+            def __init__(self, ranked: list[tuple[str, float]]) -> None:
+                self._ranked = ranked
+
+            def query(self, text: str, top_k: int = 5):
+                return [
+                    {"doc_id": doc_id, "score": score}
+                    for doc_id, score in self._ranked[:top_k]
+                ]
+
+        # Two synthetic entries with identical metadata so their
+        # rule-based scores tie. Vector score must break the tie.
+        a = _make_entry(
+            entry_id="vec_a",
+            title="alpha",
+            summary="alpha summary",
+            role="seer",
+            phase="speech",
+        )
+        b = _make_entry(
+            entry_id="vec_b",
+            title="beta",
+            summary="beta summary",
+            role="seer",
+            phase="speech",
+        )
+        service = RAGKnowledgeService(
+            seed_provider=lambda: [a, b],
+            vector_store=_StubVectorStore([("vec_a", 0.9), ("vec_b", 0.1)]),
+        )
+
+        hits = service.retrieve_live_hints(
+            RAGQuery(role="seer", phase="speech", max_results=2)
+        )
+        ids = [h.entry_id for h in hits]
+        # vec_a (vector 0.9) must outrank vec_b (vector 0.1).
+        assert ids.index("vec_a") < ids.index("vec_b"), (
+            f"R2 end-to-end: vector score should reorder ties; got {ids!r}"
+        )

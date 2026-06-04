@@ -127,6 +127,11 @@ class StrategyRetriever:
 
     When a reranker is provided, rule-based scoring narrows the candidate
     pool and the reranker semantically re-ranks the top candidates.
+
+    R2: when ``vector_scores`` is provided (typically from a BGE-m3
+    vector recall pass), the per-entry vector score is folded into the
+    final rule-based score with weight ``merge_vector_score`` (default
+    0.5). This prevents the vector signal from being discarded.
     """
 
     def __init__(
@@ -134,9 +139,19 @@ class StrategyRetriever:
         entries: list[RAGEntry] | None = None,
         *,
         reranker: Any = None,
+        vector_scores: dict[str, float] | None = None,
+        merge_vector_score: float = 0.5,
     ) -> None:
         self._entries: dict[str, RAGEntry] = {}
         self._reranker = reranker
+        # R2: vector scores keyed by entry_id; missing keys default to
+        # 0.0 in the merge step so entries without a vector signal
+        # simply keep their rule-based score (scaled by 1 - weight).
+        self._vector_scores: dict[str, float] = dict(vector_scores or {})
+        # Clamp the merge weight to [0,1]; outside that range produces
+        # nonsense merged scores. 0.0 = ignore vector entirely (legacy
+        # behavior); 1.0 = use vector score only.
+        self._merge_vector_score: float = max(0.0, min(1.0, float(merge_vector_score)))
         if entries:
             for e in entries:
                 self._entries[e.entry_id] = e
@@ -154,9 +169,18 @@ class StrategyRetriever:
         When a reranker is configured, rule-based scoring selects a wider
         candidate pool (max_results * 3), then the reranker semantically
         re-ranks the candidates.
+
+        R2: when ``vector_scores`` was passed to ``__init__`` (typically
+        by ``RAGKnowledgeService._vector_candidates``), the per-entry
+        vector score is folded into the rule-based score with weight
+        ``merge_vector_score``. Entries without a vector score keep
+        their rule-based score scaled down by ``(1 - weight)``.
         """
         candidates = self._filter_candidates(query)
-        scored = [(self._score(entry, query), entry) for entry in candidates]
+        scored = [
+            (self._merged_score(entry, query), entry)
+            for entry in candidates
+        ]
         scored.sort(key=lambda x: x[0], reverse=True)
 
         if self._reranker and scored:
@@ -279,6 +303,24 @@ class StrategyRetriever:
                 score += min(0.1, overlap * 0.03)
 
         return min(score, 1.0)
+
+    def _merged_score(self, entry: RAGEntry, query: RAGQuery) -> float:
+        """Combine the rule-based score with the optional vector score.
+
+        R2: when no vector score is registered for the entry, returns
+        the pure rule-based score (legacy behavior). When a vector
+        score is registered, returns a convex combination weighted by
+        ``merge_vector_score``. The merge happens on already-clamped
+        [0,1] values; result is clamped to [0,1] for the RAGHit
+        relevance_score field.
+        """
+        rule = self._score(entry, query)
+        if not self._vector_scores or entry.entry_id not in self._vector_scores:
+            return rule
+        w = self._merge_vector_score
+        vec = max(0.0, min(1.0, float(self._vector_scores[entry.entry_id])))
+        merged = (1.0 - w) * rule + w * vec
+        return max(0.0, min(1.0, merged))
 
     def _entry_to_hit(self, entry: RAGEntry, score: float, query: RAGQuery) -> RAGHit:
         """Convert an entry to a retrieval hit with display annotation."""
