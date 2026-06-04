@@ -4,10 +4,10 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 1 COMPLETE — Batch 2 in progress — 2026-06-03**
-- Active task: Batch 2 (P0 structural 8 items + 1 deferred S2)
+- Current phase: **Batch 2 — Skill area (K1, K2) COMPLETE — 2026-06-04**
+- Active task: Batch 2 Skill subagent (P0-K1, P0-K2) DONE; awaiting merge
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-03
+- Last updated: 2026-06-04
 
 ---
 
@@ -41,6 +41,29 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 **Batch 1 totals: 11 commits, 70+ new tests, 1158 related tests pass, 0 regression.**
 
 **Batch 1 results:** 10/10 tasks done. `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed. 12 new tests in `tests/agents/test_output_parser.py`. Zero regressions across the project.
+
+### Batch 2 — Skill area (P0-K1, P0-K2) — COMPLETE 2026-06-04
+
+Subagent: Skill (`p2-skill` worktree, branch `p2-skill`).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 2.S1 | P0-K1: drop dead skill tool path | DONE | `30fe291` | Remove `skill_tools` field, `_build_skill_tool_defs`, skill-skip retry logic, on-demand skill loading, tool-skill catalog. Pre-injection (`skill_analyses` → `skill_analysis_hints`) remains the only delivery channel. |
+| 2.S2 | P0-K2: `applies_to_task_types` field | DONE | `eb4cf42` | New `applies_to_task_types: list[str]` on `SkillDefinition`. `is_applicable` and `dispatch_for_role` now filter by task_type. |
+
+**Skill area results:** 2/2 tasks done. `pytest tests/skills/ tests/agents/ tests/runtime/`: **1160 passed**, 0 failed. Zero regressions.
+
+**Files touched (Skill area):**
+- `werewolf_agent/runtime/context.py` — removed `_TOOL_SKILL_NAMES`, `_SKILL_TOOL_DEFS`, `_resolve_tool_skills`, `_build_skill_tool_defs`; `_inject_skill_output` no longer returns `tool_analyses`; `build_agent_context` no longer builds `skill_tools`. Added `task_type` parameter.
+- `werewolf_agent/runtime/agent_adapter.py` — removed re-exports of removed symbols.
+- `werewolf_agent/agents/schemas.py` — removed `skill_tools` field.
+- `werewolf_agent/agents/player.py` — removed skill-skip retry, on-demand skill loading, and tool-skill nudge; `has_skill_tools` / `skill_call_count` / `skill_skip_count` / `_MAX_SKILL_SKIP` all gone.
+- `werewolf_agent/agents/prompt_builder.py` — removed `_build_skill_catalog` and `_SKILL_CATALOG`; replaced `_build_tool_skill_policy` with `_build_skill_policy` (pre-injection-aware text).
+- `werewolf_agent/skills/schemas.py` — added `applies_to_task_types` field; `is_applicable` now also checks the new field.
+- `werewolf_agent/skills/registry.py` — `dispatch_for_role` accepts `task_type`.
+- `tests/skills/test_skill_tool_path_removed.py` (new) — 10 tests for K1.
+- `tests/skills/test_registry.py` (new) — 9 tests for K2.
+- `tests/agents/test_player_agent.py`, `tests/agents/test_agents.py`, `tests/agents/test_prompt_builder.py`, `tests/skills/test_skill_phase_mismatch.py`, `tests/skills/test_skills.py`, `tests/runtime/test_witch_flow.py` — updated text/imports to match the new model.
 
 ### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
 
