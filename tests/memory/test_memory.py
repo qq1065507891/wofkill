@@ -978,6 +978,31 @@ def test_profile_hybrid_with_unknown_master_does_not_double_count():
 
 
 # ---------------------------------------------------------------------------
+# MEM-09: apply_deltas must log a warning when given an unknown attr key.
+# Without it, typo'd deltas (e.g. ``win_rate`` instead of ``logic``) are
+# silently dropped, and downstream code has no idea its input was
+# rejected. A single warning is enough to flag the bug.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_deltas_warns_on_unknown_attr(caplog):
+    """MEM-09: unknown delta keys trigger a logger.warning."""
+    import logging
+    from werewolf_agent.memory.schemas import PlayerProfile
+
+    p = PlayerProfile(player_id="p1", logic=0.5)
+    with caplog.at_level(logging.WARNING, logger="werewolf_agent.memory.profile"):
+        p.apply_deltas({"win_rate": 0.1})  # not in the whitelist
+
+    # At least one warning recorded naming the unknown attr.
+    matching = [r for r in caplog.records if "win_rate" in r.getMessage()]
+    assert matching, (
+        f"MEM-09: apply_deltas must warn on unknown attr keys; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Boundary: structured data not vectors
 # ---------------------------------------------------------------------------
 

@@ -7,9 +7,13 @@ Vector storage is reserved for unstructured reflections only.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+
+_LOG = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +151,17 @@ class PlayerProfile:
         return (self.wolf_wins + self.good_wins) / self.games_played
 
     def apply_deltas(self, deltas: dict[str, float]) -> None:
-        for attr in ("logic", "deception", "leadership", "credibility",
-                      "learning_rate", "risk_preference"):
-            if attr in deltas:
-                new_val = getattr(self, attr) + deltas[attr]
-                setattr(self, attr, max(0.0, min(1.0, new_val)))
+        valid = ("logic", "deception", "leadership", "credibility",
+                 "learning_rate", "risk_preference")
+        for k, v in deltas.items():
+            if k in valid:
+                new_val = getattr(self, k) + v
+                setattr(self, k, max(0.0, min(1.0, new_val)))
+            else:
+                # MEM-09: silently dropping typo'd deltas hides bugs
+                # in the upstream review generator. Log a warning
+                # so the caller can spot the misspelling.
+                _LOG.warning("Unknown delta attr %s ignored", k)
 
     def to_dict(self) -> dict[str, Any]:
         return {
