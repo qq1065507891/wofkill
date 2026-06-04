@@ -1022,6 +1022,50 @@ def test_profile_summary_documented_as_observability_only():
 
 
 # ---------------------------------------------------------------------------
+# MEM-14: lazy finalize with stale IDF / norms.
+#
+# The legacy BagOfWordsVectorIndex raised on add_text-after-finalize,
+# which forced callers to either rebuild the whole index or skip
+# late additions entirely. The post-fix behavior is to invalidate
+# the cache so the next similarity() re-finalizes correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_add_text_after_finalize_invalidates():
+    """MEM-14: add_text after finalize() must not raise; it must
+    invalidate the cached IDF/norms so the next similarity() call
+    re-finalizes with the new docs included."""
+    from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+    idx = BagOfWordsVectorIndex()
+    idx.add_text("r1", "金水 轻信 冲爆")
+    idx.finalize()
+    # Sanity: cached stats are populated.
+    assert idx._finalized is True
+    assert idx._idf  # non-empty
+
+    # Add a new doc post-finalize. With MEM-14 the call must NOT
+    # raise; it must invalidate the cache.
+    idx.add_text("r2", "站边 票型 预言家")
+
+    # The index is no longer "finalized" — next similarity() will
+    # re-finalize. The cached _idf is empty until that happens.
+    assert idx._finalized is False
+    assert idx._idf == {}
+    assert idx._norms == {}
+
+    # Calling similarity() now re-finalizes and surfaces the new
+    # doc in the results. The query "站边 预言家" should rank r2
+    # above r1 (r2 has both terms, r1 has neither).
+    scores = idx.similarity("站边 预言家")
+    assert "r2" in scores and "r1" in scores
+    assert scores["r2"] > scores["r1"], (
+        f"MEM-14: post-finalize add_text must be reflected in "
+        f"similarity scores; got r1={scores['r1']} r2={scores['r2']}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Boundary: structured data not vectors
 # ---------------------------------------------------------------------------
 
