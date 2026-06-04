@@ -11,6 +11,7 @@ Results are ranked by relevance score and filtered by quality/visibility.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -23,6 +24,31 @@ from werewolf_agent.rag.schemas import (
     SourceType,
     VisibilityBoundary,
 )
+
+
+# ---------------------------------------------------------------------------
+# Reranker score normalization
+# ---------------------------------------------------------------------------
+#
+# R5: BGE-reranker-v2-m3 emits raw logits, which can be negative when the
+# document is judged irrelevant. The merge formula
+# ``(rerank + rule) / 2`` then pumped a negative number into
+# ``RAGHit.relevance_score`` (pydantic ``Field(ge=0.0)``), crashing the
+# live path. Sigmoid maps any real number into (0, 1) cleanly:
+#   - very negative → near 0   (effectively ignored)
+#   - 0             → 0.5      (neutral)
+#   - very positive → near 1   (strong endorsement)
+# After merging, we also clamp to [0,1] as a belt-and-suspenders guard
+# in case some other component sneaks an out-of-range value through.
+
+
+def _sigmoid(x: float) -> float:
+    """Numerically-stable sigmoid that survives both extreme tails."""
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +153,11 @@ class StrategyRetriever:
 
     When a reranker is provided, rule-based scoring narrows the candidate
     pool and the reranker semantically re-ranks the top candidates.
+
+    R2: when ``vector_scores`` is provided (typically from a BGE-m3
+    vector recall pass), the per-entry vector score is folded into the
+    final rule-based score with weight ``merge_vector_score`` (default
+    0.5). This prevents the vector signal from being discarded.
     """
 
     def __init__(
@@ -134,9 +165,19 @@ class StrategyRetriever:
         entries: list[RAGEntry] | None = None,
         *,
         reranker: Any = None,
+        vector_scores: dict[str, float] | None = None,
+        merge_vector_score: float = 0.5,
     ) -> None:
         self._entries: dict[str, RAGEntry] = {}
         self._reranker = reranker
+        # R2: vector scores keyed by entry_id; missing keys default to
+        # 0.0 in the merge step so entries without a vector signal
+        # simply keep their rule-based score (scaled by 1 - weight).
+        self._vector_scores: dict[str, float] = dict(vector_scores or {})
+        # Clamp the merge weight to [0,1]; outside that range produces
+        # nonsense merged scores. 0.0 = ignore vector entirely (legacy
+        # behavior); 1.0 = use vector score only.
+        self._merge_vector_score: float = max(0.0, min(1.0, float(merge_vector_score)))
         if entries:
             for e in entries:
                 self._entries[e.entry_id] = e
@@ -154,9 +195,18 @@ class StrategyRetriever:
         When a reranker is configured, rule-based scoring selects a wider
         candidate pool (max_results * 3), then the reranker semantically
         re-ranks the candidates.
+
+        R2: when ``vector_scores`` was passed to ``__init__`` (typically
+        by ``RAGKnowledgeService._vector_candidates``), the per-entry
+        vector score is folded into the rule-based score with weight
+        ``merge_vector_score``. Entries without a vector score keep
+        their rule-based score scaled down by ``(1 - weight)``.
         """
         candidates = self._filter_candidates(query)
-        scored = [(self._score(entry, query), entry) for entry in candidates]
+        scored = [
+            (self._merged_score(entry, query), entry)
+            for entry in candidates
+        ]
         scored.sort(key=lambda x: x[0], reverse=True)
 
         if self._reranker and scored:
@@ -178,10 +228,19 @@ class StrategyRetriever:
             results: list[RAGHit] = []
             for doc in reranked:
                 entry = doc["entry"]
-                combined_score = min(
-                    (doc.get("rerank_score", 0) + doc.get("score", 0)) / 2,
-                    1.0,
-                )
+                # R5: sigmoid-normalize the raw reranker logit before
+                # merging so a negative score (which BGE emits for
+                # judged-irrelevant docs) doesn't push the combined
+                # score below 0 and crash RAGHit pydantic validation.
+                raw_rerank = float(doc.get("rerank_score", 0.0))
+                normalized_rerank = _sigmoid(raw_rerank)
+                rule_score = float(doc.get("score", 0.0))
+                combined_score = (normalized_rerank + rule_score) / 2.0
+                # Belt and suspenders: clamp to [0,1] even though
+                # sigmoid already lives in (0,1) and rule_score lives
+                # in [0,1] — a future tweak to either side could
+                # break the invariant without this guard.
+                combined_score = max(0.0, min(1.0, combined_score))
                 hit = self._entry_to_hit(entry, round(combined_score, 3), query)
                 results.append(hit)
             return results
@@ -280,6 +339,24 @@ class StrategyRetriever:
 
         return min(score, 1.0)
 
+    def _merged_score(self, entry: RAGEntry, query: RAGQuery) -> float:
+        """Combine the rule-based score with the optional vector score.
+
+        R2: when no vector score is registered for the entry, returns
+        the pure rule-based score (legacy behavior). When a vector
+        score is registered, returns a convex combination weighted by
+        ``merge_vector_score``. The merge happens on already-clamped
+        [0,1] values; result is clamped to [0,1] for the RAGHit
+        relevance_score field.
+        """
+        rule = self._score(entry, query)
+        if not self._vector_scores or entry.entry_id not in self._vector_scores:
+            return rule
+        w = self._merge_vector_score
+        vec = max(0.0, min(1.0, float(self._vector_scores[entry.entry_id])))
+        merged = (1.0 - w) * rule + w * vec
+        return max(0.0, min(1.0, merged))
+
     def _entry_to_hit(self, entry: RAGEntry, score: float, query: RAGQuery) -> RAGHit:
         """Convert an entry to a retrieval hit with display annotation."""
         meta = entry.metadata
@@ -313,7 +390,7 @@ class StrategyRetriever:
             case_type=meta.case_type,
             role_perspective=meta.role_perspective,
             phase=meta.phase,
-            key_decisions=entry.key_decisions[:5],
+            key_decisions=entry.key_decisions[:5],  # R4: audit 5 / prompt 3 is intentional — prompt_renderer caps at 3 for the live LLM, but the audit JSON keeps the full 5 for review.
             short_quotes=entry.short_quotes,
             tags=meta.tags,
             allowed_in_live_context=allowed_in_live,

@@ -176,3 +176,81 @@ def test_situation_format_is_stable_under_punctuation() -> None:
     # And the role/phase/task tokens are well-defined substrings.
     for key in ("role", "phase", "task", "actions"):
         assert f"{key}=" in situation
+
+
+# ---------------------------------------------------------------------------
+# R1: RAGKnowledgeService must wire the reranker into StrategyRetriever.
+#
+# Before this fix, `retrieve_live_hints` built a StrategyRetriever without
+# passing the reranker, so the rerank path was effectively dead code in
+# production. After: the service accepts a reranker in __init__ and forwards
+# it on every retrieve_live_hints call.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingReranker:
+    """Records every rerank_hits call so tests can assert the reranker
+    was invoked by StrategyRetriever inside RAGKnowledgeService."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def rerank_hits(self, *, query, documents, text_key="text", top_n=None):
+        self.calls.append(
+            {
+                "query": query,
+                "doc_count": len(documents),
+                "text_key": text_key,
+                "top_n": top_n,
+            }
+        )
+        # Return the input docs unchanged but stamp a rerank_score so
+        # the merge math in StrategyRetriever runs.
+        results = []
+        for i, d in enumerate(documents[: top_n or len(documents)]):
+            out = dict(d)
+            out["rerank_score"] = 0.5
+            results.append(out)
+        return results
+
+
+def test_retrieve_live_hints_uses_reranker() -> None:
+    """R1: when a reranker is injected into RAGKnowledgeService, the
+    reranker.rerank_hits is invoked at least once per retrieval."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    reranker = _RecordingReranker()
+    service = RAGKnowledgeService(reranker=reranker)
+    hits = service.retrieve_live_hints(
+        RAGQuery(
+            role="werewolf",
+            phase="night_discussion",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            max_results=3,
+        )
+    )
+
+    assert hits, "service should still return hits"
+    assert len(reranker.calls) >= 1, (
+        f"R1: reranker.rerank_hits must be called at least once per "
+        f"retrieval; got {len(reranker.calls)} calls"
+    )
+    assert reranker.calls[0]["doc_count"] > 0
+
+
+def test_retrieve_live_hints_works_without_reranker() -> None:
+    """R1 backward compat: RAGKnowledgeService instances without a reranker
+    must continue to work exactly as before — no crash, hits returned via
+    the rule-based path."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    service = RAGKnowledgeService()  # no reranker injected
+    hits = service.retrieve_live_hints(
+        RAGQuery(
+            role="werewolf",
+            phase="night_discussion",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            max_results=3,
+        )
+    )
+    assert hits

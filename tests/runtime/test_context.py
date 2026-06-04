@@ -667,6 +667,93 @@ def test_rag_injection_still_runs_for_player_speech() -> None:
 
 
 # ---------------------------------------------------------------------------
+# R3: previous slim rag_hit items must be cleared between turns.
+#
+# The filter at context.py:212-219 keeps items where ``type != "rag_hit"``.
+# Before the fix, the slim renderer omitted ``type``, so the filter
+# was a no-op and old slim items accumulated. With ``type="rag_hit"``
+# on every slim line, the filter actually drops them.
+# ---------------------------------------------------------------------------
+
+
+class _FakeHit:
+    """Minimal RAGHit-like object used for the R3 inject test."""
+
+    def __init__(self, title: str, summary: str, key_decisions: list[str]) -> None:
+        self.title = title
+        self.summary = summary
+        self.key_decisions = key_decisions
+
+
+class _FakeRAGServiceRendering:
+    """Fake service whose hits_to_prompt_lines mirrors the real slim
+    renderer's output shape (with ``type='rag_hit'``)."""
+
+    def __init__(self, hits: list[_FakeHit]) -> None:
+        self._hits = hits
+        self.call_count = 0
+
+    def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+        self.call_count += 1
+        return [
+            _FakeHit(
+                title=f"hit-{self.call_count}",
+                summary=f"summary {self.call_count}",
+                key_decisions=[f"decision-{self.call_count}"],
+            )
+        ]
+
+    def hits_to_prompt_lines(self, hits, max_items: int = 3):
+        from werewolf_agent.rag.prompt_renderer import render_hit_for_prompt
+        return [render_hit_for_prompt(h) for h in hits[:max_items]]
+
+
+def test_inject_seed_rag_hints_clears_previous_hits() -> None:
+    """R3: calling _inject_seed_rag_hints twice on the same ctx must
+    leave only the second call's hits in ctx.rag_hints. With the slim
+    line discriminator (``type='rag_hit'``), the filter at context.py
+    actually clears previous slim items instead of keeping them
+    around forever.
+    """
+    from werewolf_agent.agents.schemas import TaskType
+    from werewolf_agent.runtime.context import _inject_seed_rag_hints
+
+    fake = _FakeRAGServiceRendering(hits=[])
+    ctx = _make_ctx(TaskType.SPEECH)
+
+    # First injection: ctx.rag_hints has 1 slim item.
+    ctx1 = _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    first_titles = [item.get("title") for item in ctx1.rag_hints]
+    assert "hit-1" in first_titles, (
+        f"first injection should add hit-1; got {first_titles!r}"
+    )
+
+    # Second injection: previous "hit-1" must be dropped; only the
+    # new "hit-2" should remain.
+    ctx2 = _inject_seed_rag_hints(
+        ctx1,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    second_titles = [item.get("title") for item in ctx2.rag_hints]
+    assert "hit-1" not in second_titles, (
+        f"R3: previous slim items must be cleared; got titles {second_titles!r}"
+    )
+    assert "hit-2" in second_titles, (
+        f"R3: new injection should be present; got titles {second_titles!r}"
+    )
+    # And the slim items returned are tagged with type=rag_hit.
+    rag_items = [item for item in ctx2.rag_hints if item.get("type") == "rag_hit"]
+    assert rag_items, f"R3: at least one item must be tagged type='rag_hit'; got {ctx2.rag_hints!r}"
+
+
+# ---------------------------------------------------------------------------
 # P2-G11: RAG failure handling distinguishes expected vs anomaly.
 #
 # Two cases:
