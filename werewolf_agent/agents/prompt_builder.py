@@ -243,25 +243,73 @@ class PlayerPromptBuilder:
     #  User prompt: per-turn dynamic context (system reminder)
     # ═══════════════════════════════════════════════════════════════
 
+    # P1-S3: section-level priority labels so the LLM can rank which
+    # sections to attend to under tight token budget. The labels group
+    # the 16 user-prompt sections into three priority tiers:
+    #   - 硬约束 (HARD):     must be addressed / must be obeyed
+    #   - 辅助 (AUXILIARY):  background context, ignore non-relevant
+    #   - 可选 (OPTIONAL):   reference, may be skimmed or dropped
+    # Note: this is the OUTER section label, distinct from the inner
+    # 硬约束/建议/参考 sub-grouping already in P0-S5 for strategy_directive.
+    _SECTION_PRIORITIES: dict[str, str] = {
+        "_build_phase_context": "【辅助】",
+        "_build_belief_state": "【辅助】",
+        "_build_public_summary": "【辅助】",
+        "_build_visible_state": "【辅助】",
+        "_build_private_memory_hints": "【辅助】",
+        "_build_salience_events": "【辅助】",
+        "_build_rag_hints": "【辅助】",
+        "_build_reflection_memory_hints": "【辅助】",
+        "_build_profile_memory_hint": "【辅助】",
+        "_build_cognition_matrix_hint": "【辅助】",
+        "_build_strategy_directive": "【硬约束】",
+        "_build_skill_analysis_hints": "【辅助】",
+        "_build_recent_transcript": "【可选】",
+        "_build_retry_hint": "【硬约束】",
+        "_build_strict_output_contract": "【硬约束】",
+        # Note: _build_task_prompt and _build_persona are intentionally
+        # unlabeled — task prompt is the action spec the LLM is
+        # executing; persona lives in the system prompt.
+    }
+
+    def _label_section(self, builder_name: str, body: str) -> str:
+        """Prepend the priority label to a section's body.
+
+        P1-S3: Empty bodies are returned unchanged so the section
+        just disappears from the prompt (preserving the existing
+        `for p in parts if p` filter behavior).
+        """
+        if not body:
+            return body
+        label = self._SECTION_PRIORITIES.get(builder_name, "")
+        if not label:
+            return body
+        return f"{label} {body}"
+
     def build_user_prompt(self, retry: RetryInfo) -> str:
         parts: list[str] = []
         # Boundary marker per s10: above = stable, below = dynamic
         parts.append("=== DYNAMIC_BOUNDARY ===")
-        parts.append(self._build_phase_context())
-        parts.append(self._build_belief_state())
-        parts.append(self._build_public_summary())
-        parts.append(self._build_visible_state())
-        parts.append(self._build_private_memory_hints())
-        parts.append(self._build_salience_events())
-        parts.append(self._build_rag_hints())
-        parts.append(self._build_reflection_memory_hints())
-        parts.append(self._build_profile_memory_hint())
-        parts.append(self._build_cognition_matrix_hint())
-        parts.append(self._build_strategy_directive())
-        parts.append(self._build_skill_analysis_hints())
+        # P1-S3: each section is wrapped with a [硬约束/辅助/可选]
+        # priority label so the LLM can rank attention under tight
+        # token budgets. The label is prepended at the section level
+        # — internal sub-grouping (e.g., P0-S5 within strategy_directive)
+        # is preserved.
+        parts.append(self._label_section("_build_phase_context", self._build_phase_context()))
+        parts.append(self._label_section("_build_belief_state", self._build_belief_state()))
+        parts.append(self._label_section("_build_public_summary", self._build_public_summary()))
+        parts.append(self._label_section("_build_visible_state", self._build_visible_state()))
+        parts.append(self._label_section("_build_private_memory_hints", self._build_private_memory_hints()))
+        parts.append(self._label_section("_build_salience_events", self._build_salience_events()))
+        parts.append(self._label_section("_build_rag_hints", self._build_rag_hints()))
+        parts.append(self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints()))
+        parts.append(self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint()))
+        parts.append(self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint()))
+        parts.append(self._label_section("_build_strategy_directive", self._build_strategy_directive()))
+        parts.append(self._label_section("_build_skill_analysis_hints", self._build_skill_analysis_hints()))
         # P0-K1: skill tool path removed. Skill analyses are pre-injected
         # above (skill_analysis_hints) — no separate tool-catalog section.
-        parts.append(self._build_recent_transcript())
+        parts.append(self._label_section("_build_recent_transcript", self._build_recent_transcript()))
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM
         # read "纠正提示..." and then got distracted by the task
@@ -269,8 +317,8 @@ class PlayerPromptBuilder:
         # New order (task → retry → contract) makes the correction the
         # last thing the LLM sees before the output contract.
         parts.append(self._build_task_prompt())
-        parts.append(self._build_retry_hint(retry))
-        parts.append(self._build_strict_output_contract())
+        parts.append(self._label_section("_build_retry_hint", self._build_retry_hint(retry)))
+        parts.append(self._label_section("_build_strict_output_contract", self._build_strict_output_contract()))
         return "\n\n".join(p for p in parts if p)
 
     def _build_phase_context(self) -> str:
