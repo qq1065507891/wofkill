@@ -274,8 +274,56 @@ def sanitize_optional_private_fields(data: Any) -> Any:
     else:
         sanitized_intent["risk_flags"] = []
 
+    # P1-S7 (residual): claimed_view is documented as an identity-
+    # perspective identifier (PrivateIntent schema), not a free-form
+    # Chinese phrase. Game trace g_3528592081 showed real wolves
+    # writing "我是好人，混水摸鱼" — a strategy note in natural
+    # Chinese. Sanitize any non-enum value to a safe default so the
+    # audit log / dashboard only sees clean identifiers. The valid set
+    # is the union of: the canonical safe default, all role names, and
+    # the seer-specific "seer" identifier. Anything else gets replaced.
+    raw_claimed = sanitized_intent.get("claimed_view")
+    if not isinstance(raw_claimed, str) or raw_claimed not in _VALID_CLAIMED_VIEW_VALUES:
+        # Detect the LLM writing a Chinese natural-language claim —
+        # if it contains Chinese characters and isn't in the valid set,
+        # it's almost certainly the bad pattern from the game trace.
+        sanitized_intent["claimed_view"] = _safe_default_claimed_view(
+            sanitized_intent.get("true_role"),
+        )
+
     sanitized["private_intent"] = sanitized_intent
     return sanitized
+
+
+# P1-S7 (residual): enum-like identifiers acceptable as claimed_view.
+# The safe default "good_player_without_night_info" is the standard
+# good-side claim; role names are valid because a wolf can claim any
+# role publicly (e.g., "villager", "witch"). "seer" is canonical for
+# the seer's public claim; "good_player_without_night_info" is the
+# generic catch-all.
+_VALID_CLAIMED_VIEW_VALUES: frozenset[str] = frozenset({
+    "good_player_without_night_info",
+    "seer",
+    "werewolf",
+    "villager",
+    "witch",
+    "hunter",
+    "idiot",
+    "hybrid",
+})
+
+
+def _safe_default_claimed_view(true_role: Any) -> str:
+    """Pick a safe default claimed_view based on the agent's true_role.
+
+    - seer → "seer" (the only public claim that makes sense for seer)
+    - everything else → "good_player_without_night_info" (the standard
+      good-side cover, used by all non-wolf roles and by wolves
+      pretending to be good)
+    """
+    if isinstance(true_role, str) and true_role == "seer":
+        return "seer"
+    return "good_player_without_night_info"
 
 
 def action_from_data(data: Any) -> tuple[PlayerAction | None, str | None]:
@@ -284,15 +332,16 @@ def action_from_data(data: Any) -> tuple[PlayerAction | None, str | None]:
     # the base class to route the data through the Union's TypeAdapter,
     # which dispatches on the ``action_type`` discriminator.
     data = normalize_action_data(data)
+    # P1-S7 (residual): always sanitize private_intent before validation.
+    # The previous code only sanitized on validation failure, which let
+    # free-form Chinese claimed_view strings (e.g., "我是好人，混水摸鱼")
+    # pass through cleanly. Sanitizing first normalizes claimed_view to
+    # an enum-style identifier so the audit log / dashboard see only
+    # clean values.
+    data = sanitize_optional_private_fields(data)
     try:
         return PlayerAction.model_validate(data), None
     except ValidationError as e:
-        sanitized = sanitize_optional_private_fields(data)
-        if sanitized != data:
-            try:
-                return PlayerAction.model_validate(sanitized), None
-            except ValidationError:
-                pass
         return None, f"Schema validation error: {e}"
 
 

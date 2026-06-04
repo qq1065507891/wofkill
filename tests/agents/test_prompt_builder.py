@@ -168,7 +168,14 @@ def test_strategy_directive_only_hard_section_when_only_hard_keys():
 
 
 def test_strategy_directive_only_suggestion_section_when_only_suggestion_keys():
-    """Only suggestion keys → only 建议 header."""
+    """Only suggestion keys → only 建议 header.
+
+    P1-S3 added a section-level 【硬约束】 outer label to strategy_directive
+    in build_user_prompt. The inner sub-group check below uses the unique
+    MUST/SHOULD/REFERENCE markers (P0-S5 inner sub-group discriminators)
+    instead of the bare "【硬约束】" label, so the test still verifies that
+    only the 建议 inner sub-group renders when only suggestion keys exist.
+    """
     ctx = _make_ctx_with_directive(
         {
             "anti_herd": "不要盲目跟票",
@@ -176,13 +183,23 @@ def test_strategy_directive_only_suggestion_section_when_only_suggestion_keys():
         }
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "【硬约束】" not in prompt
-    assert "【建议】" in prompt
-    assert "【参考】" not in prompt
+    # Inner sub-group MUST markers must be absent when no hard keys exist
+    assert "以下指令必须遵守（MUST）" not in prompt, (
+        "MUST marker must not appear when no hard keys are present "
+        "(P0-S5 inner sub-group is gated by key presence)"
+    )
+    assert "以下指令为建议（SHOULD）" in prompt
+    assert "以下为背景信息（REFERENCE）" not in prompt
 
 
 def test_strategy_directive_only_reference_section_when_only_reference_keys():
-    """Only reference keys → only 参考 header."""
+    """Only reference keys → only 参考 header (P0-S5 inner sub-group).
+
+    P1-S3 added a section-level 【硬约束】 outer label to strategy_directive.
+    The inner sub-group check uses the unique MUST/SHOULD/REFERENCE
+    markers to discriminate the inner P0-S5 sub-group from the outer
+    P1-S3 section label.
+    """
     ctx = _make_ctx_with_directive(
         {
             "master_behavior_summary": "master 上一轮攻击 p05",
@@ -190,18 +207,29 @@ def test_strategy_directive_only_reference_section_when_only_reference_keys():
         }
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "【硬约束】" not in prompt
-    assert "【建议】" not in prompt
-    assert "【参考】" in prompt
+    assert "以下指令必须遵守（MUST）" not in prompt
+    assert "以下指令为建议（SHOULD）" not in prompt
+    assert "以下为背景信息（REFERENCE）" in prompt
 
 
 def test_strategy_directive_omits_section_when_empty():
-    """Empty directive → no directive section at all (no empty headers)."""
+    """Empty directive → no directive section at all (no empty headers).
+
+    P1-S3: when strategy_directive is empty, the section body is empty,
+    so the outer 【硬约束】 label is also suppressed (the section just
+    disappears from the prompt). The retry hint and output contract
+    may still have their own 【硬约束】 labels — those are unrelated
+    to the directive section.
+    """
     ctx = _make_ctx_with_directive({})
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "【硬约束】" not in prompt
-    assert "【建议】" not in prompt
-    assert "【参考】" not in prompt
+    # Inner sub-group MUST/SHOULD/REFERENCE markers must all be absent
+    assert "以下指令必须遵守（MUST）" not in prompt
+    assert "以下指令为建议（SHOULD）" not in prompt
+    assert "以下为背景信息（REFERENCE）" not in prompt
+    # The directive section's outer label is also absent when the body
+    # is empty (we look for it directly before the section header text).
+    assert "【硬约束】 本轮策略指令" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1338,6 +1366,452 @@ def test_private_memory_label_uses_day_number_correctly():
     assert "【本局·第3轮·私有记忆】" in prompt
     # Day 2 label must NOT appear in a day-3 prompt
     assert "【本局·第2轮·私有记忆】" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# P1-S3: every user-prompt section gets a [硬约束/辅助/可选] priority label
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S3 finding: build_user_prompt concatenates 16 sections
+# (phase, belief, summary, visible_state, private_memory, salience,
+# rag_hints, reflection, profile, cognition, strategy_directive,
+# skill_analysis, transcript, task, retry_hint, output_contract) with
+# no priority signal between them. The LLM reads the entire stack as
+# equally important and burns tokens on sections that don't need its
+# attention (e.g., transcript while the retry hint is telling it to
+# shorten the response).
+#
+# Fix: prepend each section with one of three priority labels:
+# - 【硬约束】 strategy_directive, retry hint, output contract
+#   (must be addressed / must be obeyed)
+# - 【辅助】   phase, belief, summary, visible state, private memory,
+#   salience, rag hints, reflection, profile, cognition, skill hints
+#   (background context for reasoning; ignore fields not relevant to
+#   current task)
+# - 【可选】   transcript (reference, may be skimmed or dropped if
+#   output is constrained)
+#
+# Task prompt itself is NOT relabeled — the task description is what
+# the LLM acts on and adding a prefix would risk confusing the action
+# spec. The retry hint + output contract keep their natural positions
+# at the end of the user message but are wrapped with 【硬约束】 so the
+# LLM sees the priority before reading the content.
+
+
+def _make_ctx_for_priority_label_test(
+    *,
+    own_role: str = "villager",
+    legal_actions: list | None = None,
+    include_retry: bool = False,
+) -> "AgentContext":
+    """Context with every section populated so the labels have content."""
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role=own_role,
+        legal_actions=legal_actions if legal_actions is not None else [ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 — p05 voted p07",
+        visible_world_state={"alive": ["p05", "p07"], "day_number": 2},
+        private_memory_hints={"logic_flaws": [{"day": 2, "point": "vote flip"}]},
+        salience_items=[{"id": "sal-1", "summary": "p07 changed vote"}],
+        rag_hints=[{"title": "Case 1", "summary": "wolf switch", "key_decisions": ["vote flip"]}],
+        reflection_memory_hints=[{"theme": "anti-herd", "summary": "independent judgement"}],
+        profile_memory_hint={"games_played": 5, "summary": "前 30%"},
+        cognition_matrix_hint={"p07": {"trust": 0.3, "faction_lean": "werewolf"}},
+        strategy_directive={
+            "must_address_alerts": ["p07 accused me"],
+            "anti_herd": "do not follow the herd",
+        },
+        skill_analysis_hints={"wolf_pit": "嫌疑区: p07"},
+        recent_transcript=[{"speaker": "p07", "text": "I think p05 is wolf"}],
+        persona_snapshot={"tone": "neutral"},
+    )
+
+
+def test_sections_have_priority_labels():
+    """P1-S3: each of the 16 user-prompt sections is prefixed with a
+    [硬约束/辅助/可选] priority label so the LLM can rank which sections
+    to attend to under tight token budget.
+
+    Sections grouped:
+    - 【硬约束】 strategy_directive, retry hint, output contract
+    - 【辅助】   phase, belief, summary, visible state, private memory,
+      salience, rag hints, reflection, profile, cognition, skill hints
+    - 【可选】   transcript
+
+    The test verifies the label appears in the user prompt and the
+    label appears BEFORE the section's first content character.
+    """
+    retry = RetryInfo(
+        attempt=1,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="missing JSON key",
+        correction_hint="Output a valid JSON object",
+    )
+    ctx = _make_ctx_for_priority_label_test(include_retry=True)
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+
+    # Hard sections must be labeled 【硬约束】.
+    hard_label_count = prompt.count("【硬约束】")
+    assert hard_label_count >= 3, (
+        f"Expected at least 3 【硬约束】 labels "
+        f"(strategy_directive, retry hint, output contract), got {hard_label_count}."
+    )
+
+    # The 辅助 sections must collectively produce multiple 【辅助】 labels.
+    auxiliary_label_count = prompt.count("【辅助】")
+    assert auxiliary_label_count >= 8, (
+        f"Expected at least 8 【辅助】 labels (one per 辅助 section), "
+        f"got {auxiliary_label_count}."
+    )
+
+    # The transcript is the only 可选 section in build_user_prompt.
+    assert "【可选】" in prompt, (
+        "Expected at least one 【可选】 label (transcript section)."
+    )
+
+    # Verify the label is followed by the section's own header text so
+    # the LLM sees 【硬约束】 X then the actual content.
+    # The retry hint header is "纠正提示" — confirm the label is
+    # immediately before it (within 50 chars to allow the section
+    # label spacing).
+    retry_idx = prompt.find("纠正提示")
+    assert retry_idx > 0, "Retry hint should still render in the user prompt"
+    preceding = prompt[max(0, retry_idx - 60):retry_idx]
+    assert "【硬约束】" in preceding, (
+        f"Retry hint must be preceded by 【硬约束】 label, got: {preceding!r}"
+    )
+
+    # Strategy directive header is "本轮策略指令" — same check.
+    directive_idx = prompt.find("本轮策略指令")
+    assert directive_idx > 0
+    preceding = prompt[max(0, directive_idx - 60):directive_idx]
+    assert "【硬约束】" in preceding, (
+        f"Strategy directive must be preceded by 【硬约束】 label, got: {preceding!r}"
+    )
+
+    # Transcript is the only 可选 section — its header is "近期发言".
+    transcript_idx = prompt.find("近期发言")
+    assert transcript_idx > 0
+    preceding = prompt[max(0, transcript_idx - 60):transcript_idx]
+    assert "【可选】" in preceding, (
+        f"Transcript must be preceded by 【可选】 label, got: {preceding!r}"
+    )
+
+
+def test_priority_labels_for_hard_sections_distinct_from_internal_directive_groups():
+    """P1-S3: the section-level 【硬约束】 label for strategy_directive is
+    the OUTER section label, distinct from the inner 【硬约束】 sub-group
+    that already exists in P0-S5.
+
+    The section-level label signals "this section is hard, attend to it
+    first". The inner sub-group signals "this key is hard within the
+    directive". Both can coexist.
+    """
+    ctx = _make_ctx_for_priority_label_test()
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The directive section already has its own 【硬约束】 sub-section
+    # (from P0-S5 grouping). The new outer label is also 【硬约束】.
+    # Confirm both can appear.
+    assert prompt.count("【硬约束】") >= 2, (
+        "Expected at least 2 occurrences of 【硬约束】: the outer section "
+        "label AND the inner P0-S5 sub-group label."
+    )
+
+
+def test_priority_labels_for_auxiliary_sections_are_consistent():
+    """P1-S3: 辅助 sections all use the same 【辅助】 label, not mixed
+    labels. The LLM should see a uniform priority signal across the
+    background context.
+    """
+    ctx = _make_ctx_for_priority_label_test()
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Section headers we expect to be 辅助:
+    auxiliary_headers = [
+        "当前阶段",          # phase
+        "我的判断",         # belief
+        "当前局公开事实",     # public summary
+        "可见状态",          # visible state
+        "本局·",            # private memory
+        "关键事件",          # salience
+        "知识库提示",        # rag hints
+        "跨局反思记忆",       # reflection
+        "长期能力画像",       # profile
+        "我的认知矩阵",       # cognition
+        "技能分析结果",       # skill analysis
+    ]
+    for header in auxiliary_headers:
+        idx = prompt.find(header)
+        if idx < 0:
+            # Some headers may not render if the corresponding data
+            # is empty in this context. Skip absent ones.
+            continue
+        preceding = prompt[max(0, idx - 60):idx]
+        assert "【辅助】" in preceding, (
+            f"Section with header {header!r} must be preceded by 【辅助】 label, "
+            f"got: {preceding!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P1-S4: _format_examples (FULL_ACTION mode) examples match the mode
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S4 finding: _format_examples is invoked for FULL_ACTION mode
+# (the speech/vote/sheriff/wolf paths). The LLM copies the example
+# structure, so a leaked `intent` field (SPEECH_INTENT mode) or `choice`
+# field (TARGET_CHOICE mode) would prime the LLM to fill those fields
+# for actions that don't have them. P0-S1 added mode isolation at the
+# parse layer (rejects unknown fields); P0-S8 added extra=forbid on the
+# schema; this is the prompt-side regression to keep the examples clean.
+#
+# Fix: verify the example JSON in each _format_examples branch has no
+# `intent` or `choice` keys. The check scans every JSON example block
+# in the user prompt and fails if either field name appears.
+
+
+def _extract_json_examples(prompt: str) -> list[dict]:
+    """Find every JSON example in the prompt (the action_type-tagged ones)."""
+    examples: list[dict] = []
+    for match in _re.finditer(
+        r"\{[^{}]*?(?:\{[^{}]*\}[^{}]*?)*\}",
+        prompt,
+        flags=_re.DOTALL,
+    ):
+        try:
+            data = _json.loads(match.group(0))
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "action_type" in data:
+            examples.append(data)
+    return examples
+
+
+def test_format_examples_no_intent_field_in_speech_path():
+    """P1-S4: speech-path example must not include `intent` field.
+
+    `intent` is a SPEECH_INTENT-mode field (the enum-style value the
+    LLM picks from a small set). FULL_ACTION mode renders speech
+    directly with action_type=speech, speech=text, reason=..., and
+    never uses `intent`. If the example mentions it, the LLM will
+    defensively fill it for SPEECH actions and the strict schema
+    (extra=forbid, P0-S8) will reject them.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05"],
+        public_summary="D2 vote",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples, "Expected at least one example in the speech path"
+    for ex in examples:
+        assert "intent" not in ex, (
+            f"FULL_ACTION example must not include 'intent' field "
+            f"(that's a SPEECH_INTENT-mode field); example={ex}"
+        )
+
+
+def test_format_examples_no_choice_field_in_speech_path():
+    """P1-S4: speech-path example must not include `choice` field.
+
+    `choice` is a TARGET_CHOICE-mode field (an enum letter A/B/C/...
+    the LLM picks from a small set). FULL_ACTION mode renders the
+    action with action_type=..., target_id=player_id, never with
+    `choice`. If the example mentions it, the LLM will defensively
+    fill it for SPEECH/VOTE/WOLF_KILL actions.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05"],
+        public_summary="D2 vote",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples
+    for ex in examples:
+        assert "choice" not in ex, (
+            f"FULL_ACTION example must not include 'choice' field "
+            f"(that's a TARGET_CHOICE-mode field); example={ex}"
+        )
+
+
+def test_format_examples_no_intent_field_in_wolf_kill_path():
+    """P1-S4: wolf_kill-path examples must not include `intent`.
+
+    Wolf kill is a TARGET_CHOICE-style action (pick a target) but
+    renders in FULL_ACTION mode. The example must not leak the
+    SPEECH_INTENT `intent` field.
+    """
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.NIGHT_ACTION,
+        phase="night",
+        day_number=1,
+        own_role="werewolf",
+        legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
+        legal_targets=["p05", "p07"],
+        public_summary="N1",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples, "Expected wolf_kill / wolf_no_kill examples"
+    for ex in examples:
+        assert "intent" not in ex, (
+            f"Wolf-kill example must not include 'intent' field; example={ex}"
+        )
+        assert "choice" not in ex, (
+            f"Wolf-kill example must not include 'choice' field; example={ex}"
+        )
+
+
+def test_format_examples_no_intent_field_in_sheriff_register_path():
+    """P1-S4: sheriff_register-path example must not include `intent`."""
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.SHERIFF_REGISTRATION,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.NO_ACTION],
+        legal_targets=[],
+        public_summary="D1 sheriff election",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    examples = _extract_json_examples(prompt)
+    assert examples, "Expected sheriff_register / no_action examples"
+    for ex in examples:
+        assert "intent" not in ex, (
+            f"Sheriff-register example must not include 'intent' field; example={ex}"
+        )
+        assert "choice" not in ex, (
+            f"Sheriff-register example must not include 'choice' field; example={ex}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P1-S9: villager role guide is present in system_prompt
+# ---------------------------------------------------------------------------
+#
+# Audit P1-S9 finding: _build_role_guide has entries for hunter, idiot,
+# witch, seer, werewolf, hybrid — but NOT for villager. Villagers are
+# 3 of 12 players in V1, so the role guide has been silently skipping
+# them. Villagers see only the generic reasoning/information-boundary
+# sections, missing concrete day-time decision guidance.
+#
+# Fix: add villager role guide with 4 specific behavioral rules:
+#   1. When publicly identified, actively state good-side stance
+#   2. Analyze speech contradictions / vote patterns
+#   3. N1: support the witch using the antidote to save people
+#   4. Vote based on public evidence chain, not emotion
+
+
+def test_villager_role_guide_present():
+    """P1-S9: villager role guide must be present in the system prompt.
+
+    The villager role guide is rendered inside _build_role_guide and
+    should appear in build_system_prompt. Other 5 roles (hunter, idiot,
+    witch, seer, werewolf, hybrid) all have guides; villager must too.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07"],
+        public_summary="D2",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # The role guide header marker for villager — must mention 村民规则
+    # OR a specific villager-behavior directive.
+    assert "村民规则" in system_prompt, (
+        "Villager role guide must be present in system_prompt. "
+        f"system_prompt: {system_prompt[:500]!r}"
+    )
+
+
+def test_villager_role_guide_specific_rules():
+    """P1-S9: villager role guide must include the 4 specific rules.
+
+    The 4 rules per the audit:
+    1. Public identity → actively state good-side stance
+    2. Analyze speech contradictions / vote patterns
+    3. N1: support antidote-saving
+    4. Vote based on public evidence chain, not emotion
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07"],
+        public_summary="D2",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # Check key phrases from each rule
+    assert "好人立场" in system_prompt or "好人阵营" in system_prompt, (
+        "Rule 1 (public stance) must be in the villager role guide."
+    )
+    assert "矛盾" in system_prompt, (
+        "Rule 2 (analyze contradictions) must be in the villager role guide."
+    )
+    assert "解药" in system_prompt, (
+        "Rule 3 (N1 antidote support) must be in the villager role guide."
+    )
+    assert "公开" in system_prompt, (
+        "Rule 4 (vote based on public evidence) must be in the villager role guide."
+    )
+
+
+def test_other_roles_still_have_their_guides():
+    """P1-S9: adding the villager guide must not remove the other 6 guides.
+
+    Regression check: each of the 6 existing role guides must still
+    appear in their respective system_prompts. Adding villager is
+    additive, not a replacement.
+    """
+    role_expected = {
+        "hunter": "猎人规则",
+        "idiot": "白痴规则",
+        "witch": "女巫规则",
+        "seer": "预言家规则",
+        "werewolf": "狼人规则",
+        "hybrid": "混血儿规则",
+    }
+    for role, expected_phrase in role_expected.items():
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role=role,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+            public_summary="D2",
+        )
+        system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+        assert expected_phrase in system_prompt, (
+            f"Role guide for {role!r} must still be present after P1-S9 "
+            f"villager addition. Expected phrase: {expected_phrase!r}"
+        )
 
 
 if __name__ == "__main__":
