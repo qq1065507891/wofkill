@@ -120,13 +120,12 @@ def test_profile_hint_logic_high_uses_rank_description_not_raw_float() -> None:
 
     hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
 
-    # The new rank description must appear
-    assert "前 30%" in hint["summary"] or hint["logic_rank"] == "前 30%"
+    # P2-M15: the canonical rendering is the structured *_rank field,
+    # not the legacy 'summary' string (which was dropped to avoid
+    # duplication with the structured dims).
+    assert hint["logic_rank"] == "前 30%"
     # Raw float 0.8 must NOT appear in any field
     assert "0.8" not in str(hint)
-    # The "logic" key, if present, should be the rank string, not the float
-    if "logic" in hint:
-        assert hint["logic"] == "前 30%"
 
 
 def test_profile_hint_logic_mid_uses_medium_rank() -> None:
@@ -224,18 +223,18 @@ def test_profile_hint_does_not_mention_learning_rate_or_risk_preference() -> Non
     # (M5 added this); we just don't want the raw keys.
 
 
-def test_profile_hint_keeps_games_played_and_summary() -> None:
-    """Backwards-compat: games_played and a human-readable summary remain."""
+def test_profile_hint_keeps_games_played_and_ranks() -> None:
+    """Backwards-compat: games_played remains; P2-M15 dropped summary but *_rank keys are present."""
     profile = _make_profile(games_played=12, logic=0.7, deception=0.4, credibility=0.8)
     role_stats = {"werewolf": {"count": 5, "wins": 3}}
 
     hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
 
     assert hint["games_played"] == 12
-    assert isinstance(hint["summary"], str)
-    assert "12" in hint["summary"]  # games_played surfaces in summary
-    # Summary should reference at least one rank description
-    assert any(rank in hint["summary"] for rank in ("前 30%", "中等", "需要提升"))
+    # P2-M15: summary field is gone; structured *_rank fields take its place.
+    assert "summary" not in hint
+    assert hint["logic_rank"] == "前 30%"
+
 
 
 def test_profile_hint_handles_missing_current_role_stats() -> None:
@@ -347,15 +346,14 @@ def test_profile_hint_only_current_role_winrate_strict() -> None:
 def test_all_six_profile_dims_in_prompt() -> None:
     """P0-M5: _profile_memory_hint must render all 6 dimensions, with
     leadership/learning_rate/risk_preference using neutral phrasing
-    so the LLM doesn't read the dim name and assume the worst.
+    so the LLM doesn'''t read the dim name and assume the worst.
 
-    Schema fields: logic, deception, leadership, credibility,
+    Schema fields: logic, deception, leadership, credibilidad,
                    learning_rate, risk_preference
-    The hint must surface rank for all 6 (either as a *_rank key or
-    in the summary), with raw floats only in `_rank_<dim>` style or
-    in a top-level integer-style field. The text phrasing for
-    learning_rate and risk_preference must be neutral
-    ('处于中等' / '处于较高' style), never '你学得慢' or similar.
+    P2-M15: structured *_rank fields are the single source of truth
+    (no summary text). All 6 dims must be in the hint as *_rank keys.
+    The text phrasing for learning_rate and risk_preference must be
+    neutral (中等 / 较高 style), never 你学得慢 or similar.
     """
     profile = PlayerProfile(
         player_id="p01",
@@ -371,42 +369,25 @@ def test_all_six_profile_dims_in_prompt() -> None:
 
     hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
 
-    # Each of the 6 dims must surface a rank somewhere in the hint.
-    # We accept either a dedicated rank key or inclusion in summary.
-    summary = hint.get("summary", "")
-
-    # Required: all 6 dims represented in summary text
-    for dim_cn in ("逻辑", "欺骗", "领导", "可信度", "学习", "风险"):
-        assert dim_cn in summary, (
-            f"Dimension {dim_cn!r} must be mentioned in summary; "
-            f"got summary={summary!r}"
+    # P2-M15: all 6 dims must surface as *_rank keys in the hint.
+    expected_rank_keys = {
+        "logic_rank", "deception_rank", "leadership_rank", "credibility_rank",
+        "learning_rate_rank", "risk_preference_rank",
+    }
+    for key in expected_rank_keys:
+        assert key in hint, f'Missing structured rank key: {key!r}. Hint: {hint!r}'
+        assert hint[key] in {"前 30%", "中等", "需要提升", "较高", "偏低"}, (
+            f'Unexpected rank for {key!r}: {hint[key]!r}'
         )
 
-    # Neutral phrasing for learning_rate and risk_preference:
-    # the phrasing must NOT be demoralizing. Accept "处于中等", "处于较高",
-    # "处于较低", or just the rank token ("中等" / "前 30%" / "需要提升").
-    # Reject raw "你学得慢" / "你很慢" / "0.3" patterns.
-    summary_lower = summary
-    assert "你学得慢" not in summary_lower, (
-        "learning_rate must not be phrased as '你学得慢'; use neutral "
-        f"'你的学习速度处于...'. Got: {summary!r}"
-    )
-    assert "0.3" not in str(hint), (
-        f"Raw learning_rate float must not appear in hint. Got: {hint!r}"
-    )
-    assert "0.5" not in summary, (
-        "Raw risk_preference float must not appear in summary. "
-        f"Got summary={summary!r}"
-    )
+    # Neutral phrasing for inner traits
+    assert hint["learning_rate_rank"] in {"中等", "较高", "偏低"}
+    assert hint["risk_preference_rank"] in {"中等", "较高", "偏低"}
 
-    # Schema must still keep all 6 fields (constraint: don't trim the
-    # PlayerProfile dataclass).
-    assert hasattr(profile, "logic")
-    assert hasattr(profile, "deception")
-    assert hasattr(profile, "leadership")
-    assert hasattr(profile, "credibility")
-    assert hasattr(profile, "learning_rate")
-    assert hasattr(profile, "risk_preference")
+    # Raw floats must not appear
+    assert "0.3" not in str(hint), f'Raw learning_rate float leaked: {hint!r}'
+    assert "0.5" not in str(hint), f'Raw risk_preference float leaked: {hint!r}'
+
 
 
 def test_all_six_profile_dims_learning_rate_low_uses_neutral_phrasing() -> None:
@@ -443,6 +424,65 @@ def test_all_six_profile_dims_learning_rate_low_uses_neutral_phrasing() -> None:
             f"learning_rate phrasing should use neutral '处于 X' style; "
             f"got window: {window!r} in summary: {summary!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P2-M15: profile hint drops duplicate `summary` field.
+#
+# P0-M4 (commit 08c733e) added rank descriptions for
+# logic/deception/credibility. P0-M5 (commit 5d9b267) added the
+# 4th/5th/6th dim ranks. Both `summary` AND the structured
+# *_rank fields now carry the same rank text — duplication
+# bloats the prompt. Drop `summary`; the structured fields are
+# the canonical rendering.
+# ---------------------------------------------------------------------------
+
+
+def test_profile_hint_no_summary_duplication() -> None:
+    """P2-M15: _profile_memory_hint must NOT include a 'summary' key
+    once the 6-dim structured rank fields are the canonical rendering.
+    The structured fields (current_role_*, logic_rank, etc.) are the
+    single source of truth; no string duplicate of the same data."""
+    profile = PlayerProfile(
+        player_id="p01",
+        games_played=12,
+        logic=0.7,
+        deception=0.4,
+        leadership=0.5,
+        credibility=0.8,
+        learning_rate=0.3,
+        risk_preference=0.5,
+    )
+    role_stats = {"werewolf": {"count": 5, "wins": 3}}
+
+    hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
+
+    # The 'summary' key is dropped to avoid duplication with the
+    # 6-dim structured *_rank fields. Downstream prompt renderers
+    # that previously read hint["summary"] must now read the
+    # structured fields.
+    assert "summary" not in hint, (
+        f"P2-M15: 'summary' must be dropped (duplicated by structured "
+        f"*_rank fields). Hint keys: {sorted(hint.keys())!r}"
+    )
+    # The 6 structured rank fields are still present.
+    for key in (
+        "logic_rank",
+        "deception_rank",
+        "leadership_rank",
+        "credibility_rank",
+        "games_played",
+        "current_role",
+    ):
+        assert key in hint, (
+            f"P2-M15: structured field {key!r} must still be in hint; "
+            f"got keys: {sorted(hint.keys())!r}"
+        )
+    # And the rank values are the canonical rank strings (not raw
+    # floats), proving the data didn't disappear — it just moved
+    # from the summary string into structured fields.
+    assert hint["logic_rank"] in ("前 30%", "中等", "需要提升")
+    assert hint["current_role_win_rate_pct"] == 60  # 3/5 = 60%
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +664,99 @@ def test_rag_injection_still_runs_for_player_speech() -> None:
     )
     assert len(fake.calls) == 1
     assert fake.calls[0]["role"] == "seer"
+
+
+# ---------------------------------------------------------------------------
+# P2-G11: RAG failure handling distinguishes expected vs anomaly.
+#
+# Two cases:
+#   (a) rag_service is None — expected path (no RAG configured), no
+#       log noise, no anomaly count.
+#   (b) rag_service.retrieve_live_hints() raises — anomaly path,
+#       warn-level log, rag_anomaly_count increments on AgentContext.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingRAGService:
+    """RAG service whose retrieve_live_hints always raises an unexpected
+    exception. Used to assert anomaly handling (P2-G11)."""
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+        self.calls.append(query)
+        raise RuntimeError("simulated RAG service crash")
+
+    def hits_to_prompt_lines(self, hits, max_items: int = 3):
+        return []
+
+
+def test_rag_failure_distinguishes_expected_vs_anomaly() -> None:
+    """P2-G11: rag_service=None is expected (silent), rag_service.raise
+    is an anomaly (counts up on AgentContext.rag_anomaly_count)."""
+    import logging
+
+    from werewolf_agent.agents.schemas import TaskType
+
+    # --- Case (a): rag_service is None → expected, no log noise ---
+    ctx_none = _make_ctx(TaskType.SPEECH)
+    out_none = _inject_seed_rag_hints(
+        ctx_none,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=None,
+        game_id="g_test",
+    )
+    # Returned context has no rag_hints mutated and no anomaly count.
+    assert out_none.rag_hints == ctx_none.rag_hints
+    # rag_anomaly_count defaults to 0 on the returned context.
+    assert getattr(out_none, "rag_anomaly_count", 0) == 0
+
+    # --- Case (b): rag_service raises → anomaly, count increments ---
+    raising = _RaisingRAGService()
+    ctx_anom = _make_ctx(TaskType.SPEECH)
+    # Capture logger output to assert warn (not debug) for anomaly.
+    cap_records: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            cap_records.append(record)
+
+    handler = _ListHandler(level=logging.DEBUG)
+    logger = logging.getLogger("werewolf_agent.runtime.context")
+    prev_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        out_anom = _inject_seed_rag_hints(
+            ctx_anom,
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            rag_service=raising,
+            game_id="g_test",
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)
+
+    # rag_service was called (anomaly is detected only when service
+    # is actually invoked).
+    assert len(raising.calls) == 1
+    # The returned context still has empty rag_hints.
+    assert out_anom.rag_hints == ctx_anom.rag_hints
+    # rag_anomaly_count is incremented.
+    assert getattr(out_anom, "rag_anomaly_count", 0) == 1
+    # Anomaly was logged at WARN (not DEBUG).
+    warn_records = [r for r in cap_records if r.levelno >= logging.WARNING]
+    assert any("RAG" in r.getMessage() for r in warn_records), (
+        f"P2-G11: RAG anomaly must log at WARN; got records: "
+        f"{[r.getMessage() for r in cap_records]!r}"
+    )
+    # And no debug-only "Seed RAG injection failed" message (the
+    # previous silent path) at WARN level.
+    assert not any(
+        "Seed RAG injection failed" in r.getMessage() and r.levelno < logging.WARNING
+        for r in cap_records
+    ), "P2-G11: anomaly path must not silently debug-log"
 
 
 # P1-M12: reflection hint diversity.

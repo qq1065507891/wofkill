@@ -169,6 +169,12 @@ def _inject_seed_rag_hints(
     if context.task_type in _RAG_SKIPPED_TASK_TYPES:
         return context
 
+    # P2-G11: rag_service is None is an expected configuration
+    # (RAG disabled / not provisioned). No log noise, no anomaly
+    # count. The retrieval code path simply doesn't run.
+    if rag_service is None:
+        return context
+
     try:
         phase = _rag_phase_for_task(context.task_type, context.phase)
         # P1-G7: the situation is a small semantic key=value blob, not
@@ -184,8 +190,6 @@ def _inject_seed_rag_hints(
             f"task={context.task_type.value} alive={n_alive} "
             f"actions={actions}"
         )
-        if rag_service is None:
-            return context
         from werewolf_agent.rag.schemas import RAGQuery
 
         query = RAGQuery(
@@ -214,8 +218,18 @@ def _inject_seed_rag_hints(
         ]
         return context.model_copy(update={"rag_hints": existing + items})
     except Exception:
-        logger.debug("Seed RAG injection failed for %s", context.agent_id, exc_info=True)
-        return context
+        # P2-G11: rag_service.retrieve_live_hints() raised — this is
+        # an anomaly (the service is provisioned but its retrieval
+        # path crashed). Warn-level log so operators notice; bump
+        # rag_anomaly_count on the returned context so metrics can
+        # track repeated failures per game.
+        logger.warning(
+            "RAG retrieval anomaly for %s (game=%s): incrementing rag_anomaly_count",
+            context.agent_id, game_id, exc_info=True,
+        )
+        return context.model_copy(
+            update={"rag_anomaly_count": context.rag_anomaly_count + 1}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -313,12 +327,13 @@ def _profile_memory_hint(
     # Use getattr so test fakes / partial profiles (e.g. M4-era FakeProfile
     # that only set logic/deception/credibility) still work. The schema
     # defaults (PlayerProfile dataclass) supply 0.5 for missing fields.
+    # P2-M15: only the 4 public traits render into the hint. The inner
+    # traits (learning_rate, risk_preference) are review/judge-only per
+    # the M4 contract; they no longer drive a summary line.
     logic_rank = _rank(float(getattr(profile, "logic", 0.5)))
     deception_rank = _rank(float(getattr(profile, "deception", 0.5)))
     leadership_rank = _rank(float(getattr(profile, "leadership", 0.5)))
     credibility_rank = _rank(float(getattr(profile, "credibility", 0.5)))
-    learning_rank = _inner_rank(float(getattr(profile, "learning_rate", 0.1)))
-    risk_rank = _inner_rank(float(getattr(profile, "risk_preference", 0.5)))
 
     return {
         "games_played": profile.games_played,
@@ -329,16 +344,8 @@ def _profile_memory_hint(
         "deception_rank": deception_rank,
         "leadership_rank": leadership_rank,
         "credibility_rank": credibility_rank,
-        "summary": (
-            f"累计{profile.games_played}局 · "
-            f"当前角色{current_role} {stats['count']}局胜率{win_rate_pct}% · "
-            f"逻辑{logic_rank} · "
-            f"欺骗{deception_rank} · "
-            f"领导{leadership_rank} · "
-            f"可信度{credibility_rank} · "
-            f"你的学习速度处于{learning_rank} · "
-            f"你的风险偏好处于{risk_rank}"
-        ),
+        "learning_rate_rank": _inner_rank(float(getattr(profile, "learning_rate", 0.5))),
+        "risk_preference_rank": _inner_rank(float(getattr(profile, "risk_preference", 0.5))),
     }
 
 
