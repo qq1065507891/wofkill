@@ -209,6 +209,15 @@ class MemoryStore:
             tags.append("had_errors")
         if report.deceived_by:
             tags.append("deceived")
+            # MEM-12: deceived_by is a list of player_ids and must be
+            # scrubbed of concrete pIDs before being persisted into
+            # long-term reflection. The legacy code added the
+            # ``deceived`` tag but never replaced the ids in the
+            # source list — they leaked through ``ReportReview.deceived_by``
+            # when the report was later re-serialized or quoted.
+            # The fix scrubs in place so any downstream consumer of
+            # the report also sees scrubbed ids.
+            report.deceived_by = _scrub_player_ids_in_list(report.deceived_by)
 
         # P0-I4: scrub concrete player ids from every text fragment
         # that will land in the long-term reflection entry. ``player_id``

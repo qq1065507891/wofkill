@@ -286,3 +286,48 @@ def test_reflection_query_returns_newest_first():
         f"MEM-06: expected newest-first ordering g5,g4,g3; "
         f"got {[r.game_id for r in results]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-12: ReviewReport.deceived_by is a list of player_ids; those
+# ids must be scrubbed (p\d{1,2} → [玩家ID已省略]) before the report
+# is persisted, otherwise the raw ids leak into long-term reflection.
+# ---------------------------------------------------------------------------
+
+
+def test_deceived_by_list_scrubbed():
+    """MEM-12: passing deceived_by=['p07'] through _store_review_reflection
+    must scrub 'p07' from the report's deceived_by list itself
+    (not just the summary text)."""
+    store = MemoryStore()
+    store.init_matrix("p01", ["p01", "p07"])
+    # Use a summary that does NOT contain p07, so the only path
+    # through which p07 can leak is deceived_by.
+    report = ReviewReport(
+        game_id="g_test_mem12",
+        player_id="p01",
+        role="seer",
+        faction_won=False,
+        deceived_by=["p07"],
+        summary="对局复盘:被对跳发言误导。",
+    )
+    store._store_review_reflection(report)
+
+    # The raw p07 must not appear in the reflection text.
+    results = store.query_reflections(CrossGameQuery(player_id="p01"))
+    assert len(results) == 1
+    entry = results[0]
+    assert "p07" not in entry.text, (
+        f"MEM-12: reflection text leaks p07; got text={entry.text!r}"
+    )
+    # And the deceived_by list on the source report must be scrubbed
+    # (in-place mutation, so the report itself no longer carries p07).
+    assert "p07" not in report.deceived_by, (
+        f"MEM-12: report.deceived_by still contains p07; got {report.deceived_by!r}"
+    )
+    assert any("[玩家ID已省略]" in s for s in report.deceived_by), (
+        f"MEM-12: expected '[玩家ID已省略]' placeholder in deceived_by; "
+        f"got {report.deceived_by!r}"
+    )
+    # And the "deceived" tag is still added.
+    assert "deceived" in entry.tags
