@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 4 (P1 Skill) IN PROGRESS — 2026-06-04**
-- Active task: P1-K3 (low-confidence skill not dropped) — TDD red-green cycle.
+- Current phase: **Batch 4 (P1 Skill) COMPLETE — 2026-06-04**
+- Active task: All 3 batch-4 P1 skill tasks done (K3, K5, K6). 18 new tests added.
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
