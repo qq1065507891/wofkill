@@ -42,6 +42,18 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 
 **Batch 1 results:** 10/10 tasks done. `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed. 12 new tests in `tests/agents/test_output_parser.py`. Zero regressions across the project.
 
+### Batch 2 (P0 structural) — RAG sub-batch IN PROGRESS 2026-06-03
+
+Worktree: `.worktrees/p2-rag` on branch `p2-rag`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 2.4 | P0-G1 slim RAG prompt lines | DONE | `9a850ce` | New `werewolf_agent/rag/prompt_renderer.py` with `hits_to_prompt_lines()` returning only title/summary/key_decisions (cap 3). `RAGInjector.hits_to_prompt_lines()` + `RAGKnowledgeService.hits_to_prompt_lines()` mirror. Runtime `_inject_seed_rag_hints` routes live prompt through slim path. 16 new tests. |
+| 2.5 | P0-G2 hide RAG score/source/quality | DONE | `064b53a` | Defense-in-depth slim filter in `_build_rag_hints`; audit log on injector retains full payload (relevance/quality/source/visibility/case_type). 2 + 2 new tests. |
+| 2.6 | P0-G3 RAG case-vs-current player ID warning | DONE | `01d450e` | Hard-constraint prefix "⚠️ RAG 案例中的玩家 ID 与本局无关；不得直接套用案例中具体玩家的发言或票型。" prepended to 知识库提示 section. 3 new tests (presence, ordering, empty-path sanity). |
+
+**RAG sub-batch results:** 3/3 tasks done. 21 new tests across `test_prompt_renderer.py` (18) and `test_prompt_builder.py` RAG class (5). `pytest tests/rag/ tests/agents/ tests/runtime/ --ignore=tests/integration`: **1241 passed**, 0 failed, 0 regression.
+
 ### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
 
 **Problem:** Game trace `g_3528592081` Action 50 — p10's LLM

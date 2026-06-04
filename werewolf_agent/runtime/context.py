@@ -170,7 +170,11 @@ def _inject_seed_rag_hints(
             game_id=game_id,
             player_id=context.agent_id,
         )
-        items = rag_service.hits_to_context_items(hits, max_items=3)
+        # P0-G1: the live prompt must only see title/summary/key_decisions,
+        # never the audit-only fields (relevance, quality, source type,
+        # visibility, display annotation). Audit data stays on the
+        # ``RAGInjector.audit_log()`` side.
+        items = rag_service.hits_to_prompt_lines(hits, max_items=3)
         if not items:
             return context
         existing = [

@@ -91,8 +91,29 @@ class RAGKnowledgeService:
         hits: list[RAGHit],
         max_items: int = 3,
     ) -> list[dict[str, Any]]:
-        """Convert RAG hits to prompt-safe salience items."""
+        """Convert RAG hits to full audit-aware context items.
+
+        This path retains relevance, quality, source type, visibility,
+        and the display annotation. Use it for audit logs, moderator
+        views, and review tooling — not for the live player prompt.
+        """
         return RAGInjector.hits_to_context_items(
+            hits,
+            max_items=max_items,
+        )
+
+    def hits_to_prompt_lines(
+        self,
+        hits: list[RAGHit],
+        max_items: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Convert RAG hits to slim prompt lines for the live player.
+
+        P0-G1: only title, summary, and 2-3 key_decisions are surfaced.
+        See :func:`werewolf_agent.rag.prompt_renderer.hits_to_prompt_lines`
+        for the full exclusion list.
+        """
+        return RAGInjector.hits_to_prompt_lines(
             hits,
             max_items=max_items,
         )
