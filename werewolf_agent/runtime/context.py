@@ -553,15 +553,11 @@ def _inject_skill_output(
             # advice (confidence=0.0, empty prompt).
             skill_analyses.setdefault(o.skill_name, o.prompt_injectable or "")
             continue
-        # Skip bold_claim for non-fake_seer wolves
-        if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
-            continue
-        # Skip deep_hook for fake_seer/pusher wolves
-        if o.skill_name == "deep_hook" and wolf_role and wolf_role in ("fake_seer", "pusher"):
-            continue
-        # Skip swing_vote for hooker wolves (conflicts with deep-hook mission)
-        if o.skill_name == "swing_vote" and wolf_role == "hooker":
-            continue
+        # S-16: wolf-role skip is the handler's responsibility, not
+        # context.py's.  Handlers (bold_claim, deep_hook, swing_vote)
+        # already emit role-neutral / low-confidence skip prompts for
+        # wolves that aren't assigned to that skill.  Re-implementing
+        # the skip here risks drift between the two copies.
         skill_analyses[o.skill_name] = o.prompt_injectable
         sortable.append((o.confidence, o.prompt_injectable))
 

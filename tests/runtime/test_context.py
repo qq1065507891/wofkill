@@ -1411,3 +1411,86 @@ def test_inject_skill_output_receives_task_type(monkeypatch) -> None:
         f"of _inject_skill_output is misnamed — it should be task_type, "
         f"not phase."
     )
+
+
+# ---------------------------------------------------------------------------
+# S-16: single-source wolf-role skip — context.py does NOT skip;
+# the handler does.
+# ---------------------------------------------------------------------------
+
+def test_wolf_skip_in_handler_only():
+    """S-16: the wolf-role skip (bold_claim for non-fake_seer wolves,
+    deep_hook for fake_seer/pusher, swing_vote for hooker) is
+    authoritative in the handler. context.py must not re-implement
+    the skip — that risks drift between the two copies.
+
+    Pin the contract: when a hooker wolf is in speech phase with
+    a teammate as fake_seer, the bold_claim handler emits a
+    role-neutral "已有队友占据预言家身份" prompt (S-14 phrasing).
+    context.py must record that prompt in analyses — it must NOT
+    silently filter bold_claim out at the context layer.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="werewolf", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    ws.append(StructuredFact(
+        fact_type="claimed_role", source_player="p05", value="seer",
+        day=1,
+    ))
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    # Call the real _inject_skill_output with a wolf_team_plan that
+    # makes p01 a "hooker" — the bold_claim handler must emit its
+    # "已有队友占据预言家身份" prompt, and context.py must record it
+    # without further filtering.
+    directive, analyses = _inject_skill_output(
+        {}, gs, "p01", ws, bs, alerts, "speech",
+        wolf_team_plan={"fake_seer": "p05", "hooker": "p01"},
+    )
+    # The handler produces the S-14 role-neutral skip prompt. context.py
+    # must NOT filter it out (S-16: handler is authoritative).
+    assert "bold_claim" in analyses, (
+        "S-16: context.py must not skip bold_claim on its own — the "
+        "handler's filtered output should pass through. analyses keys: "
+        f"{list(analyses.keys())!r}"
+    )
+    assert "已有队友占据预言家身份" in analyses["bold_claim"], (
+        "S-16: handler's role-neutral skip prompt should pass through "
+        f"context.py unchanged. Got: {analyses['bold_claim']!r}"
+    )
+    # Source-code contract: context.py must not contain a `wolf_role`
+    # filter block. Read the module source and assert.
+    from werewolf_agent.runtime import context as _ctx_mod
+    import inspect
+    src = inspect.getsource(_ctx_mod._inject_skill_output)
+    assert 'wolf_role and wolf_role != "fake_seer"' not in src, (
+        "S-16: context.py must not contain the bold_claim wolf-role "
+        "skip — that's the handler's job. Found it in _inject_skill_output."
+    )
+    assert "wolf_role and wolf_role in (\"fake_seer\", \"pusher\")" not in src, (
+        "S-16: context.py must not contain the deep_hook wolf-role "
+        "skip — that's the handler's job. Found it in _inject_skill_output."
+    )
+    assert 'wolf_role == "hooker"' not in src, (
+        "S-16: context.py must not contain the swing_vote hooker "
+        "skip — that's the handler's job. Found it in _inject_skill_output."
+    )
