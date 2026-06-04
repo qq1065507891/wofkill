@@ -249,7 +249,7 @@ def _profile_memory_hint(profile: Any, role_stats: dict[str, dict[str, int]]) ->
 
 
 def _reflection_memory_hints(reflections: list[Any], current_role: str, current_faction: str) -> list[dict[str, Any]]:
-    def _ref_score(r: Any) -> tuple[int, Any]:
+    def _ref_score(r: Any) -> tuple[int, str, str]:
         priority = 0
         if r.role == current_role:
             priority = 2
@@ -257,7 +257,14 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
             r.role != "werewolf" and current_faction == "good"
         ):
             priority = 1
-        return (-priority, str(r.entry_id))
+        # Include game_id so ties are broken by game recency (newer first).
+        # entry_id alone is unreliable because it's a composite
+        # "reflection_{game_id}_{player_id}" string. Invert char codes so
+        # YYYY-MM-DD values sort newest-first under ascending comparison.
+        # Use getattr so reflection-like test doubles without game_id still work.
+        game_id = getattr(r, "game_id", "") or ""
+        neg_game_id = "".join(chr(0x10FFFF - ord(c)) for c in str(game_id))
+        return (-priority, neg_game_id, str(r.entry_id))
 
     hints: list[dict[str, Any]] = []
     for ref in sorted(reflections, key=_ref_score)[:5]:
