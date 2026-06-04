@@ -462,9 +462,18 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.salience_items:
             return ""
-        return "关键事件: " + self._compact_json(
-            ctx.salience_items[:_MAX_SALIENCE_ITEMS],
-        )
+        # P0-2 (defense in depth): explicitly whitelist public fields
+        # so a future change that leaks a private key (seer_result,
+        # witch_target, wolf_team, private_intent, moderator_full) into
+        # ctx.salience_items cannot end up in the player-visible prompt.
+        # The runtime (runtime/context.py:build_agent_context) does not
+        # currently populate these, but the renderer should still
+        # enforce the boundary.
+        slimmed = [_slim_salience_item(item) for item in ctx.salience_items[:_MAX_SALIENCE_ITEMS]]
+        slimmed = [item for item in slimmed if item is not None]
+        if not slimmed:
+            return ""
+        return "关键事件: " + self._compact_json(slimmed)
 
     def _build_rag_hints(self) -> str:
         ctx = self.context
@@ -514,6 +523,7 @@ class PlayerPromptBuilder:
                 "key_decisions": list(item.get("key_decisions") or [])[:3],
             })
         return slim
+
 
     def _build_reflection_memory_hints(self) -> str:
         ctx = self.context
@@ -714,12 +724,17 @@ class PlayerPromptBuilder:
                 )
         else:
             role = ctx.own_role or "villager"
+            # P0-1: example_role now follows ctx.own_role so the example's
+            # `private_intent.true_role` reflects the agent's actual role
+            # instead of being hardcoded to "villager". Wolves still get
+            # the wolf-style example; every other role uses their own
+            # role identifier. faction_goal and claimed_view stay role-aware.
             if role == "werewolf":
                 example_role = "werewolf"
                 example_goal = "confuse_good"
                 example_view = _CLAIMED_VIEW_GOOD
             else:
-                example_role = "villager"
+                example_role = role
                 example_goal = "find_wolves"
                 example_view = _CLAIMED_VIEW_GOOD
             parts.append("示例输出（发言场景）：")
@@ -736,13 +751,23 @@ class PlayerPromptBuilder:
             # never actually triggered. Using role here makes the
             # claimed_view match the player's own identity.
             vote_example_view = _CLAIMED_VIEW_SEER if role == "seer" else _CLAIMED_VIEW_GOOD
+            # P0-4: a seer agent stands with their OWN check, not with
+            # another seer. The example must therefore set
+            # `standing_with_seer=""` (own ID is implicit) and keep
+            # `vote_basis="seer_check"` (now meaning "based on my own
+            # check"). Non-seer roles continue to see the p03 example
+            # since they do side with an external seer claim.
+            if role == "seer":
+                vote_standing_with_seer = ""
+            else:
+                vote_standing_with_seer = "p03"
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '
                          '"reason": "公开理由：p05发言可疑", '
                          '"seer_stance": "trust", '
                          '"vote_basis": "seer_check", '
-                         '"standing_with_seer": "p03", '
+                         f'"standing_with_seer": "{vote_standing_with_seer}", '
                          '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
                          '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
                          '"private_reason": "心里活动：我更信p03的预言家线，p05像狼队抗推失败后的防守位，所以投p05。", '
@@ -962,3 +987,38 @@ class PlayerPromptBuilder:
         if len(text) <= max_chars:
             return text
         return text[:max_chars] + f"...（已截断，原长度{len(text)}）"
+
+
+# P0-2 (defense): explicit field whitelist for salience items. The
+# runtime currently does not populate private keys into salience_items,
+# but the renderer should enforce the boundary so a future change
+# cannot leak `seer_result`, `witch_target`, `wolf_team`, etc. into
+# the player-visible prompt.
+_SALIENCE_PUBLIC_FIELDS: frozenset[str] = frozenset({
+    "weight", "bucket", "fact_type", "source", "target", "value",
+    "day", "phase", "event_type",
+})
+_SALIENCE_PRIVATE_KEYS: frozenset[str] = frozenset({
+    "seer_result", "witch_target", "wolf_team",
+    "private_intent", "moderator_full",
+})
+
+
+def _slim_salience_item(item: Any) -> dict[str, Any] | None:
+    """Return a salience item with only public fields, or None if it
+    contains any private key.
+
+    P0-2 (defense): explicit whitelist of public salience fields. Any
+    item carrying a private key (seer_result, witch_target, wolf_team,
+    private_intent, moderator_full) is dropped entirely. The runtime
+    is not expected to populate these, but the renderer must enforce
+    the boundary so a future change cannot leak through.
+    """
+    if not isinstance(item, dict):
+        return None
+    # If the item contains any private key, drop it entirely.
+    if any(key in item for key in _SALIENCE_PRIVATE_KEYS):
+        return None
+    # Otherwise project to the public-field whitelist. Keep only known
+    # public fields so future field additions don't silently leak.
+    return {k: v for k, v in item.items() if k in _SALIENCE_PUBLIC_FIELDS}

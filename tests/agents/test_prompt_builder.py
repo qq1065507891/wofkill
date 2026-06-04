@@ -1891,5 +1891,385 @@ def test_persona_empty_snapshot_is_noop():
     assert "人格设定" not in user_prompt
 
 
+# ---------------------------------------------------------------------------
+# P0-1: _format_examples else branch must follow ctx.own_role for true_role
+# ---------------------------------------------------------------------------
+#
+# Audit P0-1 finding: in `_format_examples` (the FULL_ACTION default branch
+# used by speech/vote), the `example_role` variable that becomes
+# `private_intent.true_role` was hardcoded to "villager" for every non-wolf
+# role. That meant a seer / witch / hunter / idiot / hybrid agent saw an
+# example that misrepresented their actual role in the audit log —
+# the LLM would copy the structure and emit `private_intent.true_role =
+# "villager"` even though `ctx.own_role` was something else.
+#
+# Fix: the variable that drives `true_role` in the example's
+# `private_intent` should be `ctx.own_role` (or a sensible mapping
+# for roles that have no clean "team" parallel in the example's
+# faction_goal). Tests below cover all 5 non-wolf roles and assert
+# the example's `private_intent.true_role` reflects `own_role`.
+
+
+def _find_example_true_roles(prompt: str) -> list[str]:
+    """Extract every `true_role` value in the rendered example JSON.
+
+    Walks the prompt for JSON example objects (those carrying
+    ``action_type``) and returns the value of their nested
+    ``private_intent.true_role`` field. Used by P0-1 tests to verify
+    the example role matches `own_role` rather than the hardcoded
+    "villager".
+    """
+    true_roles: list[str] = []
+    for match in _re.finditer(
+        r"\{[^{}]*?(?:\{[^{}]*\}[^{}]*?)*\}",
+        prompt,
+        flags=_re.DOTALL,
+    ):
+        try:
+            data = _json.loads(match.group(0))
+        except _json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or "action_type" not in data:
+            continue
+        pi = data.get("private_intent")
+        if isinstance(pi, dict) and "true_role" in pi:
+            true_roles.append(str(pi["true_role"]))
+    return true_roles
+
+
+def _make_full_action_ctx(role: str) -> AgentContext:
+    """Build a context that triggers _format_examples (FULL_ACTION mode).
+
+    Uses REFLECTION task + [SPEECH, VOTE] legal actions so the
+    FULL_ACTION default branch renders both the speech and vote
+    example pair. own_role is parameterized.
+    """
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.REFLECTION,
+        phase="day",
+        day_number=2,
+        own_role=role,
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 reflection",
+    )
+
+
+@pytest.mark.parametrize("role", ["seer", "witch", "hunter", "idiot", "hybrid"])
+def test_format_examples_private_intent_matches_own_role(role: str):
+    """P0-1: example's private_intent.true_role must equal ctx.own_role.
+
+    For seer / witch / hunter / idiot / hybrid (the 5 non-werewolf,
+    non-villager roles that the bug was hardcoding to "villager"),
+    the example rendered by _format_examples must use the agent's
+    own role, not a hardcoded "villager". Otherwise the LLM copies
+    the example and the audit log records `true_role="villager"`
+    for a seer — a real bug observed in production traces.
+    """
+    ctx = _make_full_action_ctx(role)
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    true_roles = _find_example_true_roles(prompt)
+    # Both the speech and vote examples should advertise the role.
+    assert true_roles, (
+        f"No example private_intent.true_role found in prompt for role={role!r}"
+    )
+    for tr in true_roles:
+        assert tr == role, (
+            f"Example private_intent.true_role must equal own_role={role!r}, "
+            f"got {tr!r}. The example hardcodes the wrong role, "
+            f"priming the LLM to copy a wrong audit value."
+        )
+    # Explicit anti-regression: the hardcoded "villager" must NOT appear
+    # as a true_role for any non-villager role.
+    assert "villager" not in true_roles, (
+        f"Example must not advertise true_role='villager' for own_role={role!r}; "
+        f"observed true_roles={true_roles}."
+    )
+
+
+def test_format_examples_villager_role_still_uses_villager():
+    """P0-1: regression — villager example must still use 'villager'.
+
+    Confirms the fix didn't accidentally break the villager branch
+    (where example_role was already 'villager' before the fix).
+    """
+    ctx = _make_full_action_ctx("villager")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    true_roles = _find_example_true_roles(prompt)
+    assert true_roles, "Expected example true_roles for villager branch"
+    for tr in true_roles:
+        assert tr == "villager", (
+            f"Villager branch must still use true_role='villager', got {tr!r}"
+        )
+
+
+def test_format_examples_werewolf_branch_still_uses_werewolf():
+    """P0-1: regression — werewolf example must still use 'werewolf'.
+
+    The bug fix only affects non-werewolf roles (the else branch).
+    The werewolf branch (line ~717-718) was already correct and
+    must remain so. Confirms no regression on the wolf example.
+    """
+    ctx = _make_full_action_ctx("werewolf")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    true_roles = _find_example_true_roles(prompt)
+    assert true_roles, "Expected example true_roles for werewolf branch"
+    for tr in true_roles:
+        assert tr == "werewolf", (
+            f"Werewolf branch must still use true_role='werewolf', got {tr!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P0-4: vote example standing_with_seer must use own ID for seer agent
+# ---------------------------------------------------------------------------
+#
+# Audit P0-4 finding: in `_format_examples`, the vote example hardcodes
+# `"standing_with_seer": "p03"` for every role. For a seer agent this
+# is wrong — a seer stands with their OWN check, not with another seer.
+# A seer voting based on its own check should report `standing_with_seer
+# = ""` (own ID is implicit) with `vote_basis = "seer_check"` meaning
+# "based on my own check".
+#
+# Fix: when `ctx.own_role == "seer"`, the example vote should set
+# `standing_with_seer=""` (own ID is implicit). For non-seer roles
+# the existing `p03` example stands.
+
+
+def test_format_examples_seer_vote_uses_own_check():
+    """P0-4: a seer agent's vote example must stand with own check (empty seer ID).
+
+    The vote example in the prompt primes the LLM on what fields to
+    fill. For a seer, `standing_with_seer` is the seer ID the agent
+    sides with — a seer is THE seer, so the field should be empty
+    (own ID is implicit) and `vote_basis` stays "seer_check" meaning
+    "based on my own check". Otherwise the LLM copies the example
+    and the seer reports a phantom "p03" allegiance it doesn't have.
+    """
+    ctx = _make_full_action_ctx("seer")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Find the vote example (action_type="vote") and inspect its
+    # standing_with_seer field.
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples, "Expected a vote example in the prompt"
+    for ex in vote_examples:
+        # P0-4 fix: seer's vote example must stand with own check.
+        assert ex.get("standing_with_seer") == "", (
+            f"Seer vote example must have standing_with_seer='' "
+            f"(own check, no other seer to side with), "
+            f"got {ex.get('standing_with_seer')!r}. "
+            f"Full example: {ex}"
+        )
+        # vote_basis must remain "seer_check" — meaning "based on my
+        # own check", not "based on someone else's seer_check".
+        assert ex.get("vote_basis") == "seer_check", (
+            f"Seer vote example must keep vote_basis='seer_check' "
+            f"(now meaning own check), got {ex.get('vote_basis')!r}. "
+            f"Full example: {ex}"
+        )
+
+
+def test_format_examples_non_seer_vote_keeps_p03_example():
+    """P0-4: non-seer roles keep the p03 / seer_check example.
+
+    Regression: the seer-specific fix must NOT remove the original
+    p03 / seer_check example for non-seer roles (villager, witch,
+    hunter, idiot, hybrid, werewolf). Those roles DO side with an
+    external seer claim, so the example is still meaningful.
+    """
+    for role in ("villager", "witch", "hunter", "idiot", "hybrid", "werewolf"):
+        ctx = _make_full_action_ctx(role)
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        vote_examples = [
+            ex for ex in _extract_json_examples(prompt)
+            if ex.get("action_type") == "vote"
+        ]
+        assert vote_examples, (
+            f"Expected a vote example for role={role!r}"
+        )
+        for ex in vote_examples:
+            # Non-seer roles still see the p03 / seer_check example.
+            assert ex.get("standing_with_seer") == "p03", (
+                f"Non-seer role={role!r} must keep the 'p03' example "
+                f"for standing_with_seer (they side with an external seer), "
+                f"got {ex.get('standing_with_seer')!r}. Full example: {ex}"
+            )
+            assert ex.get("vote_basis") == "seer_check", (
+                f"Non-seer role={role!r} must keep vote_basis='seer_check', "
+                f"got {ex.get('vote_basis')!r}. Full example: {ex}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# P0-2 (defense): _build_salience_events must whitelist public fields only
+# ---------------------------------------------------------------------------
+#
+# Audit P0-2 (defense) finding: `_build_salience_events` dumps
+# `ctx.salience_items` into the prompt without filtering private keys.
+# The runtime (`runtime/context.py:build_agent_context`) currently doesn't
+# populate private keys into salience_items, but a future change could
+# easily leak `seer_result`, `witch_target`, `wolf_team`, etc. into
+# the player-visible salience. Defense in depth: the renderer should
+# explicitly allow only the public fields and silently drop any item
+# containing private keys.
+#
+# Allowed public fields: weight, bucket, fact_type, source, target, value,
+# day, phase, event_type.
+# Private keys that must be dropped: seer_result, witch_target, wolf_team,
+# private_intent, moderator_full.
+
+
+_SALIENCE_PUBLIC_FIELDS = frozenset({
+    "weight", "bucket", "fact_type", "source", "target", "value",
+    "day", "phase", "event_type",
+})
+
+_SALIENCE_PRIVATE_KEYS = (
+    "seer_result", "witch_target", "wolf_team",
+    "private_intent", "moderator_full",
+)
+
+
+def _make_ctx_with_salience(items: list[dict]) -> AgentContext:
+    """Build a context with the given salience_items populated.
+
+    Used by P0-2 (defense) tests to feed salience payloads of varying
+    contamination level.
+    """
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="D2",
+        salience_items=items,
+    )
+
+
+def test_salience_events_strips_private_keys():
+    """P0-2: an item with a private key (e.g., seer_result) must not leak.
+
+    Defense in depth: even if a future change in the runtime
+    accidentally puts a `seer_result` field into a salience item,
+    the rendered prompt must not contain that substring. The
+    renderer should either drop the offending item entirely or
+    strip the private key — but the private value must NOT appear
+    in the user prompt.
+    """
+    leaked_item = {
+        "weight": 0.7,
+        "bucket": "vote_pattern",
+        "fact_type": "vote_resolved",
+        "source": "p03",
+        "target": "p07",
+        "value": "p07 voted p03",
+        "day": 2,
+        "phase": "day",
+        "event_type": "vote_resolved",
+        # Private key that must NOT appear in the rendered prompt.
+        "seer_result": "werewolf",
+    }
+    ctx = _make_ctx_with_salience([leaked_item])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The private KEY name must not appear (we don't know which side
+    # of the leak was rendered, but either way no "seer_result" should
+    # be in the user prompt).
+    assert "seer_result" not in prompt, (
+        "P0-2 (defense): private key 'seer_result' leaked into the "
+        "rendered user prompt via salience_events. The renderer must "
+        "strip private keys before serializing salience items."
+    )
+    # The private VALUE must not appear either ("werewolf" is allowed
+    # to appear elsewhere in the prompt, so we check for the exact
+    # seer_result=werewolf pairing).
+    assert '"seer_result":"werewolf"' not in prompt
+    assert "'seer_result': 'werewolf'" not in prompt
+
+
+def test_salience_events_strips_all_private_keys():
+    """P0-2: every documented private key must be stripped.
+
+    Sweep: the renderer must drop every private key in the audit
+    boundary, not just `seer_result`. Covers witch_target, wolf_team,
+    private_intent, and moderator_full.
+    """
+    leaked_item = {
+        "weight": 0.5,
+        "bucket": "b",
+        "fact_type": "f",
+        "source": "p08",
+        "target": "p05",
+        "value": "v",
+        "day": 2,
+        "phase": "day",
+        "event_type": "e",
+        # Pile of private keys — none should reach the prompt.
+        "seer_result": "werewolf",
+        "witch_target": "p07",
+        "wolf_team": ["p01", "p08", "p11"],
+        "private_intent": {"true_role": "werewolf"},
+        "moderator_full": "FULL STATE",
+    }
+    ctx = _make_ctx_with_salience([leaked_item])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    for private_key in _SALIENCE_PRIVATE_KEYS:
+        assert private_key not in prompt, (
+            f"P0-2 (defense): private key {private_key!r} leaked into the "
+            f"rendered user prompt via salience_events."
+        )
+
+
+def test_salience_events_keeps_public_fields():
+    """P0-2: a clean salience item (public fields only) passes through.
+
+    Confirms the whitelist is not so aggressive that it drops valid
+    public salience items. The renderer's `_compact_json` output
+    must include the public fields that drive the LLM's reasoning.
+    """
+    clean_item = {
+        "weight": 0.8,
+        "bucket": "vote_pattern",
+        "fact_type": "vote_resolved",
+        "source": "p03",
+        "target": "p07",
+        "value": "p07 voted p03 on D2",
+        "day": 2,
+        "phase": "day",
+        "event_type": "vote_resolved",
+    }
+    ctx = _make_ctx_with_salience([clean_item])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # All public field names and at least some public values should appear.
+    assert "关键事件" in prompt, (
+        "Salience section header must be present for non-empty salience_items"
+    )
+    # Spot-check public values pass through the JSON serialization.
+    assert "p07 voted p03 on D2" in prompt, (
+        "Public 'value' field of salience item must pass through to prompt"
+    )
+    assert "vote_resolved" in prompt, (
+        "Public 'event_type' / 'fact_type' field must pass through to prompt"
+    )
+
+
+def test_salience_events_section_absent_when_empty():
+    """P0-2: empty salience_items → no salience section in the prompt.
+
+    Sanity: the existing empty-path behavior must be preserved.
+    """
+    ctx = _make_ctx_with_salience([])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "关键事件" not in prompt, (
+        "Empty salience_items must not produce a salience section in the prompt"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
