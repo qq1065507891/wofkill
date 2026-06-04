@@ -375,21 +375,21 @@ def _add_own_speech_notes(
             memory["logic_flaws"].append({
                 "day": day,
                 "speaker": speaker,
-                "point": _clip(sentence),
+                "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
         if any(marker in sentence for marker in VALID_POINT_MARKERS):
             memory["valid_points"].append({
                 "day": day,
                 "speaker": speaker,
-                "point": _clip(sentence),
+                "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
         if "站边" in sentence:
             memory["stance_notes"].append({
                 "day": day,
                 "speaker": speaker,
-                "point": _clip(sentence),
+                "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
 

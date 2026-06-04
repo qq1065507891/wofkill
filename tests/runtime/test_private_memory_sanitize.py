@@ -382,3 +382,123 @@ def test_priority_ordered_truncation_drops_logic_flaws_before_stance_notes():
         f"stance_notes (priority 2). Got logic_flaws={truncated['logic_flaws']!r}, "
         f"stance_notes={truncated['stance_notes']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-01: _add_own_speech_notes writes the raw sentence into logic_flaws /
+# valid_points / stance_notes without sanitizing. If a player's public
+# speech contains first-person seer-style phrasing ("我验出 p05 是预言家"),
+# that text lands verbatim in another player's private memory and would
+# indirectly leak moderator-only seer-check results.
+#
+# Fix: wrap the `point` value with `_sanitize_role_claims(...)` before
+# writing.
+# ---------------------------------------------------------------------------
+
+
+def _make_speech_event_for_player(
+    text: str, *, speaker: str, day: int = 1, visibility: str = "public"
+) -> GameEvent:
+    return GameEvent(
+        type="speech",
+        payload={
+            "speaker": speaker,
+            "text": text,
+            "day_number": day,
+            "visibility": visibility,
+        },
+    )
+
+
+def test_speech_point_sanitized_against_cross_speaker_first_person():
+    """MEM-01: when another player's public speech contains first-person
+    seer-style phrasing like "我验出 p05 是预言家", the resulting
+    logic_flaws entry (if any) must NOT echo that verbatim string.
+    Other players must not see moderator-only seer-check results
+    through private memory."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    # p02 is a different player; p01 is building its own private memory.
+    # p02's speech contains the leaky "我验出 p05 是预言家" phrase AND
+    # a "逻辑漏洞" marker so it lands in logic_flaws.
+    gs = GameState(
+        game_id="g_test_mem01",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            _make_speech_event_for_player(
+                "我验出 p05 是预言家，他的逻辑漏洞很明显",
+                speaker="p02",
+                day=1,
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01")
+
+    # Setup sanity: the 逻辑漏洞 marker should still trigger a logic_flaw
+    # entry (we are only asserting the point text is sanitized, not that
+    # the entry is dropped entirely).
+    assert memory.get("logic_flaws"), (
+        f"setup: '逻辑漏洞' marker must still create a logic_flaw; "
+        f"got: {memory!r}"
+    )
+    # The cross-speaker first-person claim must be sanitized away.
+    for entry in memory["logic_flaws"]:
+        assert "我验出 p05 是预言家" not in entry["point"], (
+            f"MEM-01: logic_flaw point must not echo cross-speaker "
+            f"first-person seer check verbatim; got point: {entry['point']!r}"
+        )
+
+
+def test_speech_point_keeps_legitimate_content():
+    """MEM-01: legitimate (non-leaky) speech content survives
+    sanitization and still reaches valid_points via VALID_POINT_MARKERS.
+
+    The sanitization must NOT clobber benign sentences — only the role
+    / faction / teammate / first-person-check patterns are stripped."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    # "合理" is a VALID_POINT_MARKER, so this sentence should land in
+    # valid_points. The text is intentionally benign (no 我 / 队友 /
+    # 阵营 / first-person-check patterns) so the sanitization must
+    # pass it through unchanged.
+    gs = GameState(
+        game_id="g_test_mem01_b",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            _make_speech_event_for_player(
+                "p05 发言合理",
+                speaker="p02",
+                day=1,
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01")
+
+    # Setup sanity: 合理 marker should create a valid_point entry.
+    assert memory.get("valid_points"), (
+        f"setup: '合理' marker must still create a valid_point; "
+        f"got: {memory!r}"
+    )
+    # And the legitimate content survives intact (no false-positive
+    # sanitization on benign sentences).
+    found = any(
+        "p05 发言合理" in entry["point"]
+        for entry in memory["valid_points"]
+    )
+    assert found, (
+        f"MEM-01: legitimate content 'p05 发言合理' should survive "
+        f"sanitization verbatim; got valid_points: "
+        f"{memory['valid_points']!r}"
+    )
