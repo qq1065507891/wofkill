@@ -249,8 +249,24 @@ class PlayerPromptBuilder:
                 "归票基于公开证据链而非情绪。"
             ),
         }
+        # P2-9: non-wolf roles need a one-line note on which vote_basis
+        # enum value to use. The 7-value enum (seer_check / seer_siding
+        # / speech_logic / vote_pattern / pressure_test / anti_herd /
+        # fallback) is too wide to guess without guidance. Only the
+        # seer legitimately uses ``seer_check`` (their own check);
+        # every other role uses speech_logic / vote_pattern /
+        # seer_siding.
+        _VOTE_BASIS_GUIDANCE = (
+            "【投票时 vote_basis 选用 speech_logic / vote_pattern / "
+            "seer_siding，不要用 seer_check。】"
+        )
         if role in role_rules:
             lines.append(role_rules[role])
+            # Seer stands with their OWN check (own ID is implicit),
+            # so the "don't use seer_check" guidance doesn't apply
+            # to them — they should use seer_check.
+            if role != "seer":
+                lines.append(_VOTE_BASIS_GUIDANCE)
         return "\n".join(lines) if lines else ""
 
     def _build_output_contract(self) -> str:

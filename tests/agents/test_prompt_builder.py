@@ -2968,12 +2968,70 @@ def test_belief_top3_cap():
 
 
 # ---------------------------------------------------------------------------
+# P2-9: role guide documents which vote_basis values to use
+# ---------------------------------------------------------------------------
+#
+# Audit P2-9 finding: non-wolf roles did not see a one-line note
+# saying which ``vote_basis`` enum value to use for votes. The
+# 7-value ``vote_basis`` enum (seer_check / seer_siding /
+# speech_logic / vote_pattern / pressure_test / anti_herd /
+# fallback) is too wide for the LLM to guess correctly without
+# guidance, and the wrong choice silently degraded the audit log.
+# The seer is the only role that legitimately uses ``seer_check``
+# (based on their OWN check); every other role uses
+# speech_logic / vote_pattern / seer_siding and must NOT use
+# seer_check.
+#
+# Fix: add a one-line note to the role guide for non-seer roles:
+# "投票时 vote_basis 选用 speech_logic / vote_pattern / seer_siding，
+# 不要用 seer_check".
+
+
+def test_role_guide_documents_vote_basis():
+    """P2-9: the role guide for non-seer roles must mention which
+    vote_basis enum values to use (and that seer_check is not for
+    non-seer roles).
+    """
+    # Spot-check villager (a non-seer good-side role).
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # The role guide lives in the system prompt (stable section).
+    # Check that vote_basis guidance is present.
+    assert "vote_basis" in system_prompt, (
+        "P2-9: non-seer role guide must mention vote_basis enum "
+        f"guidance. system_prompt: {system_prompt!r}"
+    )
+    # And explicitly call out that seer_check is NOT to be used by
+    # non-seer roles.
+    assert "seer_check" in system_prompt, (
+        "P2-9: non-seer role guide must explicitly call out that "
+        "seer_check is not for non-seer roles. "
+        f"system_prompt: {system_prompt!r}"
+    )
+
+
+
+# ---------------------------------------------------------------------------
 # P2-3: SHERIFF example must include a sheriff_withdraw example
 # ---------------------------------------------------------------------------
 #
 # Audit P2-3 finding: the SHERIFF_REGISTER example block in
 # _format_examples renders examples for `sheriff_register` and
 # `no_action`, but does not show `sheriff_withdraw`. Without an
+# explicit withdraw example, the LLM was emitting `sheriff_register`
+# when it intended to withdraw, and the parser fell back to a
+# default (game trace g_3528592081 action 41, p05).
+#
+# Fix: add a third example showing `sheriff_withdraw` so the LLM
+# can pattern-match the correct action type when the player
+# changes their mind about running for sheriff.
+
 # explicit withdraw example, the LLM was emitting `sheriff_register`
 # when it intended to withdraw, and the parser fell back to a
 # default (game trace g_3528592081 action 41, p05).
