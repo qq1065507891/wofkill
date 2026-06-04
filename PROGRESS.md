@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 3 (Memory + Info) MERGED — 2026-06-04**
-- Active task: All 7 batch-3 P0 redesign tasks done (M6, I4, M9, I1, I2, I3). Next: Batch 4 (P1 30 items by 5 area).
+- Current phase: **Batch 4 (P1 by area) Prompt sub-batch COMPLETE — 2026-06-04**
+- Active task: All 5 batch-4 Prompt P1 tasks done (S3, S4, S6, S7, S9). Next: parallel batches 4-skill/4-rag/4-memory/4-directives.
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
@@ -41,6 +41,20 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 **Batch 1 totals: 11 commits, 70+ new tests, 1158 related tests pass, 0 regression.**
 
 **Batch 1 results:** 10/10 tasks done. `pytest tests/agents/ tests/runtime/ tests/rules/ tests/storage/ --ignore=tests/integration`: **1299 passed**, 0 failed. 12 new tests in `tests/agents/test_output_parser.py`. Zero regressions across the project.
+
+### Batch 4 (P1 by area) — Prompt sub-batch — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p4-prompt` on branch `p4-prompt`. Parallel siblings: `p4-skill`, `p4-rag`, `p4-memory`, `p4-directives`.
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.1 | P1-S3 16 user sections get [硬约束/辅助/可选] priority labels | DONE | `0ed9a34` | New `_SECTION_PRIORITIES` map + `_label_section()` helper in `build_user_prompt`. Wraps 16 sections; empty bodies pass through unchanged. Updated 3 P0-S5 tests to use MUST/SHOULD/REFERENCE markers (P0-S5 inner sub-group discriminators) so the new outer 【硬约束】 label on strategy_directive doesn't break them. |
+| 4.2 | P1-S4 `_format_examples` has no `intent`/`choice` leak | DONE | `7daa9d1` | Audit confirms all 6 example branches (wolf_kill, wolf_no_kill, sheriff_register, no_action, speech, vote) render only FULL_ACTION fields. 4 regression tests scan each branch's JSON examples. |
+| 4.3 | P1-S6 (residual) speech_quality / vote_quality correction_hint is short and specific | DONE | `e68016d` | Split: `error_message` keeps the long field-missing enumeration (audit log + 100-char prompt snippet), `correction_hint` is now a short action-oriented line: speech_quality = "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"; vote_quality = "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)". 4 new tests + 1 updated test. |
+| 4.4 | P1-S7 (residual) sanitize claimed_view to enum in production | DONE | `3123cf4` | `action_from_data` now ALWAYS calls `sanitize_optional_private_fields` (was only on validation failure). New `_VALID_CLAIMED_VIEW_VALUES` frozenset + `_safe_default_claimed_view(true_role)` helper. Non-enum values get replaced: seer → "seer", everything else → "good_player_without_night_info". 4 new tests. |
+| 4.5 | P1-S9 villager role guide added | DONE | `7f3629a` | `_build_role_guide` had entries for 6 roles (hunter, idiot, witch, seer, werewolf, hybrid) but not villager (3 of 12 players). Added 4 day-time decision rules: public stance / contradiction analysis / N1 antidote support / evidence-based voting. 3 new tests + 1 regression test for other roles. |
+
+**Batch 4 (Prompt) results:** 5/5 tasks done. 19 new tests in `tests/agents/test_prompt_builder.py` (3 priority_label + 3 format_examples + 1 villager_present + 1 villager_specific_rules + 1 other_roles_regression + 1 priority_labels_consistent + 1 priority_hard_distinct + 4 speech/vote quality hint tests in `test_player_agent.py` + 4 claimed_view tests in `test_player_agent.py`). `pytest tests/agents/ tests/runtime/`: **1105 passed** in 150s. Zero regressions.
 
 ### Batch 3 (P0 redesign) — Info-isolation sub-batch — IN PROGRESS 2026-06-04
 
