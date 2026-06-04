@@ -376,10 +376,64 @@ def test_vector_fallback_warns(caplog):
 
 
 # ---------------------------------------------------------------------------
-# MEM-15: CrossGameQuery.tags uses OR semantics — an entry matches if
-# ANY tag in the query is in the entry's tags. The docstring must
-# state this so callers don't assume AND.
+# MEM-25: ReflectionMemory._persist swallows DB write failures by
+# default, which is fine for fire-and-forget logging in production
+# but makes it impossible to detect broken repo implementations
+# during tests / migration verification. The fix adds an opt-in
+# ``raise_on_failure`` flag so callers (test harness, migration
+# scripts) can force the exception to surface.
 # ---------------------------------------------------------------------------
+
+
+def test_persist_raises_on_failure_when_opted_in():
+    """MEM-25: when _persist is called with ``raise_on_failure=True``
+    AND the repo's ``save_reflection`` raises, the exception must
+    propagate out of ``_persist`` instead of being swallowed."""
+    from werewolf_agent.memory.reflection import ReflectionMemory
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    class _BoomRepo:
+        """A repo whose save_reflection always raises."""
+        def save_reflection(self, entry):  # noqa: ANN001
+            raise RuntimeError("simulated DB failure")
+
+    mem = ReflectionMemory(repo=_BoomRepo())
+    entry = ReflectionEntry(
+        entry_id="r1", game_id="g1", player_id="p1",
+        role="seer", faction_won=True, text="t", tags=["x"],
+    )
+    # Default (raise_on_failure=False) must NOT raise.
+    mem.store(entry)  # no exception
+    # Opt-in must raise.
+    import pytest
+    with pytest.raises(RuntimeError, match="simulated DB failure"):
+        mem.store(entry, raise_on_failure=True)
+
+
+def test_persist_silent_by_default():
+    """MEM-25 (regression guard): without opt-in, _persist keeps the
+    legacy silent-on-failure behavior so production callers don't
+    start seeing new exceptions after a dependency upgrade."""
+    from werewolf_agent.memory.reflection import ReflectionMemory
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    class _BoomRepo:
+        def save_reflection(self, entry):  # noqa: ANN001
+            raise RuntimeError("simulated DB failure")
+
+    mem = ReflectionMemory(repo=_BoomRepo())
+    entry = ReflectionEntry(
+        entry_id="r1", game_id="g1", player_id="p1",
+        role="seer", faction_won=True, text="t", tags=["x"],
+    )
+    # No raise, no propagation.
+    mem.store(entry)
+    # And the in-memory store still has the entry — the failure is
+    # an observability issue, not a correctness one.
+    assert mem.get("r1") is not None
+
+
+
 
 
 def test_tag_filter_or_semantics_documented():
