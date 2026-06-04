@@ -1113,9 +1113,18 @@ class PlayerPromptBuilder:
 
     @staticmethod
     def _truncate_text(text: str, max_chars: int) -> str:
+        # P2-4: when truncated, append a clearly visible `<已截断>`
+        # marker. Truncation may cut mid-string, mid-array, or mid-object,
+        # so the JSON is no longer parseable — the marker is a
+        # signal to the LLM (and to the parse-failure handler) that
+        # the snippet was intentionally cut and is not expected to
+        # round-trip through json.loads. This is an acceptable
+        # compromise: making the cut land on a valid JSON boundary
+        # would require a much larger refactor (re-serialize with
+        # the original document structure in mind).
         if len(text) <= max_chars:
             return text
-        return text[:max_chars] + f"...（已截断，原长度{len(text)}）"
+        return text[:max_chars] + "...<已截断>"
 
 
 # P0-2 (defense): explicit field whitelist for salience items. The

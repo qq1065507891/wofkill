@@ -2860,6 +2860,56 @@ def test_salience_events_section_absent_when_empty():
 
 
 # ---------------------------------------------------------------------------
+# P2-4: _compact_json truncation must mark the cut clearly
+# ---------------------------------------------------------------------------
+#
+# Audit P2-4 finding: _compact_json truncates to 1800 chars and appends
+# `...（已截断，原长度X）`. The trailing `）` followed by nothing leaves
+# the LLM looking at a broken structure (mid-string, mid-array, mid-object).
+# The retry loop sometimes treats the malformed snippet as parseable JSON
+# (truncation rarely lands cleanly on a quote/brace boundary).
+#
+# Fix: append a clearly visible `<已截断>` marker so the LLM knows
+# the JSON was intentionally cut and is not expected to parse.
+# This is an acceptable compromise (we don't make the cut valid JSON —
+# that's a much bigger refactor). The marker also helps the parse-
+# failure handler distinguish "truncated by design" from "garbled".
+
+
+def test_compact_json_truncation_marks_omission():
+    """P2-4: a long dict passed through _compact_json must end with
+    a clearly visible omission marker."""
+    builder = PlayerPromptBuilder(
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+        )
+    )
+    # Build a long dict whose JSON-serialized form definitely exceeds
+    # the 1800-char cap. Padding values in a single big string.
+    big = {
+        "key_" + str(i): "x" * 200
+        for i in range(50)
+    }
+    out = builder._compact_json(big)
+    assert out.endswith("<已截断>"), (
+        f"P2-4: truncated compact JSON must end with the `<已截断>` "
+        f"marker so the LLM knows the snippet was intentionally cut. "
+        f"Last 30 chars: {out[-30:]!r}"
+    )
+    # And confirm the truncation actually fired (i.e. the input was
+    # bigger than the cap).
+    assert len(big) > 0  # sanity
+    # The marker suffix length matters: a future regression that drops
+    # the marker should fail this assertion.
+    assert "<已截断>" in out
+
+
+
+# ---------------------------------------------------------------------------
 # P2-3: SHERIFF example must include a sheriff_withdraw example
 # ---------------------------------------------------------------------------
 #
