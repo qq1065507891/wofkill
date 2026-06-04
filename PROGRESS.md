@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 3 (Memory + Info) MERGED — 2026-06-04**
-- Active task: All 7 batch-3 P0 redesign tasks done (M6, I4, M9, I1, I2, I3). Next: Batch 4 (P1 30 items by 5 area).
+- Current phase: **Batch 4 (Memory area, P1-M10..M14) MERGED — 2026-06-04**
+- Active task: All 5 batch-4 memory P1 tasks done (M10, M11, M12, M13, M14). Next: Batch 4 remaining areas (Prompt / Skill / RAG / Directives).
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
@@ -105,7 +105,21 @@ Worktree: `.worktrees/p3-memory` on branch `p3-memory`. Three tasks scoped to th
 
 **Memory sub-batch (Batch 3) results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1186 passed**, 0 failed, 0 regression.
 
-### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
+### Batch 4 — Memory area (P1-M10, M11, M12, M13, M14) — COMPLETE 2026-06-04
+
+Worktree: `.worktrees/p4-memory` on branch `p4-memory`. Five P1 issues scoped to the **Memory** area (parallel worktrees: `p4-prompt`, `p4-skill`, `p4-rag`, `p4-directives`).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.14 | P1-M10: private_memory marker disambiguation | DONE | `2fe85d7` | Added docstrings to `LOGIC_FLAW_MARKERS` and `VALID_POINT_MARKERS` in `runtime/private_memory.py` warning that matches are crude signals, not authoritative verdicts. New `_LLM_AWARE_HINT` constant for prompt renderers. 2 new tests. |
+| 4.15 | P1-M11: profile shows only current-role win rate (regression test) | DONE | `66cf6d2` | Verified the P0-M4 contract with a stricter test: when 3 roles have different win rates, no other role's count (5/3/1) leaks anywhere in the hint. No implementation change. 1 new test. |
+| 4.16 | P1-M12: reflection hint diversity | DONE | `bf4f872` | `_reflection_memory_hints` now caps at 2 hints per role. Priority sort still drives selection; diversity is a filter on top. Pre-existing M3 test (3 seer entries) updated to reflect new contract: 3 inputs → 2 outputs (the 2 newest). 3 new tests. |
+| 4.17 | P1-M13: belief_state.my_suspects excludes dead players (regression test) | DONE | `302affd` | Verified the existing output-stage filter in `build_agent_context` with a full-path test through `build_agent_context`. Dead player p03 must not appear in `belief_state["my_suspects"]` or `["my_trusted"]`. No implementation change. 1 new test. |
+| 4.18 | P1-M14: private_memory priority-ordered truncation | DONE | `0ee3a82` | Replaced per-category `[-12:]` cap with priority-ordered truncation against a 2000-token budget. New `_truncate_by_priority()` drops from the lowest-priority category (valid_points) first, then logic_flaws, then stance_notes, preserving vote_thoughts longest. 4 new tests. |
+
+**Memory sub-batch (Batch 4) results:** 5/5 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1203 passed**, 0 failed, 0 regression. Each task is one commit, independently revertible.
+
+---
 
 **Problem:** Game trace `g_3528592081` Action 50 — p10's LLM
 output was `{��intent��:"question_target",...}`. The Chinese
