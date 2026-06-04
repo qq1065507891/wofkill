@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Prompt Revamp — Batch 1 in progress — 2026-06-03**
-- Active task: Batch 1 Task 1.6 P0-S8 (PlayerAction strict extra=forbid)
+- Active task: Batch 1 Task 1.8 P0-M4 (profile role-specific win-rate)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-03
 
@@ -27,7 +27,7 @@ Plan: `docs/superpowers/plans/2026-06-03-prompt-revamp.md` (commit `5fc9a84`)
 | 1.4 | P0-S6 retry hint reorder + error snippet | DONE | `6c0d107` | task → retry → contract |
 | 1.5 | P0-S7 claimed_view enum | DONE | `609066b` | replace `我是好人` / `我是预言家` with `good_player_without_night_info` / `seer`; fixed pre-existing `example_role` bug |
 | 1.6 | P0-S8 PlayerAction strict extra=forbid | DONE | (this commit) | 16 variants reject unknown fields; fixed `parse_choice_action` to only pass vote fields to VOTE |
-| 1.7 | P0-M3 reflection sort by game_id | pending | — | |
+| 1.7 | P0-M3 reflection sort by game_id | DONE | `293ef74` | chr-invert trick for newest-first; getattr fallback for legacy fakes |
 | 1.8 | P0-M4 profile role-specific win-rate | pending | — | |
 | 1.9 | P0-R2 god prompt shorten | pending | — | |
 | 1.10 | P0-R3 output_parser encoding fix | pending | — | |
