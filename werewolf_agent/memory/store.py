@@ -6,6 +6,7 @@ long-term reflection memory, and player profiles.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -23,6 +24,8 @@ from werewolf_agent.memory.schemas import (
     RelationEvent,
     ReviewReport,
 )
+
+_LOG = logging.getLogger(__name__)
 
 # P0-I4: scrub concrete player ids (e.g. ``p03``) from any text that
 # gets written into long-term reflection. Cross-game memory must not
@@ -182,7 +185,29 @@ class MemoryStore:
         Args:
             winning_faction: The faction that won (\"good\" or \"werewolf\").
             player_factions: Optional per-player faction override (e.g. for hybrid).
+
+        MEM-22: if ``ground_truth`` is missing entries for some of
+        the ``player_ids``, log a warning naming the missing players.
+        The reviews are still generated (the missing ground-truth
+        entry is treated as ``"unknown"``), but the discrepancy is
+        surfaced so the upstream caller can fix the input — silent
+        skips hide real bugs (the moderator might have failed to
+        populate the ground truth, or the player list might have
+        drifted).
         """
+        # MEM-22: detect the mismatch up-front so the warning is
+        # emitted exactly once per call, regardless of how many
+        # players are missing.
+        player_set = set(player_ids)
+        truth_set = set(ground_truth)
+        missing = sorted(player_set - truth_set)
+        extra = sorted(truth_set - player_set)
+        if missing or extra:
+            _LOG.warning(
+                "generate_reviews_for_game %s: ground_truth player-id set "
+                "does not match player_ids; missing=%s extra=%s",
+                game_id, missing, extra,
+            )
         reports = []
         for pid in player_ids:
             role = roles.get(pid, "unknown")
