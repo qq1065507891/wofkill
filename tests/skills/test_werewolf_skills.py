@@ -402,6 +402,80 @@ def test_prompt_injectable_length_cap_forces_marker_on_long_input():
 
 
 # ---------------------------------------------------------------------------
+# S-10: counter_claim_handler branches on inp.role.
+# ---------------------------------------------------------------------------
+
+def test_counter_claim_branch_by_role():
+    """S-10: counter_claim must give different advice for seer vs
+    werewolf. Seer countering wolf = "defend my real check result".
+    Wolf countering real seer = "fabricate timeline to match my
+    fake-seer story".
+    """
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # Make p01 a seer, p05 a werewolf, p08 a "claimant" who is a wolf
+    players["p01"] = PlayerState(id="p01", role="seer", alive=True)
+    players["p05"] = PlayerState(id="p05", role="werewolf", alive=True)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    ws.append(StructuredFact(
+        fact_type="claimed_role", source_player="p05", value="seer",
+        day=1,
+    ))
+
+    seer_inp = SkillInput(
+        role="seer", phase="speech", day=1,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    seer_out = apply_skill(SkillName.COUNTER_CLAIM, seer_inp)
+    wolf_inp = SkillInput(
+        role="werewolf", phase="speech", day=1,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p05",
+        task_type="speech",
+    )
+    wolf_out = apply_skill(SkillName.COUNTER_CLAIM, wolf_inp)
+
+    assert seer_out.prompt_injectable != "", "seer advice must be non-empty"
+    assert wolf_out.prompt_injectable != "", "wolf advice must be non-empty"
+    # The advice must differ by role — seer defends real seer, wolf fabricates.
+    assert seer_out.prompt_injectable != wolf_out.prompt_injectable, (
+        "S-10: counter_claim must give seer-specific and wolf-specific "
+        "advice; got identical strings."
+    )
+    # seer-side markers: "真预言家", "金水", "查验" (defending real result)
+    seer_text = seer_out.prompt_injectable
+    assert any(k in seer_text for k in ("真预言家", "金水", "查验", "我查", "我验")), (
+        f"S-10: seer counter advice should defend real check result; "
+        f"got: {seer_text!r}"
+    )
+    # wolf-side markers: "假", "时间线", "悍跳" (fabricate timeline)
+    wolf_text = wolf_out.prompt_injectable
+    assert any(k in wolf_text for k in ("假", "时间线", "悍跳", "站边", "排坑")), (
+        f"S-10: wolf counter advice should reference fake / timeline / "
+        f"bold-claim framing; got: {wolf_text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # S-14: bold_claim_handler does NOT name the fake_seer teammate.
 # ---------------------------------------------------------------------------
 

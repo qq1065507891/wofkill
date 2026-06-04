@@ -379,13 +379,45 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 @register_handler(SkillName.COUNTER_CLAIM)
 def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
+    # S-10: branch on `inp.role`. A REAL seer countering a fake seer
+    # needs to defend their check result and rip the faker's timeline.
+    # A WOLF countering a real seer (i.e. doing the "悍跳" pair-up)
+    # needs to fabricate a matching timeline and steer the room.
+    is_seer = inp.role == "seer"
+    is_wolf = inp.role == "werewolf"
     if gs is None:
-        # static fallback
-        risks = ["对跳风险：真预言家对跳时好人会倾向真预言家"]
+        # static fallback — role-tailored phrasing
+        if is_seer:
+            return SkillOutput(
+                skill_name=skill.name.value,
+                speech_structure=["展示自己的真查验结果", "攻击对方时间线漏洞", "对比警徽流"],
+                risk_alerts=["对跳时一定要保持自己验人时间线的一致性"],
+                confidence=0.6,
+                reasoning="真预言家对跳：核心是守护自己的查验时间线",
+                prompt_injectable=_cap_prompt_injectable(
+                    "对跳建议（真预言家视角）：用你的真实查验结果逐条对比对方的"
+                    "假时间线。任何不匹配都是暴露对方假预言家的机会。"
+                    "重点攻击验人动机、警徽流矛盾。"
+                ),
+            )
+        if is_wolf:
+            return SkillOutput(
+                skill_name=skill.name.value,
+                speech_structure=["准备完整的假验人记录", "攻击真预言家的逻辑漏洞", "排坑占边"],
+                risk_alerts=["悍跳风险：如果对方是真预言家，可信度会大幅下降"],
+                confidence=0.55,
+                reasoning="悍跳对跳：核心是构建与队友一致的假时间线",
+                prompt_injectable=_cap_prompt_injectable(
+                    "对跳建议（狼队悍跳视角）：你作为狼的悍跳者，需要准备完整的"
+                    "假验人时间线来对跳真预言家。重点攻击对方的验人动机和警徽流漏洞，"
+                    "并用排坑占边把节奏拉到自己这边。"
+                ),
+            )
+        # Other roles (villager/hunter/witch/...) — neutral counter-claim.
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["指出对方漏洞", "报自身查验信息", "建立时间线对比"],
-            risk_alerts=risks,
+            risk_alerts=["对跳风险：真预言家对跳时好人会倾向真预言家"],
             confidence=0.55,
             reasoning="对跳需要充分的逻辑支撑和时间线一致性",
             prompt_injectable=_cap_prompt_injectable("对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。"),
@@ -406,29 +438,85 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     target_alerts = _alerts_for_player(alerts, target)
     has_claim_conflict = any(a.alert_type == "claim_conflict" for a in target_alerts)
 
-    if has_claim_conflict:
-        prompt = (
-            f"对跳分析：{target} 的发言存在矛盾点（已检测到claim_conflict）。"
-            f"建议集中攻击以下疑点，质疑其预言家身份的真实性。"
-        )
-        conf = 0.65
-        speech = [f"指出{target}验人时间线的矛盾", f"对比{target}前后不一致的发言", "建立自己的完整时间线"]
+    # S-10: role-tailored dynamic prompt
+    if is_seer:
+        # Real seer: defend own timeline, rip faker's inconsistencies.
+        if has_claim_conflict:
+            prompt = (
+                f"对跳分析（真预言家视角）：{target} 的发言存在矛盾点（claim_conflict）。"
+                f"用你真实的查验结果逐条对照对方的假时间线，"
+                f"任何不匹配都是暴露对方假预言家的机会。"
+            )
+            conf = 0.7
+            speech = [
+                f"展示你的真实查验结果对比{target}的假时间线",
+                f"指出{target}验人时间线上的具体矛盾",
+                "建立你自己的完整时间线作为锚点",
+            ]
+        else:
+            prompt = (
+                f"对跳分析（真预言家视角）：{target} 的发言看起来较一致。"
+                f"重点从侧面找漏洞：验人动机、警徽流合理性、站边逻辑。"
+                f"如果对方是悍跳者，时间线上一定会有逻辑漏洞。"
+            )
+            conf = 0.55
+            speech = [
+                f"质疑{target}的验人动机",
+                f"分析{target}的警徽流是否合理",
+                "用你自己的金水作为锚点",
+            ]
+        risks = [f"对跳 {target} 需保持查验时间线一致"]
+    elif is_wolf:
+        # Wolf (fake seer / counter-claimer): fabricate, attack, herd.
+        if has_claim_conflict:
+            prompt = (
+                f"对跳分析（悍跳视角）：{target} 的发言已经暴露矛盾（claim_conflict）。"
+                f"抓住这个矛盾猛攻，把场上风向拉到对你有利的方向。"
+                f"用你准备的假验人时间线作为正面证据。"
+            )
+            conf = 0.65
+            speech = [
+                f"放大{target}的发言矛盾",
+                "用你准备好的假时间线作为正面证据",
+                "排坑占边把节奏拉到自己这边",
+            ]
+        else:
+            prompt = (
+                f"对跳分析（悍跳视角）：{target} 的发言暂时没明显漏洞。"
+                f"不要正面硬刚，从侧面找漏洞（验人动机、警徽流合理性）。"
+                f"如果真预言家时间线无漏洞，转为排坑占边策略。"
+            )
+            conf = 0.45
+            speech = [
+                f"侧面质疑{target}的验人动机",
+                "准备完整的假时间线作为预案",
+                "用排坑占边为团队创造空间",
+            ]
+        risks = [f"悍跳 {target} 需要完整的假验人记录，时间线断裂会暴露"]
     else:
-        prompt = (
-            f"对跳分析：{target} 的发言和验人时间线较一致，直接对跳风险较高。"
-            f"建议从侧面寻找漏洞：验人动机、警徽流合理性、站边逻辑。"
-        )
-        conf = 0.45
-        speech = [f"质疑{target}的验人动机", f"分析{target}的警徽流是否合理", "找侧面漏洞而非正面硬刚"]
-
-    risks = [f"对跳 {target} 需要完整的假验人记录，任何时间线断裂都会暴露"]
+        # Other roles (villager/...) — neutral dynamic advice.
+        if has_claim_conflict:
+            prompt = (
+                f"对跳分析：{target} 的发言存在矛盾点（claim_conflict）。"
+                f"建议集中攻击以下疑点，质疑其预言家身份的真实性。"
+            )
+            conf = 0.65
+            speech = [f"指出{target}验人时间线的矛盾", f"对比{target}前后不一致的发言", "建立自己的完整时间线"]
+        else:
+            prompt = (
+                f"对跳分析：{target} 的发言和验人时间线较一致，直接对跳风险较高。"
+                f"建议从侧面寻找漏洞：验人动机、警徽流合理性、站边逻辑。"
+            )
+            conf = 0.45
+            speech = [f"质疑{target}的验人动机", f"分析{target}的警徽流是否合理", "找侧面漏洞而非正面硬刚"]
+        risks = [f"对跳 {target} 需要完整的假验人记录，任何时间线断裂都会暴露"]
 
     return SkillOutput(
         skill_name=skill.name.value,
         speech_structure=speech,
         risk_alerts=risks,
         confidence=conf,
-        reasoning=f"动态分析：根据{target}的发言一致性调整对跳策略",
+        reasoning=f"动态分析（S-10: {inp.role} 对跳）：根据{target}的发言一致性调整策略",
         prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
