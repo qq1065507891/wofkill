@@ -1414,6 +1414,64 @@ def test_inject_skill_output_receives_task_type(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# S-07: skill_tactical_advice is a structured list of dicts.
+# ---------------------------------------------------------------------------
+
+def test_skill_tactical_advice_is_structured():
+    """S-07: strategy_directive["skill_tactical_advice"] must be a
+    structured list of {skill, advice, confidence} dicts — not an
+    opaque string.  Sibling directive keys (must_address_alerts,
+    role_alerts) are already structured lists.  The prompt builder
+    formats the list into a renderable block.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    directive, _ = _inject_skill_output(
+        {}, gs, "p01", ws, bs, alerts, "speech",
+    )
+    advice = directive.get("skill_tactical_advice", None)
+    assert isinstance(advice, list), (
+        f"S-07: skill_tactical_advice must be a list (structured), got "
+        f"{type(advice).__name__}: {advice!r}"
+    )
+    if advice:  # if any skills fired, the entries are dicts
+        for entry in advice:
+            assert isinstance(entry, dict), (
+                f"S-07: each advice entry must be a dict; got {type(entry).__name__}: {entry!r}"
+            )
+            assert "skill" in entry and "advice" in entry, (
+                f"S-07: advice entry must have 'skill' and 'advice' keys; "
+                f"got: {list(entry.keys())!r}"
+            )
+            assert "confidence" in entry, (
+                f"S-07: advice entry must have 'confidence' key; "
+                f"got: {list(entry.keys())!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # S-16: single-source wolf-role skip — context.py does NOT skip;
 # the handler does.
 # ---------------------------------------------------------------------------

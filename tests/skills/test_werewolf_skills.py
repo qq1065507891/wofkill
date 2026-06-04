@@ -196,17 +196,35 @@ class TestPushVoteHandlerBranchesOnTaskType:
         # (it's `applicable_phases=[]` so all phases). The advice chunks
         # for the two task types must differ.
         if vote_advice and speech_advice:
-            assert vote_advice != speech_advice, (
+            # S-07: skill_tactical_advice is a list of {skill, advice,
+            # confidence} dicts. Compare the joined-advice strings.
+            def _join_advice(lst):
+                if isinstance(lst, list):
+                    return "\n".join(
+                        e.get("advice", "") for e in lst
+                        if isinstance(e, dict)
+                    )
+                return lst
+            vote_joined = _join_advice(vote_advice)
+            speech_joined = _join_advice(speech_advice)
+            assert vote_joined != speech_joined, (
                 f"vote and speech task_types should produce different rendered "
-                f"advice; got the same: {vote_advice!r}"
+                f"advice; got the same: {vote_joined!r}"
             )
         # Stronger check: vote-task advice must mention 投票阶段,
         # speech-task advice must mention 发言阶段.
-        assert "投票阶段" in vote_advice, (
+        def _join_advice(lst):
+            if isinstance(lst, list):
+                return "\n".join(
+                    e.get("advice", "") for e in lst
+                    if isinstance(e, dict)
+                )
+            return lst
+        assert "投票阶段" in _join_advice(vote_advice), (
             f"vote-task rendered advice should mention 投票阶段; "
             f"got: {vote_advice!r}"
         )
-        assert "发言阶段" in speech_advice, (
+        assert "发言阶段" in _join_advice(speech_advice), (
             f"speech-task rendered advice should mention 发言阶段; "
             f"got: {speech_advice!r}"
         )

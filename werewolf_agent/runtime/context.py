@@ -563,10 +563,35 @@ def _inject_skill_output(
 
     # Sort highest confidence first; stable for ties.
     sortable.sort(key=lambda x: -x[0])
-    parts = [text for _, text in sortable]
-
-    if parts:
-        strategy_directive["skill_tactical_advice"] = "\n".join(parts)
+    # S-07: skill_tactical_advice is a structured list of
+    # {skill, advice, confidence} dicts — not an opaque joined
+    # string.  Sibling directive keys (must_address_alerts,
+    # role_alerts) are already structured lists; advice should
+    # match that contract.  The prompt builder renders the list
+    # into the user prompt block.
+    structured: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # Build the structured list from the skill_analyses dict (which
+    # is keyed by skill name) plus the original outputs' confidence
+    # and skill_name.  We iterate in confidence-sorted order so
+    # high-confidence advice appears first.
+    for conf, prompt in sortable:
+        # Find the matching skill_name from outputs.
+        match = next(
+            (o for o in outputs if o.prompt_injectable == prompt),
+            None,
+        )
+        skill_name = match.skill_name if match else ""
+        if skill_name in seen:
+            continue
+        seen.add(skill_name)
+        structured.append({
+            "skill": skill_name,
+            "advice": prompt,
+            "confidence": conf,
+        })
+    if structured:
+        strategy_directive["skill_tactical_advice"] = structured
     return strategy_directive, skill_analyses
 
 

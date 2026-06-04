@@ -654,7 +654,9 @@ class TestSkillIntegration:
             directive, gs, "p01", ws, bs, alerts, "speech",
         )
         assert "skill_tactical_advice" in result
-        assert isinstance(result["skill_tactical_advice"], str)
+        # S-07: skill_tactical_advice is now a structured list of
+        # {skill, advice, confidence} dicts.
+        assert isinstance(result["skill_tactical_advice"], list)
         assert len(result["skill_tactical_advice"]) > 0
 
     def test_inject_skill_output_no_duplicate_key(self):
