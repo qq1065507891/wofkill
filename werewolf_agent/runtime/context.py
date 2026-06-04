@@ -198,7 +198,6 @@ def _inject_seed_rag_hints(
             situation=situation,
             ruleset_id=ruleset_id,
             max_results=3,
-            viewer_role=context.own_role,
         )
         hits = rag_service.retrieve_live_hints(
             query,

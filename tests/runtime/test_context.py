@@ -559,7 +559,6 @@ class _FakeRAGService:
                 "role": query.role,
                 "phase": query.phase,
                 "situation": query.situation,
-                "viewer_role": query.viewer_role,
                 "game_id": game_id,
                 "player_id": player_id,
             }

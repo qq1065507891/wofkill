@@ -206,5 +206,4 @@ class RAGInjector:
             ruleset_id=ruleset_id,
             persona_style=persona_style,
             max_results=max_results,
-            viewer_role=role,
         )
