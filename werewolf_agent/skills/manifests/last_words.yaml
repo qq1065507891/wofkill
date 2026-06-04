@@ -16,6 +16,3 @@ faction: common
 tags:
 - analysis
 - information
-is_tool_skill: true
-tool_name: skill_analyze_last_words
-tool_description: 分析刚出局玩家的遗言。提取关键信息、判断可信度、与已知信息对比。调用后返回分析结果供你参考。

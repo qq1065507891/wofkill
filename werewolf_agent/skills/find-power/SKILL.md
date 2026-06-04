@@ -17,11 +17,6 @@ faction: common
 tags:
   - analysis
   - information
-is_tool_skill: true
-tool_name: skill_find_power_roles
-tool_description: >
-  分析场上哪些玩家可能是神职（预言家、女巫、猎人等）。
-  基于发言、行为模式和已知信息推断。调用后返回推测结果供你参考。
 ---
 
 # 找神

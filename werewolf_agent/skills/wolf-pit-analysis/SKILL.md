@@ -18,11 +18,6 @@ faction: good
 tags:
   - analysis
   - logic
-is_tool_skill: true
-tool_name: skill_analyze_wolf_pit
-tool_description: >
-  分析当前狼坑（嫌疑区和排除区）。基于验人信息、投票模式、发言矛盾等
-  给出完整分析。调用后会返回详细分析结果供你参考。
 ---
 
 # 盘狼坑
