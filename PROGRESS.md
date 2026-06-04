@@ -4,10 +4,10 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 1 COMPLETE — Batch 2 in progress — 2026-06-03**
-- Active task: Batch 2 (P0 structural 8 items + 1 deferred S2)
+- Current phase: **Batch 2 in progress — Memory area COMPLETE (P0-M1, M5, M7) — 2026-06-04**
+- Active task: Batch 2 memory fixes COMPLETE; next: Batch 2 RAG or skill area
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-03
+- Last updated: 2026-06-04
 
 ---
 
@@ -255,6 +255,74 @@ Findings: `docs/audit/2026-06-03-batch0-{k1,m8,s2}-finding.md` (commits `7c92b09
 
 ### Next: Batch 1 (P0 quick wins, 10 items)
 P0-S1, S5, S6, S7, S8, M2, M3, M4, R2, R3 — sequential, same worktree, TDD per item.
+
+---
+
+## Batch 2 — Memory area (P0-M1, M5, M7) — COMPLETE 2026-06-04
+
+### Worktree
+- Branch: `p2-memory` at `.worktrees/p2-memory`
+- Base: `85ece46 docs(progress): mark batch 1 complete`
+- 3 commits, 0 regressions.
+
+### Tasks
+| ID | Description | Commit | Files |
+|----|-------------|--------|-------|
+| P0-M7 | Remove `visible_world_state` fallback for private_memory | `6fee705` | `werewolf_agent/agents/prompt_builder.py`, `tests/agents/test_prompt_builder.py` |
+| P0-M1 | Label private_memory section as 【本局·第N轮·私有记忆】; tighten `_add_own_speech_notes` markers | `9ad25b6` | `werewolf_agent/agents/prompt_builder.py`, `werewolf_agent/runtime/private_memory.py`, `tests/agents/test_prompt_builder.py`, `tests/agents/test_player_agent.py`, `tests/runtime/test_private_memory_sanitize.py` |
+| P0-M5 | Render all 6 profile dims with neutral phrasing for `learning_rate` / `risk_preference` | `5d9b267` | `werewolf_agent/runtime/context.py`, `tests/runtime/test_context.py` |
+
+### Fixes in detail
+
+**P0-M7 (commit `6fee705`):** `_build_private_memory_hints` used
+`ctx.private_memory_hints or ctx.visible_world_state.get("private_memory", {})`.
+The `visible_world_state` fallback duplicated the content (both fields
+were populated from the same source in `build_agent_context`).
+Fix: read only from `private_memory_hints`. Test verifies Case 1
+(visible-only) yields no section, Case 2 (hints-only) yields
+single-copy content.
+
+**P0-M1 (commit `9ad25b6`):**
+- Section label: `我的当前局记忆:` → `【本局·第N轮·私有记忆】`
+  (uses `ctx.day_number`, fallback "首轮"). The "本局" tag and day
+  index make the per-game boundary obvious, reducing the chance the
+  LLM paraphrases private thinking as public speech.
+- Tightened `LOGIC_FLAW_MARKERS` in `_add_own_speech_notes`:
+  removed `矛盾` / `前后不一` / `不一致` (too generic, triggered
+  on most speeches). Kept `站边` (clean public-claim detector).
+- Updated `test_user_prompt_renders_dynamic_sources_as_separate_sections`
+  to assert the new label and pass `day_number=2`.
+
+**P0-M5 (commit `5d9b267`):**
+- Added `_inner_rank()` returning "较高" / "中等" / "偏低" for
+  the 2 inner traits (learning_rate, risk_preference). The 4
+  public traits keep "前 30%" / "中等" / "需要提升" wording.
+- Summary now mentions all 6 dims with neutral phrasing for
+  the inner 2: "你的学习速度处于中等", "你的风险偏好处于中等".
+- Used `getattr(profile, ..., default)` so test fakes / partial
+  profiles still work. Schema unchanged (all 6 fields kept on
+  `PlayerProfile` for review/judge paths).
+- Updated `test_profile_hint_does_not_mention_learning_rate_or_risk_preference`
+  to allow Chinese phrasing in summary (M4 contract: no raw keys
+  exposed; M5 contract: dims surface as Chinese rank tokens).
+
+### Verification
+- `pytest tests/memory/ tests/agents/ tests/runtime/`: **1172 passed**, 0 failed (3m 03s).
+- Pre-existing tests that asserted the old label
+  (`test_user_prompt_renders_dynamic_sources_as_separate_sections`,
+  both in test_player_agent.py and re-exported via test_agents.py)
+  were updated to assert the new `【本局·第2轮·私有记忆】` label.
+- Pre-existing test that asserted the old M4 contract
+  (`test_profile_hint_does_not_mention_learning_rate_or_risk_preference`)
+  was updated to allow M5's Chinese phrasing while preserving the
+  M4 contract that raw snake_case keys are not exposed.
+
+### Notes
+- M1's section label and M7's fallback-removal both touch
+  `_build_private_memory_hints` in the same function. M7 was
+  committed first; M1 layered on top. The two are intentionally
+  in separate commits so each can be reviewed independently.
+- 70 → 67 effective issues (M1, M5, M7 done).
 
 ---
 
