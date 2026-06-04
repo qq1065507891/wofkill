@@ -11,6 +11,7 @@ Results are ranked by relevance score and filtered by quality/visibility.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from typing import Any
@@ -24,6 +25,9 @@ from werewolf_agent.rag.schemas import (
     SourceType,
     VisibilityBoundary,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +68,33 @@ _QUALITY_ORDER: dict[QualityGrade, int] = {
     QualityGrade.SELF_PLAY_CANDIDATE: 1,
     QualityGrade.UNREVIEWED: 0,
 }
+
+
+def _quality_priority(grade: QualityGrade, *, entry_id: str = "") -> int:
+    """Return the priority for a QualityGrade, warning on missing.
+
+    R20: previously ``_QUALITY_ORDER.get(missing_grade, 0)`` silently
+    returned 0 when a new ``QualityGrade`` enum value was added
+    without wiring its priority. That made every such entry get
+    filtered out by ``quality_min`` with no log line — operators
+    had no way to notice the gap.
+
+    Now: if the grade is missing from the mapping, emit a WARNING
+    identifying the entry and the grade, then fall through to the
+    lowest priority (0). The behavior of treating the missing
+    grade as 0 is preserved for backward compatibility; the
+    warning is the only new operator-visible signal.
+    """
+    priority = _QUALITY_ORDER.get(grade)
+    if priority is None:
+        logger.warning(
+            "RAG entry '%s' has quality_grade='%s' which is "
+            "unregistered in _QUALITY_ORDER; treating as lowest "
+            "priority (0). Add it to _QUALITY_ORDER in retriever.py.",
+            entry_id, grade.value if hasattr(grade, "value") else grade,
+        )
+        return 0
+    return priority
 
 # Retrieval priority by case type (design doc §9.2)
 _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
@@ -327,7 +358,13 @@ class StrategyRetriever:
 
             # Quality minimum
             if query.quality_min:
-                if _QUALITY_ORDER.get(meta.quality_grade, 0) < _QUALITY_ORDER.get(query.quality_min, 0):
+                # R20: route through _quality_priority so a missing
+                # entry's grade emits a WARNING instead of silently
+                # falling through to 0.
+                entry_priority = _quality_priority(
+                    meta.quality_grade, entry_id=entry.entry_id,
+                )
+                if entry_priority < _QUALITY_ORDER.get(query.quality_min, 0):
                     continue
 
             # Source type filter
@@ -352,7 +389,11 @@ class StrategyRetriever:
         score += _CASE_TYPE_PRIORITY.get(meta.case_type, 0) * 0.075
 
         # Quality grade bonus (0.0–0.3)
-        score += _QUALITY_ORDER.get(meta.quality_grade, 0) / 20.0
+        # R20: route through _quality_priority so a missing grade
+        # logs a WARNING rather than silently defaulting to 0.
+        score += _quality_priority(
+            meta.quality_grade, entry_id=entry.entry_id,
+        ) / 20.0
 
         # Role match (0.15)
         if query.role and meta.role_perspective:

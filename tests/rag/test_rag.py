@@ -1183,6 +1183,102 @@ class TestRAGInjector:
             "directly and the helper is dead code."
         )
 
+    def test_quality_min_warns_on_unregistered_grade(self, caplog) -> None:
+        """R20: when an entry's quality_grade is missing from
+        ``_QUALITY_ORDER`` (e.g. someone added a new enum value to
+        ``QualityGrade`` and forgot to wire its priority), the
+        retriever used to silently default the missing grade to 0
+        via ``dict.get(missing, 0)``. That made every such entry get
+        filtered out by ``quality_min`` with no log line, and
+        operators had no way to notice the gap.
+
+        The fix: emit a WARNING log line identifying the offending
+        entry and grade, then fall through to the existing
+        treat-as-lowest behavior (return 0) so the call still
+        completes. The warning is the operator-visible signal.
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        # Build an entry whose grade will be 'unregistered' from the
+        # retriever's point of view. We do that by temporarily
+        # removing PRO_MATCH from _QUALITY_ORDER — the entry's grade
+        # is still a valid QualityGrade enum value, but the retriever
+        # no longer knows its priority.
+        entry = RAGEntry(
+            entry_id="r20_test",
+            title="R20 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.PRO_MATCH,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._QUALITY_ORDER)
+        try:
+            # Drop PRO_MATCH so the entry's grade is 'unregistered'.
+            del _retriever_mod._QUALITY_ORDER[QualityGrade.PRO_MATCH]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                # Use a quality_min that would have dropped the entry
+                # silently under the old behavior (so the warning is
+                # the only operator-visible signal of the gap).
+                retriever.retrieve(
+                    RAGQuery(
+                        role="seer", phase="speech",
+                        quality_min=QualityGrade.HIGH_RANK_GAME,
+                    ),
+                )
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+            ]
+            assert warnings, (
+                "R20: retriever must emit a WARNING log line identifying "
+                "entries whose quality_grade is missing from "
+                "_QUALITY_ORDER, so operators can spot missing-priority "
+                "wiring. "
+                f"Got: {[r.getMessage() for r in caplog.records]}"
+            )
+            # The warning must mention the offending entry and grade
+            # so the operator can find it without grepping.
+            msg = warnings[0].getMessage()
+            assert "r20_test" in msg, (
+                f"R20: warning must identify the offending entry; "
+                f"got {msg!r}"
+            )
+            assert "pro_match" in msg.lower(), (
+                f"R20: warning must identify the missing grade; "
+                f"got {msg!r}"
+            )
+        finally:
+            _retriever_mod._QUALITY_ORDER.clear()
+            _retriever_mod._QUALITY_ORDER.update(original)
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement
@@ -1205,6 +1301,7 @@ class TestRAGBoundaryEnforcement:
                 ingester.ingest(_make_entry(summary=summary))
 
     def test_no_forbidden_keywords(self):
+        """Test that all known forbidden keywords are rejected."""
         """RAG must not contain ground-truth keywords."""
         ingester = CaseIngester()
         forbidden = [
