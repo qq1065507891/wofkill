@@ -296,6 +296,12 @@ class AutoVectorStore:
             client = SiliconFlowEmbeddingClient()
             self._store = SiliconFlowVectorStore(client)
             self._backend = "siliconflow"
+            # R10: log the selected backend at INFO so operators can
+            # see which path is live without having to query the
+            # ``backend`` property. Previously the constructor only
+            # logged WARNING on the fallback paths, which made the
+            # final chosen backend invisible from logs alone.
+            logger.info("vector backend: %s", self._backend)
             return
         except (ImportError, EmbeddingClientError) as exc:
             logger.warning(
@@ -308,6 +314,7 @@ class AutoVectorStore:
             import numpy  # noqa: F401
             self._store = EmbeddingVectorStore(dim=dim)
             self._backend = "embedding"
+            logger.info("vector backend: %s", self._backend)
             return
         except ImportError as exc:
             logger.warning(
@@ -318,6 +325,7 @@ class AutoVectorStore:
         # Final fallback: TF-IDF heuristic
         self._store = LocalVectorStore()
         self._backend = "tfidf"
+        logger.info("vector backend: %s", self._backend)
 
     @property
     def backend(self) -> str:

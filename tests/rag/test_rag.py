@@ -1171,6 +1171,32 @@ class TestRetrieverEdgeCases:
         hits = retriever.retrieve(query)
         assert len(hits) > 0
 
+    def test_vector_store_logs_backend(self, caplog) -> None:
+        """R10: ``AutoVectorStore`` must log the selected backend at
+        INFO level on init so operators can see which path is live
+        (siliconflow / embedding / tfidf) without having to query the
+        property. The previous version logged only the warning
+        messages on fallback, never the chosen backend itself."""
+        import logging
+        from werewolf_agent.rag.vector_store import AutoVectorStore
+
+        with caplog.at_level(logging.INFO, logger="werewolf_agent.rag.vector_store"):
+            store = AutoVectorStore()
+
+        # The "vector backend: <name>" INFO line is the new contract.
+        # We look for an INFO record (not WARNING) that names the
+        # backend explicitly so an operator scanning the log can see
+        # the chosen path at a glance.
+        info_records = [
+            r for r in caplog.records
+            if r.levelno == logging.INFO and r.name == "werewolf_agent.rag.vector_store"
+        ]
+        assert any(f"vector backend: {store.backend}" in r.message for r in info_records), (
+            f"R10: AutoVectorStore init did not log "
+            f"'vector backend: {store.backend}' at INFO; got: "
+            f"{[(r.levelname, r.name, r.message) for r in caplog.records]!r}"
+        )
+
     def test_situation_tokenize_handles_action_list(self) -> None:
         """R7: ``_tokenize_situation`` must recover every action name
         from a Python-style ``actions=['vote', 'speech']`` blob, not
