@@ -402,6 +402,71 @@ def test_prompt_injectable_length_cap_forces_marker_on_long_input():
 
 
 # ---------------------------------------------------------------------------
+# S-11: protect_power includes idiot in power_roles.
+# ---------------------------------------------------------------------------
+
+def test_protect_power_includes_idiot():
+    """S-11: protect_power's power_roles set must include 'idiot'.
+    Post-reveal idiot is a confirmed good player who needs protection.
+    """
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.world_state import build_world_state
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12 players, p01 = seer, p08 = revealed idiot.
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    players["p01"] = PlayerState(id="p01", role="seer", alive=True)
+    players["p08"] = PlayerState(id="p08", role="idiot", alive=True)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = build_world_state(gs)
+    # Inject an idiot_revealed fact for p08 (post-exile state) +
+    # 3 votes on p08.
+    from werewolf_agent.cognition.world_state import StructuredFact
+    ws.append(StructuredFact(
+        fact_type="idiot_revealed", target_player="p08", value="revealed_idiot",
+    ))
+    for voter in ("p02", "p03", "p04"):
+        ws.append(StructuredFact(
+            fact_type="vote", source_player=voter,
+            target_player="p08", day=2, value="voted_for",
+        ))
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p05")
+    bs = BeliefUpdater().update(bs, ws.facts, gs.day_number)
+
+    # Sanity: p08's top_role_guess should be (idiot, 1.0)
+    p08_top = bs.beliefs["p08"].top_role_guess()
+    assert p08_top[0] == "idiot", (
+        f"Test setup: p08 should have top_role_guess='idiot'; got {p08_top!r}"
+    )
+
+    inp = SkillInput(
+        role="villager", phase="speech", day=2,
+        game_state=gs, world_state=ws, belief_state=bs,
+        contradiction_alerts=[], player_id="p05",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.PROTECT_POWER, inp)
+    # After S-11: idiot is in power_roles, so p08 is added to at_risk.
+    # The prompt must mention p08 explicitly.
+    assert "p08" in out.prompt_injectable, (
+        f"S-11: protect_power should treat confirmed idiot p08 as a power "
+        f"role to protect; got prompt={out.prompt_injectable!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # S-13: SkillOutput no longer has recommended_action / recommended_target.
 # ---------------------------------------------------------------------------
 

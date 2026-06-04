@@ -766,7 +766,12 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     ws = inp.world_state
     bs = inp.belief_state
 
-    power_roles = {"seer", "witch", "hunter"}
+    # S-11: include `idiot` in power_roles. A revealed idiot is a
+    # confirmed good player; protecting them keeps a vote-loss but
+    # living role in play. Excluding idiot meant the post-exile idiot
+    # (公开白露光后) was a free kill for wolves — the protection
+    # skill was not flagging them as at-risk.
+    power_roles = {"seer", "witch", "hunter", "idiot"}
     candidates: list[dict[str, Any]] = []
 
     if bs is not None:
@@ -1063,7 +1068,10 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     ws = inp.world_state
     bs = inp.belief_state
 
-    power_roles = {"seer", "witch", "hunter"}
+    # S-11: include `idiot` in power_roles (see comment above in
+    # find_power_handler).  Revealed idiot is a confirmed good role
+    # to protect from wolf night-kill.
+    power_roles = {"seer", "witch", "hunter", "idiot"}
     at_risk: list[dict[str, Any]] = []
 
     if bs is not None:
