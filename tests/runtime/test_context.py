@@ -1414,6 +1414,87 @@ def test_inject_skill_output_receives_task_type(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# S-19: filter skill output entries that reference illegal targets.
+# ---------------------------------------------------------------------------
+
+def test_skill_output_filters_illegal_targets():
+    """S-19: a skill output that recommends an illegal (dead / out of
+    legal_targets) player must be dropped from skill_tactical_advice.
+
+    Pre-fix: the post-step in _inject_skill_output didn't filter
+    illegal-target advice.  A push_vote output naming p01 (dead) would
+    pass through to the LLM, where it would confuse the action.
+
+    Post-fix: structured advice entries whose `advice` text mentions
+    a player_id NOT in legal_targets are dropped.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    # Game state with one dead player (p05).  We monkeypatch
+    # push_vote's handler to emit advice naming p05 (an illegal target).
+    from werewolf_agent.skills.schemas import SkillName
+    from werewolf_agent.skills.werewolf_skills import (
+        SKILL_DEFINITIONS, register_handler, get_handler,
+    )
+    from werewolf_agent.skills.schemas import SkillInput, SkillOutput
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # p05 is dead.
+    players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    # Monkeypatch push_vote handler to emit illegal-target advice.
+    def _illegal_handler(inp, skill):
+        return SkillOutput(
+            skill_name=skill.name.value,
+            speech_structure=["投p05"],
+            confidence=0.6,
+            reasoning="illegal target test",
+            prompt_injectable="归票建议：投票 p05（illegal）",
+        )
+    register_handler(SkillName.PUSH_VOTE)(_illegal_handler)
+
+    try:
+        # legal_targets excludes p05 (dead).
+        legal = [f"p{i:02d}" for i in range(1, 13) if i != 5 and f"p{i:02d}" != "p01"]
+        directive, _ = _inject_skill_output(
+            {}, gs, "p01", ws, bs, alerts, "speech",
+            legal_targets=legal,
+        )
+        advice = directive.get("skill_tactical_advice", [])
+        # Every push_vote entry must NOT mention p05 (illegal target).
+        for entry in advice:
+            if isinstance(entry, dict) and entry.get("skill") == "push_vote":
+                assert "p05" not in entry.get("advice", ""), (
+                    f"S-19: push_vote advice must not reference illegal "
+                    f"target p05; got: {entry!r}"
+                )
+    finally:
+        # Restore the real push_vote handler.
+        from werewolf_agent.skills.werewolf_skills import push_vote_handler
+        register_handler(SkillName.PUSH_VOTE)(push_vote_handler)
+
+
+# ---------------------------------------------------------------------------
 # S-07: skill_tactical_advice is a structured list of dicts.
 # ---------------------------------------------------------------------------
 

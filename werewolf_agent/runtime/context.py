@@ -571,6 +571,11 @@ def _inject_skill_output(
     # into the user prompt block.
     structured: list[dict[str, Any]] = []
     seen: set[str] = set()
+    # S-19: post-step — drop any advice entry that names a player_id
+    # outside `legal_targets`.  Handlers may recommend players who are
+    # now dead or otherwise unavailable; surfacing that advice would
+    # confuse the LLM into an illegal action.
+    legal_set = set(legal_targets or [])
     # Build the structured list from the skill_analyses dict (which
     # is keyed by skill name) plus the original outputs' confidence
     # and skill_name.  We iterate in confidence-sorted order so
@@ -585,6 +590,16 @@ def _inject_skill_output(
         if skill_name in seen:
             continue
         seen.add(skill_name)
+        # S-19: filter entries that reference illegal targets.
+        if legal_set and prompt:
+            # Extract p\d{2} tokens from the prompt and check whether
+            # any of them is OUTSIDE the legal set.
+            import re as _re
+            mentioned = set(_re.findall(r"p\d{2}", prompt))
+            illegal = mentioned - legal_set
+            if illegal:
+                # Drop this entry — it recommends an illegal target.
+                continue
         structured.append({
             "skill": skill_name,
             "advice": prompt,
