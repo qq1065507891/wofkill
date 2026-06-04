@@ -583,6 +583,12 @@ class AgentContext(BaseModel):
     salience_items: list[dict[str, Any]] = Field(default_factory=list)
     rag_hints: list[dict[str, Any]] = Field(default_factory=list)
     private_memory_hints: dict[str, Any] = Field(default_factory=dict)
+    # MEM-02: P1-M10 caveat string. Populated by build_agent_context
+    # from build_private_memory["_llm_aware_hint"]. The prompt renderer
+    # (prompt_builder._build_private_memory_hints) emits this as a
+    # separate line BEFORE the logic_flaws / valid_points section so
+    # the LLM treats those keyword signals as crude, not authoritative.
+    private_memory_caveat: str = ""
     reflection_memory_hints: list[dict[str, Any]] = Field(default_factory=list)
     profile_memory_hint: dict[str, Any] = Field(default_factory=dict)
     cognition_matrix_hint: dict[str, Any] = Field(default_factory=dict)

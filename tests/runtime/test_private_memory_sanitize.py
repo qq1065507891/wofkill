@@ -502,3 +502,85 @@ def test_speech_point_keeps_legitimate_content():
         f"sanitization verbatim; got valid_points: "
         f"{memory['valid_points']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-02: build_private_memory must include _llm_aware_hint when
+# logic_flaws or valid_points is non-empty. The hint carries the
+# P1-M10 caveat about crude keyword signals; the prompt renderer
+# reads it from AgentContext.private_memory_caveat.
+# ---------------------------------------------------------------------------
+
+
+def test_build_private_memory_includes_caveat_when_logic_flaws_nonempty():
+    """MEM-02: when at least one logic_flaw entry is produced,
+    the returned dict must include _llm_aware_hint with the
+    P1-M10 caveat text. The renderer reads this and puts it
+    on AgentContext.private_memory_caveat."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import (
+        _LLM_AWARE_HINT,
+        build_private_memory,
+    )
+
+    gs = GameState(
+        game_id="g_test_mem02",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            _make_speech_event_for_player(
+                "p05 发言有逻辑漏洞",
+                speaker="p02",
+                day=1,
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01")
+
+    assert memory.get("logic_flaws"), (
+        f"setup: must produce at least one logic_flaw; got: {memory!r}"
+    )
+    assert memory.get("_llm_aware_hint") == _LLM_AWARE_HINT, (
+        f"MEM-02: hint must be present and equal _LLM_AWARE_HINT "
+        f"when logic_flaws non-empty; got: {memory.get('_llm_aware_hint')!r}"
+    )
+
+
+def test_build_private_memory_omits_caveat_when_empty():
+    """MEM-02: when logic_flaws and valid_points are both empty,
+    the returned dict must NOT include _llm_aware_hint (avoids
+    prompt noise when there is nothing to caveat)."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    # Speech with NO logic_flaw or valid_point markers.
+    gs = GameState(
+        game_id="g_test_mem02_empty",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            _make_speech_event_for_player(
+                "我随便说几句",
+                speaker="p02",
+                day=1,
+            ),
+        ],
+    )
+
+    memory = build_private_memory(gs, "p01")
+
+    # Setup sanity: nothing to caveat.
+    assert not memory.get("logic_flaws")
+    assert not memory.get("valid_points")
+    # And the hint is omitted.
+    assert "_llm_aware_hint" not in memory, (
+        f"MEM-02: hint must be omitted when both logic_flaws and "
+        f"valid_points are empty; got: {memory!r}"
+    )
