@@ -1132,6 +1132,57 @@ class TestRAGInjector:
             "caller's intent must be preserved"
         )
 
+    def test_inject_seed_rag_hints_uses_build_rag_query_helper(self) -> None:
+        """R18: ``_inject_seed_rag_hints`` must construct its
+        :class:`RAGQuery` via :meth:`RAGInjector.build_rag_query` rather
+        than calling the pydantic constructor directly. The helper is
+        the single source of truth for query defaults (``ruleset_id``,
+        ``max_results``, etc.) and currently duplicates it inline in
+        the runtime — if a default changes in one place it silently
+        drifts from the other.
+        """
+        from unittest import mock
+        from werewolf_agent.agents.schemas import (
+            ActionType,
+            AgentContext,
+            TaskType,
+        )
+        from werewolf_agent.runtime.context import _inject_seed_rag_hints
+
+        ctx = AgentContext(
+            agent_id="p07",
+            task_type=TaskType.SPEECH,
+            phase="speech",
+            day_number=2,
+            own_role="seer",
+            legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        )
+
+        class _FakeRAGService:
+            def retrieve_live_hints(self, query, *, game_id="", player_id=""):
+                return []
+
+            def hits_to_prompt_lines(self, hits, max_items=3):
+                return []
+
+        # Patch RAGInjector.build_rag_query and assert it was called.
+        with mock.patch(
+            "werewolf_agent.rag.injector.RAGInjector.build_rag_query",
+            wraps=lambda *a, **kw: RAGQuery(*a, **kw),
+        ) as build_mock:
+            _inject_seed_rag_hints(
+                ctx,
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                rag_service=_FakeRAGService(),
+                game_id="g_r18",
+                n_alive=8,
+            )
+        assert build_mock.called, (
+            "R18: _inject_seed_rag_hints must call RAGInjector.build_rag_query "
+            "to build its RAGQuery; instead the pydantic constructor was used "
+            "directly and the helper is dead code."
+        )
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement

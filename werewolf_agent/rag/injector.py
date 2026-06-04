@@ -189,8 +189,8 @@ class RAGInjector:
         from werewolf_agent.rag.prompt_renderer import hits_to_prompt_lines
         return hits_to_prompt_lines(hits, max_items=max_items)
 
+    @staticmethod
     def build_rag_query(
-        self,
         role: str,
         phase: str,
         situation: str = "",
@@ -198,7 +198,16 @@ class RAGInjector:
         persona_style: str = "",
         max_results: int = 5,
     ) -> RAGQuery:
-        """Build a RAGQuery from game context."""
+        """Build a RAGQuery from game context.
+
+        R18: this is a staticmethod so callers that don't hold a
+        :class:`RAGInjector` instance (e.g. ``runtime.context
+        ._inject_seed_rag_hints``) can still use it. It is the single
+        source of truth for query defaults (``ruleset_id``,
+        ``max_results``); the previous implementation duplicated the
+        constructor call inline in the runtime, which let the
+        defaults drift.
+        """
         return RAGQuery(
             role=role,
             phase=phase,

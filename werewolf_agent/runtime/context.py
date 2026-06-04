@@ -190,9 +190,12 @@ def _inject_seed_rag_hints(
             f"task={context.task_type.value} alive={n_alive} "
             f"actions={actions}"
         )
-        from werewolf_agent.rag.schemas import RAGQuery
+        # R18: build the RAGQuery through the RAGInjector helper so the
+        # query defaults (ruleset_id, max_results) live in one place.
+        # Adding a new default there now also flows through this path.
+        from werewolf_agent.rag.injector import RAGInjector
 
-        query = RAGQuery(
+        query = RAGInjector.build_rag_query(
             role=context.own_role,
             phase=phase,
             situation=situation,
