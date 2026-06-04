@@ -81,8 +81,6 @@ class SkillInput:
 @dataclass
 class SkillOutput:
     skill_name: str
-    recommended_action: str = ""
-    recommended_target: str | None = None
     speech_structure: list[str] = field(default_factory=list)
     risk_alerts: list[str] = field(default_factory=list)
     confidence: float = 0.5

@@ -6,6 +6,7 @@ applicable_roles:
   - seer
   - witch
   - hunter
+  - idiot
   - werewolf
   - hybrid
 applicable_phases:

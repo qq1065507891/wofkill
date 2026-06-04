@@ -1410,3 +1410,225 @@ def test_inject_skill_output_receives_task_type(monkeypatch) -> None:
         f"of _inject_skill_output is misnamed — it should be task_type, "
         f"not phase."
     )
+
+
+# ---------------------------------------------------------------------------
+# S-19: filter skill output entries that reference illegal targets.
+# ---------------------------------------------------------------------------
+
+def test_skill_output_filters_illegal_targets():
+    """S-19: a skill output that recommends an illegal (dead / out of
+    legal_targets) player must be dropped from skill_tactical_advice.
+
+    Pre-fix: the post-step in _inject_skill_output didn't filter
+    illegal-target advice.  A push_vote output naming p01 (dead) would
+    pass through to the LLM, where it would confuse the action.
+
+    Post-fix: structured advice entries whose `advice` text mentions
+    a player_id NOT in legal_targets are dropped.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    # Game state with one dead player (p05).  We monkeypatch
+    # push_vote's handler to emit advice naming p05 (an illegal target).
+    from werewolf_agent.skills.schemas import SkillName
+    from werewolf_agent.skills.werewolf_skills import (
+        SKILL_DEFINITIONS, register_handler, get_handler,
+    )
+    from werewolf_agent.skills.schemas import SkillInput, SkillOutput
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # p05 is dead.
+    players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    # Monkeypatch push_vote handler to emit illegal-target advice.
+    def _illegal_handler(inp, skill):
+        return SkillOutput(
+            skill_name=skill.name.value,
+            speech_structure=["投p05"],
+            confidence=0.6,
+            reasoning="illegal target test",
+            prompt_injectable="归票建议：投票 p05（illegal）",
+        )
+    register_handler(SkillName.PUSH_VOTE)(_illegal_handler)
+
+    try:
+        # legal_targets excludes p05 (dead).
+        legal = [f"p{i:02d}" for i in range(1, 13) if i != 5 and f"p{i:02d}" != "p01"]
+        directive, _ = _inject_skill_output(
+            {}, gs, "p01", ws, bs, alerts, "speech",
+            legal_targets=legal,
+        )
+        advice = directive.get("skill_tactical_advice", [])
+        # Every push_vote entry must NOT mention p05 (illegal target).
+        for entry in advice:
+            if isinstance(entry, dict) and entry.get("skill") == "push_vote":
+                assert "p05" not in entry.get("advice", ""), (
+                    f"S-19: push_vote advice must not reference illegal "
+                    f"target p05; got: {entry!r}"
+                )
+    finally:
+        # Restore the real push_vote handler.
+        from werewolf_agent.skills.werewolf_skills import push_vote_handler
+        register_handler(SkillName.PUSH_VOTE)(push_vote_handler)
+
+
+# ---------------------------------------------------------------------------
+# S-07: skill_tactical_advice is a structured list of dicts.
+# ---------------------------------------------------------------------------
+
+def test_skill_tactical_advice_is_structured():
+    """S-07: strategy_directive["skill_tactical_advice"] must be a
+    structured list of {skill, advice, confidence} dicts — not an
+    opaque string.  Sibling directive keys (must_address_alerts,
+    role_alerts) are already structured lists.  The prompt builder
+    formats the list into a renderable block.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    directive, _ = _inject_skill_output(
+        {}, gs, "p01", ws, bs, alerts, "speech",
+    )
+    advice = directive.get("skill_tactical_advice", None)
+    assert isinstance(advice, list), (
+        f"S-07: skill_tactical_advice must be a list (structured), got "
+        f"{type(advice).__name__}: {advice!r}"
+    )
+    if advice:  # if any skills fired, the entries are dicts
+        for entry in advice:
+            assert isinstance(entry, dict), (
+                f"S-07: each advice entry must be a dict; got {type(entry).__name__}: {entry!r}"
+            )
+            assert "skill" in entry and "advice" in entry, (
+                f"S-07: advice entry must have 'skill' and 'advice' keys; "
+                f"got: {list(entry.keys())!r}"
+            )
+            assert "confidence" in entry, (
+                f"S-07: advice entry must have 'confidence' key; "
+                f"got: {list(entry.keys())!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# S-16: single-source wolf-role skip — context.py does NOT skip;
+# the handler does.
+# ---------------------------------------------------------------------------
+
+def test_wolf_skip_in_handler_only():
+    """S-16: the wolf-role skip (bold_claim for non-fake_seer wolves,
+    deep_hook for fake_seer/pusher, swing_vote for hooker) is
+    authoritative in the handler. context.py must not re-implement
+    the skip — that risks drift between the two copies.
+
+    Pin the contract: when a hooker wolf is in speech phase with
+    a teammate as fake_seer, the bold_claim handler emits a
+    role-neutral "已有队友占据预言家身份" prompt (S-14 phrasing).
+    context.py must record that prompt in analyses — it must NOT
+    silently filter bold_claim out at the context layer.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="werewolf", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    ws.append(StructuredFact(
+        fact_type="claimed_role", source_player="p05", value="seer",
+        day=1,
+    ))
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    # Call the real _inject_skill_output with a wolf_team_plan that
+    # makes p01 a "hooker" — the bold_claim handler must emit its
+    # "已有队友占据预言家身份" prompt, and context.py must record it
+    # without further filtering.
+    directive, analyses = _inject_skill_output(
+        {}, gs, "p01", ws, bs, alerts, "speech",
+        wolf_team_plan={"fake_seer": "p05", "hooker": "p01"},
+    )
+    # The handler produces the S-14 role-neutral skip prompt. context.py
+    # must NOT filter it out (S-16: handler is authoritative).
+    assert "bold_claim" in analyses, (
+        "S-16: context.py must not skip bold_claim on its own — the "
+        "handler's filtered output should pass through. analyses keys: "
+        f"{list(analyses.keys())!r}"
+    )
+    assert "已有队友占据预言家身份" in analyses["bold_claim"], (
+        "S-16: handler's role-neutral skip prompt should pass through "
+        f"context.py unchanged. Got: {analyses['bold_claim']!r}"
+    )
+    # Source-code contract: context.py must not contain a `wolf_role`
+    # filter block. Read the module source and assert.
+    from werewolf_agent.runtime import context as _ctx_mod
+    import inspect
+    src = inspect.getsource(_ctx_mod._inject_skill_output)
+    assert 'wolf_role and wolf_role != "fake_seer"' not in src, (
+        "S-16: context.py must not contain the bold_claim wolf-role "
+        "skip — that's the handler's job. Found it in _inject_skill_output."
+    )
+    assert "wolf_role and wolf_role in (\"fake_seer\", \"pusher\")" not in src, (
+        "S-16: context.py must not contain the deep_hook wolf-role "
+        "skip — that's the handler's job. Found it in _inject_skill_output."
+    )
+    assert 'wolf_role == "hooker"' not in src, (
+        "S-16: context.py must not contain the swing_vote hooker "
+        "skip — that's the handler's job. Found it in _inject_skill_output."
+    )

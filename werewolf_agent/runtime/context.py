@@ -555,24 +555,60 @@ def _inject_skill_output(
             # advice (confidence=0.0, empty prompt).
             skill_analyses.setdefault(o.skill_name, o.prompt_injectable or "")
             continue
-        # Skip bold_claim for non-fake_seer wolves
-        if o.skill_name == "bold_claim" and wolf_role and wolf_role != "fake_seer":
-            continue
-        # Skip deep_hook for fake_seer/pusher wolves
-        if o.skill_name == "deep_hook" and wolf_role and wolf_role in ("fake_seer", "pusher"):
-            continue
-        # Skip swing_vote for hooker wolves (conflicts with deep-hook mission)
-        if o.skill_name == "swing_vote" and wolf_role == "hooker":
-            continue
+        # S-16: wolf-role skip is the handler's responsibility, not
+        # context.py's.  Handlers (bold_claim, deep_hook, swing_vote)
+        # already emit role-neutral / low-confidence skip prompts for
+        # wolves that aren't assigned to that skill.  Re-implementing
+        # the skip here risks drift between the two copies.
         skill_analyses[o.skill_name] = o.prompt_injectable
         sortable.append((o.confidence, o.prompt_injectable))
 
     # Sort highest confidence first; stable for ties.
     sortable.sort(key=lambda x: -x[0])
-    parts = [text for _, text in sortable]
-
-    if parts:
-        strategy_directive["skill_tactical_advice"] = "\n".join(parts)
+    # S-07: skill_tactical_advice is a structured list of
+    # {skill, advice, confidence} dicts — not an opaque joined
+    # string.  Sibling directive keys (must_address_alerts,
+    # role_alerts) are already structured lists; advice should
+    # match that contract.  The prompt builder renders the list
+    # into the user prompt block.
+    structured: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # S-19: post-step — drop any advice entry that names a player_id
+    # outside `legal_targets`.  Handlers may recommend players who are
+    # now dead or otherwise unavailable; surfacing that advice would
+    # confuse the LLM into an illegal action.
+    legal_set = set(legal_targets or [])
+    # Build the structured list from the skill_analyses dict (which
+    # is keyed by skill name) plus the original outputs' confidence
+    # and skill_name.  We iterate in confidence-sorted order so
+    # high-confidence advice appears first.
+    for conf, prompt in sortable:
+        # Find the matching skill_name from outputs.
+        match = next(
+            (o for o in outputs if o.prompt_injectable == prompt),
+            None,
+        )
+        skill_name = match.skill_name if match else ""
+        if skill_name in seen:
+            continue
+        seen.add(skill_name)
+        # S-19: filter entries that reference illegal targets.
+        if legal_set and prompt:
+            # Extract p\d{2} tokens from the prompt and check whether
+            # any of them is OUTSIDE the legal set.
+            import re as _re
+            mentioned = set(_re.findall(r"p\d{2}", prompt))
+            illegal = mentioned - legal_set
+            if illegal:
+                # Drop this entry — it recommends an illegal target.
+                continue
+        structured.append({
+            "skill": skill_name,
+            "advice": prompt,
+            "confidence": conf,
+        })
+    if structured:
+        strategy_directive["skill_tactical_advice"] = structured
     return strategy_directive, skill_analyses
 
 

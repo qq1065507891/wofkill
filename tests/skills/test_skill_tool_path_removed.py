@@ -110,7 +110,9 @@ class TestSkillToolPathRemoved:
         )
         # Pre-injection still works.
         assert "skill_tactical_advice" in result
-        assert isinstance(result["skill_tactical_advice"], str)
+        # S-07: skill_tactical_advice is now a structured list of
+        # {skill, advice, confidence} dicts.
+        assert isinstance(result["skill_tactical_advice"], list)
         # Tool dict is not needed: pass empty dict for `skill_tools` upstream.
 
 

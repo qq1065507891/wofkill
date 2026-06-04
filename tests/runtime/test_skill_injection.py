@@ -112,7 +112,13 @@ class TestLowConfidenceSkillNotDropped:
             "returns low confidence."
         )
         rendered = result["skill_tactical_advice"]
-        assert "你不需要悍跳" in rendered or "p02" in rendered, (
+        # S-07: skill_tactical_advice is now a list of dicts.
+        # Walk the list to find the bold_claim entry.
+        rendered_str = " ".join(
+            e["advice"] for e in rendered
+            if isinstance(e, dict) and e.get("skill") == "bold_claim"
+        )
+        assert "你不需要悍跳" in rendered_str or "p02" in rendered_str, (
             f"Negative-signal advice from low-confidence handler was dropped. "
             f"Rendered advice was: {rendered!r}"
         )
@@ -180,13 +186,20 @@ class TestLowConfidenceSkillNotDropped:
         # lowest-confidence one (0.3) and appears later.
         max_conf_output = max(outputs, key=lambda o: o.confidence)
         min_conf_output = min(outputs, key=lambda o: o.confidence)
-        # If the two outputs have distinct prompt_injectable, verify
-        # ordering.
+        # S-07: rendered is a list of {skill, advice, confidence} dicts.
+        # Verify the max-confidence entry appears before the
+        # min-confidence entry in the list.
         if (max_conf_output.prompt_injectable
                 and min_conf_output.prompt_injectable
                 and max_conf_output.prompt_injectable != min_conf_output.prompt_injectable):
-            idx_max = rendered.find(max_conf_output.prompt_injectable[:30])
-            idx_min = rendered.find(min_conf_output.prompt_injectable[:30])
+            # Build a joined string from the structured list, preserving
+            # order — the prompt builder does the same when it renders.
+            rendered_str = "\n".join(
+                e.get("advice", "") for e in rendered
+                if isinstance(e, dict)
+            )
+            idx_max = rendered_str.find(max_conf_output.prompt_injectable[:30])
+            idx_min = rendered_str.find(min_conf_output.prompt_injectable[:30])
             assert idx_max >= 0, "highest-confidence chunk not in rendered advice"
             assert idx_min >= 0, "lowest-confidence chunk not in rendered advice"
             assert idx_max < idx_min, (

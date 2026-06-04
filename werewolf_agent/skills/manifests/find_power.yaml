@@ -6,6 +6,7 @@ applicable_roles:
 - villager
 - seer
 - witch
+- idiot
 - hybrid
 applicable_phases:
 - speech
