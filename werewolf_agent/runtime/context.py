@@ -228,23 +228,56 @@ def _first_sentence(text: str, max_len: int = 60) -> str:
 # Cross-game memory hint builders
 # ---------------------------------------------------------------------------
 
-def _profile_memory_hint(profile: Any, role_stats: dict[str, dict[str, int]]) -> dict[str, Any]:
-    roles = [
-        {"role": role, "games": stats["count"], "wins": stats["wins"]}
-        for role, stats in sorted(role_stats.items())
-    ]
+def _profile_memory_hint(
+    profile: Any,
+    role_stats: dict[str, dict[str, int]],
+    current_role: str,
+) -> dict[str, Any]:
+    """Build the profile memory hint for the agent prompt.
+
+    Renders rank description ("前 30%" / "中等" / "需要提升") instead of
+    raw ability floats to avoid biasing LLM self-confidence. Only the
+    current role's win-rate is exposed (other roles' stats are private).
+    ``learning_rate`` and ``risk_preference`` are review/judge-only and
+    never appear in the live prompt.
+
+    Rank bins (heuristic, against the 0.0–1.0 score range):
+    - > 0.66  → "前 30%"  (top tier)
+    - > 0.33  → "中等"    (middle tier)
+    - ≤ 0.33  → "需要提升" (needs improvement)
+    """
+    def _rank(score: float) -> str:
+        if score > 0.66:
+            return "前 30%"
+        if score > 0.33:
+            return "中等"
+        return "需要提升"
+
+    # Filter role stats to current role only; default to zero stats if
+    # the player has never played this role before.
+    stats = role_stats.get(current_role, {"count": 0, "wins": 0})
+    win_rate_pct = (
+        round(100 * stats["wins"] / stats["count"]) if stats["count"] > 0 else 0
+    )
+    logic_rank = _rank(float(profile.logic))
+    deception_rank = _rank(float(profile.deception))
+    credibility_rank = _rank(float(profile.credibility))
+
     return {
         "games_played": profile.games_played,
-        "logic": round(float(profile.logic), 2),
-        "deception": round(float(profile.deception), 2),
-        "credibility": round(float(profile.credibility), 2),
+        "current_role": current_role,
+        "current_role_games": stats["count"],
+        "current_role_win_rate_pct": win_rate_pct,
+        "logic_rank": logic_rank,
+        "deception_rank": deception_rank,
+        "credibility_rank": credibility_rank,
         "summary": (
             f"累计{profile.games_played}局 · "
-            f"逻辑{profile.logic*10:.0f}/10 · "
-            f"欺骗{profile.deception*10:.0f}/10 · "
-            f"可信度{profile.credibility*10:.0f}/10"
+            f"当前角色{current_role} {stats['count']}局胜率{win_rate_pct}% · "
+            f"逻辑{logic_rank} · "
+            f"欺骗{deception_rank} · "
+            f"可信度{credibility_rank}"
         ),
-        "roles": roles,
     }
 
 
@@ -814,7 +847,7 @@ def build_agent_context(
                     role_stats[r]["count"] += 1
                     if ref.faction_won:
                         role_stats[r]["wins"] += 1
-                profile_memory_hint = _profile_memory_hint(profile, role_stats)
+                profile_memory_hint = _profile_memory_hint(profile, role_stats, player.role)
 
                 # Inject detailed reflections (self-evolution)
                 all_refs = restored_memory.reflections_by_player(player_id)
