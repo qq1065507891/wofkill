@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 3 (Memory + Info) MERGED — 2026-06-04**
-- Active task: All 7 batch-3 P0 redesign tasks done (M6, I4, M9, I1, I2, I3). Next: Batch 4 (P1 30 items by 5 area).
+- Current phase: **Batch 4 (P1 by area) Directives sub-batch — IN PROGRESS 2026-06-04**
+- Active task: All 3 P1-D tasks (D4, D5, D6) on `p4-directives` worktree — sheriff fallback, unified witch poison, torn-badge election state. Next: other Batch 4 areas (Prompt, Skill, RAG, Memory) merge in.
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 
@@ -104,6 +104,18 @@ Worktree: `.worktrees/p3-memory` on branch `p3-memory`. Three tasks scoped to th
 | 3.5 | P0-M9 + absorbed M8: cognition_matrix_hint renders evidence as ID refs | DONE | `d8b9f8f` | New `_evidence_id_ref` in `runtime/context.py` hashes text into ``salience_items#<hex>``. `_cognition_matrix_hint` no longer surfaces raw `key_evidence` / `open_questions` text; `trust` / `faction_read` summary stats kept (already public-derived). New file `tests/memory/test_belief_visibility.py` (7 tests) covers M8 regression (same public facts ⇒ same role_probabilities for both viewers) and M9 (no text leak). 1 new test in `tests/runtime/test_context.py`. |
 
 **Memory sub-batch (Batch 3) results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1186 passed**, 0 failed, 0 regression.
+
+### Batch 4 (P1 by area) — Directives sub-batch — IN PROGRESS 2026-06-04
+
+Worktree: `.worktrees/p4-directives` on branch `p4-directives`. Parallel siblings: `p4-prompt`, `p4-skill`, `p4-rag`, `p4-memory` (4 other Batch 4 sub-batches running concurrently — do not touch).
+
+| Task | ID | Status | Commit | Notes |
+|------|----|--------|--------|-------|
+| 4.19 | P1-D4 sheriff vote_push fallback (silenced sheriff) | DONE | `549ad99` | New `_is_sheriff_silenced(gs, sheriff_id)` helper checks for a `sheriff_silenced` event and falls back to badge_state `silenced`/`frozen`. In `agent_day_speech`, when the active sheriff is muted, the directive swaps from `sheriff_vote_push` to `sheriff_silent` ("本轮你无法发言；若已提前指定归票目标，通过 [vote_silent] 字段指定；如未指定则由投票开放决定。"). Forward-compatible — future skill resolvers can drive the mute without a core-rules change. 3 new tests in `TestSheriffDirectiveFallback`. |
+| 4.21 | P1-D6 sheriff died badge tear fallback | DONE | `549ad99` | New `sheriff_election_state` directive: when `gs.sheriff_id is None and gs.sheriff_badge_state == "torn"`, every player (not just the previous sheriff) gets "本局无警长；本轮发言顺序随机；无归票人。". Pre-fix, no directive mentioned the torn-badge state, so PK / vote participants kept acting as if a 归票 channel existed. 2 new tests in `TestSheriffDirectiveFallback` (regression: must reach non-good players too). |
+| 4.20 | P1-D5 witch poison directives unified | DONE | `a97727e` | Replaced two contradictory directives (`witch_poison_threshold` + `poison_urgency`) with a single `witch_poison_strategy` dict whose `branch` is one of: `no_pressure_save_for_late` (alive ≥ 10), `evidence_required_threshold` (8-9), `urgency_under_X_alive` (≤ 7). The corresponding `text` and `alive_count` are also included so the LLM gets one coherent decision frame per turn. 4 new tests in `TestWitchPoisonUnifiedDirective`; existing `test_witch_poison_requires_hard_evidence` updated to assert against the new key. |
+
+**Batch 4 (Directives) results so far:** 3/3 tasks done. 9 new tests added. `pytest tests/runtime/ tests/agents/`: **1096 passed** (697 runtime + 399 agents), 0 failed, 0 regression.
 
 ### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
 
