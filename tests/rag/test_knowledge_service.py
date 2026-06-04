@@ -10,7 +10,6 @@ import pytest
 
 from werewolf_agent.rag.schemas import RAGQuery
 
-
 @pytest.fixture
 def repo():
     from werewolf_agent.storage.memory_store import InMemoryGameRepository
@@ -93,3 +92,87 @@ def test_service_excludes_god_view_from_live_hints(repo) -> None:
     ))
 
     assert all(hit.visibility_boundary.value != "god_view" for hit in hits)
+
+
+# ---------------------------------------------------------------------------
+# P1-G7: situation string is semantic, not raw concat
+# ---------------------------------------------------------------------------
+
+
+class _FakeRAGService:
+    """Records the RAGQuery it receives so tests can assert on
+    situation/role/phase format."""
+
+    def __init__(self) -> None:
+        self.calls: list[RAGQuery] = []
+
+    def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+        self.calls.append(query)
+        return []
+
+    def hits_to_prompt_lines(self, hits, max_items: int = 3):
+        return []
+
+
+def test_situation_includes_role_phase_task() -> None:
+    """P1-G7: the situation string passed to the RAG retriever is a
+    semantic key=value blob, not just a space-joined concat of task
+    type / phase / actions. The retriever can then tokenize on `=`
+    and key the tag-overlap score on the value tokens.
+    """
+    from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
+    from werewolf_agent.runtime.context import _inject_seed_rag_hints
+
+    fake = _FakeRAGService()
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="seer",
+        legal_actions=[ActionType.VOTE, ActionType.SPEECH],
+    )
+    _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    assert len(fake.calls) == 1
+    situation = fake.calls[0].situation
+    # The new format uses key=value tokens so the retriever can
+    # separate keys from values when computing tag overlap.
+    assert "role=seer" in situation
+    assert "phase=day" in situation
+    assert "task=speech" in situation
+    assert "actions=" in situation
+
+
+def test_situation_format_is_stable_under_punctuation() -> None:
+    """P1-G7: the situation is a small semantic dict, not a noisy
+    concat. The test asserts the format does not include the old
+    "space-then-action.value" raw join (which would produce
+    'speech day vote speech' with no semantic structure)."""
+    from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
+    from werewolf_agent.runtime.context import _inject_seed_rag_hints
+
+    fake = _FakeRAGService()
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="seer",
+        legal_actions=[ActionType.VOTE],
+    )
+    _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    situation = fake.calls[0].situation
+    # Must NOT be the legacy space-joined format. The new format
+    # always has '=' between key and value.
+    assert "=" in situation
+    # And the role/phase/task tokens are well-defined substrings.
+    for key in ("role", "phase", "task", "actions"):
+        assert f"{key}=" in situation

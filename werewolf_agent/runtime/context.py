@@ -160,6 +160,7 @@ def _inject_seed_rag_hints(
     ruleset_id: str,
     rag_service: Any | None = None,
     game_id: str = "",
+    n_alive: int = 0,
 ) -> AgentContext:
     if not context.own_role:
         return context
@@ -170,11 +171,19 @@ def _inject_seed_rag_hints(
 
     try:
         phase = _rag_phase_for_task(context.task_type, context.phase)
-        situation = " ".join([
-            context.task_type.value,
-            context.phase,
-            " ".join(action.value for action in context.legal_actions),
-        ]).strip()
+        # P1-G7: the situation is a small semantic key=value blob, not
+        # a raw space-joined concat. The retriever tokenizes on `=`
+        # and weights the tag-overlap score on the value tokens, so
+        # the role/phase/task/alive/actions values reach the scoring
+        # path cleanly. The old format ('speech day vote speech')
+        # carried no semantic structure and the rule-based retriever
+        # essentially never matched.
+        actions = [a.value for a in context.legal_actions]
+        situation = (
+            f"role={context.own_role} phase={context.phase} "
+            f"task={context.task_type.value} alive={n_alive} "
+            f"actions={actions}"
+        )
         if rag_service is None:
             return context
         from werewolf_agent.rag.schemas import RAGQuery
@@ -942,4 +951,5 @@ def build_agent_context(
         ruleset_id=gs.ruleset_id,
         rag_service=rag_service,
         game_id=gs.game_id,
+        n_alive=sum(1 for p in gs.players.values() if p.alive),
     )

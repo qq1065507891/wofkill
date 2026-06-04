@@ -11,6 +11,7 @@ Results are ranked by relevance score and filtered by quality/visibility.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from werewolf_agent.rag.schemas import (
@@ -47,6 +48,46 @@ _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
     CaseType.ROLE_STRATEGY: 1,
     CaseType.SPEECH_TEMPLATE: 0,
 }
+
+
+def _tokenize_situation(situation: str) -> set[str]:
+    """P1-G7: turn a key=value situation blob into a token set.
+
+    The new format (``"role=seer phase=day task=speech actions=['vote']"``)
+    is noisy: the raw whitespace split would emit tokens like
+    ``"actions=['vote']"`` that never match any tag. Splitting on
+    ``=`` first, then stripping list/quote noise from the value side,
+    yields a clean token set that the tag-overlap scorer can use.
+
+    Backward compatible: legacy space-joined situations (e.g. the
+    string ``"抗推预言家"``) still tokenize correctly because there
+    is no ``=`` in them and the value side just becomes the whole
+    word.
+    """
+    if not situation:
+        return set()
+    tokens: set[str] = set()
+    for chunk in situation.split():
+        if "=" not in chunk:
+            tokens.add(chunk.lower())
+            continue
+        key, _, value = chunk.partition("=")
+        # Drop the key (e.g. "role", "actions") — only the value
+        # tokens are useful for tag overlap. We still keep the key
+        # when the value is empty (e.g. "actions=") so the
+        # token set is non-empty.
+        value = value.strip()
+        if not value:
+            tokens.add(key.lower())
+            continue
+        # Strip list / set / dict syntax around the value. We split
+        # on common delimiters and quote chars; the leftover pieces
+        # are individual tokens (e.g. "vote", "speech", "12").
+        for piece in re.split(r"[\[\]\(\)\{\},'\"\s]+", value):
+            piece = piece.strip().lower()
+            if piece:
+                tokens.add(piece)
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +238,13 @@ class StrategyRetriever:
 
         # Tag overlap (0.1)
         if query.situation:
-            situation_words = set(query.situation.lower().split())
+            # P1-G7: situation is a key=value blob (e.g.
+            # "role=seer phase=day task=speech actions=['vote']").
+            # Tokenize on '=' to recover the value tokens that the
+            # rule-based scorer can match against the entry's tag
+            # list. We keep both keys and values, but strip the
+            # list-bracket/list-comma noise around action values.
+            situation_words = _tokenize_situation(query.situation)
             tag_words = set(" ".join(meta.tags).lower().split())
             overlap = len(situation_words & tag_words)
             if overlap > 0:
