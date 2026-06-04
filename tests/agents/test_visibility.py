@@ -43,7 +43,7 @@ class TestVisibilityBoundaries:
             private_intent=PrivateIntent(
                 true_role="werewolf",
                 faction_goal=FactionGoal.CONFUSE_GOOD,
-                claimed_view="villager",
+                claimed_view="good_player_without_night_info",
             ),
         )
         # Private data must not appear in speech

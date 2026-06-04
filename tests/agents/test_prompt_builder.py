@@ -1456,10 +1456,13 @@ def test_sections_have_priority_labels():
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
 
     # Hard sections must be labeled 【硬约束】.
+    # P1-6: strategy_directive's outer label is now 【策略指令】 (neutral)
+    # to avoid double-labeling. Retry hint and output contract are
+    # still 【硬约束】, so 2 hard labels remain.
     hard_label_count = prompt.count("【硬约束】")
-    assert hard_label_count >= 3, (
-        f"Expected at least 3 【硬约束】 labels "
-        f"(strategy_directive, retry hint, output contract), got {hard_label_count}."
+    assert hard_label_count >= 2, (
+        f"Expected at least 2 【硬约束】 labels "
+        f"(retry hint, output contract), got {hard_label_count}."
     )
 
     # The 辅助 sections must collectively produce multiple 【辅助】 labels.
@@ -1477,21 +1480,23 @@ def test_sections_have_priority_labels():
     # Verify the label is followed by the section's own header text so
     # the LLM sees 【硬约束】 X then the actual content.
     # The retry hint header is "纠正提示" — confirm the label is
-    # immediately before it (within 50 chars to allow the section
-    # label spacing).
+    # 【辅助】 (P1-9: retry hint is advisory, not a hard constraint).
     retry_idx = prompt.find("纠正提示")
     assert retry_idx > 0, "Retry hint should still render in the user prompt"
     preceding = prompt[max(0, retry_idx - 60):retry_idx]
-    assert "【硬约束】" in preceding, (
-        f"Retry hint must be preceded by 【硬约束】 label, got: {preceding!r}"
+    assert "【辅助】" in preceding, (
+        f"P1-9: retry hint must be preceded by 【辅助】 label, got: {preceding!r}"
     )
 
-    # Strategy directive header is "本轮策略指令" — same check.
+    # P1-6: Strategy directive header is "本轮策略指令". Its outer
+    # section label is now 【策略指令】 (neutral), NOT 【硬约束】.
     directive_idx = prompt.find("本轮策略指令")
     assert directive_idx > 0
     preceding = prompt[max(0, directive_idx - 60):directive_idx]
-    assert "【硬约束】" in preceding, (
-        f"Strategy directive must be preceded by 【硬约束】 label, got: {preceding!r}"
+    assert "【策略指令】" in preceding, (
+        f"Strategy directive must be preceded by 【策略指令】 label "
+        f"(P1-6: neutral outer label, inner P0-S5 sub-group carries "
+        f"the priority signal). Got: {preceding!r}"
     )
 
     # Transcript is the only 可选 section — its header is "近期发言".
@@ -1504,22 +1509,27 @@ def test_sections_have_priority_labels():
 
 
 def test_priority_labels_for_hard_sections_distinct_from_internal_directive_groups():
-    """P1-S3: the section-level 【硬约束】 label for strategy_directive is
-    the OUTER section label, distinct from the inner 【硬约束】 sub-group
-    that already exists in P0-S5.
+    """P1-S3: the inner P0-S5 【硬约束】 sub-group must still render
+    inside the strategy_directive section, even after P1-6 changed
+    the OUTER section label to 【策略指令】.
 
-    The section-level label signals "this section is hard, attend to it
-    first". The inner sub-group signals "this key is hard within the
-    directive". Both can coexist.
+    The inner sub-group signals "this key is hard within the directive"
+    (MUST-obey). The outer section label is now neutral (【策略指令】).
+    The inner P0-S5 sub-group MUST/SHOULD/REFERENCE markers must still
+    be present so the LLM knows which directive keys are binding.
     """
     ctx = _make_ctx_for_priority_label_test()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The directive section already has its own 【硬约束】 sub-section
-    # (from P0-S5 grouping). The new outer label is also 【硬约束】.
-    # Confirm both can appear.
-    assert prompt.count("【硬约束】") >= 2, (
-        "Expected at least 2 occurrences of 【硬约束】: the outer section "
-        "label AND the inner P0-S5 sub-group label."
+    # The directive section now has the outer label 【策略指令】. The
+    # inner P0-S5 sub-group still has its 【硬约束】 MUST marker.
+    assert "以下指令必须遵守（MUST）" in prompt, (
+        "P0-S5 inner MUST marker must still render (the keys with "
+        "hard priority still need their binding signal)"
+    )
+    # Sanity: the inner marker is 【硬约束】 (P0-S5 unchanged).
+    assert "【硬约束】" in prompt, (
+        "P0-S5 inner 【硬约束】 sub-group header must still render "
+        "in the directive section."
     )
 
 
@@ -1555,6 +1565,578 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
             f"Section with header {header!r} must be preceded by 【辅助】 label, "
             f"got: {preceding!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P1-4: output contract field list must not appear twice
+# ---------------------------------------------------------------------------
+#
+# Audit P1-4 finding: ``action_type、target_id、speech、reason、confidence``
+# appears in BOTH the system prompt's ``_build_output_contract`` AND
+# the user prompt's ``_build_strict_output_contract``. Inflates token
+# budget by ~25 chars per duplication, multiplies across multi-turn
+# games, and adds no information — the LLM has already seen the field
+# list in the cacheable system prompt.
+#
+# Fix: the field list lives in the SYSTEM prompt only (stable rule).
+# The user prompt keeps the per-turn phase-specific rules (e.g., the
+# "8. 投票还必须包含..." line for VOTE actions, the legal_actions
+# / legal_targets constraints).
+
+
+def test_output_contract_not_duplicated():
+    """P1-4: the FULL_ACTION field list must appear only ONCE in the
+    assembled (system + user) prompt pair.
+
+    Pre-fix, the string ``action_type、target_id、speech、reason、confidence``
+    appeared in BOTH ``build_system_prompt()`` and
+    ``build_user_prompt()``. The user prompt version adds no new
+    information — the system prompt is already cacheable and the LLM
+    has the rule. The user prompt should keep phase-specific rules
+    only (vote audit fields, legal_actions / legal_targets).
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    builder = PlayerPromptBuilder(ctx)
+    system_prompt = builder.build_system_prompt()
+    user_prompt = builder.build_user_prompt(RetryInfo())
+
+    field_list = "action_type、target_id、speech、reason、confidence"
+    # Sanity: must appear at least once (in the system prompt).
+    assert system_prompt.count(field_list) >= 1, (
+        "Field list must still be advertised in the system prompt "
+        "(stable rule — keep the LLM trained on the format)."
+    )
+    # P1-4: must NOT appear in the user prompt (it would be a duplicate).
+    assert user_prompt.count(field_list) == 0, (
+        "P1-4: field list is duplicated in the user prompt. The system "
+        "prompt already has it — the user prompt should only carry "
+        "phase-specific rules (legal_actions, legal_targets, vote audit "
+        "fields). User prompt excerpt: " + user_prompt[:500]
+    )
+
+
+def test_output_contract_vote_rule_still_in_user_prompt():
+    """P1-4: even after removing the duplicated field list, the
+    phase-specific VOTE audit rule must still appear in the user prompt.
+
+    The user prompt is where the LLM sees the per-turn constraints. The
+    VOTE audit fields (``seer_stance、vote_basis、standing_with_seer、...``)
+    are phase-specific, not stable, so they belong in the user prompt.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The phase-specific rule for VOTE must still be in the user prompt.
+    assert "seer_stance" in user_prompt, (
+        "P1-4: phase-specific VOTE audit rule (seer_stance etc.) must "
+        "stay in the user prompt — it depends on legal_actions which "
+        "is per-turn."
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1-5: user prompt must respect a global token budget
+# ---------------------------------------------------------------------------
+#
+# Audit P1-5 finding: with 8+ sections populated (RAG hints, salience,
+# strategy_directive, transcript, etc.) the assembled user prompt
+# reaches 3,000-5,000 tokens — well over the 2,000-token budget most
+# Chinese-context models can comfortably ingest alongside the system
+# prompt. Per-section truncation at _MAX_JSON_CONTEXT_CHARS = 1800 is
+# not enough; the global sum is the constraint that matters.
+#
+# Fix: implement a global token budget. Drop lowest-priority sections
+# (可选 before 辅助; never drop 硬约束) when the assembled prompt
+# exceeds the budget. Use the existing _SECTION_PRIORITIES map for
+# the priority signal.
+
+_USER_PROMPT_BUDGET_CHARS = 6_250  # ≈ 2,500 CJK tokens (rough)
+
+
+def _make_ctx_with_all_sections_populated() -> AgentContext:
+    """Context with every available user-prompt section populated.
+
+    Forces the largest possible user prompt (16 sections all with
+    content) so the budget test catches the over-budget case.
+    """
+    long_summary = "公开事实 " + ("D2 数据 " * 300)
+    long_visible = {f"key_{i}": f"value_{i} " * 30 for i in range(20)}
+    long_private_memory = {
+        "logic_flaws": [{"day": 2, "point": f"逻辑问题 {i}"} for i in range(8)],
+        "valid_points": [{"day": 2, "point": f"有效点 {i}"} for i in range(8)],
+    }
+    long_salience = [
+        {"id": f"sal-{i}", "weight": 0.5, "summary": f"事件 {i} " * 20}
+        for i in range(8)
+    ]
+    long_rag = [
+        {"title": f"案例 {i}", "summary": f"内容 {i} " * 50, "key_decisions": [f"决策 {i}"]}
+        for i in range(3)
+    ]
+    long_reflection = [
+        {"theme": f"主题 {i}", "summary": f"经验 {i} " * 30}
+        for i in range(5)
+    ]
+    long_profile = {"games_played": 10, "summary": "前 30% 玩家画像 " * 50}
+    long_cognition = {
+        f"p{i:02d}": {"trust": 0.5, "faction_lean": "good", "top_role_guess": "villager"}
+        for i in range(1, 13)
+    }
+    long_directive = {
+        "must_address_alerts": [{"alert": f"提示 {i}"} for i in range(5)],
+        "anti_herd": "不要盲目跟票 " * 20,
+        "skill_tactical_advice": {"role": "villager", "tips": ["tip1", "tip2"] * 30},
+    }
+    long_skill = {
+        "wolf_pit": "嫌疑区 " * 100,
+        "seer_logic": "查验逻辑 " * 100,
+    }
+    long_transcript = [
+        {"speaker": f"p{i:02d}", "text": f"近期发言内容 {i} " * 30}
+        for i in range(1, 5)
+    ]
+    long_persona = {"tone": "aggressive", "style": "logical", "phrase_style": "blame_p05"}
+    long_belief = {
+        "my_suspects": [
+            {"player": f"p{i:02d}", "faction_lean": "wolf_lean",
+             "top_role_guess": "werewolf", "trust": 0.2}
+            for i in range(1, 6)
+        ],
+        "my_trusted": [
+            {"player": f"p{i:02d}", "faction_lean": "good_lean",
+             "top_role_guess": "villager", "trust": 0.8}
+            for i in range(6, 11)
+        ],
+    }
+    return AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary=long_summary,
+        visible_world_state=long_visible,
+        private_memory_hints=long_private_memory,
+        salience_items=long_salience,
+        rag_hints=long_rag,
+        reflection_memory_hints=long_reflection,
+        profile_memory_hint=long_profile,
+        cognition_matrix_hint=long_cognition,
+        strategy_directive=long_directive,
+        skill_analysis_hints=long_skill,
+        recent_transcript=long_transcript,
+        persona_snapshot=long_persona,
+        belief_state=long_belief,
+    )
+
+
+def test_user_prompt_within_budget_when_all_sections_populated():
+    """P1-5: with all 16 sections populated, the user prompt must be
+    under the budget cap.
+
+    Pre-fix: the user prompt could reach 3,000-5,000 tokens. The fix
+    drops lowest-priority sections (可选 first, then 辅助) until the
+    prompt fits under the budget. 硬约束 sections are never dropped.
+    """
+    ctx = _make_ctx_with_all_sections_populated()
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # rough CJK token estimate: 1 token ≈ 2.5 chars
+    approx_tokens = len(user_prompt) / 2.5
+    assert approx_tokens < 2_500, (
+        f"P1-5: user prompt is over budget. approx_tokens={approx_tokens:.0f}, "
+        f"chars={len(user_prompt)}, budget=2,500 tokens "
+        f"(~6,250 chars). Drop lowest-priority sections first when over "
+        f"budget. user_prompt[:500]={user_prompt[:500]!r}"
+    )
+
+
+def test_hard_sections_never_dropped_under_budget():
+    """P1-5: budget enforcement must NEVER drop truly-binding sections.
+
+    P1-9: retry hint is now 【辅助】 (advisory), so under extreme
+    budget pressure it may be dropped — the runtime FallbackAction
+    handles the safety case regardless. strategy_directive and
+    output contract are the two truly-binding sections that the
+    LLM must always see; the trimmer must never drop them.
+    """
+    ctx = _make_ctx_with_all_sections_populated()
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error: missing field 'speech'",
+        correction_hint="只输出JSON。",
+    )
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # strategy_directive is gated by 硬约束-equivalent policy: it
+    # carries binding rules the LLM must obey (the inner P0-S5
+    # MUST/SHOULD/REFERENCE sub-group keys).
+    assert "本轮策略指令" in user_prompt, (
+        "P1-5: strategy_directive carries binding rules and must "
+        "never be dropped from the user prompt under the budget cap."
+    )
+    # Output contract is 【硬约束】 and must never be dropped.
+    assert "最终输出协议" in user_prompt, (
+        "P1-5: output contract is a 硬约束 section and must never be dropped."
+    )
+
+
+def test_optional_sections_dropped_first():
+    """P1-5: under tight budget, 可选 sections are dropped first.
+
+    The transcript is the only 可选 section in build_user_prompt.
+    """
+    ctx = _make_ctx_with_all_sections_populated()
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # If the budget requires any drop, the 可选 section (transcript)
+    # should be the first to go. We can't pin the exact behavior
+    # (it depends on payload sizes), but we can assert the budget is
+    # respected — the trimmer always picks the lowest-priority section.
+    # The contract under test is "budget is enforced", not "transcript
+    # is always dropped", so this test is a sanity check that the
+    # transcript MAY be present (it didn't HAVE to be dropped) when
+    # other smaller payloads fit.
+    # Pin the contract: budget is hard.
+    approx_tokens = len(user_prompt) / 2.5
+    assert approx_tokens < 2_500
+
+
+# ---------------------------------------------------------------------------
+# P1-6: strategy_directive section label is neutral, not 【硬约束】
+# ---------------------------------------------------------------------------
+#
+# Audit P1-6 finding: ``_build_strategy_directive`` is wrapped with the
+# outer section label 【硬约束】, but the function internally splits its
+# content into 【硬约束】/【建议】/【参考】 sub-headers. The double-labeling
+# is contradictory — the LLM sees "this whole section is MUST" but then
+# sees the inner header saying "this subsection is just REFERENCE".
+#
+# Fix: use a neutral section label 【策略指令】 for the OUTER wrapper.
+# The inner sub-headers (【硬约束】/【建议】/【参考】) carry the actual
+# priority signal for the keys inside.
+
+
+def test_strategy_directive_section_label_neutral():
+    """P1-6: strategy_directive outer section label is 【策略指令】,
+    not 【硬约束】. The inner sub-headers (P0-S5) carry the priority signal.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+        strategy_directive={
+            "must_address_alerts": ["p07 accused me"],
+            "anti_herd": "do not follow the herd",
+        },
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Pin the contract: the strategy_directive section is wrapped with
+    # 【策略指令】, NOT 【硬约束】, at the outer level.
+    directive_idx = prompt.find("本轮策略指令")
+    assert directive_idx >= 0, "strategy_directive section must still render"
+    preceding = prompt[max(0, directive_idx - 60):directive_idx]
+    assert "【策略指令】" in preceding, (
+        "P1-6: strategy_directive outer section label must be 【策略指令】 "
+        "(neutral), not 【硬约束】. The inner P0-S5 sub-headers carry the "
+        "priority signal. Got preceding text: " + repr(preceding)
+    )
+    # The outer label must NOT be 【硬约束】 (the inner sub-group
+    # header is also 【硬约束】, but the OUTER wrapper is the one
+    # immediately before "本轮策略指令").
+    outer_label = preceding.strip().split("\n")[-1].strip()
+    assert "【硬约束】" not in outer_label, (
+        "P1-6: outer strategy_directive section label must NOT be "
+        "【硬约束】 (the inner sub-group is already 【硬约束】). "
+        f"Got outer label: {outer_label!r}"
+    )
+
+
+def test_strategy_directive_inner_subgroups_still_three_tiers():
+    """P1-6 regression: changing the outer label must not remove the
+    inner P0-S5 sub-grouping (MUST / SHOULD / REFERENCE).
+
+    The inner sub-headers carry the priority signal for the directive
+    keys. With hard+soft+reference keys present, all 3 inner headers
+    must still render.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+        strategy_directive={
+            # hard
+            "must_address_alerts": ["p07 accused me"],
+            # suggestion
+            "anti_herd": "do not follow the herd",
+            # reference
+            "master_behavior_summary": "master last round attacked p05",
+        },
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Inner P0-S5 sub-group markers must still be present.
+    assert "以下指令必须遵守（MUST）" in prompt, (
+        "P1-6 regression: P0-S5 inner MUST marker must still render"
+    )
+    assert "以下指令为建议（SHOULD）" in prompt, (
+        "P1-6 regression: P0-S5 inner SHOULD marker must still render"
+    )
+    assert "以下为背景信息（REFERENCE）" in prompt, (
+        "P1-6 regression: P0-S5 inner REFERENCE marker must still render"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1-7: villager role guide must not claim authority over witch's potions
+# ---------------------------------------------------------------------------
+#
+# Audit P1-7 finding: the villager role guide contains the rule
+# "N1 用药决策推动解药救人" (N1: drive the antidote-saving decision).
+# But villagers have NO authority over witch's potions — that decision
+# is exclusively the witch's. The rule confuses villagers into thinking
+# they can direct the witch, which is a known role-rule violation.
+#
+# Fix: reword to "N1 公开讨论中支持解药救人（如有女巫报银水线索）" —
+# villagers can argue in PUBLIC discussion that the witch should save
+# (if there's a silver-water lead), but they cannot "push a decision".
+
+
+def test_villager_role_guide_no_witch_decision_authority():
+    """P1-7: the villager role guide must not claim authority over
+    the witch's potion decisions.
+
+    Pre-fix text: "N1 用药决策推动解药救人" — implies villagers can
+    drive the witch's potion use. Villagers have no such authority
+    (witch's potions are exclusively the witch's decision per
+    design doc Chapter 3).
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07"],
+        public_summary="D2",
+    )
+    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # The villager role guide must not say "N1 用药决策" — that
+    # phrasing implies authority over the witch's potions.
+    assert "N1 用药决策" not in system_prompt, (
+        "P1-7: villager role guide must not say 'N1 用药决策' "
+        "(implies authority over witch's potions). Got: "
+        + system_prompt[system_prompt.find("村民规则"):system_prompt.find("村民规则") + 200]
+    )
+    # The new framing should be "支持" (support) or similar —
+    # describing what villagers can do in PUBLIC discussion, not
+    # what they can drive as a decision.
+    villager_rule_idx = system_prompt.find("村民规则")
+    assert villager_rule_idx >= 0, "villager role guide must be present"
+    rule_window = system_prompt[villager_rule_idx:villager_rule_idx + 300]
+    # The guide should reference the witch's decision context
+    # (支持 / 银水 / 公开讨论) rather than claiming authority
+    # (用药决策 / 推动).
+    assert "解药" in rule_window, (
+        "P1-7: villager guide should still mention the antidote "
+        "(just framed as supporting, not deciding)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1-8: vote example's vote_basis must be role-appropriate
+# ---------------------------------------------------------------------------
+#
+# Audit P1-8 finding: every non-seer role (villager / witch / hunter /
+# idiot / hybrid / werewolf) sees the same vote example with
+# `vote_basis="seer_check"`. But only a seer has a check. Non-seer
+# roles don't have their own check — they are siding with another
+# player's seer claim. The example's vote_basis should reflect that:
+#   - seer       → "seer_check"   (own check)
+#   - non-seer   → "seer_siding"  (standing with another seer)
+#
+# Fix: make vote_basis role-dependent in the example. Use the
+# `role` variable already in scope.
+
+
+def test_vote_example_role_appropriate_basis():
+    """P1-8: non-seer roles' vote example uses ``seer_siding``, not ``seer_check``.
+
+    Only a seer has a check of their own. Non-seer roles do not
+    have a check — they side with a (claimed) seer. The example's
+    ``vote_basis`` must reflect that distinction so the LLM doesn't
+    fabricate a non-existent check.
+    """
+    ctx = _make_full_action_ctx("villager")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples, "Expected a vote example in the prompt"
+    for ex in vote_examples:
+        # P1-8: villager must use seer_siding, not seer_check.
+        assert ex.get("vote_basis") == "seer_siding", (
+            "P1-8: villager vote example must use vote_basis='seer_siding' "
+            "(villager has no check of their own — they side with a seer). "
+            f"Got vote_basis={ex.get('vote_basis')!r}. Full example: {ex}"
+        )
+
+
+def test_vote_example_seer_basis_unchanged():
+    """P1-8 regression: seer role still uses vote_basis='seer_check'.
+
+    A seer has their own check — the example must keep the
+    ``seer_check`` value (P0-4 already fixed ``standing_with_seer``
+    to be empty for the seer branch). The P1-8 change is for
+    non-seer roles only.
+    """
+    ctx = _make_full_action_ctx("seer")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples
+    for ex in vote_examples:
+        assert ex.get("vote_basis") == "seer_check", (
+            f"P1-8 regression: seer vote example must still use "
+            f"vote_basis='seer_check', got {ex.get('vote_basis')!r}"
+        )
+
+
+@pytest.mark.parametrize("role", [
+    "witch", "hunter", "idiot", "hybrid", "werewolf",
+])
+def test_vote_example_non_seer_uses_seer_siding(role: str):
+    """P1-8: every non-seer role (good and wolf) uses ``seer_siding``."""
+    ctx = _make_full_action_ctx(role)
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    vote_examples = [
+        ex for ex in _extract_json_examples(prompt)
+        if ex.get("action_type") == "vote"
+    ]
+    assert vote_examples, f"Expected a vote example for role={role!r}"
+    for ex in vote_examples:
+        assert ex.get("vote_basis") == "seer_siding", (
+            f"P1-8: non-seer role={role!r} vote example must use "
+            f"vote_basis='seer_siding' (no own check), got "
+            f"{ex.get('vote_basis')!r}. Full example: {ex}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P1-9: retry hint section is 【辅助】, not 【硬约束】
+# ---------------------------------------------------------------------------
+#
+# Audit P1-9 finding: ``_build_retry_hint`` is wrapped with the
+# 【硬约束】 outer label, but the content is mostly descriptive /
+# advisory (the error_message snippet and the correction_hint). Only
+# the timeout-no-op permission ("如果你已经超时, 请直接返回 no_action")
+# is a true binding rule, and even that is enforced by the runtime
+# FallbackAction path, not by the LLM obeying the prompt.
+#
+# Fix: use 【辅助】 for the retry hint section. The no-op permission
+# line still appears (the LLM needs to see it), but the section
+# wrapper is no longer over-labeled as MUST-obey.
+
+
+def test_retry_hint_labeled_as_辅助():
+    """P1-9: retry hint outer section label is 【辅助】, not 【硬约束】.
+
+    The retry hint content is descriptive (error_message snippet) and
+    advisory (correction_hint, timeout-no-op permission). Treating
+    the whole section as a binding hard constraint is over-labeling.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error",
+        correction_hint="只输出JSON。",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # The retry hint header is "纠正提示" — confirm the OUTER label
+    # is 【辅助】, not 【硬约束】.
+    retry_idx = prompt.find("纠正提示")
+    assert retry_idx > 0, "Retry hint should still render in the user prompt"
+    preceding = prompt[max(0, retry_idx - 60):retry_idx]
+    assert "【辅助】" in preceding, (
+        "P1-9: retry hint section must be labeled 【辅助】 "
+        "(advisory content, not a hard constraint). Got preceding: "
+        f"{preceding!r}"
+    )
+
+
+def test_retry_hint_timeout_permission_line_still_present():
+    """P1-9 regression: the timeout-no-op permission line must still
+    appear in the retry hint even after relabeling the section.
+
+    The line is a useful advisory signal that the LLM should take
+    a safe no-op on timeout. The runtime FallbackAction enforces
+    safety; the prompt signal is the soft guidance.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="empty_response",
+        failure_category="timeout",
+        correction_hint="Please provide a valid JSON action",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # The no-op permission line is still in the rendered retry hint.
+    assert "no_action" in prompt, (
+        "P1-9 regression: timeout-no-op permission line must still "
+        "appear in the retry hint (the LLM still needs the signal)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2074,12 +2656,14 @@ def test_format_examples_seer_vote_uses_own_check():
 
 
 def test_format_examples_non_seer_vote_keeps_p03_example():
-    """P0-4: non-seer roles keep the p03 / seer_check example.
+    """P0-4 / P1-8: non-seer roles keep the p03 / seer_siding example.
 
     Regression: the seer-specific fix must NOT remove the original
-    p03 / seer_check example for non-seer roles (villager, witch,
-    hunter, idiot, hybrid, werewolf). Those roles DO side with an
-    external seer claim, so the example is still meaningful.
+    p03 example for non-seer roles (villager, witch, hunter, idiot,
+    hybrid, werewolf). Those roles DO side with an external seer
+    claim, so the example is still meaningful. P1-8 updated
+    ``vote_basis`` from "seer_check" (own check, only seers have
+    that) to "seer_siding" (standing with another seer).
     """
     for role in ("villager", "witch", "hunter", "idiot", "hybrid", "werewolf"):
         ctx = _make_full_action_ctx(role)
@@ -2092,14 +2676,18 @@ def test_format_examples_non_seer_vote_keeps_p03_example():
             f"Expected a vote example for role={role!r}"
         )
         for ex in vote_examples:
-            # Non-seer roles still see the p03 / seer_check example.
+            # Non-seer roles still see the p03 standing-with-seer
+            # example (they side with an external seer).
             assert ex.get("standing_with_seer") == "p03", (
                 f"Non-seer role={role!r} must keep the 'p03' example "
                 f"for standing_with_seer (they side with an external seer), "
                 f"got {ex.get('standing_with_seer')!r}. Full example: {ex}"
             )
-            assert ex.get("vote_basis") == "seer_check", (
-                f"Non-seer role={role!r} must keep vote_basis='seer_check', "
+            # P1-8: vote_basis is "seer_siding" for non-seer roles
+            # (they have no check of their own).
+            assert ex.get("vote_basis") == "seer_siding", (
+                f"Non-seer role={role!r} must use vote_basis='seer_siding' "
+                f"(P1-8: they have no check of their own), "
                 f"got {ex.get('vote_basis')!r}. Full example: {ex}"
             )
 

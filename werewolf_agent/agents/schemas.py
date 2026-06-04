@@ -105,9 +105,30 @@ class RiskFlag(str, Enum):
 
 class PrivateIntent(BaseModel):
     """Agent's private strategic snapshot. Only enters debug/audit views."""
+    # P1-1: reject unknown fields. The LLM was stuffing extra keys
+    # (e.g., leaked secrets, defensive fields) into private_intent and
+    # the audit log happily accepted them. With extra="forbid" the
+    # retry loop can surface the parse error and the LLM learns to
+    # stop filling fields the prompt never requested.
+    model_config = ConfigDict(extra="forbid")
     true_role: str = Field(..., description="Agent's actual role")
     faction_goal: FactionGoal = Field(..., description="Current faction objective")
-    claimed_view: str = Field(
+    # P1-3: enforce enum. P0-S7 added the prompt-side constraint, but
+    # the schema still accepted any string. Game trace g_3528592081
+    # showed wolves writing `claimed_view: "我是好人，混水摸鱼"` (a
+    # natural-language strategy note) and the audit log recording it.
+    # `Literal` over the 7 documented identity-perspective values is
+    # the same approach used by the example-renderer in
+    # prompt_builder._format_examples; both stay in sync.
+    claimed_view: Literal[
+        "good_player_without_night_info",
+        "seer",
+        "witch",
+        "hunter",
+        "idiot",
+        "hybrid",
+        "werewolf",
+    ] = Field(
         ..., description="Identity perspective the agent is claiming publicly"
     )
     pressure_target: str | None = Field(
@@ -577,6 +598,13 @@ class AgentContext(BaseModel):
     night_number: int = 0
     public_summary: str = ""
     own_role: str | None = None
+    # P1-2: hybrid's master faction ("good" or "werewolf") — set by
+    # runtime from gs.hybrid_master_faction. Controls whether the
+    # anti-herd section in the user prompt frames herding as expected
+    # (wolf-side) or warns against it (good-side). Unset/None defaults
+    # to good-side (safe default — over-warn > silent team-coordination
+    # cue leak).
+    hybrid_master_faction: str | None = None
     legal_actions: list[ActionType] = Field(default_factory=list)
     legal_targets: list[str] = Field(default_factory=list)
     visible_world_state: dict[str, Any] = Field(default_factory=dict)

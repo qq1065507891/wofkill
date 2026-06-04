@@ -76,12 +76,18 @@ class TestAntiHerdForGoodSide:
 # ---------------------------------------------------------------------------
 
 class TestAntiHerdForWolves:
-    """Wolves (and hybrid-master-wolf) should NOT receive the generic
+    """Wolves (and hybrid-with-wolf-master) should NOT receive the generic
     anti-herd text. Instead they should receive a wolf-specific herd
-    message that frames 抱团 as expected wolf coordination."""
+    message that frames 抱团 as expected wolf coordination.
+
+    Note: ``hybrid`` is parametrized separately via TestHybridMasterFaction
+    because its bucket is gated on ctx.hybrid_master_faction (P1-2), not
+    just on its own role. The K6.2 contract for hybrid-with-no-master
+    defaults to good-side (safe default).
+    """
 
     @pytest.mark.parametrize("role", [
-        "werewolf", "hybrid",
+        "werewolf",
     ])
     def test_anti_herd_text_absent_for_wolf_side(self, role: str):
         ctx = _make_vote_ctx(role)
@@ -94,7 +100,7 @@ class TestAntiHerdForWolves:
         )
 
     @pytest.mark.parametrize("role", [
-        "werewolf", "hybrid",
+        "werewolf",
     ])
     def test_wolf_specific_herd_message_present(self, role: str):
         """Wolves get a wolf-specific herd/coordination message."""
@@ -132,7 +138,6 @@ class TestAntiHerdRoleGatingContract:
         assert "反跟票警告" not in wolf_prompt
         # The wolf prompt must mention wolf-team coordination.
         assert "狼队" in wolf_prompt or "抱团" in wolf_prompt
-
     def test_unknown_role_falls_back_to_anti_herd(self):
         """If own_role is None or an unknown string, render the
         anti-herd text (safe default for the good side)."""
@@ -142,4 +147,92 @@ class TestAntiHerdRoleGatingContract:
         assert "反跟票" in prompt, (
             f"unknown role should fall back to anti-herd text (safe default). "
             f"Prompt: {prompt!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P1-2: hybrid with good-side master receives good-side anti-herd
+# ---------------------------------------------------------------------------
+#
+# Audit P1-2 finding: hybrid is always treated as wolf-side for the
+# anti-herd warning (P1-K6). But ~50% of hybrid players choose a master
+# on the good side, in which case the wolf-side message is wrong.
+# The hybrid-with-good-master should receive the good-side anti-herd
+# text ("反跟票警告") and NOT the wolf-side message ("狼队抱团是正常策略").
+#
+# Fix: introduce ``ctx.hybrid_master_faction`` (set by runtime) and
+# use it to override the hybrid bucket. Default to good-side if unset.
+
+
+def _make_hybrid_vote_ctx(
+    master_faction: str | None = None,
+) -> AgentContext:
+    """Hybrid vote context with explicit master_faction (P1-2)."""
+    return AgentContext(
+        agent_id="p04",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="hybrid",
+        hybrid_master_faction=master_faction,
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p01", "p02", "p03"],
+        public_summary="D2 vote",
+        strategy_directive={},
+    )
+
+
+class TestHybridMasterFaction:
+    """P1-2: hybrid's anti-herd bucket depends on master_faction.
+
+    Contract:
+    - hybrid_master_faction == "good"      → good-side text (反跟票警告)
+    - hybrid_master_faction == "werewolf"  → wolf-side text (狼队抱团)
+    - hybrid_master_faction is None / unset → default to good-side
+      (safe default — better to over-warn than to silently hand
+      wolves a team-coordination cue).
+    """
+
+    def test_hybrid_good_master_receives_good_side_anti_herd(self):
+        """P1-2: hybrid with good-side master must see good-side text."""
+        ctx = _make_hybrid_vote_ctx(master_faction="good")
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        assert "反跟票" in prompt, (
+            "hybrid with good master should receive the good-side "
+            f"anti-herd text. Prompt: {prompt!r}"
+        )
+        assert "狼队抱团是正常策略" not in prompt, (
+            "hybrid with good master must NOT receive the wolf-side "
+            f"herd text. Prompt: {prompt!r}"
+        )
+
+    def test_hybrid_wolf_master_receives_wolf_side_text(self):
+        """P1-2: hybrid with wolf-side master still sees wolf text.
+
+        Regression — the P1-K6 wolf-side hybrid behavior must
+        continue to apply when the master is actually a wolf.
+        """
+        ctx = _make_hybrid_vote_ctx(master_faction="werewolf")
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        assert "狼队抱团是正常策略" in prompt, (
+            "hybrid with wolf master should receive the wolf-side "
+            f"text. Prompt: {prompt!r}"
+        )
+        assert "反跟票" not in prompt, (
+            "hybrid with wolf master must NOT receive the good-side "
+            f"anti-herd text. Prompt: {prompt!r}"
+        )
+
+    def test_hybrid_master_faction_unset_defaults_to_good_side(self):
+        """P1-2: when master_faction is unset, default to good-side.
+
+        Default safety: better to over-warn the hybrid about
+        anti-herd than to silently hand wolf-team coordination
+        cues to a hybrid whose master we don't yet know.
+        """
+        ctx = _make_hybrid_vote_ctx(master_faction=None)
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        assert "反跟票" in prompt, (
+            "hybrid with unset master_faction should default to "
+            f"good-side anti-herd. Prompt: {prompt!r}"
         )

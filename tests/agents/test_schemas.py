@@ -85,7 +85,7 @@ class TestPlayerActionSchema:
             private_intent=PrivateIntent(
                 true_role="werewolf",
                 faction_goal=FactionGoal.CONFUSE_GOOD,
-                claimed_view="villager",
+                claimed_view="good_player_without_night_info",
             ),
         )
         # speech is public, private_intent is private
@@ -455,3 +455,127 @@ class TestPlayerActionExtraForbid:
                     "target_id": "p05",
                     "vote_basis": "fallback",
                 })
+
+
+# ---------------------------------------------------------------------------
+# P1-1: PrivateIntent must reject unknown fields (extra="forbid")
+# ---------------------------------------------------------------------------
+#
+# Audit P1-1 finding: all PlayerAction variants have ``extra="forbid"`` (P0-S8)
+# so the LLM cannot attach arbitrary fields to actions. But the nested
+# ``PrivateIntent`` BaseModel has no such guard — the LLM can stuff
+# `leaked_secret: "p05 is wolf"` into private_intent and have it pass
+# schema validation, then it ends up in the audit log.
+
+
+class TestPrivateIntentExtraForbid:
+    """PrivateIntent is the LLM's free-form audit payload — every variant
+    field is a deliberate schema field. With ``extra="forbid"`` an
+    LLM that attaches an extra key (defensive field, leaked secret, etc.)
+    is rejected at parse time, and the retry loop can surface the
+    parse error back to the LLM.
+    """
+
+    def test_private_intent_rejects_unknown_fields(self) -> None:
+        """P1-1: an unknown key on PrivateIntent must raise ValidationError."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PrivateIntent(
+                true_role="werewolf",
+                faction_goal=FactionGoal.PUSH_GOOD_PLAYER_OUT,
+                claimed_view="good_player_without_night_info",
+                some_unknown="x",  # type: ignore[call-arg]
+            )
+
+    def test_private_intent_model_validate_rejects_unknown(self) -> None:
+        """P1-1: model_validate path also rejects unknown fields."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PrivateIntent.model_validate({
+                "true_role": "seer",
+                "faction_goal": "find_wolves",
+                "claimed_view": "seer",
+                "leaked_secret": "p05 is wolf",
+            })
+
+    def test_private_intent_known_fields_still_pass(self) -> None:
+        """Regression: all 5 documented PrivateIntent fields still validate."""
+        intent = PrivateIntent(
+            true_role="werewolf",
+            faction_goal=FactionGoal.CONFUSE_GOOD,
+            claimed_view="good_player_without_night_info",
+            pressure_target="p05",
+            risk_flags=[RiskFlag.AVOID_TEAMMATE_EXPOSURE],
+        )
+        assert intent.true_role == "werewolf"
+        assert intent.faction_goal == FactionGoal.CONFUSE_GOOD
+        assert intent.claimed_view == "good_player_without_night_info"
+        assert intent.pressure_target == "p05"
+        assert intent.risk_flags == [RiskFlag.AVOID_TEAMMATE_EXPOSURE]
+
+
+# ---------------------------------------------------------------------------
+# P1-3: claimed_view must be enum-enforced (not free-form str)
+# ---------------------------------------------------------------------------
+#
+# Audit P1-3 finding: P0-S7 added a prompt-side enum constraint for
+# `claimed_view` (good_player_without_night_info / seer / etc.), but the
+# PrivateIntent schema still accepted any string. Game trace g_3528592081
+# showed wolves writing `claimed_view: "我是好人，混水摸鱼"` — a natural-
+# language strategy note — and the audit log happily recording it. The
+# schema must reject values that aren't in the documented enum.
+#
+# Fix: change `claimed_view: str` to a `Literal[...]` over the
+# documented set, so the retry loop can report "claimed_view '我是狼'
+# not in enum" back to the LLM and the model learns to stop.
+
+_ALLOWED_CLAIMED_VIEWS = frozenset({
+    "good_player_without_night_info",
+    "seer", "witch", "hunter", "idiot", "hybrid", "werewolf",
+})
+
+
+class TestClaimedViewEnum:
+    """P1-3: claimed_view must be one of the documented enum values."""
+
+    def test_claimed_view_accepts_only_known_values(self) -> None:
+        """P1-3: a free-form string like '我是狼' must raise ValidationError."""
+        with pytest.raises(ValidationError, match="claimed_view|Input should be"):
+            PrivateIntent(
+                true_role="werewolf",
+                faction_goal=FactionGoal.CONFUSE_GOOD,
+                claimed_view="我是狼",
+            )
+
+    def test_claimed_view_rejects_strategy_note_string(self) -> None:
+        """P1-3: a natural-language strategy note is rejected.
+
+        Mirrors the g_3528592081 leak: wolves wrote
+        ``claimed_view: "我是好人，混水摸鱼"`` and the schema accepted it.
+        """
+        with pytest.raises(ValidationError, match="claimed_view|Input should be"):
+            PrivateIntent(
+                true_role="werewolf",
+                faction_goal=FactionGoal.PUSH_GOOD_PLAYER_OUT,
+                claimed_view="我是好人，混水摸鱼",
+            )
+
+    def test_claimed_view_accepts_documented_enum_values(self) -> None:
+        """Regression: all 7 documented enum values still validate."""
+        for allowed in _ALLOWED_CLAIMED_VIEWS:
+            intent = PrivateIntent(
+                true_role="werewolf",
+                faction_goal=FactionGoal.CONFUSE_GOOD,
+                claimed_view=allowed,
+            )
+            assert intent.claimed_view == allowed, (
+                f"claimed_view={allowed!r} must validate; got "
+                f"{intent.claimed_view!r}"
+            )
+
+    def test_claimed_view_model_validate_rejects_free_form(self) -> None:
+        """P1-3: model_validate path also rejects free-form claimed_view."""
+        with pytest.raises(ValidationError, match="claimed_view|Input should be"):
+            PrivateIntent.model_validate({
+                "true_role": "seer",
+                "faction_goal": "find_wolves",
+                "claimed_view": "随便写点啥",  # noqa: E501 — not in enum
+            })

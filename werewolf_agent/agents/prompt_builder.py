@@ -59,6 +59,13 @@ _MAX_JSON_CONTEXT_CHARS = 1800
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
 _MAX_SALIENCE_ITEMS = 4
+# P1-5: global user-prompt budget. ≈ 2,500 CJK tokens at the rough
+# 2.5 chars/token ratio. The 16 user-prompt sections are truncated
+# per-section, but the SUM can still run 3,000-5,000 tokens when many
+# sections have content. The budget cap drops the lowest-priority
+# sections (可选 → 辅助) until the prompt fits. 硬约束 sections are
+# never dropped.
+_USER_PROMPT_BUDGET_CHARS = 6_250
 
 # P0-S5: strategy_directive is split into 3 priority tiers so the LLM can
 # distinguish hard constraints (must obey) from suggestions (recommended) and
@@ -238,7 +245,7 @@ class PlayerPromptBuilder:
             "villager": (
                 "村民规则：身份公开时积极表明好人立场；"
                 "分析发言矛盾/票型关系；"
-                "N1 用药决策推动解药救人；"
+                "N1 公开讨论中支持解药救人（如有女巫报银水线索）；"
                 "归票基于公开证据链而非情绪。"
             ),
         }
@@ -267,6 +274,13 @@ class PlayerPromptBuilder:
     #   - 可选 (OPTIONAL):   reference, may be skimmed or dropped
     # Note: this is the OUTER section label, distinct from the inner
     # 硬约束/建议/参考 sub-grouping already in P0-S5 for strategy_directive.
+    # P1-6: strategy_directive's outer label is 【策略指令】 (neutral)
+    # to avoid double-labeling with the inner P0-S5 sub-group. The
+    # P1-5 budget trimmer treats it as a never-dropped section
+    # because it carries binding rules.
+    _NEVER_DROP: frozenset[str] = frozenset({
+        "_build_strategy_directive",
+    })
     _SECTION_PRIORITIES: dict[str, str] = {
         "_build_persona": "【辅助】",
         "_build_phase_context": "【辅助】",
@@ -279,10 +293,21 @@ class PlayerPromptBuilder:
         "_build_reflection_memory_hints": "【辅助】",
         "_build_profile_memory_hint": "【辅助】",
         "_build_cognition_matrix_hint": "【辅助】",
-        "_build_strategy_directive": "【硬约束】",
+        # P1-6: strategy_directive outer label is NEUTRAL. The
+        # function internally splits keys into 【硬约束】/【建议】/【参考】
+        # sub-headers (P0-S5) that carry the priority signal. The
+        # outer section label cannot also be 【硬约束】 (double-labeling
+        # contradicts the inner "REFERENCE" sub-group).
+        "_build_strategy_directive": "【策略指令】",
         "_build_skill_analysis_hints": "【辅助】",
         "_build_recent_transcript": "【可选】",
-        "_build_retry_hint": "【硬约束】",
+        # P1-9: retry hint is descriptive/advisory (correction hint
+        # text is a soft signal), not a hard rule. Only the
+        # timeout-no-op permission is a true hard constraint, and it
+        # is enforced by the runtime (FallbackAction), not by the
+        # LLM obeying the prompt. The whole section is therefore
+        # 【辅助】, not 【硬约束】.
+        "_build_retry_hint": "【辅助】",
         "_build_strict_output_contract": "【硬约束】",
         # Note: _build_task_prompt is intentionally unlabeled — the
         # task prompt is the action spec the LLM is executing.
@@ -303,44 +328,109 @@ class PlayerPromptBuilder:
         return f"{label} {body}"
 
     def build_user_prompt(self, retry: RetryInfo) -> str:
-        parts: list[str] = []
-        # Boundary marker per s10: above = stable, below = dynamic
-        parts.append("=== DYNAMIC_BOUNDARY ===")
+        # P1-5: build the full prompt first, then enforce the global
+        # token budget by dropping lowest-priority sections until the
+        # prompt fits. Sections are dropped in priority order:
+        #   可选 (transcript) → 辅助 (persona, profile, ...).
+        # 硬约束 (strategy_directive, retry hint, output contract) is
+        # never dropped.
+        parts: list[tuple[str, str]] = []
+        # Boundary marker per s10: above = stable, below = dynamic.
+        # Boundary marker + task prompt are always kept (they are not
+        # sections with a priority label).
+        parts.append(("", "=== DYNAMIC_BOUNDARY ==="))
         # P2-S10: persona (per-turn style/tone hint) lives in the user
         # message, right after the boundary marker, so it stays grouped
         # with other per-turn dynamic context and does not invalidate
         # the system-prompt cache on each turn.
-        parts.append(self._label_section("_build_persona", self._build_persona()))
+        parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
         # P1-S3: each section is wrapped with a [硬约束/辅助/可选]
         # priority label so the LLM can rank attention under tight
         # token budgets. The label is prepended at the section level
         # — internal sub-grouping (e.g., P0-S5 within strategy_directive)
         # is preserved.
-        parts.append(self._label_section("_build_phase_context", self._build_phase_context()))
-        parts.append(self._label_section("_build_belief_state", self._build_belief_state()))
-        parts.append(self._label_section("_build_public_summary", self._build_public_summary()))
-        parts.append(self._label_section("_build_visible_state", self._build_visible_state()))
-        parts.append(self._label_section("_build_private_memory_hints", self._build_private_memory_hints()))
-        parts.append(self._label_section("_build_salience_events", self._build_salience_events()))
-        parts.append(self._label_section("_build_rag_hints", self._build_rag_hints()))
-        parts.append(self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints()))
-        parts.append(self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint()))
-        parts.append(self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint()))
-        parts.append(self._label_section("_build_strategy_directive", self._build_strategy_directive()))
-        parts.append(self._label_section("_build_skill_analysis_hints", self._build_skill_analysis_hints()))
+        parts.append(("_build_phase_context", self._label_section("_build_phase_context", self._build_phase_context())))
+        parts.append(("_build_belief_state", self._label_section("_build_belief_state", self._build_belief_state())))
+        parts.append(("_build_public_summary", self._label_section("_build_public_summary", self._build_public_summary())))
+        parts.append(("_build_visible_state", self._label_section("_build_visible_state", self._build_visible_state())))
+        parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
+        parts.append(("_build_salience_events", self._label_section("_build_salience_events", self._build_salience_events())))
+        parts.append(("_build_rag_hints", self._label_section("_build_rag_hints", self._build_rag_hints())))
+        parts.append(("_build_reflection_memory_hints", self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints())))
+        parts.append(("_build_profile_memory_hint", self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint())))
+        parts.append(("_build_cognition_matrix_hint", self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint())))
+        parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
+        parts.append(("_build_skill_analysis_hints", self._label_section("_build_skill_analysis_hints", self._build_skill_analysis_hints())))
         # P0-K1: skill tool path removed. Skill analyses are pre-injected
         # above (skill_analysis_hints) — no separate tool-catalog section.
-        parts.append(self._label_section("_build_recent_transcript", self._build_recent_transcript()))
+        parts.append(("_build_recent_transcript", self._label_section("_build_recent_transcript", self._build_recent_transcript())))
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM
         # read "纠正提示..." and then got distracted by the task
         # description that followed — easy to miss the correction.
         # New order (task → retry → contract) makes the correction the
         # last thing the LLM sees before the output contract.
-        parts.append(self._build_task_prompt())
-        parts.append(self._label_section("_build_retry_hint", self._build_retry_hint(retry)))
-        parts.append(self._label_section("_build_strict_output_contract", self._build_strict_output_contract()))
-        return "\n\n".join(p for p in parts if p)
+        # task prompt has no priority label — it's the action spec.
+        parts.append(("", self._build_task_prompt()))
+        parts.append(("_build_retry_hint", self._label_section("_build_retry_hint", self._build_retry_hint(retry))))
+        parts.append(("_build_strict_output_contract", self._label_section("_build_strict_output_contract", self._build_strict_output_contract())))
+        return self._enforce_budget(parts)
+
+    def _enforce_budget(
+        self,
+        parts: list[tuple[str, str]],
+    ) -> str:
+        """Join parts with blank-line separator, then trim if over budget.
+
+        P1-5: when the joined prompt exceeds ``_USER_PROMPT_BUDGET_CHARS``,
+        drop the lowest-priority sections (those whose builder_name is
+        labeled 【可选】 then 【辅助】) until it fits. Sections with the
+        【硬约束】 label, the boundary marker, and the task prompt are
+        never dropped.
+        """
+        joined = "\n\n".join(p for _, p in parts if p)
+        if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
+            return joined
+        # Build the drop order: every droppable section in priority
+        # order (lowest first). Skip sections with no label (boundary
+        # marker, task prompt), sections labeled 【硬约束】, and
+        # sections in _NEVER_DROP (e.g., strategy_directive — the
+        # outer label is 【策略指令】 per P1-6 but the section is
+        # never dropped because it carries binding rules).
+        priority = self._SECTION_PRIORITIES
+        droppable: list[tuple[int, int]] = []
+        for idx, (name, _) in enumerate(parts):
+            if not name:
+                continue
+            if name in self._NEVER_DROP:
+                continue
+            label = priority.get(name, "")
+            if label == "【硬约束】":
+                continue
+            # 可选 drops first (priority 0), 辅助 drops second (priority 1).
+            tier = 0 if label == "【可选】" else 1
+            droppable.append((tier, idx))
+        # Sort by tier first, then keep original order within a tier.
+        droppable.sort(key=lambda x: x[0])
+        drop_indices = {idx for _, idx in droppable}
+        # Drop from the lowest tier first; within a tier, drop from
+        # the end (most recently added sections are most often the
+        # largest by payload).
+        for tier, idx in droppable:
+            if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
+                break
+            if idx in drop_indices and parts[idx][0]:
+                # Only drop if the section's label is in the matching
+                # tier; otherwise skip and continue.
+                label = priority.get(parts[idx][0], "")
+                expected_tier = 0 if label == "【可选】" else 1
+                if expected_tier != tier:
+                    continue
+                drop_indices.discard(idx)
+                joined = "\n\n".join(
+                    p for i, (_, p) in enumerate(parts) if i not in drop_indices and p
+                )
+        return joined
 
     def _build_phase_context(self) -> str:
         ctx = self.context
@@ -383,9 +473,18 @@ class PlayerPromptBuilder:
             # (safe default — better to over-warn than to silently
             # hand wolves the team-coordination cue).
             _GOOD_SIDE = {"villager", "seer", "witch", "hunter", "idiot"}
-            _WOLF_SIDE = {"werewolf", "hybrid"}
+            _WOLF_SIDE = {"werewolf"}
             role = ctx.own_role or ""
-            if role in _WOLF_SIDE:
+            # P1-2: hybrid's bucket depends on master_faction. ~50% of
+            # hybrids choose a good-side master and should see the
+            # good-side anti-herd text, not the wolf-side coordination
+            # message. Default to good-side when unset (safe default —
+            # over-warn > silent team-coordination cue leak).
+            if role == "hybrid":
+                is_wolf_side = ctx.hybrid_master_faction == "werewolf"
+            else:
+                is_wolf_side = role in _WOLF_SIDE
+            if is_wolf_side:
                 lines.append(
                     "狼队抱团是正常策略；投票时跟队友一致是预期行为；"
                     "只有在倒钩场景下需独立判断。"
@@ -766,14 +865,19 @@ class PlayerPromptBuilder:
             # since they do side with an external seer claim.
             if role == "seer":
                 vote_standing_with_seer = ""
+                # P1-8: only a seer has a check. Non-seer roles don't —
+                # they are standing with a (claimed) seer, so their
+                # vote_basis is "seer_siding" not "seer_check".
+                vote_basis = "seer_check"
             else:
                 vote_standing_with_seer = "p03"
+                vote_basis = "seer_siding"
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
                          '"speech": "", '
                          '"reason": "公开理由：p05发言可疑", '
                          '"seer_stance": "trust", '
-                         '"vote_basis": "seer_check", '
+                         f'"vote_basis": "{vote_basis}", '
                          f'"standing_with_seer": "{vote_standing_with_seer}", '
                          '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
                          '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
@@ -835,15 +939,20 @@ class PlayerPromptBuilder:
             "2. 如果当前模型无法工具调用，只输出一个JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
             "3. JSON必须以{开头、以}结尾，且只能有一个对象。",
             "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
-            "5. 必填字段：action_type、target_id、speech、reason、confidence。",
         ]
+        # P1-4: the field list (action_type、target_id、speech、reason、
+        # confidence) was duplicated from the system prompt. The system
+        # prompt's ``_build_output_contract`` already advertises it as a
+        # stable rule; the user prompt should keep ONLY the per-turn
+        # phase-specific rules (legal_actions, legal_targets, vote
+        # audit fields).
         if legal_actions:
-            lines.append(f"6. action_type只能取：{legal_actions}。")
+            lines.append(f"5. action_type只能取：{legal_actions}。")
         if legal_targets:
-            lines.append(f"7. target_id只能取这些玩家之一或null：{legal_targets}。")
+            lines.append(f"6. target_id只能取这些玩家之一或null：{legal_targets}。")
         if ActionType.VOTE in ctx.legal_actions:
             lines.append(
-                "8. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
+                "7. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
                 "suspect_reason、not_voting_reason、private_reason，理由字段不能写「未说明」。"
             )
         lines.append("现在提交行动。")
