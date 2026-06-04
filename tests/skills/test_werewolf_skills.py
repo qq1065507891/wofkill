@@ -138,8 +138,10 @@ class TestPushVoteHandlerBranchesOnTaskType:
             task_type="vote",
         )
         vote_out = apply_skill(SkillName.PUSH_VOTE, vote_inp)
-        assert vote_out.recommended_action == "vote", (
-            f"vote-task handler must recommend action='vote'; got {vote_out.recommended_action}"
+        # Vote-task advice should mark itself as 投票阶段.
+        assert "投票阶段" in vote_out.prompt_injectable, (
+            f"vote-task dynamic advice should mark itself as 投票阶段; "
+            f"got: {vote_out.prompt_injectable!r}"
         )
 
         speech_inp = SkillInput(
@@ -149,14 +151,7 @@ class TestPushVoteHandlerBranchesOnTaskType:
             task_type="speech",
         )
         speech_out = apply_skill(SkillName.PUSH_VOTE, speech_inp)
-        assert speech_out.recommended_action == "speech", (
-            f"speech-task handler must recommend action='speech'; got {speech_out.recommended_action}"
-        )
-        # Vote-task advice should mention "投票阶段"; speech-task should mention "发言阶段".
-        assert "投票阶段" in vote_out.prompt_injectable, (
-            f"vote-task dynamic advice should mark itself as 投票阶段; "
-            f"got: {vote_out.prompt_injectable!r}"
-        )
+        # Speech-task advice should mark itself as 发言阶段.
         assert "发言阶段" in speech_out.prompt_injectable, (
             f"speech-task dynamic advice should mark itself as 发言阶段; "
             f"got: {speech_out.prompt_injectable!r}"
@@ -282,6 +277,131 @@ def test_hybrid_with_wolf_master_dispatches_wolf_skills():
 
 
 # ---------------------------------------------------------------------------
+# S-06: prompt_injectable length cap.
+# ---------------------------------------------------------------------------
+
+def test_prompt_injectable_length_cap():
+    """S-06: late-game review (last_words, review_correction, wolf_pit)
+    can produce >1KB prompt_injectable. Cap to 800 chars with truncation
+    marker.
+    """
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12 players, day=4. Inject player_died + claimed_role + speech
+    # facts so the last_words handler produces a multi-KB prompt.
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=4,
+        night_number=3,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    for i in range(1, 21):
+        pid = f"p{(i % 12) + 1:02d}"
+        ws.append(StructuredFact(
+            fact_type="player_died",
+            target_player=pid,
+            value="wolf_kill",
+            day=i % 4,
+        ))
+        ws.append(StructuredFact(
+            fact_type="claimed_role",
+            source_player=pid,
+            value="seer",
+            day=i % 4,
+        ))
+
+    inp = SkillInput(
+        role="villager", phase="day", day=4,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.LAST_WORDS_ANALYSIS, inp)
+    # The cap: prompt_injectable must be <= 800 chars (+ marker).
+    assert len(out.prompt_injectable) <= 900, (
+        f"S-06: prompt_injectable should be capped near 800 chars; "
+        f"got {len(out.prompt_injectable)}"
+    )
+
+
+def test_prompt_injectable_length_cap_forces_marker_on_long_input():
+    """S-06: if prompt content is forced > 800 chars, the truncation
+    marker must appear.
+    """
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=4,
+        night_number=3,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    # 30 deaths × 1 claimed_role + 4 speeches → ~3KB prompt
+    for i in range(1, 31):
+        pid = f"p{(i % 12) + 1:02d}"
+        ws.append(StructuredFact(
+            fact_type="player_died",
+            target_player=pid,
+            value="wolf_kill",
+            day=(i % 4) + 1,
+        ))
+        ws.append(StructuredFact(
+            fact_type="claimed_role",
+            source_player=pid,
+            value="seer",
+            day=(i % 4) + 1,
+        ))
+        for _ in range(4):
+            ws.append(StructuredFact(
+                fact_type="speech",
+                source_player=pid,
+                value="我是预言家" + "x" * 50,
+                day=(i % 4) + 1,
+            ))
+
+    inp = SkillInput(
+        role="villager", phase="day", day=4,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.LAST_WORDS_ANALYSIS, inp)
+    assert len(out.prompt_injectable) <= 900, (
+        f"S-06: prompt_injectable should be capped; "
+        f"got len={len(out.prompt_injectable)}"
+    )
+    # The marker is '...（已省略）'.
+    assert "..." in out.prompt_injectable, (
+        f"S-06: long prompt must include truncation marker; "
+        f"got tail: {out.prompt_injectable[-50:]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # S-13: SkillOutput no longer has recommended_action / recommended_target.
 # ---------------------------------------------------------------------------
 
@@ -335,7 +455,10 @@ def test_swing_vote_handler_wolf_discussion_recommends_night_kill():
         task_type="wolf_discussion",
     )
     out = apply_skill(SkillName.SWING_VOTE, inp)
-    assert out.recommended_action == "night_kill", (
-        f"S-03: swing_vote in wolf_discussion should recommend night_kill; "
-        f"got {out.recommended_action!r}"
+    # S-13: recommended_action is removed. Verify the prompt
+    # explicitly marks itself as a night-kill (狼队夜杀) so the
+    # downstream prompt builder renders the right action.
+    assert "夜杀" in out.prompt_injectable, (
+        f"S-03: swing_vote in wolf_discussion should mark itself as "
+        f"夜杀; got: {out.prompt_injectable!r}"
     )

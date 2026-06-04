@@ -109,6 +109,36 @@ SKILL_DEFINITIONS: list[SkillDefinition] = _load_manifests()
 
 
 # ---------------------------------------------------------------------------
+# S-06: shared prompt_injectable length cap.
+# ---------------------------------------------------------------------------
+
+# Cap any prompt_injectable to this many characters. The renderer is
+# the LLM's user prompt, and prompts that grow past ~1KB start
+# bleeding into the model's context budget. Late-game review (last_words,
+# review_correction, wolf_pit) historically produced 1-3KB prompts.
+PROMPT_INJECTABLE_CAP = 800
+# Truncation marker: appended to the end of a truncated prompt.  Kept
+# short so it survives the cap itself. Uses ASCII "..." so the
+# marker is preserved across all encodings (test cross-checks).
+PROMPT_INJECTABLE_MARKER_TAIL = "...（已省略）"
+
+
+def _cap_prompt_injectable(text: str, cap: int = PROMPT_INJECTABLE_CAP) -> str:
+    """Truncate `text` to `cap` chars, appending a marker on truncation.
+
+    S-06: late-game review output can exceed 1KB and bloat the
+    renderer prompt. Cap to 800 chars and signal truncation to the
+    LLM so it knows the advice is partial.
+    """
+    if not text:
+        return text
+    if len(text) <= cap:
+        return text
+    marker = PROMPT_INJECTABLE_MARKER_TAIL
+    return text[: cap - len(marker)] + marker
+
+
+# ---------------------------------------------------------------------------
 # Shared helpers for game-state-aware analysis
 # ---------------------------------------------------------------------------
 
@@ -269,7 +299,7 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             risk_alerts=risks,
             confidence=conf,
             reasoning="悍跳需要前期执行，后期风险增大",
-            prompt_injectable=prompt,
+            prompt_injectable=_cap_prompt_injectable(prompt),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -334,7 +364,7 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=risks,
         confidence=conf,
         reasoning="动态分析：根据场上预言家声明情况调整悍跳策略",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -352,7 +382,7 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
             risk_alerts=risks,
             confidence=0.55,
             reasoning="对跳需要充分的逻辑支撑和时间线一致性",
-            prompt_injectable="对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。",
+            prompt_injectable=_cap_prompt_injectable("对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -393,7 +423,7 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risk_alerts=risks,
         confidence=conf,
         reasoning=f"动态分析：根据{target}的发言一致性调整对跳策略",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -431,7 +461,7 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             risk_alerts=["归票错误目标可能导致好人损失"],
             confidence=0.6,
             reasoning="归票需要有充分的逻辑依据和说服力",
-            prompt_injectable=prompt,
+            prompt_injectable=_cap_prompt_injectable(prompt),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -460,7 +490,7 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             skill_name=skill.name.value,
             confidence=0.4,
             reasoning="当前无明确嫌疑目标",
-            prompt_injectable=prompt,
+            prompt_injectable=_cap_prompt_injectable(prompt),
         )
 
     primary, lean, trust = top_suspects[0]
@@ -519,7 +549,7 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         reasoning=f"动态分析：{primary} 有{len(reasons)}个嫌疑信号"
                   + ("（vote task）" if is_vote_task else
                      "（speech task）" if is_speech_task else ""),
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -543,10 +573,10 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 risk_alerts=risks,
                 confidence=0.5,
                 reasoning="冲刀需要考虑夜杀链暴露风险",
-                prompt_injectable=(
+                prompt_injectable=_cap_prompt_injectable((
                     "冲刀建议（狼队夜杀讨论）：选择场上已有投票压力的好人作为冲刀目标。"
                     "与队友协调夜杀方向，避免夜杀链暴露狼人身份。"
-                ),
+                )),
             )
         return SkillOutput(
             skill_name=skill.name.value,
@@ -554,7 +584,7 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             risk_alerts=risks,
             confidence=0.5,
             reasoning="冲票需要考虑投票链暴露风险",
-            prompt_injectable="冲票建议：选择场上已有投票压力的好人作为冲票目标。与队友协调投票方向，避免投票链暴露狼人身份。",
+            prompt_injectable=_cap_prompt_injectable("冲票建议：选择场上已有投票压力的好人作为冲票目标。与队友协调投票方向，避免投票链暴露狼人身份。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -615,7 +645,7 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 f"动态分析：{best_target} 有{best_pressure}个压力信号，"
                 f"{wolf_count}狼存活（夜杀任务）"
             ),
-            prompt_injectable=prompt,
+            prompt_injectable=_cap_prompt_injectable(prompt),
         )
 
     if best_pressure > 0:
@@ -633,7 +663,7 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=risks,
         confidence=conf,
         reasoning=f"动态分析：{best_target} 有{best_pressure}个压力信号，{wolf_count}狼存活",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -650,7 +680,7 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             risk_alerts=["倒钩策略需要长期维持一致性", "过度攻击队友可能被识别"],
             confidence=0.55,
             reasoning="倒钩核心是在好人阵营中建立长期可信度",
-            prompt_injectable="倒钩建议：伪装成好人，站边好人逻辑线，适度攻击被怀疑的队友来建立信任。注意保持发言一致性，不要前后矛盾。",
+            prompt_injectable=_cap_prompt_injectable("倒钩建议：伪装成好人，站边好人逻辑线，适度攻击被怀疑的队友来建立信任。注意保持发言一致性，不要前后矛盾。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -672,7 +702,7 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 skill_name=skill.name.value,
                 confidence=0.3,
                 reasoning=f"你是{my_role_key}，不需要倒钩策略",
-                prompt_injectable="倒钩建议：你的角色分工是冲锋/悍跳，不需要倒钩。专注于你的主要任务。",
+                prompt_injectable=_cap_prompt_injectable("倒钩建议：你的角色分工是冲锋/悍跳，不需要倒钩。专注于你的主要任务。"),
             )
 
     day = gs.day_number
@@ -714,7 +744,7 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=risks,
         confidence=conf,
         reasoning="动态分析：根据队友暴露状态调整倒钩策略",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -730,7 +760,7 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
             confidence=0.5,
             reasoning="找神需要综合多个信号源进行推断",
-            prompt_injectable="找神建议：关注发言中信息量异常的玩家（可能知道夜晚信息）、投票倾向保守的玩家、以及试图保护某些位置的玩家，这些可能是神职。",
+            prompt_injectable=_cap_prompt_injectable("找神建议：关注发言中信息量异常的玩家（可能知道夜晚信息）、投票倾向保守的玩家、以及试图保护某些位置的玩家，这些可能是神职。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -773,7 +803,7 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             skill_name=skill.name.value,
             confidence=0.3,
             reasoning="暂无足够信号推断神职",
-            prompt_injectable="找神分析：当前信息不足，建议继续观察发言信息量和投票模式。",
+            prompt_injectable=_cap_prompt_injectable("找神分析：当前信息不足，建议继续观察发言信息量和投票模式。"),
         )
 
     lines = []
@@ -786,7 +816,7 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
         confidence=0.5 + min(0.2, len(unique) * 0.05),
         reasoning=f"动态分析：识别到{len(unique)}个疑似神职信号",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -804,7 +834,7 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
             risk_alerts=risks,
             confidence=0.6,
             reasoning="藏身份需要在隐匿和发挥作用之间找到平衡",
-            prompt_injectable="藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。如果被质疑，适度释放信息自证但不要全露底牌。",
+            prompt_injectable=_cap_prompt_injectable("藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。如果被质疑，适度释放信息自证但不要全露底牌。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -855,7 +885,7 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risk_alerts=risks,
         confidence=conf,
         reasoning="动态分析：根据自身暴露状态和被怀疑程度调整策略",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -872,7 +902,7 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             risk_alerts=["过度防御可能加深怀疑", "攻击质疑者会适得其反"],
             confidence=0.55,
             reasoning="抗推需要冷静的逻辑反驳，而非情绪对抗",
-            prompt_injectable="抗推建议：冷静反驳质疑，针对关键指控逐一回应。如果被查杀，质疑预言家身份；如果仅被怀疑，补充自己的逻辑线和站边理由。",
+            prompt_injectable=_cap_prompt_injectable("抗推建议：冷静反驳质疑，针对关键指控逐一回应。如果被查杀，质疑预言家身份；如果仅被怀疑，补充自己的逻辑线和站边理由。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -930,7 +960,7 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=risks,
         confidence=conf,
         reasoning="动态分析：根据推票来源和强度调整抗推策略",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -946,7 +976,7 @@ def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             speech_structure=["列出嫌疑人", "分析各嫌疑人证据", "排除法缩小范围"],
             confidence=0.5,
             reasoning="盘狼坑需要系统性分析所有嫌疑人的行为链",
-            prompt_injectable="盘狼坑建议：系统性分析所有嫌疑人的行为链。从发言矛盾、投票链异常、验人冲突等维度排查，用排除法缩小狼坑范围。",
+            prompt_injectable=_cap_prompt_injectable("盘狼坑建议：系统性分析所有嫌疑人的行为链。从发言矛盾、投票链异常、验人冲突等维度排查，用排除法缩小狼坑范围。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1010,7 +1040,7 @@ def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         speech_structure=["列出嫌疑人及其证据", "分析排除区", "缩小嫌疑范围"],
         confidence=0.5 + min(0.2, len(unique_suspects) * 0.05),
         reasoning=f"动态分析：{len(unique_suspects)}个嫌疑人，{len(unique_excluded)}个排除",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -1027,7 +1057,7 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
             risk_alerts=["过度保护某个玩家反而暴露其身份"],
             confidence=0.5,
             reasoning="保护强神需要隐蔽的引导而非明显的保护行为",
-            prompt_injectable="保护强神建议：如果推测某玩家是神职且被推，用'我觉得他的逻辑没问题'等方式引导怀疑方向远离，不要直接说'保护他'。",
+            prompt_injectable=_cap_prompt_injectable("保护强神建议：如果推测某玩家是神职且被推，用'我觉得他的逻辑没问题'等方式引导怀疑方向远离，不要直接说'保护他'。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1082,7 +1112,7 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         risk_alerts=risks,
         confidence=conf,
         reasoning="动态分析：根据神职受压情况调整保护策略",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -1098,7 +1128,7 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
             confidence=0.55,
             reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
-            prompt_injectable="遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。",
+            prompt_injectable=_cap_prompt_injectable("遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1111,7 +1141,7 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
             confidence=0.55,
             reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
-            prompt_injectable="遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。",
+            prompt_injectable=_cap_prompt_injectable("遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。"),
         )
 
     # Find recent deaths
@@ -1122,7 +1152,7 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             skill_name=skill.name.value,
             confidence=0.3,
             reasoning="暂无死亡事件可分析",
-            prompt_injectable="遗言分析：当前无遗言可分析。",
+            prompt_injectable=_cap_prompt_injectable("遗言分析：当前无遗言可分析。"),
         )
 
     # Analyze all deaths, prioritizing the most recent
@@ -1169,7 +1199,7 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             skill_name=skill.name.value,
             confidence=0.3,
             reasoning="无有效遗言数据",
-            prompt_injectable="遗言分析：无有效遗言可分析。",
+            prompt_injectable=_cap_prompt_injectable("遗言分析：无有效遗言可分析。"),
         )
 
     prompt = f"遗言分析（{len(all_prompts)}人死亡）：\n" + "\n".join(all_prompts)
@@ -1181,7 +1211,7 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         risk_alerts=["遗言可能是狼人的误导"] if has_contradiction else [],
         confidence=0.55 if not has_contradiction else 0.65,
         reasoning="动态分析：根据遗言内容与已知信息的对比判断可信度",
-        prompt_injectable=prompt,
+        prompt_injectable=_cap_prompt_injectable(prompt),
     )
 
 
@@ -1197,7 +1227,7 @@ def review_correction_handler(inp: SkillInput, skill: SkillDefinition) -> SkillO
             speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
             confidence=0.7,
             reasoning="复盘纠错以事实为基础，系统性地回顾决策过程",
-            prompt_injectable="复盘建议：回顾每个Day的站边选择和投票决策。找出判断失误的关键节点，分析误判原因（信息不足？逻辑链断裂？被误导？），总结改进方向。",
+            prompt_injectable=_cap_prompt_injectable("复盘建议：回顾每个Day的站边选择和投票决策。找出判断失误的关键节点，分析误判原因（信息不足？逻辑链断裂？被误导？），总结改进方向。"),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1275,5 +1305,5 @@ def review_correction_handler(inp: SkillInput, skill: SkillDefinition) -> SkillO
         speech_structure=["回顾关键判断点", "识别错误和原因", "总结改进方向"],
         confidence=conf,
         reasoning="动态分析：基于投票准确率和事件时间线进行复盘",
-        prompt_injectable="\n".join(parts),
+        prompt_injectable=_cap_prompt_injectable("\n".join(parts)),
     )
