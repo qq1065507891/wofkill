@@ -1675,3 +1675,332 @@ class TestWolfSeerPriorityInjection:
         assert ctx is not None
         assert "wolf_high_priority_target" in ctx.strategy_directive
         assert "p03" in ctx.strategy_directive["wolf_high_priority_target"]
+
+
+class TestSheriffDirectiveFallback:
+    """P1-D4 / P1-D6: sheriff vote_push fallback + no-sheriff-after-tear directive.
+
+    When the sheriff is silenced (e.g., muted by poison/self-destruct) or
+    when the badge is torn (no sheriff for the rest of the game), the
+    directive must adapt so players don't keep acting on a stale
+    "明确归票" instruction.
+    """
+
+    @staticmethod
+    def _make_sheriff_gs(
+        *,
+        sheriff_id: str | None = "p03",
+        sheriff_badge_state: str = "active",
+        silenced: bool = False,
+        alive: bool = True,
+    ) -> GameState:
+        players = {
+            "p01": PlayerState(id="p01", role="werewolf", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id="p03", role="villager", alive=alive),
+            "p04": PlayerState(id="p04", role="seer", alive=True),
+            "p05": PlayerState(id="p05", role="witch", alive=True),
+            "p06": PlayerState(id="p06", role="hunter", alive=True),
+        }
+        events: list[GameEvent] = []
+        if silenced and sheriff_id:
+            events.append(
+                GameEvent(
+                    type="sheriff_silenced",
+                    payload={"sheriff_id": sheriff_id, "reason": "witch_poison"},
+                ),
+            )
+        return GameState(
+            game_id="sheriff_fallback_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            sheriff_id=sheriff_id,
+            sheriff_badge_state=sheriff_badge_state,
+            events=events,
+        )
+
+    def _invoke_day_speech(self, gs: GameState, speaker_id: str):
+        """Run agent_day_speech and return the captured strategy_directive."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_speech
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+
+            def act(self, context):
+                self.last_context = context
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH, speech="test", reason="test",
+                    ),
+                    RetryInfo(),
+                )
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+
+            def get_agent(self, player_id):
+                return self.agent if player_id == speaker_id else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_day_speech(state, engine, registry, speaker_id)
+        return registry.agent.last_context.strategy_directive
+
+    def test_sheriff_silent_fallback(self) -> None:
+        """P1-D4: when the active sheriff is silenced (e.g., by witch poison
+        or self-destruct), the directive must swap `sheriff_vote_push` for
+        `sheriff_silent` so the model doesn't tell a muted player to
+        "明确归票".
+
+        Pre-fix: ``sheriff_vote_push`` was rendered unconditionally for
+        the active sheriff, contradicting the silence condition.
+        """
+        gs = self._make_sheriff_gs(silenced=True)
+        directive = self._invoke_day_speech(gs, "p03")
+        assert "sheriff_silent" in directive, (
+            "silenced sheriff must receive `sheriff_silent` directive; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        # The old vote_push directive must NOT appear when silenced.
+        assert "sheriff_vote_push" not in directive, (
+            "silenced sheriff must not receive `sheriff_vote_push`; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        # The fallback text should tell the player they can't speak and
+        # nudge them to use vote_silent / open voting.
+        text = directive["sheriff_silent"]
+        assert "无法发言" in text or "不能发言" in text
+        assert "vote_silent" in text or "投票" in text
+
+    def test_active_sheriff_without_silence_still_gets_vote_push(self) -> None:
+        """Sanity: when the sheriff is NOT silenced, the original
+        `sheriff_vote_push` directive must still be present (regression
+        guard for P1-D4)."""
+        gs = self._make_sheriff_gs(silenced=False)
+        directive = self._invoke_day_speech(gs, "p03")
+        assert "sheriff_vote_push" in directive
+        assert "sheriff_silent" not in directive
+
+    def test_no_sheriff_after_tear(self) -> None:
+        """P1-D6: when the badge has been torn (no sheriff for the rest
+        of the game), every player must receive a `sheriff_election_state`
+        directive so PK / vote participants know there is no 归票人 and
+        speech order is random.
+
+        Pre-fix: no directive mentioned the torn-badge state, so players
+        acted as if a sheriff still existed.
+        """
+        gs = self._make_sheriff_gs(sheriff_id=None, sheriff_badge_state="torn")
+        # Speaker is a normal villager, not the (now absent) sheriff.
+        directive = self._invoke_day_speech(gs, "p04")
+        assert "sheriff_election_state" in directive, (
+            "after badge tear, every player must receive `sheriff_election_state`; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        text = directive["sheriff_election_state"]
+        # The directive should explicitly state there's no sheriff and
+        # that speech order is random.
+        assert "无警长" in text
+        assert "随机" in text
+        # And the no-sheriff state must NOT also carry the vote_push
+        # directive (otherwise the model is doubly confused).
+        assert "sheriff_vote_push" not in directive
+        assert "sheriff_silent" not in directive
+
+    def test_no_sheriff_after_tear_renders_for_wolf_too(self) -> None:
+        """P1-D6 regression: the torn-badge directive must reach non-good
+        players too (wolves should also know there's no sheriff to push
+        votes through, otherwise they may still try to coordinate as if
+        a 归票 channel existed)."""
+        gs = self._make_sheriff_gs(sheriff_id=None, sheriff_badge_state="torn")
+        directive = self._invoke_day_speech(gs, "p01")
+        assert "sheriff_election_state" in directive
+
+    def test_active_sheriff_state_does_not_emit_election_state(self) -> None:
+        """Sanity: when the sheriff is active, the `sheriff_election_state`
+        directive must NOT appear (it would be contradictory)."""
+        gs = self._make_sheriff_gs(silenced=False)
+        directive = self._invoke_day_speech(gs, "p03")
+        assert "sheriff_election_state" not in directive
+
+
+class TestWitchPoisonUnifiedDirective:
+    """P1-D5: witch poison guidance must be unified into a single
+    `witch_poison_strategy` directive with 3 context-aware branches.
+
+    Pre-fix: `witch_poison_threshold` and `poison_urgency` could both be
+    rendered (and contradict each other); there was no `no_pressure`
+    branch for early game.  The unified directive must:
+      1) `no_pressure_save_for_late` — early game, no pressure
+      2) `urgency_under_X_alive` — low alive count, urgent
+      3) `evidence_required_threshold` — mid game, need hard evidence
+    """
+
+    def _make_witch_gs(
+        self,
+        *,
+        night_number: int = 1,
+        alive_count: int = 12,
+        poison_used: bool = False,
+    ) -> GameState:
+        players: dict[str, PlayerState] = {}
+        # Fill the rest as villagers / power roles until we hit alive_count
+        roles = (
+            ["werewolf"] * 4
+            + ["villager"] * 3
+            + ["seer", "witch", "hunter", "idiot", "hybrid"]
+        )
+        for i, role in enumerate(roles[:alive_count], start=1):
+            players[f"p{i:02d}"] = PlayerState(
+                id=f"p{i:02d}", role=role, alive=True,
+            )
+        # If we need fewer alive, mark some as dead (but keep witch alive)
+        all_ids = list(players.keys())
+        witch_id = next(pid for pid, p in players.items() if p.role == "witch")
+        target_ids = [pid for pid in all_ids if pid != witch_id]
+        while sum(1 for p in players.values() if p.alive) > alive_count:
+            pid = target_ids.pop()
+            players[pid] = PlayerState(
+                id=pid, role=players[pid].role, alive=False,
+            )
+        return GameState(
+            game_id="witch_poison_unified_test",
+            players=players,
+            phase="night",
+            night_number=night_number,
+            poison_used=poison_used,
+        )
+
+    def _invoke_witch(self, gs: GameState) -> dict:
+        from werewolf_agent.runtime.agent_adapter import agent_night_witch
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+
+            def act(self, context):
+                self.last_context = context
+                return (
+                    PlayerAction(action_type=ActionType.NO_ACTION, reason="test"),
+                    RetryInfo(),
+                )
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+
+            def get_agent(self, player_id):
+                witch_id = next(
+                    pid for pid, p in gs.players.items()
+                    if p.role == "witch" and p.alive
+                )
+                return self.agent if player_id == witch_id else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        witch_id = next(
+            pid for pid, p in gs.players.items()
+            if p.role == "witch" and p.alive
+        )
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": "p01",
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_night_witch(state, engine, registry)
+        return registry.agent.last_context.strategy_directive
+
+    def test_witch_poison_unified_branch(self) -> None:
+        """P1-D5: the strategy_directive must carry a single
+        `witch_poison_strategy` dict whose ``branch`` is one of the three
+        documented branches, picked by game state.
+
+        Pre-fix: ``witch_poison_threshold`` and ``poison_urgency`` could
+        both fire, contradicting each other; there was no
+        ``no_pressure_save_for_late`` branch.
+        """
+        gs = self._make_witch_gs(alive_count=12, poison_used=False)
+        directive = self._invoke_witch(gs)
+        assert "witch_poison_strategy" in directive, (
+            "witch must receive unified `witch_poison_strategy` directive; "
+            f"got keys: {sorted(directive.keys())}"
+        )
+        wp = directive["witch_poison_strategy"]
+        assert "branch" in wp, (
+            f"witch_poison_strategy must have a 'branch' field; got: {wp!r}"
+        )
+        assert wp["branch"] in {
+            "no_pressure_save_for_late",
+            "urgency_under_X_alive",
+            "evidence_required_threshold",
+        }, f"unexpected branch value: {wp['branch']!r}"
+        # The old split keys must NOT appear alongside the unified one.
+        assert "witch_poison_threshold" not in directive
+        assert "poison_urgency" not in directive
+
+    def test_witch_poison_urgency_branch_under_low_alive(self) -> None:
+        """When alive count is low (≤ 7), the branch must escalate to
+        `urgency_under_X_alive`."""
+        gs = self._make_witch_gs(alive_count=6, poison_used=False)
+        directive = self._invoke_witch(gs)
+        wp = directive["witch_poison_strategy"]
+        assert wp["branch"] == "urgency_under_X_alive", (
+            f"low alive count must trigger urgency branch; got: {wp['branch']!r}"
+        )
+        # The directive text should mention urgency / 紧急.
+        text = wp.get("text", "") + wp.get("advice", "")
+        assert "紧急" in text or "urgency" in text.lower() or "不用毒药" in text
+
+    def test_witch_poison_evidence_branch_mid_game(self) -> None:
+        """Mid game (8-9 alive) with no urgency should land on
+        `evidence_required_threshold`."""
+        gs = self._make_witch_gs(alive_count=9, poison_used=False)
+        directive = self._invoke_witch(gs)
+        wp = directive["witch_poison_strategy"]
+        assert wp["branch"] == "evidence_required_threshold", (
+            f"mid game must trigger evidence_required_threshold branch; "
+            f"got: {wp['branch']!r}"
+        )
+
+    def test_witch_poison_no_pressure_branch_early_game(self) -> None:
+        """Early game (10+ alive, poison unused) should land on
+        `no_pressure_save_for_late`."""
+        gs = self._make_witch_gs(alive_count=11, poison_used=False)
+        directive = self._invoke_witch(gs)
+        wp = directive["witch_poison_strategy"]
+        assert wp["branch"] == "no_pressure_save_for_late", (
+            f"early game with no pressure must trigger no_pressure branch; "
+            f"got: {wp['branch']!r}"
+        )

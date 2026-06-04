@@ -102,6 +102,30 @@ def _action_result_to_dict(
     }
 
 
+def _is_sheriff_silenced(gs: GameState, sheriff_id: str) -> bool:
+    """Return True if the active sheriff is currently muted (cannot speak).
+
+    P1-D4: a sheriff may hold the active badge but still be unable to
+    speak — e.g., a witch poison mute or a self-destruct that lands the
+    badge but freezes the day-speech action.  The pre-fix code only
+    checked ``sheriff_id == speaker_id and sheriff_badge_state ==
+    "active"`` and rendered a 归票 directive unconditionally, which
+    contradicted the silence condition.
+
+    The check is forward-compatible:
+    - Looks for a ``sheriff_silenced`` event targeting this sheriff
+      (e.g., emitted by a future skill resolver).
+    - Falls back to badge states ``"silenced"`` / ``"frozen"`` if a
+      caller sets them explicitly.
+    """
+    for ev in gs.events:
+        if ev.type == "sheriff_silenced" and ev.payload.get("sheriff_id") == sheriff_id:
+            return True
+    if gs.sheriff_badge_state in {"silenced", "frozen"}:
+        return True
+    return False
+
+
 def agent_night_witch(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -754,15 +778,34 @@ def agent_day_speech(
     elif player_role == "villager":
         strategy_directive.update(_build_villager_day_speech_directive(gs, speaker_id))
 
-    # Sheriff gets 归票 (vote push) directive
+    # Sheriff gets 归票 (vote push) directive — with silence fallback
+    # (P1-D4) and torn-badge election-state directive (P1-D6).
     if gs.sheriff_id == speaker_id and gs.sheriff_badge_state == "active":
         alive_others = [pid for pid, p in gs.players.items() if p.alive and pid != speaker_id]
-        strategy_directive["sheriff_vote_push"] = (
-            "你是警长，你的发言需要归票：总结本轮讨论的关键信息点，"
-            "明确表态你怀疑谁、要推谁，号召大家集中投票。"
-            "警长归票是核心职责，不能含糊其辞。"
+        if _is_sheriff_silenced(gs, speaker_id):
+            # Sheriff is alive with the active badge but is currently
+            # muted (e.g., poisoned by witch, self-destructed on a prior
+            # turn) and cannot speak.  The pre-fix code still told them
+            # to 明确归票, which would have been a hallucination.
+            strategy_directive["sheriff_silent"] = (
+                "本轮你无法发言；若已提前指定归票目标，通过 [vote_silent] 字段指定；"
+                "如未指定则由投票开放决定。"
+            )
+        else:
+            strategy_directive["sheriff_vote_push"] = (
+                "你是警长，你的发言需要归票：总结本轮讨论的关键信息点，"
+                "明确表态你怀疑谁、要推谁，号召大家集中投票。"
+                "警长归票是核心职责，不能含糊其辞。"
+            )
+            strategy_directive["sheriff_alive_others"] = alive_others
+
+    # After badge tear → no sheriff for the rest of the game.  Every
+    # player (not just the previous sheriff) must know there is no
+    # 归票人 and that speech order is now random (design doc §警长规则).
+    if gs.sheriff_id is None and gs.sheriff_badge_state == "torn":
+        strategy_directive["sheriff_election_state"] = (
+            "本局无警长；本轮发言顺序随机；无归票人。"
         )
-        strategy_directive["sheriff_alive_others"] = alive_others
 
     # Include sheriff election speeches as salience items for day 1 discussion
     sheriff_speeches = []
