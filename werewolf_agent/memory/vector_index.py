@@ -49,6 +49,13 @@ class BagOfWordsVectorIndex:
         self._idf: dict[str, float] = {}
         self._norms: dict[str, float] = {}
         self._finalized = False
+        # MEM-18: per-query cache. The hot path (reflection
+        # retrieval) often re-queries the same string many times in a
+        # single game, and the q_norm / q_weights computation is
+        # pure — it depends only on the query string and the
+        # (finalized) IDF table. Cache by q_str; invalidate on
+        # finalize() because the IDF table may change.
+        self._query_cache: dict[str, dict[str, Any]] = {}
 
     def add_text(self, doc_id: str, text: str) -> None:
         """Register one document. May be called multiple times for the same id.
@@ -88,6 +95,10 @@ class BagOfWordsVectorIndex:
         for doc_id, tokens in self._docs.items():
             self._norms[doc_id] = self._vector_norm(tokens)
         self._finalized = True
+        # MEM-18: the IDF table may have changed; cached q_weights
+        # reference the old IDF, so the query cache is no longer
+        # valid.
+        self._query_cache.clear()
 
     def _vector_norm(self, tokens: list[str]) -> float:
         if not tokens:
@@ -105,19 +116,48 @@ class BagOfWordsVectorIndex:
             self.finalize()
         if not self._docs:
             return {}
-        q_tokens = _tokenize(query_text)
-        if not q_tokens:
+        # MEM-18: cache the per-query work (q_tokens, q_norm, q_weights)
+        # by query string. The hot path (cross-game reflection query)
+        # re-queries the same string many times in one game; the cache
+        # makes the second-and-onwards calls O(|docs|) instead of
+        # O(|docs| + |query|). The cache is invalidated by finalize()
+        # because the IDF table may have changed.
+        cached = self._query_cache.get(query_text)
+        if cached is not None:
+            q_norm = cached["q_norm"]
+            q_weights = cached["q_weights"]
+        else:
+            q_tokens = _tokenize(query_text)
+            if not q_tokens:
+                empty = {doc_id: 0.0 for doc_id in self._docs}
+                # Still cache the empty result so repeated empty-query
+                # calls are also O(1) lookups.
+                self._query_cache[query_text] = {
+                    "q_norm": 0.0,
+                    "q_weights": {},
+                    "empty_result": empty,
+                }
+                return empty
+            q_tf = Counter(q_tokens)
+            q_norm_sq = 0.0
+            q_weights = {}
+            for term, count in q_tf.items():
+                if term not in self._idf:
+                    continue
+                w = self._idf[term] * count
+                q_weights[term] = w
+                q_norm_sq += w * w
+            q_norm = math.sqrt(q_norm_sq) if q_norm_sq > 0 else 0.0
+            self._query_cache[query_text] = {
+                "q_norm": q_norm,
+                "q_weights": q_weights,
+            }
+        # If the cached entry is the "empty result" sentinel, return it
+        # without recomputing. Otherwise fall through to the dot-product
+        # loop, which depends on per-doc state and is not cached (it
+        # would be a deeper change with diminishing returns).
+        if not q_weights and q_norm == 0.0:
             return {doc_id: 0.0 for doc_id in self._docs}
-        q_tf = Counter(q_tokens)
-        q_norm_sq = 0.0
-        q_weights: dict[str, float] = {}
-        for term, count in q_tf.items():
-            if term not in self._idf:
-                continue
-            w = self._idf[term] * count
-            q_weights[term] = w
-            q_norm_sq += w * w
-        q_norm = math.sqrt(q_norm_sq) if q_norm_sq > 0 else 0.0
         scores: dict[str, float] = {}
         for doc_id, doc_tokens in self._docs.items():
             doc_norm = self._norms.get(doc_id, 0.0)
