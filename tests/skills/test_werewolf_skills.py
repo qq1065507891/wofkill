@@ -277,6 +277,62 @@ def test_hybrid_with_wolf_master_dispatches_wolf_skills():
 
 
 # ---------------------------------------------------------------------------
+# S-18: last_words_handler static/dynamic prompt parity.
+# ---------------------------------------------------------------------------
+
+def test_last_words_handler_static_dynamic_parity():
+    """S-18: last_words has 3 branches:
+    1. gs is None  → static fallback prompt
+    2. gs given, ws is None → "no-ws" branch (currently duplicates fallback)
+    3. gs and ws both given → dynamic analysis
+
+    The first two MUST produce the same prompt. The third may differ
+    (dynamic analysis is the value-add).
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+
+    # Branch 1: gs is None (static fallback)
+    static_inp = SkillInput(
+        role="villager", phase="day", day=1,
+        game_state=None, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    static_out = apply_skill(SkillName.LAST_WORDS_ANALYSIS, static_inp)
+
+    # Branch 2: gs given, world_state is None (no-ws branch)
+    no_ws_inp = SkillInput(
+        role="villager", phase="day", day=1,
+        game_state=gs, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    no_ws_out = apply_skill(SkillName.LAST_WORDS_ANALYSIS, no_ws_inp)
+
+    # Parity: same prompt
+    assert static_out.prompt_injectable == no_ws_out.prompt_injectable, (
+        f"S-18: last_words static-fallback and no-ws branch must match; "
+        f"got static={static_out.prompt_injectable!r} vs "
+        f"no_ws={no_ws_out.prompt_injectable!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # S-06: prompt_injectable length cap.
 # ---------------------------------------------------------------------------
 

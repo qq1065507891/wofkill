@@ -1223,8 +1223,12 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
 @register_handler(SkillName.LAST_WORDS_ANALYSIS)
 def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
-    if gs is None:
-        # static fallback
+    # S-18: unify the static fallback (gs is None) and the no-ws
+    # branch (gs set but world_state is None) into a single early
+    # return. Previously the two branches had duplicated code with
+    # identical output — a divergence risk if one branch was edited
+    # and the other was not.
+    if gs is None or inp.world_state is None:
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
@@ -1235,16 +1239,6 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     # dynamic analysis
     ws = inp.world_state
     alerts = inp.contradiction_alerts
-
-    if ws is None:
-        # Reuse static fallback when world_state is also missing
-        return SkillOutput(
-            skill_name=skill.name.value,
-            speech_structure=["提取遗言关键信息", "分析遗言与已知信息的矛盾", "评估遗言可信度"],
-            confidence=0.55,
-            reasoning="遗言分析需要结合已有信息判断遗言内容的真实性",
-            prompt_injectable=_cap_prompt_injectable("遗言分析建议：关注出局玩家最后发言中的角色声明、验人信息和站边逻辑。与已知信息交叉验证，判断遗言内容的可信度。"),
-        )
 
     # Find recent deaths
     recent_deaths = list(ws.facts_of_type("player_died"))
