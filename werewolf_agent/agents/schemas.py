@@ -598,3 +598,9 @@ class AgentContext(BaseModel):
         description="Pre-computed skill analysis results keyed by tool name.",
     )
     skill_analysis_hints: dict[str, str] = Field(default_factory=dict)
+    # P2-G11: counts RAG service anomalies observed while building this
+    # context. Increments by 1 per unexpected retrieve_live_hints()
+    # failure. Expected misses (rag_service=None, no hits returned) do
+    # NOT increment. Used by tests and metrics; not consumed by the
+    # prompt renderer.
+    rag_anomaly_count: int = 0

@@ -626,6 +626,99 @@ def test_rag_injection_still_runs_for_player_speech() -> None:
     assert fake.calls[0]["role"] == "seer"
 
 
+# ---------------------------------------------------------------------------
+# P2-G11: RAG failure handling distinguishes expected vs anomaly.
+#
+# Two cases:
+#   (a) rag_service is None — expected path (no RAG configured), no
+#       log noise, no anomaly count.
+#   (b) rag_service.retrieve_live_hints() raises — anomaly path,
+#       warn-level log, rag_anomaly_count increments on AgentContext.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingRAGService:
+    """RAG service whose retrieve_live_hints always raises an unexpected
+    exception. Used to assert anomaly handling (P2-G11)."""
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+        self.calls.append(query)
+        raise RuntimeError("simulated RAG service crash")
+
+    def hits_to_prompt_lines(self, hits, max_items: int = 3):
+        return []
+
+
+def test_rag_failure_distinguishes_expected_vs_anomaly() -> None:
+    """P2-G11: rag_service=None is expected (silent), rag_service.raise
+    is an anomaly (counts up on AgentContext.rag_anomaly_count)."""
+    import logging
+
+    from werewolf_agent.agents.schemas import TaskType
+
+    # --- Case (a): rag_service is None → expected, no log noise ---
+    ctx_none = _make_ctx(TaskType.SPEECH)
+    out_none = _inject_seed_rag_hints(
+        ctx_none,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=None,
+        game_id="g_test",
+    )
+    # Returned context has no rag_hints mutated and no anomaly count.
+    assert out_none.rag_hints == ctx_none.rag_hints
+    # rag_anomaly_count defaults to 0 on the returned context.
+    assert getattr(out_none, "rag_anomaly_count", 0) == 0
+
+    # --- Case (b): rag_service raises → anomaly, count increments ---
+    raising = _RaisingRAGService()
+    ctx_anom = _make_ctx(TaskType.SPEECH)
+    # Capture logger output to assert warn (not debug) for anomaly.
+    cap_records: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            cap_records.append(record)
+
+    handler = _ListHandler(level=logging.DEBUG)
+    logger = logging.getLogger("werewolf_agent.runtime.context")
+    prev_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        out_anom = _inject_seed_rag_hints(
+            ctx_anom,
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            rag_service=raising,
+            game_id="g_test",
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)
+
+    # rag_service was called (anomaly is detected only when service
+    # is actually invoked).
+    assert len(raising.calls) == 1
+    # The returned context still has empty rag_hints.
+    assert out_anom.rag_hints == ctx_anom.rag_hints
+    # rag_anomaly_count is incremented.
+    assert getattr(out_anom, "rag_anomaly_count", 0) == 1
+    # Anomaly was logged at WARN (not DEBUG).
+    warn_records = [r for r in cap_records if r.levelno >= logging.WARNING]
+    assert any("RAG" in r.getMessage() for r in warn_records), (
+        f"P2-G11: RAG anomaly must log at WARN; got records: "
+        f"{[r.getMessage() for r in cap_records]!r}"
+    )
+    # And no debug-only "Seed RAG injection failed" message (the
+    # previous silent path) at WARN level.
+    assert not any(
+        "Seed RAG injection failed" in r.getMessage() and r.levelno < logging.WARNING
+        for r in cap_records
+    ), "P2-G11: anomaly path must not silently debug-log"
+
+
 # P1-M12: reflection hint diversity.
 #
 # `_reflection_memory_hints` previously took the top 5 reflections with
