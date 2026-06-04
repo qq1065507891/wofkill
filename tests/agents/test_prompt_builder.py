@@ -2910,12 +2910,77 @@ def test_compact_json_truncation_marks_omission():
 
 
 # ---------------------------------------------------------------------------
+# P2-8: belief rendering is capped at top 3
+# ---------------------------------------------------------------------------
+#
+# Audit P2-8 finding: _build_belief_state rendered top-5 suspects and
+# top-5 trusted (10 belief entries). Combined with 4 salience items,
+# the section consumed 200-400 tokens. The budget trimmer (P1-5) had
+# to drop entire sections to fit, when a smaller cap on the
+# highest-priority section would have freed tokens for lower-priority
+# context.
+#
+# Fix: cap the belief section to top 3 suspects / top 3 trusted
+# (6 belief entries total). The salience section is also reduced
+# from 4 → 3 items via _MAX_SALIENCE_ITEMS.
+
+
+def test_belief_top3_cap():
+    """P2-8: rendered belief with 5 suspects must show at most 3."""
+    # Set up 5 suspects — well above the new top-3 cap.
+    suspects = [
+        {"player": f"p0{i}", "faction_lean": "werewolf_lean", "top_role_guess": "狼"}
+        for i in range(1, 6)
+    ]
+    trusted = [
+        {"player": "p10", "faction_lean": "good", "trust": 0.9},
+    ]
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        belief_state={"my_suspects": suspects, "my_trusted": trusted},
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The example JSON in the prompt (e.g. "target_id": "p05") also
+    # contains p0X tokens, so the test extracts ONLY the belief
+    # section ("我怀疑的玩家" / "我信任的玩家") and counts inside that.
+    import re
+    m = re.search(r"我怀疑的玩家: ([^\n]*)", prompt)
+    assert m, (
+        "P2-8: belief section must be present in the rendered prompt. "
+        f"Prompt: {prompt!r}"
+    )
+    suspect_line = m.group(1)
+    rendered_suspects = sum(1 for i in range(1, 6) if f"p0{i}" in suspect_line)
+    assert rendered_suspects <= 3, (
+        f"P2-8: rendered belief must show at most 3 of the 5 suspects. "
+        f"Found {rendered_suspects} in suspect line: {suspect_line!r}"
+    )
+    # And the trusted player (p10) should still be present.
+    assert "p10" in prompt, (
+        "P2-8: trusted player must still be rendered in the belief section. "
+        f"Prompt: {prompt!r}"
+    )
+
+
+
+# ---------------------------------------------------------------------------
 # P2-3: SHERIFF example must include a sheriff_withdraw example
 # ---------------------------------------------------------------------------
 #
 # Audit P2-3 finding: the SHERIFF_REGISTER example block in
 # _format_examples renders examples for `sheriff_register` and
 # `no_action`, but does not show `sheriff_withdraw`. Without an
+# explicit withdraw example, the LLM was emitting `sheriff_register`
+# when it intended to withdraw, and the parser fell back to a
+# default (game trace g_3528592081 action 41, p05).
+#
+# Fix: add a third example showing `sheriff_withdraw` so the LLM
+# can pattern-match the correct action type when the player
+# changes their mind about running for sheriff.
 # explicit withdraw example, the LLM was emitting `sheriff_register`
 # when it intended to withdraw, and the parser fell back to a
 # default (game trace g_3528592081 action 41, p05).

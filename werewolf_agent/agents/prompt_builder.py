@@ -58,7 +58,7 @@ _SPEECH_INTENTS = {
 _MAX_JSON_CONTEXT_CHARS = 1800
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
-_MAX_SALIENCE_ITEMS = 4
+_MAX_SALIENCE_ITEMS = 3
 # P1-5: global user-prompt budget. ≈ 2,500 CJK tokens at the rough
 # 2.5 chars/token ratio. The 16 user-prompt sections are truncated
 # per-section, but the SUM can still run 3,000-5,000 tokens when many
@@ -514,19 +514,23 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.belief_state:
             return ""
+        # P2-8: cap at top 3 suspects / top 3 trusted (was 5+5 = 10).
+        # Combined with 3 salience items, the section stays under
+        # 150 tokens in the typical case (was 200-400 with 5+5+4).
+        _MAX_BELIEF_ITEMS = 3
         suspects = ctx.belief_state.get("my_suspects", [])
         trusted = ctx.belief_state.get("my_trusted", [])
         belief_lines = []
         if suspects:
             suspect_desc = ", ".join(
                 f"{s['player']}(嫌疑{s['faction_lean']}, 猜{s['top_role_guess']})"
-                for s in suspects[:5]
+                for s in suspects[:_MAX_BELIEF_ITEMS]
             )
             belief_lines.append(f"我怀疑的玩家: {suspect_desc}")
         if trusted:
             trust_desc = ", ".join(
                 f"{t['player']}(倾向{t['faction_lean']}, 信任{t['trust']})"
-                for t in trusted[:5]
+                for t in trusted[:_MAX_BELIEF_ITEMS]
             )
             belief_lines.append(f"我信任的玩家: {trust_desc}")
         if belief_lines:
