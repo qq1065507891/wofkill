@@ -254,3 +254,149 @@ def test_retrieve_live_hints_works_without_reranker() -> None:
         )
     )
     assert hits
+
+
+# ---------------------------------------------------------------------------
+# R9: role/phase fallback in _vector_candidates must be AND, not OR
+# ---------------------------------------------------------------------------
+
+
+def _make_rag_entry(
+    *,
+    entry_id: str,
+    role_perspective: str,
+    phase: str,
+    ruleset_id: str = "pre_witch_hunter_idiot_mixed",
+) -> "RAGEntry":
+    """Build a minimal RAGEntry with the given role/phase for R9 tests."""
+    from werewolf_agent.rag.schemas import (
+        CaseMetadata,
+        CaseType,
+        QualityGrade,
+        RAGEntry,
+        ReviewStatus,
+        SourceMetadata,
+        SourceType,
+        VisibilityBoundary,
+    )
+
+    return RAGEntry(
+        entry_id=entry_id,
+        title=entry_id,
+        summary="r9 test summary",
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.COMMUNITY_CASE,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id=ruleset_id,
+            player_count=12,
+            phase=phase,
+            role_perspective=role_perspective,
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+            tags=[role_perspective, phase],
+        ),
+    )
+
+
+def test_role_phase_fallback_is_and_not_or() -> None:
+    """R9: ``_vector_candidates`` previously used parallel ``if``
+    statements (OR semantics): a candidate was selected if either the
+    role matched OR the phase matched. That pulled cross-role cases
+    into the candidate pool — e.g. a werewolf case slipped in for a
+    villager query just because the phase happened to be ``speech``.
+
+    After the fix the fallback must use AND: BOTH role (or
+    ``general`` wildcard) AND phase (or ``general`` wildcard) must
+    match for the entry to be admitted via the metadata fallback.
+    """
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+    from werewolf_agent.rag.vector_store import LocalVectorStore
+
+    # Three entries:
+    # - wolf_speech: role=werewolf, phase=speech — should be REJECTED
+    #   for a villager/speech query (role mismatch).
+    # - villager_day: role=villager, phase=day — should be REJECTED
+    #   for a villager/speech query (phase mismatch).
+    # - villager_speech: role=villager, phase=speech — should be
+    #   ACCEPTED (both match).
+    wolf_speech = _make_rag_entry(
+        entry_id="wolf_speech",
+        role_perspective="werewolf",
+        phase="speech",
+    )
+    villager_day = _make_rag_entry(
+        entry_id="villager_day",
+        role_perspective="villager",
+        phase="day",
+    )
+    villager_speech = _make_rag_entry(
+        entry_id="villager_speech",
+        role_perspective="villager",
+        phase="speech",
+    )
+
+    # Use a LocalVectorStore with no docs so the vector-recall path
+    # returns nothing and the metadata-fallback path runs.
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [wolf_speech, villager_day, villager_speech],
+        vector_store=LocalVectorStore(),
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(role="villager", phase="speech", max_results=5),
+        [wolf_speech, villager_day, villager_speech],
+    )
+
+    selected_ids = {entry.entry_id for _, entry in out}
+
+    # AND semantics: wolf_speech fails role match → excluded.
+    assert "wolf_speech" not in selected_ids, (
+        f"R9: werewolf/speech entry leaked into villager/speech query "
+        f"via OR semantics; selected={selected_ids!r}"
+    )
+    # AND semantics: villager_day fails phase match → excluded.
+    assert "villager_day" not in selected_ids, (
+        f"R9: villager/day entry leaked into villager/speech query "
+        f"via OR semantics; selected={selected_ids!r}"
+    )
+    # The only entry that matches BOTH must be admitted.
+    assert "villager_speech" in selected_ids, (
+        f"R9: the role-and-phase-matching entry was rejected; "
+        f"selected={selected_ids!r}"
+    )
+
+
+def test_role_phase_fallback_admits_general_wildcard() -> None:
+    """R9: a ``role_perspective='general'`` entry must still be
+    admitted by the role/phase AND check (it's the universal entry).
+    Same for ``phase='general'``. The AND check must accept either
+    wildcard side so the universal entries keep reaching the
+    retriever."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+    from werewolf_agent.rag.vector_store import LocalVectorStore
+
+    general_role_speech = _make_rag_entry(
+        entry_id="general_role_speech",
+        role_perspective="general",
+        phase="speech",
+    )
+    villager_general_phase = _make_rag_entry(
+        entry_id="villager_general_phase",
+        role_perspective="villager",
+        phase="general",
+    )
+
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [general_role_speech, villager_general_phase],
+        vector_store=LocalVectorStore(),
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(role="villager", phase="speech", max_results=5),
+        [general_role_speech, villager_general_phase],
+    )
+    selected_ids = {entry.entry_id for _, entry in out}
+    assert "general_role_speech" in selected_ids
+    assert "villager_general_phase" in selected_ids
