@@ -488,6 +488,7 @@ class PlayerPromptBuilder:
                 lines.append(
                     "狼队抱团是正常策略；投票时跟队友一致是预期行为；"
                     "只有在倒钩场景下需独立判断。"
+                    "P2-5: 悍跳狼应跟悍跳队友的归票走，而非原狼队的票型。"
                 )
             else:
                 # Good side + unknown role (safe default).

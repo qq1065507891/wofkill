@@ -236,3 +236,32 @@ class TestHybridMasterFaction:
             "hybrid with unset master_faction should default to "
             f"good-side anti-herd. Prompt: {prompt!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P2-5: wolf-side anti-herd advice addresses 悍跳狼 (fake-seer wolf)
+# ---------------------------------------------------------------------------
+#
+# Audit P2-5 finding: the wolf-side message says "投票时跟队友一致
+# 是预期行为", but does not distinguish the 悍跳狼 (fake-seer wolf)
+# case. A 悍跳 wolf is expected to follow the 悍跳 teammate's 归票
+# (the fake-seer wolf's framing of the day), not the original wolf
+# team's vote shape. The original "跟队友一致" message is too coarse
+# and risks the fake-seer wolf following the wrong teammate.
+#
+# Fix: extend the wolf-side text to mention that 悍跳狼 should follow
+# the 悍跳 teammate's 归票, not the original wolf-team's vote shape.
+
+
+def test_fake_seer_wolf_advice_present():
+    """P2-5: the wolf-side anti-herd text must mention 悍跳狼 (fake-seer wolf)
+    coordination explicitly. A 悍跳狼 should follow the 悍跳 teammate's
+    归票, not the original wolf-team's vote shape.
+    """
+    ctx = _make_vote_ctx("werewolf")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "悍跳" in prompt, (
+        "P2-5: wolf-side anti-herd text must mention 悍跳狼 coordination "
+        f"so the fake-seer wolf follows the 悍跳 teammate's 归票. "
+        f"Prompt: {prompt!r}"
+    )
