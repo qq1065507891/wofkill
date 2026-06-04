@@ -69,13 +69,21 @@ class RAGInjector:
         player_id: str | None = None,
     ) -> list[RAGHit]:
         """Retrieve and filter RAG hits for the given context."""
-        # God-view only allowed in review/moderator
-        if injection_context in (InjectionContext.REVIEW, InjectionContext.MODERATOR):
-            query.include_god_view = True
-        else:
-            query.include_god_view = False
+        # R6: build a derived query instead of mutating the caller's
+        # RAGQuery. The old code did
+        # ``query.include_god_view = True/False`` which silently
+        # changed the caller's state and leaked the injector's
+        # internal visibility decision into unrelated call sites.
+        want_god_view = injection_context in (
+            InjectionContext.REVIEW,
+            InjectionContext.MODERATOR,
+        )
+        effective_query = (
+            query if query.include_god_view == want_god_view
+            else query.model_copy(update={"include_god_view": want_god_view})
+        )
 
-        hits = self._retriever.retrieve(query)
+        hits = self._retriever.retrieve(effective_query)
 
         # Filter by injection context
         if injection_context == InjectionContext.LIVE_PLAYER:

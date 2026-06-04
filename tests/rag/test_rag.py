@@ -945,6 +945,43 @@ class TestRAGInjector:
         hits = injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
         assert len(hits) == 0
 
+    def test_injector_does_not_mutate_caller_query(self) -> None:
+        """R6: ``RAGInjector.inject`` must NOT mutate the caller's
+        ``RAGQuery``. Previously the method set
+        ``query.include_god_view = True/False`` directly, which silently
+        changed the caller's query and leaked the injector's internal
+        visibility decision into the caller's state.
+
+        This guard verifies all four injection contexts (LIVE_PLAYER,
+        REVIEW, MODERATOR, SPECTATOR) leave the caller's
+        ``include_god_view`` untouched.
+        """
+        injector = self._make_injector()
+        for ctx in (
+            InjectionContext.LIVE_PLAYER,
+            InjectionContext.REVIEW,
+            InjectionContext.MODERATOR,
+            InjectionContext.SPECTATOR,
+        ):
+            query = RAGQuery(role="seer", phase="speech", include_god_view=False)
+            original_dump = query.model_dump()
+            _ = injector.inject(query, injection_context=ctx)
+            after_dump = query.model_dump()
+            assert after_dump == original_dump, (
+                f"R6: injector mutated caller's query under {ctx!r}; "
+                f"before={original_dump!r} after={after_dump!r}"
+            )
+
+        # Also assert the inverse: a query explicitly carrying
+        # include_god_view=True must stay True after a LIVE_PLAYER
+        # call (live shouldn't downgrade it silently either).
+        query = RAGQuery(role="seer", phase="speech", include_god_view=True)
+        _ = injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
+        assert query.include_god_view is True, (
+            "R6: injector downgraded a True include_god_view to False; "
+            "caller's intent must be preserved"
+        )
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement
