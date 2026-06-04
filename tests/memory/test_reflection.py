@@ -331,3 +331,45 @@ def test_deceived_by_list_scrubbed():
     )
     # And the "deceived" tag is still added.
     assert "deceived" in entry.tags
+
+
+# ---------------------------------------------------------------------------
+# MEM-13: when a vector_index lacks a ``similarity`` method, the
+# reflection query falls back to exact-match order. The fallback must
+# be loud (logger.warning) so the upstream wiring can be fixed.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_fallback_warns(caplog):
+    """MEM-13: query with a vector_index that has no ``similarity``
+    method must emit a logger.warning naming the fallback."""
+    import logging
+    from types import SimpleNamespace
+
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    mem = ReflectionMemory()
+    mem.store(ReflectionEntry(
+        entry_id="r1", game_id="g1", player_id="p1", role="seer",
+        faction_won=True, text="a", situation="endgame",
+    ))
+
+    class _NoSimilarity:
+        """Vector index duck-typed shape that lacks similarity()."""
+        def __len__(self) -> int:
+            return 1
+
+    with caplog.at_level(logging.WARNING, logger="werewolf_agent.memory.reflection"):
+        mem.query(
+            CrossGameQuery(situation="endgame"),
+            vector_index=_NoSimilarity(),
+        )
+
+    matching = [
+        r for r in caplog.records
+        if "no similarity method" in r.getMessage().lower()
+    ]
+    assert matching, (
+        f"MEM-13: vector fallback must emit a logger.warning; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )

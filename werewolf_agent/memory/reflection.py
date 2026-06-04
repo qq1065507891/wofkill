@@ -11,10 +11,14 @@ is a future extension — current implementation uses exact tag/role matching.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
 from werewolf_agent.memory.schemas import CrossGameQuery, ReflectionEntry
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class ReflectionMemory:
@@ -140,6 +144,12 @@ class ReflectionMemory:
             query_text = query.situation or ""
             scores = vector_index.similarity(query_text)
         else:  # pragma: no cover - defensive: unsupported index impl
+            # MEM-13: warn the caller — without a similarity method
+            # every entry scores 0 and falls to the unindexed tail,
+            # so a "vector search" silently degrades to exact-match
+            # order. Make the fallback loud so the upstream caller
+            # can fix the index wiring.
+            _LOG.warning("vector index has no similarity method, falling back")
             scores = {}
 
         scored: list[tuple[float, int, ReflectionEntry]] = []
