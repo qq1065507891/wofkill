@@ -185,11 +185,89 @@ def _resolve_stance_target(target: str, game_state: GameState | None) -> str:
     return stripped
 
 
+# P1-M14: total token budget for private memory. When the rendered
+# memory exceeds this, drop entries from the lowest-priority category
+# first (see _PRIORITY_ORDER).
+_MAX_PRIVATE_MEMORY_TOKENS = 2000
+
+# P1-M14: priority-ordered categories. Index 0 is the HIGHEST priority
+# (kept longest), index -1 is the LOWEST (dropped first). The renderer
+# walks this list and drops entries from the rightmost end first.
+# Order reflects the strategic value of each note type:
+#   - vote_thoughts: direct action-relevant; survive longest
+#   - stance_notes:   public-claim tracking; valuable for cross-day
+#                     consistency checks
+#   - logic_flaws:    subjective keyword signals (P1-M10 caveat)
+#   - valid_points:   subjective keyword signals (P1-M10 caveat);
+#                     dropped first when over budget
+_PRIORITY_ORDER = (
+    "vote_thoughts",
+    "stance_notes",
+    "logic_flaws",
+    "valid_points",
+)
+
+
+def _estimate_entry_tokens(entry: dict[str, Any]) -> int:
+    """Rough token estimate for a single memory entry.
+
+    Counts characters of the JSON-serialized entry, divided by 2 as a
+    rough proxy for token count (CJK characters are typically 1-2
+    tokens each; ASCII words are ~1 token per 4 chars). The exact
+    ratio matters less than getting the relative ordering right.
+    """
+    import json as _json
+    serialized = _json.dumps(entry, ensure_ascii=False, sort_keys=True)
+    return max(1, len(serialized) // 2)
+
+
+def _truncate_by_priority(
+    memory: dict[str, list[dict[str, Any]]],
+    max_tokens: int = _MAX_PRIVATE_MEMORY_TOKENS,
+) -> dict[str, list[dict[str, Any]]]:
+    """Truncate a private_memory dict to fit within ``max_tokens``.
+
+    P1-M14: drops from the lowest-priority category first. Within a
+    category, drops from the OLDEST entries first (preserve the most
+    recent thinking).
+
+    Returns a NEW dict; the input is not mutated. Empty categories
+    are still included (with empty lists) so the caller can rely on
+    the schema.
+    """
+    result: dict[str, list[dict[str, Any]]] = {
+        category: list(memory.get(category, []))
+        for category in _PRIORITY_ORDER
+    }
+
+    def _total_tokens() -> int:
+        return sum(_estimate_entry_tokens(e) for entries in result.values() for e in entries)
+
+    # Already fits: return as-is.
+    if _total_tokens() <= max_tokens:
+        return result
+
+    # Walk categories in REVERSE priority order (lowest priority first).
+    # Within each category, drop the OLDEST entries first.
+    for category in reversed(_PRIORITY_ORDER):
+        if _total_tokens() <= max_tokens:
+            break
+        # Drop from the head (oldest) until either empty or within budget.
+        while result[category] and _total_tokens() > max_tokens:
+            result[category].pop(0)
+
+    return result
+
+
 def build_private_memory(game_state: GameState, player_id: str) -> dict[str, list[dict[str, Any]]]:
     """Build memory visible only to ``player_id``.
 
     This intentionally uses only the player's own public statements and private
     audit traces. It does not create a shared omniscient summary of all speeches.
+
+    P1-M14: when the per-category total exceeds ``_MAX_PRIVATE_MEMORY_TOKENS``,
+    drop from the lowest-priority category first. Within a category, keep the
+    most recent entries.
     """
     memory: dict[str, list[dict[str, Any]]] = {
         "logic_flaws": [],
@@ -206,7 +284,11 @@ def build_private_memory(game_state: GameState, player_id: str) -> dict[str, lis
         if event.payload.get("visibility") in PRIVATE_VISIBILITIES:
             continue
         _add_own_speech_notes(memory, event, player_id)
-    return {key: value[-12:] for key, value in memory.items() if value}
+    # P1-M14: priority-ordered truncation replaces the previous
+    # `[-12:]` per-category cap. The 12-entry cap is no longer needed
+    # because the token budget enforces a more meaningful constraint.
+    truncated = _truncate_by_priority(memory, max_tokens=_MAX_PRIVATE_MEMORY_TOKENS)
+    return {key: value for key, value in truncated.items() if value}
 
 
 def _add_private_vote_thought(
