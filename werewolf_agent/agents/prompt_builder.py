@@ -844,15 +844,20 @@ class PlayerPromptBuilder:
             "2. 如果当前模型无法工具调用，只输出一个JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
             "3. JSON必须以{开头、以}结尾，且只能有一个对象。",
             "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
-            "5. 必填字段：action_type、target_id、speech、reason、confidence。",
         ]
+        # P1-4: the field list (action_type、target_id、speech、reason、
+        # confidence) was duplicated from the system prompt. The system
+        # prompt's ``_build_output_contract`` already advertises it as a
+        # stable rule; the user prompt should keep ONLY the per-turn
+        # phase-specific rules (legal_actions, legal_targets, vote
+        # audit fields).
         if legal_actions:
-            lines.append(f"6. action_type只能取：{legal_actions}。")
+            lines.append(f"5. action_type只能取：{legal_actions}。")
         if legal_targets:
-            lines.append(f"7. target_id只能取这些玩家之一或null：{legal_targets}。")
+            lines.append(f"6. target_id只能取这些玩家之一或null：{legal_targets}。")
         if ActionType.VOTE in ctx.legal_actions:
             lines.append(
-                "8. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
+                "7. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
                 "suspect_reason、not_voting_reason、private_reason，理由字段不能写「未说明」。"
             )
         lines.append("现在提交行动。")

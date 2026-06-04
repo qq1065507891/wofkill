@@ -1558,6 +1558,90 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
 
 
 # ---------------------------------------------------------------------------
+# P1-4: output contract field list must not appear twice
+# ---------------------------------------------------------------------------
+#
+# Audit P1-4 finding: ``action_type、target_id、speech、reason、confidence``
+# appears in BOTH the system prompt's ``_build_output_contract`` AND
+# the user prompt's ``_build_strict_output_contract``. Inflates token
+# budget by ~25 chars per duplication, multiplies across multi-turn
+# games, and adds no information — the LLM has already seen the field
+# list in the cacheable system prompt.
+#
+# Fix: the field list lives in the SYSTEM prompt only (stable rule).
+# The user prompt keeps the per-turn phase-specific rules (e.g., the
+# "8. 投票还必须包含..." line for VOTE actions, the legal_actions
+# / legal_targets constraints).
+
+
+def test_output_contract_not_duplicated():
+    """P1-4: the FULL_ACTION field list must appear only ONCE in the
+    assembled (system + user) prompt pair.
+
+    Pre-fix, the string ``action_type、target_id、speech、reason、confidence``
+    appeared in BOTH ``build_system_prompt()`` and
+    ``build_user_prompt()``. The user prompt version adds no new
+    information — the system prompt is already cacheable and the LLM
+    has the rule. The user prompt should keep phase-specific rules
+    only (vote audit fields, legal_actions / legal_targets).
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    builder = PlayerPromptBuilder(ctx)
+    system_prompt = builder.build_system_prompt()
+    user_prompt = builder.build_user_prompt(RetryInfo())
+
+    field_list = "action_type、target_id、speech、reason、confidence"
+    # Sanity: must appear at least once (in the system prompt).
+    assert system_prompt.count(field_list) >= 1, (
+        "Field list must still be advertised in the system prompt "
+        "(stable rule — keep the LLM trained on the format)."
+    )
+    # P1-4: must NOT appear in the user prompt (it would be a duplicate).
+    assert user_prompt.count(field_list) == 0, (
+        "P1-4: field list is duplicated in the user prompt. The system "
+        "prompt already has it — the user prompt should only carry "
+        "phase-specific rules (legal_actions, legal_targets, vote audit "
+        "fields). User prompt excerpt: " + user_prompt[:500]
+    )
+
+
+def test_output_contract_vote_rule_still_in_user_prompt():
+    """P1-4: even after removing the duplicated field list, the
+    phase-specific VOTE audit rule must still appear in the user prompt.
+
+    The user prompt is where the LLM sees the per-turn constraints. The
+    VOTE audit fields (``seer_stance、vote_basis、standing_with_seer、...``)
+    are phase-specific, not stable, so they belong in the user prompt.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 speech",
+    )
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The phase-specific rule for VOTE must still be in the user prompt.
+    assert "seer_stance" in user_prompt, (
+        "P1-4: phase-specific VOTE audit rule (seer_stance etc.) must "
+        "stay in the user prompt — it depends on legal_actions which "
+        "is per-turn."
+    )
+
+
+# ---------------------------------------------------------------------------
 # P1-S4: _format_examples (FULL_ACTION mode) examples match the mode
 # ---------------------------------------------------------------------------
 #
