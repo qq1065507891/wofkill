@@ -243,26 +243,40 @@ def agent_night_witch(
         witch_directive["witch_strategy_hint"] = ""
     if not gs.poison_used:
         witch_directive["witch_strategy_hint"] += " 毒药可用时，也可以考虑不救而保留毒药用于验证可疑目标。"
-        witch_directive["witch_poison_threshold"] = (
-            "【毒药决策指引】毒药是好人阵营唯一的主动击杀手段。"
-            "以下情况应优先使用毒药："
-            "1) 可信预言家的明确查杀；2) 强票型证据（连续保狼、冲票、关键轮分票）；"
-            "3) 对跳失败或身份逻辑明显破产；4) 场上存活人数减少，再不用毒药可能来不及。"
-            "如果存在合理怀疑但证据不够硬，应权衡'不用毒药导致好人出局'vs'误毒好人'的风险。"
-            "解药已用后，你每夜只剩毒药或空过——空过意味着好人失去一轮主动权。"
-        )
+        # P1-D5: unified `witch_poison_strategy` directive.  Pre-fix the
+        # code emitted two separate keys (`witch_poison_threshold` and
+        # `poison_urgency`) that could contradict each other; there was
+        # also no `no_pressure` branch for early game.  Pick ONE branch
+        # per game state and render the matching text.
         alive = sum(1 for p in gs.players.values() if p.alive)
-        if alive <= 9:
-            witch_directive["poison_urgency"] = (
-                f"场上存活{alive}人，解药已用，你每夜只有毒药和空过两个选项。"
-                f"如果你有怀疑目标（即使证据不够硬），应积极考虑用毒——但需权衡误毒好人的风险。"
-            )
         if alive <= 7:
-            witch_directive["poison_urgency"] = (
+            branch = "urgency_under_X_alive"
+            text = (
                 f"【紧急】场上仅存活{alive}人！你的毒药还没有使用！"
                 f"好人阵营已经没有犹豫的空间——选择你怀疑度最高的目标用毒。"
                 f"不用毒药很可能意味着好人永远失去主动权。"
             )
+        elif alive <= 9:
+            branch = "evidence_required_threshold"
+            text = (
+                f"场上存活{alive}人，解药已用，你每夜只有毒药和空过两个选项。"
+                f"如果你有怀疑目标（即使证据不够硬），应积极考虑用毒——但需权衡误毒好人的风险。"
+            )
+        else:
+            branch = "no_pressure_save_for_late"
+            text = (
+                "【毒药决策指引】毒药是好人阵营唯一的主动击杀手段。"
+                "以下情况应优先使用毒药："
+                "1) 可信预言家的明确查杀；2) 强票型证据（连续保狼、冲票、关键轮分票）；"
+                "3) 对跳失败或身份逻辑明显破产；4) 场上存活人数减少，再不用毒药可能来不及。"
+                "如果存在合理怀疑但证据不够硬，应权衡'不用毒药导致好人出局'vs'误毒好人'的风险。"
+                "解药已用后，你每夜只剩毒药或空过——空过意味着好人失去一轮主动权。"
+            )
+        witch_directive["witch_poison_strategy"] = {
+            "branch": branch,
+            "alive_count": alive,
+            "text": text,
+        }
 
     witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
 

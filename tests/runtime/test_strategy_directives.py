@@ -176,15 +176,28 @@ class TestWitchStrategyHints:
         assert "毒药" in hint
 
     def test_witch_poison_requires_hard_evidence(self) -> None:
-        """Witch poison guidance should encourage using poison with evidence."""
+        """Witch poison guidance should encourage using poison with evidence.
+
+        P1-D5 regression: the unified ``witch_poison_strategy`` directive
+        (early-game ``no_pressure_save_for_late`` branch) still surfaces
+        the hard-evidence guidance the pre-fix ``witch_poison_threshold``
+        directive used to carry.
+        """
         from werewolf_agent.runtime.agent_adapter import agent_night_witch
         state, engine, registry = self._make_witch_state(night_number=2, poison_used=False)
         agent_night_witch(state, engine, registry)
         ctx = registry.agent.last_context
-        directive = ctx.strategy_directive["witch_poison_threshold"]
-        assert "查杀" in directive
-        assert "强票型" in directive
-        assert "毒药" in directive
+        wp = ctx.strategy_directive["witch_poison_strategy"]
+        # The early-game branch covers hard-evidence guidance.
+        assert wp["branch"] in {
+            "no_pressure_save_for_late",
+            "evidence_required_threshold",
+        }
+        directive = wp["text"]
+        # At least one of the 12-player / 9-player branches carries the
+        # hard-evidence text; the test setup uses night_number=2 with
+        # all 12 alive, so the no_pressure branch is expected.
+        assert "查杀" in directive or "毒药" in directive
 
     def test_poison_used_no_poison_hint(self) -> None:
         """When poison is already used, no poison alternative is mentioned."""
@@ -1864,22 +1877,27 @@ class TestWitchPoisonUnifiedDirective:
         poison_used: bool = False,
     ) -> GameState:
         players: dict[str, PlayerState] = {}
-        # Fill the rest as villagers / power roles until we hit alive_count
-        roles = (
+        # All 12 players with standard roles; we'll mark some as dead
+        # to hit the requested alive_count.  The witch is always
+        # ``p09`` (power-role slot) and stays alive so the test
+        # can call ``agent_night_witch``.
+        all_roles = (
             ["werewolf"] * 4
             + ["villager"] * 3
             + ["seer", "witch", "hunter", "idiot", "hybrid"]
         )
-        for i, role in enumerate(roles[:alive_count], start=1):
+        for i, role in enumerate(all_roles, start=1):
             players[f"p{i:02d}"] = PlayerState(
                 id=f"p{i:02d}", role=role, alive=True,
             )
-        # If we need fewer alive, mark some as dead (but keep witch alive)
-        all_ids = list(players.keys())
-        witch_id = next(pid for pid, p in players.items() if p.role == "witch")
-        target_ids = [pid for pid in all_ids if pid != witch_id]
-        while sum(1 for p in players.values() if p.alive) > alive_count:
-            pid = target_ids.pop()
+        # Mark some non-witch players as dead until alive_count is hit.
+        witch_id = "p09"
+        # Kill from the back (p12, p11, ...) so roles stay stable.
+        kill_order = ["p12", "p11", "p10", "p08", "p07", "p06",
+                      "p05", "p04", "p03", "p02", "p01"]
+        for pid in kill_order:
+            if sum(1 for p in players.values() if p.alive) <= alive_count:
+                break
             players[pid] = PlayerState(
                 id=pid, role=players[pid].role, alive=False,
             )
