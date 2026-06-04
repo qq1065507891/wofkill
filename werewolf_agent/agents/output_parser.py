@@ -49,11 +49,69 @@ SPEECH_INTENTS = {
 }
 
 
+_MOJIBAKE_REPLACEMENT_CHAR = "��"  # U+FFFD
+
+
+def _try_latin1_roundtrip(text: str) -> str | None:
+    """Attempt to recover a double-encoded UTF-8 string via latin-1 round-trip.
+
+    When an originally-UTF-8 byte sequence is mistakenly decoded as
+    latin-1 and then re-encoded as UTF-8, every non-ASCII byte
+    becomes a 2-3 byte sequence. Decoding the mojibake as latin-1
+    recovers the intermediate 1-byte-per-char string, which then
+    re-encodes back to the original UTF-8.
+
+    Returns the recovered text, or ``None`` if the round-trip would
+    produce invalid characters (e.g. U+FFFD can't round-trip through
+    latin-1 since latin-1 only covers 0x00-0xFF) or produces the
+    same text (no change means no mojibake detected).
+    """
+    try:
+        roundtripped = text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return None
+    if roundtripped == text:
+        return None
+    return roundtripped
+
+
+def _try_repair_mojibake(text: str) -> str | None:
+    """Try common mojibake recovery strategies. Returns repaired text or None.
+
+    Two strategies (game-trace g_3528592081 Action 50 — p10's LLM
+    output had `��` (U+FFFD) where JSON quotes should be):
+
+    1. **Latin-1 round-trip**: When the original UTF-8 was decoded
+       as latin-1 and re-encoded as UTF-8. The intermediate chars
+       all sit in the 0x00-0xFF range, so latin-1 round-trip
+       recovers the original. This handles the classic
+       "double-encoded" case even without U+FFFD markers.
+
+    2. **U+FFFD → " replacement**: When U+FFFD is present (the
+       bytes were simply replaced with the replacement char during
+       a decode failure), replace each occurrence with `"` (the
+       most common cause: mojibaked JSON key delimiters). The
+       subsequent unquoted-key repair handles the rest.
+    """
+    # Strategy 1: latin-1 round-trip. Works for double-encoded UTF-8
+    # even when no U+FFFD is present.
+    if _MOJIBAKE_REPLACEMENT_CHAR not in text:
+        return _try_latin1_roundtrip(text)
+    # Strategy 2: U+FFFD present. Try round-trip first (in case
+    # mixed mojibake), fall back to literal `"` replacement.
+    roundtripped = _try_latin1_roundtrip(text)
+    if roundtripped is not None and _MOJIBAKE_REPLACEMENT_CHAR not in roundtripped:
+        return roundtripped
+    return text.replace(_MOJIBAKE_REPLACEMENT_CHAR, '"')
+
+
 def repair_json_text(raw: str) -> str:
     """Apply common JSON repairs for LLM output quirks.
 
     Handles: trailing commas, single-quoted strings, unquoted keys,
-    JS-style comments, NaN/Infinity literals, and BOM.
+    JS-style comments, NaN/Infinity literals, BOM, mojibake (U+FFFD
+    replacement chars adjacent to JSON delimiters, and latin-1
+    double-encoded UTF-8).
     """
     import re as _re
 
@@ -66,6 +124,13 @@ def repair_json_text(raw: str) -> str:
     # Replace NaN / Infinity with null
     text = _re.sub(r"\bNaN\b", "null", text)
     text = _re.sub(r"\bInfinity\b|\binf\b", "null", text, flags=_re.IGNORECASE)
+    # P0-R3: handle mojibake'd Chinese text. Game trace
+    # g_3528592081 Action 50 shows LLM output with `��` (U+FFFD)
+    # where JSON quotes should be. Also handles latin-1
+    # double-encoded UTF-8 (e.g. `{"ä¸¥å¾":"value"}` form).
+    mojibake_repaired = _try_repair_mojibake(text)
+    if mojibake_repaired is not None:
+        text = mojibake_repaired
     # Fix single-quoted strings → double-quoted (naive but covers common cases)
     # Only outside already-double-quoted strings
     text = _re.sub(r"(?<!\\)'([^']*?)'", r'"\1"', text)
