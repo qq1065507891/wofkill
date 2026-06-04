@@ -105,6 +105,12 @@ class RiskFlag(str, Enum):
 
 class PrivateIntent(BaseModel):
     """Agent's private strategic snapshot. Only enters debug/audit views."""
+    # P1-1: reject unknown fields. The LLM was stuffing extra keys
+    # (e.g., leaked secrets, defensive fields) into private_intent and
+    # the audit log happily accepted them. With extra="forbid" the
+    # retry loop can surface the parse error and the LLM learns to
+    # stop filling fields the prompt never requested.
+    model_config = ConfigDict(extra="forbid")
     true_role: str = Field(..., description="Agent's actual role")
     faction_goal: FactionGoal = Field(..., description="Current faction objective")
     claimed_view: str = Field(

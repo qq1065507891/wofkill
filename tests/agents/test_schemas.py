@@ -455,3 +455,58 @@ class TestPlayerActionExtraForbid:
                     "target_id": "p05",
                     "vote_basis": "fallback",
                 })
+
+
+# ---------------------------------------------------------------------------
+# P1-1: PrivateIntent must reject unknown fields (extra="forbid")
+# ---------------------------------------------------------------------------
+#
+# Audit P1-1 finding: all PlayerAction variants have ``extra="forbid"`` (P0-S8)
+# so the LLM cannot attach arbitrary fields to actions. But the nested
+# ``PrivateIntent`` BaseModel has no such guard — the LLM can stuff
+# `leaked_secret: "p05 is wolf"` into private_intent and have it pass
+# schema validation, then it ends up in the audit log.
+
+
+class TestPrivateIntentExtraForbid:
+    """PrivateIntent is the LLM's free-form audit payload — every variant
+    field is a deliberate schema field. With ``extra="forbid"`` an
+    LLM that attaches an extra key (defensive field, leaked secret, etc.)
+    is rejected at parse time, and the retry loop can surface the
+    parse error back to the LLM.
+    """
+
+    def test_private_intent_rejects_unknown_fields(self) -> None:
+        """P1-1: an unknown key on PrivateIntent must raise ValidationError."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PrivateIntent(
+                true_role="werewolf",
+                faction_goal=FactionGoal.PUSH_GOOD_PLAYER_OUT,
+                claimed_view="good_player_without_night_info",
+                some_unknown="x",  # type: ignore[call-arg]
+            )
+
+    def test_private_intent_model_validate_rejects_unknown(self) -> None:
+        """P1-1: model_validate path also rejects unknown fields."""
+        with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
+            PrivateIntent.model_validate({
+                "true_role": "seer",
+                "faction_goal": "find_wolves",
+                "claimed_view": "seer",
+                "leaked_secret": "p05 is wolf",
+            })
+
+    def test_private_intent_known_fields_still_pass(self) -> None:
+        """Regression: all 5 documented PrivateIntent fields still validate."""
+        intent = PrivateIntent(
+            true_role="werewolf",
+            faction_goal=FactionGoal.CONFUSE_GOOD,
+            claimed_view="good_player_without_night_info",
+            pressure_target="p05",
+            risk_flags=[RiskFlag.AVOID_TEAMMATE_EXPOSURE],
+        )
+        assert intent.true_role == "werewolf"
+        assert intent.faction_goal == FactionGoal.CONFUSE_GOOD
+        assert intent.claimed_view == "good_player_without_night_info"
+        assert intent.pressure_target == "p05"
+        assert intent.risk_flags == [RiskFlag.AVOID_TEAMMATE_EXPOSURE]
