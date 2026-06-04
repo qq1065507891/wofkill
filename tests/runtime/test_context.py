@@ -30,7 +30,9 @@ def _make_reflection(
 
 
 def test_reflection_hints_orders_newer_game_id_first_within_same_priority() -> None:
-    """Within same priority bucket, newer game_id should sort first."""
+    """Within same priority bucket, newer game_id should sort first.
+    P1-M12 caps at 2 hints per role, so the 2 newest are kept and
+    the 3rd is dropped."""
     refs = [
         _make_reflection(game_id="2024-12-01", role="seer", text="old"),
         _make_reflection(game_id="2024-12-02", role="seer", text="middle"),
@@ -39,7 +41,8 @@ def test_reflection_hints_orders_newer_game_id_first_within_same_priority() -> N
 
     hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
 
-    assert [h["text"] for h in hints] == ["new", "middle", "old"]
+    # 3 inputs → 2 outputs (cap=2 per role), in newest-first order.
+    assert [h["text"] for h in hints] == ["new", "middle"]
 
 
 def test_reflection_hints_tie_broken_by_game_id_descending() -> None:
@@ -249,6 +252,90 @@ def test_profile_hint_handles_missing_current_role_stats() -> None:
     assert hint["current_role"] == "werewolf"
     assert hint["current_role_games"] == 0
     assert hint["current_role_win_rate_pct"] == 0
+
+
+# ---------------------------------------------------------------------------
+# P1-M11: profile hint must show ONLY the current role's win rate.
+# This is a stricter regression test for the M4 contract: when a profile
+# has 3 roles with different win rates, the hint surfaces only the
+# current-role stats. Other roles' wins/games are NEVER present in the
+# hint (top-level fields, summary text, or anywhere).
+# ---------------------------------------------------------------------------
+
+
+def test_profile_hint_only_current_role_winrate_strict() -> None:
+    """P1-M11: when a profile has 3 roles with different win rates, the
+    hint must surface only the current role's stats. Other roles' wins
+    and games must NOT appear anywhere in the hint dict (top-level
+    fields, summary text, nested values)."""
+    profile = _make_profile(games_played=20)
+    # Set up 3 roles with very different win rates so leakage would
+    # be obvious:
+    #   werewolf:  8/10 = 80% (current)
+    #   seer:      3/5  = 60%
+    #   villager:  1/5  = 20%
+    role_stats = {
+        "werewolf": {"count": 10, "wins": 8},
+        "seer": {"count": 5, "wins": 3},
+        "villager": {"count": 5, "wins": 1},
+    }
+
+    hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
+
+    # Current-role stats ARE exposed.
+    assert hint["current_role"] == "werewolf"
+    assert hint["current_role_games"] == 10
+    assert hint["current_role_win_rate_pct"] == 80
+
+    # Other roles' names must NOT appear anywhere in the hint.
+    # We check every string field of the hint recursively.
+    def _gather_strings(obj: Any) -> list[str]:
+        out: list[str] = []
+        if isinstance(obj, dict):
+            for v in obj.values():
+                out.extend(_gather_strings(v))
+        elif isinstance(obj, (list, tuple, set)):
+            for v in obj:
+                out.extend(_gather_strings(v))
+        elif isinstance(obj, str):
+            out.append(obj)
+        return out
+
+    all_strings = _gather_strings(hint)
+    full_blob = " | ".join(all_strings)
+
+    assert "seer" not in full_blob, (
+        f"P1-M11: 'seer' must not appear in the hint; other roles "
+        f"must be filtered. Hint strings: {all_strings!r}"
+    )
+    # 'villager' is a sub-token of 'werewolf' AND may legitimately
+    # appear in the Chinese 村民 wording — we cannot rely on the
+    # ASCII token. But the count 5 (seer's games) and 1 (villager's
+    # wins) and 3 (seer's wins) are unique leakage signals.
+    assert " 5" not in full_blob or " 50" in full_blob or "前 5" in full_blob, (
+        f"P1-M11: other roles' counts (5 = seer games, 1 = villager "
+        f"wins, 3 = seer wins) must not appear in the hint. "
+        f"Got: {full_blob!r}"
+    )
+    # The two 5s (seer count, villager count) are the leak risk.
+    # Check that no field surfaces these counts.
+    for key, value in hint.items():
+        if key in ("summary",):
+            # The summary embeds current_role_games (10) and
+            # current_role_win_rate_pct (80); neither matches 5.
+            continue
+        assert value != 5, (
+            f"P1-M11: field {key!r} leaked another role's games count "
+            f"(5). Hint: {hint!r}"
+        )
+        assert value != 3, (
+            f"P1-M11: field {key!r} leaked another role's wins count "
+            f"(3). Hint: {hint!r}"
+        )
+        assert value != 1, (
+            f"P1-M11: field {key!r} leaked another role's wins count "
+            f"(1). Hint: {hint!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -537,3 +624,229 @@ def test_rag_injection_still_runs_for_player_speech() -> None:
     )
     assert len(fake.calls) == 1
     assert fake.calls[0]["role"] == "seer"
+
+
+# P1-M12: reflection hint diversity.
+#
+# `_reflection_memory_hints` previously took the top 5 reflections with
+# the same priority — they could all be from the same role and tag.
+# Add a diversity filter so a single role can contribute at most
+# MAX_PER_ROLE hints, then per-tag diversity, so the prompt sees
+# reflections from multiple perspectives.
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_hints_capped_per_role() -> None:
+    """P1-M12: at most 2 reflections per role are surfaced, even when
+    the top 5 priority entries are all from the same role."""
+    # Build 6 reflections all from the same role (seer), all same
+    # priority (priority 2 — same role as current). They have
+    # different game_ids so they would all be in the top 5 before
+    # diversity filtering.
+    refs = [
+        _make_reflection(game_id="2024-12-01", role="seer", text="seer-1"),
+        _make_reflection(game_id="2024-12-02", role="seer", text="seer-2"),
+        _make_reflection(game_id="2024-12-03", role="seer", text="seer-3"),
+        _make_reflection(game_id="2024-12-04", role="seer", text="seer-4"),
+        _make_reflection(game_id="2024-12-05", role="seer", text="seer-5"),
+        _make_reflection(game_id="2024-12-06", role="seer", text="seer-6"),
+        # Plus 2 villager reflections at the same priority (priority 1,
+        # same faction). Without diversity, the top 5 could be all
+        # seer; with diversity, the cap forces at least one villager in.
+        _make_reflection(game_id="2024-12-10", role="villager", text="villager-1"),
+        _make_reflection(game_id="2024-12-11", role="villager", text="villager-2"),
+    ]
+
+    hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
+
+    # Total returned must not exceed the existing 5-hint cap.
+    assert len(hints) <= 5, f"hint cap violated: got {len(hints)} hints"
+
+    # No single role may contribute more than 2 hints.
+    role_counts: dict[str, int] = {}
+    for h in hints:
+        role_counts[h["role"]] = role_counts.get(h["role"], 0) + 1
+    for role, count in role_counts.items():
+        assert count <= 2, (
+            f"P1-M12: role {role!r} contributed {count} hints; "
+            f"max 2 allowed. Role counts: {role_counts!r}"
+        )
+
+    # The 2 newest seer reflections should be present (priority 2
+    # beats priority 1, and within priority 2 newest game wins).
+    seer_texts = {h["text"] for h in hints if h["role"] == "seer"}
+    assert "seer-6" in seer_texts, (
+        f"newest seer reflection (seer-6) should be present; got: {seer_texts!r}"
+    )
+    assert "seer-5" in seer_texts, (
+        f"second-newest seer reflection (seer-5) should be present; got: {seer_texts!r}"
+    )
+    # At most 2 seer hints in the output
+    assert len(seer_texts) <= 2, (
+        f"At most 2 seer hints allowed; got: {seer_texts!r}"
+    )
+
+
+def test_reflection_hints_diversity_when_no_other_role_available() -> None:
+    """P1-M12: when all candidate reflections are from a single role,
+    the cap is still respected (no more than 2 from that role)."""
+    refs = [
+        _make_reflection(game_id="2024-12-01", role="seer", text="a"),
+        _make_reflection(game_id="2024-12-02", role="seer", text="b"),
+        _make_reflection(game_id="2024-12-03", role="seer", text="c"),
+    ]
+
+    hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
+
+    role_counts: dict[str, int] = {}
+    for h in hints:
+        role_counts[h["role"]] = role_counts.get(h["role"], 0) + 1
+    # Cap at 2 even when no other role is available.
+    assert role_counts.get("seer", 0) <= 2, (
+        f"P1-M12: even with no other role, seer cap must hold; "
+        f"got: {role_counts!r}"
+    )
+
+
+def test_reflection_hints_diversity_preserves_priority_order() -> None:
+    """P1-M12: diversity is a filter ON TOP of priority sorting, not a
+    replacement. The newest top-priority reflections still beat older
+    lower-priority reflections, capped per role.
+
+    Setup: 5 seer candidates (priority 2, all same role) + 1 villager
+    candidate (priority 1, different role). The cap of 2-per-role
+    should kick in: only 2 seer are kept, then 1 villager fills the
+    third slot. The villager (priority 1) beats the third seer
+    (priority 2, but at-cap) — that is, we do NOT swap in a third
+    seer just because priority 2 is higher than priority 1; we
+    respect the diversity cap.
+    """
+    refs = [
+        # priority 2 (same role as current) — 5 of these
+        _make_reflection(game_id="2024-12-10", role="seer", text="seer-1"),
+        _make_reflection(game_id="2024-12-11", role="seer", text="seer-2"),
+        _make_reflection(game_id="2024-12-12", role="seer", text="seer-3"),
+        _make_reflection(game_id="2024-12-13", role="seer", text="seer-4"),
+        _make_reflection(game_id="2024-12-14", role="seer", text="seer-5"),
+        # priority 1 (same faction, different role) — 1 of these
+        _make_reflection(game_id="2024-12-20", role="villager", text="villager-1"),
+    ]
+
+    hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
+
+    # At most 2 seer hints in the output.
+    seer_count = sum(1 for h in hints if h["role"] == "seer")
+    assert seer_count <= 2, (
+        f"P1-M12: seer cap of 2 violated; got {seer_count} seer hints. "
+        f"Hints: {hints!r}"
+    )
+
+    # Villager is present (priority 1 + different role fills the slot).
+    roles_present = [h["role"] for h in hints]
+    assert "villager" in roles_present, (
+        f"Villager should fill the third slot after the 2 seer. "
+        f"Got: {roles_present!r}"
+    )
+
+    # The 2 newest seer reflections should be present.
+    seer_texts = {h["text"] for h in hints if h["role"] == "seer"}
+    assert seer_texts == {"seer-4", "seer-5"}, (
+        f"Two newest seer (seer-4, seer-5) should be selected over older "
+        f"ones. Got: {seer_texts!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1-M13: belief_state.my_suspects / my_trusted must exclude dead players.
+#
+# The belief_state is initialized with all 12 player IDs (alive AND
+# dead). Without an explicit filter, dead players leak into the agent
+# prompt as candidates for suspicion / trust — which is confusing at
+# best, since the player can no longer act on that info.
+# ---------------------------------------------------------------------------
+
+
+def test_belief_state_excludes_dead_players() -> None:
+    """P1-M13: belief_dict["my_suspects"] and belief_dict["my_trusted"]
+    must NOT contain any player whose gs.players[pid].alive is False.
+
+    Test setup: 3 players in a 3-player game.
+    - p01 (self, alive, role seer)
+    - p02 (alive, role wolf) — should appear in my_suspects
+    - p03 (DEAD, role villager) — must NOT appear in either list
+
+    The filter is at the output stage of build_agent_context: when
+    iterating belief_state.beliefs, dead players are skipped before
+    being added to suspect_list or trust_list.
+    """
+    from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+    from werewolf_agent.runtime.context import build_agent_context
+    from werewolf_agent.agents.schemas import TaskType
+    from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
+
+    # Build a minimal GameState with 3 players. p03 is dead from the
+    # start; p02 is alive and a known wolf (high-suspicion).
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=False),
+    }
+    gs = GameState(
+        game_id="g_test_p1m13",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=2,
+        night_number=2,
+        phase="day",
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "我站边 p01 的预言家。",
+                    "day_number": 1,
+                    "visibility": "public",
+                },
+            ),
+            GameEvent(
+                type="seer_check",
+                payload={
+                    "target_id": "p02",
+                    "alignment": "wolf",
+                    "night_number": 1,
+                },
+            ),
+        ],
+    )
+
+    # Use the real RuleEngine. We just need build_agent_context to
+    # populate belief_dict from the visible facts.
+    ruleset = Ruleset(raw={
+        "player_count": 3,
+        "roles": {
+            "werewolf": {"count": 1},
+            "villager": {"count": 1},
+            "seer": {"count": 1},
+        },
+    })
+    engine = RuleEngine(ruleset=ruleset)
+    ctx = build_agent_context(
+        engine=engine,
+        gs=gs,
+        player_id="p01",
+        task_type=TaskType.SPEECH,
+    )
+
+    suspect_players = {entry["player"] for entry in ctx.belief_state["my_suspects"]}
+    trusted_players = {entry["player"] for entry in ctx.belief_state["my_trusted"]}
+
+    # p03 (dead) must not appear in either list.
+    assert "p03" not in suspect_players, (
+        f"P1-M13: dead player p03 leaked into my_suspects: {suspect_players!r}"
+    )
+    assert "p03" not in trusted_players, (
+        f"P1-M13: dead player p03 leaked into my_trusted: {trusted_players!r}"
+    )
+    # p01 (self) must not appear in either list.
+    assert "p01" not in suspect_players
+    assert "p01" not in trusted_players
