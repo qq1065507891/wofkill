@@ -380,5 +380,31 @@ class TestSlimAndAuditCoexist:
         assert before == after
 
 
+# ===================================================================
+# P1-G4: summary truncation relaxed (300 → 800 chars)
+# ===================================================================
+
+
+class TestSummaryTruncation800Chars:
+    """P1-G4: The retriever caps summary at 800 chars (was 300). The slim
+    renderer must preserve whatever the retriever returned — slim
+    rendering does not re-truncate."""
+
+    def test_summary_truncation_800_chars(self) -> None:
+        """Build a RAGHit with the new 800-char summary and confirm the
+        slim renderer passes it through unchanged."""
+        long_summary = "狼" * 800  # exactly 800 chars
+        hit = _make_hit(summary=long_summary)
+        # Sanity: the test fixture's summary is the 800-char one.
+        assert len(hit.summary) == 800
+
+        line = render_hit_for_prompt(hit)
+        # Slim renderer does not re-truncate — it trusts the cap at the
+        # retriever layer (P1-G4 contract: 800 chars at retriever, not
+        # renderer).
+        assert line["summary"] == long_summary
+        assert len(line["summary"]) == 800
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -638,6 +638,68 @@ class TestRetriever:
         for hit in hits:
             assert 0.0 <= hit.relevance_score <= 1.0
 
+    def test_summary_truncation_800_chars(self) -> None:
+        """P1-G4: summaries longer than 300 chars (old cap) must be
+        preserved up to 800 chars so the LLM sees more strategy detail.
+
+        Build a synthetic entry with an 1100-char summary; the hit must
+        keep the first 800 characters, not the first 300.
+        """
+        long_summary = "狼" * 1100  # 1100 Chinese characters
+        entry = _make_entry(
+            entry_id="long_summary_001",
+            title="长案例测试",
+            summary=long_summary,
+        )
+        retriever = StrategyRetriever([entry])
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+        assert hits, "retriever should return the synthetic long-summary hit"
+        hit = hits[0]
+        assert len(hit.summary) == 800, (
+            f"P1-G4 contract: summary cap raised to 800; got {len(hit.summary)}"
+        )
+        assert hit.summary == long_summary[:800]
+
+    def test_key_decisions_capped_at_five(self) -> None:
+        """P1-G4: key_decisions longer than 5 are capped at 5 in the hit
+        payload (the slim renderer further caps at 3 for the live prompt).
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+        )
+        decisions = [f"决策{i}: 详细说明" for i in range(8)]
+        entry = RAGEntry(
+            entry_id="many_decisions_001",
+            title="多决策案例测试",
+            summary="summary",
+            key_decisions=decisions,
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.COMMUNITY_CASE,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+        assert hits
+        hit = hits[0]
+        assert len(hit.key_decisions) == 5, (
+            f"P1-G4 contract: key_decisions cap raised to 5; got {len(hit.key_decisions)}"
+        )
+        assert hit.key_decisions == decisions[:5]
+
 
 # ===================================================================
 # TestRAGInjector

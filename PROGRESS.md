@@ -4,8 +4,8 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Batch 3 (Memory + Info) MERGED — 2026-06-04**
-- Active task: All 7 batch-3 P0 redesign tasks done (M6, I4, M9, I1, I2, I3). Next: Batch 4 (P1 30 items by 5 area).
+- Current phase: **Batch 4 (P1 RAG area) — STARTING 2026-06-04**
+- Active task: 5 P1 RAG tasks (G4, G5, G6, G7, G8) on branch `p4-rag` in `.worktrees/p4-rag`
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-04
 

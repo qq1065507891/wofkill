@@ -221,7 +221,7 @@ class StrategyRetriever:
         return RAGHit(
             entry_id=entry.entry_id,
             title=entry.title,
-            summary=entry.summary[:300],
+            summary=entry.summary[:800],
             relevance_score=round(score, 3),
             quality_grade=meta.quality_grade,
             source_type=meta.source.source_type,
@@ -229,7 +229,7 @@ class StrategyRetriever:
             case_type=meta.case_type,
             role_perspective=meta.role_perspective,
             phase=meta.phase,
-            key_decisions=entry.key_decisions,
+            key_decisions=entry.key_decisions[:5],
             short_quotes=entry.short_quotes,
             tags=meta.tags,
             allowed_in_live_context=allowed_in_live,
