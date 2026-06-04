@@ -821,6 +821,19 @@ class PlayerPromptBuilder:
                 '"speech": "我报名竞选警长。", '
                 '"reason": "希望参与警上发言并争取带队", "confidence": 0.6}'
             )
+            # P2-3: explicit sheriff_withdraw example so the LLM has a
+            # template to copy when the player decides to pull out of
+            # the sheriff race. Game trace g_3528592081 action 41 (p05)
+            # showed the LLM emitting `sheriff_register` when it meant
+            # to withdraw — adding this example gives the model the
+            # right action_type to pattern-match.
+            if ActionType.SHERIFF_WITHDRAW in ctx.legal_actions:
+                parts.append("示例输出（退警场景）：")
+                parts.append(
+                    '{"action_type": "sheriff_withdraw", "target_id": null, '
+                    '"speech": "我退水，把警徽给更需要的人。", '
+                    '"reason": "评估后觉得不适合继续竞选", "confidence": 0.6}'
+                )
             if ActionType.NO_ACTION in ctx.legal_actions:
                 parts.append("示例输出（不上警场景）：")
                 parts.append(

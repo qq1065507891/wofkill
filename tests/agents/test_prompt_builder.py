@@ -2859,5 +2859,53 @@ def test_salience_events_section_absent_when_empty():
     )
 
 
+# ---------------------------------------------------------------------------
+# P2-3: SHERIFF example must include a sheriff_withdraw example
+# ---------------------------------------------------------------------------
+#
+# Audit P2-3 finding: the SHERIFF_REGISTER example block in
+# _format_examples renders examples for `sheriff_register` and
+# `no_action`, but does not show `sheriff_withdraw`. Without an
+# explicit withdraw example, the LLM was emitting `sheriff_register`
+# when it intended to withdraw, and the parser fell back to a
+# default (game trace g_3528592081 action 41, p05).
+#
+# Fix: add a third example showing `sheriff_withdraw` so the LLM
+# can pattern-match the correct action type when the player
+# changes their mind about running for sheriff.
+
+
+def test_sheriff_example_includes_withdraw():
+    """P2-3: the SHERIFF_REGISTER example block must include a
+    `sheriff_withdraw` JSON example.
+
+    The block currently shows only `sheriff_register` and (optionally)
+    `no_action`. We add a `sheriff_withdraw` example so the LLM
+    has a template to copy when the player decides to pull out of
+    the sheriff race. The withdraw example is only emitted when
+    SHERIFF_WITHDRAW is in legal_actions — mirror that in the test.
+    """
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.SHERIFF_REGISTRATION,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[
+            ActionType.SHERIFF_REGISTER,
+            ActionType.SHERIFF_WITHDRAW,
+            ActionType.NO_ACTION,
+        ],
+        legal_targets=[],
+        public_summary="D1 sheriff election",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "sheriff_withdraw" in prompt, (
+        "P2-3: SHERIFF example block must include a `sheriff_withdraw` "
+        "JSON example so the LLM has a template when the player "
+        "decides to pull out of the sheriff race."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
