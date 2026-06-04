@@ -541,9 +541,27 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 @register_handler(SkillName.SWING_VOTE)
 def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
+    # S-03: branch on task_type. `wolf_discussion` is a NIGHT phase —
+    # the wolves are picking a night-kill target, not a day-vote target.
+    # Default (day-vote) behavior is preserved.
+    is_wolf_discussion = inp.task_type == "wolf_discussion"
+
     if gs is None:
         # static fallback
         risks = ["冲票暴露投票链：好人可能通过投票链锁定狼人"]
+        if is_wolf_discussion:
+            return SkillOutput(
+                skill_name=skill.name.value,
+                recommended_action="night_kill",
+                speech_structure=["在狼讨论中提出冲刀目标", "分析目标的投票压力", "协调队友分散或集中夜杀"],
+                risk_alerts=risks,
+                confidence=0.5,
+                reasoning="冲刀需要考虑夜杀链暴露风险",
+                prompt_injectable=(
+                    "冲刀建议（狼队夜杀讨论）：选择场上已有投票压力的好人作为冲刀目标。"
+                    "与队友协调夜杀方向，避免夜杀链暴露狼人身份。"
+                ),
+            )
         return SkillOutput(
             skill_name=skill.name.value,
             recommended_action="vote",
@@ -563,7 +581,7 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         return SkillOutput(
             skill_name=skill.name.value,
             confidence=0.0,
-            reasoning="无冲票目标",
+            reasoning="无冲票目标" if not is_wolf_discussion else "无冲刀目标",
         )
 
     # Find non-wolf with most vote pressure
@@ -588,6 +606,34 @@ def swing_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     risks = ["冲票暴露投票链：好人可能通过投票链锁定狼人"]
     if wolf_count <= 2:
         risks.append(f"仅剩{wolf_count}狼，冲票暴露风险极高")
+
+    if is_wolf_discussion:
+        # Night-kill semantics: rephrase the prompt and action.
+        if best_pressure > 0:
+            prompt = (
+                f"冲刀建议（狼队夜杀讨论）：集中狼队夜杀 {best_target}。"
+                f"理由：{best_target} 已有{best_pressure}个怀疑信号，"
+                f"冲刀成功率高，避免暴露狼队。"
+            )
+            conf = 0.5 + min(0.2, best_pressure * 0.04)
+        else:
+            prompt = (
+                "冲刀建议（狼队夜杀讨论）：当前无明确冲刀目标，"
+                "建议根据好人发言集中度选择夜杀目标。"
+            )
+            conf = 0.35
+        return SkillOutput(
+            skill_name=skill.name.value,
+            recommended_action="night_kill",
+            recommended_target=best_target if best_pressure > 0 else None,
+            risk_alerts=risks,
+            confidence=conf,
+            reasoning=(
+                f"动态分析：{best_target} 有{best_pressure}个压力信号，"
+                f"{wolf_count}狼存活（夜杀任务）"
+            ),
+            prompt_injectable=prompt,
+        )
 
     if best_pressure > 0:
         prompt = (

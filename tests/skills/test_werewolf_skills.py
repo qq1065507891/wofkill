@@ -279,3 +279,40 @@ def test_hybrid_with_wolf_master_dispatches_wolf_skills():
         f"S-02: hybrid-with-wolf-master should dispatch bold_claim in speech; "
         f"got {skill_names!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# S-03: swing_vote_handler recommends night_kill in wolf_discussion.
+# ---------------------------------------------------------------------------
+
+def test_swing_vote_handler_wolf_discussion_recommends_night_kill():
+    """S-03: `swing_vote_handler` in `wolf_discussion` is a NIGHT phase:
+    the wolves are picking a night-kill target, not a day-vote target.
+
+    Pre-fix: the handler always returns `recommended_action="vote"` even
+    when `task_type == "wolf_discussion"`, which the wolf-discussion
+    prompt builder would interpret as "vote for this player during the
+    day" — wrong; the wolf needs a night-kill recommendation.
+
+    Post-fix: branch on `inp.task_type`; for `wolf_discussion`, set
+    `recommended_action="night_kill"` and rephrase the prompt to make
+    the night-kill semantics explicit.
+    """
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    gs = _make_skill_gs(day=1)
+    # Build a wolf-discussion skill input. Day=1, role=werewolf, and
+    # task_type=wolf_discussion. The handler receives an empty/no
+    # fact-filled world state, so pressure-based logic still works.
+    inp = SkillInput(
+        role="werewolf", phase="night", day=1,
+        game_state=gs, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="wolf_discussion",
+    )
+    out = apply_skill(SkillName.SWING_VOTE, inp)
+    assert out.recommended_action == "night_kill", (
+        f"S-03: swing_vote in wolf_discussion should recommend night_kill; "
+        f"got {out.recommended_action!r}"
+    )
