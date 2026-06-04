@@ -424,8 +424,12 @@ def _cognition_matrix_hint(restored_memory: Any, player_id: str) -> dict[str, An
         # P0-M9: render key_evidence and open_questions as ID references,
         # never as full text. The summary stats (trust, faction_read)
         # are already derived from public facts via BeliefUpdater.
+        # MEM-07: key_evidence items may be EvidenceItem or bare str.
+        def _claim_str(item: Any) -> str:
+            claim = getattr(item, "claim", None)
+            return str(claim) if claim is not None else str(item)
         key_evidence = [
-            _evidence_id_ref(text)
+            _evidence_id_ref(_claim_str(text))
             for text in list(getattr(entry, "key_evidence", []))[:3]
         ]
         open_questions = [

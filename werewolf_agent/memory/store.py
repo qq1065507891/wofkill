@@ -118,8 +118,15 @@ class MemoryStore:
         faction_won: bool,
         ground_truth: dict[str, str],
         generate_reflection: bool = True,
+        faction: str | None = None,
     ) -> ReviewReport:
-        """Generate review for a player, optionally storing reflection."""
+        """Generate review for a player, optionally storing reflection.
+
+        MEM-08: pass ``faction`` to override the default role-based
+        classification (used for hybrid whose master is on a known
+        side). Callers should pass ``_player_faction(role,
+        master_faction)`` for hybrid.
+        """
         matrix = self.cognition_matrices.get(player_id)
 
         report = self._review_generator.generate(
@@ -139,6 +146,7 @@ class MemoryStore:
             faction_won=faction_won,
             ability_deltas=report.ability_deltas,
             review_id=f"{game_id}_{player_id}",
+            faction=faction,
         )
 
         # Store reflection
@@ -186,6 +194,7 @@ class MemoryStore:
                 role=role,
                 faction_won=faction_won,
                 ground_truth=ground_truth,
+                faction=pf,
             )
             reports.append(report)
         return reports
@@ -200,6 +209,15 @@ class MemoryStore:
             tags.append("had_errors")
         if report.deceived_by:
             tags.append("deceived")
+            # MEM-12: deceived_by is a list of player_ids and must be
+            # scrubbed of concrete pIDs before being persisted into
+            # long-term reflection. The legacy code added the
+            # ``deceived`` tag but never replaced the ids in the
+            # source list — they leaked through ``ReportReview.deceived_by``
+            # when the report was later re-serialized or quoted.
+            # The fix scrubs in place so any downstream consumer of
+            # the report also sees scrubbed ids.
+            report.deceived_by = _scrub_player_ids_in_list(report.deceived_by)
 
         # P0-I4: scrub concrete player ids from every text fragment
         # that will land in the long-term reflection entry. ``player_id``
@@ -235,7 +253,14 @@ class MemoryStore:
             faction_won=report.faction_won,
             text=" | ".join(text_parts),
             tags=tags,
-            situation=_scrub_player_ids(report.summary),
+            # MEM-05: situation now holds the structured game context
+            # (game_id / role / won) instead of duplicating the
+            # summary. Previously it was a copy of ``summary`` and
+            # doubled the per-entry storage cost.
+            situation=(
+                f"game={report.game_id} role={report.role} "
+                f"won={report.faction_won}"
+            ),
         )
         self.reflections.store(entry)
 

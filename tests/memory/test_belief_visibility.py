@@ -280,3 +280,58 @@ def test_belief_hint_independent_of_viewer_with_same_facts():
         f"trust diverges: wolf={w_p03['trust']} villager={v_p03['trust']}"
     )
     assert w_p03["faction_read"] == v_p03["faction_read"]
+
+
+# ---------------------------------------------------------------------------
+# MEM-07: key_evidence is now a list[EvidenceItem] (structured form)
+# carrying claim / source_event / day / confidence / speaker.
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_item_has_structured_fields():
+    """MEM-07: add_evidence with an EvidenceItem must store the full
+    structured object so the downstream renderer / debugger can see
+    the claim's provenance and confidence.
+    """
+    from werewolf_agent.memory.schemas import EvidenceItem
+
+    cm = CognitionMatrix("p1")
+    cm.initialize(["p1", "p2"])
+    ev = EvidenceItem(
+        claim="p2 is wolf (long speech + claimed seer)",
+        source_event="speech",
+        day=1,
+        confidence=0.8,
+        speaker="p1",
+    )
+    cm.add_evidence("p2", ev)
+    entry = cm.get("p2")
+    assert entry is not None
+    assert len(entry.key_evidence) == 1
+    stored = entry.key_evidence[0]
+    assert isinstance(stored, EvidenceItem), (
+        f"MEM-07: stored evidence must be EvidenceItem; got {type(stored).__name__}"
+    )
+    # All 5 structured fields are accessible.
+    assert stored.claim == "p2 is wolf (long speech + claimed seer)"
+    assert stored.source_event == "speech"
+    assert stored.day == 1
+    assert stored.confidence == 0.8
+    assert stored.speaker == "p1"
+
+
+def test_evidence_item_back_compat_with_str():
+    """MEM-07: add_evidence with a bare str must still work (backward
+    compatibility); it gets wrapped into an EvidenceItem.
+    """
+    from werewolf_agent.memory.schemas import EvidenceItem
+
+    cm = CognitionMatrix("p1")
+    cm.initialize(["p1", "p2"])
+    cm.add_evidence("p2", "legacy_claim_string")
+    entry = cm.get("p2")
+    assert len(entry.key_evidence) == 1
+    stored = entry.key_evidence[0]
+    # Bare str is wrapped into an EvidenceItem whose claim equals the string.
+    assert isinstance(stored, EvidenceItem)
+    assert stored.claim == "legacy_claim_string"

@@ -51,11 +51,23 @@ class BagOfWordsVectorIndex:
         self._finalized = False
 
     def add_text(self, doc_id: str, text: str) -> None:
-        """Register one document. May be called multiple times for the same id."""
+        """Register one document. May be called multiple times for the same id.
+
+        MEM-14: if the index has been finalized, the cached IDF and
+        norms are stale (they don't reflect this new doc). The legacy
+        behavior was to raise; the post-fix behavior is to invalidate
+        the cache so the next similarity() call re-finalizes with
+        the new docs included.
+        """
         if self._finalized:
-            raise RuntimeError(
-                "BagOfWordsVectorIndex: cannot add_text after finalize()"
-            )
+            # Invalidate the cached stats so the next similarity()
+            # call re-finalizes from the current ``_docs``. This is
+            # safer than raising — the caller can still add more
+            # texts and call finalize/similarity when ready, and
+            # their results will be correct.
+            self._finalized = False
+            self._idf = {}
+            self._norms = {}
         self._docs[doc_id] = _tokenize(text)
 
     def add_texts(self, items: Iterable[tuple[str, str]]) -> None:

@@ -4,7 +4,7 @@ Each agent maintains a cognition matrix during a game with:
 - role_probabilities per other player
 - faction_read (good_lean / wolf_lean / unknown)
 - trust score [0..1]
-- key_evidence list (structured references to events)
+- key_evidence list of EvidenceItem (structured references to events)
 - open_questions list
 
 The matrix syncs from BeliefUpdater output but is the persisted form
@@ -13,10 +13,10 @@ that survives across turns and can be serialized to JSON.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Union
 
 from werewolf_agent.cognition.belief import BeliefState, PlayerBelief
-from werewolf_agent.memory.schemas import CognitionMatrixEntry
+from werewolf_agent.memory.schemas import CognitionMatrixEntry, EvidenceItem
 
 
 class CognitionMatrix:
@@ -61,10 +61,27 @@ class CognitionMatrix:
             entry.trust = belief.trust
             entry.open_questions = list(belief.open_questions)
 
-    def add_evidence(self, player_id: str, evidence: str) -> None:
+    def add_evidence(
+        self,
+        player_id: str,
+        evidence: Union[EvidenceItem, str],
+    ) -> None:
+        """Add evidence for ``player_id``.
+
+        MEM-07: accept either an ``EvidenceItem`` (preferred — carries
+        source_event / day / confidence / speaker) or a bare ``str``
+        (legacy back-compat — wrapped into EvidenceItem with default
+        fields).
+        """
         entry = self._entries.get(player_id)
-        if entry is not None:
+        if entry is None:
+            return
+        if isinstance(evidence, EvidenceItem):
             entry.key_evidence.append(evidence)
+        else:
+            # Back-compat: wrap a bare string claim into an
+            # EvidenceItem with conservative defaults.
+            entry.key_evidence.append(EvidenceItem(claim=str(evidence)))
 
     def add_open_question(self, player_id: str, question: str) -> None:
         entry = self._entries.get(player_id)

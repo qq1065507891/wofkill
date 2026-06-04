@@ -11,10 +11,14 @@ is a future extension — current implementation uses exact tag/role matching.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
 from werewolf_agent.memory.schemas import CrossGameQuery, ReflectionEntry
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class ReflectionMemory:
@@ -140,6 +144,12 @@ class ReflectionMemory:
             query_text = query.situation or ""
             scores = vector_index.similarity(query_text)
         else:  # pragma: no cover - defensive: unsupported index impl
+            # MEM-13: warn the caller — without a similarity method
+            # every entry scores 0 and falls to the unindexed tail,
+            # so a "vector search" silently degrades to exact-match
+            # order. Make the fallback loud so the upstream caller
+            # can fix the index wiring.
+            _LOG.warning("vector index has no similarity method, falling back")
             scores = {}
 
         scored: list[tuple[float, int, ReflectionEntry]] = []
@@ -156,7 +166,12 @@ class ReflectionMemory:
         return ranked[: query.max_results]
 
     def _filter_candidates(self, query: CrossGameQuery) -> list[ReflectionEntry]:
-        """Apply exact-match *filters* (player_id, role, tags, faction_won)."""
+        """Apply exact-match *filters* (player_id, role, tags, faction_won).
+
+        MEM-06: also sort by game_id descending (newest first) so the
+        truncation step in ``query`` keeps the most recent experience
+        when the candidate set is larger than ``max_results``.
+        """
         results = list(self._entries.values())
         if query.player_id:
             results = [e for e in results if e.player_id == query.player_id]
@@ -169,6 +184,12 @@ class ReflectionMemory:
             ]
         if query.faction_won is not None:
             results = [e for e in results if e.faction_won == query.faction_won]
+        # Newest first: sort by game_id descending. ``game_id`` is a
+        # string; for game ids of the form ``g123`` lex order matches
+        # numeric order once the prefix is aligned. For arbitrary ids,
+        # reverse-sort is still a stable proxy for "newer first" when
+        # ids are timestamp-derived.
+        results.sort(key=lambda e: e.game_id, reverse=True)
         return results
 
     def _apply_situation_filter(

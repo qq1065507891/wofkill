@@ -39,6 +39,10 @@ PRIVATE_VISIBILITIES = {
     "moderator_only",
     "seer_private",
     "witch_private",
+    # MEM-11: ``moderator_full`` is a debug / moderator-only view
+    # that exposes every private fact. Player agents must never
+    # see it; the renderer filters it out by including it here.
+    "moderator_full",
 }
 
 LOGIC_FLAW_MARKERS = (
@@ -107,6 +111,19 @@ _FIRST_PERSON_CHECK_RE = re.compile(
     r"我(?:看穿|发现|看出|验出|查到|查到)(?:了)?\s*(?:[Pp]\d{1,2}|他|她|它)?\s*(?:是)?(狼人|预言家|女巫|猎人|白痴|混血儿|村民)"
 )
 
+# MEM-03: negation markers used to detect stance-deny patterns. These
+# flip a positive "X 是 角色" claim into a denial, so the resolved
+# stance target must NOT echo the role label.
+_NEGATION_MARKERS = (
+    "不是",
+    "不信",
+    "不站",
+    "否认",
+    "反",
+    "否定",
+    "不认为",
+)
+
 
 def _sanitize_role_claims(text: str) -> str:
     """Strip role/team-mate/faction claims that would leak private info.
@@ -150,6 +167,12 @@ def _resolve_stance_target(target: str, game_state: GameState | None) -> str:
     text = str(target).strip()
     if not text:
         return "玩家"
+    # MEM-03: if the stance text contains a negation marker, the
+    # speaker is denying the role claim — do NOT echo the role label.
+    # Mark as denial so the downstream note reflects the negation.
+    for marker in _NEGATION_MARKERS:
+        if marker in text:
+            return "[否认]"
     # Try direct lookup first: target is exactly a player id.
     if game_state is not None:
         player = game_state.players.get(text)
@@ -211,14 +234,26 @@ _PRIORITY_ORDER = (
 def _estimate_entry_tokens(entry: dict[str, Any]) -> int:
     """Rough token estimate for a single memory entry.
 
-    Counts characters of the JSON-serialized entry, divided by 2 as a
-    rough proxy for token count (CJK characters are typically 1-2
-    tokens each; ASCII words are ~1 token per 4 chars). The exact
-    ratio matters less than getting the relative ordering right.
+    MEM-04: legacy ``len(serialized) // 2`` treated CJK as 0.5 tokens
+    per character, but real BPE is closer to 1.5-2 tokens per CJK
+    character (each Hanzi may split into 2-3 sub-tokens). Use a
+    rough CJK+BPE-aware heuristic: count CJK characters separately
+    (2 tokens each) and ASCII letters/digits separately (1 token
+    per 4 chars). Other bytes (punctuation, whitespace) are
+    negligible.
+
+    The exact ratio matters less than getting the relative ordering
+    right; the per-category priority drop depends on accurate
+    relative sizes, not on absolute accuracy.
     """
     import json as _json
     serialized = _json.dumps(entry, ensure_ascii=False, sort_keys=True)
-    return max(1, len(serialized) // 2)
+    cjk_chars = sum(1 for ch in serialized if '一' <= ch <= '鿿')
+    ascii_chars = sum(
+        1 for ch in serialized
+        if ch.isascii() and ch.isprintable() and not ch.isspace()
+    )
+    return max(1, cjk_chars * 2 + ascii_chars // 4)
 
 
 def _truncate_by_priority(
@@ -394,7 +429,13 @@ def _add_own_speech_notes(
                 "point": _sanitize_role_claims(_clip(sentence)),
                 "source_event": event.type,
             })
-        if "站边" in sentence:
+        # MEM-16: a stance negation ('我不站边 p03', 'p03 不站边 预言家')
+        # must NOT trigger a stance_notes entry — the speaker is
+        # actively disclaiming alignment, not declaring it. Reuse
+        # the negation marker list from MEM-03.
+        if "站边" in sentence and not any(
+            marker in sentence for marker in _NEGATION_MARKERS
+        ):
             memory["stance_notes"].append({
                 "day": day,
                 "speaker": speaker,

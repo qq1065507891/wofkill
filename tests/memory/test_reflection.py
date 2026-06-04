@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.memory.reflection import ReflectionMemory
-from werewolf_agent.memory.schemas import CrossGameQuery, ReviewReport
+from werewolf_agent.memory.schemas import CrossGameQuery, ReflectionEntry, ReviewReport
 from werewolf_agent.memory.store import MemoryStore
 from werewolf_agent.runtime.private_memory import (
     _resolve_stance_target,
@@ -253,3 +253,159 @@ def test_reflection_stance_strip_via_store_review_reflection():
     # The raw ID should not appear in cross-game reflection text.
     # (We allow it to appear in the player_id field, but not in text.)
     assert "p03" not in text, f"reflection text leaks p03: {text}"
+
+
+# ---------------------------------------------------------------------------
+# MEM-06: reflection candidates must be sorted by recency (newest first)
+# before truncation. The legacy code filtered by hard constraints but
+# kept insertion order, so old entries could dominate a max_results
+# limit and the agent would see stale experience first.
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_query_returns_newest_first():
+    """MEM-06: query with max_results=3 on 5 reflections across
+    game_ids 1-5 must return game_ids 5, 4, 3 (newest first)."""
+    mem = ReflectionMemory()
+    for gid in range(1, 6):
+        mem.store(ReflectionEntry(
+            entry_id=f"r{gid}",
+            game_id=f"g{gid}",
+            player_id="p1",
+            role="seer",
+            faction_won=True,
+            text=f"reflection for game {gid}",
+            tags=["seer", "win"],
+        ))
+
+    # Query with max_results=3
+    results = mem.query(CrossGameQuery(player_id="p1", max_results=3))
+    assert len(results) == 3
+    # Newest first: game_ids 5, 4, 3
+    assert [r.game_id for r in results] == ["g5", "g4", "g3"], (
+        f"MEM-06: expected newest-first ordering g5,g4,g3; "
+        f"got {[r.game_id for r in results]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-12: ReviewReport.deceived_by is a list of player_ids; those
+# ids must be scrubbed (p\d{1,2} → [玩家ID已省略]) before the report
+# is persisted, otherwise the raw ids leak into long-term reflection.
+# ---------------------------------------------------------------------------
+
+
+def test_deceived_by_list_scrubbed():
+    """MEM-12: passing deceived_by=['p07'] through _store_review_reflection
+    must scrub 'p07' from the report's deceived_by list itself
+    (not just the summary text)."""
+    store = MemoryStore()
+    store.init_matrix("p01", ["p01", "p07"])
+    # Use a summary that does NOT contain p07, so the only path
+    # through which p07 can leak is deceived_by.
+    report = ReviewReport(
+        game_id="g_test_mem12",
+        player_id="p01",
+        role="seer",
+        faction_won=False,
+        deceived_by=["p07"],
+        summary="对局复盘:被对跳发言误导。",
+    )
+    store._store_review_reflection(report)
+
+    # The raw p07 must not appear in the reflection text.
+    results = store.query_reflections(CrossGameQuery(player_id="p01"))
+    assert len(results) == 1
+    entry = results[0]
+    assert "p07" not in entry.text, (
+        f"MEM-12: reflection text leaks p07; got text={entry.text!r}"
+    )
+    # And the deceived_by list on the source report must be scrubbed
+    # (in-place mutation, so the report itself no longer carries p07).
+    assert "p07" not in report.deceived_by, (
+        f"MEM-12: report.deceived_by still contains p07; got {report.deceived_by!r}"
+    )
+    assert any("[玩家ID已省略]" in s for s in report.deceived_by), (
+        f"MEM-12: expected '[玩家ID已省略]' placeholder in deceived_by; "
+        f"got {report.deceived_by!r}"
+    )
+    # And the "deceived" tag is still added.
+    assert "deceived" in entry.tags
+
+
+# ---------------------------------------------------------------------------
+# MEM-13: when a vector_index lacks a ``similarity`` method, the
+# reflection query falls back to exact-match order. The fallback must
+# be loud (logger.warning) so the upstream wiring can be fixed.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_fallback_warns(caplog):
+    """MEM-13: query with a vector_index that has no ``similarity``
+    method must emit a logger.warning naming the fallback."""
+    import logging
+    from types import SimpleNamespace
+
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    mem = ReflectionMemory()
+    mem.store(ReflectionEntry(
+        entry_id="r1", game_id="g1", player_id="p1", role="seer",
+        faction_won=True, text="a", situation="endgame",
+    ))
+
+    class _NoSimilarity:
+        """Vector index duck-typed shape that lacks similarity()."""
+        def __len__(self) -> int:
+            return 1
+
+    with caplog.at_level(logging.WARNING, logger="werewolf_agent.memory.reflection"):
+        mem.query(
+            CrossGameQuery(situation="endgame"),
+            vector_index=_NoSimilarity(),
+        )
+
+    matching = [
+        r for r in caplog.records
+        if "no similarity method" in r.getMessage().lower()
+    ]
+    assert matching, (
+        f"MEM-13: vector fallback must emit a logger.warning; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-15: CrossGameQuery.tags uses OR semantics — an entry matches if
+# ANY tag in the query is in the entry's tags. The docstring must
+# state this so callers don't assume AND.
+# ---------------------------------------------------------------------------
+
+
+def test_tag_filter_or_semantics_documented():
+    """MEM-15: CrossGameQuery.tags field must carry a docstring
+    documenting OR semantics (entry matches if any tag is in query.tags)."""
+    from werewolf_agent.memory.schemas import CrossGameQuery
+
+    field_doc = (CrossGameQuery.__dataclass_fields__["tags"].metadata or {})  # type: ignore[attr-defined]
+    # The standard way to document dataclass fields in Python 3.10+
+    # is missing metadata support, so we read the field's repr / doc.
+    # Most dataclass field docstrings live on the class itself or on
+    # the surrounding # comment. Accept either:
+    #   - a metadata entry whose string value contains 'OR'
+    #   - a comment on the class / field that names OR
+    src = ""
+    try:
+        # Python 3.10+ ``field(...)`` does not preserve a docstring
+        # natively. We therefore allow the comment-style hint to live
+        # in the docstring of the class or in any ``help()`` output.
+        import inspect
+        src = inspect.getsource(CrossGameQuery)
+    except (OSError, TypeError):
+        pass
+    # The class docstring / source must mention "OR".
+    cls_doc = (CrossGameQuery.__doc__ or "")
+    assert ("OR" in cls_doc) or ("OR" in src) or ("or semantics" in src.lower()), (
+        f"MEM-15: CrossGameQuery.tags must document OR semantics in "
+        f"the class docstring / source. cls_doc={cls_doc!r}, src={src!r}"
+    )

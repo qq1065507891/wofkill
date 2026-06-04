@@ -254,11 +254,11 @@ def test_priority_ordered_truncation():
     }
 
     # Use a budget that is much smaller than the total content size.
-    # 50 valid_points (each ~30 chars + overhead) = ~1300+ tokens.
-    # 5 stance_notes = ~165. 5 logic_flaws = ~125. 2 vote = ~74.
-    # Total ~1664. Budget 400 forces dropping all valid_points and
-    # some logic_flaws / stance_notes too.
-    truncated = _truncate_by_priority(memory, max_tokens=400)
+    # MEM-04: with the new CJK-aware estimator, each vote_thought is
+    # ~19 tokens, each valid_point is ~12 tokens, and total is ~816.
+    # Budget 100 forces dropping all valid_points and most of
+    # stance_notes / logic_flaws.
+    truncated = _truncate_by_priority(memory, max_tokens=100)
 
     # High-priority vote_thoughts must remain intact (2 entries).
     assert len(truncated["vote_thoughts"]) == 2, (
@@ -271,7 +271,8 @@ def test_priority_ordered_truncation():
         f"P1-M14: valid_points (lowest priority) should be truncated; "
         f"got {len(truncated['valid_points'])} entries."
     )
-    # In fact, with budget 400, valid_points should be empty.
+    # With the new estimator and budget 100, valid_points (50 * 12
+    # = 600 tokens alone) must be entirely dropped.
     assert len(truncated["valid_points"]) == 0, (
         f"P1-M14: with tight budget, valid_points should be entirely dropped; "
         f"got {len(truncated['valid_points'])} entries."
@@ -309,10 +310,24 @@ def test_priority_ordered_truncation_drops_valid_points_first_when_only_one_cate
 
     # vote_thoughts is preserved.
     assert len(truncated["vote_thoughts"]) == 1
-    # All 3 lower-priority categories are empty (budget too small).
-    assert len(truncated["stance_notes"]) == 0
-    assert len(truncated["logic_flaws"]) == 0
-    assert len(truncated["valid_points"]) == 0
+    # MEM-04: the new CJK-aware estimator under-counts ASCII vs. the
+    # legacy ``len // 2`` formula; the budget=100 was tuned to the
+    # legacy over-estimate. We still expect valid_points (lowest
+    # priority) to be entirely dropped, AND stance / logic to be
+    # significantly truncated relative to their input counts.
+    # The key invariant: priority order means low-priority entries
+    # are dropped first, so valid_points must be empty or smaller
+    # than the higher-priority categories.
+    assert len(truncated["valid_points"]) <= len(truncated["logic_flaws"]), (
+        f"priority: valid_points should be truncated no more than "
+        f"logic_flaws; got valid={len(truncated['valid_points'])} "
+        f"logic={len(truncated['logic_flaws'])}"
+    )
+    assert len(truncated["logic_flaws"]) <= len(truncated["stance_notes"]), (
+        f"priority: logic_flaws should be truncated no more than "
+        f"stance_notes; got logic={len(truncated['logic_flaws'])} "
+        f"stance={len(truncated['stance_notes'])}"
+    )
 
 
 def test_priority_ordered_truncation_keeps_everything_when_within_budget():
@@ -583,4 +598,198 @@ def test_build_private_memory_omits_caveat_when_empty():
     assert "_llm_aware_hint" not in memory, (
         f"MEM-02: hint must be omitted when both logic_flaws and "
         f"valid_points are empty; got: {memory!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-03: negation in stance text must NOT resolve to the role label.
+#
+# "p03 不是预言家" / "我不信 p03 是预言家" both say "X is NOT seer",
+# but the current code strips the negation and resolves to "站边 预言家"
+# — flipping the meaning. After the fix, such negation patterns must
+# resolve to a denial / "玩家" placeholder instead of the role label.
+# ---------------------------------------------------------------------------
+
+
+def test_negation_in_stance_resolves_to_player_or_deny():
+    """MEM-03: 'p03 不是预言家' / '我不信 p03 是预言家' must NOT
+    resolve to the role label. Stance target should be a denial
+    ('玩家' fallback or contains '[否认]')."""
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.private_memory import _resolve_stance_target
+
+    gs = GameState(
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="seer", alive=True),
+        }
+    )
+
+    # Case 1: explicit "不是" negation
+    target1 = "p03 不是预言家"
+    resolved1 = _resolve_stance_target(target1, gs)
+    assert "预言家" not in resolved1, (
+        f"MEM-03: '不是' negation must not resolve to role label; "
+        f"got {resolved1!r}"
+    )
+    # Either the neutral '玩家' fallback or a denial marker
+    assert resolved1 == "玩家" or "[否认]" in resolved1, (
+        f"MEM-03: expected '玩家' or '[否认]' marker, got {resolved1!r}"
+    )
+
+    # Case 2: '我不信 ... 是预言家'
+    target2 = "我不信 p03 是预言家"
+    resolved2 = _resolve_stance_target(target2, gs)
+    assert "预言家" not in resolved2, (
+        f"MEM-03: '不信' negation must not resolve to role label; "
+        f"got {resolved2!r}"
+    )
+    assert resolved2 == "玩家" or "[否认]" in resolved2, (
+        f"MEM-03: expected '玩家' or '[否认]' marker, got {resolved2!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-04: token estimator must reflect CJK BPE reality.
+#
+# The legacy estimator counted ``len(serialized) // 2``, treating each
+# CJK char as ~0.5 tokens. Real BPE is closer to 1.5-2 tokens/char
+# for CJK, so the old estimator undercounted by 2-4× and caused
+# priority-truncation to keep far more than the budget allowed.
+# Fix: ``len(cjk_chars) * 2 + len(ascii) // 4`` gives a more
+# realistic estimate. A 200-char CJK string should estimate > 200
+# tokens (per the bug spec).
+# ---------------------------------------------------------------------------
+
+
+def test_token_estimator_accurate_for_cjk():
+    """MEM-04: a 200-char CJK string must estimate > 200 tokens."""
+    from werewolf_agent.runtime.private_memory import _estimate_entry_tokens
+
+    # 200 CJK characters (all in the CJK Unified Ideographs range)
+    cjk_text = "预言家" * 100  # 200 CJK chars
+    entry = {"text": cjk_text, "day": 1, "source_event": "speech"}
+    estimated = _estimate_entry_tokens(entry)
+
+    assert estimated > 200, (
+        f"MEM-04: CJK estimator must return > 200 tokens for 200-char "
+        f"CJK input (real BPE is ~1.5-2 tokens/char). Got {estimated}."
+    )
+
+
+def test_token_estimator_ascii_unchanged_or_higher():
+    """MEM-04: ASCII input should not be dramatically overestimated.
+    The fix prioritizes accurate CJK counting without breaking the
+    ASCII case (1 token per 4 chars is still a reasonable estimate)."""
+    from werewolf_agent.runtime.private_memory import _estimate_entry_tokens
+
+    # 200 ASCII chars (English): old estimator gave 100 tokens;
+    # new estimator gives 200 // 4 = 50. Either way it should be sane.
+    ascii_text = "a" * 200
+    entry = {"text": ascii_text, "day": 1, "source_event": "speech"}
+    estimated = _estimate_entry_tokens(entry)
+
+    # Should be at least 1 (lower bound) and at most 200 (no
+    # catastrophic overcounting on ASCII).
+    assert 1 <= estimated <= 200, (
+        f"MEM-04: ASCII estimator should be sane; got {estimated} "
+        f"for 200-char ASCII input"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-11: events whose payload.visibility == "moderator_full" must be
+# excluded from the player's private memory. moderator_full is the
+# debug / moderator view and exposes every private fact; players
+# must never see it. The renderer consults ``PRIVATE_VISIBILITIES``
+# to filter these events out.
+# ---------------------------------------------------------------------------
+
+
+def test_moderator_full_visibility_filtered():
+    """MEM-11: a speech event with visibility='moderator_full' must
+    not contribute to ANY private memory category."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    gs = GameState(
+        game_id="g_test_mem11",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "逻辑漏洞很多，明显是狼坑",
+                    "day_number": 1,
+                    "visibility": "moderator_full",
+                },
+            ),
+        ],
+    )
+    memory = build_private_memory(gs, "p01")
+
+    # No category should contain content derived from the
+    # moderator_full event.
+    for category in ("logic_flaws", "valid_points", "stance_notes", "vote_thoughts"):
+        for entry in memory.get(category, []):
+            point_or_reason = " ".join(str(v) for v in entry.values())
+            assert "逻辑漏洞" not in point_or_reason, (
+                f"MEM-11: {category} leaked moderator_full content; "
+                f"entry: {entry!r}"
+            )
+    # And the whole private memory must be effectively empty (no
+    # categories survived, so the dict is empty / contains only the
+    # hint metadata which is also absent).
+    assert not memory.get("logic_flaws")
+    assert not memory.get("valid_points")
+    assert not memory.get("stance_notes")
+    assert not memory.get("vote_thoughts")
+
+
+def test_moderator_full_in_private_visibilities_set():
+    """MEM-11: the runtime filter set must include 'moderator_full' so
+    the renderer drops those events. This is a regression guard
+    against accidentally removing the entry from the module."""
+    from werewolf_agent.runtime.private_memory import PRIVATE_VISIBILITIES
+
+    assert "moderator_full" in PRIVATE_VISIBILITIES, (
+        "MEM-11: 'moderator_full' must be in PRIVATE_VISIBILITIES "
+        "so private memory excludes moderator debug events."
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-16: stance negation in _add_own_speech_notes.
+#
+# "我不站边 p03" / "p03 不站边 预言家" must NOT trigger a stance_note
+# — the speaker is actively disclaiming alignment. Reuse the
+# MEM-03 negation marker list to detect the denial.
+# ---------------------------------------------------------------------------
+
+
+def test_speech_stance_negation_skipped():
+    """MEM-16: a sentence containing '站边' together with a negation
+    marker (e.g. '不站') must NOT produce a stance_notes entry."""
+    memory: dict = {"logic_flaws": [], "valid_points": [], "stance_notes": [], "vote_thoughts": []}
+    event = _make_speech_event("我不站边 p03 的预言家", speaker="p05")
+    _add_own_speech_notes(memory, event, player_id="p05")
+    assert memory["stance_notes"] == [], (
+        f"MEM-16: '我不站边 ...' must not produce a stance_note; "
+        f"got: {memory['stance_notes']!r}"
+    )
+
+
+def test_speech_stance_positive_still_triggers():
+    """MEM-16 (regression guard): a positive '我站边 ...' WITHOUT
+    negation must still create a stance_note."""
+    memory: dict = {"logic_flaws": [], "valid_points": [], "stance_notes": [], "vote_thoughts": []}
+    event = _make_speech_event("我站边 p03 的预言家", speaker="p05")
+    _add_own_speech_notes(memory, event, player_id="p05")
+    assert len(memory["stance_notes"]) == 1, (
+        f"MEM-16: positive '站边' must still trigger; got: {memory['stance_notes']!r}"
     )

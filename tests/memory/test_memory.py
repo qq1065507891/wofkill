@@ -83,7 +83,10 @@ class TestCognitionMatrix:
         cm.initialize(["p1", "p2"])
         cm.add_evidence("p2", "day1_voted_player_03")
         entry = cm.get("p2")
-        assert "day1_voted_player_03" in entry.key_evidence
+        # MEM-07: bare str is wrapped into an EvidenceItem whose
+        # claim equals the original string.
+        assert len(entry.key_evidence) == 1
+        assert entry.key_evidence[0].claim == "day1_voted_player_03"
 
     def test_add_open_question(self):
         cm = CognitionMatrix("p1")
@@ -102,7 +105,9 @@ class TestCognitionMatrix:
         cm2 = CognitionMatrix.from_dict(data)
         assert cm2.viewer_id == "p1"
         assert set(cm2.player_ids()) == {"p2", "p3"}
-        assert "ev1" in cm2.get("p2").key_evidence
+        # MEM-07: bare str is wrapped into an EvidenceItem.
+        assert len(cm2.get("p2").key_evidence) == 1
+        assert cm2.get("p2").key_evidence[0].claim == "ev1"
         assert "q1" in cm2.get("p3").open_questions
 
     def test_get_nonexistent(self):
@@ -862,6 +867,202 @@ class TestMemoryStore:
 
         # Reflections persist after reset
         assert store.reflections.count() == 1
+
+
+# ---------------------------------------------------------------------------
+# MEM-05: situation/text redundancy in _store_review_reflection.
+#
+# The review-reflection path used to copy the scrubbed summary into
+# BOTH ``entry.text`` AND ``entry.situation``. The two fields carried
+# the same content, doubling the per-entry storage and (with
+# _estimate_entry_tokens) the truncation cost. The fix keeps
+# ``text`` as the primary reflection body and leaves ``situation``
+# to carry only the game-context (day / role / game_id) snapshot,
+# not the summary.
+# ---------------------------------------------------------------------------
+
+
+def test_review_reflection_no_text_situation_redundancy():
+    """MEM-05: after a review, the resulting ReflectionEntry must not
+    have the same content in both ``text`` and ``situation``.
+
+    text = reflection body (summary / lessons / etc.)
+    situation = structured game context, not a summary duplicate
+    """
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    store = MemoryStore()
+    store.init_matrix("p1", ["p1", "p2"])
+    report = ReviewReport(
+        game_id="g_test_mem05",
+        player_id="p1",
+        role="seer",
+        faction_won=True,
+        summary="本局游戏的关键教训:谨慎金水,核对查验记录,不要轻信情绪化发言。",
+    )
+    store._store_review_reflection(report)
+    reflections = store.reflections_by_player("p1")
+    assert len(reflections) == 1
+    entry = reflections[0]
+    # The summary text must appear in `text`.
+    assert "谨慎金水" in entry.text
+    # And the situation field must NOT duplicate the summary.
+    assert entry.situation != entry.text, (
+        f"MEM-05: situation and text carry the same content; "
+        f"text={entry.text!r} situation={entry.situation!r}"
+    )
+    # And the situation should NOT contain the full summary body.
+    assert "谨慎金水" not in entry.situation, (
+        f"MEM-05: situation duplicates the summary body; "
+        f"situation={entry.situation!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-08: hybrid role with wolf master must be counted as wolf, not good.
+#
+# The legacy profile.update_after_game classified every non-"werewolf"
+# role as good, which silently mis-classified hybrid (who wins with
+# master's original faction). After the fix, callers pass an explicit
+# ``faction`` argument and the profile increments games_as_wolf vs
+# games_as_good accordingly.
+# ---------------------------------------------------------------------------
+
+
+def test_profile_hybrid_with_wolf_master_counted_as_wolf():
+    """MEM-08: a hybrid whose master is on the wolf team must count
+    in games_as_wolf (because hybrid wins with master's original
+    faction) and not in games_as_good."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    store = ProfileStore()
+    p = store.update_after_game(
+        "p1", role="hybrid", faction_won=True, faction="werewolf",
+    )
+    assert p.games_played == 1
+    assert p.games_as_wolf == 1, (
+        f"MEM-08: hybrid with wolf master must count as wolf; "
+        f"got games_as_wolf={p.games_as_wolf}, games_as_good={p.games_as_good}"
+    )
+    assert p.games_as_good == 0
+    assert p.wolf_wins == 1
+
+
+def test_profile_hybrid_with_good_master_counted_as_good():
+    """MEM-08: hybrid with good master counts as good, not wolf."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    store = ProfileStore()
+    p = store.update_after_game(
+        "p1", role="hybrid", faction_won=True, faction="good",
+    )
+    assert p.games_played == 1
+    assert p.games_as_good == 1
+    assert p.games_as_wolf == 0
+    assert p.good_wins == 1
+
+
+def test_profile_hybrid_with_unknown_master_does_not_double_count():
+    """MEM-08: if faction is unknown (e.g. master not yet determined),
+    the game still counts in games_played but not in either
+    games_as_wolf or games_as_good."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    store = ProfileStore()
+    p = store.update_after_game(
+        "p1", role="hybrid", faction_won=False, faction="unknown",
+    )
+    assert p.games_played == 1
+    assert p.games_as_wolf == 0
+    assert p.games_as_good == 0
+
+
+# ---------------------------------------------------------------------------
+# MEM-09: apply_deltas must log a warning when given an unknown attr key.
+# Without it, typo'd deltas (e.g. ``win_rate`` instead of ``logic``) are
+# silently dropped, and downstream code has no idea its input was
+# rejected. A single warning is enough to flag the bug.
+# ---------------------------------------------------------------------------
+
+
+def test_apply_deltas_warns_on_unknown_attr(caplog):
+    """MEM-09: unknown delta keys trigger a logger.warning."""
+    import logging
+    from werewolf_agent.memory.schemas import PlayerProfile
+
+    p = PlayerProfile(player_id="p1", logic=0.5)
+    with caplog.at_level(logging.WARNING, logger="werewolf_agent.memory.profile"):
+        p.apply_deltas({"win_rate": 0.1})  # not in the whitelist
+
+    # At least one warning recorded naming the unknown attr.
+    matching = [r for r in caplog.records if "win_rate" in r.getMessage()]
+    assert matching, (
+        f"MEM-09: apply_deltas must warn on unknown attr keys; "
+        f"got records: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-10: ProfileStore.summary is observability-only and must be
+# documented as such so future callers don't feed the aggregate into a
+# player prompt (would leak the relative skill of every other player).
+# ---------------------------------------------------------------------------
+
+
+def test_profile_summary_documented_as_observability_only():
+    """MEM-10: ProfileStore.summary's docstring must contain the word
+    'observability' to flag it as not for prompt context."""
+    from werewolf_agent.memory.profile import ProfileStore
+
+    doc = (ProfileStore.summary.__doc__ or "")
+    assert "observability" in doc.lower(), (
+        f"MEM-10: ProfileStore.summary docstring must mark this as "
+        f"observability-only; got doc={doc!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-14: lazy finalize with stale IDF / norms.
+#
+# The legacy BagOfWordsVectorIndex raised on add_text-after-finalize,
+# which forced callers to either rebuild the whole index or skip
+# late additions entirely. The post-fix behavior is to invalidate
+# the cache so the next similarity() re-finalizes correctly.
+# ---------------------------------------------------------------------------
+
+
+def test_add_text_after_finalize_invalidates():
+    """MEM-14: add_text after finalize() must not raise; it must
+    invalidate the cached IDF/norms so the next similarity() call
+    re-finalizes with the new docs included."""
+    from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+    idx = BagOfWordsVectorIndex()
+    idx.add_text("r1", "金水 轻信 冲爆")
+    idx.finalize()
+    # Sanity: cached stats are populated.
+    assert idx._finalized is True
+    assert idx._idf  # non-empty
+
+    # Add a new doc post-finalize. With MEM-14 the call must NOT
+    # raise; it must invalidate the cache.
+    idx.add_text("r2", "站边 票型 预言家")
+
+    # The index is no longer "finalized" — next similarity() will
+    # re-finalize. The cached _idf is empty until that happens.
+    assert idx._finalized is False
+    assert idx._idf == {}
+    assert idx._norms == {}
+
+    # Calling similarity() now re-finalizes and surfaces the new
+    # doc in the results. The query "站边 预言家" should rank r2
+    # above r1 (r2 has both terms, r1 has neither).
+    scores = idx.similarity("站边 预言家")
+    assert "r2" in scores and "r1" in scores
+    assert scores["r2"] > scores["r1"], (
+        f"MEM-14: post-finalize add_text must be reflected in "
+        f"similarity scores; got r1={scores['r1']} r2={scores['r2']}"
+    )
 
 
 # ---------------------------------------------------------------------------
