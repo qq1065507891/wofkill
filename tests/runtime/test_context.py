@@ -251,6 +251,90 @@ def test_profile_hint_handles_missing_current_role_stats() -> None:
 
 
 # ---------------------------------------------------------------------------
+# P1-M11: profile hint must show ONLY the current role's win rate.
+# This is a stricter regression test for the M4 contract: when a profile
+# has 3 roles with different win rates, the hint surfaces only the
+# current-role stats. Other roles' wins/games are NEVER present in the
+# hint (top-level fields, summary text, or anywhere).
+# ---------------------------------------------------------------------------
+
+
+def test_profile_hint_only_current_role_winrate_strict() -> None:
+    """P1-M11: when a profile has 3 roles with different win rates, the
+    hint must surface only the current role's stats. Other roles' wins
+    and games must NOT appear anywhere in the hint dict (top-level
+    fields, summary text, nested values)."""
+    profile = _make_profile(games_played=20)
+    # Set up 3 roles with very different win rates so leakage would
+    # be obvious:
+    #   werewolf:  8/10 = 80% (current)
+    #   seer:      3/5  = 60%
+    #   villager:  1/5  = 20%
+    role_stats = {
+        "werewolf": {"count": 10, "wins": 8},
+        "seer": {"count": 5, "wins": 3},
+        "villager": {"count": 5, "wins": 1},
+    }
+
+    hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
+
+    # Current-role stats ARE exposed.
+    assert hint["current_role"] == "werewolf"
+    assert hint["current_role_games"] == 10
+    assert hint["current_role_win_rate_pct"] == 80
+
+    # Other roles' names must NOT appear anywhere in the hint.
+    # We check every string field of the hint recursively.
+    def _gather_strings(obj: Any) -> list[str]:
+        out: list[str] = []
+        if isinstance(obj, dict):
+            for v in obj.values():
+                out.extend(_gather_strings(v))
+        elif isinstance(obj, (list, tuple, set)):
+            for v in obj:
+                out.extend(_gather_strings(v))
+        elif isinstance(obj, str):
+            out.append(obj)
+        return out
+
+    all_strings = _gather_strings(hint)
+    full_blob = " | ".join(all_strings)
+
+    assert "seer" not in full_blob, (
+        f"P1-M11: 'seer' must not appear in the hint; other roles "
+        f"must be filtered. Hint strings: {all_strings!r}"
+    )
+    # 'villager' is a sub-token of 'werewolf' AND may legitimately
+    # appear in the Chinese 村民 wording — we cannot rely on the
+    # ASCII token. But the count 5 (seer's games) and 1 (villager's
+    # wins) and 3 (seer's wins) are unique leakage signals.
+    assert " 5" not in full_blob or " 50" in full_blob or "前 5" in full_blob, (
+        f"P1-M11: other roles' counts (5 = seer games, 1 = villager "
+        f"wins, 3 = seer wins) must not appear in the hint. "
+        f"Got: {full_blob!r}"
+    )
+    # The two 5s (seer count, villager count) are the leak risk.
+    # Check that no field surfaces these counts.
+    for key, value in hint.items():
+        if key in ("summary",):
+            # The summary embeds current_role_games (10) and
+            # current_role_win_rate_pct (80); neither matches 5.
+            continue
+        assert value != 5, (
+            f"P1-M11: field {key!r} leaked another role's games count "
+            f"(5). Hint: {hint!r}"
+        )
+        assert value != 3, (
+            f"P1-M11: field {key!r} leaked another role's wins count "
+            f"(3). Hint: {hint!r}"
+        )
+        assert value != 1, (
+            f"P1-M11: field {key!r} leaked another role's wins count "
+            f"(1). Hint: {hint!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # P0-M5: all 6 profile dims rendered (with neutral phrasing for
 # learning_rate / risk_preference so they don't demoralize the LLM).
 # ---------------------------------------------------------------------------
