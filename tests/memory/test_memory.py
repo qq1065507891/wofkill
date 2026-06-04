@@ -553,6 +553,72 @@ class TestProfileStore:
         assert top[0].player_id == "p1"
         assert top[1].player_id == "p3"
 
+    def test_top_by_stable_order(self):
+        """MEM-17: when multiple profiles share the same attribute value,
+        ``top_by`` must produce a stable, player_id-keyed ordering across
+        repeated calls AND independent of dict insertion order.
+
+        Without the secondary ``player_id`` tie-breaker, the result
+        depends on the order profiles were first added to the store —
+        which is unstable for entries hydrated from a database (rows may
+        come back in any order) or for code paths that ``get_or_create``
+        different players in different sequences.
+
+        The fix sorts by ``(attribute, player_id)`` so the result is
+        deterministic regardless of insertion order.
+        """
+        from werewolf_agent.memory.profile import ProfileStore
+
+        # Build a store with NON-alphabetical insertion order so the
+        # ``player_id`` tie-breaker actually has to fire. All three
+        # profiles share the same logic value, so the order MUST come
+        # from player_id alone.
+        store = ProfileStore()
+        # Insert in reverse-alphabetical order: p3, then p2, then p1.
+        for pid in ("p3", "p2", "p1"):
+            store.get_or_create(pid).logic = 0.5
+
+        first = store.top_by("logic", limit=10)
+        second = store.top_by("logic", limit=10)
+
+        ids_first = [p.player_id for p in first]
+        ids_second = [p.player_id for p in second]
+
+        # Stable across repeated calls.
+        assert ids_first == ids_second, (
+            f"MEM-17: top_by must be stable across calls; "
+            f"got first={ids_first} second={ids_second}"
+        )
+        # And the order is the alphabetical (player_id) order, not
+        # the insertion order. Insertion was p3→p2→p1; result must
+        # be p1→p2→p3 because the secondary key is player_id.
+        assert ids_first == ["p1", "p2", "p3"], (
+            f"MEM-17: with tied attribute, top_by must sort by "
+            f"player_id as secondary key; got {ids_first} (insertion "
+            f"order was p3, p2, p1)"
+        )
+
+    def test_top_by_stable_order_with_tied_pair(self):
+        """MEM-17: when a top value is unique and the rest tie, the
+        top still wins and the tied remainder is player_id-ordered."""
+        from werewolf_agent.memory.profile import ProfileStore
+
+        store = ProfileStore()
+        # Insert p3 first, then p1 (winner), then p2 — p2 and p3
+        # are tied at 0.5, p1 is uniquely highest.
+        for pid in ("p3", "p1", "p2"):
+            store.get_or_create(pid).logic = 0.5
+        store.get_or_create("p1").logic = 0.9
+
+        result = store.top_by("logic", limit=10)
+        ids = [p.player_id for p in result]
+        # p1 is the unique top; p2 and p3 tie and the tie-breaker
+        # by player_id puts p2 first.
+        assert ids == ["p1", "p2", "p3"], (
+            f"MEM-17: unique top + tied remainder must be player_id "
+            f"ordered on the tie; got {ids}"
+        )
+
     def test_summary_empty(self):
         store = ProfileStore()
         s = store.summary()
