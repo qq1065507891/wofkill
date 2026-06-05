@@ -397,13 +397,65 @@ def test_apply_death_records_required_death_fields() -> None:
         state,
         Death(player_id="v1", reason="wolf_kill", timing="night", resolution_batch="night_1"),
     )
-
     death = new_state.deaths[-1]
     assert death.can_leave_last_words is True
     assert death.triggered_skills == []
     event = new_state.events[-1]
     assert event.payload["can_leave_last_words"] is True
     assert event.payload["triggered_skills"] == []
+
+
+def test_witch_poison_on_revealed_idiot_is_noop() -> None:
+    """Design doc §3.4: a revealed idiot stays alive even when targeted by
+    witch poison. apply_death must record the attempt as a noop (only emit
+    a player_died event for audit) but must not flip alive to False.
+
+    The revealed idiot is only ever killed by a later wolf_kill.
+    """
+    engine = make_engine()
+    state = make_state(revealed_idiot=True)
+
+    new_state = engine.apply_death(
+        state,
+        Death(
+            player_id="idiot",
+            reason="witch_poison",
+            timing="night",
+            resolution_batch="night_1",
+        ),
+    )
+
+    assert new_state.players["idiot"].alive is True, (
+        "Revealed idiot must stay alive when poisoned by witch"
+    )
+    # The death event is still recorded for audit, but the player keeps living
+    assert any(
+        event.type == "player_died"
+        and event.payload.get("player_id") == "idiot"
+        and event.payload.get("reason") == "witch_poison"
+        for event in new_state.events
+    ), "Poison attempt on revealed idiot should still be recorded as event"
+
+
+def test_wolf_kill_on_revealed_idiot_kills() -> None:
+    """Counterpart test: revealed idiot is killed by wolf_kill (later
+    night). Confirms the noop logic only suppresses non-wolf_kill reasons."""
+    engine = make_engine()
+    state = make_state(revealed_idiot=True)
+
+    new_state = engine.apply_death(
+        state,
+        Death(
+            player_id="idiot",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_2",
+        ),
+    )
+
+    assert new_state.players["idiot"].alive is False, (
+        "Revealed idiot must die when killed by wolves (later night)"
+    )
 
 
 def test_tearing_badge_removes_sheriff_for_rest_of_game() -> None:
