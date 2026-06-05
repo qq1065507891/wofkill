@@ -799,6 +799,34 @@ class TestLocalContextBuilder:
         )
         assert ctx.visible_world_state.get("master_id") == "p05"
 
+    def test_hybrid_wolf_master_receives_deep_hook(self):
+        """Hybrid whose master is a werewolf must default to deep_hook strategy.
+
+        Without wiring `faction_goal` from context.py to strategy.select,
+        the hybrid's base role default (survive_lay_low) wins regardless of
+        the master's faction. This is the COG-3-02 bug.
+        """
+        builder = self._make_builder()
+        state = GameState(
+            players={
+                "p12": PlayerState(id="p12", role="hybrid"),
+                "p01": PlayerState(id="p01", role="werewolf"),
+            },
+            hybrid_master_id="p01",
+            hybrid_master_faction="werewolf",
+            day_number=1, night_number=1,
+        )
+        ctx, _ = builder.build(
+            game_state=state,
+            viewer_id="p12",
+            viewer_role="hybrid",
+            task_type=TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=[],
+        )
+        # Hybrid with wolf master must use deep_hook, not survive_lay_low
+        assert ctx.strategy_directive["package"] == "deep_hook"
+
     def test_seer_sees_check_results(self):
         builder = self._make_builder()
         state = _make_state()
