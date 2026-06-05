@@ -1258,6 +1258,41 @@ def test_vector_similarity_cache_distinct_queries():
 
 
 # ---------------------------------------------------------------------------
+# MEM-NEW-4: _TOKEN_RE must cover CJK Extension A and CJK Compatibility
+# Ideographs, not just the CJK Unified Ideographs block.
+#
+# The pre-fix regex was ``[一-鿿]`` (U+4E00-9FFF). That missed
+#   - CJK Extension A (U+3400-4DBF) — common in older / less-frequent
+#     characters
+#   - CJK Compatibility Ideographs (U+F900-FAFF) — used for round-trip
+#     with older encodings
+#
+# This silently broke reflection recall: a reflection containing a
+# rare / compatibility CJK character was tokenized into zero CJK
+# tokens, so the cosine similarity collapsed to 0 and the reflection
+# never surfaced as a candidate.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_tokenize_cjk_extension_a():
+    """MEM-NEW-4: a string containing a CJK Extension A character
+    (U+3400-4DBF) must produce a non-empty token list. Pre-fix the
+    regex ``[一-鿿]`` skipped the entire U+3400-4DBF range, so the
+    character was lost and reflection recall collapsed to 0.
+    """
+    from werewolf_agent.memory.vector_index import _tokenize
+
+    # U+3400 = first CJK Extension A char (renders as 㐀)
+    ext_a_char = "㐀"
+    text = f"包含扩展甲字{ext_a_char}的文本"
+    tokens = _tokenize(text)
+    assert ext_a_char in tokens, (
+        f"MEM-NEW-4: _tokenize must tokenize CJK Extension A (U+3400-4DBF); "
+        f"got tokens={tokens!r} for text={text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # MEM-22: generate_reviews_for_game must log a warning when
 # ground_truth is missing entries for some player_ids. The legacy
 # behavior was a silent skip via ``roles.get(pid, "unknown")`` — the

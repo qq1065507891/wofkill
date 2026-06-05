@@ -22,7 +22,16 @@ from typing import Any, Iterable
 # Chinese + Latin word boundary. ASCII letters and digits are kept as
 # tokens; CJK runs are split per character (a pragmatic choice for a
 # bag-of-words index without jieba/word-segmenter deps).
-_TOKEN_RE = re.compile(r"[A-Za-z]+|[一-鿿]")
+#
+# MEM-NEW-4: the regex must cover THREE CJK blocks, not just the
+# Unified Ideographs block. The pre-fix ``[一-鿿]`` (U+4E00-9FFF)
+# silently dropped CJK Extension A (U+3400-4DBF) and CJK
+# Compatibility Ideographs (U+F900-FAFF) — both are real characters
+# in Chinese text (older / less-frequent hanzi, and round-trip
+# compatibility mappings). A reflection containing one of those
+# characters was tokenized into zero CJK tokens and the cosine
+# similarity collapsed to 0.
+_TOKEN_RE = re.compile(r"[A-Za-z]+|[㐀-䶿一-鿿豈-﫿]")
 
 
 def _tokenize(text: str) -> list[str]:
