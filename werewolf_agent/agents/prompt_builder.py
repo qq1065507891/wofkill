@@ -450,12 +450,18 @@ class PlayerPromptBuilder:
             # 可选 drops first (priority 0), 辅助 drops second (priority 1).
             tier = 0 if label == "【可选】" else 1
             droppable.append((tier, idx))
-        # Sort by tier first, then keep original order within a tier.
+        # Sort by tier first, then keep original order within a tier
+        # (stable sort). Note: this means within a tier, sections
+        # earlier in the parts list (e.g. persona, phase_context)
+        # are dropped before later ones (e.g. retry_hint, output
+        # contract). That's the opposite of "drop from the end"
+        # but it's deterministic and predictable.
         droppable.sort(key=lambda x: x[0])
         drop_indices = {idx for _, idx in droppable}
-        # Drop from the lowest tier first; within a tier, drop from
-        # the end (most recently added sections are most often the
-        # largest by payload).
+        # Walk droppable in stable tier+order; drop each section
+        # whose label is in the matching tier, until the budget
+        # is satisfied or droppable is exhausted. The 硬约束
+        # filter is applied up-front so they never appear here.
         for tier, idx in droppable:
             if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
                 break
