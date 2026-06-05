@@ -792,3 +792,68 @@ def test_wolf_pit_seer_check_skips_dead_players() -> None:
         f"Sanity: alive p09 (good check) must be in exclude list. "
         f"Got prompt: {text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S19-D: find_power skips dead players.
+# ---------------------------------------------------------------------------
+
+
+def test_find_power_skips_dead_players() -> None:
+    """NEW-S19-D: find_power iterates bs.beliefs.items() without
+    checking `gs.players[pid].alive`. A dead player with high
+    role probability (e.g. a real seer who was just wolf-killed) would
+    be added to candidates. Their prompt then names a dead player as
+    a power-role holder, which:
+    (a) is misleading (they can't act on the info),
+    (b) triggers the S-19 illegal-target filter downstream.
+    Add an alive check that mirrors the wolf_pit belief-state loop.
+    """
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.world_state import build_world_state
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12 players, p03 = seer (dead), p07 = seer (alive).
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    players["p03"] = PlayerState(id="p03", role="seer", alive=False)  # dead seer
+    players["p07"] = PlayerState(id="p07", role="seer", alive=True)   # alive seer
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = build_world_state(gs)
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p05")
+    bs = BeliefUpdater().update(bs, ws.facts, gs.day_number)
+    # Manually set high seer probability for the dead p03.
+    bs.beliefs["p03"].role_probabilities = {"seer": 0.9, "werewolf": 0.05, "villager": 0.05}
+    # And high seer probability for the alive p07.
+    bs.beliefs["p07"].role_probabilities = {"seer": 0.9, "werewolf": 0.05, "villager": 0.05}
+
+    inp = SkillInput(
+        role="villager", phase="speech", day=2,
+        game_state=gs, world_state=ws, belief_state=bs,
+        contradiction_alerts=[], player_id="p05",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.FIND_POWER, inp)
+    text = out.prompt_injectable
+    # NEW-S19-D: dead p03 must NOT appear in the candidate list.
+    # The candidate line uses "p03 大概率是 seer" style.
+    assert "p03" not in text, (
+        f"NEW-S19-D: dead p03 must NOT appear in find_power "
+        f"candidates. Got prompt: {text!r}"
+    )
+    # Sanity: alive p07 IS in the candidates.
+    assert "p07" in text, (
+        f"Sanity: alive p07 (high seer prob) must be in candidates. "
+        f"Got prompt: {text!r}"
+    )

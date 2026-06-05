@@ -870,6 +870,13 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
     if bs is not None:
         for pid, belief in bs.beliefs.items():
+            # NEW-S19-D: skip dead players. A dead player with high
+            # role probability would land in candidates and trip the
+            # S-19 filter downstream. Mirror the wolf_pit belief-state
+            # loop's alive guard.
+            player = gs.players.get(pid)
+            if not player or not player.alive:
+                continue
             for role, prob in belief.role_probabilities.items():
                 if role in power_roles and prob > 0.3:
                     candidates.append({
