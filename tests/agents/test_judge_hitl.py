@@ -6,6 +6,7 @@ event sourcing, integration with GameRunner.
 
 from __future__ import annotations
 
+import threading
 import time
 
 from werewolf_agent.core.models import GameState, GameEvent, PlayerState
@@ -167,6 +168,33 @@ class TestJudgeHITLInterface:
         for cmd in ("pause", "resume", "inspect", "show_phase", "show_alive",
                      "show_roles", "status"):
             assert cmd in result["response"], f"'{cmd}' missing from help"
+
+    # ------------------------------------------------------------------
+    # J-6: send_command must signal a threading.Event
+    # ------------------------------------------------------------------
+
+    def test_send_command_signals_event(self):
+        """J-6: send_command must set the threading.Event so any thread
+        blocked in wait_for_human can be woken up.
+
+        The old design used a bare ``self._pending_command`` flag, which
+        had no way to wake a thread that was already blocked in
+        ``wait_for_human``. Using ``threading.Event`` provides a proper
+        signal primitive: the waiter calls ``event.wait()`` and the
+        setter calls ``event.set()``.
+        """
+        hitl = JudgeHITLInterface()
+        # New field must exist
+        assert hasattr(hitl, "_command_event"), \
+            "JudgeHITLInterface must expose a _command_event threading.Event"
+        assert isinstance(hitl._command_event, threading.Event), \
+            f"_command_event must be a threading.Event, got {type(hitl._command_event)}"
+        # Initially the event is clear
+        assert not hitl._command_event.is_set()
+        # send_command must set the event
+        hitl.send_command("show_phase")
+        assert hitl._command_event.is_set(), \
+            "send_command must set the threading.Event"
 
 
 class TestHITLGameRunnerIntegration:

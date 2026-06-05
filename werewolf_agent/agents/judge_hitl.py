@@ -9,6 +9,7 @@ for full audit trail and replay compatibility.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -104,6 +105,9 @@ class JudgeHITLInterface:
         self._pause_timeout = pause_timeout
         self._pending_command: HITLCommand | None = None
         self._pause_started: float = 0.0
+        # J-6: threading.Event used as a signal primitive so any thread
+        # blocked in wait_for_human() can be woken up by send_command().
+        self._command_event: threading.Event = threading.Event()
         # Step counter for "resume N" command
         self._steps_to_run: int = 0
         self._events: list[GameEvent] = []
@@ -178,8 +182,13 @@ class JudgeHITLInterface:
         return None  # Would block in interactive mode
 
     def send_command(self, raw: str) -> None:
-        """Queue a command from an external source (API, CLI, dashboard)."""
+        """Queue a command from an external source (API, CLI, dashboard).
+
+        J-6: also signals the threading.Event so any thread blocked in
+        wait_for_human() wakes immediately.
+        """
         self._pending_command = HITLCommand.parse(raw)
+        self._command_event.set()
 
     def pause(self, by_user: bool = True) -> None:
         """Pause execution at the next checkpoint."""
