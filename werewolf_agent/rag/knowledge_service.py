@@ -86,9 +86,15 @@ class RAGKnowledgeService:
             scored = self._vector_candidates(query, entries)
             candidate_entries = [entry for _, entry in scored]
             # Build the entry_id → score map for the retriever's merge
-            # step. Entries that came from the metadata fallback path
-            # carry score 0.0; the merge math treats them as "no
-            # vector signal" and uses pure rule-based ranking.
+            # step. N6: the original docstring claimed "entries from
+            # the metadata fallback path carry score 0.0" but after R2
+            # the ``if score > 0.0`` filter drops those entries from
+            # the merge map entirely — the fallback path is therefore
+            # treated as "no vector signal" by the retriever (which
+            # then uses pure rule-based ranking for them). The filter
+            # is intentional: keeping fallback entries in the map
+            # with a 0.0 score would pull their merged relevance down
+            # for no semantic reason.
             vector_scores = {
                 entry.entry_id: score for score, entry in scored if score > 0.0
             }
