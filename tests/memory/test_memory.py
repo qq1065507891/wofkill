@@ -644,6 +644,47 @@ class TestReviewGenerator:
         cm.initialize([viewer_id, "p2", "p3", "p4"])
         return cm
 
+    # MEM-NEW-12: the variable holding the top role's probability in
+    # ``_evaluate_judgments`` used to be called ``confidence``, which
+    # invited the wrong reading (``confidence=0.5`` reads like
+    # "I'm 50% confident in this judgment", not "the top role got
+    # 50% of the probability mass"). The fix renames it ``best_prob``.
+    # Pin the contract with a docstring test.
+    def test_top_role_guess_variable_named_best_prob(self):
+        """MEM-NEW-12: the source of ``_evaluate_judgments`` must use
+        ``best_prob`` (not ``confidence``) for the top role's
+        probability mass. Pin the contract via static source
+        inspection — the variable is a local in a function, so a
+        runtime assertion can't see it. Only the Python identifier
+        matters; the word may still appear in a comment / docstring
+        (we use ast to filter out comments)."""
+        import ast
+        import inspect
+        import textwrap
+
+        from werewolf_agent.memory.review import ReviewGenerator
+
+        src = textwrap.dedent(inspect.getsource(ReviewGenerator._evaluate_judgments))
+        tree = ast.parse(src)
+        # Walk every Name node in the function. The new variable
+        # ``best_prob`` must appear; the old ``confidence`` must NOT
+        # be referenced as a name (only in comments / docstrings,
+        # which ast ignores by design).
+        names = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name)
+        }
+        assert "best_prob" in names, (
+            f"MEM-NEW-12: _evaluate_judgments must bind ``best_prob`` "
+            f"to the top role's probability; names found: {names!r}"
+        )
+        assert "confidence" not in names, (
+            f"MEM-NEW-12: the misleading ``confidence`` identifier "
+            f"must be replaced with ``best_prob``; names found: "
+            f"{names!r}"
+        )
+
     def test_basic_review(self):
         gen = ReviewGenerator()
         report = gen.generate(
