@@ -30,6 +30,8 @@ def _create_and_start_game(client: TestClient) -> str:
         "player_count": 12,
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "seed": 99,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     assert resp.status_code == 200
     game_id = resp.json()["game"]["game_id"]
@@ -146,13 +148,17 @@ class TestDashboardPermissions:
 
 class TestDashboardAPI:
     def test_list_games_returns_dict(self, client: TestClient) -> None:
-        resp = client.get("/games")
+        resp = client.get(
+            "/games", params={"caller_id": "mod1", "caller_role": "moderator"}
+        )
         assert resp.status_code == 200
         assert isinstance(resp.json(), dict) and "game_ids" in resp.json()
 
     def test_game_list_after_create(self, client: TestClient) -> None:
         game_id = _create_and_start_game(client)
-        resp = client.get("/games")
+        resp = client.get(
+            "/games", params={"caller_id": "mod1", "caller_role": "moderator"}
+        )
         games = resp.json()
         assert len(games["game_ids"]) >= 1
         assert game_id in games["game_ids"]

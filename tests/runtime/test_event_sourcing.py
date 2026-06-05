@@ -96,13 +96,13 @@ class TestPauseResumeEventSourcing:
         app = create_app()
         client = TestClient(app)
         # Create and start game
-        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed"})
+        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         game_id = r.json()["game"]["game_id"]
-        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         # Pause
-        r = client.post(f"/games/{game_id}/pause", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/pause", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         # Check that game_paused event exists in the game's events
         r = client.get(f"/games/{game_id}/timeline", params={
@@ -118,14 +118,14 @@ class TestPauseResumeEventSourcing:
         from fastapi.testclient import TestClient
         app = create_app()
         client = TestClient(app)
-        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed"})
+        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         game_id = r.json()["game"]["game_id"]
-        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
-        r = client.post(f"/games/{game_id}/pause", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/pause", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
-        r = client.post(f"/games/{game_id}/resume", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/resume", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         r = client.get(f"/games/{game_id}/timeline", params={
             "caller_id": "mod1", "caller_role": "moderator", "view_mode": "moderator_full",
@@ -186,10 +186,10 @@ class TestStartGameEventSourcing:
         from fastapi.testclient import TestClient
         app = create_app()
         client = TestClient(app)
-        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed"})
+        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         game_id = r.json()["game"]["game_id"]
-        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         # Check event in timeline
         r = client.get(f"/games/{game_id}/timeline", params={
@@ -205,9 +205,9 @@ class TestStartGameEventSourcing:
         from fastapi.testclient import TestClient
         app = create_app()
         client = TestClient(app)
-        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed"})
+        r = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "caller_id": "mod1", "caller_role": "moderator"})
         game_id = r.json()["game"]["game_id"]
-        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         r = client.get(f"/games/{game_id}/public-state")
         assert r.status_code == 200

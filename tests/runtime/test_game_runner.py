@@ -475,11 +475,13 @@ class TestGameRunnerStartGameEndpoint:
         r = client.post("/games", json={
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
             "seed": 42,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         assert r.status_code == 200
         game_id = r.json()["game"]["game_id"]
         # Start game
-        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         # Verify 12 players and roles assigned via RuleEngine
         r = client.get(f"/games/{game_id}/public-state")
@@ -498,16 +500,20 @@ class TestGameRunnerStartGameEndpoint:
         r1 = client.post("/games", json={
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
             "seed": 42,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         game_id_1 = r1.json()["game"]["game_id"]
         r2 = client.post("/games", json={
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
             "seed": 42,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         game_id_2 = r2.json()["game"]["game_id"]
         # Start both
-        client.post(f"/games/{game_id_1}/start", json={"caller_id": "mod1"})
-        client.post(f"/games/{game_id_2}/start", json={"caller_id": "mod1"})
+        client.post(f"/games/{game_id_1}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
+        client.post(f"/games/{game_id_2}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         # Both should have the same player IDs (deterministic from seed)
         s1 = client.get(f"/games/{game_id_1}/public-state").json()
         s2 = client.get(f"/games/{game_id_2}/public-state").json()
@@ -524,12 +530,14 @@ class TestGameRunnerStartGameEndpoint:
         r = client.post("/games", json={
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
             "seed": 42,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         game_id = r.json()["game"]["game_id"]
-        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         # Step the game
-        r = client.post(f"/games/{game_id}/step", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/step", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         assert r.json().get("success") is True
 
@@ -542,11 +550,13 @@ class TestGameRunnerStartGameEndpoint:
         r = client.post("/games", json={
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
             "seed": 42,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         game_id = r.json()["game"]["game_id"]
-        client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+        client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
         # Step
-        r = client.post(f"/games/{game_id}/step", json={"caller_id": "mod1"})
+        r = client.post(f"/games/{game_id}/step", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert r.status_code == 200
         data = r.json()
         assert "step_count" in data or "success" in data
@@ -561,13 +571,15 @@ class TestGameRunnerStartGameEndpoint:
         r = client.post("/games", json={
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
             "seed": 42,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         game_id = r.json()["game"]["game_id"]
-        client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
-        pause = client.post(f"/games/{game_id}/pause", json={"caller_id": "mod1"})
+        client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
+        pause = client.post(f"/games/{game_id}/pause", json={"caller_id": "mod1", "caller_role": "moderator"})
         assert pause.status_code == 200
 
-        step = client.post(f"/games/{game_id}/step", json={"caller_id": "mod1"})
+        step = client.post(f"/games/{game_id}/step", json={"caller_id": "mod1", "caller_role": "moderator"})
 
         assert step.status_code == 400
         assert "paused" in step.json()["detail"].lower()
