@@ -720,6 +720,68 @@ def agent_wolf_discussion(
     return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
 
 
+def agent_defense_speech(
+    state: dict[str, Any],
+    engine: RuleEngine,
+    registry: AgentRegistry,
+    speaker_id: str,
+) -> dict[str, Any] | None:
+    """D-8: handler for TaskType.DEFENSE_SPEECH.
+
+    The defense-speech slot fires when a candidate is accused and gets
+    the floor to defend themselves before the room votes.  Pre-fix the
+    ``DEFENSE_SPEECH`` task type was registered in the schema and
+    referenced in the RAG mapping, but no adapter handler existed —
+    any node that tried to delegate defense speeches would crash or
+    silently fall through to the scripted fallback.
+
+    This handler delegates to the same machinery as ``agent_day_speech``
+    (a public speech is a public speech) but tags the strategy
+    directive with a ``defense_context`` block so the model knows it's
+    on the spot, not just discussing freely.
+    """
+    gs: GameState = state["game_state"]
+    agent = registry.get_agent(speaker_id)
+    if agent is None:
+        return None
+
+    context = build_agent_context(
+        engine, gs, speaker_id, TaskType.DEFENSE_SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
+        discussion_positions=state.get("discussion_positions"),
+    )
+
+    strategy_directive = context.strategy_directive or {}
+    strategy_directive["defense_context"] = (
+        "你正处于被质疑/被指控的状态，正在做防御性发言。\n"
+        "防御性发言要点：\n"
+        "1) 直接回应针对你的具体指控——不能含糊其辞\n"
+        "2) 提供你当时发言/投票的合理解释（'我投TA是因为……'）\n"
+        "3) 如果指控是误会，提供事实证据（'我可以查我的发言记录'）\n"
+        "4) 不要泛泛地喊'我真是好人'——这没有信息量\n"
+        "5) 反问指控者的逻辑漏洞（'你为什么认为我有狼面？'）\n"
+        "6) 收尾时给出你希望被如何对待的建议（'请听我解释后再投票'）"
+    )
+
+    context = _merge_strategy_directive(context, strategy_directive)
+
+    action, retry_info = agent.act(context)
+    speech_text = getattr(action, "speech", "") or ""
+
+    # Fallback for empty defense speech
+    if not speech_text.strip():
+        speech_text = (
+            f"我是{speaker_id}，我理解大家的质疑。让我解释一下："
+            f"我当时的判断基于公开信息，可能不全面但绝不是恶意带节奏。"
+            f"请大家听完我的解释后再做决定。"
+        )
+
+    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
+
+
 def agent_day_speech(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -861,14 +923,19 @@ def agent_day_speech(
     # If a wolf (or anyone) generated a speech that violates this rule,
     # replace it with a sanitized fallback so the bad claim never reaches
     # the public timeline.
-    if player_role == "werewolf" and speech_text:
+    # D-13: the validator used to be gated on ``player_role == "werewolf"``;
+    # the rule is a domain rule (one check per night), not a wolf-specific
+    # guard, so any speech — wolf impostor, confused LLM, hybrid, etc. —
+    # must be screened.  We now run the validator on every public speech
+    # that contains seer-style claim patterns.
+    if speech_text:
         from werewolf_agent.runtime.seer_claim_validator import validate_seer_claim
 
         claim_err = validate_seer_claim(speech_text, day_number=gs.day_number)
         if claim_err:
             logger.warning(
-                "Wolf %s speech violated seer claim rule: %s — applying fallback",
-                speaker_id, claim_err,
+                "Speaker %s (role=%s) speech violated seer claim rule: %s — applying fallback",
+                speaker_id, player_role, claim_err,
             )
             alive_others = [
                 pid for pid, p in gs.players.items()
@@ -962,6 +1029,86 @@ def agent_pk_speech(
     if prior_tally:
         updated_visible = {**context.visible_world_state, "prior_vote_tally": prior_tally}
         context = context.model_copy(update={"visible_world_state": updated_visible})
+
+    # D-2: PK speech needs role-specific directives.  A tied candidate
+    # must convince the room in 60s; their argument should be anchored
+    # in the strongest role-specific evidence (seer checks, witch
+    # private info, hunter last-words, wolf team plan, etc.).
+    pk_strategy: dict[str, Any] = {
+        "pk_urgent": (
+            "你正处于PK发言阶段——平票候选人只有一次发言机会，必须在这一轮内说服足够多的人改投你。"
+            "不要再'等下一轮'，不要再'观察'，直接亮出你最强的证据或分析。"
+        ),
+    }
+    player_role = gs.players[speaker_id].role if speaker_id in gs.players else ""
+    if player_role == "werewolf":
+        # Wolves: keep cover, attack the rival, push for team target
+        pk_strategy["wolf_pk_push"] = (
+            "你是狼人，PK发言策略：\n"
+            "1) 攻击对手的发言漏洞——TA的逻辑不完整、TA的站边前后矛盾\n"
+            "2) 表现得像一个有分析能力的好人，不要替狼队说话\n"
+            "3) 如果场上有队友的推人目标，借机把票型引导到目标玩家"
+        )
+    elif player_role == "seer":
+        # Seer: anchor in check results
+        try:
+            check_results = []
+            for e in gs.events:
+                if e.type == "seer_check":
+                    check_results.append({
+                        "target": e.payload["target_id"],
+                        "alignment": e.payload["alignment"],
+                        "night": e.payload["night_number"],
+                    })
+            if check_results:
+                pk_strategy["seer_pk_check_evidence"] = (
+                    f"你是预言家，PK发言必须以你的查验结果为核心："
+                    f"你已获得 {len(check_results)} 个查验结果。"
+                    "在PK中直接报出最关键的一个查杀或金水，"
+                    "告诉所有人'信我，我查了[玩家]是[好人/狼人]'，"
+                    "让对跳预言家或你的对手无法在60秒内反驳。"
+                )
+        except Exception:
+            logger.debug("Failed to build seer PK check evidence", exc_info=True)
+    elif player_role == "witch":
+        pk_strategy["witch_pk_evidence"] = (
+            "你是女巫，PK发言策略：\n"
+            "1) 不要轻易透露药水状态，但你需要给出可信的分析来赢得PK\n"
+            "2) 引用场上具体的发言矛盾、票型异常来支撑你的判断\n"
+            "3) 如果你救了某人（银水），可以暗示'我手里有信息'但不要明说"
+        )
+    elif player_role == "hunter":
+        pk_strategy["hunter_pk_pressure"] = (
+            "你是猎人，PK发言策略：\n"
+            "1) 利用'我有枪'的威慑——明确说'我被放逐会开枪带走最可疑的人'\n"
+            "2) 这会给狼队压力，让他们考虑放逐你的风险\n"
+            "3) 但不要虚张声势说已经决定带谁"
+        )
+    elif player_role == "villager":
+        pk_strategy["villager_pk_logic"] = (
+            "你是普通村民，PK发言必须基于公开信息逻辑分析：\n"
+            "1) 引用场上具体的发言矛盾、票型异常、警徽流\n"
+            "2) 不要喊'我是好人'——这没有信息量\n"
+            "3) 直接分析对手为什么更像狼，列出2-3个具体证据"
+        )
+    elif player_role == "idiot":
+        pk_strategy["idiot_pk_caution"] = (
+            "你是白痴（未翻牌或已翻牌），PK发言：\n"
+            "1) 翻牌前的白痴不要暴露身份，专注逻辑分析\n"
+            "2) 翻牌后的白痴可以大胆表达观点——你已免疫放逐"
+        )
+    elif player_role == "hybrid":
+        # Hybrid PK: align with master if known
+        master_id = gs.hybrid_master_id
+        if master_id:
+            pk_strategy["hybrid_pk_master_align"] = (
+                f"你是混血儿，主人是{master_id}。"
+                "PK发言要表现得像主人的判断方向——"
+                "如果主人在场，分析与主人站边一致；"
+                "但不要每轮都跟主人保持完全一致，那会暴露关系。"
+            )
+
+    context = _merge_strategy_directive(context, pk_strategy)
 
     action, retry_info = agent.act(context)
     speech_text = getattr(action, "speech", "") or ""
@@ -1073,19 +1220,85 @@ def agent_day_vote(
             "考虑是否投别人来稀释票数\n"
             "5) 绝对不要在投票理由中暴露你的混血儿身份"
         )
+    elif voter_role == "seer":
+        # D-3: seer voters must anchor their vote in check results and
+        # surface any unreported check-kills in the vote reasoning.
+        try:
+            check_results = []
+            for e in gs.events:
+                if e.type == "seer_check":
+                    check_results.append({
+                        "target": e.payload["target_id"],
+                        "alignment": e.payload["alignment"],
+                        "night": e.payload["night_number"],
+                    })
+            wolf_checks = [c for c in check_results if c["alignment"] == "wolf"]
+            good_checks = [c for c in check_results if c["alignment"] == "good"]
+            wolf_list = "、".join(c["target"] for c in wolf_checks) or "（无）"
+            good_list = "、".join(c["target"] for c in good_checks) or "（无）"
+            strategy_directive["seer_vote_strategy"] = (
+                "你是预言家，投票策略：\n"
+                f"1) 你已查验出狼人: {wolf_list}——必须把票投给这些查杀对象中的某一个\n"
+                f"2) 你已查验出好人: {good_list}——不要投这些人\n"
+                "3) 如果场上多个人被查杀，优先投你最近查杀、警徽流计划中的下一个\n"
+                "4) 如果场上没有查杀对象，引用票型/警徽流/发言矛盾\n"
+                "5) 投票时公开重申你的查杀——这是预言家的核心职责"
+            )
+        except Exception:
+            logger.debug("Failed to build seer vote strategy", exc_info=True)
+            strategy_directive["seer_vote_strategy"] = (
+                "你是预言家，投票时以你的查验结果为核心依据。"
+            )
+    elif voter_role == "witch":
+        # D-3: witch voters have private potion info that informs
+        # the vote (saved person, poisoned person).
+        strategy_directive["witch_vote_strategy"] = (
+            "你是女巫，投票策略：\n"
+            "1) 你的解药目标（银水）是好人的强信号——给银水站台、帮其站边\n"
+            "2) 你的毒药目标如果是狼人，那一票已经定局；如果是好人，提醒自己不要把票投给无辜者\n"
+            "3) 不要在公开投票理由中提及药水使用细节（'我救了TA'/'我毒了TA'）\n"
+            "4) 但你可以引用场上其他公开信息（发言矛盾、票型）来支撑你的投票"
+        )
+    elif voter_role == "hunter":
+        # D-3: hunter voters must consider shot-after-exile implications
+        # and avoid wasting the gun on a low-value target.
+        strategy_directive["hunter_vote_strategy"] = (
+            "你是猎人，投票策略：\n"
+            "1) 投完票后可能被放逐——一旦你被放逐，你会开枪\n"
+            "2) 投票时考虑：如果我被放逐，我最想带谁？把票投给最像狼的人\n"
+            "3) 不要投给明显是好人的人——浪费你的枪\n"
+            "4) 如果你不想暴露自己，宁可弃票或跟大多数人票"
+        )
     elif voter_role in ("villager", "idiot"):
         seer_claimants = _public_seer_claimants(gs)
-        strategy_directive["villager_vote_strategy"] = (
-            "你是普通好人（无私有信息），投票策略必须基于公开信息独立判断：\n"
-            "1) 先判断预言家真假：\n"
-            "   - 单边预言家（无对跳）：可信度高，可以跟其查杀走\n"
-            f"   - 对跳预言家 {sorted(seer_claimants) if seer_claimants else '（暂无）'}："
-            "谁的验人逻辑链更完整？谁的发言有实质信息？谁在遵守警徽流？\n"
-            "2) 不要无条件跟任何人的票——先用你自己的分析判断谁更像狼\n"
-            "3) 关注票型数据：谁在保谁、谁在投谁——狼人倾向于抱团投票\n"
-            "4) 如果场上没有查杀，投发言逻辑最混乱、站边最模糊的人\n"
-            "5) 不要投自己——这没有任何价值"
-        )
+        # D-16: explicit single-seer branch when there is exactly one
+        # public claimant (no counterclaim) — villagers should
+        # default to trusting them unless evidence strongly disagrees.
+        if len(seer_claimants) == 1:
+            claimant = sorted(seer_claimants)[0]
+            strategy_directive["villager_vote_strategy"] = (
+                f"你是普通好人（无私有信息），投票策略必须基于公开信息独立判断：\n"
+                f"1) 场上只有{claimant}单边跳预言家（无对跳预言家）——"
+                "单边预言家的可信度较高，可以优先跟其查杀走\n"
+                "2) 但即使是单边预言家，也要看TA的发言是否有验人逻辑链、是否遵守警徽流\n"
+                "3) 不要无条件跟任何人的票——先用你自己的分析判断谁更像狼\n"
+                "4) 关注票型数据：谁在保谁、谁在投谁——狼人倾向于抱团投票\n"
+                "5) 如果场上没有查杀，投发言逻辑最混乱、站边最模糊的人\n"
+                "6) 不要投自己——这没有任何价值"
+            )
+        else:
+            seer_claimants = _public_seer_claimants(gs)
+            strategy_directive["villager_vote_strategy"] = (
+                "你是普通好人（无私有信息），投票策略必须基于公开信息独立判断：\n"
+                "1) 先判断预言家真假：\n"
+                "   - 单边预言家（无对跳）：可信度高，可以跟其查杀走\n"
+                f"   - 对跳预言家 {sorted(seer_claimants) if seer_claimants else '（暂无）'}："
+                "谁的验人逻辑链更完整？谁的发言有实质信息？谁在遵守警徽流？\n"
+                "2) 不要无条件跟任何人的票——先用你自己的分析判断谁更像狼\n"
+                "3) 关注票型数据：谁在保谁、谁在投谁——狼人倾向于抱团投票\n"
+                "4) 如果场上没有查杀，投发言逻辑最混乱、站边最模糊的人\n"
+                "5) 不要投自己——这没有任何价值"
+            )
 
     # Pre-compute evidence-based fallback target for structured failure
     non_self_legal = [t for t in legal_targets if t != voter_id]

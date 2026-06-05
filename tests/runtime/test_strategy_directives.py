@@ -2032,3 +2032,418 @@ class TestWitchPoisonUnifiedDirective:
             f"early game with no pressure must trigger no_pressure branch; "
             f"got: {wp['branch']!r}"
         )
+
+
+class TestPKSpeechRoleBranches:
+    """D-2: agent_pk_speech must inject role-specific directives like
+    agent_day_speech.  Pre-fix, PK had no role branching so the tied
+    candidate spoke with no role context."""
+
+    def _make_pk_state(
+        self,
+        speaker_id: str,
+        role: str,
+        extra_events: list | None = None,
+    ) -> tuple:
+        from werewolf_agent.runtime.agent_adapter import agent_pk_speech
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role if i == 1 else "villager", alive=True)
+            for i in range(1, 13)
+        }
+        players["p02"] = PlayerState(id="p02", role="werewolf", alive=True)
+        players["p03"] = PlayerState(id="p03", role="werewolf", alive=True)
+        players["p04"] = PlayerState(id="p04", role="werewolf", alive=True)
+        players["p05"] = PlayerState(id="p05", role="werewolf", alive=True)
+        players["p06"] = PlayerState(id="p06", role="seer", alive=True)
+        players["p07"] = PlayerState(id="p07", role="witch", alive=True)
+        players["p08"] = PlayerState(id="p08", role="hunter", alive=True)
+        players["p09"] = PlayerState(id="p09", role="idiot", alive=True)
+        players["p10"] = PlayerState(id="p10", role="hybrid", alive=True)
+        events = [
+            GameEvent(type="vote_resolved", payload={
+                "exiled": None, "tied": [speaker_id, "p02"], "day_number": 2,
+                "votes": [],
+            }),
+        ]
+        if extra_events:
+            events.extend(extra_events)
+        gs = GameState(
+            game_id="pk_role_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=events,
+        )
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                return (PlayerAction(action_type=ActionType.SPEECH, speech="test"), RetryInfo())
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+            def get_agent(self, player_id):
+                return self.agent if player_id == speaker_id else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": True,
+            "pk_candidates": [speaker_id, "p02"],
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        return state, engine, registry
+
+    def test_pk_speech_has_role_branches(self) -> None:
+        """agent_pk_speech must dispatch to per-role directive builders."""
+        from werewolf_agent.runtime.agent_adapter import agent_pk_speech
+
+        # Seer PK speech: must include seer_speech_directive-style hint
+        state, engine, registry = self._make_pk_state("p01", "seer")
+        agent_pk_speech(state, engine, registry, "p01")
+        ctx = registry.agent.last_context
+        # Pre-fix, the strategy_directive was empty (or lacked role keys).
+        # After fix, a seer PK candidate should receive at least one
+        # role-specific directive (e.g. seer_check_pushed or wolf-style
+        # counterclaim context).
+        assert ctx is not None
+        assert ctx.strategy_directive, "PK speech must receive a role directive"
+        # Wolf PK: should get wolf vote / push target.
+        state2, engine2, registry2 = self._make_pk_state("p02", "werewolf")
+        agent_pk_speech(state2, engine2, registry2, "p02")
+        ctx2 = registry2.agent.last_context
+        assert ctx2 is not None
+        assert ctx2.strategy_directive, "Wolf PK speech must receive a directive"
+
+    def test_pk_speech_seer_has_check_evidence_hint(self) -> None:
+        """Seer in PK must be told to anchor their case in check results."""
+        from werewolf_agent.runtime.agent_adapter import agent_pk_speech
+
+        events = [
+            GameEvent(type="seer_check", payload={
+                "seer_id": "p01", "target_id": "p02",
+                "alignment": "wolf", "night_number": 1,
+            }),
+        ]
+        state, engine, registry = self._make_pk_state(
+            "p01", "seer", extra_events=events,
+        )
+        agent_pk_speech(state, engine, registry, "p01")
+        ctx = registry.agent.last_context
+        # The seer should have a check-based hint; not the old empty SD.
+        assert ctx is not None
+        # Allow either a dedicated key or a seer-specific block.
+        sd = ctx.strategy_directive
+        assert ("seer_pk_check_evidence" in sd) or (
+            "seer_speech_directive" in sd
+        ), f"seer PK must receive a role hint; got: {sorted(sd.keys())}"
+
+    def test_pk_speech_wolf_has_push_target_hint(self) -> None:
+        """Wolf in PK must receive the wolf pk push-target hint."""
+        from werewolf_agent.runtime.agent_adapter import agent_pk_speech
+
+        state, engine, registry = self._make_pk_state("p02", "werewolf")
+        agent_pk_speech(state, engine, registry, "p02")
+        ctx = registry.agent.last_context
+        sd = ctx.strategy_directive
+        # A wolf PK should have at least a wolf_pk_push hint, or fall
+        # back to the wolf day-speech directive block.
+        assert (
+            "wolf_pk_push" in sd or "wolf_speech_directive" in sd
+        ), f"wolf PK must receive a wolf hint; got: {sorted(sd.keys())}"
+
+
+class TestVoteDirectiveBranchesByRole:
+    """D-3: agent_day_vote must dispatch to per-role vote directive builders.
+
+    Pre-fix the vote stage had branches for werewolf / hybrid / (villager,
+    idiot) but NO branches for seer / witch / hunter.  After the fix,
+    each role gets a dedicated vote strategy block.
+    """
+
+    def _make_vote_state(
+        self,
+        voter_id: str,
+        role: str,
+    ) -> tuple:
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 13)
+        }
+        players["p02"] = PlayerState(id="p02", role="werewolf", alive=True)
+        players["p03"] = PlayerState(id="p03", role="werewolf", alive=True)
+        players["p04"] = PlayerState(id="p04", role="werewolf", alive=True)
+        players["p05"] = PlayerState(id="p05", role="werewolf", alive=True)
+        players["p06"] = PlayerState(id="p06", role="seer", alive=True)
+        players["p07"] = PlayerState(id="p07", role="witch", alive=True)
+        players["p08"] = PlayerState(id="p08", role="hunter", alive=True)
+        players["p09"] = PlayerState(id="p09", role="idiot", alive=True)
+        players["p10"] = PlayerState(id="p10", role="hybrid", alive=True)
+        # Set the role for the voter
+        players[voter_id] = PlayerState(id=voter_id, role=role, alive=True)
+        gs = GameState(
+            game_id="vote_role_test",
+            players=players,
+            phase="day",
+            day_number=2,
+        )
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                return (PlayerAction(
+                    action_type=ActionType.VOTE,
+                    target_id="p02",
+                    reason="test",
+                    suspect_reason="suspect",
+                    not_voting_reason="others clean",
+                    private_reason="private",
+                ), RetryInfo())
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+            def get_agent(self, player_id):
+                return self.agent if player_id == voter_id else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        return state, engine, registry
+
+    def test_vote_directive_branches_by_role(self) -> None:
+        """Seer, witch, and hunter voters each get a role-specific vote hint."""
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+
+        for role, expected_key in [
+            ("seer", "seer_vote_strategy"),
+            ("witch", "witch_vote_strategy"),
+            ("hunter", "hunter_vote_strategy"),
+        ]:
+            voter_id = f"p06" if role == "seer" else (
+                f"p07" if role == "witch" else f"p08"
+            )
+            state, engine, registry = self._make_vote_state(voter_id, role)
+            agent_day_vote(state, engine, registry, voter_id)
+            ctx = registry.agent.last_context
+            assert ctx is not None
+            sd = ctx.strategy_directive
+            assert expected_key in sd, (
+                f"{role} voter must receive {expected_key!r} directive; "
+                f"got: {sorted(sd.keys())}"
+            )
+
+
+class TestDefenseSpeechHandler:
+    """D-8: DEFENSE_SPEECH task type must have a corresponding agent handler."""
+
+    def test_defense_speech_handler_exists(self) -> None:
+        from werewolf_agent.runtime import agent_adapter
+
+        assert hasattr(agent_adapter, "agent_defense_speech")
+        # And it's callable.
+        assert callable(getattr(agent_adapter, "agent_defense_speech"))
+
+
+class TestNightActionSpeechValidation:
+    """D-13: validate_seer_claim guardrail must apply to ALL night_action
+    speech fields, not just werewolf day speeches.
+
+    Pre-fix, the seer-claim validator was gated on ``player_role ==
+    'werewolf'``; any other role that produced a violation-prone speech
+    (e.g., a fake-Seer impostor or a confused LLM) was allowed through.
+    """
+
+    def test_night_action_speech_validated(self) -> None:
+        """Run agent_day_speech for a werewolf whose speech contains
+        multiple seer-check claims for the same night and confirm the
+        guardrail substitutes the fallback even though the role filter
+        is no longer role-restricted.
+        """
+        from werewolf_agent.runtime.agent_adapter import agent_day_speech
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 13)
+        }
+        # Use p01 as a werewolf
+        players["p01"] = PlayerState(id="p01", role="werewolf", alive=True)
+        gs = GameState(
+            game_id="night_action_validate_test",
+            players=players,
+            phase="day",
+            day_number=2,
+        )
+
+        class BadSeerAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                # Two checks in the same night — violation.
+                # The validator pattern requires "我" or "也" to anchor
+                # the claim, so we lead each clause with "我第1夜查了".
+                return (PlayerAction(
+                    action_type=ActionType.SPEECH,
+                    speech="我第1夜查了p03是狼人，我第1夜查了p05是好人",
+                    reason="test",
+                ), RetryInfo())
+
+        class BadRegistry:
+            def __init__(self):
+                self.agent = BadSeerAgent()
+            def get_agent(self, player_id):
+                return self.agent if player_id == "p01" else None
+
+        registry = BadRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        result = agent_day_speech(state, engine, registry, "p01")
+        # The guardrail must kick in and replace the speech with the
+        # sanitized fallback.
+        assert result is not None
+        assert "第1夜查了p03" not in result["speech_text"], (
+            "violating seer-claim speech must be replaced by the fallback"
+        )
+
+
+class TestSingleSeerBranch:
+    """D-16: villager_vote_strategy must include a single-seer branch when
+    only one player has publicly claimed Seer (no counterclaim)."""
+
+    def test_single_seer_branch(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 13)
+        }
+        players["p01"] = PlayerState(id="p01", role="werewolf", alive=True)
+        players["p02"] = PlayerState(id="p02", role="werewolf", alive=True)
+        players["p03"] = PlayerState(id="p03", role="werewolf", alive=True)
+        players["p04"] = PlayerState(id="p04", role="werewolf", alive=True)
+        players["p05"] = PlayerState(id="p05", role="seer", alive=True)
+        events = [
+            GameEvent(type="sheriff_speech", payload={
+                "speaker": "p05",
+                "text": "我是预言家",
+                "claims": [{"type": "role", "value": "seer"}],
+            }),
+        ]
+        gs = GameState(
+            game_id="single_seer_branch_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=events,
+        )
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                return (PlayerAction(
+                    action_type=ActionType.VOTE,
+                    target_id="p01",
+                    reason="test",
+                    suspect_reason="suspect",
+                    not_voting_reason="others clean",
+                    private_reason="private",
+                ), RetryInfo())
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+            def get_agent(self, player_id):
+                return self.agent if player_id == "p06" else None
+
+        registry = CaptureRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_day_vote(state, engine, registry, "p06")
+        ctx = registry.agent.last_context
+        vs = ctx.strategy_directive.get("villager_vote_strategy", "")
+        # Single-seer branch should mention trusting the lone claimant
+        # when no counterclaim exists.
+        assert "单边" in vs or "无对跳" in vs or "对跳" in vs, (
+            f"single-seer branch should mention seer-claimant situation; "
+            f"got: {vs!r}"
+        )
