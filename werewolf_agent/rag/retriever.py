@@ -358,13 +358,24 @@ class StrategyRetriever:
 
             # Quality minimum
             if query.quality_min:
-                # R20: route through _quality_priority so a missing
-                # entry's grade emits a WARNING instead of silently
-                # falling through to 0.
+                # R20: route the ENTRY's grade through _quality_priority
+                # so a missing entry's grade emits a WARNING instead of
+                # silently falling through to 0.
                 entry_priority = _quality_priority(
                     meta.quality_grade, entry_id=entry.entry_id,
                 )
-                if entry_priority < _QUALITY_ORDER.get(query.quality_min, 0):
+                # N2: route the QUERY's quality_min through the same
+                # helper. The old ``_QUALITY_ORDER.get(query.quality_min,
+                # 0)`` silently returned 0 for a missing grade, which
+                # made the entire filter a no-op and dropped every
+                # entry (or admitted every entry, depending on the
+                # comparison direction) with no operator-visible
+                # signal. The treat-as-lowest behavior is preserved;
+                # the warning is the new operator signal.
+                min_priority = _quality_priority(
+                    query.quality_min, entry_id=f"query:{query.quality_min.value}",
+                )
+                if entry_priority < min_priority:
                     continue
 
             # Source type filter

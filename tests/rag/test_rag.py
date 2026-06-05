@@ -1279,6 +1279,96 @@ class TestRAGInjector:
             _retriever_mod._QUALITY_ORDER.clear()
             _retriever_mod._QUALITY_ORDER.update(original)
 
+    def test_quality_min_warns_when_unregistered(self, caplog) -> None:
+        """N2: when ``RAGQuery.quality_min`` is set to a grade that the
+        retriever does not know about (e.g. someone added a new
+        ``QualityGrade`` enum value and forgot to wire its priority in
+        ``_QUALITY_ORDER``), the old code used
+        ``_QUALITY_ORDER.get(query.quality_min, 0)`` which silently
+        returned 0 — making the entire ``quality_min`` filter a no-op
+        (every entry would compare ``entry_priority < 0`` and fail,
+        dropping everything; the only operator signal was a sudden
+        zero-hits regression).
+
+        The fix mirrors R20 on the ENTRY side: route
+        ``query.quality_min`` through ``_quality_priority`` so a
+        missing grade emits a WARNING log line, then fall through to
+        the existing "treat as 0" behavior so the filter still works
+        (the call still completes with deterministic semantics).
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        # Build one entry with a known quality (so it isn't the
+        # offender on the entry side) and a query whose quality_min
+        # we will temporarily make 'unregistered'.
+        entry = RAGEntry(
+            entry_id="n2_test",
+            title="N2 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.COMMUNITY_CASE,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._QUALITY_ORDER)
+        try:
+            # Drop HIGH_RANK_GAME from the retriever's mapping so the
+            # query's quality_min=HighRankGame is "unregistered".
+            del _retriever_mod._QUALITY_ORDER[QualityGrade.HIGH_RANK_GAME]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                hits = retriever.retrieve(
+                    RAGQuery(
+                        role="seer", phase="speech",
+                        quality_min=QualityGrade.HIGH_RANK_GAME,
+                    ),
+                )
+
+            # Filter must still work (treat as 0) — the entry has
+            # COMMUNITY_CASE priority 2 which is >= 0, so it stays.
+            assert any(h.entry_id == "n2_test" for h in hits), (
+                "N2: filter must still admit entries whose priority "
+                "is >= 0 (the treat-as-lowest fallback must work)"
+            )
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+                and "high_rank_game" in r.getMessage().lower()
+            ]
+            assert warnings, (
+                "N2: retriever must emit a WARNING log line identifying "
+                "the unregistered query.quality_min. Got: "
+                f"{[r.getMessage() for r in caplog.records]}"
+            )
+        finally:
+            _retriever_mod._QUALITY_ORDER.clear()
+            _retriever_mod._QUALITY_ORDER.update(original)
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement
