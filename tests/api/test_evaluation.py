@@ -1,9 +1,13 @@
-"""Tests for the NEW-P1-7 evaluation cross-game audit leak fix.
+"""Tests for the NEW-P1-7 evaluation cross-game audit leak fix and
+NEW-P2-2 info_leak_count from denial count.
 
 The evaluation endpoint was returning the entire ``checker.audit_log()``
 which is process-wide — so audit events from game A leaked into the
 evaluation response of game B. The fix filters by the request's
 ``game_id``.
+
+Additionally, ``info_leak_count`` was hardcoded to 0 in the view layer.
+It should be computed as the number of denied audit events.
 """
 
 from __future__ import annotations
@@ -12,6 +16,9 @@ from fastapi.testclient import TestClient
 
 from werewolf_agent.api.app import create_app
 from werewolf_agent.api.auth import AuthConfig, AuthManager
+from werewolf_agent.api.schemas import ViewMode
+from werewolf_agent.api.views import build_evaluation
+from werewolf_agent.core.models import GameState, PlayerState
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 
 _TEST_SECRET = "test-secret-key-for-unit-tests-only"
@@ -72,4 +79,33 @@ def test_evaluation_filters_audit_by_game_id():
     seen_game_ids = {e.game_id for e in checker.audit_log()}
     assert g1 in seen_game_ids and g2 in seen_game_ids, (
         "test setup error: expected audit log to contain both games"
+    )
+
+
+def test_info_leak_count_uses_denial_count():
+    """info_leak_count must equal the number of denied audit events.
+
+    Tests the view function directly so we control the audit_events
+    payload. Two denials + one grant should yield info_leak_count == 2.
+    """
+    state = GameState(game_id="g_info_leak", players={
+        "p1": PlayerState(id="p1", role="villager"),
+        "p2": PlayerState(id="p2", role="seer"),
+    })
+    audit_events = [
+        {"game_id": "g_info_leak", "granted": False, "caller_id": "p1",
+         "caller_role": "player_agent", "requested_view": "moderator_full",
+         "endpoint": "replay"},
+        {"game_id": "g_info_leak", "granted": False, "caller_id": "p1",
+         "caller_role": "player_agent", "requested_view": "moderator_full",
+         "endpoint": "evaluation"},
+        {"game_id": "g_info_leak", "granted": True, "caller_id": "mod1",
+         "caller_role": "moderator", "requested_view": "moderator_full",
+         "endpoint": "replay"},
+    ]
+    response = build_evaluation(state, ViewMode.MODERATOR_FULL, audit_events=audit_events)
+    assert response.metrics is not None
+    assert response.metrics.info_leak_count == 2, (
+        f"NEW-P2-2 not fixed: expected info_leak_count=2 (denied events), "
+        f"got {response.metrics.info_leak_count}"
     )

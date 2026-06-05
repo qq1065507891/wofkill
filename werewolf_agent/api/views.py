@@ -270,6 +270,12 @@ def build_evaluation(
     view_mode: ViewMode,
     audit_events: list[dict[str, Any]] | None = None,
 ) -> EvaluationResponse:
+    events = audit_events or []
+    # NEW-P2-2: info_leak_count is the number of denied audit events.
+    # A denial is the observable signal of an attempted (or successful)
+    # info leak — the route filter guarantees these are scoped to this
+    # game.
+    info_leak_count = sum(1 for e in events if not e.get("granted", True))
     metrics = EvaluationMetrics(
         game_id=game_state.game_id,
         faction_win_rate={"good": 0.0, "wolf": 0.0},
@@ -280,8 +286,8 @@ def build_evaluation(
             }
             for pid, p in game_state.players.items()
         },
-        info_leak_count=0,
-        audit_events=audit_events or [],
+        info_leak_count=info_leak_count,
+        audit_events=events,
     )
 
     if game_state.winning_faction and game_state.winning_faction in metrics.faction_win_rate:
