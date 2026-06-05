@@ -167,7 +167,12 @@ def route_after_resolve_night(state: RuntimeState) -> str:
     if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
         return "announce_deaths_with_badge_loss"
     if _needs_sheriff_before_deaths(gs):
-        return "sheriff_first_day_entry"
+        # D1 sheriff-first: deaths must still be announced before sheriff
+        # election (design doc §day_flow). If a wolf self-destructs during
+        # the sheriff election, route_after_self_destruct ensures deaths
+        # are still published. Use the badge-loss variant because the
+        # self-destruct path may also tear the badge.
+        return "announce_deaths_with_badge_loss"
     return "announce_deaths"
 
 

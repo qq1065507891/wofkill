@@ -166,7 +166,11 @@ class TestSheriffBadgeNightDeathRouting:
         assert result == "sheriff_badge_transfer"
 
     def test_no_sheriff_death_routes_to_sheriff_election_on_night1(self) -> None:
-        """Night 1 with no sheriff death routes to sheriff election before deaths."""
+        """Night 1 with no sheriff death must announce deaths FIRST (design
+        doc §day_flow: announce_deaths -> last_words -> sheriff_election).
+        Previously this skipped the death announcement and went directly
+        to sheriff_election; that broke the D1 self-destruct path which
+        needed a published death_announce broadcast before continuing."""
         engine = _new_engine()
         players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=42)
         gs = GameState(
@@ -176,7 +180,7 @@ class TestSheriffBadgeNightDeathRouting:
             night_number=1,
         )
         result = route_after_resolve_night({"game_state": gs, "engine": engine})
-        assert result == "sheriff_first_day_entry"
+        assert result in ("announce_deaths", "announce_deaths_with_badge_loss")
 
     def test_sheriff_alive_routes_to_announce_deaths(self) -> None:
         """When sheriff is still alive, route goes to announce_deaths."""
@@ -457,3 +461,42 @@ class TestSheriffElectionPK:
             if e.type == "judge_broadcast" and e.payload.get("phase") == "sheriff_no_election"
         ]
         assert len(no_election_broadcasts) == 1
+
+
+def test_self_destruct_during_sheriff_election_announces_deaths_first() -> None:
+    """D1: when a wolf self-destructs during sheriff election, the night
+    deaths from N1 must be announced AFTER the self-destruct resolves and
+    BEFORE the game continues to the next phase. Previously the
+    resolve_self_destruct node routed directly to check_victory, skipping
+    announce_deaths entirely.
+
+    The fix: route_after_resolve_night must route to announce_deaths
+    (via the _needs_sheriff_before_deaths branch) so the N1 deaths get
+    publicly broadcast when self-destruct later interrupts sheriff election.
+    """
+    from werewolf_agent.runtime.graph import route_after_resolve_night
+
+    engine = _new_engine()
+    players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=42)
+    gs = GameState(
+        game_id="d1_self_destruct_first",
+        players=players,
+        phase="night",
+        night_number=1,
+        day_number=0,
+        sheriff_id=None,
+        sheriff_badge_state="none",
+        sheriff_interrupt_count=0,
+    )
+
+    # The route_after_resolve_night on N1 with no sheriff should NOT go
+    # to sheriff_first_day_entry (which skips death announcement). It
+    # must route to announce_deaths or announce_deaths_with_badge_loss
+    # so that if a self-destruct later interrupts sheriff election, the
+    # N1 deaths still get publicly announced.
+    result = route_after_resolve_night({"game_state": gs, "engine": engine})
+    assert result in ("announce_deaths", "announce_deaths_with_badge_loss"), (
+        f"route_after_resolve_night on N1 with no sheriff must route to "
+        f"announce_deaths[_with_badge_loss] so D1 self-destruct can publish "
+        f"N1 deaths; got {result!r}"
+    )
