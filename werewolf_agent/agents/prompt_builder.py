@@ -308,6 +308,16 @@ class PlayerPromptBuilder:
     #      to learn two priority systems in the same prompt.
     _NEVER_DROP: frozenset[str] = frozenset({
         "_build_strategy_directive",
+        # AUDIT-2-04: retry hint is the LLM's only feedback on the
+        # previous turn's failure (error_message snippet +
+        # correction_hint). Without it the LLM repeats the same
+        # mistake and burns the retry budget. Game trace
+        # g_3528592081 Action 50: p10 had 3 retries on the same
+        # parse_error before fallback. The fix promotes retry hint
+        # from 【辅助】 to 【硬约束】 so the budget trimmer never
+        # drops it. Runtime FallbackAction still enforces safety
+        # (so this is corrective guidance, not the only safety net).
+        "_build_retry_hint",
     })
     _SECTION_PRIORITIES: dict[str, str] = {
         "_build_persona": "【辅助】",
@@ -329,13 +339,15 @@ class PlayerPromptBuilder:
         "_build_strategy_directive": "【策略指令】",
         "_build_skill_analysis_hints": "【辅助】",
         "_build_recent_transcript": "【可选】",
-        # P1-9: retry hint is descriptive/advisory (correction hint
-        # text is a soft signal), not a hard rule. Only the
-        # timeout-no-op permission is a true hard constraint, and it
-        # is enforced by the runtime (FallbackAction), not by the
-        # LLM obeying the prompt. The whole section is therefore
-        # 【辅助】, not 【硬约束】.
-        "_build_retry_hint": "【辅助】",
+        # AUDIT-2-04: retry hint label is now 【硬约束】. The
+        # correction_hint + error_message are the LLM's only
+        # signal of what went wrong on the previous attempt; losing
+        # them under budget pressure makes the LLM repeat the same
+        # mistake and waste the retry budget. (P1-9 originally
+        # classified this as 【辅助】 advisory — that was a
+        # conservative call that has since been overridden by
+        # observed retry-loop behavior in g_3528592081.)
+        "_build_retry_hint": "【硬约束】",
         "_build_strict_output_contract": "【硬约束】",
         # Note: _build_task_prompt is intentionally unlabeled — the
         # task prompt is the action spec the LLM is executing.
