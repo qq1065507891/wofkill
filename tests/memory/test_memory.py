@@ -1390,6 +1390,57 @@ def test_generate_reviews_uses_hybrid_master_factions():
     assert p2_profile.games_as_good == 0
 
 
+# ---------------------------------------------------------------------------
+# MEM-NEW-6: explicit override must survive an empty-string value.
+#
+# The pre-fix `pf = (player_factions or {}).get(pid) or self._player_faction(role)`
+# used ``or`` to fall back, so an explicit ``""`` was treated as falsy
+# and silently replaced by the role-based _player_faction result.
+# Post-fix: only fall back when the key is missing; respect explicit
+# overrides (including "").
+# ---------------------------------------------------------------------------
+
+
+def test_store_override_uses_is_not_none():
+    """MEM-NEW-6: passing player_factions={pid: ""} must keep the
+    explicit "" override. Pre-fix, the ``or`` fallback swallowed
+    the empty string and silently substituted the role-based
+    _player_faction result, hiding upstream bugs that wanted to
+    force 'unknown' or a sentinel.
+
+    The clean way to observe the override surviving is to use a
+    ``winning_faction`` that ONLY matches the override value. With
+    ``winning_faction=""`` the post-fix ``pf=""`` produces
+    ``faction_won = ("") == ("") = True``; the pre-fix ``pf="good"``
+    produces ``faction_won = False``.
+    """
+    from werewolf_agent.memory.store import MemoryStore
+
+    store = MemoryStore()
+    player_ids = ["p1"]
+    roles = {"p1": "seer"}
+    ground_truth = {"p1": "seer"}
+    player_factions = {"p1": ""}  # explicit empty override
+    winning_faction = ""  # only matches the override, not "good"
+
+    reports = store.generate_reviews_for_game(
+        game_id="g_test_mem_new6",
+        player_ids=player_ids,
+        roles=roles,
+        winning_faction=winning_faction,
+        ground_truth=ground_truth,
+        player_factions=player_factions,
+    )
+    by_pid = {r.player_id: r for r in reports}
+    # Post-fix: pf is preserved as "" → faction_won is True.
+    # Pre-fix: pf clobbered to "good" → faction_won is False.
+    assert by_pid["p1"].faction_won is True, (
+        f"MEM-NEW-6: explicit \"\" override must survive the fallback; "
+        f"expected faction_won=True (pf==winning_faction=\"\"==\"\"), "
+        f"got faction_won={by_pid['p1'].faction_won}"
+    )
+
+
 class TestStructuredDataBoundary:
 
     def test_relation_events_are_queryable(self):
