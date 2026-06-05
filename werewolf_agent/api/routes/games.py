@@ -196,14 +196,22 @@ def create_game_router(
         state = _get_game(games, game_id)
         if state.paused:
             raise HTTPException(400, "Already paused")
-        event = GameEvent(type="game_paused", payload={
-            "game_id": game_id, "phase": state.phase,
-        })
-        state = replace(state, paused=True, events=state.events + [event])
-        with runners_lock:
-            if game_id in runners:
-                runners[game_id]._state = state
-        _persist(state, games, games_lock, repo)
+        # NEW-P1-4: serialize with in-flight step. try-acquire (non-blocking)
+        # to avoid hanging the API request; if a step is running, return 409.
+        lock = executor.lock_for(game_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "Game is currently executing a step; retry")
+        try:
+            event = GameEvent(type="game_paused", payload={
+                "game_id": game_id, "phase": state.phase,
+            })
+            state = replace(state, paused=True, events=state.events + [event])
+            with runners_lock:
+                if game_id in runners:
+                    runners[game_id]._state = state
+            _persist(state, games, games_lock, repo)
+        finally:
+            lock.release()
         return GameActionResponse(
             game_id=game_id, action="pause", success=True,
             message="Game paused",
@@ -215,14 +223,21 @@ def create_game_router(
         state = _get_game(games, game_id)
         if not state.paused:
             raise HTTPException(400, "Not paused")
-        event = GameEvent(type="game_resumed", payload={
-            "game_id": game_id, "phase": state.phase,
-        })
-        state = replace(state, paused=False, events=state.events + [event])
-        with runners_lock:
-            if game_id in runners:
-                runners[game_id]._state = state
-        _persist(state, games, games_lock, repo)
+        # NEW-P1-4: serialize with in-flight step (see pause_game).
+        lock = executor.lock_for(game_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "Game is currently executing a step; retry")
+        try:
+            event = GameEvent(type="game_resumed", payload={
+                "game_id": game_id, "phase": state.phase,
+            })
+            state = replace(state, paused=False, events=state.events + [event])
+            with runners_lock:
+                if game_id in runners:
+                    runners[game_id]._state = state
+            _persist(state, games, games_lock, repo)
+        finally:
+            lock.release()
         return GameActionResponse(
             game_id=game_id, action="resume", success=True,
             message="Game resumed",
