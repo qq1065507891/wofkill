@@ -35,10 +35,17 @@ def test_create_app_initializes_rag_service_from_env(monkeypatch):
 def _make_client() -> TestClient:
     app = create_app(auth_manager=_test_auth)
     client = TestClient(app)
-    # Create and start a game
-    resp = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed"})
+    # Create and start a game — game control endpoints require moderator auth
+    resp = client.post("/games", json={
+        "ruleset_id": "pre_witch_hunter_idiot_mixed",
+        "caller_id": "mod1",
+        "caller_role": "moderator",
+    })
     game_id = resp.json()["game"]["game_id"]
-    client.post(f"/games/{game_id}/start", json={})
+    client.post(
+        f"/games/{game_id}/start",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
     return client, game_id
 
 
@@ -185,32 +192,42 @@ class TestAPIEndpoints:
 
     def test_list_games(self):
         client, _ = _make_client()
-        resp = client.get("/games")
+        resp = client.get(
+            "/games?caller_id=mod1&caller_role=moderator"
+        )
         assert resp.status_code == 200
         assert len(resp.json()["game_ids"]) >= 1
 
     def test_start_game(self):
         client, game_id = _make_client()
         # Game already started in _make_client
-        resp = client.post(f"/games/{game_id}/start", json={})
+        resp = client.post(
+            f"/games/{game_id}/start",
+            json={"caller_id": "mod1", "caller_role": "moderator"},
+        )
         assert resp.status_code == 400  # Already started
 
     def test_pause_resume(self):
         client, game_id = _make_client()
-        resp = client.post(f"/games/{game_id}/pause", json={})
+        mod = {"caller_id": "mod1", "caller_role": "moderator"}
+        resp = client.post(f"/games/{game_id}/pause", json=mod)
         assert resp.status_code == 200
-        resp = client.post(f"/games/{game_id}/resume", json={})
+        resp = client.post(f"/games/{game_id}/resume", json=mod)
         assert resp.status_code == 200
 
     def test_pause_already_paused(self):
         client, game_id = _make_client()
-        client.post(f"/games/{game_id}/pause", json={})
-        resp = client.post(f"/games/{game_id}/pause", json={})
+        mod = {"caller_id": "mod1", "caller_role": "moderator"}
+        client.post(f"/games/{game_id}/pause", json=mod)
+        resp = client.post(f"/games/{game_id}/pause", json=mod)
         assert resp.status_code == 400
 
     def test_resume_not_paused(self):
         client, game_id = _make_client()
-        resp = client.post(f"/games/{game_id}/resume", json={})
+        resp = client.post(
+            f"/games/{game_id}/resume",
+            json={"caller_id": "mod1", "caller_role": "moderator"},
+        )
         assert resp.status_code == 400
 
     def test_public_state(self):

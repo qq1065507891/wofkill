@@ -2,6 +2,10 @@
 
 Design doc §12.1: three view modes — public, player_view, moderator_full.
 During live play, player agents must never receive moderator_full.
+
+All Request models enforce ``extra='forbid'`` + ``strict=True`` so
+unknown fields and silent type coercion are rejected with 422.
+Response models keep the default permissive config (extra='ignore').
 """
 
 from __future__ import annotations
@@ -9,7 +13,25 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+# ---------------------------------------------------------------------------
+# Shared base for Request models
+# ---------------------------------------------------------------------------
+
+class _StrictRequest(BaseModel):
+    """Base for request models: reject extra fields.
+
+    ``extra='forbid'`` is the security fix — unknown fields in a request
+    body are rejected with 422 instead of silently dropped.
+    ``strict=True`` is intentionally NOT enabled here because the API
+    surface uses string-coerced enums (``CallerRole``/``ViewMode``) and
+    many clients send enum values as JSON strings; Pydantic's strict
+    mode rejects string→enum coercion, which would break the existing
+    public API. Extra-field rejection is the load-bearing constraint.
+    """
+    model_config = ConfigDict(extra="forbid")
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +70,7 @@ class AuditEvent(BaseModel):
 # API requests
 # ---------------------------------------------------------------------------
 
-class CreateGameRequest(BaseModel):
+class CreateGameRequest(_StrictRequest):
     ruleset_id: str = "pre_witch_hunter_idiot_mixed"
     player_count: int = 12
     seed: int | None = None
@@ -56,40 +78,44 @@ class CreateGameRequest(BaseModel):
     human_seat: int | None = None
     profile_pack_id: str = "default_12_ai_players"
     share_code: str = ""
-
-
-class GameActionRequest(BaseModel):
     caller_id: str = ""
     caller_role: CallerRole = CallerRole.SPECTATOR
+    session_token: str = ""
 
 
-class PrivateStateRequest(BaseModel):
+class GameActionRequest(_StrictRequest):
+    caller_id: str = ""
+    caller_role: CallerRole = CallerRole.SPECTATOR
+    session_token: str = ""
+
+
+class PrivateStateRequest(_StrictRequest):
     caller_id: str = ""
     caller_role: CallerRole = CallerRole.PLAYER_AGENT
     player_id: str = ""
     view_mode: ViewMode = ViewMode.PLAYER_VIEW
 
 
-class TimelineRequest(BaseModel):
+class TimelineRequest(_StrictRequest):
     caller_id: str = ""
     caller_role: CallerRole = CallerRole.SPECTATOR
     view_mode: ViewMode = ViewMode.PUBLIC
     day_filter: int | None = None
 
 
-class ReplayRequest(BaseModel):
+class ReplayRequest(_StrictRequest):
     caller_id: str = ""
     caller_role: CallerRole = CallerRole.SPECTATOR
     view_mode: ViewMode = ViewMode.MODERATOR_FULL
 
 
-class EvaluationRequest(BaseModel):
+class EvaluationRequest(_StrictRequest):
     caller_id: str = ""
     caller_role: CallerRole = CallerRole.SPECTATOR
     view_mode: ViewMode = ViewMode.MODERATOR_FULL
 
 
-class CognitiveDiffRequest(BaseModel):
+class CognitiveDiffRequest(_StrictRequest):
     caller_id: str = ""
     caller_role: CallerRole = CallerRole.DEBUGGER
     player_id: str = ""

@@ -110,11 +110,22 @@ def test_marketplace_persona_packs_lists_default_pack() -> None:
 
 def test_share_summary_is_public_safe() -> None:
     client = TestClient(create_app())
-    created = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "seed": 717}).json()
+    created = client.post("/games", json={
+        "ruleset_id": "pre_witch_hunter_idiot_mixed",
+        "seed": 717,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
+    }).json()
     game_id = created["game"]["game_id"]
-    client.post(f"/games/{game_id}/start", json={"caller_id": "mod1"})
+    client.post(
+        f"/games/{game_id}/start",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
 
-    resp = client.get(f"/games/{game_id}/share-summary")
+    resp = client.get(
+        f"/games/{game_id}/share-summary"
+        f"?caller_id=mod1&caller_role=moderator"
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -135,7 +146,11 @@ def test_share_summary_is_public_safe() -> None:
 def test_create_game_human_seat_mode_requires_human_seat() -> None:
     client = TestClient(create_app())
 
-    resp = client.post("/games", json={"experience_mode": "human_seat"})
+    resp = client.post("/games", json={
+        "experience_mode": "human_seat",
+        "caller_id": "mod1",
+        "caller_role": "moderator",
+    })
 
     assert resp.status_code == 400
     assert "human_seat" in resp.json()["detail"]
@@ -153,6 +168,8 @@ def test_create_game_stores_locked_customization_snapshot() -> None:
             "human_seat": 3,
             "share_code": "abc123",
             "seed": 818,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         },
     )
 

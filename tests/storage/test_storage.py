@@ -573,6 +573,8 @@ class TestAppWiring:
         resp = client.post("/games", json={
             "player_count": 12,
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         assert resp.status_code == 200
         game_id = resp.json()["game"]["game_id"]
@@ -595,6 +597,8 @@ class TestAppWiring:
             "player_count": 12,
             "ruleset_id": "pre_witch_hunter_idiot_mixed",
             "seed": 1,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
         })
         game_id = resp.json()["game"]["game_id"]
 

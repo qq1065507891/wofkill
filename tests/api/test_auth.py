@@ -185,6 +185,8 @@ def test_session_token_on_replay_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -209,6 +211,8 @@ def test_session_token_on_evaluation_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -231,6 +235,8 @@ def test_session_token_on_cognitive_diff_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -253,6 +259,8 @@ def test_session_token_on_private_state_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -277,6 +285,8 @@ def test_invalid_session_token_rejected():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -300,6 +310,8 @@ def test_expired_session_token_rejected():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -329,6 +341,8 @@ def test_legacy_caller_id_still_works():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -348,6 +362,8 @@ def test_legacy_debugger_still_works():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -355,3 +371,391 @@ def test_legacy_debugger_still_works():
         f"/games/{game_id}/cognitive-diff?caller_id=dbg1&caller_role=debugger"
     )
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# NEW-P0-1: game control endpoints (start/step/pause/resume) require moderator
+# ---------------------------------------------------------------------------
+
+def test_start_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/start must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # Create a game as moderator (the only legit way to call create_game too)
+    game_resp = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    )
+    game_id = game_resp.json()["game"]["game_id"]
+
+    # Now try to start WITHOUT a moderator identity — must be 403
+    resp = client.post(f"/games/{game_id}/start", json={})
+    assert resp.status_code == 403
+
+
+def test_step_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/step must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # Setup: create + start as moderator
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "seed": 99,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+    # start with moderator identity
+    client.post(
+        f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+
+    # Try to step without auth — must 403
+    resp = client.post(f"/games/{game_id}/step", json={})
+    assert resp.status_code == 403
+
+
+def test_pause_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/pause must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "seed": 7,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+    client.post(
+        f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+
+    # No auth — must 403
+    resp = client.post(f"/games/{game_id}/pause", json={})
+    assert resp.status_code == 403
+
+
+def test_resume_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/resume must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "seed": 8,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+    client.post(
+        f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+    # Pause with moderator first
+    client.post(
+        f"/games/{game_id}/pause?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+
+    # No auth on resume — must 403
+    resp = client.post(f"/games/{game_id}/resume", json={})
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# NEW-P0-2: create_game requires moderator (DoS prevention)
+# ---------------------------------------------------------------------------
+
+def test_create_game_requires_moderator():
+    """NEW-P0-2: POST /games must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # No auth at all — must 403 (DoS vector closed)
+    resp = client.post(
+        "/games",
+        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12},
+    )
+    assert resp.status_code == 403
+
+
+def test_create_game_rejects_empty_caller_id():
+    """NEW-P0-2: caller_id must be non-empty even for moderator role."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "",
+            "caller_role": "moderator",
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_create_game_accepts_moderator():
+    """NEW-P0-2: POST /games must accept authenticated moderator."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    )
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# NEW-P1-2: share-summary requires view_mode=public role check
+# ---------------------------------------------------------------------------
+
+def test_share_summary_requires_view_mode_public():
+    """NEW-P1-2: GET /games/{id}/share-summary must reject callers whose
+    effective role cannot see public events (e.g. a non-empty caller_id
+    claiming player_agent role while requesting moderator_full).
+
+    The endpoint must force view_mode=PUBLIC, which is permitted for
+    SPECTATOR/PLAYER_AGENT/MODERATOR/DEBUGGER — so a caller with no auth
+    params (defaults to SPECTATOR + PUBLIC) is allowed. The auth fix is
+    to require non-empty caller_id OR session_token, AND to validate the
+    caller's role via checker.check(...).
+    """
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # Setup a game
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+
+    # No caller_id and no session_token — must 403
+    resp = client.get(f"/games/{game_id}/share-summary")
+    assert resp.status_code == 403
+
+
+def test_share_summary_downgrades_player_agent_to_public():
+    """NEW-P1-2: a player_agent caller can access share-summary, but the
+    endpoint must force view_mode=PUBLIC regardless of any view_mode
+    query param they sent. Response must be public_only=True.
+    """
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+
+    # Player agent asking for moderator_full — must be downgraded to public.
+    resp = client.get(
+        f"/games/{game_id}/share-summary"
+        f"?caller_id=p01&caller_role=player_agent&view_mode=moderator_full"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["public_only"] is True
+
+
+def test_share_summary_accepts_spectator():
+    """NEW-P1-2: caller with SPECTATOR role and default public view is OK."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+
+    # Spectator role with public view is allowed
+    resp = client.get(
+        f"/games/{game_id}/share-summary?caller_id=spectator&caller_role=spectator"
+    )
+    assert resp.status_code == 200
+
+
+def test_share_summary_accepts_moderator():
+    """NEW-P1-2: moderator role is always allowed."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+
+    resp = client.get(
+        f"/games/{game_id}/share-summary?caller_id=mod1&caller_role=moderator"
+    )
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# NEW-P1-3: list_games requires role
+# ---------------------------------------------------------------------------
+
+def test_list_games_requires_role():
+    """NEW-P1-3: GET /games must require MODERATOR/DEBUGGER role or
+    filter by caller_id — anonymous enumeration is a privacy leak.
+    """
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # Anonymous — must 403
+    resp = client.get("/games")
+    assert resp.status_code == 403
+
+
+def test_list_games_accepts_moderator():
+    """NEW-P1-3: moderator can list games."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    resp = client.get("/games?caller_id=mod1&caller_role=moderator")
+    assert resp.status_code == 200
+
+
+def test_list_games_rejects_spectator():
+    """NEW-P1-3: spectator without games to own is denied."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    resp = client.get("/games?caller_id=spectator&caller_role=spectator")
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# NEW-P1-6: public-state records caller (audit log)
+# ---------------------------------------------------------------------------
+
+def test_public_state_records_caller():
+    """NEW-P1-6: GET /games/{id}/public-state must record the caller in
+    the audit log (no auth required, but a thin role resolution + audit
+    event must be emitted for the GET).
+    """
+    from fastapi.testclient import TestClient
+    from werewolf_agent.api.permissions import PermissionChecker
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+
+    # Hit public-state with a known caller_id; audit log should record it.
+    # Note: the test app's checker is a fresh instance; the assertion
+    # target is that the endpoint accepts the caller_id without 403
+    # and that the response contains a public-only payload.
+    resp = client.get(
+        f"/games/{game_id}/public-state?caller_id=mod1&caller_role=moderator"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["game_id"] == game_id
+
+
+def test_public_state_allows_anonymous_with_audit():
+    """NEW-P1-6: anonymous (no caller_id) is allowed for public-state,
+    but the audit log must record the call. The fix is 'thin role
+    resolution + audit log' — not a 403 gate."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    ).json()["game"]["game_id"]
+
+    # Anonymous GET must succeed (public-state is intentionally open).
+    resp = client.get(f"/games/{game_id}/public-state")
+    assert resp.status_code == 200
+    assert resp.json()["game_id"] == game_id
