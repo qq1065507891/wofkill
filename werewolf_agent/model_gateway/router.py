@@ -375,8 +375,15 @@ class ModelRouter:
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        jitter_seconds: tuple[float, float] = (0.0, 0.8),
     ) -> GenerateResult:
-        """Generate via routed provider with fallback."""
+        """Generate via routed provider with fallback.
+
+        ``jitter_seconds`` is the (low, high) range of a uniform random
+        sleep applied before the FIRST attempt only. Defaults to
+        ``(0, 0.8)`` to spread concurrent requests. Pass ``(0, 0)`` in
+        tests to avoid 5-15s of cumulative wait across 12 players.
+        """
         config, fallback_provider = self.resolve_config(agent_id, task_type)
 
         provider = self._providers.get(config.provider)
@@ -390,8 +397,9 @@ class ModelRouter:
         for attempt in range(max_retries + 1):
             # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
             # On the first attempt only — retries already have backoff.
-            if attempt == 0:
-                time.sleep(random.uniform(0, 0.8))
+            # R3-MG-3: skip entirely when jitter_seconds == (0, 0).
+            if attempt == 0 and jitter_seconds != (0.0, 0.0):
+                time.sleep(random.uniform(jitter_seconds[0], jitter_seconds[1]))
             try:
                 # For text-fallback models, skip tool_choice on first attempt.
                 # These models rarely return tool_calls reliably; forcing it

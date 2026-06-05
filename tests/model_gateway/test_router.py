@@ -110,6 +110,34 @@ class TestGenerateWithMockProvider:
         assert uniform_calls[0] == (0, 0.8)
         assert sleeps[0] == 0.8
 
+    def test_jitter_zero_in_test_mode(self, monkeypatch) -> None:
+        """R3-MG-3: jitter_seconds=(0, 0) on a router call must skip the
+        pre-call sleep entirely so test suites are not slowed by 5-15s of
+        cumulative jitter across 12 players × many rounds.
+        """
+        from werewolf_agent.model_gateway import router as router_module
+
+        uniform_calls: list[tuple[float, float]] = []
+        sleeps: list[float] = []
+
+        def fake_uniform(low: float, high: float) -> float:
+            uniform_calls.append((low, high))
+            return high
+
+        monkeypatch.setattr(router_module.random, "uniform", fake_uniform)
+        monkeypatch.setattr(router_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
+        router.generate(
+            agent_id="p01",
+            task_type="speech",
+            prompt="Hello",
+            jitter_seconds=(0, 0),
+        )
+
+        # No sleep should have been issued because jitter_seconds is (0, 0).
+        assert sleeps == []
+
     def test_generate_registers_usage(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
         router.generate(agent_id="p01", task_type="speech", prompt="test")
