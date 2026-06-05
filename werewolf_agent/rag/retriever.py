@@ -327,10 +327,22 @@ class StrategyRetriever:
             query_text = self._build_rerank_query(query)
 
             # Rerank by semantic relevance
+            # N5: truncate the summary to the same 800-char cap
+            # ``_entry_to_hit`` enforces on the audit side, BEFORE
+            # building the reranker input dict. The old code passed
+            # the full ``e.summary`` to the reranker and only
+            # truncated later when building the hit — so the model
+            # scored on text the operator never saw in the audit
+            # JSON. Truncating up front means the two paths agree on
+            # what the model sees.
             reranked = self._reranker.rerank_hits(
                 query=query_text,
                 documents=[
-                    {"score": s, "entry": e, "summary": e.summary}
+                    {
+                        "score": s,
+                        "entry": e,
+                        "summary": e.summary[:800],
+                    }
                     for s, e in rerank_pool
                 ],
                 text_key="summary",

@@ -2131,3 +2131,52 @@ class TestRerankerNegativeScore:
         hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=1))
         assert hits
         assert 0.0 <= hits[0].relevance_score <= 1.0
+
+    def test_rerank_input_uses_truncated_summary(self) -> None:
+        """N5: the reranker must receive the 800-char-truncated
+        summary that ``_entry_to_hit`` also produces, not the
+        full-length ``entry.summary``. The two paths diverged before
+        the fix: the reranker saw the full text and the audit JSON
+        (which serializes the hit) saw the truncated text, so a
+        2000-char entry would show 800 chars in audit but the model
+        would have scored on the full 2000.
+
+        Truncate to 800 chars before building the reranker input
+        dict so both paths agree on what the model sees.
+        """
+        long_summary = "狼" * 2000  # 2000 Chinese characters
+        entry = _make_entry(
+            entry_id="n5_long",
+            title="N5 long summary",
+            summary=long_summary,
+        )
+
+        # Spy reranker that records the document dicts it received.
+        captured: list[list[dict]] = []
+
+        class _SpyReranker:
+            def rerank_hits(self, *, query, documents, text_key="summary", top_n=None):
+                # Copy the docs so later mutations don't change what we saw.
+                captured.append([dict(d) for d in documents])
+                out = []
+                for d in documents[: top_n or len(documents)]:
+                    new = dict(d)
+                    new["rerank_score"] = 0.5
+                    out.append(new)
+                return out
+
+        retriever = StrategyRetriever([entry], reranker=_SpyReranker())
+        retriever.retrieve(
+            RAGQuery(role="seer", phase="speech", max_results=1),
+        )
+
+        assert captured, "N5: reranker must be called"
+        docs = captured[0]
+        # The single document's summary must be truncated to 800 chars
+        # — the same cap ``_entry_to_hit`` enforces on the audit side.
+        for doc in docs:
+            assert len(doc["summary"]) == 800, (
+                f"N5: reranker must see 800-char truncated summary; "
+                f"got {len(doc['summary'])} chars"
+            )
+            assert doc["summary"] == long_summary[:800]
