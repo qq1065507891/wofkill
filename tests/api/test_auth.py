@@ -355,3 +355,102 @@ def test_legacy_debugger_still_works():
         f"/games/{game_id}/cognitive-diff?caller_id=dbg1&caller_role=debugger"
     )
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# NEW-P0-1: game control endpoints (start/step/pause/resume) require moderator
+# ---------------------------------------------------------------------------
+
+def test_start_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/start must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # Create a game as moderator (the only legit way to call create_game too)
+    login = client.post("/auth/login?caller_id=mod1&role=moderator")
+    token = login.json()["token"]
+    game_resp = client.post(
+        "/games",
+        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12},
+    )
+    game_id = game_resp.json()["game"]["game_id"]
+
+    # Now try to start WITHOUT a moderator identity — must be 403
+    resp = client.post(f"/games/{game_id}/start", json={})
+    assert resp.status_code == 403
+
+
+def test_step_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/step must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # Setup: create + start as moderator
+    client.post(
+        "/games",
+        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12},
+    )
+    game_id = client.post(
+        "/games",
+        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12, "seed": 99},
+    ).json()["game"]["game_id"]
+    # start with moderator identity
+    client.post(
+        f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+
+    # Try to step without auth — must 403
+    resp = client.post(f"/games/{game_id}/step", json={})
+    assert resp.status_code == 403
+
+
+def test_pause_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/pause must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12, "seed": 7},
+    ).json()["game"]["game_id"]
+    client.post(
+        f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+
+    # No auth — must 403
+    resp = client.post(f"/games/{game_id}/pause", json={})
+    assert resp.status_code == 403
+
+
+def test_resume_game_requires_moderator():
+    """NEW-P0-1: POST /games/{id}/resume must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    game_id = client.post(
+        "/games",
+        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12, "seed": 8},
+    ).json()["game"]["game_id"]
+    client.post(
+        f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+    # Pause with moderator first
+    client.post(
+        f"/games/{game_id}/pause?caller_id=mod1&caller_role=moderator",
+        json={"caller_id": "mod1", "caller_role": "moderator"},
+    )
+
+    # No auth on resume — must 403
+    resp = client.post(f"/games/{game_id}/resume", json={})
+    assert resp.status_code == 403

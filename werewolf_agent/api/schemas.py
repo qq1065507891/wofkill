@@ -61,6 +61,7 @@ class CreateGameRequest(BaseModel):
 class GameActionRequest(BaseModel):
     caller_id: str = ""
     caller_role: CallerRole = CallerRole.SPECTATOR
+    session_token: str = ""
 
 
 class PrivateStateRequest(BaseModel):

@@ -124,6 +124,7 @@ def create_game_router(
 
     @router.post("/games/{game_id}/start", response_model=GameActionResponse)
     def start_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
+        _enforce_moderator_only(req, auth, checker, authorized_callers, game_id, "start")
         state = _get_game(games, game_id)
         if state.phase != "setup":
             raise HTTPException(400, "Game already started")
@@ -165,6 +166,7 @@ def create_game_router(
 
     @router.post("/games/{game_id}/step", response_model=GameActionResponse)
     def step_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
+        _enforce_moderator_only(req, auth, checker, authorized_callers, game_id, "step")
         state = _get_game(games, game_id)
         if state.paused:
             raise HTTPException(400, "Game is paused")
@@ -189,6 +191,7 @@ def create_game_router(
 
     @router.post("/games/{game_id}/pause", response_model=GameActionResponse)
     def pause_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
+        _enforce_moderator_only(req, auth, checker, authorized_callers, game_id, "pause")
         state = _get_game(games, game_id)
         if state.paused:
             raise HTTPException(400, "Already paused")
@@ -207,6 +210,7 @@ def create_game_router(
 
     @router.post("/games/{game_id}/resume", response_model=GameActionResponse)
     def resume_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
+        _enforce_moderator_only(req, auth, checker, authorized_callers, game_id, "resume")
         state = _get_game(games, game_id)
         if not state.paused:
             raise HTTPException(400, "Not paused")
@@ -471,6 +475,43 @@ def _resolve_caller_role(
         requested_role.value,
     )
     return requested_role
+
+
+def _enforce_moderator_only(
+    req: GameActionRequest,
+    auth_manager: AuthManager,
+    checker: PermissionChecker,
+    authorized_callers: dict[str, CallerRole],
+    game_id: str,
+    endpoint: str,
+) -> None:
+    """Restrict a game-control endpoint to MODERATOR/DEBUGGER callers.
+
+    Resolves the role via session_token OR the authorized_callers registry,
+    and rejects anything else with 403. Records denials in the audit log.
+    """
+    caller_role = _resolve_caller_role(
+        authorized_callers,
+        req.caller_id,
+        req.caller_role,
+        session_token=req.session_token,
+        auth_manager=auth_manager,
+    )
+    if caller_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
+        try:
+            checker.check(
+                caller_id=req.caller_id,
+                caller_role=caller_role,
+                requested_view=ViewMode.MODERATOR_FULL,
+                game_id=game_id,
+                endpoint=endpoint,
+                game_active=True,
+            )
+        except PermissionDenied as e:
+            raise HTTPException(403, detail=e.reason)
+        raise HTTPException(403, "Game control endpoints require moderator or debugger role")
+    if endpoint == "start" and not req.caller_id:
+        raise HTTPException(403, "start_game requires a non-empty caller_id")
 
 
 def _build_locked_config_snapshot(req: CreateGameRequest, project_root: Path) -> dict:
