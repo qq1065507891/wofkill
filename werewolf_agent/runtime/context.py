@@ -1029,11 +1029,17 @@ def build_agent_context(
                 all_refs = restored_memory.reflections_by_player(player_id)
                 if all_refs:
                     current_role = player.role
-                    current_faction = (
-                        "werewolf" if current_role == "werewolf"
-                        else "good" if current_role in ("villager", "seer", "witch", "hunter", "idiot")
-                        else ("werewolf" if gs.hybrid_master_faction == "werewolf" else "good") if current_role == "hybrid"
-                        else "good"
+                    # MEM-NEW-3: use the canonical _player_faction
+                    # helper instead of a duplicated ternary. The
+                    # inline version was functionally correct for the
+                    # current role set, but the two WILL drift if a
+                    # new role is added or MemoryStore's role sets
+                    # change. A single source of truth is much easier
+                    # to keep aligned.
+                    from werewolf_agent.memory.store import MemoryStore
+                    current_faction = MemoryStore._player_faction(
+                        current_role,
+                        master_faction=gs.hybrid_master_faction,
                     )
                     reflection_memory_hints = _reflection_memory_hints(
                         all_refs, current_role, current_faction

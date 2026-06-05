@@ -1632,3 +1632,123 @@ def test_wolf_skip_in_handler_only():
         "S-16: context.py must not contain the swing_vote hooker "
         "skip — that's the handler's job. Found it in _inject_skill_output."
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-3: build_agent_context's cross-game memory hint must use
+# ``MemoryStore._player_faction`` (the canonical helper) to compute
+# the current faction, not a hard-coded ternary that duplicates the
+# logic. The two WILL drift if a new role is added or the role sets
+# in ``MemoryStore`` change.
+#
+# The user-visible consequence: a hybrid whose master is a werewolf
+# was being treated as "good" by the inline ternary at
+# context.py:1032-1037 (the branch for current_role == "hybrid"
+# checked gs.hybrid_master_faction, but the surrounding fallthrough
+# landed on "good"). After the fix, the hybrid's reflections are
+# ranked the same way as a werewolf's (priority 1 for werewolf
+# reflections), not the same way as a seer's.
+# ---------------------------------------------------------------------------
+
+
+def test_cross_game_hint_uses_player_faction_helper() -> None:
+    """MEM-NEW-3: a hybrid (master=werewolf) whose cross-game
+    reflections include both a werewolf entry and a seer entry
+    must rank the werewolf entry higher (same-faction priority
+    beats other-faction priority). The current_faction passed to
+    _reflection_memory_hints must therefore be 'werewolf', not
+    'good'.
+
+    We exercise the end-to-end path through build_agent_context
+    (not _reflection_memory_hints directly) so the test catches
+    regressions in the inline ternary at context.py:1032-1037
+    that this fix replaces.
+    """
+    from werewolf_agent.agents.schemas import TaskType
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
+    from werewolf_agent.runtime.context import build_agent_context
+
+    # Build a GameState where p01 is hybrid and the master has
+    # already been chosen (gs.hybrid_master_faction='werewolf').
+    players = {
+        "p01": PlayerState(id="p01", role="hybrid", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    gs = GameState(
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        game_id="g_test_mem_new3",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players=players,
+        hybrid_master_faction="werewolf",
+    )
+
+    # Fake restored_memory with profile (required to enter the
+    # reflection block) and two reflections: one from a werewolf,
+    # one from a seer. Both have the same game_id (priority tie),
+    # so the priority sort decides which appears first.
+    werewolf_ref = ReflectionEntry(
+        entry_id="r_wolf",
+        game_id="2025-01-01",
+        player_id="p10",
+        role="werewolf",
+        faction_won=True,
+        text="wolf-perspective-reflection",
+    )
+    seer_ref = ReflectionEntry(
+        entry_id="r_seer",
+        game_id="2025-01-01",
+        player_id="p11",
+        role="seer",
+        faction_won=False,
+        text="seer-perspective-reflection",
+    )
+    profile = PlayerProfile(player_id="p01", games_played=2)
+
+    class _FakeRestoredMemory:
+        def get_profile(self, pid):
+            return profile if pid == "p01" else None
+
+        def reflections_by_player(self, pid):
+            if pid == "p01":
+                return [werewolf_ref, seer_ref]
+            return []
+
+    ruleset = Ruleset(raw={
+        "player_count": 3,
+        "roles": {
+            "werewolf": {"count": 1},
+            "villager": {"count": 1},
+            "hybrid": {"count": 1},
+        },
+    })
+    engine = RuleEngine(ruleset=ruleset)
+    ctx = build_agent_context(
+        engine=engine,
+        gs=gs,
+        player_id="p01",
+        task_type=TaskType.SPEECH,
+        restored_memory=_FakeRestoredMemory(),
+    )
+
+    hints = ctx.reflection_memory_hints
+    assert hints, "MEM-NEW-3: cross-game hint should be populated for hybrid with past games"
+    # With current_faction == "werewolf" (correct), the werewolf
+    # reflection is same-faction (priority 1) and the seer reflection
+    # is other-faction (priority 0). The werewolf reflection should
+    # appear before the seer reflection in the hint list.
+    texts = [h["text"] for h in hints]
+    wolf_idx = texts.index("wolf-perspective-reflection") if "wolf-perspective-reflection" in texts else -1
+    seer_idx = texts.index("seer-perspective-reflection") if "seer-perspective-reflection" in texts else -1
+    assert wolf_idx != -1, f"MEM-NEW-3: werewolf reflection missing from hints: {texts!r}"
+    assert seer_idx != -1, f"MEM-NEW-3: seer reflection missing from hints: {texts!r}"
+    assert wolf_idx < seer_idx, (
+        f"MEM-NEW-3: hybrid (master=werewolf) should rank the werewolf "
+        f"reflection higher (same faction) than the seer reflection; "
+        f"got werewolf at {wolf_idx}, seer at {seer_idx}. "
+        f"current_faction must be 'werewolf' (post-fix), not 'good' "
+        f"(pre-fix inline ternary landed on 'good' for hybrid)."
+    )
