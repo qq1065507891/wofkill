@@ -137,7 +137,7 @@ def test_build_private_memory_stance_note_uses_role_label():
         players=dict(gs.players),
         events=[_make_audit_event("p02", day=1, standing_with_seer="p03")],
     )
-    memory = build_private_memory(gs, "p02")
+    memory, _caveat = build_private_memory(gs, "p02")
     assert "stance_notes" in memory
     assert len(memory["stance_notes"]) == 1
     point = memory["stance_notes"][0]["point"]
@@ -158,7 +158,7 @@ def test_build_private_memory_stance_note_strips_unknown_id():
         players=dict(gs.players),
         events=[_make_audit_event("p02", day=1, standing_with_seer="p99")],
     )
-    memory = build_private_memory(gs, "p02")
+    memory, _caveat = build_private_memory(gs, "p02")
     assert "stance_notes" in memory
     assert len(memory["stance_notes"]) == 1
     point = memory["stance_notes"][0]["point"]
@@ -192,7 +192,7 @@ def test_reflection_stance_no_player_ids_in_text():
         players=dict(gs.players),
         events=[_make_audit_event("p01", day=1, standing_with_seer="p03")],
     )
-    private_memory = build_private_memory(gs, "p01")
+    private_memory, _caveat = build_private_memory(gs, "p01")
     assert private_memory, "expected stance_notes to be present"
     stance_points = [s["point"] for s in private_memory["stance_notes"]]
     # Sanity: stance points never include raw IDs
@@ -537,3 +537,71 @@ def test_tag_filter_or_semantics_documented():
         f"MEM-15: CrossGameQuery.tags must document OR semantics in "
         f"the class docstring / source. cls_doc={cls_doc!r}, src={src!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-7: ReflectionMemory.store must REJECT a string faction_won
+# rather than silently coercing via ``faction_won == "werewolf"``.
+#
+# Pre-fix: ``bool(faction_won) if isinstance(faction_won, (bool, int))
+# else faction_won == "werewolf"`` swallowed any string and resolved
+# it to a bool by exact string match. A caller passing
+# ``faction_won="true"`` (lowercase, the JSON-decoded form) got
+# faction_won=False — the wrong answer for an unambiguous win
+# indicator.
+#
+# Post-fix: drop the string fallback. Force callers to pass a bool.
+# Raise TypeError on anything else so the bug surfaces immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_faction_won_rejects_string():
+    """MEM-NEW-7: passing faction_won='true' (a string) must raise
+    TypeError, not silently resolve to False via the legacy
+    ``faction_won == 'werewolf'`` comparison."""
+    import pytest
+
+    from werewolf_agent.memory.reflection import ReflectionMemory
+
+    mem = ReflectionMemory()
+    with pytest.raises(TypeError):
+        mem.store(
+            "g_test_mem_new7",
+            player_id="p1",
+            role="seer",
+            faction_won="true",  # type: ignore[arg-type]
+            text="test",
+            tags=["seer"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-10: empty game_id must be rejected.
+#
+# Pre-fix: ``ReflectionEntry.__post_init__`` only validated the
+# ``tags`` list. An entry with ``game_id=""`` slipped through and
+# always sorted to the end under the chr-invert newest-first sort
+# — so the reflection was effectively invisible in cross-game
+# queries. Post-fix: empty game_id raises ValueError so the bug
+# surfaces at the call site.
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_entry_rejects_empty_game_id():
+    """MEM-NEW-10: ``game_id=""`` is silently invisible in newest-
+    first queries (always sorts to the end of the chr-invert
+    ordering). Reject it at construction time."""
+    import pytest
+
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    with pytest.raises(ValueError):
+        ReflectionEntry(
+            entry_id="r_empty_gid",
+            game_id="",
+            player_id="p1",
+            role="seer",
+            faction_won=True,
+            text="test",
+            tags=["seer"],
+        )

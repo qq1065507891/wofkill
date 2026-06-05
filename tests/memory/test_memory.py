@@ -644,6 +644,47 @@ class TestReviewGenerator:
         cm.initialize([viewer_id, "p2", "p3", "p4"])
         return cm
 
+    # MEM-NEW-12: the variable holding the top role's probability in
+    # ``_evaluate_judgments`` used to be called ``confidence``, which
+    # invited the wrong reading (``confidence=0.5`` reads like
+    # "I'm 50% confident in this judgment", not "the top role got
+    # 50% of the probability mass"). The fix renames it ``best_prob``.
+    # Pin the contract with a docstring test.
+    def test_top_role_guess_variable_named_best_prob(self):
+        """MEM-NEW-12: the source of ``_evaluate_judgments`` must use
+        ``best_prob`` (not ``confidence``) for the top role's
+        probability mass. Pin the contract via static source
+        inspection — the variable is a local in a function, so a
+        runtime assertion can't see it. Only the Python identifier
+        matters; the word may still appear in a comment / docstring
+        (we use ast to filter out comments)."""
+        import ast
+        import inspect
+        import textwrap
+
+        from werewolf_agent.memory.review import ReviewGenerator
+
+        src = textwrap.dedent(inspect.getsource(ReviewGenerator._evaluate_judgments))
+        tree = ast.parse(src)
+        # Walk every Name node in the function. The new variable
+        # ``best_prob`` must appear; the old ``confidence`` must NOT
+        # be referenced as a name (only in comments / docstrings,
+        # which ast ignores by design).
+        names = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name)
+        }
+        assert "best_prob" in names, (
+            f"MEM-NEW-12: _evaluate_judgments must bind ``best_prob`` "
+            f"to the top role's probability; names found: {names!r}"
+        )
+        assert "confidence" not in names, (
+            f"MEM-NEW-12: the misleading ``confidence`` identifier "
+            f"must be replaced with ``best_prob``; names found: "
+            f"{names!r}"
+        )
+
     def test_basic_review(self):
         gen = ReviewGenerator()
         report = gen.generate(
@@ -738,6 +779,36 @@ class TestReviewGenerator:
             cognition_matrix=cm,
         )
         assert len(report.improvement_suggestions) > 0
+
+    def test_deceived_by_excludes_hybrid(self):
+        """MEM-NEW-1: hybrid (wolf-aligned via master) must NOT be
+        treated as a good-side deceiver target. A hybrid voted out by
+        wolves was a wolf-aligned player — wolves don't deceive by
+        attacking their own side.
+        """
+        rg = RelationGraph()
+        # p1 voted for p4 (hybrid). p5 (werewolf) also spoke against p4.
+        rg.add_event(RelationEvent(
+            predicate=RelationType.SPOKE_AGAINST, source="p5", target="p4", day=1,
+        ))
+        rg.add_event(RelationEvent(
+            predicate=RelationType.VOTED, source="p1", target="p4", day=1,
+        ))
+
+        gen = ReviewGenerator()
+        report = gen.generate(
+            game_id="g1", player_id="p1", role="seer",
+            faction_won=False,
+            ground_truth={"p4": "hybrid", "p5": "werewolf"},
+            relation_graph=rg,
+        )
+        # Pre-fix: hybrid was in the good-role set, so p5 (werewolf)
+        # got added to deceived_by. Post-fix: hybrid excluded → p5 must
+        # NOT be in deceived_by when the target is a hybrid.
+        assert "p5" not in report.deceived_by, (
+            f"MEM-NEW-1: hybrid voted out by wolves must not be marked "
+            f"as a deception case; got deceived_by={report.deceived_by}"
+        )
 
     def test_summary_generated(self):
         gen = ReviewGenerator()
@@ -1228,6 +1299,182 @@ def test_vector_similarity_cache_distinct_queries():
 
 
 # ---------------------------------------------------------------------------
+# MEM-NEW-5: similarity() must return the cached empty-result dict
+# for an empty query, not recompute it.
+#
+# Pre-fix: the empty-result dict was stored in the cache under
+# ``empty_result`` but never READ on the second call — the code
+# still fell through to the ``if not q_weights and q_norm == 0.0``
+# branch and rebuilt a fresh empty dict. The fix is to check
+# ``cached.get("empty_result")`` and return it directly when
+# present.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_cache_returns_empty_result():
+    """MEM-NEW-5: an empty (whitespace-only) query must return the
+    SAME dict object on the second call (proves the cache hit
+    short-circuits the rebuild). Pre-fix the dict was rebuilt on
+    every call — the cache held the value but never returned it.
+    """
+    from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+    idx = BagOfWordsVectorIndex()
+    idx.add_text("r1", "站边 预言家")
+    idx.add_text("r2", "金水 轻信")
+    idx.finalize()
+
+    # First call: empty query → empty-result dict stored in cache.
+    first = idx.similarity("")
+    assert first == {"r1": 0.0, "r2": 0.0}
+    cache = idx._query_cache
+    cached_entry = cache.get("")
+    assert cached_entry is not None
+    assert "empty_result" in cached_entry, (
+        f"MEM-NEW-5: empty query must populate the empty_result "
+        f"cache slot; got {cached_entry!r}"
+    )
+
+    # Second call: must return the cached empty_result, not a
+    # fresh dict. Object identity is the proof.
+    second = idx.similarity("")
+    assert second == {"r1": 0.0, "r2": 0.0}
+    assert second is cached_entry["empty_result"], (
+        f"MEM-NEW-5: cached empty_result must be returned directly; "
+        f"got a new dict (object identity mismatch). "
+        f"first id={id(first)} second id={id(second)} "
+        f"cached id={id(cached_entry['empty_result'])}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-4: _TOKEN_RE must cover CJK Extension A and CJK Compatibility
+# Ideographs, not just the CJK Unified Ideographs block.
+#
+# The pre-fix regex was ``[一-鿿]`` (U+4E00-9FFF). That missed
+#   - CJK Extension A (U+3400-4DBF) — common in older / less-frequent
+#     characters
+#   - CJK Compatibility Ideographs (U+F900-FAFF) — used for round-trip
+#     with older encodings
+#
+# This silently broke reflection recall: a reflection containing a
+# rare / compatibility CJK character was tokenized into zero CJK
+# tokens, so the cosine similarity collapsed to 0 and the reflection
+# never surfaced as a candidate.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_tokenize_cjk_extension_a():
+    """MEM-NEW-4: a string containing a CJK Extension A character
+    (U+3400-4DBF) must produce a non-empty token list. Pre-fix the
+    regex ``[一-鿿]`` skipped the entire U+3400-4DBF range, so the
+    character was lost and reflection recall collapsed to 0.
+    """
+    from werewolf_agent.memory.vector_index import _tokenize
+
+    # U+3400 = first CJK Extension A char (renders as 㐀)
+    ext_a_char = "㐀"
+    text = f"包含扩展甲字{ext_a_char}的文本"
+    tokens = _tokenize(text)
+    assert ext_a_char in tokens, (
+        f"MEM-NEW-4: _tokenize must tokenize CJK Extension A (U+3400-4DBF); "
+        f"got tokens={tokens!r} for text={text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-11: ReflectionMemory.query must NOT consult a vector_index
+# that has ``__len__`` but no ``similarity`` method.
+#
+# Pre-fix: the guard was ``vector_index is None or not
+# getattr(vector_index, "__len__", lambda: 0)()``. An object that
+# implemented ``__len__`` (e.g. a list, a BytesIO) but no
+# ``similarity`` slipped past the guard and then either:
+#   - AttributeError'd at the ``vector_index.similarity(query_text)``
+#     call site, OR
+#   - hit the defensive ``else`` branch and silently degraded to
+#     exact-match order with a warning.
+#
+# Post-fix: check for both ``__len__`` AND ``similarity`` in the
+# guard. An index missing ``similarity`` is treated like a None
+# index (degrades to exact-match behavior) with a loud warning.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_index_requires_similarity():
+    """MEM-NEW-11: an object with __len__ but no ``similarity``
+    method must NOT be treated as a valid vector index. The
+    query must degrade to the exact-match path (no AttributeError,
+    no silent zero-score rank) and a warning must be logged so
+    the wiring bug surfaces."""
+    import logging
+    from types import SimpleNamespace
+
+    from werewolf_agent.memory.reflection import ReflectionMemory
+    from werewolf_agent.memory.schemas import CrossGameQuery, ReflectionEntry
+
+    # Build a ReflectionMemory with a candidate entry.
+    mem = ReflectionMemory()
+    mem.store(
+        "g1",
+        player_id="p1",
+        role="seer",
+        faction_won=True,
+        text="reflection-text",
+        tags=["seer"],
+    )
+
+    # Fake "index" with __len__ but no similarity method. Pre-fix
+    # this slipped past the ``__len__`` guard and AttributeError'd
+    # at the call site (or hit the defensive branch and silently
+    # ranked everything at 0). Post-fix: the query must fall
+    # through to the exact-match path and log a warning.
+    class _BadIndex:
+        def __len__(self) -> int:
+            return 5
+    bad_index = _BadIndex()
+
+    with_log: list[logging.LogRecord] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            with_log.append(record)
+
+    handler = _CaptureHandler(level=logging.WARNING)
+    logger = logging.getLogger("werewolf_agent.memory.reflection")
+    logger.addHandler(handler)
+    try:
+        # Must not raise. Pre-fix would AttributeError on
+        # bad_index.similarity(query_text).
+        # Empty situation so the exact-match path returns
+        # ``list(candidates)`` (substring filter is a no-op).
+        results = mem.query(
+            CrossGameQuery(player_id="p1", situation=""),
+            vector_index=bad_index,
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    # The exact-match path returns the entry (substring match on
+    # situation succeeds).
+    assert len(results) == 1, (
+        f"MEM-NEW-11: __len__-only index must fall through to "
+        f"exact-match path; got {results!r}"
+    )
+
+    # And a warning was logged naming the issue.
+    matching = [
+        r for r in with_log
+        if "similarity" in r.getMessage().lower()
+    ]
+    assert matching, (
+        f"MEM-NEW-11: a warning must be emitted when the index "
+        f"has no similarity method; got: "
+        f"{[r.getMessage() for r in with_log]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # MEM-22: generate_reviews_for_game must log a warning when
 # ground_truth is missing entries for some player_ids. The legacy
 # behavior was a silent skip via ``roles.get(pid, "unknown")`` — the
@@ -1310,6 +1557,105 @@ def test_generate_reviews_no_warning_when_ground_truth_complete(caplog):
     )
 
 
+# ---------------------------------------------------------------------------
+# MEM-NEW-2: generate_reviews_for_game must thread hybrid_master_factions
+# through to _player_faction. Without it, every hybrid gets
+# _player_faction('hybrid', master_faction=None) = 'unknown', and
+# the review loses the wolf/good attribution that drives
+# profile.games_as_wolf / games_as_good and the faction_won flag.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_reviews_uses_hybrid_master_factions():
+    """MEM-NEW-2: when a hybrid's master is a werewolf and wolves win,
+    the hybrid's review must record faction_won=True (so the profile
+    bumps games_as_wolf + wolf_wins). Pre-fix, hybrid was always
+    classified as 'unknown', so its faction_won never matched the
+    winning faction — the hybrid was mis-recorded as a loser."""
+    from werewolf_agent.memory.store import MemoryStore
+
+    store = MemoryStore()
+    player_ids = ["p1", "p2", "p3"]
+    roles = {"p1": "werewolf", "p2": "hybrid", "p3": "villager"}
+    ground_truth = {"p1": "werewolf", "p2": "hybrid", "p3": "villager"}
+    # wolves win; hybrid master is a werewolf
+    winning_faction = "werewolf"
+    hybrid_master_factions = {"p2": "werewolf"}
+
+    reports = store.generate_reviews_for_game(
+        game_id="g_test_mem_new2",
+        player_ids=player_ids,
+        roles=roles,
+        winning_faction=winning_faction,
+        ground_truth=ground_truth,
+        hybrid_master_factions=hybrid_master_factions,
+    )
+    by_pid = {r.player_id: r for r in reports}
+    # p2 is hybrid with master=werewolf and wolves won — must count as a win.
+    assert by_pid["p2"].faction_won is True, (
+        f"MEM-NEW-2: hybrid (master=werewolf) with wolves winning must "
+        f"have faction_won=True; got faction_won={by_pid['p2'].faction_won}"
+    )
+    # And the profile side: games_as_wolf should be 2 (p1 + p2).
+    p2_profile = store.get_profile("p2")
+    assert p2_profile is not None
+    assert p2_profile.games_as_wolf == 1, (
+        f"MEM-NEW-2: hybrid (master=werewolf) must count in games_as_wolf; "
+        f"got games_as_wolf={p2_profile.games_as_wolf}, "
+        f"games_as_good={p2_profile.games_as_good}"
+    )
+    assert p2_profile.games_as_good == 0
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-6: explicit override must survive an empty-string value.
+#
+# The pre-fix `pf = (player_factions or {}).get(pid) or self._player_faction(role)`
+# used ``or`` to fall back, so an explicit ``""`` was treated as falsy
+# and silently replaced by the role-based _player_faction result.
+# Post-fix: only fall back when the key is missing; respect explicit
+# overrides (including "").
+# ---------------------------------------------------------------------------
+
+
+def test_store_override_uses_is_not_none():
+    """MEM-NEW-6: passing player_factions={pid: ""} must keep the
+    explicit "" override. Pre-fix, the ``or`` fallback swallowed
+    the empty string and silently substituted the role-based
+    _player_faction result, hiding upstream bugs that wanted to
+    force 'unknown' or a sentinel.
+
+    The clean way to observe the override surviving is to use a
+    ``winning_faction`` that ONLY matches the override value. With
+    ``winning_faction=""`` the post-fix ``pf=""`` produces
+    ``faction_won = ("") == ("") = True``; the pre-fix ``pf="good"``
+    produces ``faction_won = False``.
+    """
+    from werewolf_agent.memory.store import MemoryStore
+
+    store = MemoryStore()
+    player_ids = ["p1"]
+    roles = {"p1": "seer"}
+    ground_truth = {"p1": "seer"}
+    player_factions = {"p1": ""}  # explicit empty override
+    winning_faction = ""  # only matches the override, not "good"
+
+    reports = store.generate_reviews_for_game(
+        game_id="g_test_mem_new6",
+        player_ids=player_ids,
+        roles=roles,
+        winning_faction=winning_faction,
+        ground_truth=ground_truth,
+        player_factions=player_factions,
+    )
+    by_pid = {r.player_id: r for r in reports}
+    # Post-fix: pf is preserved as "" → faction_won is True.
+    # Pre-fix: pf clobbered to "good" → faction_won is False.
+    assert by_pid["p1"].faction_won is True, (
+        f"MEM-NEW-6: explicit \"\" override must survive the fallback; "
+        f"expected faction_won=True (pf==winning_faction=\"\"==\"\"), "
+        f"got faction_won={by_pid['p1'].faction_won}"
+    )
 
 
 class TestStructuredDataBoundary:

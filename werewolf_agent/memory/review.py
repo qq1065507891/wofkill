@@ -76,7 +76,16 @@ class ReviewGenerator:
             if actual is None:
                 continue
 
-            guessed, confidence = self._top_role_guess(entry)
+            # MEM-NEW-12: the second tuple element is the
+            # ``top_role_guess`` probability (i.e. the highest single
+            # role's probability in the role distribution), NOT a
+            # confidence score in the statistical sense. Renamed
+            # ``best_prob`` so the meaning is unambiguous — a
+            # ``best_prob=0.5`` means "the top role got 50% of the
+            # probability mass", not "I'm 50% confident in this
+            # judgment". The old name ``confidence`` invited the
+            # wrong reading at the call site below.
+            guessed, best_prob = self._top_role_guess(entry)
             correct = guessed == actual
 
             # MEM-07: key_evidence items may now be EvidenceItem or
@@ -93,13 +102,21 @@ class ReviewGenerator:
                 evidence="; ".join(evidence_claims),
             ))
 
-            if not correct and confidence > 0.3:
+            if not correct and best_prob > 0.3:
                 report.error_analysis.append(
                     f"误判 {entry.player_id} 为 {guessed}（实际 {actual}），"
-                    f"置信度 {confidence:.2f}，faction_read={entry.faction_read}"
+                    f"最佳角色概率 {best_prob:.2f}，faction_read={entry.faction_read}"
                 )
 
     def _top_role_guess(self, entry: CognitionMatrixEntry) -> tuple[str, float]:
+        """Return ``(top_role, top_probability)`` for the entry.
+
+        MEM-NEW-12: the returned float is the top role's probability
+        mass in ``role_probabilities``, NOT a confidence score. We
+        call it ``best_prob`` at the call site (renamed from
+        ``confidence`` to make the meaning explicit). The math is
+        identical: ``max(role_probabilities.items())``.
+        """
         if not entry.role_probabilities:
             return ("unknown", 0.0)
         best = max(entry.role_probabilities.items(), key=lambda x: x[1])
@@ -164,7 +181,13 @@ class ReviewGenerator:
             if target is None:
                 continue
             actual_target_role = ground_truth.get(target, "")
-            if actual_target_role in ("villager", "seer", "witch", "hunter", "idiot", "hybrid"):
+            # MEM-NEW-1: hybrid wins with master's original faction.
+            # When the master is a werewolf, hybrid is wolf-side; the
+            # wolves attacking their own ally is NOT a deception. The
+            # pre-fix list mis-classified hybrid as good, which made
+            # every hybrid exile read as "deceived by wolves" — a
+            # wolf team got free credit for exposing its own member.
+            if actual_target_role in ("villager", "seer", "witch", "hunter", "idiot"):
                 attacks = graph.query(
                     predicate=RelationType.SPOKE_AGAINST,
                     target=target,
@@ -179,7 +202,7 @@ class ReviewGenerator:
         if not report.deceived_by:
             for vote in votes:
                 target = vote.target or ""
-                if ground_truth.get(target, "") in ("villager", "seer", "witch", "hunter", "idiot", "hybrid"):
+                if ground_truth.get(target, "") in ("villager", "seer", "witch", "hunter", "idiot"):
                     same_voters = graph.query(
                         predicate=RelationType.VOTED,
                         target=target,
