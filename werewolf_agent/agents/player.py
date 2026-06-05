@@ -595,7 +595,7 @@ class PlayerAgent:
             tool_call_received=tool_call_received,
             parse_success=parse_success,
             parse_error=parse_error_str,
-            retry_count=self.max_retries,
+            retry_count=attempt,
             structured_failure_reason=structured_failure_reason,
         )
         fallback = fallback.model_copy(update={"trace": trace})
