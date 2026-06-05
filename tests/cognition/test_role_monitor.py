@@ -46,6 +46,43 @@ class TestSeerUnderPressure:
         assert len(seer_alerts) == 1
         assert seer_alerts[0].severity == "critical"
 
+    def test_seer_pressure_fires_without_seer_id(self):
+        """seer_check events from world_state.py omit seer_id (single-seer fallback).
+
+        The detector must still recognize unreported checks when the seer is
+        under pressure and the check payload has no seer_id field.
+        """
+        monitor = RoleStateMonitor()
+        gs = _make_gs(day_number=2)
+        gs = replace(gs, events=gs.events + [
+            # seer_check events — note: NO seer_id in payload (single seer fallback)
+            GameEvent(type="seer_check", payload={
+                "target_id": "p03", "alignment": "wolf", "night_number": 1,
+            }),
+            GameEvent(type="seer_check", payload={
+                "target_id": "p07", "alignment": "good", "night_number": 2,
+            }),
+            # 2+ speakers questioning the seer (p05) — triggers the alert branch
+            GameEvent(type="speech", payload={
+                "speaker": "p02", "day_number": 2,
+                "text": "我怀疑p05有问题",
+            }),
+            GameEvent(type="speech", payload={
+                "speaker": "p03", "day_number": 2,
+                "text": "出p05",
+            }),
+            # Seer never mentioned the unchecked targets in any speech.
+        ])
+        alerts = monitor.assess(gs, "p05", "seer", "day")
+        seer_alerts = [a for a in alerts if a.alert_type == "SEER_UNDER_PRESSURE"]
+        assert len(seer_alerts) == 1
+        # Bug fix: with the seer_id filter removed, the detector should
+        # report the unreported checks.
+        assert any("unreported" in e for e in seer_alerts[0].evidence)
+        # The alert message should mention unreported checks (the hint that
+        # they must report them in this turn).
+        assert "未报出" in seer_alerts[0].message
+
 
 class TestWitchPoisonUnusedAtRisk:
     def test_alerts_when_witch_targeted_and_poison_unused(self):

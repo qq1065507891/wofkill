@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from werewolf_agent.cognition.world_state import StructuredFact, StructuredWorldState
+from werewolf_agent.cognition.world_state import StructuredFact
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,11 @@ class BeliefUpdater:
         pid = fact.target_player
         if pid and pid in state.beliefs:
             belief = state.beliefs[pid]
-            belief.role_probabilities = {"idiot": 1.0}
+            # Preserve all role keys (downstream consumers iterate the dict)
+            belief.role_probabilities = {
+                r: (1.0 if r == "idiot" else 0.0)
+                for r in belief.role_probabilities
+            }
             belief.faction_lean = "good_lean"
             belief.trust = 0.8
         return state
@@ -190,14 +194,25 @@ class BeliefUpdater:
         return state
 
     def _apply_seer_claim(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
-        """公开查杀声明：目标 faction_lean 偏狼，声明者信任微增。"""
+        """公开查杀声明：目标 faction_lean 偏狼，role_probabilities 也偏狼，声明者信任微增。"""
         target = fact.target_player
         source = fact.source_player
         val = (fact.value or "").lower()
         if "wolf" in val or "狼" in val:
             if target and target in state.beliefs:
-                state.beliefs[target].faction_lean = "wolf_lean"
-                state.beliefs[target].trust = max(0.0, state.beliefs[target].trust - 0.03)
+                belief = state.beliefs[target]
+                belief.faction_lean = "wolf_lean"
+                belief.trust = max(0.0, belief.trust - 0.03)
+                # Boost werewolf probability so top_role_guess converges
+                if "werewolf" in belief.role_probabilities:
+                    belief.role_probabilities["werewolf"] = min(
+                        1.0, belief.role_probabilities["werewolf"] + 0.4
+                    )
+                    # Renormalize
+                    total = sum(belief.role_probabilities.values())
+                    if total > 0:
+                        for r in belief.role_probabilities:
+                            belief.role_probabilities[r] /= total
             if source and source in state.beliefs:
                 state.beliefs[source].trust = min(1.0, state.beliefs[source].trust + 0.02)
         elif "good" in val or "好人" in val or "金水" in val:

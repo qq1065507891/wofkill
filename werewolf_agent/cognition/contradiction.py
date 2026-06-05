@@ -61,7 +61,21 @@ class ContradictionEngine:
         facts: list[StructuredFact],
         current_day: int,
     ) -> list[ContradictionAlert]:
-        """Detect when a player defends then attacks the same target."""
+        """Detect when a player reverses their public stance on the same target.
+
+        Iterates over claim facts with `fact_type.startswith("claimed_")`
+        (produced by the speech extractor in world_state.py: claimed_role,
+        claimed_suspect, claimed_good, seer_check_claim, badge_flow_claim).
+        For each (player, target) pair, collects the values across all claim
+        days. A "stance reversal" fires when the player has BOTH a "good"/
+        "good_lean" claim AND a "wolf"/"wolf_lean"/"werewolf" claim for the
+        same target on different days — e.g. p01 "is gold water" on D1 but
+        p01 "is wolf" on D2.
+
+        A self-claim like claimed_role(target=player) cannot match because
+        has_good and has_wolf require opposing faction values, neither of
+        which appears in role claims ("seer"/"witch"/...).
+        """
         alerts: list[ContradictionAlert] = []
         # Collect speech facts by player
         speeches_by_player: dict[str, list[StructuredFact]] = {}

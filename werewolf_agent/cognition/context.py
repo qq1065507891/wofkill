@@ -18,7 +18,7 @@ from werewolf_agent.cognition.contradiction import ContradictionAlert, Contradic
 from werewolf_agent.cognition.salience import SalienceEngine, SalientFact
 from werewolf_agent.cognition.strategy import StrategyPackage, StrategySelector
 from werewolf_agent.cognition.visibility import VisibilityPolicy
-from werewolf_agent.cognition.world_state import StructuredFact, StructuredWorldState, build_world_state
+from werewolf_agent.cognition.world_state import StructuredFact, build_world_state
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.visible_state import (
     build_public_summary,
@@ -167,8 +167,14 @@ class LocalContextBuilder:
                         teammate_exiled = True
                         break
 
+        # --- Hybrid's faction_goal: help master's faction (any master) ---
+        faction_goal = ""
+        if viewer_role == "hybrid" and game_state.hybrid_master_faction:
+            faction_goal = "help_master_faction"
+
         strategy = self._strategy.select(
             role=viewer_role,
+            faction_goal=faction_goal,
             persona_style=persona_style,
             is_suspected=is_suspected,
             teammate_just_exiled=teammate_exiled,

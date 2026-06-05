@@ -68,7 +68,6 @@ _FACT_VISIBILITY_MAP: dict[str, str] = {
     "badge_torn": "public",
     "speech": "public",
     "vote": "public",
-    "claimed_claim": "public",  # 来自 salience.py 中 vote bucket 的通用声称类型
     "claimed_role": "public",
     "claimed_suspect": "public",
     "claimed_good": "public",
@@ -76,7 +75,6 @@ _FACT_VISIBILITY_MAP: dict[str, str] = {
     "badge_flow_claim": "public",
 
     # Wolf team private
-    "wolf_kill_target": "wolf_team",
     "wolf_kill_selected": "wolf_team",
     "wolf_no_kill_declared": "wolf_team",
     "wolf_no_kill_timeout": "wolf_team",
@@ -92,12 +90,6 @@ _FACT_VISIBILITY_MAP: dict[str, str] = {
 
     # Hybrid private
     "hybrid_master_chosen": "hybrid_private",
-
-    # Hunter private
-    "hunter_can_shoot": "hunter_private",
-
-    # Idiot private
-    "idiot_reveal_status": "idiot_private",
 }
 
 # What each role can see

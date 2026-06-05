@@ -274,7 +274,6 @@ class TestVisibilityPolicy:
         ws.append(StructuredFact(fact_type="witch_antidote_used", target_player="p05", value="antidote_saved"))
         ws.append(StructuredFact(fact_type="witch_poison_used", target_player="p06", value="poison_killed"))
         ws.append(StructuredFact(fact_type="hybrid_master_chosen", source_player="p12", target_player="p05"))
-        ws.append(StructuredFact(fact_type="wolf_kill_target", target_player="p05"))
         ws.append(StructuredFact(fact_type="wolf_discussion", value="discussing"))
         return ws
 
@@ -290,7 +289,6 @@ class TestVisibilityPolicy:
         assert "seer_check" not in visible_types
         assert "witch_antidote_used" not in visible_types
         assert "hybrid_master_chosen" not in visible_types
-        assert "wolf_kill_target" not in visible_types
         assert "wolf_discussion" not in visible_types
 
     def test_seer_sees_own_checks(self):
@@ -320,7 +318,6 @@ class TestVisibilityPolicy:
         policy = VisibilityPolicy()
         visible = policy.filter_visible_facts(ws, "p01", "werewolf")
         visible_types = {f.fact_type for f in visible}
-        assert "wolf_kill_target" in visible_types
         assert "wolf_discussion" in visible_types
         assert "player_died" in visible_types
         # Cannot see seer checks or witch potions
@@ -418,6 +415,61 @@ class TestVisibilityPolicy:
         assert not passed
         assert len(leaks) == 1
         assert "seer_check" in leaks[0]
+
+    def test_fact_visibility_map_only_contains_produced_fact_types(self):
+        """Regression for COG-3-07: the visibility map must not list fact types
+        that are never produced by world_state extractors.
+
+        Pre-fix, "wolf_kill_target" and "idiot_reveal_status" were in the map
+        but no extractor ever produced them. If a future producer starts
+        emitting those types, they'd be silently routed (and could leak), so
+        we enforce the "no stale entries" invariant with this test.
+        """
+        from werewolf_agent.cognition.visibility import _FACT_VISIBILITY_MAP
+        # Drive every extractor with one event each, plus a speech that
+        # exercises all claim-fact subtypes and a wolf_kill_selected that
+        # produces both wolf_kill_selected + witch_kill_target.
+        events = [
+            GameEvent(type="player_died", payload={"player_id": "p05", "reason": "wolf_kill"}),
+            GameEvent(type="idiot_revealed", payload={"player_id": "p11"}),
+            GameEvent(type="player_exiled", payload={"player_id": "p05"}),
+            GameEvent(type="werewolf_self_destructed", payload={"player_id": "p01"}),
+            GameEvent(type="hybrid_master_chosen", payload={"hybrid_id": "p12", "master_id": "p05"}),
+            GameEvent(type="sheriff_elected", payload={"sheriff_id": "p08"}),
+            GameEvent(type="sheriff_registered", payload={"candidates": ["p08", "p01"]}),
+            GameEvent(type="sheriff_withdraw", payload={"withdrew": ["p01"]}),
+            GameEvent(type="sheriff_vote_tie", payload={"day_number": 1}),
+            GameEvent(type="sheriff_vote_tie_first", payload={"day_number": 1, "candidates": ["p05"]}),
+            GameEvent(type="badge_transferred", payload={"from": "p08", "to": "p05"}),
+            GameEvent(type="badge_torn", payload={"sheriff_id": "p08"}),
+            GameEvent(type="witch_antidote_used", payload={"target_id": "p05"}),
+            GameEvent(type="witch_poison_used", payload={"target_id": "p06"}),
+            GameEvent(type="wolf_kill_selected", payload={"target_id": "p05", "night_number": 1}),
+            GameEvent(type="wolf_no_kill_declared", payload={"night_number": 1, "reason": "x"}),
+            GameEvent(type="wolf_no_kill_timeout", payload={"night_number": 2}),
+            GameEvent(type="wolf_discussion", payload={"text": "x"}),
+            # speech that triggers every claim subtype
+            GameEvent(type="speech", payload={
+                "speaker": "p08", "day_number": 1, "phase": "speech",
+                "text": (
+                    "我是预言家 查杀p01 p02是狼人 p03是金水 "
+                    "给p04发金水 警徽流p05 p07 怀疑p06是狼人"
+                ),
+            }),
+            GameEvent(type="sheriff_speech", payload={"speaker": "p08", "text": "x", "day_number": 1}),
+            GameEvent(type="vote", payload={"voter": "p05", "target": "p01", "day_number": 1}),
+            GameEvent(type="seer_check", payload={"target_id": "p01", "alignment": "werewolf", "night_number": 1}),
+            GameEvent(type="sheriff_no_election", payload={}),
+        ]
+        ws = build_world_state(_make_state(events=events))
+        produced = {f.fact_type for f in ws.facts}
+        # Map keys must be a subset of produced fact types
+        stale = set(_FACT_VISIBILITY_MAP.keys()) - produced
+        assert not stale, (
+            f"_FACT_VISIBILITY_MAP has stale entries not produced by any "
+            f"world_state extractor: {sorted(stale)}. Remove them so the "
+            f"fail-closed default (moderator_only) applies."
+        )
 
 
 # ===================================================================
@@ -532,6 +584,27 @@ class TestBeliefUpdater:
         assert state.beliefs["p02"].role_probabilities["idiot"] == 1.0
         assert state.beliefs["p02"].faction_lean == "good_lean"
 
+    def test_idiot_reveal_preserves_all_role_keys(self):
+        """Idiot reveal must keep all 7 role keys; only the idiot slot becomes 1.0.
+
+        Pre-fix, _apply_idiot_reveal set role_probabilities={"idiot": 1.0},
+        dropping the other 6 role keys. Any consumer that iterated over the
+        dict (e.g. top_role_guess, distribution-aware prompts) would break
+        because the invariant "all roles present" was violated.
+        """
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03"], "p01")
+        fact = StructuredFact(fact_type="idiot_revealed", target_player="p02")
+        state = updater.update(state, [fact], 1)
+        prob = state.beliefs["p02"].role_probabilities
+        # All role keys must still be present
+        expected_roles = {"villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid"}
+        assert set(prob.keys()) == expected_roles
+        # Idiot is 1.0, all others are 0.0
+        assert prob["idiot"] == 1.0
+        for r in expected_roles - {"idiot"}:
+            assert prob[r] == 0.0
+
     def test_role_claim_shifts_probabilities(self):
         updater = BeliefUpdater()
         state = updater.initialize(["p01", "p02", "p03"], "p01")
@@ -562,6 +635,35 @@ class TestBeliefUpdater:
         role, conf = belief.top_role_guess()
         assert role in ("villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid")
         assert conf > 0
+
+    def test_seer_claim_updates_role_probabilities(self):
+        """Seer-claim (查杀) must boost the target's werewolf probability.
+
+        Pre-fix, _apply_seer_claim only mutated faction_lean and trust, so
+        top_role_guess() still returned near-uniform (the dominant role was
+        whichever the random uniform gave a slight edge to). After the fix,
+        a 查杀 claim should make werewolf the top-role guess for the target.
+        """
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03"], "p01")
+        initial_wolf_prob = state.beliefs["p03"].role_probabilities["werewolf"]
+        # Simulate a seer-claim fact: p02 (claiming seer) says p03 is wolf
+        fact = StructuredFact(
+            fact_type="seer_check_claim",
+            source_player="p02",
+            target_player="p03",
+            value="wolf",
+            day=1,
+        )
+        state = updater.update(state, [fact], 1)
+        boosted = state.beliefs["p03"].role_probabilities["werewolf"]
+        assert boosted > initial_wolf_prob + 0.1  # substantial boost
+        # Renormalized
+        total = sum(state.beliefs["p03"].role_probabilities.values())
+        assert abs(total - 1.0) < 0.01
+        # top_role_guess now points to werewolf
+        top_role, top_conf = state.beliefs["p03"].top_role_guess()
+        assert top_role == "werewolf"
 
 
 # ===================================================================
@@ -798,6 +900,34 @@ class TestLocalContextBuilder:
             legal_targets=[],
         )
         assert ctx.visible_world_state.get("master_id") == "p05"
+
+    def test_hybrid_wolf_master_receives_deep_hook(self):
+        """Hybrid whose master is a werewolf must default to deep_hook strategy.
+
+        Without wiring `faction_goal` from context.py to strategy.select,
+        the hybrid's base role default (survive_lay_low) wins regardless of
+        the master's faction. This is the COG-3-02 bug.
+        """
+        builder = self._make_builder()
+        state = GameState(
+            players={
+                "p12": PlayerState(id="p12", role="hybrid"),
+                "p01": PlayerState(id="p01", role="werewolf"),
+            },
+            hybrid_master_id="p01",
+            hybrid_master_faction="werewolf",
+            day_number=1, night_number=1,
+        )
+        ctx, _ = builder.build(
+            game_state=state,
+            viewer_id="p12",
+            viewer_role="hybrid",
+            task_type=TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=[],
+        )
+        # Hybrid with wolf master must use deep_hook, not survive_lay_low
+        assert ctx.strategy_directive["package"] == "deep_hook"
 
     def test_seer_sees_check_results(self):
         builder = self._make_builder()
