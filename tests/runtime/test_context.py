@@ -1708,3 +1708,35 @@ def test_inject_skill_output_passes_gs_to_dispatch(monkeypatch) -> None:
         f"context.py:520-522 is missing the gs= keyword — so hybrid "
         f"wolf-master dispatch breaks in production."
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S16-A: dead code (wolf_role computation) removed from context.py.
+# ---------------------------------------------------------------------------
+
+
+def test_wolf_role_computation_removed() -> None:
+    """NEW-S16-A: the `wolf_role = None` block was dead code — the
+    wolf-role skip moved into the handler (S-16). The variable was
+    computed but never read. Assert the source no longer contains the
+    dead block.
+    """
+    from werewolf_agent.runtime import context as context_mod
+    import inspect
+    import re as _re
+    src = inspect.getsource(context_mod._inject_skill_output)
+    # Strip line comments so explanatory comments don't false-positive.
+    code_lines = [
+        ln for ln in src.splitlines()
+        if ln.lstrip().startswith("#") is False
+    ]
+    code = "\n".join(code_lines)
+    assert "wolf_role = None" not in code, (
+        f"NEW-S16-A: dead code `wolf_role = None` must be removed. "
+        f"Found in _inject_skill_output."
+    )
+    # Also assert the for-loop scanning wolf_team_plan is gone.
+    assert 'for role_key in ("fake_seer", "pusher", "hooker", "deep_cover")' not in code, (
+        f"NEW-S16-A: dead wolf-team-role scanning loop must be removed. "
+        f"Found in _inject_skill_output."
+    )

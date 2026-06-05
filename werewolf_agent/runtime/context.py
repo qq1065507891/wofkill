@@ -524,13 +524,12 @@ def _inject_skill_output(
         player.role, task_type, skill_input, task_type=task_type, gs=gs,
     )
 
-    # Filter skills that conflict with wolf team role assignment
-    wolf_role = None
-    if wolf_team_plan and player.role == "werewolf":
-        for role_key in ("fake_seer", "pusher", "hooker", "deep_cover"):
-            if wolf_team_plan.get(role_key) == player_id:
-                wolf_role = role_key
-                break
+    # NEW-S16-A: the dead-code block that computed `wolf_role` (and
+    # the `for role_key in ("fake_seer", "pusher", "hooker", ...)`
+    # loop scanning wolf_team_plan) was removed. S-16 moved the
+    # wolf-role skip into the handler (bold_claim, deep_hook,
+    # swing_vote) — context.py must not re-implement it. The variable
+    # was computed but never read, so it is removed entirely.
 
     parts: list[str] = []
 
