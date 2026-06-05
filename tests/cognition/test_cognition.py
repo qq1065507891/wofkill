@@ -563,6 +563,35 @@ class TestBeliefUpdater:
         assert role in ("villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid")
         assert conf > 0
 
+    def test_seer_claim_updates_role_probabilities(self):
+        """Seer-claim (查杀) must boost the target's werewolf probability.
+
+        Pre-fix, _apply_seer_claim only mutated faction_lean and trust, so
+        top_role_guess() still returned near-uniform (the dominant role was
+        whichever the random uniform gave a slight edge to). After the fix,
+        a 查杀 claim should make werewolf the top-role guess for the target.
+        """
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03"], "p01")
+        initial_wolf_prob = state.beliefs["p03"].role_probabilities["werewolf"]
+        # Simulate a seer-claim fact: p02 (claiming seer) says p03 is wolf
+        fact = StructuredFact(
+            fact_type="seer_check_claim",
+            source_player="p02",
+            target_player="p03",
+            value="wolf",
+            day=1,
+        )
+        state = updater.update(state, [fact], 1)
+        boosted = state.beliefs["p03"].role_probabilities["werewolf"]
+        assert boosted > initial_wolf_prob + 0.1  # substantial boost
+        # Renormalized
+        total = sum(state.beliefs["p03"].role_probabilities.values())
+        assert abs(total - 1.0) < 0.01
+        # top_role_guess now points to werewolf
+        top_role, top_conf = state.beliefs["p03"].top_role_guess()
+        assert top_role == "werewolf"
+
 
 # ===================================================================
 # TestContradictionEngine
