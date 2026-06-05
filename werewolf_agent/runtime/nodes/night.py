@@ -453,15 +453,11 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
         for event in gs.events
     )
     for ev in events:
-        if ev.type == "wolf_kill":
-            target = ev.payload.get("player_id", "?")
-            saved = ev.payload.get("saved_by_antidote", False)
-            if saved:
-                logger.debug(f"  [夜晚结算] {_player_display(state, target)} 被狼人袭击，但被女巫救活")
-            else:
-                logger.debug(f"  [夜晚结算] {_player_display(state, target)} 被狼人袭击身亡")
-        elif ev.type == "poison_death":
-            logger.debug(f"  [夜晚结算] {_player_display(state, ev.payload.get('player_id', '?'))} 被女巫毒杀")
+        if ev.type == "witch_antidote_used":
+            target = ev.payload.get("target_id", "?")
+            logger.debug(f"  [夜晚结算] {_player_display(state, target)} 被狼人袭击，但被女巫解药救活")
+        elif ev.type == "witch_poison_used":
+            logger.debug(f"  [夜晚结算] {_player_display(state, ev.payload.get('target_id', '?'))} 被女巫毒杀")
         elif ev.type == "seer_check":
             target = ev.payload.get("target_id", "?")
             alignment = ev.payload.get("alignment", "?")
@@ -473,8 +469,6 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
                 visibility="seer_private",
             )
             logger.debug(f"  [夜晚结算] 预言家查验 {_player_display(state, target)}: {'好人' if alignment == 'good' else '狼人'}")
-        elif ev.type == "no_death":
-            logger.debug(f"  [夜晚结算] 平安夜，无人死亡")
     if seer_woke:
         gs, _ = _judge_broadcast(
             phase="seer_sleep",
