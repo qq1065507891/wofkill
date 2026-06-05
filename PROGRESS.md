@@ -26,7 +26,7 @@ Authoritative rule source: `docs/design/werewolf-agent-v1-design.md` Ch. 3 (no r
 | J-11 | Peaceful night broadcast missing `public_data` | DONE (earlier in branch) | bcdbcfb | `judge.py` |
 | J-12 | `_cmd_show_votes` filters by stale event types | DONE | c4956e8 | `judge_hitl.py` + test |
 | J-13 | Judge profile lacks public-only boundary | DONE | 5cad626 | `config/personas/judge_profiles.yaml` + test |
-| J-14 | `should_pause` direction param consistency | ACTIVE (coverage test) | pending | `judge_hitl.py` (test only) |
+| J-14 | `should_pause` direction param consistency | DONE | 01db2ff | `judge_hitl.py` (test only) + `test_judge_flow.py` cleanup |
 
 ### Workflow
 
@@ -2206,3 +2206,25 @@ safe no-op.
   architectural move is still correct: system prompt is now
   shorter regardless, and tests use phase="speech" to verify
   the placement works.
+
+### Final results (2026-06-05)
+
+| # | New tests | Commit | Notes |
+|---|-----------|--------|-------|
+| J-12 | 3 | c4956e8 | TDD red→green; filter widened to 4 event types |
+| J-13 | 3 | 5cad626 | TDD red→green; YAML contract; had to fix sentinel to span the verb "能" |
+| J-14 | 3 | 01db2ff | Coverage-only; J-7 followup test_persona_inject_prepends_prompt also fixed |
+
+**Total tests added: 9** (3 per J-12, J-13, J-14).
+
+**Full suite (all non-integration):** 2418 passed, 0 failed.
+
+### Test counts per checkpoint
+
+| Stage | `tests/agents/` | Full suite (`tests/`, no integration) |
+|-------|-----------------|----------------------------------------|
+| Pre-work (J-7..J-11 baseline on this branch) | 493 | ~2400 |
+| After J-12 (c4956e8) | 496 | — |
+| After J-13 (5cad626) | 499 | — |
+| After J-14 (01db2ff) | 502 | 2418 |
+
