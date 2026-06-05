@@ -98,12 +98,19 @@ def build_wolf_directive(
         fake_seer = wolf_team_plan.get("fake_seer") if wolf_team_plan else None
         fake_seer_spoke = fake_seer and _has_publicly_claimed_seer(gs, fake_seer)
         if fake_seer_spoke:
-            parts["wolf_universal_rules"] += (
-                "6) 你的队友{fake_seer}已经在公开场合跳了预言家。"
+            # D-10: substitute the teammate name via plain str.replace so
+            # a leftover ``{fake_seer}`` placeholder can never leak
+            # through.  str.format() is brittle here because the rest of
+            # ``wolf_universal_rules`` already contains Chinese
+            # punctuation that could collide with the format engine
+            # if any other placeholder ever appears upstream.
+            teammate_clause = (
+                f"6) 你的队友{fake_seer}已经在公开场合跳了预言家。"
                 "你可以像普通好人一样站边TA、引用TA的查验结果——"
                 "这对其他好人来说是正常的信息接收行为，不会暴露你的身份。"
                 "不要表现出比普通好人更了解TA的真实身份。"
-            ).format(fake_seer=fake_seer)
+            )
+            parts["wolf_universal_rules"] += teammate_clause
         else:
             parts["wolf_universal_rules"] += (
                 "6) 【严禁信息穿越】你不能使用你作为狼人的未来信息。"
@@ -179,10 +186,15 @@ def build_wolf_directive(
         for f in _ws.facts_of_type("seer_check_claim"):
             val = (f.value or "").lower()
             if ("wolf" in val or "狼" in (f.value or "")) and f.target_player in wolf_teammates:
+                # D-11: drop the dead ``f.night`` reference and the
+                # defensive ``hasattr`` shim.  Fact rows in the
+                # world_state schema carry a single ``day`` attribute
+                # for the round reference; if it's missing we render
+                # an empty string rather than crash.
                 teammate_checked.append({
                     "target": f.target_player,
                     "seer": f.source_player,
-                    "night": f.day or f.night if hasattr(f, 'night') else "",
+                    "night": getattr(f, "day", "") or "",
                 })
     except Exception:
         logger.warning("Failed to check teammate-exposure claims", exc_info=True)
