@@ -29,6 +29,7 @@ def _make_gs(**kwargs) -> GameState:
             for i in range(1, 13)
         }),
         sheriff_id=kwargs.get("sheriff_id"),
+        events=kwargs.get("events", []),
     )
 
 
@@ -59,6 +60,66 @@ class TestHITLCommand:
         assert "judge_agent" not in sig.parameters, (
             "J-10: judge_agent must be removed (unused storage)"
         )
+
+
+class TestShowVotesResolved:
+    """J-12: `_cmd_show_votes` must surface `vote_resolved` and
+    `sheriff_vote_resolved` events, not just the bare `vote` /
+    `sheriff_vote` types. The runtime emits `vote_resolved` for
+    day votes and (per the design) `sheriff_vote_resolved` for
+    sheriff elections — both are the actual public record the
+    human asks to inspect with `show_votes`.
+    """
+
+    def test_show_votes_returns_resolved_votes(self) -> None:
+        """J-12: a GameState carrying a `vote_resolved` event must
+        be reflected in `show_votes` output."""
+        hitl = JudgeHITLInterface()
+        gs = _make_gs(
+            events=[
+                GameEvent(type="vote_resolved", payload={
+                    "tally": {"p03": 5.0, "p07": 3.0},
+                    "exiled": "p03",
+                }),
+            ],
+        )
+        result = hitl.handle_command(HITLCommand.parse("show_votes"), gs)
+        assert "暂无投票记录" not in result["response"], (
+            f"J-12: vote_resolved event must surface in show_votes; "
+            f"got: {result['response']!r}"
+        )
+        assert "vote_resolved" in result["response"]
+        assert "p03" in result["response"]
+
+    def test_show_votes_returns_sheriff_vote_resolved(self) -> None:
+        """J-12: a `sheriff_vote_resolved` event must also surface."""
+        hitl = JudgeHITLInterface()
+        gs = _make_gs(
+            events=[
+                GameEvent(type="sheriff_vote_resolved", payload={
+                    "tally": {"p05": 4.0, "p08": 2.0},
+                    "elected": "p05",
+                }),
+            ],
+        )
+        result = hitl.handle_command(HITLCommand.parse("show_votes"), gs)
+        assert "sheriff_vote_resolved" in result["response"], (
+            f"J-12: sheriff_vote_resolved must surface; got: {result['response']!r}"
+        )
+        assert "p05" in result["response"]
+
+    def test_show_votes_returns_legacy_vote_type(self) -> None:
+        """J-12 regression: legacy `vote` / `sheriff_vote` events
+        must still surface — the fix is additive."""
+        hitl = JudgeHITLInterface()
+        gs = _make_gs(
+            events=[
+                GameEvent(type="vote", payload={"voter": "p01", "target": "p07"}),
+            ],
+        )
+        result = hitl.handle_command(HITLCommand.parse("show_votes"), gs)
+        assert "vote" in result["response"]
+        assert "p07" in result["response"]
 
 
 class TestJudgeHITLInterface:

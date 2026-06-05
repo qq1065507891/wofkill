@@ -292,8 +292,15 @@ class JudgeHITLInterface:
         return {"response": "\n".join(lines)}
 
     def _cmd_show_votes(self, args: list[str], gs: GameState) -> dict[str, Any]:
-        """Show recent vote events from the event log."""
-        vote_events = [e for e in gs.events if e.type in ("vote", "sheriff_vote")]
+        """Show recent vote events from the event log.
+
+        J-12: filter covers the resolved variants emitted by the runtime
+        (``vote_resolved`` for day votes, ``sheriff_vote_resolved`` for
+        sheriff elections) plus the legacy bare ``vote`` / ``sheriff_vote``
+        types so older traces keep working.
+        """
+        vote_types = ("vote_resolved", "sheriff_vote_resolved", "vote", "sheriff_vote")
+        vote_events = [e for e in gs.events if e.type in vote_types]
         if not vote_events:
             return {"response": "暂无投票记录。"}
         lines = [f"投票记录 ({len(vote_events)}条):"]
