@@ -120,3 +120,108 @@ class TestWolfDirectiveNoUnfilledPlaceholders:
         assert "{fake_seer}" not in rules
         # The teammate name must be substituted in
         assert "w2" in rules
+
+
+class TestDeathCauseLabelD5:
+    """D-5: death-cause evaluation label is `[公开判断]` (not `[需判断]`)
+    for villager / hunter / idiot / hybrid.  Villager branch must
+    explicitly say the player has no private info."""
+
+    def test_villager_death_cause_uses_public_label(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.strategy.death import evaluate_death_cause_claims
+
+        players = {
+            "v1": PlayerState(id="v1", role="villager"),
+            "p01": PlayerState(id="p01", role="werewolf"),
+            "witch": PlayerState(id="witch", role="witch"),
+        }
+        events = [
+            GameEvent(type="speech", payload={
+                "speaker": "witch", "text": "我毒了p01", "day_number": 2,
+            }),
+        ]
+        gs = GameState(
+            game_id="villager_death_label_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=events,
+            poison_used=True,
+        )
+        evals = evaluate_death_cause_claims(gs, "v1", "villager")
+        assert evals
+        # Pre-fix used `[需判断]`; new label is `[公开判断]`.
+        assert any("[公开判断]" in e for e in evals)
+        # Villager branch must explicitly say no private info.
+        joined = " ".join(evals)
+        assert "无" in joined and ("信息" in joined or "私有" in joined)
+
+
+class TestNegationExcludedFromClaimedSeerD6:
+    """D-6: denial-of-seer claims must NOT count as a public seer claim."""
+
+    def test_negation_excluded_from_claimed_seer(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.strategy.wolf import (
+            has_publicly_claimed_seer,
+            evaluate_wolf_kill_target,
+        )
+
+        players = {
+            "p01": PlayerState(id="p01", role="werewolf"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+            "p03": PlayerState(id="p03", role="werewolf"),
+            "p04": PlayerState(id="p04", role="werewolf"),
+            "v1": PlayerState(id="v1", role="villager"),
+            "seer": PlayerState(id="seer", role="seer"),
+        }
+        events = [
+            GameEvent(type="speech", payload={
+                "speaker": "v1", "text": "我不是预言家", "day_number": 1,
+            }),
+        ]
+        gs = GameState(
+            game_id="negation_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=events,
+        )
+        # v1 explicitly DENIED being seer — must NOT count as a claim.
+        assert has_publicly_claimed_seer(gs, "v1") is False
+
+        # And the wolf kill scorer must not score v1 as claimed_seer.
+        result = evaluate_wolf_kill_target(gs, "p01", ["v1", "seer"])
+        assert result is not None
+        v1_entry = next(
+            (t for t in result["ranked_targets"] if t["target"] == "v1"), None
+        )
+        assert v1_entry is not None
+        assert "claimed_seer" not in v1_entry["signals"], (
+            "negated seer claim must not score v1 as claimed_seer; "
+            f"got signals: {v1_entry['signals']}"
+        )
+
+    def test_affirmative_seer_claim_still_counts(self) -> None:
+        """Sanity guard: an affirmative claim still triggers claimed_seer."""
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.strategy.wolf import has_publicly_claimed_seer
+
+        players = {
+            "seer": PlayerState(id="seer", role="seer"),
+            "v1": PlayerState(id="v1", role="villager"),
+        }
+        events = [
+            GameEvent(type="speech", payload={
+                "speaker": "seer", "text": "我是预言家，昨晚查了v1是好人", "day_number": 1,
+            }),
+        ]
+        gs = GameState(
+            game_id="affirm_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=events,
+        )
+        assert has_publicly_claimed_seer(gs, "seer") is True

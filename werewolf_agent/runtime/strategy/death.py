@@ -155,8 +155,38 @@ def evaluate_death_cause_claims(
                     eval_text = f"[需判断] {speaker}称{target}死因{label}——你未查验{speaker}，需从逻辑一致性判断"
 
             # -- Commoner perspective (villager / hunter / idiot / hybrid) --
+            # D-5: rename the `[需判断]` label to `[公开判断]` and make
+            # the villager no-private-info framing explicit.  Pre-fix
+            # the label was misleading (it sounded like the evaluator
+            # was unable to judge) and did not call out that the
+            # villager-side branch is the public-only default.
             else:
-                eval_text = f"[需判断] {speaker}称{target}死因{label}——你无私有信息可验证，需判断{speaker}发言逻辑是否自洽、是否有矛盾"
+                if player_role == "villager":
+                    eval_text = (
+                        f"[公开判断] {speaker}称{target}死因{label}——"
+                        f"作为村民你无任何私有信息可验证，只能基于"
+                        f"公开发言/票型/逻辑一致性判断{speaker}是否可信"
+                    )
+                elif player_role == "hunter":
+                    eval_text = (
+                        f"[公开判断] {speaker}称{target}死因{label}——"
+                        f"作为猎人你无验人/药水信息，只能从公开逻辑判断"
+                    )
+                elif player_role == "idiot":
+                    eval_text = (
+                        f"[公开判断] {speaker}称{target}死因{label}——"
+                        f"作为白痴你无私有信息，只能从公开逻辑判断"
+                    )
+                elif player_role == "hybrid":
+                    eval_text = (
+                        f"[公开判断] {speaker}称{target}死因{label}——"
+                        f"作为混血儿你无验人/药水信息，只能从公开逻辑判断"
+                    )
+                else:
+                    eval_text = (
+                        f"[公开判断] {speaker}称{target}死因{label}——"
+                        f"你无私有信息可验证，需判断{speaker}发言逻辑是否自洽、是否有矛盾"
+                    )
 
             if eval_text:
                 already_exists = any(eval_text in e for e in evaluations)

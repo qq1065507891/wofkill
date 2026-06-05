@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.strategy.seer import public_seer_claimants
 
 logger = logging.getLogger(__name__)
+
+# D-6: negation words that flip a power-role claim into a denial.
+# Mirrors the helper in strategy/wolf.py so a denied claim
+# ("我不是女巫" / "我没查验" / "否认我是预言家") is not treated as
+# an affirmative "claimed_power_role" signal.
+_NEGATION_WORDS = ("不是", "不", "否认", "反", "否定", "没", "无", "非")
+_NEGATION_RE = re.compile(
+    r"(?:" + "|".join(re.escape(w) for w in _NEGATION_WORDS) + r")[^，。,.\n]{0,6}"
+    r"(?:预言家|女巫|猎人|seer|witch|hunter|查杀|金水|验了|查验)",
+    re.IGNORECASE,
+)
+
+
+def _speech_is_negated(text: str) -> bool:
+    if not text:
+        return False
+    return bool(_NEGATION_RE.search(text))
 
 
 def evaluate_hunter_shot_target(
@@ -93,6 +111,12 @@ def evaluate_hunter_shot_target(
             if e.payload.get("speaker") != pid:
                 continue
             claims = e.payload.get("claims") or []
+            # D-6: skip negated power-role claims.  A speech that
+            # says "我不是女巫" or "否认我是预言家" must not score
+            # as a positive claim.
+            text = str(e.payload.get("text", ""))
+            if _speech_is_negated(text):
+                continue
             for claim in claims:
                 if claim.get("type") == "role" and claim.get("value") in (
                     "seer", "witch", "hunter",
