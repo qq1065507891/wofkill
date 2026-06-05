@@ -333,6 +333,45 @@ class TestFallbackModelProfile:
             ModelRouter.from_yaml(yaml_path)
 
 
+class TestRegisterEnvProvidersLogging:
+    def test_register_env_providers_logs_missing(self, caplog) -> None:
+        """R3-MG-8: a configured provider whose API key is absent must
+        produce a WARNING log naming the missing providers.
+        """
+        from unittest.mock import patch
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        # Build a router whose model_profiles requires a provider that
+        # we know won't have a key in test env.
+        router = ModelRouter(
+            model_profiles={
+                "needs_openai": {"provider": "openai", "model": "x"},
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "openai",
+                        "model_profile": "needs_openai",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+        # Patch the re-exported name on the providers package, since
+        # register_env_providers imports from there.
+        with patch(
+            "werewolf_agent.model_gateway.providers.create_provider_from_env",
+            return_value=None,
+        ):
+            with caplog.at_level("WARNING"):
+                router.register_env_providers()
+        assert any(
+            "register_env_providers" in rec.getMessage()
+            and "openai" in rec.getMessage()
+            for rec in caplog.records
+        ), f"expected WARNING naming 'openai', got: {[r.getMessage() for r in caplog.records]}"
+
+
 class TestFormatException:
     def test_format_exception_returns_message(self) -> None:
         from werewolf_agent.model_gateway.router import _format_exception

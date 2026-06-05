@@ -264,14 +264,31 @@ class ModelRouter:
         self._providers[provider.name] = provider
 
     def register_env_providers(self) -> None:
-        """Register configured providers that have API keys in env/.env."""
+        """Register configured providers that have API keys in env/.env.
+
+        R3-MG-8: log a WARNING for every configured provider name that
+        resolves to ``None`` (i.e. its required API key is missing) so
+        silent fallback is at least visible in the log. The pre-R3-MG-8
+        behavior swallowed the None return value and only the
+        downstream ``Provider not found`` error surfaced.
+        """
         from werewolf_agent.model_gateway.providers import create_provider_from_env
 
         provider_names = self._configured_provider_names()
+        missing: list[str] = []
         for provider_name in provider_names:
             provider = create_provider_from_env(provider_name)
             if provider is not None:
                 self.register_provider(provider)
+            else:
+                missing.append(provider_name)
+        if missing:
+            logger.warning(
+                "register_env_providers: %d configured provider(s) had no "
+                "API key in env/.env and were skipped: %s",
+                len(missing),
+                sorted(missing),
+            )
 
     def provider_names(self) -> list[str]:
         return list(self._providers.keys())
