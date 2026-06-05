@@ -628,15 +628,27 @@ class TestJudgePersonaIntegration:
         assert judge._persona_system_prompt() == ""
 
     def test_persona_inject_prepends_prompt(self):
-        """_persona_inject prepends system prompt to the generation prompt."""
+        """_persona_inject returns (user_prompt, system_prompt) tuple.
+
+        J-7: the function no longer concatenates the persona into the
+        user prompt — it returns the user prompt unchanged as the first
+        tuple element and the persona system_prompt as the second.
+        """
         from werewolf_agent.agents.judge import JudgeAgent
         from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
         router = JudgeProfileRouter.from_yaml("config/personas/judge_profiles.yaml")
         judge = JudgeAgent(model_router=None, profile_router=router,
                            profile_id="ancient_mystic")
-        result = judge._persona_inject("请宣布天黑闭眼", "judge_phase")
-        assert "上古玄学" in result or "命运" in result or "神秘" in result
-        assert "请宣布天黑闭眼" in result
+        user_prompt, system_prompt = judge._persona_inject("请宣布天黑闭眼", "judge_phase")
+        # user_prompt is the original prompt unchanged
+        assert user_prompt == "请宣布天黑闭眼"
+        # system_prompt carries the persona — ancient_mystic should match
+        # one of the documented sentinel phrases.
+        assert (
+            "上古玄学" in system_prompt
+            or "命运" in system_prompt
+            or "神秘" in system_prompt
+        )
 
     def test_game_runner_loads_judge_profile_router(self):
         """GameRunner with use_agent_registry loads JudgeProfileRouter."""

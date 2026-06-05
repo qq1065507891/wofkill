@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
-    AgentContext,
     JudgeBroadcast,
     JudgeVoteCallingInput,
     JudgeSkillGuideInput,
@@ -70,12 +69,15 @@ class JudgeAgent:
             return ""
         return persona.system_prompt
 
-    def _persona_inject(self, prompt: str, task_type: str = "judge_phase") -> str:
-        """Prepend persona system prompt to a broadcast generation prompt."""
-        sys_p = self._persona_system_prompt(task_type)
-        if not sys_p:
-            return prompt
-        return f"{sys_p}\n\n{prompt}"
+    def _persona_inject(self, prompt: str, task_type: str = "judge_phase") -> tuple[str, str | None]:
+        """Resolve the persona system prompt and return (user_prompt, system_prompt).
+
+        The persona is returned as a separate system prompt (not concatenated to
+        the user prompt) so downstream LLM providers can route it through the
+        native system role instead of burying it in user content.
+        """
+        sys_p = self._persona_system_prompt(task_type) or None
+        return prompt, sys_p
 
     def broadcast_phase(
         self,
@@ -135,6 +137,7 @@ class JudgeAgent:
                 message=f"{phase_label('day', day_number)}：昨夜是平安夜，无人倒牌。",
                 phase="day",
                 day_number=day_number,
+                public_data={"death_count": 0, "death_ids": ""},
             )
 
         dead_names = []
@@ -148,7 +151,10 @@ class JudgeAgent:
             message=msg,
             phase="day",
             day_number=day_number,
-            public_data={"deaths": deaths},
+            public_data={
+                "death_count": len(dead_names),
+                "death_ids": ",".join(dead_names),
+            },
         )
 
     def broadcast_vote_calling(
@@ -185,11 +191,12 @@ class JudgeAgent:
                 f"可投票目标：{', '.join(candidates) if candidates else '任意存活玩家'}。\n"
                 f"只输出唱票台词，不要输出其他内容。"
             )
-            prompt = self._persona_inject(prompt, "judge_vote_calling")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_vote_calling")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -254,11 +261,12 @@ class JudgeAgent:
                 f"请用叙事化的中文引导该玩家做出选择。不要替玩家做决定。\n"
                 f"只输出引导台词，不要输出其他内容。"
             )
-            prompt = self._persona_inject(prompt, "judge_skill_guide")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_skill_guide")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -293,13 +301,23 @@ class JudgeAgent:
             mark = f"（警长{ sheriff_weight }票）" if is_sheriff else ""
             lines.append(f"  {name}: {weight}票{mark}")
         fallback = f"{label} 投票结果：\n" + "\n".join(lines) if lines else f"{label} 投票结束。"
+        # Flatten tally into scalar public_data (avoid nested dict per J-8)
+        public_data: dict[str, str | int | float | bool] = {
+            "tally_count": int(sum(tally.values())),
+            "tally_top_id": (
+                max(tally.items(), key=lambda x: x[1])[0] if tally else ""
+            ),
+            "tally_top_votes": (
+                max(tally.values()) if tally else 0
+            ),
+        }
         if self.model_router is None:
             return JudgeBroadcast(
                 broadcast_type="vote_tally",
                 message=fallback,
                 phase="vote",
                 day_number=day_number,
-                public_data={"tally": tally},
+                public_data=public_data,
             )
         try:
             tally_text = "；".join(
@@ -311,11 +329,12 @@ class JudgeAgent:
                 f"得票情况：{tally_text}。\n"
                 f"请用简洁的中文宣布投票结果。只输出宣布台词，不要输出其他内容。"
             )
-            prompt = self._persona_inject(prompt, "judge_vote_tally")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_vote_tally")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -323,7 +342,7 @@ class JudgeAgent:
                     message=result.text.strip(),
                     phase="vote",
                     day_number=day_number,
-                    public_data={"tally": tally},
+                    public_data=public_data,
                 )
         except Exception:
             pass
@@ -332,7 +351,7 @@ class JudgeAgent:
             message=fallback,
             phase="vote",
             day_number=day_number,
-            public_data={"tally": tally},
+            public_data=public_data,
         )
 
     def announce_exile_result(
@@ -346,6 +365,11 @@ class JudgeAgent:
         """Announce exile result with narrative flair."""
         label = phase_label("day", day_number)
         tied = tied_player_ids or []
+        public_data: dict[str, str | int | float | bool] = {
+            "exiled_player_id": exiled_player_id or "",
+            "reason": reason,
+            "tied_count": len(tied),
+        }
         if exiled_player_id:
             name = exiled_player_name or exiled_player_id
             fallback = f"{label}：{name} 被放逐出局。"
@@ -361,7 +385,7 @@ class JudgeAgent:
                 message=fallback,
                 phase="vote",
                 day_number=day_number,
-                public_data={"exiled_player_id": exiled_player_id, "reason": reason},
+                public_data=public_data,
             )
         try:
             if exiled_player_id:
@@ -382,11 +406,12 @@ class JudgeAgent:
                 )
             else:
                 prompt = f"你是狼人杀游戏的法官。{label}，投票结束。请用简洁的中文宣布。"
-            prompt = self._persona_inject(prompt, "judge_exile")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_exile")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -394,7 +419,7 @@ class JudgeAgent:
                     message=result.text.strip(),
                     phase="vote",
                     day_number=day_number,
-                    public_data={"exiled_player_id": exiled_player_id, "reason": reason},
+                    public_data=public_data,
                 )
         except Exception:
             pass
@@ -403,77 +428,7 @@ class JudgeAgent:
             message=fallback,
             phase="vote",
             day_number=day_number,
-            public_data={"exiled_player_id": exiled_player_id, "reason": reason},
-        )
-
-    def summarize_speech(
-        self,
-        speeches: list[dict[str, str]],
-        context: AgentContext | None = None,
-    ) -> str:
-        """Summarize a round of speeches for context compression.
-
-        Uses LLM if model_router is configured, otherwise extracts key points.
-        """
-        if not speeches:
-            return "本轮无人发言。"
-
-        if context is not None:
-            if self.model_router is None:
-                # Fallback: extract first sentence of each speech
-                summaries = []
-                for s in speeches:
-                    speaker = s.get("speaker", "?")
-                    text = s.get("text", "")
-                    first_sentence = text.split("。")[0][:80]
-                    summaries.append(f"[{speaker}] {first_sentence}")
-                return "\n".join(summaries)
-            prompt_parts = ["请用中文简要总结以下发言的关键立场和观点：\n"]
-            for s in speeches:
-                speaker = s.get("speaker", "?")
-                text = s.get("text", "")
-                prompt_parts.append(f"[{speaker}]: {text[:200]}")
-            prompt = "\n".join(prompt_parts)
-
-            result = self.model_router.generate(
-                agent_id="judge",
-                task_type="speech",
-                prompt=prompt,
-            )
-            if result.text:
-                return result.text
-
-        # Fallback: extract first sentence of each speech
-        summaries = []
-        for s in speeches:
-            speaker = s.get("speaker", "?")
-            text = s.get("text", "")
-            first_sentence = text.split("。")[0][:80]
-            summaries.append(f"[{speaker}] {first_sentence}")
-        return "\n".join(summaries)
-
-    def broadcast_vote_result(
-        self,
-        vote_result: dict[str, Any],
-    ) -> JudgeBroadcast:
-        """Translate vote resolution to broadcast."""
-        exiled = vote_result.get("exiled_player_id")
-        reason = vote_result.get("reason", "")
-
-        if exiled:
-            msg = f"投票结果：{exiled} 被放逐。"
-        elif reason == "first_tie_pk":
-            msg = "首次平票，进入PK发言。"
-        elif reason == "second_tie_no_exile":
-            msg = "再次平票，无人出局，进入夜晚。"
-        else:
-            msg = "投票结束。"
-
-        return JudgeBroadcast(
-            broadcast_type="vote_result",
-            message=msg,
-            phase="vote",
-            public_data=vote_result,
+            public_data=public_data,
         )
 
     def broadcast_sheriff_result(
@@ -493,5 +448,8 @@ class JudgeAgent:
             broadcast_type="sheriff_result",
             message=msg,
             phase="sheriff_election",
-            public_data={"sheriff_id": sheriff_id, "badge_state": badge_state},
+            public_data={
+                "sheriff_id": sheriff_id or "",
+                "badge_state": badge_state,
+            },
         )

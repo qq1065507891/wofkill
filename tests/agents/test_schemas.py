@@ -129,7 +129,7 @@ class TestJudgeBroadcastSchema:
             message="昨夜p03倒牌。",
             phase="day",
             day_number=2,
-            public_data={"deaths": [{"player_id": "p03"}]},
+            public_data={"death_count": 1, "death_ids": "p03"},
         )
         assert b.broadcast_type == "death_announcement"
         assert b.day_number == 2
@@ -147,6 +147,36 @@ class TestJudgeBroadcastSchema:
                 phase="day",
                 extra_unwanted_field="value",  # type: ignore[call-arg]
             )
+
+    def test_judge_broadcast_rejects_nested_dict_in_public_data(self) -> None:
+        """J-8: public_data values must be scalar (str|int|float|bool), not nested dicts/lists."""
+        with pytest.raises(ValidationError, match="dict_value|public_data|Input should be"):
+            JudgeBroadcast(
+                broadcast_type="death_announcement",
+                message="p03倒牌。",
+                phase="day",
+                public_data={"deaths": [{"player_id": "p03", "reason": "wolf_kill"}]},
+            )
+
+    def test_judge_broadcast_rejects_list_value_in_public_data(self) -> None:
+        """J-8: list values in public_data are not allowed."""
+        with pytest.raises(ValidationError, match="dict_value|public_data|Input should be"):
+            JudgeBroadcast(
+                broadcast_type="death_announcement",
+                message="p03倒牌。",
+                phase="day",
+                public_data={"deaths": ["p03", "p05"]},
+            )
+
+    def test_judge_broadcast_accepts_scalar_public_data(self) -> None:
+        """J-8: scalar values (str|int|float|bool) in public_data are allowed."""
+        b = JudgeBroadcast(
+            broadcast_type="death_announcement",
+            message="p03倒牌。",
+            phase="day",
+            public_data={"death_count": 1, "death_ids": "p03", "is_peaceful": False},
+        )
+        assert b.public_data == {"death_count": 1, "death_ids": "p03", "is_peaceful": False}
 
 
 # ---------------------------------------------------------------------------
