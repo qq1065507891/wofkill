@@ -360,7 +360,12 @@ class PlayerAgent:
                     self.metrics_collector.record(
                         player_id=context.agent_id,
                         task_type=context.task_type.value,
-                        error_code=retry.error_code if retry else "model_generation_failed",
+                        # R3-MG-9: ``retry`` is always truthy on this
+                        # path (we just built a new RetryInfo on line 327
+                        # and stored it in the local). Replace the dead
+                        # ternary with a literal that matches the
+                        # structured_failure_reason branch above.
+                        error_code="model_generation_failed",
                         fallback_used=True,
                         retry_count=attempt,
                     )
