@@ -539,7 +539,7 @@ class JudgeBroadcast(BaseModel):
     phase: str = Field(..., description="Current game phase")
     day_number: int = Field(0, ge=0)
     night_number: int = Field(0, ge=0)
-    public_data: dict[str, Any] = Field(
+    public_data: dict[str, str | int | float | bool] = Field(
         default_factory=dict, description="Structured public data for this broadcast"
     )
 

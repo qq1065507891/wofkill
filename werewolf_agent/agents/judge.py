@@ -138,6 +138,7 @@ class JudgeAgent:
                 message=f"{phase_label('day', day_number)}：昨夜是平安夜，无人倒牌。",
                 phase="day",
                 day_number=day_number,
+                public_data={"death_count": 0, "death_ids": ""},
             )
 
         dead_names = []
@@ -151,7 +152,10 @@ class JudgeAgent:
             message=msg,
             phase="day",
             day_number=day_number,
-            public_data={"deaths": deaths},
+            public_data={
+                "death_count": len(dead_names),
+                "death_ids": ",".join(dead_names),
+            },
         )
 
     def broadcast_vote_calling(
@@ -298,13 +302,23 @@ class JudgeAgent:
             mark = f"（警长{ sheriff_weight }票）" if is_sheriff else ""
             lines.append(f"  {name}: {weight}票{mark}")
         fallback = f"{label} 投票结果：\n" + "\n".join(lines) if lines else f"{label} 投票结束。"
+        # Flatten tally into scalar public_data (avoid nested dict per J-8)
+        public_data: dict[str, str | int | float | bool] = {
+            "tally_count": int(sum(tally.values())),
+            "tally_top_id": (
+                max(tally.items(), key=lambda x: x[1])[0] if tally else ""
+            ),
+            "tally_top_votes": (
+                max(tally.values()) if tally else 0
+            ),
+        }
         if self.model_router is None:
             return JudgeBroadcast(
                 broadcast_type="vote_tally",
                 message=fallback,
                 phase="vote",
                 day_number=day_number,
-                public_data={"tally": tally},
+                public_data=public_data,
             )
         try:
             tally_text = "；".join(
@@ -329,7 +343,7 @@ class JudgeAgent:
                     message=result.text.strip(),
                     phase="vote",
                     day_number=day_number,
-                    public_data={"tally": tally},
+                    public_data=public_data,
                 )
         except Exception:
             pass
@@ -338,7 +352,7 @@ class JudgeAgent:
             message=fallback,
             phase="vote",
             day_number=day_number,
-            public_data={"tally": tally},
+            public_data=public_data,
         )
 
     def announce_exile_result(
@@ -352,6 +366,11 @@ class JudgeAgent:
         """Announce exile result with narrative flair."""
         label = phase_label("day", day_number)
         tied = tied_player_ids or []
+        public_data: dict[str, str | int | float | bool] = {
+            "exiled_player_id": exiled_player_id or "",
+            "reason": reason,
+            "tied_count": len(tied),
+        }
         if exiled_player_id:
             name = exiled_player_name or exiled_player_id
             fallback = f"{label}：{name} 被放逐出局。"
@@ -367,7 +386,7 @@ class JudgeAgent:
                 message=fallback,
                 phase="vote",
                 day_number=day_number,
-                public_data={"exiled_player_id": exiled_player_id, "reason": reason},
+                public_data=public_data,
             )
         try:
             if exiled_player_id:
@@ -401,7 +420,7 @@ class JudgeAgent:
                     message=result.text.strip(),
                     phase="vote",
                     day_number=day_number,
-                    public_data={"exiled_player_id": exiled_player_id, "reason": reason},
+                    public_data=public_data,
                 )
         except Exception:
             pass
@@ -410,7 +429,7 @@ class JudgeAgent:
             message=fallback,
             phase="vote",
             day_number=day_number,
-            public_data={"exiled_player_id": exiled_player_id, "reason": reason},
+            public_data=public_data,
         )
 
     def summarize_speech(
@@ -500,5 +519,8 @@ class JudgeAgent:
             broadcast_type="sheriff_result",
             message=msg,
             phase="sheriff_election",
-            public_data={"sheriff_id": sheriff_id, "badge_state": badge_state},
+            public_data={
+                "sheriff_id": sheriff_id or "",
+                "badge_state": badge_state,
+            },
         )
