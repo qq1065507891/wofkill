@@ -145,7 +145,19 @@ class CaseIngester:
             r"\u72fc.{0,8}(\u6ca1\u5b9a|\u672a\u5b9a|\u6ca1\u6709\u51b3\u5b9a).{0,8}\u5200\u53e3.{0,8}\u9ed8\u8ba4.{0,4}\u7a7a\u5200",
             r"\u72fc\u961f.{0,8}(\u53ef\u4ee5|\u80fd).{0,8}(\u9009\u62e9\u4e0d\u5200\u4eba|\u4e0d\u5200\u4eba|\u7a7a\u5200)",
         ])
-        text = f"{entry.title} {entry.summary} {' '.join(entry.key_decisions)} {' '.join(entry.short_quotes)}".lower()
+        # N4: include ``metadata.tags`` in the scanned text. R16 added
+        # tags to the parallel ``_validate_forbidden_content`` scan,
+        # but the rule-truth scan missed it — so an entry with a
+        # clean title/summary/key_decisions/short_quotes but a
+        # rule-truth pattern in its tags used to pass ingestion. The
+        # RAG contract is "no RAG entry may carry a rule-truth
+        # statement anywhere", which includes tags.
+        text = (
+            f"{entry.title} {entry.summary} "
+            f"{' '.join(entry.key_decisions)} "
+            f"{' '.join(entry.short_quotes)} "
+            f"{' '.join(entry.metadata.tags)}"
+        ).lower()
         for pattern in rule_truth_patterns:
             if re.search(pattern, text):
                 raise IngestionError(

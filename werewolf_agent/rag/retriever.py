@@ -107,6 +107,34 @@ _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
 }
 
 
+def _case_type_priority(case_type: CaseType, *, entry_id: str = "") -> int:
+    """Return the priority for a CaseType, warning on missing.
+
+    N7: ``_CASE_TYPE_PRIORITY.get(missing_case_type, 0)`` silently
+    returned 0 when a new ``CaseType`` enum value was added without
+    wiring its priority. That made the sort key and the rule-based
+    score treat the new case_type as the lowest priority, and the
+    drop was invisible to operators.
+
+    Now: if the case_type is missing from the mapping, emit a
+    WARNING identifying the entry and the case_type, then fall
+    through to 0 (treat as lowest). The behavior is preserved for
+    backward compatibility; the warning is the new operator signal.
+    """
+    priority = _CASE_TYPE_PRIORITY.get(case_type)
+    if priority is None:
+        logger.warning(
+            "RAG entry '%s' has case_type='%s' which is "
+            "unregistered in _CASE_TYPE_PRIORITY; treating as "
+            "lowest priority (0). Add it to _CASE_TYPE_PRIORITY "
+            "in retriever.py.",
+            entry_id,
+            case_type.value if hasattr(case_type, "value") else case_type,
+        )
+        return 0
+    return priority
+
+
 # P1-G8: human-readable display labels for the RAG hit's
 # ``display_annotation`` field. The raw enum values stay on
 # RAGHit.source_type / RAGHit.quality_grade for the audit log; the
@@ -274,11 +302,18 @@ class StrategyRetriever:
         # the rule-based signal.
         scored.sort(
             key=lambda x: (
-                _CASE_TYPE_PRIORITY.get(
-                    x[1].metadata.case_type, 0
+                _case_type_priority(
+                    x[1].metadata.case_type, entry_id=x[1].entry_id,
                 ),
-                _QUALITY_ORDER.get(
-                    x[1].metadata.quality_grade, 0
+                # N3: route the quality sort key through
+                # ``_quality_priority`` so a missing grade emits a
+                # WARNING (matching the asymmetry fix in N2 for the
+                # query filter and in R20 for the entry score). The
+                # old ``_QUALITY_ORDER.get(grade, 0)`` was a silent
+                # no-op; behavior was identical (both default to 0)
+                # but operators had no signal of the gap.
+                _quality_priority(
+                    x[1].metadata.quality_grade, entry_id=x[1].entry_id,
                 ),
                 x[0],
             ),
@@ -292,10 +327,22 @@ class StrategyRetriever:
             query_text = self._build_rerank_query(query)
 
             # Rerank by semantic relevance
+            # N5: truncate the summary to the same 800-char cap
+            # ``_entry_to_hit`` enforces on the audit side, BEFORE
+            # building the reranker input dict. The old code passed
+            # the full ``e.summary`` to the reranker and only
+            # truncated later when building the hit — so the model
+            # scored on text the operator never saw in the audit
+            # JSON. Truncating up front means the two paths agree on
+            # what the model sees.
             reranked = self._reranker.rerank_hits(
                 query=query_text,
                 documents=[
-                    {"score": s, "entry": e, "summary": e.summary}
+                    {
+                        "score": s,
+                        "entry": e,
+                        "summary": e.summary[:800],
+                    }
                     for s, e in rerank_pool
                 ],
                 text_key="summary",
@@ -358,13 +405,24 @@ class StrategyRetriever:
 
             # Quality minimum
             if query.quality_min:
-                # R20: route through _quality_priority so a missing
-                # entry's grade emits a WARNING instead of silently
-                # falling through to 0.
+                # R20: route the ENTRY's grade through _quality_priority
+                # so a missing entry's grade emits a WARNING instead of
+                # silently falling through to 0.
                 entry_priority = _quality_priority(
                     meta.quality_grade, entry_id=entry.entry_id,
                 )
-                if entry_priority < _QUALITY_ORDER.get(query.quality_min, 0):
+                # N2: route the QUERY's quality_min through the same
+                # helper. The old ``_QUALITY_ORDER.get(query.quality_min,
+                # 0)`` silently returned 0 for a missing grade, which
+                # made the entire filter a no-op and dropped every
+                # entry (or admitted every entry, depending on the
+                # comparison direction) with no operator-visible
+                # signal. The treat-as-lowest behavior is preserved;
+                # the warning is the new operator signal.
+                min_priority = _quality_priority(
+                    query.quality_min, entry_id=f"query:{query.quality_min.value}",
+                )
+                if entry_priority < min_priority:
                     continue
 
             # Source type filter
@@ -386,7 +444,12 @@ class StrategyRetriever:
         meta = entry.metadata
 
         # Case type priority (0.0–0.3)
-        score += _CASE_TYPE_PRIORITY.get(meta.case_type, 0) * 0.075
+        # N7: route through ``_case_type_priority`` so a missing
+        # case_type logs a WARNING rather than silently defaulting
+        # to 0.
+        score += _case_type_priority(
+            meta.case_type, entry_id=entry.entry_id,
+        ) * 0.075
 
         # Quality grade bonus (0.0–0.3)
         # R20: route through _quality_priority so a missing grade

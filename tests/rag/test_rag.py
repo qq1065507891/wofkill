@@ -404,6 +404,31 @@ class TestIngestion:
         with pytest.raises(IngestionError, match="Forbidden keyword"):
             ingester.ingest(entry)
 
+    def test_validate_not_rule_truth_scans_tags(self):
+        """N4: ``_validate_not_rule_truth`` must scan
+        ``metadata.tags`` for rule-truth patterns. The forbidden-keyword
+        scan (R16) was extended to tags, but the parallel
+        rule-truth regex scan was not — so an entry whose title /
+        summary / key_decisions / short_quotes were clean but whose
+        ``tags`` carried a rule-truth pattern (e.g.
+        ``"女巫不能自救"``) used to pass ingestion.
+
+        The RAG contract is "no RAG entry may carry a rule-truth
+        statement anywhere" — which includes tags.
+        """
+        ingester = CaseIngester()
+        # Build an entry whose every other field is squeaky clean
+        # and whose only rule-truth content is in tags. If the
+        # validator skips tags, this would pass; we want it to fail.
+        entry = _make_entry(
+            entry_id="rule_truth_tag",
+            title="Clean title",
+            summary="Clean summary, no rule claims.",
+            tags=["tactic", "女巫不能自救"],
+        )
+        with pytest.raises(IngestionError, match="base rule truth"):
+            ingester.ingest(entry)
+
 
 # ===================================================================
 # TestSeedData
@@ -1279,6 +1304,237 @@ class TestRAGInjector:
             _retriever_mod._QUALITY_ORDER.clear()
             _retriever_mod._QUALITY_ORDER.update(original)
 
+    def test_quality_min_warns_when_unregistered(self, caplog) -> None:
+        """N2: when ``RAGQuery.quality_min`` is set to a grade that the
+        retriever does not know about (e.g. someone added a new
+        ``QualityGrade`` enum value and forgot to wire its priority in
+        ``_QUALITY_ORDER``), the old code used
+        ``_QUALITY_ORDER.get(query.quality_min, 0)`` which silently
+        returned 0 — making the entire ``quality_min`` filter a no-op
+        (every entry would compare ``entry_priority < 0`` and fail,
+        dropping everything; the only operator signal was a sudden
+        zero-hits regression).
+
+        The fix mirrors R20 on the ENTRY side: route
+        ``query.quality_min`` through ``_quality_priority`` so a
+        missing grade emits a WARNING log line, then fall through to
+        the existing "treat as 0" behavior so the filter still works
+        (the call still completes with deterministic semantics).
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        # Build one entry with a known quality (so it isn't the
+        # offender on the entry side) and a query whose quality_min
+        # we will temporarily make 'unregistered'.
+        entry = RAGEntry(
+            entry_id="n2_test",
+            title="N2 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.COMMUNITY_CASE,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._QUALITY_ORDER)
+        try:
+            # Drop HIGH_RANK_GAME from the retriever's mapping so the
+            # query's quality_min=HighRankGame is "unregistered".
+            del _retriever_mod._QUALITY_ORDER[QualityGrade.HIGH_RANK_GAME]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                hits = retriever.retrieve(
+                    RAGQuery(
+                        role="seer", phase="speech",
+                        quality_min=QualityGrade.HIGH_RANK_GAME,
+                    ),
+                )
+
+            # Filter must still work (treat as 0) — the entry has
+            # COMMUNITY_CASE priority 2 which is >= 0, so it stays.
+            assert any(h.entry_id == "n2_test" for h in hits), (
+                "N2: filter must still admit entries whose priority "
+                "is >= 0 (the treat-as-lowest fallback must work)"
+            )
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+                and "high_rank_game" in r.getMessage().lower()
+            ]
+            assert warnings, (
+                "N2: retriever must emit a WARNING log line identifying "
+                "the unregistered query.quality_min. Got: "
+                f"{[r.getMessage() for r in caplog.records]}"
+            )
+        finally:
+            _retriever_mod._QUALITY_ORDER.clear()
+            _retriever_mod._QUALITY_ORDER.update(original)
+
+    def test_sort_uses_quality_priority_helper(self, caplog) -> None:
+        """N3: the sort key for case_type+quality must go through
+        ``_quality_priority`` (the same helper that N2 wired on the
+        query filter and that R20 wired on the entry score), so a
+        missing ``quality_grade`` in ``_QUALITY_ORDER`` emits a
+        WARNING during sorting. The old
+        ``_QUALITY_ORDER.get(grade, 0)`` was a silent no-op — same
+        behavior (both default to 0) but no operator signal.
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        entry = RAGEntry(
+            entry_id="n3_test",
+            title="N3 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.PRO_MATCH,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._QUALITY_ORDER)
+        try:
+            # Drop PRO_MATCH so the sort key is 'unregistered'.
+            del _retriever_mod._QUALITY_ORDER[QualityGrade.PRO_MATCH]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+                and "pro_match" in r.getMessage().lower()
+                and "n3_test" in r.getMessage()
+            ]
+            assert warnings, (
+                "N3: sort key must use ``_quality_priority`` so a "
+                "missing grade emits a WARNING. Got: "
+                f"{[r.getMessage() for r in caplog.records]}"
+            )
+        finally:
+            _retriever_mod._QUALITY_ORDER.clear()
+            _retriever_mod._QUALITY_ORDER.update(original)
+
+    def test_case_type_warns_when_unregistered(self, caplog) -> None:
+        """N7: when an entry's ``metadata.case_type`` is not in
+        ``_CASE_TYPE_PRIORITY`` (e.g. someone added a new ``CaseType``
+        enum value and forgot to wire its priority), the retriever
+        used to silently default it to 0 via ``dict.get(missing, 0)``
+        with no log line. Operators had no way to spot the missing
+        priority.
+
+        The fix: introduce ``_case_type_priority(case_type,
+        entry_id=...)`` that emits a WARNING when the case_type is
+        missing, then fall through to 0 for backward compatibility.
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        entry = RAGEntry(
+            entry_id="n7_test",
+            title="N7 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.COMMUNITY_CASE,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._CASE_TYPE_PRIORITY)
+        try:
+            # Drop ROLE_STRATEGY from the retriever's mapping so the
+            # entry's case_type is "unregistered".
+            del _retriever_mod._CASE_TYPE_PRIORITY[CaseType.ROLE_STRATEGY]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+
+            # Behavior preserved: the entry is still returned (treat
+            # as 0 priority) and the call still completes.
+            assert any(h.entry_id == "n7_test" for h in hits)
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+                and "role_strategy" in r.getMessage().lower()
+            ]
+            assert warnings, (
+                "N7: retriever must emit a WARNING log line identifying "
+                "the unregistered case_type. Got: "
+                f"{[r.getMessage() for r in caplog.records]}"
+            )
+        finally:
+            _retriever_mod._CASE_TYPE_PRIORITY.clear()
+            _retriever_mod._CASE_TYPE_PRIORITY.update(original)
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement
@@ -1875,3 +2131,52 @@ class TestRerankerNegativeScore:
         hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=1))
         assert hits
         assert 0.0 <= hits[0].relevance_score <= 1.0
+
+    def test_rerank_input_uses_truncated_summary(self) -> None:
+        """N5: the reranker must receive the 800-char-truncated
+        summary that ``_entry_to_hit`` also produces, not the
+        full-length ``entry.summary``. The two paths diverged before
+        the fix: the reranker saw the full text and the audit JSON
+        (which serializes the hit) saw the truncated text, so a
+        2000-char entry would show 800 chars in audit but the model
+        would have scored on the full 2000.
+
+        Truncate to 800 chars before building the reranker input
+        dict so both paths agree on what the model sees.
+        """
+        long_summary = "狼" * 2000  # 2000 Chinese characters
+        entry = _make_entry(
+            entry_id="n5_long",
+            title="N5 long summary",
+            summary=long_summary,
+        )
+
+        # Spy reranker that records the document dicts it received.
+        captured: list[list[dict]] = []
+
+        class _SpyReranker:
+            def rerank_hits(self, *, query, documents, text_key="summary", top_n=None):
+                # Copy the docs so later mutations don't change what we saw.
+                captured.append([dict(d) for d in documents])
+                out = []
+                for d in documents[: top_n or len(documents)]:
+                    new = dict(d)
+                    new["rerank_score"] = 0.5
+                    out.append(new)
+                return out
+
+        retriever = StrategyRetriever([entry], reranker=_SpyReranker())
+        retriever.retrieve(
+            RAGQuery(role="seer", phase="speech", max_results=1),
+        )
+
+        assert captured, "N5: reranker must be called"
+        docs = captured[0]
+        # The single document's summary must be truncated to 800 chars
+        # — the same cap ``_entry_to_hit`` enforces on the audit side.
+        for doc in docs:
+            assert len(doc["summary"]) == 800, (
+                f"N5: reranker must see 800-char truncated summary; "
+                f"got {len(doc['summary'])} chars"
+            )
+            assert doc["summary"] == long_summary[:800]
