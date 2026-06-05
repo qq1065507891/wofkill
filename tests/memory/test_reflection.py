@@ -137,7 +137,7 @@ def test_build_private_memory_stance_note_uses_role_label():
         players=dict(gs.players),
         events=[_make_audit_event("p02", day=1, standing_with_seer="p03")],
     )
-    memory = build_private_memory(gs, "p02")
+    memory, _caveat = build_private_memory(gs, "p02")
     assert "stance_notes" in memory
     assert len(memory["stance_notes"]) == 1
     point = memory["stance_notes"][0]["point"]
@@ -158,7 +158,7 @@ def test_build_private_memory_stance_note_strips_unknown_id():
         players=dict(gs.players),
         events=[_make_audit_event("p02", day=1, standing_with_seer="p99")],
     )
-    memory = build_private_memory(gs, "p02")
+    memory, _caveat = build_private_memory(gs, "p02")
     assert "stance_notes" in memory
     assert len(memory["stance_notes"]) == 1
     point = memory["stance_notes"][0]["point"]
@@ -192,7 +192,7 @@ def test_reflection_stance_no_player_ids_in_text():
         players=dict(gs.players),
         events=[_make_audit_event("p01", day=1, standing_with_seer="p03")],
     )
-    private_memory = build_private_memory(gs, "p01")
+    private_memory, _caveat = build_private_memory(gs, "p01")
     assert private_memory, "expected stance_notes to be present"
     stance_points = [s["point"] for s in private_memory["stance_notes"]]
     # Sanity: stance points never include raw IDs

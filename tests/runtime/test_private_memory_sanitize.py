@@ -337,7 +337,7 @@ def test_skip_action_trace_audit_when_disabled():
         ],
     )
 
-    memory = build_private_memory(gs, "p01", include_action_trace_audit=False)
+    memory, _caveat = build_private_memory(gs, "p01", include_action_trace_audit=False)
 
     for category in ("vote_thoughts", "logic_flaws", "valid_points", "stance_notes"):
         assert not memory.get(category), (
@@ -383,7 +383,7 @@ def test_action_trace_audit_enabled_by_default():
         ],
     )
 
-    memory = build_private_memory(gs, "p01")
+    memory, _caveat = build_private_memory(gs, "p01")
     # With audit enabled, the suspect_reason "漏洞" produces a logic_flaw.
     assert memory.get("logic_flaws"), (
         f"MEM-23: default behavior must include action_trace_audit "
@@ -648,7 +648,7 @@ def test_speech_point_sanitized_against_cross_speaker_first_person():
         ],
     )
 
-    memory = build_private_memory(gs, "p01")
+    memory, _caveat = build_private_memory(gs, "p01")
 
     # Setup sanity: the 逻辑漏洞 marker should still trigger a logic_flaw
     # entry (we are only asserting the point text is sanitized, not that
@@ -694,7 +694,7 @@ def test_speech_point_keeps_legitimate_content():
         ],
     )
 
-    memory = build_private_memory(gs, "p01")
+    memory, _caveat = build_private_memory(gs, "p01")
 
     # Setup sanity: 合理 marker should create a valid_point entry.
     assert memory.get("valid_points"), (
@@ -749,14 +749,16 @@ def test_build_private_memory_includes_caveat_when_logic_flaws_nonempty():
         ],
     )
 
-    memory = build_private_memory(gs, "p01")
+    memory, caveat = build_private_memory(gs, "p01")
 
     assert memory.get("logic_flaws"), (
         f"setup: must produce at least one logic_flaw; got: {memory!r}"
     )
-    assert memory.get("_llm_aware_hint") == _LLM_AWARE_HINT, (
-        f"MEM-02: hint must be present and equal _LLM_AWARE_HINT "
-        f"when logic_flaws non-empty; got: {memory.get('_llm_aware_hint')!r}"
+    # MEM-NEW-8: caveat is a top-level return value, not a meta key.
+    assert caveat == _LLM_AWARE_HINT, (
+        f"MEM-02 / MEM-NEW-8: caveat must be present and equal "
+        f"_LLM_AWARE_HINT when logic_flaws non-empty; "
+        f"got caveat={caveat!r}"
     )
 
 
@@ -784,7 +786,7 @@ def test_build_private_memory_omits_caveat_when_empty():
         ],
     )
 
-    memory = build_private_memory(gs, "p01")
+    memory, _caveat = build_private_memory(gs, "p01")
 
     # Setup sanity: nothing to caveat.
     assert not memory.get("logic_flaws")
@@ -793,6 +795,83 @@ def test_build_private_memory_omits_caveat_when_empty():
     assert "_llm_aware_hint" not in memory, (
         f"MEM-02: hint must be omitted when both logic_flaws and "
         f"valid_points are empty; got: {memory!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-8: build_private_memory must plumb the P1-M10 caveat as a
+# separate top-level field, not as a key in the returned memory dict.
+#
+# Pre-fix: the function returned a dict with category lists AND a
+# ``_llm_aware_hint`` string key mixed in. The schema was inconsistent
+# (some values were list[dict], one value was a plain str) and the
+# meta key had to be ``pop()``-ed out of the dict by every consumer
+# that wanted to surface the caveat to the LLM prompt.
+#
+# Post-fix: build_private_memory returns a tuple ``(memory, caveat)``
+# where ``memory`` is the dict of category lists (no meta keys) and
+# ``caveat`` is the P1-M10 hint string (or ``""`` when there's nothing
+# to caveat). Callers plumb them through the typed channels
+# (``ctx.private_memory_hints`` for the memory, ``ctx.private_memory_caveat``
+# for the caveat) without needing dict surgery.
+# ---------------------------------------------------------------------------
+
+
+def test_private_memory_caveat_is_separate_field():
+    """MEM-NEW-8: the P1-M10 caveat must be a separate top-level
+    return value, not a key inside the memory dict. The memory
+    dict's values must all be list-typed (categories of entries);
+    the caveat is a plain string returned alongside."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    # Speech with a logic_flaw marker so the caveat is non-empty.
+    gs = GameState(
+        game_id="g_test_mem_new8",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            _make_speech_event_for_player(
+                "p05 发言有逻辑漏洞",
+                speaker="p02",
+                day=1,
+            ),
+        ],
+    )
+
+    result = build_private_memory(gs, "p01")
+
+    # 1. Return value is a tuple of (memory, caveat).
+    assert isinstance(result, tuple) and len(result) == 2, (
+        f"MEM-NEW-8: build_private_memory must return (memory, caveat); "
+        f"got {type(result).__name__}"
+    )
+    memory, caveat = result
+
+    # 2. The memory dict contains ONLY category lists. No meta keys.
+    assert isinstance(memory, dict)
+    for key, value in memory.items():
+        assert isinstance(value, list), (
+            f"MEM-NEW-8: memory[{key!r}] must be a list (category), "
+            f"got {type(value).__name__}: {value!r}"
+        )
+    assert "_llm_aware_hint" not in memory, (
+        f"MEM-NEW-8: caveat must not be mixed into the memory dict; "
+        f"got memory={memory!r}"
+    )
+
+    # 3. The caveat is a top-level string field, separate from memory.
+    assert isinstance(caveat, str), (
+        f"MEM-NEW-8: caveat must be a string (top-level field), "
+        f"got {type(caveat).__name__}: {caveat!r}"
+    )
+    # And non-empty when logic_flaws are present.
+    assert caveat.strip(), (
+        f"MEM-NEW-8: caveat must be non-empty when logic_flaws present; "
+        f"got {caveat!r}"
     )
 
 
@@ -926,7 +1005,7 @@ def test_moderator_full_visibility_filtered():
             ),
         ],
     )
-    memory = build_private_memory(gs, "p01")
+    memory, _caveat = build_private_memory(gs, "p01")
 
     # No category should contain content derived from the
     # moderator_full event.

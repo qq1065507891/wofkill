@@ -655,17 +655,12 @@ def build_agent_context(
 
     # Build simplified visible state
     visible: dict[str, Any] = build_visible_player_state(gs)
-    private_memory = build_private_memory(gs, player_id)
-    # MEM-02: extract the P1-M10 caveat from the private_memory dict
-    # so it can be plumbed onto AgentContext as `private_memory_caveat`.
-    # The meta key is a renderer signal — it must NOT bleed into
-    # `private_memory_hints` (renderer contract is the 4 memory
-    # categories) or `visible["private_memory"]` (audit trail).
-    private_memory_caveat: str = ""
-    if isinstance(private_memory, dict):
-        hint = private_memory.pop("_llm_aware_hint", None)
-        if isinstance(hint, str) and hint.strip():
-            private_memory_caveat = hint
+    # MEM-NEW-8: build_private_memory now returns a tuple
+    # ``(memory, caveat)`` — the caveat is no longer a meta key in
+    # the memory dict, so no ``pop()`` is needed. The schema is
+    # uniform: memory values are category lists, caveat is a
+    # top-level string.
+    private_memory, private_memory_caveat = build_private_memory(gs, player_id)
     if private_memory:
         visible["private_memory"] = private_memory
     private_memory_hints = private_memory or {}

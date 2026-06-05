@@ -315,8 +315,19 @@ def build_private_memory(
     game_state: GameState,
     player_id: str,
     include_action_trace_audit: bool = True,
-) -> dict[str, list[dict[str, Any]]]:
-    """Build memory visible only to ``player_id``.
+) -> tuple[dict[str, list[dict[str, Any]]], str]:
+    """Build memory visible only to ``player_id``, plus the P1-M10
+    caveat hint as a separate top-level return value.
+
+    Returns:
+        A tuple ``(memory, caveat)`` where:
+          - ``memory`` is a dict of category-name → list-of-entries
+            (only categories with non-empty content are included).
+            No meta keys are mixed in.
+          - ``caveat`` is a non-empty string with the P1-M10
+            "keyword signals are crude" warning when logic_flaws
+            or valid_points survive the token budget; ``""`` when
+            there's nothing to caveat.
 
     This intentionally uses only the player's own public statements and private
     audit traces. It does not create a shared omniscient summary of all speeches.
@@ -331,6 +342,11 @@ def build_private_memory(
     from them only retain the newest entry (older ones are pure
     storage overhead). The default is True to preserve backwards
     compatibility with callers that have not been audited.
+
+    MEM-NEW-8: returns a tuple ``(memory, caveat)`` instead of a
+    dict that mixed category lists with a meta ``_llm_aware_hint``
+    string key. The schema is now uniform (memory values are all
+    list-typed) and the caveat flows through a typed channel.
     """
     memory: dict[str, list[dict[str, Any]]] = {
         "logic_flaws": [],
@@ -352,11 +368,15 @@ def build_private_memory(
     # P1-M14: priority-ordered truncation replaces the previous
     # `[-12:]` per-category cap. The 12-entry cap is no longer needed
     # because the token budget enforces a more meaningful constraint.
-    # MEM-20: _truncate_by_priority now self-contains the P1-M10
-    # caveat append, so the caller no longer needs to re-add it.
+    # MEM-NEW-8: _truncate_by_priority still mutates the dict to
+    # add the caveat, but we extract it here so the returned tuple
+    # keeps the memory dict schema-clean (no mixed-type values).
     truncated = _truncate_by_priority(memory, max_tokens=_MAX_PRIVATE_MEMORY_TOKENS)
+    # Pull the caveat out of the truncated dict before filtering
+    # empty categories. If absent, return an empty string.
+    caveat = truncated.pop("_llm_aware_hint", "") or ""
     result = {key: value for key, value in truncated.items() if value}
-    return result
+    return result, caveat
 
 
 def _add_private_vote_thought(
