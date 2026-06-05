@@ -1519,13 +1519,16 @@ def test_sections_have_priority_labels():
 
     # Verify the label is followed by the section's own header text so
     # the LLM sees 【硬约束】 X then the actual content.
-    # The retry hint header is "纠正提示" — confirm the label is
-    # 【辅助】 (P1-9: retry hint is advisory, not a hard constraint).
+    # AUDIT-2-04: the retry hint is now 【硬约束】 (was 【辅助】 in P1-9).
+    # The trimmer was actually dropping the retry hint under budget
+    # pressure, leading the LLM to repeat the same mistake on retries.
+    # Promoting the label to 【硬约束】 keeps the trimmer from dropping it.
     retry_idx = prompt.find("纠正提示")
     assert retry_idx > 0, "Retry hint should still render in the user prompt"
     preceding = prompt[max(0, retry_idx - 60):retry_idx]
-    assert "【辅助】" in preceding, (
-        f"P1-9: retry hint must be preceded by 【辅助】 label, got: {preceding!r}"
+    assert "【硬约束】" in preceding, (
+        f"AUDIT-2-04: retry hint must be preceded by 【硬约束】 label, "
+        f"got: {preceding!r}"
     )
 
     # P1-6: Strategy directive header is "本轮策略指令". Its outer
@@ -1861,6 +1864,60 @@ def test_optional_sections_dropped_first():
 
 
 # ---------------------------------------------------------------------------
+# AUDIT-2-04: retry hint must be never-dropped under budget pressure
+# ---------------------------------------------------------------------------
+#
+# Audit AUDIT-2-04 finding: the retry hint carries the LLM's only
+# feedback on the previous turn's failure (the error_message snippet
+# + correction_hint). Under budget pressure, the 辅助 label allowed
+# the trimmer to drop this section — leaving the LLM to repeat the
+# same mistake on the next attempt and burning the retry budget.
+#
+# Game trace g_3528592081 Action 50: p10 had 3 retries on the same
+# parse_error before fallback. The retry hint (had it survived) is
+# the corrective signal that breaks that loop.
+#
+# Fix: add _build_retry_hint to _NEVER_DROP and change the outer
+# label from 【辅助】 to 【硬约束】 so the trimmer treats it as
+# binding (must be present regardless of budget).
+
+
+def test_retry_hint_never_dropped_under_budget():
+    """AUDIT-2-04: under heavy budget pressure the retry hint content
+    must still be present in the user prompt.
+
+    The retry hint is the LLM's only feedback on the previous turn's
+    failure (the error_message snippet + correction_hint). Without
+    it, the LLM repeats the same mistake and burns the retry budget.
+    The fix puts _build_retry_hint in _NEVER_DROP and labels it
+    【硬约束】 so the trimmer cannot remove it.
+    """
+    ctx = _make_ctx_with_all_sections_populated()
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="JSON parse error: missing field 'speech'",
+        correction_hint="只输出JSON，不要解释、不要Markdown代码块。",
+    )
+    user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    # The retry hint's error snippet and correction hint must appear.
+    # Both are unique strings the LLM needs to see to break out of
+    # the retry loop.
+    assert "missing field 'speech'" in user_prompt, (
+        "AUDIT-2-04: retry hint error_message snippet must survive "
+        "budget pressure. Without it, the LLM cannot tell what failed "
+        "on the previous attempt. "
+        f"Prompt length: {len(user_prompt)} chars."
+    )
+    assert "只输出JSON" in user_prompt, (
+        "AUDIT-2-04: retry hint correction_hint must survive budget "
+        "pressure. The hint is the LLM's only corrective signal on "
+        f"retries. Prompt length: {len(user_prompt)} chars."
+    )
+
+
+# ---------------------------------------------------------------------------
 # P1-6: strategy_directive section label is neutral, not 【硬约束】
 # ---------------------------------------------------------------------------
 #
@@ -2094,27 +2151,32 @@ def test_vote_example_non_seer_uses_seer_siding(role: str):
 
 
 # ---------------------------------------------------------------------------
-# P1-9: retry hint section is 【辅助】, not 【硬约束】
+# AUDIT-2-04 (overrides P1-9): retry hint section is 【硬约束】
 # ---------------------------------------------------------------------------
 #
-# Audit P1-9 finding: ``_build_retry_hint`` is wrapped with the
-# 【硬约束】 outer label, but the content is mostly descriptive /
-# advisory (the error_message snippet and the correction_hint). Only
-# the timeout-no-op permission ("如果你已经超时, 请直接返回 no_action")
-# is a true binding rule, and even that is enforced by the runtime
-# FallbackAction path, not by the LLM obeying the prompt.
+# P1-9 originally classified _build_retry_hint as 【辅助】 (advisory)
+# on the theory that the content is descriptive and the runtime
+# FallbackAction enforces safety. That conservative call was
+# overridden by AUDIT-2-04: under budget pressure the trimmer was
+# actually dropping the retry hint, leaving the LLM to repeat the
+# same mistake on retries. Game trace g_3528592081 Action 50
+# showed p10 hitting the same parse_error 3 times before fallback.
 #
-# Fix: use 【辅助】 for the retry hint section. The no-op permission
-# line still appears (the LLM needs to see it), but the section
-# wrapper is no longer over-labeled as MUST-obey.
+# Fix: promote _build_retry_hint to 【硬约束】 AND add it to
+# _NEVER_DROP. The correction_hint + error_message are the LLM's
+# only signal of what failed on the previous attempt. Losing them
+# under budget pressure is a worse failure mode than the
+# (over-labeling) cost of treating the whole section as MUST-obey.
 
 
-def test_retry_hint_labeled_as_辅助():
-    """P1-9: retry hint outer section label is 【辅助】, not 【硬约束】.
+def test_retry_hint_labeled_as_硬约束():
+    """AUDIT-2-04: retry hint outer section label is 【硬约束】, not 【辅助】.
 
-    The retry hint content is descriptive (error_message snippet) and
-    advisory (correction_hint, timeout-no-op permission). Treating
-    the whole section as a binding hard constraint is over-labeling.
+    The retry hint is the LLM's only feedback on the previous turn's
+    failure (error_message snippet + correction_hint). Without it,
+    the LLM repeats the same mistake and burns the retry budget.
+    Promoting the label to 【硬约束】 keeps the trimmer from dropping
+    this section under heavy budget pressure.
     """
     ctx = AgentContext(
         agent_id="p05",
@@ -2135,13 +2197,13 @@ def test_retry_hint_labeled_as_辅助():
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
     # The retry hint header is "纠正提示" — confirm the OUTER label
-    # is 【辅助】, not 【硬约束】.
+    # is 【硬约束】, not 【辅助】.
     retry_idx = prompt.find("纠正提示")
     assert retry_idx > 0, "Retry hint should still render in the user prompt"
     preceding = prompt[max(0, retry_idx - 60):retry_idx]
-    assert "【辅助】" in preceding, (
-        "P1-9: retry hint section must be labeled 【辅助】 "
-        "(advisory content, not a hard constraint). Got preceding: "
+    assert "【硬约束】" in preceding, (
+        "AUDIT-2-04: retry hint section must be labeled 【硬约束】 "
+        "(binding — must survive budget trim). Got preceding: "
         f"{preceding!r}"
     )
 

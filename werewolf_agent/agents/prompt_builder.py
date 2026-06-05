@@ -308,6 +308,16 @@ class PlayerPromptBuilder:
     #      to learn two priority systems in the same prompt.
     _NEVER_DROP: frozenset[str] = frozenset({
         "_build_strategy_directive",
+        # AUDIT-2-04: retry hint is the LLM's only feedback on the
+        # previous turn's failure (error_message snippet +
+        # correction_hint). Without it the LLM repeats the same
+        # mistake and burns the retry budget. Game trace
+        # g_3528592081 Action 50: p10 had 3 retries on the same
+        # parse_error before fallback. The fix promotes retry hint
+        # from 【辅助】 to 【硬约束】 so the budget trimmer never
+        # drops it. Runtime FallbackAction still enforces safety
+        # (so this is corrective guidance, not the only safety net).
+        "_build_retry_hint",
     })
     _SECTION_PRIORITIES: dict[str, str] = {
         "_build_persona": "【辅助】",
@@ -329,13 +339,15 @@ class PlayerPromptBuilder:
         "_build_strategy_directive": "【策略指令】",
         "_build_skill_analysis_hints": "【辅助】",
         "_build_recent_transcript": "【可选】",
-        # P1-9: retry hint is descriptive/advisory (correction hint
-        # text is a soft signal), not a hard rule. Only the
-        # timeout-no-op permission is a true hard constraint, and it
-        # is enforced by the runtime (FallbackAction), not by the
-        # LLM obeying the prompt. The whole section is therefore
-        # 【辅助】, not 【硬约束】.
-        "_build_retry_hint": "【辅助】",
+        # AUDIT-2-04: retry hint label is now 【硬约束】. The
+        # correction_hint + error_message are the LLM's only
+        # signal of what went wrong on the previous attempt; losing
+        # them under budget pressure makes the LLM repeat the same
+        # mistake and waste the retry budget. (P1-9 originally
+        # classified this as 【辅助】 advisory — that was a
+        # conservative call that has since been overridden by
+        # observed retry-loop behavior in g_3528592081.)
+        "_build_retry_hint": "【硬约束】",
         "_build_strict_output_contract": "【硬约束】",
         # Note: _build_task_prompt is intentionally unlabeled — the
         # task prompt is the action spec the LLM is executing.
@@ -415,10 +427,19 @@ class PlayerPromptBuilder:
         labeled 【可选】 then 【辅助】) until it fits. Sections with the
         【硬约束】 label, the boundary marker, and the task prompt are
         never dropped.
+
+        Implementation note (carries over from prior fix): ``drop_indices``
+        here is the EXCLUSION set — indices still in the set are EXCLUDED
+        from the joined prompt. ``drop_indices.discard(idx)`` therefore
+        means "stop excluding idx" = "include idx in the joined". The
+        loop iterates the droppable list in priority order (lowest
+        priority first) and discards one at a time, growing the joined.
+        The loop exits as soon as the joined fits under the budget.
         """
-        joined = "\n\n".join(p for _, p in parts if p)
-        if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
-            return joined
+        # Fast path: the full prompt is already under budget.
+        full_joined = "\n\n".join(p for _, p in parts if p)
+        if len(full_joined) <= _USER_PROMPT_BUDGET_CHARS:
+            return full_joined
         # Build the drop order: every droppable section in priority
         # order (lowest first). Skip sections with no label (boundary
         # marker, task prompt), sections labeled 【硬约束】, and
@@ -438,27 +459,68 @@ class PlayerPromptBuilder:
             # 可选 drops first (priority 0), 辅助 drops second (priority 1).
             tier = 0 if label == "【可选】" else 1
             droppable.append((tier, idx))
-        # Sort by tier first, then keep original order within a tier.
+        # Sort by tier first, then keep original order within a tier
+        # (stable sort). Note: this means within a tier, sections
+        # earlier in the parts list (e.g. persona, phase_context)
+        # are dropped before later ones (e.g. retry_hint, output
+        # contract). That's the opposite of "drop from the end"
+        # but it's deterministic and predictable.
         droppable.sort(key=lambda x: x[0])
         drop_indices = {idx for _, idx in droppable}
-        # Drop from the lowest tier first; within a tier, drop from
-        # the end (most recently added sections are most often the
-        # largest by payload).
+        # AUDIT-2-02: maintain a running total of the joined length
+        # and update it O(1) per discard instead of re-joining the
+        # full prompt on every iteration. The previous implementation
+        # called ``joined = "\n\n".join(... filter ...)`` inside the
+        # loop, which is O(N) per iteration and gives O(N²) total
+        # work for tight budgets.
+        #
+        # Per the implementation note above, ``drop_indices`` is the
+        # EXCLUSION set. We start with all 13 droppable parts
+        # excluded (joined = non-droppable parts only) and grow the
+        # joined as we discard (include). Each inclusion ADDS the
+        # body length + 2 chars for one separator (the part gains
+        # one neighbor and one new "\n\n" between it and its
+        # predecessor in the joined string).
+        non_droppable = [
+            p for i, (_, p) in enumerate(parts)
+            if p and i not in drop_indices
+        ]
+        running_total = sum(len(p) for p in non_droppable)
+        n_active = len(non_droppable)
+        if n_active > 0:
+            running_total += 2 * (n_active - 1)
+        # Walk droppable in stable tier+order; discard (include)
+        # each section whose label is in the matching tier, until
+        # the budget is satisfied or droppable is exhausted. The
+        # 硬约束 filter is applied up-front so they never appear
+        # here.
         for tier, idx in droppable:
-            if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
+            if running_total <= _USER_PROMPT_BUDGET_CHARS:
                 break
             if idx in drop_indices and parts[idx][0]:
-                # Only drop if the section's label is in the matching
-                # tier; otherwise skip and continue.
+                # Only discard (include) if the section's label is
+                # in the matching tier; otherwise skip and continue.
                 label = priority.get(parts[idx][0], "")
                 expected_tier = 0 if label == "【可选】" else 1
                 if expected_tier != tier:
                     continue
                 drop_indices.discard(idx)
-                joined = "\n\n".join(
-                    p for i, (_, p) in enumerate(parts) if i not in drop_indices and p
-                )
-        return joined
+                # Update running total: ADD the body + 1 separator.
+                # Empty body means the section was already filtered
+                # out of non_droppable, so the only effect is on
+                # drop_indices; the running total is unchanged.
+                body = parts[idx][1]
+                if body:
+                    running_total += len(body) + 2
+                    n_active += 1
+        # AUDIT-2-02: reconstruct the joined string ONCE in O(N)
+        # from the (post-discard) drop_indices. The previous
+        # implementation re-joined the whole prompt on every
+        # iteration — O(N²) for tight budgets.
+        active = [
+            p for i, (_, p) in enumerate(parts) if i not in drop_indices and p
+        ]
+        return "\n\n".join(active)
 
     def _build_phase_context(self) -> str:
         ctx = self.context
