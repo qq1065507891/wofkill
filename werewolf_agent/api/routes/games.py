@@ -233,8 +233,29 @@ def create_game_router(
     # ------------------------------------------------------------------
 
     @router.get("/games/{game_id}/public-state", response_model=PublicStateResponse)
-    def get_public_state(game_id: str) -> PublicStateResponse:
+    def get_public_state(
+        game_id: str,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.SPECTATOR),
+    ) -> PublicStateResponse:
         state = _get_game(games, game_id)
+        # NEW-P1-6: thin role resolution + audit log emission.
+        # public-state is intentionally anonymous-readable, but every
+        # call must be logged so enumeration attempts are visible.
+        resolved_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+        )
+        try:
+            checker.check(
+                caller_id=caller_id,
+                caller_role=resolved_role,
+                requested_view=ViewMode.PUBLIC,
+                game_id=game_id,
+                endpoint="public-state",
+                game_active=state.winning_faction is None,
+            )
+        except PermissionDenied as e:
+            raise HTTPException(403, detail=e.reason)
         return build_public_state(state)
 
     @router.get(
@@ -392,8 +413,39 @@ def create_game_router(
         return {"game_id": game_id, "rag_audits": [e.payload for e in rag_events]}
 
     @router.get("/games/{game_id}/share-summary")
-    def get_share_summary(game_id: str) -> dict:
+    def get_share_summary(
+        game_id: str,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.SPECTATOR),
+        session_token: str = Query(""),
+    ) -> dict:
+        # NEW-P1-2: close the unauthenticated share-summary leak.
+        # share-summary is forced to PUBLIC view, but the caller's
+        # role is resolved and audited; non-empty caller_id OR
+        # session_token is required.
+        if not caller_id and not session_token:
+            raise HTTPException(
+                403,
+                "share-summary requires caller_id or session_token",
+            )
         state = _get_game(games, game_id)
+        game_active = state.winning_faction is None
+        resolved_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
+        # Force view_mode=PUBLIC regardless of query param.
+        try:
+            checker.check(
+                caller_id=caller_id,
+                caller_role=resolved_role,
+                requested_view=ViewMode.PUBLIC,
+                game_id=game_id,
+                endpoint="share-summary",
+                game_active=game_active,
+            )
+        except PermissionDenied as e:
+            raise HTTPException(403, detail=e.reason)
         public_events = [
             {
                 "event_type": event.type,
@@ -420,9 +472,30 @@ def create_game_router(
 
     @router.get("/games")
     async def list_games(
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.SPECTATOR),
+        session_token: str = Query(""),
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
     ) -> dict:
+        # NEW-P1-3: close the unauthenticated enumeration leak.
+        # list_games requires MODERATOR or DEBUGGER role (or a
+        # session_token that maps to one of those roles). Spectators
+        # and player_agents are denied.
+        if not caller_id and not session_token:
+            raise HTTPException(
+                403,
+                "list_games requires caller_id or session_token",
+            )
+        resolved_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
+        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
+            raise HTTPException(
+                403,
+                "list_games requires moderator or debugger role",
+            )
         with games_lock:
             all_game_ids = list(games.keys())
         page = all_game_ids[offset:offset + limit]

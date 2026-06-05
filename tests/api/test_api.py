@@ -192,7 +192,9 @@ class TestAPIEndpoints:
 
     def test_list_games(self):
         client, _ = _make_client()
-        resp = client.get("/games")
+        resp = client.get(
+            "/games?caller_id=mod1&caller_role=moderator"
+        )
         assert resp.status_code == 200
         assert len(resp.json()["game_ids"]) >= 1
 

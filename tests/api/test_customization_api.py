@@ -122,7 +122,10 @@ def test_share_summary_is_public_safe() -> None:
         json={"caller_id": "mod1", "caller_role": "moderator"},
     )
 
-    resp = client.get(f"/games/{game_id}/share-summary")
+    resp = client.get(
+        f"/games/{game_id}/share-summary"
+        f"?caller_id=mod1&caller_role=moderator"
+    )
 
     assert resp.status_code == 200
     data = resp.json()
