@@ -580,6 +580,30 @@ def _inject_skill_output(
     # now dead or otherwise unavailable; surfacing that advice would
     # confuse the LLM into an illegal action.
     legal_set = set(legal_targets or [])
+    # NEW-S19-A: legal_targets typically excludes dead players (it
+    # is the *action* target set — you can't vote for or shoot a
+    # dead player). But for analysis skills (last_words, review) we
+    # WANT to mention dead players (e.g. "p05的遗言：..."). Skip the
+    # S-19 filter for skills whose `applicable_phases` includes
+    # `last_words` or `review` — and use a widened analysis set
+    # that includes all known players (alive + dead) for them.
+    from werewolf_agent.skills.schemas import SkillName as _SkillName
+    # Build a set of skill names whose applicable_phases includes
+    # `last_words` or `review` — these are exempt from S-19.
+    _analysis_exempt_skills: set[str] = set()
+    for _sn in _SkillName:
+        if _sn.value in ("last_words", "review_correction", "review_correct"):
+            # last_words + review_correct(ion) are exempt
+            _analysis_exempt_skills.add(_sn.value)
+    # NEW-S19-A: for the exempt skills, build a wider
+    # `legal_targets_for_analysis` that includes dead players.
+    # That way, if a non-exempt skill's advice mentions a dead
+    # player by name (rare but possible), the S-19 check below can
+    # still see them. For the exempt skills themselves, we simply
+    # SKIP the S-19 check entirely.
+    analysis_legal_set = set(legal_set)
+    for _pid, _p in gs.players.items():
+        analysis_legal_set.add(_pid)
     # Build the structured list from the skill_analyses dict (which
     # is keyed by skill name) plus the original outputs' confidence
     # and skill_name.  We iterate in confidence-sorted order so
@@ -595,7 +619,12 @@ def _inject_skill_output(
             continue
         seen.add(skill_name)
         # S-19: filter entries that reference illegal targets.
-        if legal_set and prompt:
+        # NEW-S19-A: skip for analysis skills (last_words, review).
+        if (
+            legal_set
+            and prompt
+            and skill_name not in _analysis_exempt_skills
+        ):
             # Extract p\d{2} tokens from the prompt and check whether
             # any of them is OUTSIDE the legal set.
             import re as _re

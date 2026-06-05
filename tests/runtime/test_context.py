@@ -1740,3 +1740,100 @@ def test_wolf_role_computation_removed() -> None:
         f"NEW-S16-A: dead wolf-team-role scanning loop must be removed. "
         f"Found in _inject_skill_output."
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S19-A: illegal-target filter does not drop last_words advice.
+# ---------------------------------------------------------------------------
+
+
+def test_skill_illegal_target_filter_skips_last_words() -> None:
+    """NEW-S19-A: the S-19 illegal-target post-step must not drop
+    advice from skills whose `applicable_phases` includes
+    `last_words` (or `review`). These skills routinely mention dead
+    players by id (`p05的遗言：...`), and the S-19 regex `p\\d{2}`
+    would drop the entire entry if p05 isn't in `legal_targets` (which
+    for last_words is `alive_others` — p05 is dead, so the filter
+    flags it as illegal and the advice disappears).
+
+    Fix: skip the S-19 filter for skills whose applicable_phases
+    includes `last_words` (or `review`). Build a separate
+    `legal_targets_for_analysis` set that includes dead players so
+    the analysis still works.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import (
+        StructuredWorldState,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.skills.schemas import SkillName
+    from werewolf_agent.skills.werewolf_skills import (
+        register_handler,
+    )
+    from werewolf_agent.skills.schemas import SkillInput, SkillOutput
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # p05 is dead — last_words will mention p05 by id, which S-19 would
+    # flag as illegal (p05 not in legal_targets).
+    players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    # Monkeypatch last_words_analysis to emit p05 explicitly.
+    def _last_words_handler(inp, skill):
+        return SkillOutput(
+            skill_name=skill.name.value,
+            speech_structure=["遗言分析"],
+            confidence=0.6,
+            reasoning="last words mentions dead p05",
+            prompt_injectable=(
+                "遗言分析（1人死亡）：\n"
+                "p05的遗言：身份声明：seer。"
+            ),
+        )
+
+    register_handler(SkillName.LAST_WORDS_ANALYSIS)(_last_words_handler)
+    try:
+        # legal_targets = alive_others (p05 is dead, NOT in legal_targets).
+        legal = [
+            f"p{i:02d}" for i in range(1, 13)
+            if i != 5 and f"p{i:02d}" != "p01"
+        ]
+        directive, _ = _inject_skill_output(
+            {}, gs, "p01", ws, bs, alerts, "speech",
+            legal_targets=legal,
+        )
+        advice = directive.get("skill_tactical_advice", [])
+        last_words_entries = [
+            e for e in advice
+            if isinstance(e, dict) and e.get("skill") == "last_words"
+        ]
+        # NEW-S19-A: the last_words advice must NOT be dropped even
+        # though it mentions p05 (a dead player).
+        assert last_words_entries, (
+            f"NEW-S19-A: last_words advice must not be dropped by "
+            f"S-19 illegal-target filter when it mentions a dead "
+            f"player. Advice entries: {advice!r}"
+        )
+        assert any("p05" in e.get("advice", "") for e in last_words_entries), (
+            f"NEW-S19-A: at least one last_words advice entry must "
+            f"contain p05. Advice: {last_words_entries!r}"
+        )
+    finally:
+        # Restore the real handler.
+        from werewolf_agent.skills.werewolf_skills import last_words_handler
+        register_handler(SkillName.LAST_WORDS_ANALYSIS)(last_words_handler)
