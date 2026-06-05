@@ -266,6 +266,17 @@ class ReflectionEntry:
         # Run after the dataclass __init__ so ``self.tags`` is the
         # final list (or factory default).
         _validate_reflection_tags(self.tags)
+        # MEM-NEW-10: reject empty game_id at construction time. A
+        # reflection with ``game_id=""`` is silently invisible in
+        # the chr-invert newest-first sort — the empty string
+        # always sorts to the end, so the entry is effectively
+        # unreachable for cross-game queries. Surface the bug at
+        # construction rather than letting it rot in the index.
+        if not self.game_id or not self.game_id.strip():
+            raise ValueError(
+                f"ReflectionEntry.game_id must be a non-empty string; "
+                f"got {self.game_id!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {

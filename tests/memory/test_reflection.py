@@ -573,3 +573,35 @@ def test_faction_won_rejects_string():
             text="test",
             tags=["seer"],
         )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-10: empty game_id must be rejected.
+#
+# Pre-fix: ``ReflectionEntry.__post_init__`` only validated the
+# ``tags`` list. An entry with ``game_id=""`` slipped through and
+# always sorted to the end under the chr-invert newest-first sort
+# — so the reflection was effectively invisible in cross-game
+# queries. Post-fix: empty game_id raises ValueError so the bug
+# surfaces at the call site.
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_entry_rejects_empty_game_id():
+    """MEM-NEW-10: ``game_id=""`` is silently invisible in newest-
+    first queries (always sorts to the end of the chr-invert
+    ordering). Reject it at construction time."""
+    import pytest
+
+    from werewolf_agent.memory.schemas import ReflectionEntry
+
+    with pytest.raises(ValueError):
+        ReflectionEntry(
+            entry_id="r_empty_gid",
+            game_id="",
+            player_id="p1",
+            role="seer",
+            faction_won=True,
+            text="test",
+            tags=["seer"],
+        )
