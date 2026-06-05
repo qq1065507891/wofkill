@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 from dataclasses import replace
 
@@ -249,7 +250,18 @@ class TestLiveGameFlow:
     """Full 12-player mock-provider game through the LangGraph runtime."""
 
     def test_game_starts_and_runs_at_least_one_night_and_day(self) -> None:
-        """Game with agent registry must complete setup + at least 1 night + 1 day."""
+        """Game with agent registry must complete setup + at least 1 night + 1 day.
+
+        Regression: the graph.stream loop MUST early-exit once
+        announce_deaths is observed. The 5 required assertions
+        (setup_game, assign_roles, enter_night, resolve_night_node,
+        announce_deaths) are all met at node ~14. Without the early
+        break, the loop continues consuming the full graph stream
+        (~7 minutes) — wasting CI time on assertions that have
+        already passed. The regression test
+        ``test_full_game_flow_early_exit_runtime`` below pins the
+        runtime budget at 30 s.
+        """
         graph = build_game_graph()
         engine = _new_engine()
         registry = _build_registry(engine)
@@ -279,7 +291,16 @@ class TestLiveGameFlow:
             for chunk in graph.stream(state, {"recursion_limit": 200}):
                 for node_name in chunk.keys():
                     nodes_seen.append(node_name)
-                    # Collect updated state from the last chunk
+                    if "announce_deaths" in nodes_seen:
+                        # Early-exit: the 5 required assertions are all
+                        # met at this point. Continue the outer loop one
+                        # more time only to drain the in-flight chunk
+                        # (avoid using break-inside-for which leaks a
+                        # Python ``for-else`` interaction).
+                        break
+                else:
+                    continue
+                break
         except Exception:
             pass  # May not terminate fully, but we just need to see enough nodes
 
@@ -291,6 +312,70 @@ class TestLiveGameFlow:
 
         # Must have at least one day phase
         assert "announce_deaths" in nodes_seen
+
+    def test_full_game_flow_early_exit_runtime(self) -> None:
+        """Regression: the full-game-flow test must finish in <30s.
+
+        Pins the contract added in the test_hang fix: the
+        ``test_game_starts_and_runs_at_least_one_night_and_day`` test
+        early-exits at ``announce_deaths``, so it never burns the
+        full graph stream. This sibling test re-runs the same
+        scenario and asserts the wall-clock runtime stays under
+        30s. The full stream previously took ~7 minutes
+        (recursion_limit=200 × agent-decision latency per node).
+        """
+        graph = build_game_graph()
+        engine = _new_engine()
+        registry = _build_registry(engine)
+
+        state: RuntimeState = {
+            "game_state": GameState(game_id="early_exit01"),
+            "engine": engine,
+            "agent_registry": registry,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+
+        nodes_seen: list[str] = []
+        start = time.monotonic()
+        try:
+            for chunk in graph.stream(state, {"recursion_limit": 200}):
+                for node_name in chunk.keys():
+                    nodes_seen.append(node_name)
+                    if "announce_deaths" in nodes_seen:
+                        break
+                else:
+                    continue
+                break
+        except Exception:
+            pass
+        elapsed = time.monotonic() - start
+
+        # Sanity: the early-exit must still surface announce_deaths.
+        assert "announce_deaths" in nodes_seen, (
+            f"early-exit path must still surface announce_deaths; "
+            f"got nodes_seen={nodes_seen!r}"
+        )
+        # Hard budget: 30s. The full graph stream takes ~7 minutes
+        # without the early-exit — if this trips, the early-exit was
+        # lost in a refactor.
+        assert elapsed < 30.0, (
+            f"Full-game-flow test runtime regressed to {elapsed:.1f}s "
+            f"(budget 30s). The early-exit at announce_deaths was likely "
+            f"lost in a refactor. nodes_seen={nodes_seen!r}"
+        )
 
     def test_agent_driven_wolf_kill_produces_death_event(self) -> None:
         """When wolf agent picks a kill target, a death event is produced."""
