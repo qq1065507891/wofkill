@@ -63,7 +63,6 @@ class RoleStateMonitor:
         seer_checks = [
             e for e in gs.events
             if e.type == "seer_check"
-            and e.payload.get("seer_id") == seer_id
         ]
         reported = set()
         for e in gs.events:
