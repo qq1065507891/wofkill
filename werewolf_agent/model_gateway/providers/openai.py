@@ -144,13 +144,30 @@ def _generate_openai_compatible(
 
 
 def _openai_chat_completions_url(base_url: str) -> str:
-    """Build a chat completions URL for OpenAI and OpenAI-compatible gateways."""
+    """Build a chat completions URL for OpenAI and OpenAI-compatible gateways.
+
+    R3-MG-10: the legacy helper accepted any URL whose last path segment
+    contained the substring ``/v`` (e.g. ``/v1beta``, ``/v2``, ``/v1.5``)
+    and appended ``/chat/completions`` directly. That produced 404s for
+    real OpenAI-compatible gateways that use non-/v1 API versions.
+
+    New rules:
+    - explicit /v1 or integer /vN (v2, v3, v4, ...): append /chat/completions
+    - anything else (e.g. /v1beta, /v2beta, no /v at all): strip the last
+      path segment and fall back to {scheme://host}/v1/chat/completions
+    """
+    import re
+    from urllib.parse import urlparse
     normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1") or "/v" in normalized.rsplit("/", 1)[-1]:
+    last_segment = normalized.rsplit("/", 1)[-1] if normalized else ""
+    if re.fullmatch(r"v\d+", last_segment):
         return f"{normalized}/chat/completions"
-    if normalized != "https://api.openai.com" and "/" in normalized.removeprefix("https://").removeprefix("http://"):
-        return f"{normalized}/chat/completions"
-    return f"{normalized}/v1/chat/completions"
+    # Fall back: build the canonical /v1/chat/completions URL from the
+    # scheme+host only, discarding any non-conforming path the caller
+    # supplied (e.g. /v1beta, /v2beta).
+    parsed = urlparse(normalized)
+    host = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme else normalized
+    return f"{host}/v1/chat/completions"
 
 
 def _sanitize_for_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
