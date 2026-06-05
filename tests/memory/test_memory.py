@@ -1342,6 +1342,98 @@ def test_vector_tokenize_cjk_extension_a():
 
 
 # ---------------------------------------------------------------------------
+# MEM-NEW-11: ReflectionMemory.query must NOT consult a vector_index
+# that has ``__len__`` but no ``similarity`` method.
+#
+# Pre-fix: the guard was ``vector_index is None or not
+# getattr(vector_index, "__len__", lambda: 0)()``. An object that
+# implemented ``__len__`` (e.g. a list, a BytesIO) but no
+# ``similarity`` slipped past the guard and then either:
+#   - AttributeError'd at the ``vector_index.similarity(query_text)``
+#     call site, OR
+#   - hit the defensive ``else`` branch and silently degraded to
+#     exact-match order with a warning.
+#
+# Post-fix: check for both ``__len__`` AND ``similarity`` in the
+# guard. An index missing ``similarity`` is treated like a None
+# index (degrades to exact-match behavior) with a loud warning.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_index_requires_similarity():
+    """MEM-NEW-11: an object with __len__ but no ``similarity``
+    method must NOT be treated as a valid vector index. The
+    query must degrade to the exact-match path (no AttributeError,
+    no silent zero-score rank) and a warning must be logged so
+    the wiring bug surfaces."""
+    import logging
+    from types import SimpleNamespace
+
+    from werewolf_agent.memory.reflection import ReflectionMemory
+    from werewolf_agent.memory.schemas import CrossGameQuery, ReflectionEntry
+
+    # Build a ReflectionMemory with a candidate entry.
+    mem = ReflectionMemory()
+    mem.store(
+        "g1",
+        player_id="p1",
+        role="seer",
+        faction_won=True,
+        text="reflection-text",
+        tags=["seer"],
+    )
+
+    # Fake "index" with __len__ but no similarity method. Pre-fix
+    # this slipped past the ``__len__`` guard and AttributeError'd
+    # at the call site (or hit the defensive branch and silently
+    # ranked everything at 0). Post-fix: the query must fall
+    # through to the exact-match path and log a warning.
+    class _BadIndex:
+        def __len__(self) -> int:
+            return 5
+    bad_index = _BadIndex()
+
+    with_log: list[logging.LogRecord] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            with_log.append(record)
+
+    handler = _CaptureHandler(level=logging.WARNING)
+    logger = logging.getLogger("werewolf_agent.memory.reflection")
+    logger.addHandler(handler)
+    try:
+        # Must not raise. Pre-fix would AttributeError on
+        # bad_index.similarity(query_text).
+        # Empty situation so the exact-match path returns
+        # ``list(candidates)`` (substring filter is a no-op).
+        results = mem.query(
+            CrossGameQuery(player_id="p1", situation=""),
+            vector_index=bad_index,
+        )
+    finally:
+        logger.removeHandler(handler)
+
+    # The exact-match path returns the entry (substring match on
+    # situation succeeds).
+    assert len(results) == 1, (
+        f"MEM-NEW-11: __len__-only index must fall through to "
+        f"exact-match path; got {results!r}"
+    )
+
+    # And a warning was logged naming the issue.
+    matching = [
+        r for r in with_log
+        if "similarity" in r.getMessage().lower()
+    ]
+    assert matching, (
+        f"MEM-NEW-11: a warning must be emitted when the index "
+        f"has no similarity method; got: "
+        f"{[r.getMessage() for r in with_log]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # MEM-22: generate_reviews_for_game must log a warning when
 # ground_truth is missing entries for some player_ids. The legacy
 # behavior was a silent skip via ``roles.get(pid, "unknown")`` — the

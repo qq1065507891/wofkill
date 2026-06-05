@@ -159,22 +159,37 @@ class ReflectionMemory:
         """
         candidates = self._filter_candidates(query)
 
-        if vector_index is None or not getattr(vector_index, "__len__", lambda: 0)():
+        # MEM-NEW-11: an object with __len__ but no similarity method
+        # is not a valid vector index. Catch it HERE, in the guard,
+        # so the rest of the function never sees it — the prior
+        # post-guard ``hasattr`` check at the call site was a
+        # defensive but easy-to-miss fallback, and an object with a
+        # `similarity` attribute that raises on call would have
+        # leaked through with an AttributeError deep inside the
+        # rank loop. The contract for a valid index is BOTH
+        # __len__ AND similarity; missing either one falls
+        # through to the exact-match path with a warning.
+        if (
+            vector_index is None
+            or not getattr(vector_index, "__len__", lambda: 0)()
+            or not hasattr(vector_index, "similarity")
+        ):
+            if vector_index is not None and not hasattr(vector_index, "similarity"):
+                # MEM-13: warn the caller — without a similarity
+                # method every entry scores 0 and falls to the
+                # unindexed tail, so a "vector search" silently
+                # degrades to exact-match order. Make the fallback
+                # loud so the upstream caller can fix the index
+                # wiring.
+                _LOG.warning(
+                    "vector index has no similarity method, falling back"
+                )
             # P0-M6: when situation is set, keep the pre-existing substring
             # match against the *situation* field; otherwise no-op.
             return self._apply_situation_filter(candidates, query)[: query.max_results]
 
-        if hasattr(vector_index, "similarity"):
-            query_text = query.situation or ""
-            scores = vector_index.similarity(query_text)
-        else:  # pragma: no cover - defensive: unsupported index impl
-            # MEM-13: warn the caller — without a similarity method
-            # every entry scores 0 and falls to the unindexed tail,
-            # so a "vector search" silently degrades to exact-match
-            # order. Make the fallback loud so the upstream caller
-            # can fix the index wiring.
-            _LOG.warning("vector index has no similarity method, falling back")
-            scores = {}
+        query_text = query.situation or ""
+        scores = vector_index.similarity(query_text)
 
         scored: list[tuple[float, int, ReflectionEntry]] = []
         unindexed: list[ReflectionEntry] = []
