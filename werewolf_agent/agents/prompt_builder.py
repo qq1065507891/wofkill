@@ -427,10 +427,19 @@ class PlayerPromptBuilder:
         labeled 【可选】 then 【辅助】) until it fits. Sections with the
         【硬约束】 label, the boundary marker, and the task prompt are
         never dropped.
+
+        Implementation note (carries over from prior fix): ``drop_indices``
+        here is the EXCLUSION set — indices still in the set are EXCLUDED
+        from the joined prompt. ``drop_indices.discard(idx)`` therefore
+        means "stop excluding idx" = "include idx in the joined". The
+        loop iterates the droppable list in priority order (lowest
+        priority first) and discards one at a time, growing the joined.
+        The loop exits as soon as the joined fits under the budget.
         """
-        joined = "\n\n".join(p for _, p in parts if p)
-        if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
-            return joined
+        # Fast path: the full prompt is already under budget.
+        full_joined = "\n\n".join(p for _, p in parts if p)
+        if len(full_joined) <= _USER_PROMPT_BUDGET_CHARS:
+            return full_joined
         # Build the drop order: every droppable section in priority
         # order (lowest first). Skip sections with no label (boundary
         # marker, task prompt), sections labeled 【硬约束】, and
@@ -458,25 +467,60 @@ class PlayerPromptBuilder:
         # but it's deterministic and predictable.
         droppable.sort(key=lambda x: x[0])
         drop_indices = {idx for _, idx in droppable}
-        # Walk droppable in stable tier+order; drop each section
-        # whose label is in the matching tier, until the budget
-        # is satisfied or droppable is exhausted. The 硬约束
-        # filter is applied up-front so they never appear here.
+        # AUDIT-2-02: maintain a running total of the joined length
+        # and update it O(1) per discard instead of re-joining the
+        # full prompt on every iteration. The previous implementation
+        # called ``joined = "\n\n".join(... filter ...)`` inside the
+        # loop, which is O(N) per iteration and gives O(N²) total
+        # work for tight budgets.
+        #
+        # Per the implementation note above, ``drop_indices`` is the
+        # EXCLUSION set. We start with all 13 droppable parts
+        # excluded (joined = non-droppable parts only) and grow the
+        # joined as we discard (include). Each inclusion ADDS the
+        # body length + 2 chars for one separator (the part gains
+        # one neighbor and one new "\n\n" between it and its
+        # predecessor in the joined string).
+        non_droppable = [
+            p for i, (_, p) in enumerate(parts)
+            if p and i not in drop_indices
+        ]
+        running_total = sum(len(p) for p in non_droppable)
+        n_active = len(non_droppable)
+        if n_active > 0:
+            running_total += 2 * (n_active - 1)
+        # Walk droppable in stable tier+order; discard (include)
+        # each section whose label is in the matching tier, until
+        # the budget is satisfied or droppable is exhausted. The
+        # 硬约束 filter is applied up-front so they never appear
+        # here.
         for tier, idx in droppable:
-            if len(joined) <= _USER_PROMPT_BUDGET_CHARS:
+            if running_total <= _USER_PROMPT_BUDGET_CHARS:
                 break
             if idx in drop_indices and parts[idx][0]:
-                # Only drop if the section's label is in the matching
-                # tier; otherwise skip and continue.
+                # Only discard (include) if the section's label is
+                # in the matching tier; otherwise skip and continue.
                 label = priority.get(parts[idx][0], "")
                 expected_tier = 0 if label == "【可选】" else 1
                 if expected_tier != tier:
                     continue
                 drop_indices.discard(idx)
-                joined = "\n\n".join(
-                    p for i, (_, p) in enumerate(parts) if i not in drop_indices and p
-                )
-        return joined
+                # Update running total: ADD the body + 1 separator.
+                # Empty body means the section was already filtered
+                # out of non_droppable, so the only effect is on
+                # drop_indices; the running total is unchanged.
+                body = parts[idx][1]
+                if body:
+                    running_total += len(body) + 2
+                    n_active += 1
+        # AUDIT-2-02: reconstruct the joined string ONCE in O(N)
+        # from the (post-discard) drop_indices. The previous
+        # implementation re-joined the whole prompt on every
+        # iteration — O(N²) for tight budgets.
+        active = [
+            p for i, (_, p) in enumerate(parts) if i not in drop_indices and p
+        ]
+        return "\n\n".join(active)
 
     def _build_phase_context(self) -> str:
         ctx = self.context
