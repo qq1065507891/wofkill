@@ -459,23 +459,6 @@ def create_game_router(
             cognition_data=_build_cognition_data_for_viewer(state, player_id or "p01"),
         )
 
-    @router.get("/games/{game_id}/rag-audit")
-    def get_rag_audit(
-        game_id: str,
-        caller_id: str = Query(""),
-        caller_role: CallerRole = Query(CallerRole.DEBUGGER),
-        session_token: str = Query(""),
-    ) -> dict:
-        state = _get_game(games, game_id)
-        resolved_role = _resolve_caller_role(
-            authorized_callers, caller_id, caller_role,
-            session_token=session_token, auth_manager=auth,
-        )
-        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
-            raise HTTPException(403, "RAG audit requires moderator or debugger access")
-        rag_events = [e for e in state.events if e.type == "rag_injection_audit"]
-        return {"game_id": game_id, "rag_audits": [e.payload for e in rag_events]}
-
     @router.get("/games/{game_id}/share-summary")
     def get_share_summary(
         game_id: str,
