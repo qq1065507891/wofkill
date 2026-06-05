@@ -1394,6 +1394,73 @@ class TestRAGInjector:
             _retriever_mod._QUALITY_ORDER.clear()
             _retriever_mod._QUALITY_ORDER.update(original)
 
+    def test_sort_uses_quality_priority_helper(self, caplog) -> None:
+        """N3: the sort key for case_type+quality must go through
+        ``_quality_priority`` (the same helper that N2 wired on the
+        query filter and that R20 wired on the entry score), so a
+        missing ``quality_grade`` in ``_QUALITY_ORDER`` emits a
+        WARNING during sorting. The old
+        ``_QUALITY_ORDER.get(grade, 0)`` was a silent no-op — same
+        behavior (both default to 0) but no operator signal.
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        entry = RAGEntry(
+            entry_id="n3_test",
+            title="N3 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.PRO_MATCH,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._QUALITY_ORDER)
+        try:
+            # Drop PRO_MATCH so the sort key is 'unregistered'.
+            del _retriever_mod._QUALITY_ORDER[QualityGrade.PRO_MATCH]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+                and "pro_match" in r.getMessage().lower()
+                and "n3_test" in r.getMessage()
+            ]
+            assert warnings, (
+                "N3: sort key must use ``_quality_priority`` so a "
+                "missing grade emits a WARNING. Got: "
+                f"{[r.getMessage() for r in caplog.records]}"
+            )
+        finally:
+            _retriever_mod._QUALITY_ORDER.clear()
+            _retriever_mod._QUALITY_ORDER.update(original)
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement

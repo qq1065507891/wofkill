@@ -277,8 +277,15 @@ class StrategyRetriever:
                 _CASE_TYPE_PRIORITY.get(
                     x[1].metadata.case_type, 0
                 ),
-                _QUALITY_ORDER.get(
-                    x[1].metadata.quality_grade, 0
+                # N3: route the quality sort key through
+                # ``_quality_priority`` so a missing grade emits a
+                # WARNING (matching the asymmetry fix in N2 for the
+                # query filter and in R20 for the entry score). The
+                # old ``_QUALITY_ORDER.get(grade, 0)`` was a silent
+                # no-op; behavior was identical (both default to 0)
+                # but operators had no signal of the gap.
+                _quality_priority(
+                    x[1].metadata.quality_grade, entry_id=x[1].entry_id,
                 ),
                 x[0],
             ),
