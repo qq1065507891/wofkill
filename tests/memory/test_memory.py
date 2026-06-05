@@ -1340,6 +1340,54 @@ def test_generate_reviews_no_warning_when_ground_truth_complete(caplog):
     )
 
 
+# ---------------------------------------------------------------------------
+# MEM-NEW-2: generate_reviews_for_game must thread hybrid_master_factions
+# through to _player_faction. Without it, every hybrid gets
+# _player_faction('hybrid', master_faction=None) = 'unknown', and
+# the review loses the wolf/good attribution that drives
+# profile.games_as_wolf / games_as_good and the faction_won flag.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_reviews_uses_hybrid_master_factions():
+    """MEM-NEW-2: when a hybrid's master is a werewolf and wolves win,
+    the hybrid's review must record faction_won=True (so the profile
+    bumps games_as_wolf + wolf_wins). Pre-fix, hybrid was always
+    classified as 'unknown', so its faction_won never matched the
+    winning faction — the hybrid was mis-recorded as a loser."""
+    from werewolf_agent.memory.store import MemoryStore
+
+    store = MemoryStore()
+    player_ids = ["p1", "p2", "p3"]
+    roles = {"p1": "werewolf", "p2": "hybrid", "p3": "villager"}
+    ground_truth = {"p1": "werewolf", "p2": "hybrid", "p3": "villager"}
+    # wolves win; hybrid master is a werewolf
+    winning_faction = "werewolf"
+    hybrid_master_factions = {"p2": "werewolf"}
+
+    reports = store.generate_reviews_for_game(
+        game_id="g_test_mem_new2",
+        player_ids=player_ids,
+        roles=roles,
+        winning_faction=winning_faction,
+        ground_truth=ground_truth,
+        hybrid_master_factions=hybrid_master_factions,
+    )
+    by_pid = {r.player_id: r for r in reports}
+    # p2 is hybrid with master=werewolf and wolves won — must count as a win.
+    assert by_pid["p2"].faction_won is True, (
+        f"MEM-NEW-2: hybrid (master=werewolf) with wolves winning must "
+        f"have faction_won=True; got faction_won={by_pid['p2'].faction_won}"
+    )
+    # And the profile side: games_as_wolf should be 2 (p1 + p2).
+    p2_profile = store.get_profile("p2")
+    assert p2_profile is not None
+    assert p2_profile.games_as_wolf == 1, (
+        f"MEM-NEW-2: hybrid (master=werewolf) must count in games_as_wolf; "
+        f"got games_as_wolf={p2_profile.games_as_wolf}, "
+        f"games_as_good={p2_profile.games_as_good}"
+    )
+    assert p2_profile.games_as_good == 0
 
 
 class TestStructuredDataBoundary:

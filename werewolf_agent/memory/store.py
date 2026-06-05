@@ -179,12 +179,18 @@ class MemoryStore:
         winning_faction: str,
         ground_truth: dict[str, str],
         player_factions: dict[str, str] | None = None,
+        hybrid_master_factions: dict[str, str] | None = None,
     ) -> list[ReviewReport]:
         """Generate reviews for all players in a game.
 
         Args:
             winning_faction: The faction that won (\"good\" or \"werewolf\").
             player_factions: Optional per-player faction override (e.g. for hybrid).
+            hybrid_master_factions: Optional mapping of player_id →
+                master's faction for hybrid roles. When set, the hybrid
+                is classified as ``"good"`` or ``"werewolf"`` based on
+                its master's faction; otherwise the legacy behavior
+                treats hybrid as ``"unknown"``.
 
         MEM-22: if ``ground_truth`` is missing entries for some of
         the ``player_ids``, log a warning naming the missing players.
@@ -194,6 +200,11 @@ class MemoryStore:
         skips hide real bugs (the moderator might have failed to
         populate the ground truth, or the player list might have
         drifted).
+
+        MEM-NEW-2: thread ``hybrid_master_factions`` into the
+        per-player faction computation. Without it, every hybrid
+        returns ``"unknown"`` from ``_player_faction`` and never
+        gets a meaningful ``faction_won`` flag or profile side.
         """
         # MEM-22: detect the mismatch up-front so the warning is
         # emitted exactly once per call, regardless of how many
@@ -211,7 +222,17 @@ class MemoryStore:
         reports = []
         for pid in player_ids:
             role = roles.get(pid, "unknown")
-            pf = (player_factions or {}).get(pid) or self._player_faction(role)
+            # MEM-NEW-6: explicit None check, not ``or``. Caller
+            # passing ``""`` must be respected, not silently
+            # overridden by the role-based fallback.
+            if player_factions and pid in player_factions:
+                pf = player_factions[pid]
+            else:
+                # MEM-NEW-2: pass the hybrid master's faction so a
+                # hybrid with master=werewolf is classified as
+                # "werewolf" (not "unknown").
+                master_faction = (hybrid_master_factions or {}).get(pid)
+                pf = self._player_faction(role, master_faction=master_faction)
             faction_won = pf == winning_faction
             report = self.generate_review(
                 game_id=game_id,
