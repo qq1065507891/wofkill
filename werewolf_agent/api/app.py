@@ -90,7 +90,25 @@ def create_app(
                 vector_store = create_vector_store(vector_backend)
             except Exception as exc:
                 logger.warning("Vector store initialization failed; using RAG fallback: %s", exc)
-        rag_service = RAGKnowledgeService(repository=repo, vector_store=vector_store)
+        # N1: auto-init reranker when SILICONFLOW_API_KEY is set, mirroring
+        # the auto-detect in ``retriever.create_retriever()``. Without this
+        # wiring the reranker was dead code in production — RAGKnowledgeService
+        # was constructed without a reranker, so R1's wiring was never
+        # exercised. If the API key is missing or the client fails to
+        # construct, fall through to reranker=None (rule-based-only path).
+        reranker = None
+        if os.environ.get("SILICONFLOW_API_KEY"):
+            try:
+                from werewolf_agent.rag.reranker_client import SiliconFlowRerankerClient
+                reranker = SiliconFlowRerankerClient()
+            except Exception as exc:
+                logger.warning(
+                    "SiliconFlow reranker initialization failed; "
+                    "continuing with rule-based retrieval only: %s", exc,
+                )
+        rag_service = RAGKnowledgeService(
+            repository=repo, vector_store=vector_store, reranker=reranker,
+        )
         rag_service.ensure_seeded()
     except Exception as exc:
         logger.warning("RAG knowledge service initialization failed: %s", exc)
