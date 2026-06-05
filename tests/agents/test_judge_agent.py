@@ -97,6 +97,82 @@ class TestJudgeAgent:
         assert not hasattr(judge, "broadcast_vote_result"), "broadcast_vote_result is dead code"
 
 
+class TestJudgeProfilePublicOnlyBoundary:
+    """J-13: every judge persona profile must include a uniform
+    public-only broadcasting constraint in its system_prompt.
+
+    The judge is a non-adjudicating broadcaster: it can only relay
+    public information, never reveal hidden identity, role, or
+    night-time private actions. The constraint must be present in
+    every profile (tournament, variety_show, neutral, mystic) so
+    the LLM behaves consistently regardless of which persona the
+    router picked.
+    """
+
+    PROFILES_YAML = "config/personas/judge_profiles.yaml"
+
+    def test_judge_profile_includes_public_only_constraint(self) -> None:
+        """J-13: every loaded profile has a public-only boundary clause."""
+        import yaml as _yaml
+        from pathlib import Path as _Path
+        with open(self.PROFILES_YAML, encoding="utf-8") as f:
+            data = _yaml.safe_load(f)
+        profiles = data.get("judge_profiles", {})
+        assert profiles, "judge_profiles.yaml must define at least one profile"
+        # The boundary phrase the prompt must carry. Phrasing is
+        # intentionally close to the existing profile style; we
+        # only require the public-info intent, not exact wording.
+        boundary_markers = ("公开信息", "public", "公开")
+        for pname, prof in profiles.items():
+            sp = (prof.get("system_prompt") or "").strip()
+            assert sp, f"profile {pname!r} has empty system_prompt"
+            has_marker = any(marker in sp for marker in boundary_markers)
+            assert has_marker, (
+                f"J-13: profile {pname!r} system_prompt must include a "
+                f"public-only boundary (one of {boundary_markers!r}); got: {sp!r}"
+            )
+
+    def test_judge_profile_boundary_is_uniform(self) -> None:
+        """J-13: the boundary clause itself must be uniform across profiles
+        (same wording), so the LLM sees the same constraint regardless of
+        which persona the router picked. The sentinel is the public-only
+        contract core ("公开信息不得透露") — a substring that all 4
+        profiles must carry verbatim.
+        """
+        import yaml as _yaml
+        with open(self.PROFILES_YAML, encoding="utf-8") as f:
+            data = _yaml.safe_load(f)
+        profiles = data.get("judge_profiles", {})
+        # Sentinel substring that must appear in every profile.
+        # We split the constraint into two substrings to avoid the
+        # middle verb "能" that would break a single contiguous
+        # sentinel like "只播报公开信息".
+        public_clause = "公开信息，不得透露"
+        forbidden_leak = "真实身份或夜间私密信息"
+        for pname, prof in profiles.items():
+            sp = prof.get("system_prompt") or ""
+            assert public_clause in sp, (
+                f"J-13: profile {pname!r} missing public-only clause "
+                f"{public_clause!r}; got: {sp!r}"
+            )
+            assert forbidden_leak in sp, (
+                f"J-13: profile {pname!r} missing forbidden-leak clause "
+                f"{forbidden_leak!r}; got: {sp!r}"
+            )
+
+    def test_judge_profile_router_returns_constrained_snapshots(self) -> None:
+        """J-13: JudgeProfileRouter snapshots also carry the constraint."""
+        from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
+        router = JudgeProfileRouter.from_yaml(self.PROFILES_YAML)
+        public_clause = "公开信息，不得透露"
+        for pname in router.list_profiles():
+            snap = router.resolve(pname)
+            assert public_clause in snap.system_prompt, (
+                f"J-13: snapshot for {pname!r} missing boundary sentinel "
+                f"{public_clause!r}; got: {snap.system_prompt!r}"
+            )
+
+
 class TestPersonaSystemMessageInjection:
     """J-7: persona should be passed as a separate system_prompt, not concatenated to user prompt."""
 

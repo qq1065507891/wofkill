@@ -24,8 +24,8 @@ Authoritative rule source: `docs/design/werewolf-agent-v1-design.md` Ch. 3 (no r
 | J-9  | `summarize_speech` / `broadcast_vote_result` dead code | DONE (earlier in branch) | 8cbc3f5 | `judge.py` |
 | J-10 | `JudgeHITLInterface.judge_agent` unused field | DONE (earlier in branch) | 6a33a89 | `judge_hitl.py` |
 | J-11 | Peaceful night broadcast missing `public_data` | DONE (earlier in branch) | bcdbcfb | `judge.py` |
-| J-12 | `_cmd_show_votes` filters by stale event types | ACTIVE (TDD) | pending | `judge_hitl.py` + test |
-| J-13 | Judge profile lacks public-only boundary | queued | pending | `config/personas/judge_profiles.yaml` + test |
+| J-12 | `_cmd_show_votes` filters by stale event types | DONE | c4956e8 | `judge_hitl.py` + test |
+| J-13 | Judge profile lacks public-only boundary | ACTIVE (TDD) | pending | `config/personas/judge_profiles.yaml` + test |
 | J-14 | `should_pause` direction param consistency | queued | pending | `judge_hitl.py` (test only) |
 
 ### Workflow
