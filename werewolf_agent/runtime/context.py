@@ -517,8 +517,11 @@ def _inject_skill_output(
     # S-05: dispatch_for_role receives the task_type value as both
     # `phase` (2nd positional — backward compat with the older API)
     # and `task_type` (kwarg — used by the P0-K2 precise filter).
+    # NEW-S02-A: forward `gs` so the registry can resolve hybrid's
+    # faction (S-02) — without `gs`, hybrid-with-wolf-master falls
+    # back to GOOD and WOLF-faction skills are unreachable.
     outputs = registry.dispatch_for_role(
-        player.role, task_type, skill_input, task_type=task_type,
+        player.role, task_type, skill_input, task_type=task_type, gs=gs,
     )
 
     # Filter skills that conflict with wolf team role assignment

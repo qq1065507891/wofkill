@@ -1632,3 +1632,79 @@ def test_wolf_skip_in_handler_only():
         "S-16: context.py must not contain the swing_vote hooker "
         "skip — that's the handler's job. Found it in _inject_skill_output."
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S02-A: dispatch_for_role receives gs so hybrid wolf-master dispatch works.
+# ---------------------------------------------------------------------------
+
+
+def test_inject_skill_output_passes_gs_to_dispatch(monkeypatch) -> None:
+    """NEW-S02-A: `_inject_skill_output` must call `dispatch_for_role`
+    with `gs=gs`. The S-02 unit test only passed `gs=gs` directly to
+    the registry call; the production call site at context.py:520-522
+    was missing the keyword, so a hybrid with master=werewolf in
+    production couldn't dispatch WOLF-faction skills (faction_for_role
+    fell back to GOOD without `gs`).
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime import context as context_mod
+
+    captured: dict[str, Any] = {}
+
+    class _FakeRegistry:
+        def dispatch_for_role(
+            self, role, phase, skill_input, task_type="", gs=None
+        ):
+            captured["role"] = role
+            captured["phase"] = phase
+            captured["task_type"] = task_type
+            captured["gs"] = gs
+            return []
+
+    monkeypatch.setattr(context_mod, "SkillRegistry", _FakeRegistry)
+
+    # 6-player game with a hybrid whose master is a werewolf. Without
+    # gs passed to dispatch_for_role, the registry's `faction_for_role`
+    # falls back to GOOD and WOLF-faction skills are unreachable.
+    players = {
+        "p01": PlayerState(id="p01", role="werewolf", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="hybrid", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+        "p05": PlayerState(id="p05", role="villager", alive=True),
+        "p06": PlayerState(id="p06", role="seer", alive=True),
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="new_s02a_test",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+        hybrid_master_id="p01",
+        hybrid_master_faction="werewolf",
+    )
+
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.cognition.world_state import build_world_state
+
+    world_state = build_world_state(gs)
+    belief = BeliefUpdater().initialize(list(gs.players.keys()), "p03")
+    belief = BeliefUpdater().update(belief, world_state.facts, gs.day_number)
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+
+    context_mod._inject_skill_output(
+        {}, gs, "p03", world_state, belief, alerts, "speech",
+    )
+
+    # NEW-S02-A: dispatch_for_role must receive gs as a keyword. Pre-fix
+    # the production call site at context.py:520-522 was missing the
+    # gs= keyword — so hybrid wolf-master dispatch broke.
+    assert captured.get("gs") is gs, (
+        f"NEW-S02-A: dispatch_for_role must be called with gs=gs; "
+        f"got gs={captured.get('gs')!r}. The production call site at "
+        f"context.py:520-522 is missing the gs= keyword — so hybrid "
+        f"wolf-master dispatch breaks in production."
+    )
