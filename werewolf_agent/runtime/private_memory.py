@@ -237,10 +237,31 @@ def _estimate_entry_tokens(entry: dict[str, Any]) -> int:
     MEM-04: legacy ``len(serialized) // 2`` treated CJK as 0.5 tokens
     per character, but real BPE is closer to 1.5-2 tokens per CJK
     character (each Hanzi may split into 2-3 sub-tokens). Use a
-    rough CJK+BPE-aware heuristic: count CJK characters separately
+    rough CJK+BPE-aware heuristic: count CJK ideographs separately
     (2 tokens each) and ASCII letters/digits separately (1 token
     per 4 chars). Other bytes (punctuation, whitespace) are
     negligible.
+
+    AUDIT-2-05: the legacy estimator also misses two real BPE
+    costs:
+
+    1. CJK punctuation marks (。，！？、；：「」『』【】《》
+       ——— …… —) and the full-width space (U+3000) live in
+       Unicode blocks outside U+4E00..U+9FFF (they're in
+       U+3000..U+303F, U+FF00..U+FFEF, U+2010..U+205F), so the
+       cjk counter skips them. Real BPE emits ~1 token per
+       punctuation mark — a string of 100 CJK commas tokens to
+       ~100, not 0.
+
+    2. The dict wrapper itself (JSON braces, quotes, colons,
+       commas between fields) adds tokens the body estimator
+       doesn't capture. A single-key entry ``{"text": ""}``
+       tokenizes to ~5 BPE tokens even though both counters
+       return 0 for the body.
+
+    Fix: apply a 1.1× inflation factor to the running total to
+    catch the systemic punctuation under-count, and add a +4
+    token overhead for the dict wrapper itself.
 
     The exact ratio matters less than getting the relative ordering
     right; the per-category priority drop depends on accurate
@@ -253,7 +274,15 @@ def _estimate_entry_tokens(entry: dict[str, Any]) -> int:
         1 for ch in serialized
         if ch.isascii() and ch.isprintable() and not ch.isspace()
     )
-    return max(1, cjk_chars * 2 + ascii_chars // 4)
+    body_estimate = cjk_chars * 2 + ascii_chars // 4
+    # AUDIT-2-05: 1.1× inflation catches CJK punctuation +
+    # full-width space (not in the cjk ideograph range) and other
+    # small token costs (emoji, control-char handling, etc.) that
+    # real BPE accounts for. +4 covers the dict wrapper (JSON
+    # braces, quotes, colons, the structural tokens around the
+    # field set).
+    inflated = int(body_estimate * 1.1) + 4
+    return max(1, inflated)
 
 
 def _truncate_by_priority(

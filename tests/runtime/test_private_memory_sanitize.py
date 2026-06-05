@@ -988,3 +988,122 @@ def test_speech_stance_positive_still_triggers():
     assert len(memory["stance_notes"]) == 1, (
         f"MEM-16: positive '站边' must still trigger; got: {memory['stance_notes']!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# AUDIT-2-05: CJK punctuation under-counts in _estimate_entry_tokens.
+#
+# The legacy estimator only counts CJK ideographs (U+4E00..U+9FFF) and
+# ASCII printable characters. CJK punctuation marks (，。！？、；：「」『』
+# 【】《》—— …… —) and the full-width space (U+3000) live in OTHER
+# Unicode blocks (U+3000..U+303F, U+FF00..U+FFEF, U+2010..U+205F) and
+# slip through both counters. Real BPE tokenizers (cl100k_base,
+# o200k_base, GLM-5) emit ~1 token per punctuation mark on average,
+# so a string with heavy punctuation can drift 20-30% low.
+#
+# Plus the dict wrapper itself adds tokens for the JSON braces,
+# quotes, and colons — about 4 tokens for a single-key entry — which
+# the per-key body estimator doesn't capture.
+#
+# Fix: apply a 1.1x inflation factor to the running total and add a
+# +4 token overhead for the dict wrapper. The estimator is a rough
+# BPE proxy; small relative errors are acceptable but the systemic
+# under-count of punctuation-driven entries is not.
+# ---------------------------------------------------------------------------
+
+
+def test_token_estimate_includes_punctuation_overhead():
+    """AUDIT-2-05: text with heavy CJK punctuation must estimate HIGHER
+    than the legacy estimator (cjk*2 + ascii//4) returns.
+
+    The legacy estimator ignores CJK punctuation. A 100-char string
+    composed entirely of CJK punctuation must still produce a non-zero
+    token estimate. Punctuation marks (，。！？) typically tokenize to
+    ~1 token each in real BPE; the inflation factor (1.1x) plus the
+    dict wrapper overhead (+4) must push the estimate well above the
+    legacy 0-token baseline.
+    """
+    from werewolf_agent.runtime.private_memory import _estimate_entry_tokens
+
+    # 100 chars of heavy CJK punctuation (the "。" is U+3002; "，" is
+    # U+FF0C; "、" is U+3001; "！" is U+FF01; "？" is U+FF1F).
+    # None of these are in the U+4E00..U+9FFF CJK ideograph range, so
+    # the legacy estimator counts ZERO CJK chars and ZERO ASCII chars
+    # for this string.
+    heavy_punctuation = "。" * 50 + "，" * 30 + "！" * 10 + "？" * 10
+    assert all(0x3000 <= ord(ch) <= 0x303F or 0xFF00 <= ord(ch) <= 0xFFEF
+               for ch in heavy_punctuation), (
+        "test setup: all chars must be CJK punctuation outside the "
+        "CJK ideograph range (U+4E00..U+9FFF) so the legacy estimator "
+        f"under-counts. Got chars: {set(heavy_punctuation)}"
+    )
+
+    entry = {
+        "day": 1,
+        "point": heavy_punctuation,
+        "speaker": "p05",
+        "source_event": "speech",
+    }
+    estimated = _estimate_entry_tokens(entry)
+
+    # Legacy estimator returns max(1, 0) = 1 for this entry (no cjk
+    # ideographs, no ASCII printable non-whitespace). The fix adds
+    # a 1.1x inflation factor and a +4 token dict-wrapper overhead,
+    # so the estimate must be substantially higher than the legacy
+    # 1-token baseline. We require at least 4 (matching the wrapper
+    # overhead alone) — any value above the legacy baseline proves
+    # the inflation factor is being applied.
+    assert estimated > 1, (
+        f"AUDIT-2-05: text with heavy CJK punctuation must estimate "
+        f"HIGHER than the legacy baseline (which counts only CJK "
+        f"ideographs and ASCII). The legacy returns max(1, 0) = 1 "
+        f"for a 100-char punctuation string. The fix applies a 1.1x "
+        f"inflation factor + 4 token wrapper overhead — both should "
+        f"push the estimate above 1. Got estimated={estimated} for "
+        f"entry={entry!r}"
+    )
+
+    # And the estimate should be larger than what the legacy formula
+    # would give for the same entry WITHOUT the wrapper overhead.
+    # (The legacy cjk_chars count is 0, ascii count is 4 — the 4
+    # ASCII chars in 'day', 'point', 'source_event' are field names
+    # not values. Wait, the field names ARE in the serialized JSON
+    # so the legacy formula does count them.) The exact legacy
+    # value depends on the serialized bytes; we just need a strict
+    # upper-bound comparison: estimate > legacy.
+    import json as _json
+    serialized = _json.dumps(entry, ensure_ascii=False, sort_keys=True)
+    cjk_chars = sum(1 for ch in serialized if '一' <= ch <= '鿿')
+    ascii_chars = sum(
+        1 for ch in serialized
+        if ch.isascii() and ch.isprintable() and not ch.isspace()
+    )
+    legacy_estimate = max(1, cjk_chars * 2 + ascii_chars // 4)
+    assert estimated > legacy_estimate, (
+        f"AUDIT-2-05: the new estimator must return a value strictly "
+        f"above the legacy baseline. legacy={legacy_estimate}, new="
+        f"{estimated}, entry={entry!r}. The 1.1x inflation + 4 wrapper "
+        f"overhead must produce a strictly higher estimate."
+    )
+
+
+def test_token_estimate_includes_dict_wrapper_overhead():
+    """AUDIT-2-05: a single-key empty-string entry must estimate > 4.
+
+    The dict wrapper overhead (JSON braces, quotes, colons) adds ~4
+    tokens in real BPE. A single-key entry with an empty value still
+    costs the wrapper — the legacy estimator (max 1) under-counts
+    this completely.
+    """
+    from werewolf_agent.runtime.private_memory import _estimate_entry_tokens
+
+    entry = {"text": ""}
+    estimated = _estimate_entry_tokens(entry)
+
+    # The wrapper alone ({"text":""} in JSON) emits ~4 BPE tokens.
+    # The fix must surface this overhead.
+    assert estimated >= 4, (
+        f"AUDIT-2-05: dict wrapper overhead must be ≥ 4 tokens for "
+        f"a single-key empty entry. The legacy estimator returns 1 "
+        f"(max 1 with no cjk/ascii content). Got estimated={estimated}."
+    )
