@@ -408,7 +408,10 @@ def create_game_router(
             )
         except PermissionDenied as e:
             raise HTTPException(403, detail=e.reason)
-        return build_cognitive_diff(state, player_id or "p01", allowed_view)
+        return build_cognitive_diff(
+            state, player_id or "p01", allowed_view,
+            cognition_data=_build_cognition_data_for_viewer(state, player_id or "p01"),
+        )
 
     @router.get("/games/{game_id}/rag-audit")
     def get_rag_audit(
@@ -634,6 +637,60 @@ def _enforce_create_game_auth(
         except PermissionDenied as e:
             raise HTTPException(403, detail=e.reason)
         raise HTTPException(403, "create_game requires moderator role")
+
+
+def _build_cognition_data_for_viewer(
+    state: GameState, viewer_id: str,
+) -> dict[str, dict[str, Any]]:
+    """NEW-P1-5: build real belief data for the cognitive-diff view.
+
+    Uses the belief updater to initialize a uniform belief state from
+    the current game state, then collapses each player's
+    ``role_probabilities`` into ``{guessed_role, guessed_confidence,
+    faction_read, trust}`` for the view layer.
+    """
+    try:
+        from werewolf_agent.cognition.belief import BeliefUpdater
+        from werewolf_agent.cognition.world_state import build_world_state
+        from werewolf_agent.cognition.visibility import VisibilityPolicy
+    except Exception:
+        return {}
+
+    try:
+        world_state = build_world_state(state)
+    except Exception:
+        return {}
+
+    role_names = [
+        "villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid",
+    ]
+    updater = BeliefUpdater(all_role_names=role_names)
+    belief_state = updater.initialize(list(state.players.keys()), viewer_id)
+
+    # Apply visibility filter so the belief state reflects what the
+    # viewer could realistically infer.
+    try:
+        viewer_role = state.players[viewer_id].role if viewer_id in state.players else "villager"
+        vis_policy = VisibilityPolicy()
+        visible_facts = vis_policy.filter_visible_facts(world_state, viewer_id, viewer_role)
+        belief_state = updater.update(belief_state, visible_facts, state.day_number)
+    except Exception:
+        # Fall back to uniform beliefs on visibility errors.
+        pass
+
+    cognition_data: dict[str, dict[str, Any]] = {}
+    for pid, b in belief_state.beliefs.items():
+        guessed_role, guessed_confidence = b.top_role_guess()
+        faction_read = b.faction_lean if b.faction_lean != "unknown" else "unknown"
+        cognition_data[pid] = {
+            "guessed_role": guessed_role,
+            "guessed_confidence": float(guessed_confidence),
+            "faction_read": faction_read,
+            "trust": float(b.trust),
+            "key_evidence": list(b.open_questions),
+            "belief_changes": [],
+        }
+    return cognition_data
 
 
 def _build_locked_config_snapshot(req: CreateGameRequest, project_root: Path) -> dict:
