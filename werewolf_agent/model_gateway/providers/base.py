@@ -28,25 +28,27 @@ def categorize_empty_response(
     """Categorize the cause of an empty LLM response.
 
     Returns None if the response is non-empty (no attribution needed).
-    Order of checks:
+    Order of checks (R3-MG-6 — http_status must be inspected first so a
+    4xx whose error body mentions 'token' still classifies as
+    ``provider_error`` rather than the less specific ``token_limit``):
       1. Non-empty response → None
-      2. High latency → timeout
-      3. Token-shaped error string → token_limit
-      4. HTTP 5xx → provider_error
-      5. HTTP 4xx → provider_error
+      2. HTTP 5xx → provider_error
+      3. HTTP 4xx → provider_error
+      4. High latency → timeout (provider-configurable threshold)
+      5. Token-shaped error string → token_limit
       6. Network-shaped error string → network_error
       7. Otherwise → unknown
     """
     if response_text and response_text.strip():
         return None
-    if latency_ms > timeout_threshold_ms:
-        return "timeout"
-    if raw_error and "token" in raw_error.lower():
-        return "token_limit"
     if http_status >= 500:
         return "provider_error"
     if http_status >= 400:
         return "provider_error"
+    if latency_ms > timeout_threshold_ms:
+        return "timeout"
+    if raw_error and "token" in raw_error.lower():
+        return "token_limit"
     if raw_error and (
         "network" in raw_error.lower() or "connection" in raw_error.lower()
     ):

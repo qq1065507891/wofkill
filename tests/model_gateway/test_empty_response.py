@@ -25,10 +25,12 @@ class TestCategorizeEmptyResponse:
         from werewolf_agent.model_gateway.providers.base import (
             categorize_empty_response,
         )
+        # R3-MG-6: http_status is inspected first. Use http_status=0 (no
+        # HTTP failure signal) so the token-string match still applies.
         category = categorize_empty_response(
             response_text="",
             latency_ms=5000,
-            http_status=400,
+            http_status=0,
             raw_error="max_tokens exceeded",
         )
         assert category == "token_limit"

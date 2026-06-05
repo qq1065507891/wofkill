@@ -66,6 +66,12 @@ class GenerateResult:
     text_fallback_used: bool = False
     structured_failure_reason: str | None = None
     allow_text_tool_fallback: bool = False
+    # R3-MG-2: surface raw HTTP status / error string from the provider so
+    # the failure categorizer can attribute 4xx/5xx to ``provider_error``
+    # instead of falling through to ``unknown``. Defaults preserve the
+    # pre-R3-MG-2 behavior for callers that do not populate them.
+    http_status: int = 0
+    raw_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -517,10 +523,17 @@ class ModelRouter:
             ))
             if len(self._usage_log) > 10000:
                 self._usage_log = self._usage_log[-5000:]
+        # R3-MG-2: surface the HTTP status / raw error from the most recent
+        # exception so the categorizer can attribute 4xx/5xx to
+        # ``provider_error`` rather than the silent ``unknown`` fallback.
         return GenerateResult(
             text="",
             provider=config.provider,
             model=config.model,
+            http_status=_http_status_from_exception(primary_error)
+            or _http_status_from_exception(fallback_error),
+            raw_error=_raw_error_from_exception(primary_error)
+            or _raw_error_from_exception(fallback_error),
         )
 
     def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:
@@ -582,6 +595,43 @@ def _format_exception(exc: BaseException | None) -> str:
     if message:
         return f"{type(exc).__name__}: {message}"
     return type(exc).__name__
+
+
+def _http_status_from_exception(exc: BaseException | None) -> int:
+    """R3-MG-2: best-effort HTTP status extraction from an exception.
+
+    Returns 0 when the exception does not carry an HTTP status (e.g. a
+    bare ``RuntimeError`` from a SDK or a connection-refused ``OSError``).
+    """
+    if exc is None:
+        return 0
+    # httpx.HTTPStatusError and httpx.HTTPError variants expose .response
+    try:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError):
+            return int(getattr(exc.response, "status_code", 0) or 0)
+        response = getattr(exc, "response", None)
+        if response is not None:
+            return int(getattr(response, "status_code", 0) or 0)
+    except ImportError:
+        pass
+    # Generic: look for an integer "code" attribute or HTTP NNN in str(exc).
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and 100 <= code <= 599:
+        return code
+    import re
+    m = re.search(r"\b([1-5]\d{2})\b", str(exc))
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def _raw_error_from_exception(exc: BaseException | None) -> str | None:
+    """R3-MG-2: best-effort raw error string from an exception."""
+    if exc is None:
+        return None
+    message = str(exc)
+    return message or None
 
 
 def _failure_reason(
