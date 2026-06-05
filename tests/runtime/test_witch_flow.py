@@ -748,4 +748,8 @@ class TestWitchPoisonPressureContext:
         )
 
         assert context.skill_analyses == {"skill_analyze_wolf_pit": "suspects: p02"}
-        assert context.skill_analysis_hints == context.skill_analyses
+        # NEW-S04-A: skill_analysis_hints is no longer populated. The
+        # single source of truth is strategy_directive.skill_tactical_advice
+        # (the structured render path inside the strategy_directive
+        # section). The dual-render duplication is gone.
+        assert context.skill_analysis_hints == {}

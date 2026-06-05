@@ -1196,7 +1196,10 @@ class TestPlayerAgentRetryFallback:
         assert "长期能力画像:" in prompt
         assert "我的认知矩阵:" in prompt
         assert "本轮策略指令:" in prompt
-        assert "技能分析结果:" in prompt
+        # NEW-S04-A: the legacy "技能分析结果:" section is dropped.
+        # The structured skill_tactical_advice in strategy_directive
+        # is the single source of truth.
+        assert "技能分析结果:" not in prompt
         assert prompt.index("知识库提示:") < prompt.index("跨局反思记忆:")
         assert prompt.index("跨局反思记忆:") < prompt.index("本轮策略指令:")
         assert "策略建议:" not in prompt

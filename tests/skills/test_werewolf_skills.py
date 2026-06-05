@@ -716,3 +716,184 @@ def test_swing_vote_handler_wolf_discussion_recommends_night_kill():
         f"S-03: swing_vote in wolf_discussion should mark itself as "
         f"夜杀; got: {out.prompt_injectable!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-MANIFEST-A: review_correction manifest name matches the enum value.
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_name_matches_enum() -> None:
+    """NEW-MANIFEST-A: the legacy review_correction.yaml manifest's
+    `name:` field used the value `review_correction`, while the
+    SkillName enum's value is `review_correct` (REVIEW_CORRECTION =
+    'review_correct' in schemas.py:31). The two drifted — the manifest
+    used a name the enum never produced. The fix is to align the
+    manifest's `name:` with the enum.
+
+    Assert: every manifest YAML under `manifests/` (legacy) has a
+    `name:` that is a valid SkillName enum value.
+    """
+    import yaml as _yaml
+    from pathlib import Path as _Path
+    from werewolf_agent.skills import werewolf_skills as _ws
+    from werewolf_agent.skills.schemas import SkillName
+
+    manifest_dir = _Path(_ws.__file__).parent / "manifests"
+    valid_names = {n.value for n in SkillName}
+
+    mismatches: list[tuple[str, str, str]] = []
+    for yf in sorted(manifest_dir.glob("*.yaml")):
+        data = _yaml.safe_load(yf.read_text(encoding="utf-8")) or {}
+        manifest_name = data.get("name")
+        if manifest_name is None:
+            continue
+        if manifest_name not in valid_names:
+            mismatches.append(
+                (yf.name, manifest_name, f"valid={sorted(valid_names)}")
+            )
+    assert not mismatches, (
+        f"NEW-MANIFEST-A: manifest `name:` must match a SkillName enum "
+        f"value. Mismatches: {mismatches!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S19-B: wolf_pit seer_check_claim branch skips dead players.
+# ---------------------------------------------------------------------------
+
+
+def test_wolf_pit_seer_check_skips_dead_players() -> None:
+    """NEW-S19-B: wolf_pit's seer_check_claim branch must NOT add a
+    dead target to `suspects` / `excluded`. Pre-fix, the branch only
+    checked `if target and ...` but not `gs.players[target].alive`.
+    A dead player previously tagged as "wolf" by a seer_check_claim
+    would be added to suspects; the S-19 filter in context.py would
+    then either drop the whole advice (because the dead player is
+    outside legal_targets) or — worse — surface the dead player to
+    the LLM as a vote target.
+    """
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # p05 is the dead target. p07 is the seer who claimed the check.
+    players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+    players["p07"] = PlayerState(id="p07", role="seer", alive=True)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    # Seer p07 claims p05 is wolf (BUT p05 is dead).
+    ws.append(StructuredFact(
+        fact_type="seer_check_claim",
+        source_player="p07", target_player="p05",
+        value="wolf", day=1,
+    ))
+    # Seer p07 also claims p09 is good (p09 alive).
+    ws.append(StructuredFact(
+        fact_type="seer_check_claim",
+        source_player="p07", target_player="p09",
+        value="good", day=1,
+    ))
+
+    inp = SkillInput(
+        role="werewolf", phase="speech", day=2,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.WOLF_PIT_ANALYSIS, inp)
+    text = out.prompt_injectable
+    # NEW-S19-B: dead p05 must NOT appear in the suspect list (or
+    # anywhere as a recommendation).
+    # The suspect line uses `(p05...)` style with parentheses.
+    # Allow for plain mention (e.g. "嫌疑区(0人)") but flag `p05(...)`
+    # or `p05(被...)` patterns as suspect/exclude entries.
+    assert "p05(被p07" not in text, (
+        f"NEW-S19-B: dead p05 must NOT appear in wolf_pit suspect or "
+        f"exclude list. Got prompt: {text!r}"
+    )
+    # Sanity: alive p09 IS mentioned in the exclude (good check).
+    # The exclude line uses `(p09...)` style.
+    assert "p09(被p07发金水)" in text, (
+        f"Sanity: alive p09 (good check) must be in exclude list. "
+        f"Got prompt: {text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S19-D: find_power skips dead players.
+# ---------------------------------------------------------------------------
+
+
+def test_find_power_skips_dead_players() -> None:
+    """NEW-S19-D: find_power iterates bs.beliefs.items() without
+    checking `gs.players[pid].alive`. A dead player with high
+    role probability (e.g. a real seer who was just wolf-killed) would
+    be added to candidates. Their prompt then names a dead player as
+    a power-role holder, which:
+    (a) is misleading (they can't act on the info),
+    (b) triggers the S-19 illegal-target filter downstream.
+    Add an alive check that mirrors the wolf_pit belief-state loop.
+    """
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.world_state import build_world_state
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12 players, p03 = seer (dead), p07 = seer (alive).
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    players["p03"] = PlayerState(id="p03", role="seer", alive=False)  # dead seer
+    players["p07"] = PlayerState(id="p07", role="seer", alive=True)   # alive seer
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = build_world_state(gs)
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p05")
+    bs = BeliefUpdater().update(bs, ws.facts, gs.day_number)
+    # Manually set high seer probability for the dead p03.
+    bs.beliefs["p03"].role_probabilities = {"seer": 0.9, "werewolf": 0.05, "villager": 0.05}
+    # And high seer probability for the alive p07.
+    bs.beliefs["p07"].role_probabilities = {"seer": 0.9, "werewolf": 0.05, "villager": 0.05}
+
+    inp = SkillInput(
+        role="villager", phase="speech", day=2,
+        game_state=gs, world_state=ws, belief_state=bs,
+        contradiction_alerts=[], player_id="p05",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.FIND_POWER, inp)
+    text = out.prompt_injectable
+    # NEW-S19-D: dead p03 must NOT appear in the candidate list.
+    # The candidate line uses "p03 大概率是 seer" style.
+    assert "p03" not in text, (
+        f"NEW-S19-D: dead p03 must NOT appear in find_power "
+        f"candidates. Got prompt: {text!r}"
+    )
+    # Sanity: alive p07 IS in the candidates.
+    assert "p07" in text, (
+        f"Sanity: alive p07 (high seer prob) must be in candidates. "
+        f"Got prompt: {text!r}"
+    )
