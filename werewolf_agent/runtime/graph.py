@@ -179,12 +179,11 @@ def route_after_hunter_shot(state: RuntimeState) -> str:
         return "check_victory"
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
+    # Daytime hunter shot: there are no night deaths to announce.
+    # Route to check_victory first; if no winner, route_victory sends
+    # the game to enter_night to continue the day→night flow.
     if gs.phase != "night":
-        if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
-            return "announce_deaths_with_badge_loss"
-        if _needs_sheriff_before_deaths(gs):
-            return "sheriff_first_day_entry"
-        return "announce_deaths"
+        return "check_victory"
     if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
         return "announce_deaths_with_badge_loss"
     if _needs_sheriff_before_deaths(gs):
