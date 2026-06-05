@@ -282,6 +282,43 @@ class TestJudgeHITLInterface:
         )
         assert "villager" in result["response"]
 
+    # ------------------------------------------------------------------
+    # J-5: inject_event must reject nested sensitive keys + non-custom types + oversize payloads
+    # ------------------------------------------------------------------
+
+    def test_inject_event_rejects_nested_sensitive_keys(self):
+        """J-5: inject_event validation must recurse into nested values.
+
+        A protected top-level key (e.g. 'players') hidden inside a nested
+        dict must be rejected — otherwise an attacker can smuggle a
+        protected-field mutation past the top-level check. The fix walks
+        dicts and lists recursively.
+        """
+        import json
+        hitl = JudgeHITLInterface()
+        gs = _make_gs()
+        # Nested payload: protected 'players' key is hidden one level deep.
+        # JSON must be compact (no spaces) since the HITL parser splits on
+        # whitespace — using commas/colons only keeps it a single token.
+        nested_value = json.dumps({"players": "fake", "innocent": "ok"}, separators=(",", ":"))
+        cmd_raw = f'inject_event custom_x data={nested_value}'
+        result = hitl.handle_command(HITLCommand.parse(cmd_raw), gs)
+        assert "拒绝" in result["response"], \
+            f"Nested protected key should be rejected, got: {result['response']!r}"
+        # The protected key should be named in the rejection so the user
+        # understands what triggered it.
+        assert "players" in result["response"], \
+            f"Rejection should name 'players', got: {result['response']!r}"
+        # State must NOT have been mutated
+        assert "game_state" not in result, \
+            f"game_state must not be returned on rejection, got keys: {list(result.keys())}"
+        # Sanity: a flat safe payload still works
+        result_ok = hitl.handle_command(
+            HITLCommand.parse("inject_event custom_x benign=ok"),
+            gs,
+        )
+        assert "已注入" in result_ok["response"]
+
 
 class TestHITLGameRunnerIntegration:
     def test_game_runner_creates_hitl_when_enabled(self):

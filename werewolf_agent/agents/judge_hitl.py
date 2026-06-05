@@ -421,28 +421,87 @@ class JudgeHITLInterface:
         """Inject a custom GameEvent. Protected fields are validated and rejected.
 
         Usage: inject_event <event_type> key1=value1 key2=value2 ...
+
+        J-5 hardening:
+          1. Whitelist event types — only ``custom_*`` is allowed. This
+             blocks injection of reserved/semantic event types such as
+             ``vote_resolved`` or ``phase_changed`` that the rule engine
+             uses to mutate state.
+          2. Recursive nested key check — protected top-level keys
+             (``players``, ``deaths``, ``votes``, ``phase``,
+             ``winning_faction``, ``hybrid_result``) AND protected
+             per-player keys (``role``, ``alive``, ``faction``,
+             ``vote_enabled``, ``revealed_idiot``, ``badge_eligible``)
+             are rejected anywhere in the value tree (dicts, lists).
+          3. Size limit — the serialized payload must not exceed 4KB.
         """
+        import json as _json
+
         if len(args) < 1:
             return {"response": "用法: inject_event <type> [key=value ...]"}
         event_type = args[0]
-        # Validate event_type — reject empty, overlong, or system-reserved patterns
+        # J-5a: Whitelist — only custom_* event types are allowed.
         if not event_type or len(event_type) > 64:
             return {"response": f"拒绝: 事件类型无效（空或过长: {len(event_type)}字符）"}
         if event_type.startswith("_"):
             return {"response": "拒绝: 事件类型不能以下划线开头（保留给内部事件）"}
+        if not event_type.startswith("custom_"):
+            return {"response": (
+                f"拒绝: 事件类型必须以 'custom_' 开头（收到: '{event_type}'）。"
+                "系统保留类型（如 vote_resolved / phase_changed / deaths 等）不可注入。"
+            )}
         if event_type in ("judge_hitl_interaction", "judge_broadcast"):
             return {"response": f"拒绝: '{event_type}' 是系统保留事件类型"}
-        # Parse key=value pairs
+        # Parse key=value pairs. Values that parse as JSON dicts/lists are
+        # decoded so the recursive check below can walk into them.
         payload: dict[str, Any] = {}
         for kv in args[1:]:
             if "=" in kv:
                 k, v = kv.split("=", 1)
-                payload[k] = v
-        # Validate — reject protected field mutations (case-insensitive)
+                try:
+                    decoded = _json.loads(v)
+                except (ValueError, TypeError):
+                    decoded = v
+                payload[k] = decoded
+        # J-5b: Recursive nested key check across the value tree.
         protected_lower = {k.lower() for k in _PROTECTED_TOP_KEYS}
-        for key in list(payload.keys()):
-            if key.lower() in protected_lower:
-                return {"response": f"拒绝: '{key}' 是受保护字段，不能通过 inject_event 修改。"}
+        protected_player_lower = {k.lower() for k in _PROTECTED_PLAYER_KEYS}
+        all_protected = protected_lower | protected_player_lower
+
+        def _find_protected(obj: Any) -> str | None:
+            """Return the first protected key found anywhere in ``obj``,
+            or None if the value tree is clean.
+            """
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(k, str) and k.lower() in all_protected:
+                        return k
+                    found = _find_protected(v)
+                    if found is not None:
+                        return found
+            elif isinstance(obj, list):
+                for item in obj:
+                    found = _find_protected(item)
+                    if found is not None:
+                        return found
+            return None
+
+        bad_key = _find_protected(payload)
+        if bad_key is not None:
+            return {"response": (
+                f"拒绝: '{bad_key}' 是受保护字段（递归检查），不能通过 inject_event 修改。"
+            )}
+        # J-5c: Size limit 4KB. Encode with sorted keys + ensure_ascii=False
+        # so the limit reflects what the user actually wrote.
+        try:
+            serialized = _json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except (ValueError, TypeError) as exc:
+            return {"response": f"拒绝: payload 无法序列化: {exc}"}
+        byte_size = len(serialized.encode("utf-8"))
+        if byte_size > 4096:
+            return {"response": (
+                f"拒绝: 注入 payload 超过 4KB 限制（{byte_size}字节）。"
+            )}
         # Log the custom event
         event = GameEvent(type=event_type, payload=payload)
         gs = replace(gs, events=gs.events + [event])
