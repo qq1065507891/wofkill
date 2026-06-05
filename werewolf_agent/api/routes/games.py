@@ -604,14 +604,19 @@ def _resolve_caller_role(
         raise HTTPException(403, "Invalid or expired session token")
     if requested_role in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
         if caller_id and authorized_callers.get(caller_id) == requested_role:
+            # NEW-P2-5: only log a warning for elevated legacy auth.
+            # Non-elevated callers (player_agent, spectator) using
+            # query-param auth is the documented dev path and not
+            # security-relevant; the old log was noise.
+            logger.warning(
+                "Legacy query-param auth for elevated role without "
+                "session_token: caller_id=%s, caller_role=%s — no "
+                "cryptographic verification performed",
+                caller_id,
+                requested_role.value,
+            )
             return requested_role
         raise HTTPException(403, "Elevated caller role is not authorized")
-    logger.warning(
-        "Legacy query-param auth without session_token: "
-        "caller_id=%s, caller_role=%s — no cryptographic verification performed",
-        caller_id,
-        requested_role.value,
-    )
     return requested_role
 
 
