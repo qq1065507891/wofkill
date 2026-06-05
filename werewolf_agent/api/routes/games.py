@@ -292,6 +292,12 @@ def create_game_router(
         session_token: str = Query(""),
     ) -> PrivateStateResponse:
         state = _get_game(games, game_id)
+        # NEW-P2-9: 404 when the player doesn't exist in this game.
+        # Previously the view returned role="unknown", which was a
+        # silent bug — a typo or stale player_id would not be flagged
+        # to the caller.
+        if player_id not in state.players:
+            raise HTTPException(404, f"Player {player_id} not found in game {game_id}")
         caller_role = _resolve_caller_role(
             authorized_callers, caller_id, caller_role,
             session_token=session_token, auth_manager=auth,
