@@ -52,6 +52,14 @@ class TestHITLCommand:
         cmd = HITLCommand.parse("")
         assert cmd.command == ""
 
+    def test_judge_agent_param_removed(self):
+        """J-10: JudgeHITLInterface no longer takes/keeps a judge_agent reference."""
+        import inspect
+        sig = inspect.signature(JudgeHITLInterface.__init__)
+        assert "judge_agent" not in sig.parameters, (
+            "J-10: judge_agent must be removed (unused storage)"
+        )
+
 
 class TestJudgeHITLInterface:
     def test_initial_state_running(self):

@@ -114,7 +114,6 @@ class GameRunner:
         if self._config.judge_hitl_enabled:
             auto_pause = set(self._config.judge_hitl_auto_pause_triggers or [])
             self._hitl_interface = JudgeHITLInterface(
-                judge_agent=self._judge_agent,
                 auto_pause_phases=auto_pause,
             )
         # Attempt to restore memory from a previous snapshot at init
