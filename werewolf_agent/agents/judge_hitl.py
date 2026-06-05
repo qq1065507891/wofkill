@@ -30,6 +30,29 @@ class HITLState(str, Enum):
     STOPPED = "stopped"
 
 
+class HITLRole(str, Enum):
+    """Caller role for HITL command authorization (J-4).
+
+    Privileged commands (show_roles / show_votes / inject_event) leak
+    hidden identities or mutate game state, so they are gated to
+    MODERATOR / JUDGE roles. SPECTATOR (e.g. an audience dashboard) is
+    denied.
+    """
+
+    MODERATOR = "moderator"
+    JUDGE = "judge"
+    SPECTATOR = "spectator"
+
+
+# J-4: commands gated to MODERATOR / JUDGE (anything else, including
+# SPECTATOR, is denied with a refused response).
+_PRIVILEGED_COMMANDS = frozenset({
+    "show_roles",
+    "show_votes",
+    "inject_event",
+})
+
+
 @dataclass
 class HITLCommand:
     command: str
@@ -249,12 +272,33 @@ class JudgeHITLInterface:
         self,
         cmd: HITLCommand,
         game_state: GameState,
+        *,
+        caller_role: HITLRole | str = HITLRole.MODERATOR,
     ) -> dict[str, Any]:
         """Parse and execute a HITL command. Returns a result dict with at
         least a ``response`` key. May include ``game_state`` if mutated.
+
+        J-4: ``caller_role`` gates privileged commands. The default of
+        ``MODERATOR`` preserves backward compatibility for in-process
+        callers; external callers (API, CLI, dashboard) must pass
+        ``HITLRole.SPECTATOR`` (or any other non-privileged role) to
+        actually be denied.
         """
         command = cmd.command
         args = cmd.args
+
+        # J-4: gate privileged commands to MODERATOR / JUDGE.
+        if command in _PRIVILEGED_COMMANDS:
+            role_value = caller_role.value if isinstance(caller_role, HITLRole) else str(caller_role)
+            if role_value not in (HITLRole.MODERATOR.value, HITLRole.JUDGE.value):
+                response = (
+                    f"拒绝: 命令 '{command}' 需要 MODERATOR 或 JUDGE 角色，"
+                    f"当前角色 '{role_value}' 无权访问。"
+                )
+                self._log_event("command_denied", {
+                    "command": command, "caller_role": role_value,
+                })
+                return {"response": response}
 
         handlers: dict[str, Callable[[list[str], GameState], dict[str, Any]]] = {
             "pause": self._cmd_pause,

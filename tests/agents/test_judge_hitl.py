@@ -13,6 +13,7 @@ from werewolf_agent.core.models import GameState, GameEvent, PlayerState
 from werewolf_agent.agents.judge_hitl import (
     HITLState,
     HITLCommand,
+    HITLRole,
     JudgeHITLInterface,
     _PROTECTED_TOP_KEYS,
     _PROTECTED_PLAYER_KEYS,
@@ -252,6 +253,34 @@ class TestJudgeHITLInterface:
         assert hitl.state == HITLState.RUNNING
         assert hitl.is_running is True
         assert hitl.is_paused is False
+
+    # ------------------------------------------------------------------
+    # J-4: caller_role gates sensitive commands (show_roles/show_votes/inject_event)
+    # ------------------------------------------------------------------
+
+    def test_show_roles_requires_moderator_role(self):
+        """J-4: show_roles must be denied for non-moderator callers.
+
+        Privileged commands leak hidden identities or vote records, so they
+        must be gated to MODERATOR/JUDGE roles. SPECTATOR (e.g. an audience
+        dashboard) must NOT be allowed to invoke them.
+        """
+        hitl = JudgeHITLInterface()
+        gs = _make_gs()
+        # SPECTATOR is denied
+        result = hitl.handle_command(
+            HITLCommand.parse("show_roles"), gs, caller_role=HITLRole.SPECTATOR
+        )
+        assert "拒绝" in result["response"] or "denied" in result["response"].lower(), \
+            f"SPECTATOR should be denied show_roles, got: {result['response']!r}"
+        # No identity data should leak
+        assert "villager" not in result["response"], \
+            f"Identity leaked to SPECTATOR: {result['response']!r}"
+        # MODERATOR still works
+        result = hitl.handle_command(
+            HITLCommand.parse("show_roles"), gs, caller_role=HITLRole.MODERATOR
+        )
+        assert "villager" in result["response"]
 
 
 class TestHITLGameRunnerIntegration:
