@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
-    AgentContext,
     JudgeBroadcast,
     JudgeVoteCallingInput,
     JudgeSkillGuideInput,
@@ -430,76 +429,6 @@ class JudgeAgent:
             phase="vote",
             day_number=day_number,
             public_data=public_data,
-        )
-
-    def summarize_speech(
-        self,
-        speeches: list[dict[str, str]],
-        context: AgentContext | None = None,
-    ) -> str:
-        """Summarize a round of speeches for context compression.
-
-        Uses LLM if model_router is configured, otherwise extracts key points.
-        """
-        if not speeches:
-            return "本轮无人发言。"
-
-        if context is not None:
-            if self.model_router is None:
-                # Fallback: extract first sentence of each speech
-                summaries = []
-                for s in speeches:
-                    speaker = s.get("speaker", "?")
-                    text = s.get("text", "")
-                    first_sentence = text.split("。")[0][:80]
-                    summaries.append(f"[{speaker}] {first_sentence}")
-                return "\n".join(summaries)
-            prompt_parts = ["请用中文简要总结以下发言的关键立场和观点：\n"]
-            for s in speeches:
-                speaker = s.get("speaker", "?")
-                text = s.get("text", "")
-                prompt_parts.append(f"[{speaker}]: {text[:200]}")
-            prompt = "\n".join(prompt_parts)
-
-            result = self.model_router.generate(
-                agent_id="judge",
-                task_type="speech",
-                prompt=prompt,
-            )
-            if result.text:
-                return result.text
-
-        # Fallback: extract first sentence of each speech
-        summaries = []
-        for s in speeches:
-            speaker = s.get("speaker", "?")
-            text = s.get("text", "")
-            first_sentence = text.split("。")[0][:80]
-            summaries.append(f"[{speaker}] {first_sentence}")
-        return "\n".join(summaries)
-
-    def broadcast_vote_result(
-        self,
-        vote_result: dict[str, Any],
-    ) -> JudgeBroadcast:
-        """Translate vote resolution to broadcast."""
-        exiled = vote_result.get("exiled_player_id")
-        reason = vote_result.get("reason", "")
-
-        if exiled:
-            msg = f"投票结果：{exiled} 被放逐。"
-        elif reason == "first_tie_pk":
-            msg = "首次平票，进入PK发言。"
-        elif reason == "second_tie_no_exile":
-            msg = "再次平票，无人出局，进入夜晚。"
-        else:
-            msg = "投票结束。"
-
-        return JudgeBroadcast(
-            broadcast_type="vote_result",
-            message=msg,
-            phase="vote",
-            public_data=vote_result,
         )
 
     def broadcast_sheriff_result(

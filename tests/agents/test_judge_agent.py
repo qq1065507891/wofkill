@@ -56,28 +56,6 @@ class TestJudgeAgent:
         b = judge.broadcast_death_announcement(deaths=[], day_number=2)
         assert "平安夜" in b.message
 
-    def test_broadcast_vote_result_exile(self) -> None:
-        judge = self._make_judge()
-        b = judge.broadcast_vote_result(
-            {"exiled_player_id": "p05", "reason": "majority"}
-        )
-        assert "p05" in b.message
-        assert "放逐" in b.message
-
-    def test_broadcast_vote_result_first_tie(self) -> None:
-        judge = self._make_judge()
-        b = judge.broadcast_vote_result(
-            {"exiled_player_id": None, "reason": "first_tie_pk"}
-        )
-        assert "平票" in b.message
-
-    def test_broadcast_vote_result_second_tie(self) -> None:
-        judge = self._make_judge()
-        b = judge.broadcast_vote_result(
-            {"exiled_player_id": None, "reason": "second_tie_no_exile"}
-        )
-        assert "再次平票" in b.message
-
     def test_broadcast_sheriff_elected(self) -> None:
         judge = self._make_judge()
         b = judge.broadcast_sheriff_result("p03", "active")
@@ -89,15 +67,6 @@ class TestJudgeAgent:
         b = judge.broadcast_sheriff_result(None, "torn")
         assert "撕掉" in b.message
 
-    def test_summarize_speech_fallback(self) -> None:
-        judge = self._make_judge()
-        speeches = [
-            {"speaker": "p01", "text": "我觉得3号是狼人。因为他的视角有问题。"},
-            {"speaker": "p02", "text": "我站边1号，归票5号。"},
-        ]
-        summary = judge.summarize_speech(speeches)
-        assert "p01" in summary
-
     def test_judge_does_not_adjudicate(self) -> None:
         """Judge broadcast has no authority fields."""
         judge = self._make_judge()
@@ -105,6 +74,12 @@ class TestJudgeAgent:
         data = b.model_dump()
         assert "winner" not in data
         assert "ruling" not in data
+
+    def test_judge_dead_methods_removed(self) -> None:
+        """J-9: summarize_speech and broadcast_vote_result are dead code; must be removed."""
+        judge = self._make_judge()
+        assert not hasattr(judge, "summarize_speech"), "summarize_speech is dead code"
+        assert not hasattr(judge, "broadcast_vote_result"), "broadcast_vote_result is dead code"
 
 
 class TestPersonaSystemMessageInjection:
