@@ -353,6 +353,43 @@ def create_game_router(
             raise HTTPException(403, detail=e.reason)
         return build_replay(state, allowed_view, viewer_id=caller_id)
 
+    @router.get("/games/{game_id}/snapshot", response_model=ReplayResponse)
+    def get_snapshot(
+        game_id: str,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.MODERATOR),
+        view_mode: ViewMode = Query(ViewMode.MODERATOR_FULL),
+        session_token: str = Query(""),
+    ) -> ReplayResponse:
+        """NEW-P2-3: snapshot of the current game state.
+
+        The legacy ``/replay`` endpoint is misleadingly named — the
+        response always contains exactly one ``ReplaySnapshot`` built
+        from the *current* ``GameState``, not a sequence of snapshots
+        across the game's history. This endpoint exposes the same
+        behavior under a clearer name and includes a short note in
+        the source annotation so callers don't expect historical
+        playback.
+        """
+        state = _get_game(games, game_id)
+        game_active = state.winning_faction is None
+        caller_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
+        try:
+            allowed_view = checker.check(
+                caller_id=caller_id,
+                caller_role=caller_role,
+                requested_view=view_mode,
+                game_id=game_id,
+                endpoint="snapshot",
+                game_active=game_active,
+            )
+        except PermissionDenied as e:
+            raise HTTPException(403, detail=e.reason)
+        return build_replay(state, allowed_view, viewer_id=caller_id)
+
     @router.get("/games/{game_id}/evaluation", response_model=EvaluationResponse)
     def get_evaluation(
         game_id: str,
