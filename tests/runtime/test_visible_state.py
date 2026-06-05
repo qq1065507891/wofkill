@@ -318,3 +318,42 @@ def test_death_reason_labels_in_broadcast() -> None:
     assert _death_reason_label("exile") == "放逐"
     assert _death_reason_label("self_destruct") == "自爆"
     assert _death_reason_label("unknown") == "原因不明"
+
+
+def test_sheriff_id_hidden_after_death() -> None:
+    """Design doc §visibility: when the sheriff has died but badge
+    transfer has not yet executed, the public view must hide the dead
+    sheriff's id. Agents must not reference a dead player as '在场'.
+
+    Applies to BOTH build_visible_player_state and build_public_summary
+    so player contexts never leak a dead sheriff's id.
+    """
+    gs = GameState(
+        game_id="sheriff_dead_visibility",
+        phase="day",
+        day_number=2,
+        night_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=True),
+            # Sheriff died (poisoned/hunter-shot); badge not yet transferred
+            "p02": PlayerState(id="p02", role="villager", alive=False),
+        },
+        sheriff_id="p02",
+        sheriff_badge_state="active",
+    )
+
+    # build_visible_player_state: sheriff_id field must be None
+    visible = build_visible_player_state(gs)
+    assert visible["sheriff_id"] is None, (
+        f"Visible state must hide dead sheriff id; got {visible['sheriff_id']!r}"
+    )
+    assert visible["badge_state"] is None
+
+    # build_public_summary: must not mention dead sheriff by id
+    summary = build_public_summary(gs)
+    assert "警长" not in summary, (
+        f"Public summary must not mention dead sheriff; got: {summary!r}"
+    )
+    assert "p02" not in summary, (
+        f"Public summary must not leak dead sheriff id p02; got: {summary!r}"
+    )

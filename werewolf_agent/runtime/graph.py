@@ -147,6 +147,18 @@ def assign_roles(state: RuntimeState) -> dict[str, Any]:
 # Conditional edge routers
 # ---------------------------------------------------------------------------
 
+def _post_hunter_route(gs: GameState) -> str:
+    """Shared routing logic for the post-night-resolve / post-hunter-shot
+    night branch. Picks the next node based on sheriff interrupt count
+    and whether the day needs sheriff election before death announcement.
+    """
+    if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
+        return "announce_deaths_with_badge_loss"
+    if _needs_sheriff_before_deaths(gs):
+        return "sheriff_first_day_entry"
+    return "announce_deaths"
+
+
 def route_after_resolve_night(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
     for death in gs.deaths:
@@ -164,10 +176,13 @@ def route_after_resolve_night(state: RuntimeState) -> str:
         return "check_victory"
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
-    if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
-        return "announce_deaths_with_badge_loss"
+    # D1 sheriff-first: deaths must still be announced before sheriff
+    # election (design doc §day_flow). If a wolf self-destructs during
+    # the sheriff election, route_after_self_destruct ensures deaths
+    # are still published. Use the badge-loss variant because the
+    # self-destruct path may also tear the badge.
     if _needs_sheriff_before_deaths(gs):
-        return "sheriff_first_day_entry"
+        return "announce_deaths_with_badge_loss"
     return "announce_deaths"
 
 
@@ -179,17 +194,12 @@ def route_after_hunter_shot(state: RuntimeState) -> str:
         return "check_victory"
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
+    # Daytime hunter shot: there are no night deaths to announce.
+    # Route to check_victory first; if no winner, route_victory sends
+    # the game to enter_night to continue the day→night flow.
     if gs.phase != "night":
-        if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
-            return "announce_deaths_with_badge_loss"
-        if _needs_sheriff_before_deaths(gs):
-            return "sheriff_first_day_entry"
-        return "announce_deaths"
-    if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
-        return "announce_deaths_with_badge_loss"
-    if _needs_sheriff_before_deaths(gs):
-        return "sheriff_first_day_entry"
-    return "announce_deaths"
+        return "check_victory"
+    return _post_hunter_route(gs)
 
 
 def route_after_vote(state: RuntimeState) -> str:

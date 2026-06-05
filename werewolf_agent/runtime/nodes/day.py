@@ -93,6 +93,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     _hitl_checkpoint(state, "announce_deaths", "after")
     return {"game_state": gs,
             "revote": False, "speech_index": 0,
+            "speech_order": [],
             "current_speaker_id": None}
 
 
@@ -602,28 +603,32 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
             break
     if exiled_id is None:
         return {"game_state": gs}
-    exiled_role = gs.players.get(exiled_id, None)
-    role_str = exiled_role.role if exiled_role else "?"
-    gs, _ = _judge_broadcast(
-        phase="exile",
-        message=f"{_player_display(state, exiled_id)}被放逐出局",
-        gs=gs, day_number=gs.day_number,
-        extra_payload={"exiled": exiled_id},
-        visibility="public",
-    )
+    # Resolve the exile FIRST so we know whether the player is actually
+    # exiled (idiot reveal voids the exile). Then publish a public broadcast
+    # that reflects the actual outcome.
     gs, events = engine.resolve_exile(gs, target_id=exiled_id)
     gs = replace(gs, events=gs.events + events)
-    logger.debug(f"  [放逐] {_player_display(state, exiled_id)}({role_str}) 被放逐出局")
-    for ev in events:
-        if ev.type == "idiot_revealed":
-            logger.debug(f"  [白痴亮牌] {_player_display(state, exiled_id)} 是白痴，不会被放逐")
-            gs, _ = _judge_broadcast(
-                phase="idiot_revealed",
-                message=f"{_player_display(state, exiled_id)}亮出白痴身份，不会被放逐，但失去投票权",
-                gs=gs, day_number=gs.day_number,
-                extra_payload={"player_id": exiled_id},
-                visibility="public",
-            )
+    exiled_role = gs.players.get(exiled_id, None)
+    role_str = exiled_role.role if exiled_role else "?"
+    idiot_revealed = any(ev.type == "idiot_revealed" for ev in events)
+    if idiot_revealed:
+        logger.debug(f"  [白痴亮牌] {_player_display(state, exiled_id)} 是白痴，不会被放逐")
+        gs, _ = _judge_broadcast(
+            phase="idiot_revealed",
+            message=f"{_player_display(state, exiled_id)}亮出白痴身份，不会被放逐，但失去投票权",
+            gs=gs, day_number=gs.day_number,
+            extra_payload={"player_id": exiled_id},
+            visibility="public",
+        )
+    else:
+        gs, _ = _judge_broadcast(
+            phase="exile",
+            message=f"{_player_display(state, exiled_id)}被放逐出局",
+            gs=gs, day_number=gs.day_number,
+            extra_payload={"exiled": exiled_id},
+            visibility="public",
+        )
+        logger.debug(f"  [放逐] {_player_display(state, exiled_id)}({role_str}) 被放逐出局")
     return {"game_state": gs}
 
 

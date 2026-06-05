@@ -397,13 +397,65 @@ def test_apply_death_records_required_death_fields() -> None:
         state,
         Death(player_id="v1", reason="wolf_kill", timing="night", resolution_batch="night_1"),
     )
-
     death = new_state.deaths[-1]
     assert death.can_leave_last_words is True
     assert death.triggered_skills == []
     event = new_state.events[-1]
     assert event.payload["can_leave_last_words"] is True
     assert event.payload["triggered_skills"] == []
+
+
+def test_witch_poison_on_revealed_idiot_is_noop() -> None:
+    """Design doc §3.4: a revealed idiot stays alive even when targeted by
+    witch poison. apply_death must record the attempt as a noop (only emit
+    a player_died event for audit) but must not flip alive to False.
+
+    The revealed idiot is only ever killed by a later wolf_kill.
+    """
+    engine = make_engine()
+    state = make_state(revealed_idiot=True)
+
+    new_state = engine.apply_death(
+        state,
+        Death(
+            player_id="idiot",
+            reason="witch_poison",
+            timing="night",
+            resolution_batch="night_1",
+        ),
+    )
+
+    assert new_state.players["idiot"].alive is True, (
+        "Revealed idiot must stay alive when poisoned by witch"
+    )
+    # The death event is still recorded for audit, but the player keeps living
+    assert any(
+        event.type == "player_died"
+        and event.payload.get("player_id") == "idiot"
+        and event.payload.get("reason") == "witch_poison"
+        for event in new_state.events
+    ), "Poison attempt on revealed idiot should still be recorded as event"
+
+
+def test_wolf_kill_on_revealed_idiot_kills() -> None:
+    """Counterpart test: revealed idiot is killed by wolf_kill (later
+    night). Confirms the noop logic only suppresses non-wolf_kill reasons."""
+    engine = make_engine()
+    state = make_state(revealed_idiot=True)
+
+    new_state = engine.apply_death(
+        state,
+        Death(
+            player_id="idiot",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_2",
+        ),
+    )
+
+    assert new_state.players["idiot"].alive is False, (
+        "Revealed idiot must die when killed by wolves (later night)"
+    )
 
 
 def test_tearing_badge_removes_sheriff_for_rest_of_game() -> None:
@@ -509,6 +561,27 @@ def test_last_words_matrix(
     engine = make_engine()
 
     assert engine.can_leave_last_words(death_reason=death_reason, timing=timing, night_number=night_number) is expected
+
+
+def test_hunter_shot_target_no_last_words() -> None:
+    """Design doc §3.3: hunter shot target never gets last words. The
+    branch order in can_leave_last_words must check death_reason ==
+    'hunter_shot' BEFORE the timing == 'night' branch — otherwise a
+    night-timing hunter shot (e.g. hunter wolf-killed N1 then shoots
+    back) would incorrectly get first_night_death=True.
+    """
+    engine = make_engine()
+
+    # Night timing (e.g. hunter wolf-killed, shoots back same night)
+    assert engine.can_leave_last_words(
+        death_reason="hunter_shot", timing="night", night_number=1,
+    ) is False
+    assert engine.can_leave_last_words(
+        death_reason="hunter_shot", timing="night", night_number=2,
+    ) is False
+    assert engine.can_leave_last_words(
+        death_reason="hunter_shot", timing="night", night_number=3,
+    ) is False
 
 
 def test_first_day_flow_announces_deaths_then_last_words_then_sheriff_election() -> None:

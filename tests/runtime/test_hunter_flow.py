@@ -307,6 +307,55 @@ class TestHunterShotOrdering:
 
         assert route_after_hunter_shot({"game_state": gs, "engine": engine}) == "check_victory"
 
+    def test_day_hunter_shot_does_not_announce_deaths(self) -> None:
+        """Daytime hunter shot: when game is NOT over, must NOT go to
+        announce_deaths (which would announce stale night deaths). Should
+        go to check_victory to continue day flow properly."""
+        engine = _new_engine()
+        # 3 wolves remain after hunter shot one — game not over (no winner)
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+            "wolf1": PlayerState(id="wolf1", role="werewolf", alive=False),  # shot
+            "wolf2": PlayerState(id="wolf2", role="werewolf", alive=True),
+            "wolf3": PlayerState(id="wolf3", role="werewolf", alive=True),
+            "wolf4": PlayerState(id="wolf4", role="werewolf", alive=True),
+            "v1": PlayerState(id="v1", role="villager", alive=True),
+            "v2": PlayerState(id="v2", role="villager", alive=True),
+            "v3": PlayerState(id="v3", role="villager", alive=True),
+            "seer": PlayerState(id="seer", role="seer", alive=True),
+        }
+        gs = GameState(
+            game_id="hunter_day_no_announce",
+            players=players,
+            deaths=[
+                Death(
+                    player_id="hunter",
+                    reason="exile",
+                    timing="day_vote",
+                    resolution_batch="day_4_vote",
+                    triggered_skills=["hunter_shot"],
+                ),
+                Death(
+                    player_id="wolf1",
+                    reason="hunter_shot",
+                    timing="day_vote",
+                    resolution_batch="day_4_vote",
+                    source_player_id="hunter",
+                ),
+            ],
+            day_number=4,
+            phase="day",
+        )
+
+        result = route_after_hunter_shot({"game_state": gs, "engine": engine})
+        assert result != "announce_deaths", (
+            "Daytime hunter shot must not route to announce_deaths "
+            "(no night deaths to announce on day)"
+        )
+        assert result != "announce_deaths_with_badge_loss", (
+            "Daytime hunter shot must not route to announce_deaths_with_badge_loss"
+        )
+
     def test_resolve_hunter_shot_uses_target_declared_in_exile_last_words(self) -> None:
         from werewolf_agent.runtime.graph import resolve_hunter_shot
 

@@ -228,6 +228,12 @@ class RuleEngine:
         target = state.players[death.player_id]
         if not target.alive:
             return state
+        # Design doc §3.4: revealed idiot stays alive. Only a later
+        # wolf_kill can finally kill them. Witch poison / exile attempts
+        # must be noops: the death event is still recorded for audit, but
+        # alive is NOT flipped to False.
+        if target.revealed_idiot and death.reason != "wolf_kill":
+            return self._record_noop_death(state, death)
         can_leave_last_words = death.can_leave_last_words
         if can_leave_last_words is None:
             night_number = state.night_number
@@ -575,16 +581,19 @@ class RuleEngine:
 
     def can_leave_last_words(self, *, death_reason: str, timing: str, night_number: int) -> bool:
         lw = self.ruleset.raw["last_words"]
+        # Check death_reason branches FIRST so a night-timing hunter shot
+        # (hunter wolf-killed then shoots back same night) does not get
+        # misclassified as a normal first_night_death.
         if death_reason == "exile" and timing == "day_vote":
             return lw["day_exile"]
+        if death_reason == "hunter_shot":
+            return lw["hunter_shot_target"]
+        if death_reason == "self_destruct":
+            return lw["self_destruct"]
         if timing == "night":
             if night_number == 1:
                 return lw["first_night_death"]
             return lw["later_night_death"]
-        if death_reason == "self_destruct":
-            return lw["self_destruct"]
-        if death_reason == "hunter_shot":
-            return lw["hunter_shot_target"]
         return False
 
     # -- Visibility --
@@ -633,3 +642,39 @@ class RuleEngine:
             raise ValueError(f"{label}_not_found: {target_id}")
         if not target.alive:
             raise ValueError(f"{label}_not_alive: {target_id}")
+
+    def _record_noop_death(self, state: GameState, death: Death) -> GameState:
+        """Record a death attempt that did NOT actually kill the player.
+
+        Used for revealed idiot + non-wolf_kill: the event log must still
+        show the attempt (for audit and replay) but the player keeps
+        living. alive is NOT flipped and the death is not added to
+        state.deaths (which would imply a real death).
+        """
+        can_leave_last_words = death.can_leave_last_words
+        if can_leave_last_words is None:
+            night_number = state.night_number
+            if night_number == 0 and death.resolution_batch.startswith("night_"):
+                try:
+                    night_number = int(death.resolution_batch.removeprefix("night_"))
+                except ValueError:
+                    night_number = state.night_number
+            can_leave_last_words = self.can_leave_last_words(
+                death_reason=death.reason,
+                timing=death.timing,
+                night_number=night_number,
+            )
+        new_events = state.events + [GameEvent(
+            type="player_died",
+            payload={
+                "player_id": death.player_id,
+                "reason": death.reason,
+                "timing": death.timing,
+                "resolution_batch": death.resolution_batch,
+                "source_player_id": death.source_player_id,
+                "can_leave_last_words": can_leave_last_words,
+                "triggered_skills": list(death.triggered_skills),
+                "noop": True,  # Marker: death attempt did not actually kill
+            },
+        )]
+        return replace(state, events=new_events)
