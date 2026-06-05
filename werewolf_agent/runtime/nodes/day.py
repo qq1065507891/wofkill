@@ -93,6 +93,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     _hitl_checkpoint(state, "announce_deaths", "after")
     return {"game_state": gs,
             "revote": False, "speech_index": 0,
+            "speech_order": [],
             "current_speaker_id": None}
 
 

@@ -370,3 +370,49 @@ def test_night_death_last_words_broadcasts_skip_when_no_eligible_players() -> No
     ]
     assert broadcasts[-1]["phase"] == "night_death_last_words"
     assert broadcasts[-1]["players"] == []
+
+
+def test_announce_deaths_resets_speech_order() -> None:
+    """D2+ must NOT reuse D1's speech_order; announce_deaths resets it."""
+    from werewolf_agent.runtime.graph import announce_deaths
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    # D1 with speech_order pre-populated from previous flow
+    gs_d1 = GameState(
+        game_id="d1_announce",
+        players=players,
+        phase="day",
+        day_number=1,
+        night_number=1,
+    )
+    d1_result = announce_deaths({
+        "game_state": gs_d1,
+        "speech_order": ["p01", "p02", "p03"],
+    })
+    # After D1 announce, speech_order should be empty (reset for fresh generation)
+    assert d1_result["speech_order"] == [], (
+        f"D1 announce_deaths should reset speech_order, got {d1_result.get('speech_order')}"
+    )
+    assert d1_result["speech_index"] == 0
+    assert d1_result["current_speaker_id"] is None
+
+    # D2 with stale D1 speech_order
+    gs_d2 = GameState(
+        game_id="d2_announce",
+        players=players,
+        phase="day",
+        day_number=2,
+        night_number=2,
+    )
+    d2_result = announce_deaths({
+        "game_state": gs_d2,
+        "speech_order": ["p01", "p02", "p03"],  # Stale from D1
+    })
+    assert d2_result["speech_order"] == [], (
+        "D2 announce_deaths should reset stale speech_order, "
+        f"got {d2_result.get('speech_order')}"
+    )
