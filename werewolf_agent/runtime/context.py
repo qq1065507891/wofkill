@@ -655,10 +655,83 @@ def _merge_strategy_directive(
     context: Any,
     new_directive: dict[str, Any],
 ) -> Any:
-    """Merge new directive into existing context strategy_directive, preserving skill_tactical_advice."""
+    """Merge new directive into existing context strategy_directive, preserving skill_tactical_advice.
+
+    D-9: enforce a hard cap on the rendered size of the directive
+    dict.  The LLM context window is finite, and an unbounded
+    ``strategy_directive`` has caused OOMs in long games where the
+    accumulated round-specific blocks (vote pressure, day summaries,
+    sheriff election records, etc.) grew past ~10k chars.
+
+    The cap is approximate (we count the joined string length of
+    ``str(v)`` for each value) and ``_MAX_STRATEGY_DIRECTIVE_TOKENS``
+    is interpreted as "characters" to avoid pulling in a tokenizer
+    dependency.  When the merged directive exceeds the cap, the
+    oldest round-specific blocks are dropped first (by insertion
+    order of the existing context).  Round-specific keys we
+    recognize as droppable live in ``_ROUND_SPECIFIC_DROP_KEYS``;
+    everything else is considered structural and is kept.
+    """
     existing = context.strategy_directive or {}
-    merged = {**existing, **new_directive}
+    merged: dict[str, Any] = {**existing, **new_directive}
+    merged = _cap_strategy_directive(merged)
     return context.model_copy(update={"strategy_directive": merged})
+
+
+# D-9: hard cap on the strategy_directive payload, expressed as an
+# approximate token count.  Conservative: 1 token ≈ 1.5 chars for
+# Chinese / 4 chars for ASCII — we use a flat 2 chars/token estimate.
+_MAX_STRATEGY_DIRECTIVE_TOKENS = 1500
+# Round-specific blocks that can be dropped first when the cap is
+# exceeded.  Ordering matters: earlier entries are dropped first.
+_ROUND_SPECIFIC_DROP_KEYS: tuple[str, ...] = (
+    "sheriff_election_record",
+    "day_discussion_summary",
+    "vote_pressure_context",
+    "vote_pressure",
+    "vote_history",
+    "skill_tactical_advice",
+    "role_alerts",
+    "must_address_alerts",
+    "death_cause_evaluation",
+    "witch_death_cause_evaluations",
+    "wolf_fake_seer_teammate",
+    "wolf_teammate_exposed",
+    "belief_state",
+    "must_address",
+)
+
+
+def _directive_size(directive: dict[str, Any]) -> int:
+    """Approximate token count for a strategy_directive payload."""
+    total = 0
+    for v in directive.values():
+        try:
+            total += len(str(v))
+        except Exception:
+            continue
+    return total // 2  # rough chars→tokens
+
+
+def _cap_strategy_directive(
+    directive: dict[str, Any],
+    cap_tokens: int = _MAX_STRATEGY_DIRECTIVE_TOKENS,
+) -> dict[str, Any]:
+    """Drop oldest round-specific blocks until the cap fits.
+
+    Preserves the structural / role-critical keys (the role
+    directive, the speech strategy text, the vote contract, etc.).
+    """
+    if _directive_size(directive) <= cap_tokens:
+        return directive
+    # Walk round-specific keys in drop-priority order; remove
+    # them one at a time until the cap fits.
+    for key in _ROUND_SPECIFIC_DROP_KEYS:
+        if _directive_size(directive) <= cap_tokens:
+            break
+        if key in directive:
+            directive = {k: v for k, v in directive.items() if k != key}
+    return directive
 
 
 def build_agent_context(

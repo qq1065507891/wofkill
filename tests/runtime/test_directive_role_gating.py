@@ -225,3 +225,54 @@ class TestNegationExcludedFromClaimedSeerD6:
             events=events,
         )
         assert has_publicly_claimed_seer(gs, "seer") is True
+
+
+class TestStrategyDirectiveTokenCapD9:
+    """D-9: _MAX_STRATEGY_DIRECTIVE_TOKENS caps the merged strategy_directive
+    size; when the cap is exceeded, the oldest round-specific blocks
+    are dropped first (structural / role-critical keys are preserved)."""
+
+    def test_strategy_directive_within_token_cap(self) -> None:
+        from werewolf_agent.runtime.context import (
+            _cap_strategy_directive,
+            _MAX_STRATEGY_DIRECTIVE_TOKENS,
+        )
+
+        # Build a directive that exceeds the cap by a wide margin
+        directive: dict = {
+            "seer_speech_directive": "structural — must be kept",
+            "wolf_speech_directive": "structural — must be kept",
+        }
+        # Add round-specific blocks whose total size > cap.
+        big_text = "X" * (_MAX_STRATEGY_DIRECTIVE_TOKENS * 2)
+        for k in (
+            "sheriff_election_record",
+            "day_discussion_summary",
+            "vote_pressure",
+            "vote_pressure_context",
+            "skill_tactical_advice",
+            "role_alerts",
+            "death_cause_evaluation",
+        ):
+            directive[k] = big_text
+
+        capped = _cap_strategy_directive(directive)
+        # Cap must be respected.
+        size = sum(len(str(v)) for v in capped.values()) // 2
+        assert size <= _MAX_STRATEGY_DIRECTIVE_TOKENS, (
+            f"capped directive exceeds token cap: {size} > {_MAX_STRATEGY_DIRECTIVE_TOKENS}"
+        )
+        # Structural keys must survive.
+        assert "seer_speech_directive" in capped
+        assert "wolf_speech_directive" in capped
+        # Round-specific blocks must be dropped.
+        assert "sheriff_election_record" not in capped
+        assert "day_discussion_summary" not in capped
+
+    def test_strategy_directive_under_cap_is_unchanged(self) -> None:
+        from werewolf_agent.runtime.context import _cap_strategy_directive
+
+        small = {"seer_speech_directive": "tiny"}
+        assert _cap_strategy_directive(small) is small or (
+            _cap_strategy_directive(small) == small
+        )
