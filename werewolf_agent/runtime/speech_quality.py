@@ -249,7 +249,13 @@ def validate_public_speech(
     is_high_pressure = phase in ("sheriff_speech", "pk_speech") or context.get("is_claiming_role")
     if is_high_pressure:
         # Must have claim logic or counterclaim
-        has_claim = bool(re.search(r"我是.*?(?:预言家|女巫|猎人|白痴)", text))
+        # D-12: the claim_pattern now also accepts 村民|混血儿 so a
+        # villager / hybrid who claims their public role during a
+        # high-pressure phase (sheriff / PK) is treated as a valid
+        # claim.  Pre-fix, only 预言家|女巫|猎人|白痴 were accepted,
+        # and a villager claiming "我是村民" silently failed the
+        # check, polluting the missing_fields list.
+        has_claim = bool(re.search(r"我是.*?(?:预言家|女巫|猎人|白痴|村民|混血儿)", text))
         has_counterclaim = bool(re.search(r"对跳|反跳|假预言家", text))
         has_attack_defense = bool(re.search(r"(?:矛盾|不合理|逻辑不通|查杀|金水)", text))
         if not (has_claim or has_counterclaim or has_attack_defense):

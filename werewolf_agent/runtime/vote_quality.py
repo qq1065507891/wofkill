@@ -121,18 +121,45 @@ def validate_vote_reason(
 
 
 def normalize_vote_basis(detected_bases: list[str]) -> str:
-    """Map text evidence detectors to the public vote-basis enum."""
-    for basis in detected_bases:
-        if basis == "seer_check":
-            return "seer_check"
-        if basis in {"counterclaim", "badge_flow"}:
-            return "seer_siding"
-        if basis == "vote_tally":
-            return "vote_pattern"
-        if basis == "pk_speech":
-            return "pressure_test"
-        if basis in {"contradiction", "stance_reversal", "speech_quote"}:
-            return "speech_logic"
+    """Map text evidence detectors to the public vote-basis enum.
+
+    D-14: prefer the most informative basis when several are detected.
+    Pre-fix the function returned on the *first* match in
+    hard-coded priority order, which discarded multi-basis evidence
+    (e.g., a vote that cited both a seer check AND a vote-tally
+    pattern was reported as just ``seer_check`` even when the
+    reasoning was anchored in the tally).  The fix ranks bases by
+    evidentiary weight and picks the strongest.  Falls back to
+    ``fallback`` when no basis is detected.
+    """
+    if not detected_bases:
+        return "fallback"
+    # Highest-evidence bases first.  A seer_check is the strongest
+    # public signal; counterclaim / badge_flow rank as seer_siding
+    # support; vote_tally is its own evidence class.
+    _PRIORITY = (
+        "seer_check",         # explicit wolf check from a seer
+        "counterclaim",       # seer_siding: counterclaim was made
+        "badge_flow",         # seer_siding: badge flow plan cited
+        "contradiction",      # speech_logic: contradiction flagged
+        "stance_reversal",    # speech_logic: stance change
+        "speech_quote",       # speech_logic: prior speech quoted
+        "vote_tally",         # vote_pattern: vote data cited
+        "pk_speech",          # pressure_test: PK speech cited
+    )
+    for basis in _PRIORITY:
+        if basis in detected_bases:
+            # Map detector names to the public enum.
+            if basis == "seer_check":
+                return "seer_check"
+            if basis in {"counterclaim", "badge_flow"}:
+                return "seer_siding"
+            if basis == "vote_tally":
+                return "vote_pattern"
+            if basis == "pk_speech":
+                return "pressure_test"
+            if basis in {"contradiction", "stance_reversal", "speech_quote"}:
+                return "speech_logic"
     return "fallback"
 
 

@@ -2,12 +2,40 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.strategy.seer import public_seer_claimants
 
 logger = logging.getLogger(__name__)
+
+# D-6: negation words that flip a seer-claim into a denial.  When
+# the speech text contains any of these within 6 characters of the
+# seer keyword ("预言家" / "seer"), the claim is treated as a
+# *non-claim* and does not score the player as a publicly-claimed
+# seer.  This is intentionally a narrow set: the day-1 wolf
+# pre-claim scenario depends on catching "我不是预言家" / "我不是
+# seer" reliably without over-suppressing affirmative claims.
+_NEGATION_WORDS = ("不是", "不", "否认", "反", "否定", "没", "无", "非")
+_NEGATION_RE = re.compile(
+    r"(?:" + "|".join(re.escape(w) for w in _NEGATION_WORDS) + r")[^，。,.\n]{0,6}"
+    r"(?:预言家|seer|查杀|金水|验了|查验)",
+    re.IGNORECASE,
+)
+
+
+def _speech_is_negated(text: str) -> bool:
+    """Return True if the speech contains a negation-of-seer pattern.
+
+    D-6 helper: catches "我不是预言家" / "我没查验" / "否认我是seer"
+    etc.  Used by both ``has_publicly_claimed_seer`` and the
+    wolf-kill-target scorer so a denied claim does not trigger a
+    "claimed_seer" signal.
+    """
+    if not text:
+        return False
+    return bool(_NEGATION_RE.search(text))
 
 
 def evaluate_wolf_kill_target(
@@ -37,6 +65,12 @@ def evaluate_wolf_kill_target(
                 continue
             text = str(e.payload.get("text", ""))
             if "预言家" in text or "seer" in text.lower():
+                # D-6: a denial ("我不是预言家") must not count as a
+                # seer claim.  Without negation detection, wolves
+                # could feign denial in a sub-speech and still get
+                # flagged as the top kill priority.
+                if _speech_is_negated(text):
+                    continue
                 sig.append("claimed_seer")
                 value += 6
                 break
@@ -143,11 +177,21 @@ def get_wolf_role_assignment(
 
 
 def has_publicly_claimed_seer(gs: GameState, player_id: str) -> bool:
-    """Check if a player has publicly claimed seer in any speech event."""
+    """Check if a player has publicly claimed seer in any speech event.
+
+    D-6: negated claims ("我不是预言家" / "否认我是seer" / "我没查验")
+    are NOT counted as public claims.  Pre-fix the keyword-substring
+    matcher would treat "我不是预言家" as a positive claim, polluting
+    the wolf kill priority list with players who explicitly denied
+    the role.
+    """
     seer_keywords = ("预言家", "查杀", "金水", "验了", "查验")
     for e in gs.events:
         if e.type in ("sheriff_speech", "speech") and e.payload.get("speaker") == player_id:
             text = e.payload.get("text", "")
-            if any(kw in text for kw in seer_keywords):
-                return True
+            if not any(kw in text for kw in seer_keywords):
+                continue
+            if _speech_is_negated(text):
+                continue
+            return True
     return False
