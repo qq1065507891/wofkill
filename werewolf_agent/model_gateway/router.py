@@ -550,6 +550,25 @@ class ModelRouter:
         if not fallback_cfg:
             return None
         model_profile_id = fallback_cfg.get("model_profile", "")
+        # R3-MG-7: a fallback that references a missing model_profile
+        # used to silently return ModelConfig(model="") at first
+        # fallback invocation, which the LLM call would then explode
+        # against. Raise at config load time instead.
+        if not model_profile_id:
+            from werewolf_agent.model_gateway.providers.base import (
+                ProviderConfigError,
+            )
+            raise ProviderConfigError(
+                f"llm_profile {llm_profile_id!r}.fallback has no model_profile"
+            )
+        if model_profile_id not in self._model_profiles:
+            from werewolf_agent.model_gateway.providers.base import (
+                ProviderConfigError,
+            )
+            raise ProviderConfigError(
+                f"llm_profile {llm_profile_id!r}.fallback references "
+                f"unknown model_profile {model_profile_id!r}"
+            )
         model_profile = self._model_profiles.get(model_profile_id, {})
         return ModelConfig(
             provider=fallback_cfg.get("provider", "mock"),

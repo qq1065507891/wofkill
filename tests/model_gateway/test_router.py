@@ -271,6 +271,68 @@ class TestFromYamlValidation:
         assert router.get_llm_profile_for_agent("p01") == "default"
 
 
+class TestFallbackModelProfile:
+    def test_missing_fallback_model_profile_raises(self) -> None:
+        """R3-MG-7: a fallback with an unknown model_profile must raise at
+        config-validation time rather than silently returning
+        ``ModelConfig(model="")`` at first fallback invocation.
+        """
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        # Direct construction with a bad fallback model_profile id.
+        router = ModelRouter(
+            model_profiles={
+                "primary_profile": {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "anthropic",
+                        "model_profile": "primary_profile",
+                    },
+                    "fallback": {
+                        "provider": "mock",
+                        "model_profile": "ghost_profile",  # typo
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+        with pytest.raises(ProviderConfigError):
+            router._resolve_fallback_model(llm_profile_id="default")
+
+    def test_missing_fallback_model_profile_raises_from_yaml(self, tmp_path) -> None:
+        """R3-MG-7: from_yaml should fail fast on a bad fallback ref."""
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_fallback.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  primary_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: primary_profile\n"
+            "    fallback:\n"
+            "      provider: mock\n"
+            "      model_profile: ghost_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ProviderConfigError):
+            ModelRouter.from_yaml(yaml_path)
+
+
 class TestFormatException:
     def test_format_exception_returns_message(self) -> None:
         from werewolf_agent.model_gateway.router import _format_exception
