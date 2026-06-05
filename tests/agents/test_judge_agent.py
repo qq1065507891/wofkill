@@ -56,6 +56,21 @@ class TestJudgeAgent:
         b = judge.broadcast_death_announcement(deaths=[], day_number=2)
         assert "平安夜" in b.message
 
+    def test_peaceful_night_broadcast_includes_empty_deaths(self) -> None:
+        """J-11: peaceful night broadcast must include public_data (empty deaths explicitly)."""
+        judge = self._make_judge()
+        b = judge.broadcast_death_announcement(deaths=[], day_number=2)
+        # public_data must be present and explicitly indicate zero deaths
+        assert b.public_data, "peaceful night broadcast must include public_data"
+        # Either "deaths" key with empty list, or death_count == 0
+        has_empty_deaths = (
+            b.public_data.get("deaths") == []
+            or b.public_data.get("death_count") == 0
+        )
+        assert has_empty_deaths, (
+            f"peaceful night must have empty deaths marker, got {b.public_data}"
+        )
+
     def test_broadcast_sheriff_elected(self) -> None:
         judge = self._make_judge()
         b = judge.broadcast_sheriff_result("p03", "active")
