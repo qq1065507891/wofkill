@@ -110,6 +110,34 @@ class TestGenerateWithMockProvider:
         assert uniform_calls[0] == (0, 0.8)
         assert sleeps[0] == 0.8
 
+    def test_jitter_zero_in_test_mode(self, monkeypatch) -> None:
+        """R3-MG-3: jitter_seconds=(0, 0) on a router call must skip the
+        pre-call sleep entirely so test suites are not slowed by 5-15s of
+        cumulative jitter across 12 players × many rounds.
+        """
+        from werewolf_agent.model_gateway import router as router_module
+
+        uniform_calls: list[tuple[float, float]] = []
+        sleeps: list[float] = []
+
+        def fake_uniform(low: float, high: float) -> float:
+            uniform_calls.append((low, high))
+            return high
+
+        monkeypatch.setattr(router_module.random, "uniform", fake_uniform)
+        monkeypatch.setattr(router_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+        router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
+        router.generate(
+            agent_id="p01",
+            task_type="speech",
+            prompt="Hello",
+            jitter_seconds=(0, 0),
+        )
+
+        # No sleep should have been issued because jitter_seconds is (0, 0).
+        assert sleeps == []
+
     def test_generate_registers_usage(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
         router.generate(agent_id="p01", task_type="speech", prompt="test")
@@ -147,6 +175,201 @@ class TestRetryHelpers:
         d1 = _retry_delay_for_exception(RuntimeError("test"), 0)
         d2 = _retry_delay_for_exception(RuntimeError("test"), 2)
         assert d2 > d1
+
+
+class TestFromYamlValidation:
+    def test_from_yaml_raises_on_unknown_model_profile(self, tmp_path) -> None:
+        """R3-MG-1: typos in model_profile references must surface at load time."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_models.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: real_profilo\n"  # typo
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        with pytest.raises((ValueError, KeyError, RuntimeError)):
+            ModelRouter.from_yaml(yaml_path)
+
+    def test_from_yaml_raises_on_unknown_llm_profile_ref(self, tmp_path) -> None:
+        """R3-MG-1: players.<id>.llm_profile pointing to a missing profile raises."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_llm.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: real_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: ghost_profile\n",
+            encoding="utf-8",
+        )
+        with pytest.raises((ValueError, KeyError, RuntimeError)):
+            ModelRouter.from_yaml(yaml_path)
+
+    def test_from_yaml_raises_on_unknown_provider(self, tmp_path) -> None:
+        """R3-MG-1: model_profile.provider that the runtime does not know raises."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_provider.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: chocochip_9000\n"  # not a known provider
+            "    model: x\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: chocochip_9000\n"
+            "      model_profile: real_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        with pytest.raises((ValueError, KeyError, RuntimeError)):
+            ModelRouter.from_yaml(yaml_path)
+
+    def test_from_yaml_accepts_valid_config(self, tmp_path) -> None:
+        """R3-MG-1: a valid config does not raise."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "good_models.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: real_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        router = ModelRouter.from_yaml(yaml_path)
+        assert router.get_llm_profile_for_agent("p01") == "default"
+
+
+class TestFallbackModelProfile:
+    def test_missing_fallback_model_profile_raises(self) -> None:
+        """R3-MG-7: a fallback with an unknown model_profile must raise at
+        config-validation time rather than silently returning
+        ``ModelConfig(model="")`` at first fallback invocation.
+        """
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        # Direct construction with a bad fallback model_profile id.
+        router = ModelRouter(
+            model_profiles={
+                "primary_profile": {
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "anthropic",
+                        "model_profile": "primary_profile",
+                    },
+                    "fallback": {
+                        "provider": "mock",
+                        "model_profile": "ghost_profile",  # typo
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+        with pytest.raises(ProviderConfigError):
+            router._resolve_fallback_model(llm_profile_id="default")
+
+    def test_missing_fallback_model_profile_raises_from_yaml(self, tmp_path) -> None:
+        """R3-MG-7: from_yaml should fail fast on a bad fallback ref."""
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_fallback.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  primary_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: primary_profile\n"
+            "    fallback:\n"
+            "      provider: mock\n"
+            "      model_profile: ghost_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ProviderConfigError):
+            ModelRouter.from_yaml(yaml_path)
+
+
+class TestRegisterEnvProvidersLogging:
+    def test_register_env_providers_logs_missing(self, caplog) -> None:
+        """R3-MG-8: a configured provider whose API key is absent must
+        produce a WARNING log naming the missing providers.
+        """
+        from unittest.mock import patch
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        # Build a router whose model_profiles requires a provider that
+        # we know won't have a key in test env.
+        router = ModelRouter(
+            model_profiles={
+                "needs_openai": {"provider": "openai", "model": "x"},
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "openai",
+                        "model_profile": "needs_openai",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+        # Patch the re-exported name on the providers package, since
+        # register_env_providers imports from there.
+        with patch(
+            "werewolf_agent.model_gateway.providers.create_provider_from_env",
+            return_value=None,
+        ):
+            with caplog.at_level("WARNING"):
+                router.register_env_providers()
+        assert any(
+            "register_env_providers" in rec.getMessage()
+            and "openai" in rec.getMessage()
+            for rec in caplog.records
+        ), f"expected WARNING naming 'openai', got: {[r.getMessage() for r in caplog.records]}"
 
 
 class TestFormatException:

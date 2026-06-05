@@ -127,6 +127,7 @@ def _categorize_failure_category(
     *,
     latency_ms: int,
     raw_error: str | None,
+    http_status: int = 0,
 ) -> str | None:
     """Bridge from player-side signals to the failure_category string.
 
@@ -134,6 +135,10 @@ def _categorize_failure_category(
     model_gateway.providers package (some test harnesses mock the
     router). When the categorizer is unavailable we conservatively
     return None — the field in RetryInfo will simply be unset.
+
+    R3-MG-2: ``http_status`` is plumbed through from ``GenerateResult``
+    so 4xx/5xx responses classify as ``provider_error`` rather than
+    silently falling through to ``unknown``.
     """
     try:
         from werewolf_agent.model_gateway.providers.base import (
@@ -144,7 +149,7 @@ def _categorize_failure_category(
     return categorize_empty_response(
         response_text="",
         latency_ms=latency_ms,
-        http_status=0,  # not yet surfaced on GenerateResult
+        http_status=http_status,
         raw_error=raw_error,
     )
 
@@ -323,6 +328,7 @@ class PlayerAgent:
                     failure_category = _categorize_failure_category(
                         latency_ms=_latency_from_result(result),
                         raw_error=failure_reason,
+                        http_status=int(getattr(result, "http_status", 0) or 0),
                     )
                     retry = RetryInfo(
                         attempt=attempt,
@@ -354,7 +360,12 @@ class PlayerAgent:
                     self.metrics_collector.record(
                         player_id=context.agent_id,
                         task_type=context.task_type.value,
-                        error_code=retry.error_code if retry else "model_generation_failed",
+                        # R3-MG-9: ``retry`` is always truthy on this
+                        # path (we just built a new RetryInfo on line 327
+                        # and stored it in the local). Replace the dead
+                        # ternary with a literal that matches the
+                        # structured_failure_reason branch above.
+                        error_code="model_generation_failed",
                         fallback_used=True,
                         retry_count=attempt,
                     )
@@ -362,6 +373,7 @@ class PlayerAgent:
                 failure_category = _categorize_failure_category(
                     latency_ms=_latency_from_result(result),
                     raw_error=None,
+                    http_status=int(getattr(result, "http_status", 0) or 0),
                 )
                 category_hint = (
                     f" (cause: {failure_category})" if failure_category else ""
@@ -588,7 +600,7 @@ class PlayerAgent:
             tool_call_received=tool_call_received,
             parse_success=parse_success,
             parse_error=parse_error_str,
-            retry_count=self.max_retries,
+            retry_count=attempt,
             structured_failure_reason=structured_failure_reason,
         )
         fallback = fallback.model_copy(update={"trace": trace})

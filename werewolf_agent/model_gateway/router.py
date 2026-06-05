@@ -66,6 +66,12 @@ class GenerateResult:
     text_fallback_used: bool = False
     structured_failure_reason: str | None = None
     allow_text_tool_fallback: bool = False
+    # R3-MG-2: surface raw HTTP status / error string from the provider so
+    # the failure categorizer can attribute 4xx/5xx to ``provider_error``
+    # instead of falling through to ``unknown``. Defaults preserve the
+    # pre-R3-MG-2 behavior for callers that do not populate them.
+    http_status: int = 0
+    raw_error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -172,22 +178,117 @@ class ModelRouter:
             llm_profiles=llm_profiles,
             player_assignments=assignments,
         )
+        router._validate_config()
         if register_env_providers:
             router.register_env_providers()
         return router
+
+    def _validate_config(self) -> None:
+        """Cross-check references in model_profiles / llm_profiles / players.
+
+        Catches typos at load time rather than at first LLM call. Raises
+        ``ProviderConfigError`` for any dangling reference.
+        """
+        from werewolf_agent.model_gateway.providers.base import (
+            ProviderConfigError,
+        )
+
+        # 1. Every players[id].llm_profile ref must exist in llm_profiles.
+        for pid, profile_id in self._player_assignments.items():
+            if profile_id not in self._llm_profiles:
+                raise ProviderConfigError(
+                    f"player {pid!r} references unknown llm_profile {profile_id!r}"
+                )
+
+        # 2. Every llm_profile entry (default / tasks / fallback) that
+        #    names a model_profile must point at a real model_profile.
+        for profile_id, profile in self._llm_profiles.items():
+            for block_name in ("default", "fallback"):
+                block = profile.get(block_name) or {}
+                if not block:
+                    continue
+                mp_id = block.get("model_profile")
+                if mp_id and mp_id not in self._model_profiles:
+                    raise ProviderConfigError(
+                        f"llm_profile {profile_id!r}.{block_name} "
+                        f"references unknown model_profile {mp_id!r}"
+                    )
+            for task_type, task_cfg in (profile.get("tasks") or {}).items():
+                mp_id = task_cfg.get("model_profile")
+                if mp_id and mp_id not in self._model_profiles:
+                    raise ProviderConfigError(
+                        f"llm_profile {profile_id!r}.tasks.{task_type} "
+                        f"references unknown model_profile {mp_id!r}"
+                    )
+
+        # 3. Every provider name must be one the factory can build
+        #    (so an unknown name fails at config load, not first LLM call).
+        from werewolf_agent.model_gateway.providers.factory import (
+            create_provider_from_env,
+        )
+
+        known_providers: set[str] = set()
+        for cfg in self._model_profiles.values():
+            pname = cfg.get("provider")
+            if pname:
+                known_providers.add(str(pname))
+        for profile in self._llm_profiles.values():
+            for block_name in ("default", "fallback"):
+                block = profile.get(block_name) or {}
+                pname = block.get("provider")
+                if pname:
+                    known_providers.add(str(pname))
+            for task_cfg in (profile.get("tasks") or {}).values():
+                pname = task_cfg.get("provider")
+                if pname:
+                    known_providers.add(str(pname))
+        for pname in known_providers:
+            # 'create_provider_from_env' returns None when the API key is
+            # missing but does not validate the provider name. We probe
+            # the factory's known list via its module rather than the
+            # import side-effects.
+            try:
+                if pname.lower() not in {
+                    "anthropic", "openai", "glm", "minimax", "mock",
+                }:
+                    raise ProviderConfigError(
+                        f"provider {pname!r} is not registered "
+                        "(known: anthropic, openai, glm, minimax, mock)"
+                    )
+            except ProviderConfigError:
+                raise
+            # Touch factory for import-side-effect parity.
+            _ = create_provider_from_env
 
     def register_provider(self, provider: LLMProvider) -> None:
         self._providers[provider.name] = provider
 
     def register_env_providers(self) -> None:
-        """Register configured providers that have API keys in env/.env."""
+        """Register configured providers that have API keys in env/.env.
+
+        R3-MG-8: log a WARNING for every configured provider name that
+        resolves to ``None`` (i.e. its required API key is missing) so
+        silent fallback is at least visible in the log. The pre-R3-MG-8
+        behavior swallowed the None return value and only the
+        downstream ``Provider not found`` error surfaced.
+        """
         from werewolf_agent.model_gateway.providers import create_provider_from_env
 
         provider_names = self._configured_provider_names()
+        missing: list[str] = []
         for provider_name in provider_names:
             provider = create_provider_from_env(provider_name)
             if provider is not None:
                 self.register_provider(provider)
+            else:
+                missing.append(provider_name)
+        if missing:
+            logger.warning(
+                "register_env_providers: %d configured provider(s) had no "
+                "API key in env/.env and were skipped: %s",
+                len(missing),
+                sorted(missing),
+            )
 
     def provider_names(self) -> list[str]:
         return list(self._providers.keys())
@@ -291,8 +392,15 @@ class ModelRouter:
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        jitter_seconds: tuple[float, float] = (0.0, 0.8),
     ) -> GenerateResult:
-        """Generate via routed provider with fallback."""
+        """Generate via routed provider with fallback.
+
+        ``jitter_seconds`` is the (low, high) range of a uniform random
+        sleep applied before the FIRST attempt only. Defaults to
+        ``(0, 0.8)`` to spread concurrent requests. Pass ``(0, 0)`` in
+        tests to avoid 5-15s of cumulative wait across 12 players.
+        """
         config, fallback_provider = self.resolve_config(agent_id, task_type)
 
         provider = self._providers.get(config.provider)
@@ -306,8 +414,9 @@ class ModelRouter:
         for attempt in range(max_retries + 1):
             # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
             # On the first attempt only — retries already have backoff.
-            if attempt == 0:
-                time.sleep(random.uniform(0, 0.8))
+            # R3-MG-3: skip entirely when jitter_seconds == (0, 0).
+            if attempt == 0 and jitter_seconds != (0.0, 0.0):
+                time.sleep(random.uniform(jitter_seconds[0], jitter_seconds[1]))
             try:
                 # For text-fallback models, skip tool_choice on first attempt.
                 # These models rarely return tool_calls reliably; forcing it
@@ -439,10 +548,17 @@ class ModelRouter:
             ))
             if len(self._usage_log) > 10000:
                 self._usage_log = self._usage_log[-5000:]
+        # R3-MG-2: surface the HTTP status / raw error from the most recent
+        # exception so the categorizer can attribute 4xx/5xx to
+        # ``provider_error`` rather than the silent ``unknown`` fallback.
         return GenerateResult(
             text="",
             provider=config.provider,
             model=config.model,
+            http_status=_http_status_from_exception(primary_error)
+            or _http_status_from_exception(fallback_error),
+            raw_error=_raw_error_from_exception(primary_error)
+            or _raw_error_from_exception(fallback_error),
         )
 
     def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:
@@ -451,6 +567,25 @@ class ModelRouter:
         if not fallback_cfg:
             return None
         model_profile_id = fallback_cfg.get("model_profile", "")
+        # R3-MG-7: a fallback that references a missing model_profile
+        # used to silently return ModelConfig(model="") at first
+        # fallback invocation, which the LLM call would then explode
+        # against. Raise at config load time instead.
+        if not model_profile_id:
+            from werewolf_agent.model_gateway.providers.base import (
+                ProviderConfigError,
+            )
+            raise ProviderConfigError(
+                f"llm_profile {llm_profile_id!r}.fallback has no model_profile"
+            )
+        if model_profile_id not in self._model_profiles:
+            from werewolf_agent.model_gateway.providers.base import (
+                ProviderConfigError,
+            )
+            raise ProviderConfigError(
+                f"llm_profile {llm_profile_id!r}.fallback references "
+                f"unknown model_profile {model_profile_id!r}"
+            )
         model_profile = self._model_profiles.get(model_profile_id, {})
         return ModelConfig(
             provider=fallback_cfg.get("provider", "mock"),
@@ -504,6 +639,43 @@ def _format_exception(exc: BaseException | None) -> str:
     if message:
         return f"{type(exc).__name__}: {message}"
     return type(exc).__name__
+
+
+def _http_status_from_exception(exc: BaseException | None) -> int:
+    """R3-MG-2: best-effort HTTP status extraction from an exception.
+
+    Returns 0 when the exception does not carry an HTTP status (e.g. a
+    bare ``RuntimeError`` from a SDK or a connection-refused ``OSError``).
+    """
+    if exc is None:
+        return 0
+    # httpx.HTTPStatusError and httpx.HTTPError variants expose .response
+    try:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError):
+            return int(getattr(exc.response, "status_code", 0) or 0)
+        response = getattr(exc, "response", None)
+        if response is not None:
+            return int(getattr(response, "status_code", 0) or 0)
+    except ImportError:
+        pass
+    # Generic: look for an integer "code" attribute or HTTP NNN in str(exc).
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and 100 <= code <= 599:
+        return code
+    import re
+    m = re.search(r"\b([1-5]\d{2})\b", str(exc))
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def _raw_error_from_exception(exc: BaseException | None) -> str | None:
+    """R3-MG-2: best-effort raw error string from an exception."""
+    if exc is None:
+        return None
+    message = str(exc)
+    return message or None
 
 
 def _failure_reason(

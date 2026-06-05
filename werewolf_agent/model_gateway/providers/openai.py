@@ -144,11 +144,44 @@ def _generate_openai_compatible(
 
 
 def _openai_chat_completions_url(base_url: str) -> str:
-    """Build a chat completions URL for OpenAI and OpenAI-compatible gateways."""
+    """Build a chat completions URL for OpenAI and OpenAI-compatible gateways.
+
+    R3-MG-10: the legacy helper accepted any URL whose last path segment
+    contained the substring ``/v`` (e.g. ``/v1beta``, ``/v2``, ``/v1.5``)
+    and appended ``/chat/completions`` directly. That produced 404s for
+    real OpenAI-compatible gateways that use non-/v1 API versions
+    (e.g. ``/v1beta/chat/completions``).
+
+    New rules:
+    - last segment is integer ``/vN`` (v1, v2, v3, v4, ...): append
+      /chat/completions — matches the documented ``/v1`` and integer
+      ``/vN`` OpenAI-compatible versions.
+    - last segment is a non-integer versioned path (e.g. ``/v1beta``,
+      ``/v2beta``): fall back to the canonical
+      ``{scheme://host}/v1/chat/completions`` URL — the legacy
+      substring check erroneously matched these.
+    - last segment is something else (e.g. ``/coding``, ``/api``):
+      preserve the path and append /chat/completions — preserves
+      real-world OpenAI-compatible gateways like
+      ``https://qianfan.baidubce.com/v2/coding`` whose /vN lives in
+      the middle of the path, not at the end.
+    - last segment is the bare host (no path at all): default to
+      /v1/chat/completions.
+    """
+    import re
+    from urllib.parse import urlparse
     normalized = base_url.rstrip("/")
-    if normalized.endswith("/v1") or "/v" in normalized.rsplit("/", 1)[-1]:
+    last_segment = normalized.rsplit("/", 1)[-1] if normalized else ""
+    if re.fullmatch(r"v\d+", last_segment):
         return f"{normalized}/chat/completions"
-    if normalized != "https://api.openai.com" and "/" in normalized.removeprefix("https://").removeprefix("http://"):
+    if re.fullmatch(r"v\d+\w*", last_segment):
+        # Non-integer versioned segment (e.g. v1beta, v2beta) — the
+        # legacy substring check erroneously appended /chat/completions
+        # here. Strip the bad segment and fall back to canonical /v1.
+        parsed = urlparse(normalized)
+        host = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme else normalized
+        return f"{host}/v1/chat/completions"
+    if normalized != "https://api.openai.com":
         return f"{normalized}/chat/completions"
     return f"{normalized}/v1/chat/completions"
 

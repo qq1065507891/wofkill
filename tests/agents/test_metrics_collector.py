@@ -1,5 +1,7 @@
 """Tests for per-player failure profile metrics collector."""
 
+import threading
+
 from werewolf_agent.agents.metrics_collector import (
     MetricsCollector,
     PlayerFailureProfile,
@@ -49,3 +51,40 @@ class TestMetricsCollector:
         profile = m.get_profile("p99")
         assert profile.sample_count == 0
         assert profile.fallback_rate == 0.0
+
+    def test_concurrent_record_does_not_corrupt_counts(self):
+        """R3-MG-4: concurrent .record() calls must not drop updates.
+
+        Without a lock, dict.setdefault + dict.__setitem__ on the
+        per-task breakdown can race and lose entries. Run 20 threads
+        each posting 500 records to a single shared player and assert
+        the final sample_count equals the total issued count.
+        """
+        m = MetricsCollector()
+        n_threads = 20
+        per_thread = 500
+        player_id = "p01"
+        expected_total = n_threads * per_thread
+
+        def worker() -> None:
+            for _ in range(per_thread):
+                m.record(
+                    player_id=player_id,
+                    task_type="vote",
+                    error_code="parse_error",
+                    fallback_used=False,
+                    retry_count=1,
+                )
+
+        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        profile = m.get_profile(player_id)
+        assert profile.sample_count == expected_total, (
+            f"expected {expected_total} got {profile.sample_count}"
+        )
+        assert profile.error_code_counts.get("parse_error") == expected_total
+        assert profile.per_task_breakdown["vote"]["sample_count"] == expected_total
