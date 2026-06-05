@@ -77,13 +77,13 @@ def test_is_applicable_empty_phases_list_means_always_applicable():
     assert skill.is_applicable("werewolf", phase="night", task_type="night_action") is True
 
 
-def test_prompt_builder_skill_analysis_hints_rendered_for_speech_role():
-    """End-to-end: a villager in day/SPEECH phase with analyses gets the section.
+def test_prompt_builder_skill_tactical_advice_rendered_for_speech_role():
+    """NEW-S04-A: a villager in day/SPEECH phase with skill_tactical_advice
+    in strategy_directive gets the advice rendered in the strategy_directive
+    section (inside the 【参考】 group).
 
-    This is the regression test for the production bug. After P0-K1 the
-    tool-path catalog is gone — the analyses are delivered via the
-    `skill_analysis_hints` pre-injection section. We inject a hint and
-    assert the section header is rendered.
+    The legacy `技能分析结果` header is gone. The structured
+    skill_tactical_advice is the single source of truth.
     """
     from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
     from werewolf_agent.agents.schemas import (
@@ -100,12 +100,28 @@ def test_prompt_builder_skill_analysis_hints_rendered_for_speech_role():
         own_role="villager",
         legal_actions=[ActionType.SPEECH],
         legal_targets=[],
-        skill_analysis_hints={"wolf_pit": "嫌疑区: p05"},
+        # NEW-S04-A: skill_tactical_advice in strategy_directive is
+        # the canonical render path.
+        strategy_directive={
+            "skill_tactical_advice": [
+                {
+                    "skill": "wolf_pit",
+                    "advice": "嫌疑区: p05",
+                    "confidence": 0.6,
+                }
+            ],
+        },
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The pre-injection section is rendered when analyses are present.
-    assert "技能分析结果" in prompt
-    assert "嫌疑区" in prompt
+    # The legacy section is gone.
+    assert "技能分析结果" not in prompt, (
+        "NEW-S04-A: legacy 技能分析结果 section is dropped."
+    )
+    # The structured advice is rendered inside strategy_directive.
+    assert "嫌疑区" in prompt, (
+        "skill_tactical_advice advice text must be rendered in the "
+        "strategy_directive section."
+    )
 
 
 # ---------------------------------------------------------------------------

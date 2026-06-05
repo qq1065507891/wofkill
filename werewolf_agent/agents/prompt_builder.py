@@ -327,7 +327,10 @@ class PlayerPromptBuilder:
         # outer section label cannot also be 【硬约束】 (double-labeling
         # contradicts the inner "REFERENCE" sub-group).
         "_build_strategy_directive": "【策略指令】",
-        "_build_skill_analysis_hints": "【辅助】",
+        # NEW-S04-A: skill_analysis_hints render path is dropped. The
+        # structured skill_tactical_advice is the single source of
+        # truth (rendered inside strategy_directive's 【参考】 group).
+        # The opaque-dict dual render is gone.
         "_build_recent_transcript": "【可选】",
         # P1-9: retry hint is descriptive/advisory (correction hint
         # text is a soft signal), not a hard rule. Only the
@@ -388,9 +391,11 @@ class PlayerPromptBuilder:
         parts.append(("_build_profile_memory_hint", self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint())))
         parts.append(("_build_cognition_matrix_hint", self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint())))
         parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
-        parts.append(("_build_skill_analysis_hints", self._label_section("_build_skill_analysis_hints", self._build_skill_analysis_hints())))
-        # P0-K1: skill tool path removed. Skill analyses are pre-injected
-        # above (skill_analysis_hints) — no separate tool-catalog section.
+        # NEW-S04-A: skill_analysis_hints render path dropped. The
+        # structured skill_tactical_advice is the single source of
+        # truth (rendered inside strategy_directive's 【参考】 group).
+        # The opaque-dict dual render is gone. _build_skill_analysis_hints
+        # is no longer called from here.
         parts.append(("_build_recent_transcript", self._label_section("_build_recent_transcript", self._build_recent_transcript())))
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM
@@ -741,13 +746,11 @@ class PlayerPromptBuilder:
         return "\n\n".join(parts)
 
     def _build_skill_analysis_hints(self) -> str:
-        ctx = self.context
-        if not ctx.skill_analysis_hints:
-            return ""
-        return (
-            "技能分析结果: 以下是本轮工具分析结果，只能作为辅助推理。\n"
-            + self._compact_json(ctx.skill_analysis_hints)
-        )
+        # NEW-S04-A: this method is dead code. The dual-render path
+        # was removed — skill_analysis_hints is no longer populated.
+        # Kept (no-op) only to avoid removing a public method on a
+        # shared class; remove in a follow-up cleanup if desired.
+        return ""
 
     def _build_persona(self) -> str:
         ctx = self.context

@@ -1916,3 +1916,183 @@ def test_skill_seen_dedupe_uses_id_not_prompt(monkeypatch) -> None:
         f"even when their prompt_injectable strings are identical "
         f"(S-06 truncation). Got skills: {skill_names!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S04-A: skill_analysis_hints is dropped; single render path is
+#            strategy_directive.skill_tactical_advice.
+# ---------------------------------------------------------------------------
+
+
+def test_skill_analysis_hints_dedup() -> None:
+    """NEW-S04-A: AgentContext.skill_analysis_hints must be empty
+    after build_agent_context. The single source of truth for the
+    prompt builder is `strategy_directive.skill_tactical_advice`.
+    Previously, the same dict was passed to BOTH `skill_analyses`
+    and `skill_analysis_hints` — the prompt builder rendered
+    skill_analysis_hints as a JSON block AND strategy_directive
+    rendered skill_tactical_advice, doubling the token budget.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.cognition.world_state import build_world_state
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 7)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="dedup_test",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    world_state = build_world_state(gs)
+    belief = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    belief = BeliefUpdater().update(belief, world_state.facts, gs.day_number)
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+
+    directive, _analyses = _inject_skill_output(
+        {}, gs, "p01", world_state, belief, alerts, "speech",
+    )
+
+    # NEW-S04-A: skill_analyses is the only opaque-dict slot. The
+    # structured `skill_tactical_advice` lives in strategy_directive.
+    # The prompt builder renders only the structured path. The
+    # opaque `skill_analyses` is not duplicated to skill_analysis_hints.
+    assert "skill_analyses" not in directive, (
+        f"NEW-S04-A: skill_analyses must not be a key on the "
+        f"strategy_directive dict; the structured "
+        f"skill_tactical_advice is the single source of truth. "
+        f"Got: {list(directive.keys())!r}"
+    )
+    # skill_tactical_advice is the structured render path.
+    advice = directive.get("skill_tactical_advice", None)
+    if advice:
+        assert isinstance(advice, list), (
+            f"NEW-S04-A: skill_tactical_advice must be a list of dicts. "
+            f"Got: {type(advice).__name__}: {advice!r}"
+        )
+
+
+def test_skill_analysis_hints_field_empty_after_build_agent_context() -> None:
+    """NEW-S04-A: end-to-end: build_agent_context must NOT populate
+    `ctx.skill_analysis_hints`. The dual render path is gone.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime import context as context_mod
+    from werewolf_agent.agents.schemas import ActionType, TaskType
+    from werewolf_agent.engine.rule_engine import RuleEngine
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 7)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="end_to_end_dedup",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    engine = RuleEngine.from_yaml(
+        Path(__file__).resolve().parents[2] / "config" / "rulesets"
+        / "pre_witch_hunter_idiot_mixed.yaml"
+    )
+    ctx = context_mod.build_agent_context(
+        engine, gs, "p01", TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+    # NEW-S04-A: skill_analysis_hints is empty (the dual-render
+    # duplication is gone). The skill advice is rendered from
+    # strategy_directive.skill_tactical_advice only.
+    assert not ctx.skill_analysis_hints, (
+        f"NEW-S04-A: skill_analysis_hints must be empty after "
+        f"build_agent_context. Got: {ctx.skill_analysis_hints!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S19-C: illegal-target filter applies to the surviving render path.
+# ---------------------------------------------------------------------------
+
+
+def test_skill_illegal_target_filter_applies_to_all_render_paths() -> None:
+    """NEW-S19-C: the S-19 illegal-target filter applies to the
+    surviving render path (strategy_directive.skill_tactical_advice).
+    The duplicate skill_analysis_hints render path is gone (NEW-S04-A),
+    so the unfiltered leak is no longer possible. We assert:
+      (1) AgentContext.skill_analysis_hints is empty (NEW-S04-A).
+      (2) When an advice entry names an illegal target, it is
+          filtered out of skill_tactical_advice (S-19).
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime import context as context_mod
+    from werewolf_agent.agents.schemas import ActionType, TaskType
+    from werewolf_agent.engine.rule_engine import RuleEngine
+    from werewolf_agent.skills.schemas import SkillName
+    from werewolf_agent.skills.werewolf_skills import register_handler
+    from werewolf_agent.skills.schemas import SkillOutput
+
+    # Force a push_vote advice entry that names p05 (dead → illegal).
+    def _illegal_handler(inp, skill):
+        return SkillOutput(
+            skill_name=skill.name.value,
+            speech_structure=["投p05"],
+            confidence=0.6,
+            reasoning="illegal target test",
+            prompt_injectable="归票建议：投票 p05（illegal）",
+        )
+
+    register_handler(SkillName.PUSH_VOTE)(_illegal_handler)
+    try:
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 13)
+        }
+        players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+        gs = GameState(
+            ruleset_id="test",
+            game_id="g",
+            phase="speech",
+            day_number=1,
+            night_number=1,
+            players=players,
+        )
+        engine = RuleEngine.from_yaml(
+            Path(__file__).resolve().parents[2] / "config" / "rulesets"
+            / "pre_witch_hunter_idiot_mixed.yaml"
+        )
+        # legal_targets excludes p05 (dead).
+        legal = [
+            f"p{i:02d}" for i in range(1, 13)
+            if i != 5 and f"p{i:02d}" != "p01"
+        ]
+        ctx = context_mod.build_agent_context(
+            engine, gs, "p01", TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=legal,
+        )
+        # NEW-S04-A: skill_analysis_hints is empty (no dual render).
+        assert not ctx.skill_analysis_hints, (
+            f"NEW-S04-A/NEW-S19-C: skill_analysis_hints must be "
+            f"empty. Got: {ctx.skill_analysis_hints!r}"
+        )
+        # NEW-S19-C: the surviving render path (skill_tactical_advice)
+        # must filter the illegal target. We assert the advice does
+        # not name p05 in any push_vote entry.
+        advice = ctx.strategy_directive.get("skill_tactical_advice", [])
+        for entry in advice:
+            if isinstance(entry, dict) and entry.get("skill") == "push_vote":
+                assert "p05" not in entry.get("advice", ""), (
+                    f"NEW-S19-C: skill_tactical_advice push_vote entry "
+                    f"must filter p05 (illegal). Got: {entry!r}"
+                )
+    finally:
+        from werewolf_agent.skills.werewolf_skills import push_vote_handler
+        register_handler(SkillName.PUSH_VOTE)(push_vote_handler)

@@ -1152,11 +1152,12 @@ def test_skill_catalog_not_in_system_prompt_for_seer():
     )
 
 
-def test_skill_analysis_hints_in_user_prompt_for_seer():
-    """P0-K1: seer user prompt must include the pre-injected skill analysis.
-
-    The catalog (tool path) is removed. Skill analyses are delivered
-    via the `skill_analysis_hints` pre-injection path.
+def test_skill_analysis_hints_not_in_user_prompt_for_seer():
+    """NEW-S04-A: skill_analysis_hints render path is dropped. The
+    structured `skill_tactical_advice` (in strategy_directive) is the
+    single source of truth; the opaque `技能分析结果` section no
+    longer appears in the user prompt. Seer user prompt must NOT
+    include the old `技能分析结果` header.
     """
     ctx = AgentContext(
         agent_id="p03",
@@ -1167,11 +1168,16 @@ def test_skill_analysis_hints_in_user_prompt_for_seer():
         legal_actions=[ActionType.SPEECH, ActionType.VOTE],
         legal_targets=["p05", "p07"],
         public_summary="D2 seer speech",
+        # Even if a caller populates skill_analysis_hints directly,
+        # the prompt builder does not render the legacy section.
         skill_analysis_hints={"wolf_pit": "嫌疑区: p05"},
     )
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "技能分析结果" in user_prompt, (
-        "Seer user prompt must include the pre-injected skill analysis section."
+    assert "技能分析结果" not in user_prompt, (
+        "NEW-S04-A: skill_analysis_hints render path is dropped; the "
+        "legacy `技能分析结果` section must NOT appear in the user "
+        "prompt. The structured `skill_tactical_advice` inside "
+        "strategy_directive is the single source of truth."
     )
 
 
@@ -1188,8 +1194,11 @@ def test_skill_catalog_not_in_system_prompt_for_villager():
     )
 
 
-def test_skill_analysis_hints_in_user_prompt_for_villager():
-    """P0-K1: villager user prompt must include the pre-injected skill analyses."""
+def test_skill_analysis_hints_not_in_user_prompt_for_villager():
+    """NEW-S04-A: villager user prompt must NOT include the legacy
+    `技能分析结果` section. The structured `skill_tactical_advice` in
+    `strategy_directive` is the single source of truth.
+    """
     ctx = AgentContext(
         agent_id="p10",
         task_type=TaskType.SPEECH,
@@ -1202,7 +1211,11 @@ def test_skill_analysis_hints_in_user_prompt_for_villager():
         skill_analysis_hints={"wolf_pit": "嫌疑区: p07"},
     )
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "技能分析结果" in user_prompt
+    assert "技能分析结果" not in user_prompt, (
+        "NEW-S04-A: skill_analysis_hints render path is dropped; the "
+        "legacy `技能分析结果` section must NOT appear in the user "
+        "prompt."
+    )
 
 
 # ---------------------------------------------------------------------------

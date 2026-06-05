@@ -1102,7 +1102,13 @@ def build_agent_context(
         belief_state=belief_dict,
         strategy_directive=strategy_directive,
         skill_analyses=skill_analyses,
-        skill_analysis_hints=skill_analyses,
+        # NEW-S04-A: skill_analysis_hints is no longer populated. The
+        # single source of truth is strategy_directive.skill_tactical_advice
+        # (rendered inside the strategy_directive section). The old
+        # dual-render path passed the same opaque dict to BOTH
+        # skill_analyses AND skill_analysis_hints, doubling the token
+        # budget. Now only the structured path remains.
+        skill_analysis_hints={},
     )
     return _inject_seed_rag_hints(
         context,
