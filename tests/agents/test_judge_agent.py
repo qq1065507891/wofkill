@@ -107,6 +107,71 @@ class TestJudgeAgent:
         assert "ruling" not in data
 
 
+class TestPersonaSystemMessageInjection:
+    """J-7: persona should be passed as a separate system_prompt, not concatenated to user prompt."""
+
+    def _make_judge_with_capture(self) -> tuple[JudgeAgent, list[dict[str, object]]]:
+        captured: list[dict[str, object]] = []
+
+        class _CaptureProvider:
+            name = "capture"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):  # type: ignore[no-untyped-def]
+                captured.append({"prompt": prompt, "system_prompt": system_prompt})
+                from werewolf_agent.model_gateway.router import GenerateResult, UsageRecord
+                return GenerateResult(
+                    text="captured",
+                    provider=self.name,
+                    model=config.model,
+                    usage=UsageRecord(
+                        agent_id="judge", task_type="speech",
+                        provider=self.name, model=config.model,
+                        prompt_tokens=0, completion_tokens=0, latency_ms=0,
+                    ),
+                )
+
+        router = ModelRouter(
+            model_profiles={"cap": {"model": "capture-model"}},
+            llm_profiles={
+                "judge_default": {
+                    "default": {"provider": "capture", "model_profile": "cap"},
+                }
+            },
+            player_assignments={"judge": "judge_default"},
+            providers={"capture": _CaptureProvider()},
+        )
+        # Build a judge with a profile router that yields a known persona
+        from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
+        profile_router = JudgeProfileRouter(
+            profiles={
+                "tournament_referee": {
+                    "display_name": "锦标赛裁判",
+                    "tone_variant": "tournament",
+                    "base": {},
+                    "task_styles": {},
+                    "broadcast_patterns": {},
+                    "system_prompt": "你是专业的狼人杀裁判。",
+                },
+            }
+        )
+        judge = JudgeAgent(model_router=router, profile_router=profile_router)
+        return judge, captured
+
+    def test_persona_in_system_message(self) -> None:
+        """J-7: when an LLM is used, persona is passed via system_prompt, not the user prompt."""
+        judge, captured = self._make_judge_with_capture()
+        judge.broadcast_vote_calling(
+            voter_id="p01", voter_name="玩家一", candidates=["p02", "p03"],
+            position=1, total=3, day_number=1,
+        )
+        assert len(captured) == 1, "LLM should have been invoked once"
+        rec = captured[0]
+        assert rec["system_prompt"] is not None
+        assert "狼人杀裁判" in str(rec["system_prompt"])
+        # The user prompt must NOT carry the persona prefix
+        assert "狼人杀裁判" not in str(rec["prompt"])
+
+
 class TestAgentIntegration:
     def test_full_pipeline_persona_model_agent(self) -> None:
         """End-to-end: persona -> model router -> player agent -> valid output."""

@@ -70,12 +70,15 @@ class JudgeAgent:
             return ""
         return persona.system_prompt
 
-    def _persona_inject(self, prompt: str, task_type: str = "judge_phase") -> str:
-        """Prepend persona system prompt to a broadcast generation prompt."""
-        sys_p = self._persona_system_prompt(task_type)
-        if not sys_p:
-            return prompt
-        return f"{sys_p}\n\n{prompt}"
+    def _persona_inject(self, prompt: str, task_type: str = "judge_phase") -> tuple[str, str | None]:
+        """Resolve the persona system prompt and return (user_prompt, system_prompt).
+
+        The persona is returned as a separate system prompt (not concatenated to
+        the user prompt) so downstream LLM providers can route it through the
+        native system role instead of burying it in user content.
+        """
+        sys_p = self._persona_system_prompt(task_type) or None
+        return prompt, sys_p
 
     def broadcast_phase(
         self,
@@ -185,11 +188,12 @@ class JudgeAgent:
                 f"可投票目标：{', '.join(candidates) if candidates else '任意存活玩家'}。\n"
                 f"只输出唱票台词，不要输出其他内容。"
             )
-            prompt = self._persona_inject(prompt, "judge_vote_calling")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_vote_calling")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -254,11 +258,12 @@ class JudgeAgent:
                 f"请用叙事化的中文引导该玩家做出选择。不要替玩家做决定。\n"
                 f"只输出引导台词，不要输出其他内容。"
             )
-            prompt = self._persona_inject(prompt, "judge_skill_guide")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_skill_guide")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -311,11 +316,12 @@ class JudgeAgent:
                 f"得票情况：{tally_text}。\n"
                 f"请用简洁的中文宣布投票结果。只输出宣布台词，不要输出其他内容。"
             )
-            prompt = self._persona_inject(prompt, "judge_vote_tally")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_vote_tally")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -382,11 +388,12 @@ class JudgeAgent:
                 )
             else:
                 prompt = f"你是狼人杀游戏的法官。{label}，投票结束。请用简洁的中文宣布。"
-            prompt = self._persona_inject(prompt, "judge_exile")
+            prompt, system_prompt = self._persona_inject(prompt, "judge_exile")
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
+                system_prompt=system_prompt,
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
