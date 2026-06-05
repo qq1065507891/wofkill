@@ -1,4 +1,4 @@
-name: review_correction
+name: review_correct
 display_name: 复盘纠错
 description: 复盘本局关键判断，识别错误，提出改进建议
 applicable_roles:

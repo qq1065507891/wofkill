@@ -719,6 +719,46 @@ def test_swing_vote_handler_wolf_discussion_recommends_night_kill():
 
 
 # ---------------------------------------------------------------------------
+# NEW-MANIFEST-A: review_correction manifest name matches the enum value.
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_name_matches_enum() -> None:
+    """NEW-MANIFEST-A: the legacy review_correction.yaml manifest's
+    `name:` field used the value `review_correction`, while the
+    SkillName enum's value is `review_correct` (REVIEW_CORRECTION =
+    'review_correct' in schemas.py:31). The two drifted — the manifest
+    used a name the enum never produced. The fix is to align the
+    manifest's `name:` with the enum.
+
+    Assert: every manifest YAML under `manifests/` (legacy) has a
+    `name:` that is a valid SkillName enum value.
+    """
+    import yaml as _yaml
+    from pathlib import Path as _Path
+    from werewolf_agent.skills import werewolf_skills as _ws
+    from werewolf_agent.skills.schemas import SkillName
+
+    manifest_dir = _Path(_ws.__file__).parent / "manifests"
+    valid_names = {n.value for n in SkillName}
+
+    mismatches: list[tuple[str, str, str]] = []
+    for yf in sorted(manifest_dir.glob("*.yaml")):
+        data = _yaml.safe_load(yf.read_text(encoding="utf-8")) or {}
+        manifest_name = data.get("name")
+        if manifest_name is None:
+            continue
+        if manifest_name not in valid_names:
+            mismatches.append(
+                (yf.name, manifest_name, f"valid={sorted(valid_names)}")
+            )
+    assert not mismatches, (
+        f"NEW-MANIFEST-A: manifest `name:` must match a SkillName enum "
+        f"value. Mismatches: {mismatches!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # NEW-S19-B: wolf_pit seer_check_claim branch skips dead players.
 # ---------------------------------------------------------------------------
 
