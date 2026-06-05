@@ -9,6 +9,7 @@ for full audit trail and replay compatibility.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -27,6 +28,29 @@ class HITLState(str, Enum):
     WAITING_AFTER = "waiting_after"
     PAUSED_USER = "paused_user"
     STOPPED = "stopped"
+
+
+class HITLRole(str, Enum):
+    """Caller role for HITL command authorization (J-4).
+
+    Privileged commands (show_roles / show_votes / inject_event) leak
+    hidden identities or mutate game state, so they are gated to
+    MODERATOR / JUDGE roles. SPECTATOR (e.g. an audience dashboard) is
+    denied.
+    """
+
+    MODERATOR = "moderator"
+    JUDGE = "judge"
+    SPECTATOR = "spectator"
+
+
+# J-4: commands gated to MODERATOR / JUDGE (anything else, including
+# SPECTATOR, is denied with a refused response).
+_PRIVILEGED_COMMANDS = frozenset({
+    "show_roles",
+    "show_votes",
+    "inject_event",
+})
 
 
 @dataclass
@@ -104,6 +128,12 @@ class JudgeHITLInterface:
         self._pause_timeout = pause_timeout
         self._pending_command: HITLCommand | None = None
         self._pause_started: float = 0.0
+        # J-6: threading.Event used as a signal primitive so any thread
+        # blocked in wait_for_human() can be woken up by send_command().
+        self._command_event: threading.Event = threading.Event()
+        # J-2: track whether user explicitly paused (so we don't auto-resume
+        # on every consumed command).
+        self._user_paused: bool = False
         # Step counter for "resume N" command
         self._steps_to_run: int = 0
         self._events: list[GameEvent] = []
@@ -158,32 +188,66 @@ class JudgeHITLInterface:
         """Block waiting for a human command.
 
         In an interactive setting this would read from stdin or an API queue.
-        For the simulation harness, it checks the pending command set via
-        ``send_command()`` and returns immediately.
+        For the simulation harness, it waits on a threading.Event that is set
+        by ``send_command()``. Returns the queued command or ``None`` on
+        timeout.
         """
-        effective_timeout = timeout or self._pause_timeout
+        effective_timeout = timeout if timeout is not None else self._pause_timeout
         self._pause_started = time.time()
 
+        # If a command is already queued, consume it immediately.
         if self._pending_command is not None:
-            cmd = self._pending_command
-            self._pending_command = None
-            return cmd
+            return self._consume_pending_command()
 
-        # Non-blocking for simulation: return None to indicate timeout/no-input
-        elapsed = time.time() - self._pause_started
-        if elapsed >= effective_timeout:
-            self._state = HITLState.RUNNING
+        # J-1: Block on the event until send_command() signals or timeout
+        # elapses. Previously this returned None immediately, so the
+        # runner could not actually pause for human input.
+        got_signal = self._command_event.wait(timeout=effective_timeout)
+        if not got_signal:
+            # Timeout — auto-resume back to running (unless user explicitly paused)
+            if not self._user_paused:
+                self._state = HITLState.RUNNING
+            elapsed = time.time() - self._pause_started
             self._log_event("auto_resume", {"reason": "timeout", "elapsed": elapsed})
             return None
-        return None  # Would block in interactive mode
+
+        # Signalled — return the queued command (must be present since
+        # send_command is the only setter).
+        return self._consume_pending_command()
+
+    def _consume_pending_command(self) -> HITLCommand | None:
+        """Pop the pending command and reset state appropriately.
+
+        J-2: After a command is consumed (a human actively interacted),
+        drop back to RUNNING so the runner advances. The "pause was
+        explicitly called" caveat only applies when no command is in the
+        queue — i.e. the user paused to inspect, and there is nothing to
+        consume.
+        """
+        cmd = self._pending_command
+        self._pending_command = None
+        # J-6: clear the event so a future wait_for_human can block again
+        self._command_event.clear()
+        # J-2: Reset to RUNNING — a consumed command means the user wants
+        # the game to continue.
+        if self._state != HITLState.STOPPED:
+            self._state = HITLState.RUNNING
+        return cmd
 
     def send_command(self, raw: str) -> None:
-        """Queue a command from an external source (API, CLI, dashboard)."""
+        """Queue a command from an external source (API, CLI, dashboard).
+
+        J-6: also signals the threading.Event so any thread blocked in
+        wait_for_human() wakes immediately.
+        """
         self._pending_command = HITLCommand.parse(raw)
+        self._command_event.set()
 
     def pause(self, by_user: bool = True) -> None:
         """Pause execution at the next checkpoint."""
         self._state = HITLState.PAUSED_USER if by_user else HITLState.WAITING_AFTER
+        if by_user:
+            self._user_paused = True
         self._log_event("paused", {"by_user": by_user})
 
     def resume(self, steps: int = 0) -> None:
@@ -191,6 +255,7 @@ class JudgeHITLInterface:
         if self._state == HITLState.STOPPED:
             return
         self._state = HITLState.RUNNING
+        self._user_paused = False
         self._steps_to_run = max(0, steps)
         self._log_event("resumed", {"steps": steps})
 
@@ -207,12 +272,33 @@ class JudgeHITLInterface:
         self,
         cmd: HITLCommand,
         game_state: GameState,
+        *,
+        caller_role: HITLRole | str = HITLRole.MODERATOR,
     ) -> dict[str, Any]:
         """Parse and execute a HITL command. Returns a result dict with at
         least a ``response`` key. May include ``game_state`` if mutated.
+
+        J-4: ``caller_role`` gates privileged commands. The default of
+        ``MODERATOR`` preserves backward compatibility for in-process
+        callers; external callers (API, CLI, dashboard) must pass
+        ``HITLRole.SPECTATOR`` (or any other non-privileged role) to
+        actually be denied.
         """
         command = cmd.command
         args = cmd.args
+
+        # J-4: gate privileged commands to MODERATOR / JUDGE.
+        if command in _PRIVILEGED_COMMANDS:
+            role_value = caller_role.value if isinstance(caller_role, HITLRole) else str(caller_role)
+            if role_value not in (HITLRole.MODERATOR.value, HITLRole.JUDGE.value):
+                response = (
+                    f"拒绝: 命令 '{command}' 需要 MODERATOR 或 JUDGE 角色，"
+                    f"当前角色 '{role_value}' 无权访问。"
+                )
+                self._log_event("command_denied", {
+                    "command": command, "caller_role": role_value,
+                })
+                return {"response": response}
 
         handlers: dict[str, Callable[[list[str], GameState], dict[str, Any]]] = {
             "pause": self._cmd_pause,
@@ -335,28 +421,87 @@ class JudgeHITLInterface:
         """Inject a custom GameEvent. Protected fields are validated and rejected.
 
         Usage: inject_event <event_type> key1=value1 key2=value2 ...
+
+        J-5 hardening:
+          1. Whitelist event types — only ``custom_*`` is allowed. This
+             blocks injection of reserved/semantic event types such as
+             ``vote_resolved`` or ``phase_changed`` that the rule engine
+             uses to mutate state.
+          2. Recursive nested key check — protected top-level keys
+             (``players``, ``deaths``, ``votes``, ``phase``,
+             ``winning_faction``, ``hybrid_result``) AND protected
+             per-player keys (``role``, ``alive``, ``faction``,
+             ``vote_enabled``, ``revealed_idiot``, ``badge_eligible``)
+             are rejected anywhere in the value tree (dicts, lists).
+          3. Size limit — the serialized payload must not exceed 4KB.
         """
+        import json as _json
+
         if len(args) < 1:
             return {"response": "用法: inject_event <type> [key=value ...]"}
         event_type = args[0]
-        # Validate event_type — reject empty, overlong, or system-reserved patterns
+        # J-5a: Whitelist — only custom_* event types are allowed.
         if not event_type or len(event_type) > 64:
             return {"response": f"拒绝: 事件类型无效（空或过长: {len(event_type)}字符）"}
         if event_type.startswith("_"):
             return {"response": "拒绝: 事件类型不能以下划线开头（保留给内部事件）"}
+        if not event_type.startswith("custom_"):
+            return {"response": (
+                f"拒绝: 事件类型必须以 'custom_' 开头（收到: '{event_type}'）。"
+                "系统保留类型（如 vote_resolved / phase_changed / deaths 等）不可注入。"
+            )}
         if event_type in ("judge_hitl_interaction", "judge_broadcast"):
             return {"response": f"拒绝: '{event_type}' 是系统保留事件类型"}
-        # Parse key=value pairs
+        # Parse key=value pairs. Values that parse as JSON dicts/lists are
+        # decoded so the recursive check below can walk into them.
         payload: dict[str, Any] = {}
         for kv in args[1:]:
             if "=" in kv:
                 k, v = kv.split("=", 1)
-                payload[k] = v
-        # Validate — reject protected field mutations (case-insensitive)
+                try:
+                    decoded = _json.loads(v)
+                except (ValueError, TypeError):
+                    decoded = v
+                payload[k] = decoded
+        # J-5b: Recursive nested key check across the value tree.
         protected_lower = {k.lower() for k in _PROTECTED_TOP_KEYS}
-        for key in list(payload.keys()):
-            if key.lower() in protected_lower:
-                return {"response": f"拒绝: '{key}' 是受保护字段，不能通过 inject_event 修改。"}
+        protected_player_lower = {k.lower() for k in _PROTECTED_PLAYER_KEYS}
+        all_protected = protected_lower | protected_player_lower
+
+        def _find_protected(obj: Any) -> str | None:
+            """Return the first protected key found anywhere in ``obj``,
+            or None if the value tree is clean.
+            """
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if isinstance(k, str) and k.lower() in all_protected:
+                        return k
+                    found = _find_protected(v)
+                    if found is not None:
+                        return found
+            elif isinstance(obj, list):
+                for item in obj:
+                    found = _find_protected(item)
+                    if found is not None:
+                        return found
+            return None
+
+        bad_key = _find_protected(payload)
+        if bad_key is not None:
+            return {"response": (
+                f"拒绝: '{bad_key}' 是受保护字段（递归检查），不能通过 inject_event 修改。"
+            )}
+        # J-5c: Size limit 4KB. Encode with sorted keys + ensure_ascii=False
+        # so the limit reflects what the user actually wrote.
+        try:
+            serialized = _json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except (ValueError, TypeError) as exc:
+            return {"response": f"拒绝: payload 无法序列化: {exc}"}
+        byte_size = len(serialized.encode("utf-8"))
+        if byte_size > 4096:
+            return {"response": (
+                f"拒绝: 注入 payload 超过 4KB 限制（{byte_size}字节）。"
+            )}
         # Log the custom event
         event = GameEvent(type=event_type, payload=payload)
         gs = replace(gs, events=gs.events + [event])
