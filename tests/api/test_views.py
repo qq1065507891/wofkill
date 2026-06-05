@@ -1,5 +1,5 @@
-"""Tests for the NEW-P2-9 private-state 404 fix and the NEW-P2-10
-known-sensitive-field list.
+"""Tests for the NEW-P2-9 private-state 404 fix, the NEW-P2-10
+known-sensitive-field list, and the NEW-P2-11 MVP prefer-villager fix.
 
 NEW-P2-9: build_private_state previously returned ``role="unknown"`` when
 the player wasn't found in the game, silently masking typos and stale
@@ -9,6 +9,10 @@ NEW-P2-10: the timeline view's "strip private info" pass had a hard-coded
 list of payload keys. New private keys would silently leak through. The
 fix centralizes the list in a module-level constant so the test can
 assert it covers every event type.
+
+NEW-P2-11: _pick_public_mvp_candidate sorted by player id and returned
+the lowest, so whoever happened to be p01 always won. The fix
+prefers an alive good-faction player.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from werewolf_agent.api.views import (
     _build_event,
     _build_public_event,
 )
+from werewolf_agent.api.routes.games import _pick_public_mvp_candidate
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.api.schemas import ViewMode
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
@@ -139,3 +144,44 @@ def test_all_event_types_filter_known_sensitive_fields():
         # Restore the constant to its declared state.
         KNOWN_SENSITIVE_FIELDS.clear()
         KNOWN_SENSITIVE_FIELDS.update(original)
+
+
+# ---------------------------------------------------------------------------
+# NEW-P2-11
+# ---------------------------------------------------------------------------
+
+
+def test_mvp_picks_first_alive_villager():
+    """NEW-P2-11: MVP candidate must prefer an alive good-faction
+    player (villager/seer/etc.) over a wolf, even when the wolf has a
+    lower id. The legacy code just sorted by id, so ``p01`` always won
+    regardless of role.
+    """
+    # p01 is a wolf, p02 is a villager → MVP must be p02.
+    players = {
+        "p01": PlayerState(id="p01", role="werewolf", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="seer", alive=True),
+        "p04": PlayerState(id="p04", role="idiot", alive=False),  # dead
+    }
+    state = GameState(game_id="g_mvp", players=players)
+    assert _pick_public_mvp_candidate(state) == "p02", (
+        "NEW-P2-11 not fixed: MVP picked by id-sort, ignoring role"
+    )
+
+    # Sanity: when only wolves are alive, MVP must still return *some*
+    # alive id (the fallback path).
+    only_wolves = {
+        "p01": PlayerState(id="p01", role="werewolf", alive=True),
+        "p05": PlayerState(id="p05", role="werewolf", alive=True),
+    }
+    state2 = GameState(game_id="g_mvp2", players=only_wolves)
+    assert _pick_public_mvp_candidate(state2) == "p01"
+
+    # Edge: no alive players → return lowest id from the full roster.
+    all_dead = {
+        "p01": PlayerState(id="p01", role="villager", alive=False),
+        "p02": PlayerState(id="p02", role="werewolf", alive=False),
+    }
+    state3 = GameState(game_id="g_mvp3", players=all_dead)
+    assert _pick_public_mvp_candidate(state3) == "p01"

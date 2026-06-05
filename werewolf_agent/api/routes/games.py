@@ -782,6 +782,24 @@ def _event_is_public_for_share(event: GameEvent) -> bool:
 
 
 def _pick_public_mvp_candidate(state: GameState) -> str | None:
+    """NEW-P2-11: pick a public-safe MVP candidate.
+
+    The old implementation just sorted by player id, which meant the
+    "MVP" was whoever happened to be ``p01`` — almost always a
+    villager, but for the wrong reason, and broken if ``p01`` happened
+    to be a wolf.
+
+    The fix prefers an alive good-faction player in deterministic
+    id order. If no good player is alive, fall back to any alive
+    player; if none, fall back to the lowest-id player overall.
+    """
+    good_roles = {"villager", "seer", "witch", "hunter", "idiot"}
+    alive_good = sorted(
+        pid for pid, player in state.players.items()
+        if player.alive and player.role in good_roles
+    )
+    if alive_good:
+        return alive_good[0]
     alive_ids = sorted(pid for pid, player in state.players.items() if player.alive)
     if alive_ids:
         return alive_ids[0]
