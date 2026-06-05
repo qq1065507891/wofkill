@@ -36,9 +36,13 @@ class GameState:
     night_number: int = 0
     hybrid_master_id: str | None = None
     hybrid_master_faction: str | None = None
+    hybrid_result: str | None = None
     sheriff_id: str | None = None
     sheriff_badge_state: str = "none"
     sheriff_candidates: list[str] = field(default_factory=list)
+    sheriff_interrupt_count: int = 0
+    sheriff_tie_count: int = 0
+    sheriff_pk_candidates: list[str] = field(default_factory=list)
     votes: dict[str, str] = field(default_factory=dict)
     private_intents: dict[str, dict[str, Any]] = field(default_factory=dict)
     antidote_used: bool = False
@@ -46,6 +50,7 @@ class GameState:
     deaths: list[Death] = field(default_factory=list)
     events: list[GameEvent] = field(default_factory=list)
     winning_faction: str | None = None
+    paused: bool = False
 
     def __post_init__(self) -> None:
         # 防御性浅拷贝：防止外部可变容器被意外修改
@@ -56,11 +61,6 @@ class GameState:
         object.__setattr__(self, "private_intents", dict(self.private_intents) if self.private_intents else {})
         object.__setattr__(self, "sheriff_candidates", list(self.sheriff_candidates) if self.sheriff_candidates else [])
         object.__setattr__(self, "sheriff_pk_candidates", list(self.sheriff_pk_candidates) if self.sheriff_pk_candidates else [])
-    hybrid_result: str | None = None
-    paused: bool = False
-    sheriff_interrupt_count: int = 0
-    sheriff_tie_count: int = 0
-    sheriff_pk_candidates: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
