@@ -1104,15 +1104,29 @@ def build_agent_context(
         logger.warning("Role state monitoring failed, skipping", exc_info=True)
 
     # -- Death cause claim evaluation: does the player trust each claim? --
-    try:
-        death_evaluations = _evaluate_death_cause_claims(
-            gs, player_id, player.role,
-            wolf_kill_target_id=wolf_kill_target_id,
-        )
-        if death_evaluations:
-            strategy_directive["death_cause_evaluation"] = death_evaluations
-    except Exception:
-        logger.debug("Death cause evaluation failed, skipping", exc_info=True)
+    # D-15: phase-gate the evaluation.  Pre-fix, the evaluator ran on
+    # every context build, which meant night-action prompts (witch
+    # decision, seer check, wolf kill) carried death-cause guidance
+    # the model wasn't asking for and that bloated the prompt
+    # unnecessarily.  The death-cause evaluation only makes sense in
+    # the day-phase speech / vote / sheriff slots where the player is
+    # actively weighing other players' public claims.
+    if task_type in (
+        TaskType.SPEECH,
+        TaskType.PK_SPEECH,
+        TaskType.SHERIFF_SPEECH,
+        TaskType.VOTE,
+        TaskType.DEFENSE_SPEECH,
+    ):
+        try:
+            death_evaluations = _evaluate_death_cause_claims(
+                gs, player_id, player.role,
+                wolf_kill_target_id=wolf_kill_target_id,
+            )
+            if death_evaluations:
+                strategy_directive["death_cause_evaluation"] = death_evaluations
+        except Exception:
+            logger.debug("Death cause evaluation failed, skipping", exc_info=True)
 
     # -- Cross-game memory: inject accumulated learning from previous games --
     profile_memory_hint: dict[str, Any] = {}

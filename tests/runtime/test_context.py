@@ -7,6 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from werewolf_agent.agents.schemas import ActionType, TaskType
+from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.memory.schemas import PlayerProfile, ReflectionEntry
 from werewolf_agent.runtime.context import (
     _cognition_matrix_hint,
@@ -94,6 +97,65 @@ def test_reflection_hints_higher_priority_wins_over_newer_game() -> None:
 # ---------------------------------------------------------------------------
 # P0-M4: profile rank description (no raw ability floats, current-role only)
 # ---------------------------------------------------------------------------
+
+def test_death_cause_eval_phase_gated() -> None:
+    """D-15: the death_cause_evaluation directive is only injected for
+    speech / vote / sheriff slots, never for night_action.
+
+    Pre-fix the evaluator ran on every context build, which meant
+    night-action prompts (witch decision, seer check, wolf kill)
+    carried death-cause guidance the model wasn't asking for and
+    that bloated the prompt unnecessarily.
+    """
+    from werewolf_agent.runtime.graph import _new_engine
+
+    # Minimal 4-player game to keep the test fast.
+    players = {
+        "p01": PlayerState(id="p01", role="werewolf"),
+        "p02": PlayerState(id="p02", role="werewolf"),
+        "p03": PlayerState(id="p03", role="villager"),
+        "p04": PlayerState(id="p04", role="seer"),
+    }
+    events = [
+        GameEvent(type="speech", payload={
+            "speaker": "p01", "text": "我女巫，我毒了p02", "day_number": 2,
+        }),
+    ]
+    gs = GameState(
+        game_id="phase_gate_test",
+        players=players,
+        phase="night",
+        night_number=2,
+        events=events,
+        poison_used=True,
+    )
+    engine = _new_engine()
+
+    # Day-phase slots SHOULD receive the directive.
+    for task in (
+        TaskType.SPEECH, TaskType.PK_SPEECH, TaskType.SHERIFF_SPEECH,
+        TaskType.VOTE, TaskType.DEFENSE_SPEECH,
+    ):
+        ctx = build_agent_context(
+            engine, gs, "p04", task,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p01", "p02", "p03"],
+        )
+        assert "death_cause_evaluation" in ctx.strategy_directive, (
+            f"task {task} should receive death_cause_evaluation"
+        )
+
+    # Night-action slots MUST NOT receive the directive.
+    for task in (TaskType.NIGHT_ACTION, TaskType.HUNTER_SHOT, TaskType.WOLF_DISCUSSION):
+        ctx = build_agent_context(
+            engine, gs, "p04", task,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p01", "p02", "p03"],
+        )
+        assert "death_cause_evaluation" not in ctx.strategy_directive, (
+            f"task {task} must NOT receive death_cause_evaluation (D-15 phase gate)"
+        )
+
 
 def _make_profile(
     *,

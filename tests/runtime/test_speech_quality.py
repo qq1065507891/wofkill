@@ -77,6 +77,34 @@ class TestHighPressureSpeech:
         result = validate_public_speech(speech, phase="sheriff_speech", context={})
         assert result["valid"] is False
 
+    def test_claim_pattern_includes_all_roles(self):
+        """D-12: a public claim to 村民 or 混血儿 must also count as
+        a valid claim during a high-pressure phase.
+
+        Pre-fix the regex only accepted 预言家|女巫|猎人|白痴, so a
+        villager saying "我是村民" was misclassified as a missing
+        claim, polluting the missing_fields list.
+        """
+        # Villager claim in sheriff / PK phase
+        speech_v = "我是村民，我听了所有人的发言，我怀疑p03，倾向投p03"
+        result_v = validate_public_speech(
+            speech_v, phase="sheriff_speech", context={"is_claiming_role": True},
+        )
+        assert "claim_logic" not in result_v.get("missing_fields", []), (
+            f"villager claim should not trigger claim_logic miss; "
+            f"got missing: {result_v.get('missing_fields')}"
+        )
+
+        # Hybrid claim in PK phase
+        speech_h = "我是混血儿，我主人是p05，我分析p03更像狼，倾向投p03"
+        result_h = validate_public_speech(
+            speech_h, phase="pk_speech", context={"is_claiming_role": True},
+        )
+        assert "claim_logic" not in result_h.get("missing_fields", []), (
+            f"hybrid claim should not trigger claim_logic miss; "
+            f"got missing: {result_h.get('missing_fields')}"
+        )
+
 
 class TestPeaceNightWitchReasoning:
     """Peace night reasoning must not misread public no-death as no wolf kill."""

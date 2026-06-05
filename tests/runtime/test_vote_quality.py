@@ -262,6 +262,40 @@ class TestValidateStructuredVoteAction:
         assert result.get("seer_stance") in ("no_claim", "undecided")
 
 
+class TestNormalizeMultiBasis:
+    """D-14: normalize_vote_basis must rank multi-basis evidence by
+    evidentiary weight, not just return the first detector hit."""
+
+    def test_normalize_multi_basis(self) -> None:
+        from werewolf_agent.runtime.vote_quality import normalize_vote_basis
+
+        # Multi-basis: seer_check + counterclaim + vote_tally. The
+        # strongest evidence (seer_check) should win, NOT the first
+        # detector in iteration order.
+        result = normalize_vote_basis(["vote_tally", "counterclaim", "seer_check"])
+        assert result == "seer_check", (
+            f"strongest basis (seer_check) should win; got: {result}"
+        )
+
+    def test_normalize_picks_counterclaim_when_no_seer_check(self) -> None:
+        from werewolf_agent.runtime.vote_quality import normalize_vote_basis
+
+        result = normalize_vote_basis(["vote_tally", "counterclaim"])
+        assert result == "seer_siding"
+
+    def test_normalize_picks_vote_tally_alone(self) -> None:
+        from werewolf_agent.runtime.vote_quality import normalize_vote_basis
+
+        result = normalize_vote_basis(["vote_tally"])
+        assert result == "vote_pattern"
+
+    def test_normalize_empty_falls_back(self) -> None:
+        from werewolf_agent.runtime.vote_quality import normalize_vote_basis
+
+        result = normalize_vote_basis([])
+        assert result == "fallback"
+
+
 class TestVoteFallbackTarget:
     """Fallback vote target selection should use public evidence when possible."""
 
