@@ -1837,3 +1837,82 @@ def test_skill_illegal_target_filter_skips_last_words() -> None:
         # Restore the real handler.
         from werewolf_agent.skills.werewolf_skills import last_words_handler
         register_handler(SkillName.LAST_WORDS_ANALYSIS)(last_words_handler)
+
+
+# ---------------------------------------------------------------------------
+# NEW-S04-B: dedupe uses object identity, not full-prompt string compare.
+# ---------------------------------------------------------------------------
+
+
+def test_skill_seen_dedupe_uses_id_not_prompt(monkeypatch) -> None:
+    """NEW-S04-B: the `seen` dedupe set in `_inject_skill_output`
+    must key on object identity (`id(o)`) or `(skill_name, prompt[:50])`
+    — NOT on the full `prompt_injectable` string. S-06's length cap
+    produces identical `...（已省略）` truncations for two different
+    skills whose original prompts differ; the string-based dedupe
+    would hide the second skill.
+
+    We mock `dispatch_for_role` to return two outputs with identical
+    truncated prompts but different skill_names. Both must be
+    included in the structured `skill_tactical_advice` output.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime import context as context_mod
+    from werewolf_agent.skills.schemas import SkillOutput
+
+    truncated = "前文...（已省略）"  # S-06 marker; same for both skills
+
+    class _FakeRegistry:
+        def dispatch_for_role(self, role, phase, skill_input, task_type="", gs=None):
+            return [
+                SkillOutput(
+                    skill_name="push_vote",
+                    speech_structure=["rally"],
+                    confidence=0.7,
+                    reasoning="truncated",
+                    prompt_injectable=truncated,
+                ),
+                SkillOutput(
+                    skill_name="find_power",
+                    speech_structure=["analyze"],
+                    confidence=0.6,
+                    reasoning="truncated",
+                    prompt_injectable=truncated,
+                ),
+            ]
+
+    monkeypatch.setattr(context_mod, "SkillRegistry", _FakeRegistry)
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 7)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="dedup_id_test",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.cognition.world_state import build_world_state
+
+    world_state = build_world_state(gs)
+    belief = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    belief = BeliefUpdater().update(belief, world_state.facts, gs.day_number)
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+
+    directive, _ = context_mod._inject_skill_output(
+        {}, gs, "p01", world_state, belief, alerts, "speech",
+    )
+    advice = directive.get("skill_tactical_advice", [])
+    skill_names = {e.get("skill") for e in advice if isinstance(e, dict)}
+
+    # NEW-S04-B: both push_vote and find_power must be in the output.
+    assert {"push_vote", "find_power"}.issubset(skill_names), (
+        f"NEW-S04-B: dedupe must keep both push_vote and find_power "
+        f"even when their prompt_injectable strings are identical "
+        f"(S-06 truncation). Got skills: {skill_names!r}"
+    )

@@ -541,7 +541,15 @@ def _inject_skill_output(
     # appears first in the rendered prompt — within the same budget,
     # the LLM sees the best signal first; actionable low-confidence
     # advice (e.g. "your teammate already handles X") remains reachable.
-    sortable: list[tuple[float, str]] = []
+    # NEW-S04-B: each sortable entry carries the originating
+    # SkillOutput object as the third element. Two different skills
+    # can produce identical prompt_injectable strings (e.g. S-06
+    # truncation); the previous prompt-based lookup returned the
+    # first match for both, dropping the second skill. Identifying
+    # the *specific* output lets us key the dedupe on object
+    # identity (skill_name on the source output) instead of the
+    # truncated prompt.
+    sortable: list[tuple[float, str, Any]] = []
 
     # S-04: collect per-skill output keyed by skill_name. Each entry
     # is the skill's prompt_injectable (or empty string if the skill
@@ -563,7 +571,7 @@ def _inject_skill_output(
         # wolves that aren't assigned to that skill.  Re-implementing
         # the skip here risks drift between the two copies.
         skill_analyses[o.skill_name] = o.prompt_injectable
-        sortable.append((o.confidence, o.prompt_injectable))
+        sortable.append((o.confidence, o.prompt_injectable, o))
 
     # Sort highest confidence first; stable for ties.
     sortable.sort(key=lambda x: -x[0])
@@ -608,13 +616,13 @@ def _inject_skill_output(
     # is keyed by skill name) plus the original outputs' confidence
     # and skill_name.  We iterate in confidence-sorted order so
     # high-confidence advice appears first.
-    for conf, prompt in sortable:
-        # Find the matching skill_name from outputs.
-        match = next(
-            (o for o in outputs if o.prompt_injectable == prompt),
-            None,
-        )
-        skill_name = match.skill_name if match else ""
+    for conf, prompt, source_output in sortable:
+        # NEW-S04-B: identify the *specific* output by reading
+        # skill_name directly from the source object (no prompt
+        # lookup — that was the source of the dedupe collision).
+        skill_name = source_output.skill_name if source_output else ""
+        # NEW-S04-B: key the `seen` dedupe by skill_name (not by
+        # the full prompt string).
         if skill_name in seen:
             continue
         seen.add(skill_name)
