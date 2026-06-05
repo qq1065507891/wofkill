@@ -1104,6 +1104,15 @@ def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             for f in ws.facts_of_type(fact_type):
                 target = f.target_player
                 val = (f.value or "").lower()
+                # NEW-S19-B: skip dead players. A dead player with a
+                # seer_check_claim would be added to suspects/excluded
+                # and then dropped by the S-19 filter (or worse, the
+                # prompt would carry an "illegal" target). Mirror the
+                # belief-state loop above which already guards on
+                # `player.alive`.
+                target_player = gs.players.get(target) if target else None
+                if not target_player or not target_player.alive:
+                    continue
                 if target and ("wolf" in val or "狼" in (f.value or "")):
                     suspects.append((target, f"被{f.source_player}查杀"))
                 elif target and ("good" in val or "金水" in (f.value or "")):

@@ -716,3 +716,79 @@ def test_swing_vote_handler_wolf_discussion_recommends_night_kill():
         f"S-03: swing_vote in wolf_discussion should mark itself as "
         f"夜杀; got: {out.prompt_injectable!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-S19-B: wolf_pit seer_check_claim branch skips dead players.
+# ---------------------------------------------------------------------------
+
+
+def test_wolf_pit_seer_check_skips_dead_players() -> None:
+    """NEW-S19-B: wolf_pit's seer_check_claim branch must NOT add a
+    dead target to `suspects` / `excluded`. Pre-fix, the branch only
+    checked `if target and ...` but not `gs.players[target].alive`.
+    A dead player previously tagged as "wolf" by a seer_check_claim
+    would be added to suspects; the S-19 filter in context.py would
+    then either drop the whole advice (because the dead player is
+    outside legal_targets) or — worse — surface the dead player to
+    the LLM as a vote target.
+    """
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # p05 is the dead target. p07 is the seer who claimed the check.
+    players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+    players["p07"] = PlayerState(id="p07", role="seer", alive=True)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    # Seer p07 claims p05 is wolf (BUT p05 is dead).
+    ws.append(StructuredFact(
+        fact_type="seer_check_claim",
+        source_player="p07", target_player="p05",
+        value="wolf", day=1,
+    ))
+    # Seer p07 also claims p09 is good (p09 alive).
+    ws.append(StructuredFact(
+        fact_type="seer_check_claim",
+        source_player="p07", target_player="p09",
+        value="good", day=1,
+    ))
+
+    inp = SkillInput(
+        role="werewolf", phase="speech", day=2,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.WOLF_PIT_ANALYSIS, inp)
+    text = out.prompt_injectable
+    # NEW-S19-B: dead p05 must NOT appear in the suspect list (or
+    # anywhere as a recommendation).
+    # The suspect line uses `(p05...)` style with parentheses.
+    # Allow for plain mention (e.g. "嫌疑区(0人)") but flag `p05(...)`
+    # or `p05(被...)` patterns as suspect/exclude entries.
+    assert "p05(被p07" not in text, (
+        f"NEW-S19-B: dead p05 must NOT appear in wolf_pit suspect or "
+        f"exclude list. Got prompt: {text!r}"
+    )
+    # Sanity: alive p09 IS mentioned in the exclude (good check).
+    # The exclude line uses `(p09...)` style.
+    assert "p09(被p07发金水)" in text, (
+        f"Sanity: alive p09 (good check) must be in exclude list. "
+        f"Got prompt: {text!r}"
+    )
