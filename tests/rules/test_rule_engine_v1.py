@@ -563,6 +563,27 @@ def test_last_words_matrix(
     assert engine.can_leave_last_words(death_reason=death_reason, timing=timing, night_number=night_number) is expected
 
 
+def test_hunter_shot_target_no_last_words() -> None:
+    """Design doc §3.3: hunter shot target never gets last words. The
+    branch order in can_leave_last_words must check death_reason ==
+    'hunter_shot' BEFORE the timing == 'night' branch — otherwise a
+    night-timing hunter shot (e.g. hunter wolf-killed N1 then shoots
+    back) would incorrectly get first_night_death=True.
+    """
+    engine = make_engine()
+
+    # Night timing (e.g. hunter wolf-killed, shoots back same night)
+    assert engine.can_leave_last_words(
+        death_reason="hunter_shot", timing="night", night_number=1,
+    ) is False
+    assert engine.can_leave_last_words(
+        death_reason="hunter_shot", timing="night", night_number=2,
+    ) is False
+    assert engine.can_leave_last_words(
+        death_reason="hunter_shot", timing="night", night_number=3,
+    ) is False
+
+
 def test_first_day_flow_announces_deaths_then_last_words_then_sheriff_election() -> None:
     engine = make_engine()
 

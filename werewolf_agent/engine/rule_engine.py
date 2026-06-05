@@ -581,16 +581,19 @@ class RuleEngine:
 
     def can_leave_last_words(self, *, death_reason: str, timing: str, night_number: int) -> bool:
         lw = self.ruleset.raw["last_words"]
+        # Check death_reason branches FIRST so a night-timing hunter shot
+        # (hunter wolf-killed then shoots back same night) does not get
+        # misclassified as a normal first_night_death.
         if death_reason == "exile" and timing == "day_vote":
             return lw["day_exile"]
+        if death_reason == "hunter_shot":
+            return lw["hunter_shot_target"]
+        if death_reason == "self_destruct":
+            return lw["self_destruct"]
         if timing == "night":
             if night_number == 1:
                 return lw["first_night_death"]
             return lw["later_night_death"]
-        if death_reason == "self_destruct":
-            return lw["self_destruct"]
-        if death_reason == "hunter_shot":
-            return lw["hunter_shot_target"]
         return False
 
     # -- Visibility --
