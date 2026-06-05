@@ -185,6 +185,8 @@ def test_session_token_on_replay_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -209,6 +211,8 @@ def test_session_token_on_evaluation_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -231,6 +235,8 @@ def test_session_token_on_cognitive_diff_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -253,6 +259,8 @@ def test_session_token_on_private_state_endpoint():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -277,6 +285,8 @@ def test_invalid_session_token_rejected():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -300,6 +310,8 @@ def test_expired_session_token_rejected():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -329,6 +341,8 @@ def test_legacy_caller_id_still_works():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -348,6 +362,8 @@ def test_legacy_debugger_still_works():
     game_resp = client.post("/games", json={
         "ruleset_id": "pre_witch_hunter_idiot_mixed",
         "player_count": 12,
+        "caller_id": "mod1",
+        "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -369,11 +385,14 @@ def test_start_game_requires_moderator():
     client = TestClient(app)
 
     # Create a game as moderator (the only legit way to call create_game too)
-    login = client.post("/auth/login?caller_id=mod1&role=moderator")
-    token = login.json()["token"]
     game_resp = client.post(
         "/games",
-        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12},
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
     )
     game_id = game_resp.json()["game"]["game_id"]
 
@@ -390,13 +409,15 @@ def test_step_game_requires_moderator():
     client = TestClient(app)
 
     # Setup: create + start as moderator
-    client.post(
-        "/games",
-        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12},
-    )
     game_id = client.post(
         "/games",
-        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12, "seed": 99},
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "seed": 99,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
     ).json()["game"]["game_id"]
     # start with moderator identity
     client.post(
@@ -418,7 +439,13 @@ def test_pause_game_requires_moderator():
 
     game_id = client.post(
         "/games",
-        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12, "seed": 7},
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "seed": 7,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
     ).json()["game"]["game_id"]
     client.post(
         f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
@@ -439,7 +466,13 @@ def test_resume_game_requires_moderator():
 
     game_id = client.post(
         "/games",
-        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12, "seed": 8},
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "seed": 8,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
     ).json()["game"]["game_id"]
     client.post(
         f"/games/{game_id}/start?caller_id=mod1&caller_role=moderator",
@@ -454,3 +487,60 @@ def test_resume_game_requires_moderator():
     # No auth on resume — must 403
     resp = client.post(f"/games/{game_id}/resume", json={})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# NEW-P0-2: create_game requires moderator (DoS prevention)
+# ---------------------------------------------------------------------------
+
+def test_create_game_requires_moderator():
+    """NEW-P0-2: POST /games must reject non-moderator callers."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    # No auth at all — must 403 (DoS vector closed)
+    resp = client.post(
+        "/games",
+        json={"ruleset_id": "pre_witch_hunter_idiot_mixed", "player_count": 12},
+    )
+    assert resp.status_code == 403
+
+
+def test_create_game_rejects_empty_caller_id():
+    """NEW-P0-2: caller_id must be non-empty even for moderator role."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "",
+            "caller_role": "moderator",
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_create_game_accepts_moderator():
+    """NEW-P0-2: POST /games must accept authenticated moderator."""
+    from fastapi.testclient import TestClient
+
+    app = _make_test_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/games",
+        json={
+            "ruleset_id": "pre_witch_hunter_idiot_mixed",
+            "player_count": 12,
+            "caller_id": "mod1",
+            "caller_role": "moderator",
+        },
+    )
+    assert resp.status_code == 200

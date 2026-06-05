@@ -36,7 +36,11 @@ def _make_client() -> TestClient:
     app = create_app(auth_manager=_test_auth)
     client = TestClient(app)
     # Create and start a game — game control endpoints require moderator auth
-    resp = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed"})
+    resp = client.post("/games", json={
+        "ruleset_id": "pre_witch_hunter_idiot_mixed",
+        "caller_id": "mod1",
+        "caller_role": "moderator",
+    })
     game_id = resp.json()["game"]["game_id"]
     client.post(
         f"/games/{game_id}/start",

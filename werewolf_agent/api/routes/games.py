@@ -92,6 +92,7 @@ def create_game_router(
 
     @router.post("/games", response_model=GameCreateResponse)
     def create_game(req: CreateGameRequest) -> GameCreateResponse:
+        _enforce_create_game_auth(req, auth, checker, authorized_callers)
         if req.experience_mode == "human_seat" and (req.human_seat is None or req.human_seat < 1 or req.human_seat > 12):
             raise HTTPException(400, "human_seat must be between 1 and 12 when experience_mode is human_seat")
         game_id = f"game_{req.seed}" if req.seed is not None else str(uuid.uuid4())[:8]
@@ -512,6 +513,39 @@ def _enforce_moderator_only(
         raise HTTPException(403, "Game control endpoints require moderator or debugger role")
     if endpoint == "start" and not req.caller_id:
         raise HTTPException(403, "start_game requires a non-empty caller_id")
+
+
+def _enforce_create_game_auth(
+    req: CreateGameRequest,
+    auth_manager: AuthManager,
+    checker: PermissionChecker,
+    authorized_callers: dict[str, CallerRole],
+) -> None:
+    """Require a non-empty caller_id and MODERATOR role for create_game.
+
+    Closing the unauthenticated DoS vector: a caller without a verified
+    moderator role cannot create a new game session.
+    """
+    if not req.caller_id:
+        raise HTTPException(403, "create_game requires a non-empty caller_id")
+    caller_role = _resolve_caller_role(
+        authorized_callers,
+        req.caller_id,
+        req.caller_role,
+        session_token=req.session_token,
+        auth_manager=auth_manager,
+    )
+    if caller_role != CallerRole.MODERATOR:
+        try:
+            checker.check(
+                caller_id=req.caller_id,
+                caller_role=caller_role,
+                requested_view=ViewMode.MODERATOR_FULL,
+                endpoint="create-game",
+            )
+        except PermissionDenied as e:
+            raise HTTPException(403, detail=e.reason)
+        raise HTTPException(403, "create_game requires moderator role")
 
 
 def _build_locked_config_snapshot(req: CreateGameRequest, project_root: Path) -> dict:

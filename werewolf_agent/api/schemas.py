@@ -56,6 +56,9 @@ class CreateGameRequest(BaseModel):
     human_seat: int | None = None
     profile_pack_id: str = "default_12_ai_players"
     share_code: str = ""
+    caller_id: str = ""
+    caller_role: CallerRole = CallerRole.SPECTATOR
+    session_token: str = ""
 
 
 class GameActionRequest(BaseModel):
