@@ -230,6 +230,29 @@ class TestJudgeHITLInterface:
         assert result_box["cmd"].command == "show_phase"  # type: ignore[union-attr]
         assert elapsed < 0.2, f"wait_for_human returned too late: {elapsed}s"
 
+    # ------------------------------------------------------------------
+    # J-2: _state resets to RUNNING after a queued command is consumed
+    # ------------------------------------------------------------------
+
+    def test_state_resets_to_running_after_command(self):
+        """J-2: After wait_for_human() consumes a queued command, the state
+        should drop back to RUNNING — unless the user explicitly paused.
+
+        Pattern: pause() -> send_command() -> wait_for_human() returns ->
+        state must be RUNNING.
+        """
+        hitl = JudgeHITLInterface()
+        hitl.pause()
+        assert hitl.state == HITLState.PAUSED_USER
+
+        hitl.send_command("show_phase")
+        cmd = hitl.wait_for_human(timeout=1.0)
+        assert cmd is not None
+        # Consuming the command should reset state back to RUNNING
+        assert hitl.state == HITLState.RUNNING
+        assert hitl.is_running is True
+        assert hitl.is_paused is False
+
 
 class TestHITLGameRunnerIntegration:
     def test_game_runner_creates_hitl_when_enabled(self):

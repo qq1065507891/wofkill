@@ -108,6 +108,9 @@ class JudgeHITLInterface:
         # J-6: threading.Event used as a signal primitive so any thread
         # blocked in wait_for_human() can be woken up by send_command().
         self._command_event: threading.Event = threading.Event()
+        # J-2: track whether user explicitly paused (so we don't auto-resume
+        # on every consumed command).
+        self._user_paused: bool = False
         # Step counter for "resume N" command
         self._steps_to_run: int = 0
         self._events: list[GameEvent] = []
@@ -171,25 +174,41 @@ class JudgeHITLInterface:
 
         # If a command is already queued, consume it immediately.
         if self._pending_command is not None:
-            cmd = self._pending_command
-            self._pending_command = None
-            return cmd
+            return self._consume_pending_command()
 
         # J-1: Block on the event until send_command() signals or timeout
         # elapses. Previously this returned None immediately, so the
         # runner could not actually pause for human input.
         got_signal = self._command_event.wait(timeout=effective_timeout)
         if not got_signal:
-            # Timeout — auto-resume back to running
-            self._state = HITLState.RUNNING
+            # Timeout — auto-resume back to running (unless user explicitly paused)
+            if not self._user_paused:
+                self._state = HITLState.RUNNING
             elapsed = time.time() - self._pause_started
             self._log_event("auto_resume", {"reason": "timeout", "elapsed": elapsed})
             return None
 
         # Signalled — return the queued command (must be present since
         # send_command is the only setter).
+        return self._consume_pending_command()
+
+    def _consume_pending_command(self) -> HITLCommand | None:
+        """Pop the pending command and reset state appropriately.
+
+        J-2: After a command is consumed (a human actively interacted),
+        drop back to RUNNING so the runner advances. The "pause was
+        explicitly called" caveat only applies when no command is in the
+        queue — i.e. the user paused to inspect, and there is nothing to
+        consume.
+        """
         cmd = self._pending_command
         self._pending_command = None
+        # J-6: clear the event so a future wait_for_human can block again
+        self._command_event.clear()
+        # J-2: Reset to RUNNING — a consumed command means the user wants
+        # the game to continue.
+        if self._state != HITLState.STOPPED:
+            self._state = HITLState.RUNNING
         return cmd
 
     def send_command(self, raw: str) -> None:
@@ -204,6 +223,8 @@ class JudgeHITLInterface:
     def pause(self, by_user: bool = True) -> None:
         """Pause execution at the next checkpoint."""
         self._state = HITLState.PAUSED_USER if by_user else HITLState.WAITING_AFTER
+        if by_user:
+            self._user_paused = True
         self._log_event("paused", {"by_user": by_user})
 
     def resume(self, steps: int = 0) -> None:
@@ -211,6 +232,7 @@ class JudgeHITLInterface:
         if self._state == HITLState.STOPPED:
             return
         self._state = HITLState.RUNNING
+        self._user_paused = False
         self._steps_to_run = max(0, steps)
         self._log_event("resumed", {"steps": steps})
 
