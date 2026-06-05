@@ -404,6 +404,31 @@ class TestIngestion:
         with pytest.raises(IngestionError, match="Forbidden keyword"):
             ingester.ingest(entry)
 
+    def test_validate_not_rule_truth_scans_tags(self):
+        """N4: ``_validate_not_rule_truth`` must scan
+        ``metadata.tags`` for rule-truth patterns. The forbidden-keyword
+        scan (R16) was extended to tags, but the parallel
+        rule-truth regex scan was not — so an entry whose title /
+        summary / key_decisions / short_quotes were clean but whose
+        ``tags`` carried a rule-truth pattern (e.g.
+        ``"女巫不能自救"``) used to pass ingestion.
+
+        The RAG contract is "no RAG entry may carry a rule-truth
+        statement anywhere" — which includes tags.
+        """
+        ingester = CaseIngester()
+        # Build an entry whose every other field is squeaky clean
+        # and whose only rule-truth content is in tags. If the
+        # validator skips tags, this would pass; we want it to fail.
+        entry = _make_entry(
+            entry_id="rule_truth_tag",
+            title="Clean title",
+            summary="Clean summary, no rule claims.",
+            tags=["tactic", "女巫不能自救"],
+        )
+        with pytest.raises(IngestionError, match="base rule truth"):
+            ingester.ingest(entry)
+
 
 # ===================================================================
 # TestSeedData
