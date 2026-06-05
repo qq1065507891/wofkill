@@ -97,6 +97,10 @@ def build_public_summary(game_state: GameState) -> str:
         parts.append(phase_label("night", game_state.night_number))
     alive = sum(1 for player in game_state.players.values() if player.alive)
     parts.append(f"存活 {alive} 人")
-    if game_state.sheriff_id:
-        parts.append(f"警长: {game_state.sheriff_id}")
+    # Use _effective_sheriff_id so a dead sheriff is hidden (the raw
+    # game_state.sheriff_id may still point at a dead player if badge
+    # transfer has not yet executed — design doc §visibility).
+    eff_sheriff = _effective_sheriff_id(game_state)
+    if eff_sheriff:
+        parts.append(f"警长: {eff_sheriff}")
     return "。".join(parts) + "。"
