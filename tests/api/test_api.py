@@ -200,12 +200,13 @@ class TestAPIEndpoints:
 
     def test_start_game(self):
         client, game_id = _make_client()
-        # Game already started in _make_client
+        # Game already started in _make_client — runner is registered,
+        # so the new contract (NEW-P2-4) returns 409, not 400.
         resp = client.post(
             f"/games/{game_id}/start",
             json={"caller_id": "mod1", "caller_role": "moderator"},
         )
-        assert resp.status_code == 400  # Already started
+        assert resp.status_code == 409  # Runner already exists
 
     def test_pause_resume(self):
         client, game_id = _make_client()

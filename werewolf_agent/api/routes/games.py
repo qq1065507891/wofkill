@@ -125,6 +125,12 @@ def create_game_router(
 
     @router.post("/games/{game_id}/start", response_model=GameActionResponse)
     def start_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
+        # NEW-P2-4: refuse to start if a runner is already registered
+        # for this game. The runner is the actual long-lived resource;
+        # silently overwriting it would lose in-flight state.
+        with runners_lock:
+            if game_id in runners:
+                raise HTTPException(409, f"Game {game_id} is already running")
         _enforce_moderator_only(req, auth, checker, authorized_callers, game_id, "start")
         state = _get_game(games, game_id)
         if state.phase != "setup":
