@@ -333,11 +333,25 @@ def route_self_destruct_check(state: RuntimeState) -> str:
 # Build the graph
 # ---------------------------------------------------------------------------
 
+_GAME_GRAPH_CACHE: CompiledStateGraph | None = None
+
+
 def build_game_graph() -> CompiledStateGraph:
-    graph = StateGraph(RuntimeState)
-    _add_all_nodes(graph)
-    _add_all_edges(graph)
-    return graph.compile()
+    """Build and compile the runtime game graph.
+
+    Result is memoized at module level (test/perf optimization). The
+    graph itself is stateless — tests stream events through it without
+    mutating graph structure — so sharing one instance across all
+    callers is safe. ``build_game_graph_with_checkpoint`` is NOT
+    cached (it takes a parameter and is rarely called).
+    """
+    global _GAME_GRAPH_CACHE
+    if _GAME_GRAPH_CACHE is None:
+        graph = StateGraph(RuntimeState)
+        _add_all_nodes(graph)
+        _add_all_edges(graph)
+        _GAME_GRAPH_CACHE = graph.compile()
+    return _GAME_GRAPH_CACHE
 
 
 def build_game_graph_with_checkpoint(
