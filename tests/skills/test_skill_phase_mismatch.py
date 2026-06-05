@@ -186,35 +186,29 @@ def test_idiot_in_find_power_and_hide_identity():
     applicable_roles. Idiot is a role that benefits from both skills
     (the role itself needs to be hidden, and the find_power signal
     can include the post-白露光 idiot as a known good target).
+
+    Note: post-S-15, the legacy `manifests/` folder is gone. The source
+    of truth is now the per-skill `SKILL.md` frontmatter loaded into
+    `SKILL_DEFINITIONS` at import time. Assert against the loaded
+    definitions.
     """
-    import yaml as _yaml
-
-    # Load the YAML manifests directly.  The manifests live next to
-    # the werewolf_skills.py module under `skills/manifests/`.
-    from pathlib import Path as _Path
-    from werewolf_agent.skills import werewolf_skills as _ws
-    manifest_dir = _Path(_ws.__file__).parent / "manifests"
-    fp_path = manifest_dir / "find_power.yaml"
-    hi_path = manifest_dir / "hide_identity.yaml"
-    fp_data = _yaml.safe_load(fp_path.read_text(encoding="utf-8")) or {}
-    hi_data = _yaml.safe_load(hi_path.read_text(encoding="utf-8")) or {}
-
-    # Both must include 'idiot' in applicable_roles.
-    assert "idiot" in fp_data.get("applicable_roles", []), (
-        f"S-12: find_power.yaml should include 'idiot' in applicable_roles; "
-        f"got: {fp_data.get('applicable_roles')!r}"
-    )
-    assert "idiot" in hi_data.get("applicable_roles", []), (
-        f"S-12: hide_identity.yaml should include 'idiot' in applicable_roles; "
-        f"got: {hi_data.get('applicable_roles')!r}"
-    )
-
-    # And verify the loaded SkillDefinition picks up the new role list
-    # (idiot becomes applicable).
     from werewolf_agent.skills.werewolf_skills import SKILL_DEFINITIONS
     from werewolf_agent.skills.schemas import SkillName
     find_def = next(d for d in SKILL_DEFINITIONS if d.name == SkillName.FIND_POWER)
     hide_def = next(d for d in SKILL_DEFINITIONS if d.name == SkillName.HIDE_IDENTITY)
+
+    # Both must include 'idiot' in applicable_roles.
+    assert "idiot" in find_def.applicable_roles, (
+        f"S-12: find_power SKILL.md should include 'idiot' in applicable_roles; "
+        f"got: {find_def.applicable_roles!r}"
+    )
+    assert "idiot" in hide_def.applicable_roles, (
+        f"S-12: hide_identity SKILL.md should include 'idiot' in applicable_roles; "
+        f"got: {hide_def.applicable_roles!r}"
+    )
+
+    # And verify the loaded SkillDefinition picks up the new role list
+    # (idiot becomes applicable).
     assert find_def.is_applicable("idiot", phase="speech", task_type="speech"), (
         "S-12: FIND_POWER manifest must apply to 'idiot' role"
     )

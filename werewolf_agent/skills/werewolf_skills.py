@@ -74,8 +74,6 @@ def _load_manifests(root: "Path | None" = None) -> list[SkillDefinition]:
     for skill_dir in sorted(root.iterdir()):
         if not skill_dir.is_dir() or skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
             continue
-        if skill_dir.name == "manifests":
-            continue  # legacy, skip
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():
             continue
