@@ -64,7 +64,7 @@ class CognitionMatrix:
     def add_evidence(
         self,
         player_id: str,
-        evidence: Union[EvidenceItem, str],
+        evidence: EvidenceItem | str,
     ) -> None:
         """Add evidence for ``player_id``.
 
@@ -72,7 +72,21 @@ class CognitionMatrix:
         source_event / day / confidence / speaker) or a bare ``str``
         (legacy back-compat — wrapped into EvidenceItem with default
         fields).
+
+        MEM-NEW-9: explicit type guard. The pre-fix Union[EvidenceItem,
+        str] silently wrapped everything else via
+        ``EvidenceItem(claim=str(evidence))`` — including dicts, ints,
+        and None — producing garbled evidence entries. Reject any
+        other type with TypeError so the bug surfaces at the call
+        site, not deep inside a downstream consumer that tries to
+        read ``claim`` / ``source_event`` off a None.
         """
+        if not isinstance(evidence, (EvidenceItem, str)):
+            raise TypeError(
+                f"CognitionMatrix.add_evidence: evidence must be "
+                f"EvidenceItem or str, got {type(evidence).__name__}: "
+                f"{evidence!r}"
+            )
         entry = self._entries.get(player_id)
         if entry is None:
             return
@@ -81,7 +95,7 @@ class CognitionMatrix:
         else:
             # Back-compat: wrap a bare string claim into an
             # EvidenceItem with conservative defaults.
-            entry.key_evidence.append(EvidenceItem(claim=str(evidence)))
+            entry.key_evidence.append(EvidenceItem(claim=evidence))
 
     def add_open_question(self, player_id: str, question: str) -> None:
         entry = self._entries.get(player_id)

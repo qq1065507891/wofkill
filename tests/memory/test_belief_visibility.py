@@ -335,3 +335,32 @@ def test_evidence_item_back_compat_with_str():
     # Bare str is wrapped into an EvidenceItem whose claim equals the string.
     assert isinstance(stored, EvidenceItem)
     assert stored.claim == "legacy_claim_string"
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-9: add_evidence must REJECT types that aren't EvidenceItem or
+# bare str. The pre-fix Union[EvidenceItem, str] silently wrapped
+# everything else via ``EvidenceItem(claim=str(evidence))`` —
+# including dicts, ints, and None — producing garbled evidence
+# entries that polluted the cognition matrix and confused downstream
+# consumers.
+#
+# Post-fix: explicit isinstance check + TypeError. Forces the caller
+# to either pass a proper EvidenceItem or a clean string claim.
+# ---------------------------------------------------------------------------
+
+
+def test_add_evidence_rejects_non_string_or_item():
+    """MEM-NEW-9: passing a dict (or int / None / list / etc.) to
+    add_evidence must raise TypeError, not silently wrap into
+    ``EvidenceItem(claim=str(evidence))``."""
+    import pytest
+
+    cm = CognitionMatrix("p1")
+    cm.initialize(["p1", "p2"])
+    with pytest.raises(TypeError):
+        cm.add_evidence("p2", {"claim": "already a dict"})
+    with pytest.raises(TypeError):
+        cm.add_evidence("p2", 42)
+    with pytest.raises(TypeError):
+        cm.add_evidence("p2", None)
