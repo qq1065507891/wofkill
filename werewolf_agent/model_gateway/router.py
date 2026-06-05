@@ -172,9 +172,87 @@ class ModelRouter:
             llm_profiles=llm_profiles,
             player_assignments=assignments,
         )
+        router._validate_config()
         if register_env_providers:
             router.register_env_providers()
         return router
+
+    def _validate_config(self) -> None:
+        """Cross-check references in model_profiles / llm_profiles / players.
+
+        Catches typos at load time rather than at first LLM call. Raises
+        ``ProviderConfigError`` for any dangling reference.
+        """
+        from werewolf_agent.model_gateway.providers.base import (
+            ProviderConfigError,
+        )
+
+        # 1. Every players[id].llm_profile ref must exist in llm_profiles.
+        for pid, profile_id in self._player_assignments.items():
+            if profile_id not in self._llm_profiles:
+                raise ProviderConfigError(
+                    f"player {pid!r} references unknown llm_profile {profile_id!r}"
+                )
+
+        # 2. Every llm_profile entry (default / tasks / fallback) that
+        #    names a model_profile must point at a real model_profile.
+        for profile_id, profile in self._llm_profiles.items():
+            for block_name in ("default", "fallback"):
+                block = profile.get(block_name) or {}
+                if not block:
+                    continue
+                mp_id = block.get("model_profile")
+                if mp_id and mp_id not in self._model_profiles:
+                    raise ProviderConfigError(
+                        f"llm_profile {profile_id!r}.{block_name} "
+                        f"references unknown model_profile {mp_id!r}"
+                    )
+            for task_type, task_cfg in (profile.get("tasks") or {}).items():
+                mp_id = task_cfg.get("model_profile")
+                if mp_id and mp_id not in self._model_profiles:
+                    raise ProviderConfigError(
+                        f"llm_profile {profile_id!r}.tasks.{task_type} "
+                        f"references unknown model_profile {mp_id!r}"
+                    )
+
+        # 3. Every provider name must be one the factory can build
+        #    (so an unknown name fails at config load, not first LLM call).
+        from werewolf_agent.model_gateway.providers.factory import (
+            create_provider_from_env,
+        )
+
+        known_providers: set[str] = set()
+        for cfg in self._model_profiles.values():
+            pname = cfg.get("provider")
+            if pname:
+                known_providers.add(str(pname))
+        for profile in self._llm_profiles.values():
+            for block_name in ("default", "fallback"):
+                block = profile.get(block_name) or {}
+                pname = block.get("provider")
+                if pname:
+                    known_providers.add(str(pname))
+            for task_cfg in (profile.get("tasks") or {}).values():
+                pname = task_cfg.get("provider")
+                if pname:
+                    known_providers.add(str(pname))
+        for pname in known_providers:
+            # 'create_provider_from_env' returns None when the API key is
+            # missing but does not validate the provider name. We probe
+            # the factory's known list via its module rather than the
+            # import side-effects.
+            try:
+                if pname.lower() not in {
+                    "anthropic", "openai", "glm", "minimax", "mock",
+                }:
+                    raise ProviderConfigError(
+                        f"provider {pname!r} is not registered "
+                        "(known: anthropic, openai, glm, minimax, mock)"
+                    )
+            except ProviderConfigError:
+                raise
+            # Touch factory for import-side-effect parity.
+            _ = create_provider_from_env
 
     def register_provider(self, provider: LLMProvider) -> None:
         self._providers[provider.name] = provider

@@ -149,6 +149,100 @@ class TestRetryHelpers:
         assert d2 > d1
 
 
+class TestFromYamlValidation:
+    def test_from_yaml_raises_on_unknown_model_profile(self, tmp_path) -> None:
+        """R3-MG-1: typos in model_profile references must surface at load time."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_models.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: real_profilo\n"  # typo
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        with pytest.raises((ValueError, KeyError, RuntimeError)):
+            ModelRouter.from_yaml(yaml_path)
+
+    def test_from_yaml_raises_on_unknown_llm_profile_ref(self, tmp_path) -> None:
+        """R3-MG-1: players.<id>.llm_profile pointing to a missing profile raises."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_llm.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: real_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: ghost_profile\n",
+            encoding="utf-8",
+        )
+        with pytest.raises((ValueError, KeyError, RuntimeError)):
+            ModelRouter.from_yaml(yaml_path)
+
+    def test_from_yaml_raises_on_unknown_provider(self, tmp_path) -> None:
+        """R3-MG-1: model_profile.provider that the runtime does not know raises."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "bad_provider.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: chocochip_9000\n"  # not a known provider
+            "    model: x\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: chocochip_9000\n"
+            "      model_profile: real_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        with pytest.raises((ValueError, KeyError, RuntimeError)):
+            ModelRouter.from_yaml(yaml_path)
+
+    def test_from_yaml_accepts_valid_config(self, tmp_path) -> None:
+        """R3-MG-1: a valid config does not raise."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "good_models.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  real_profile:\n"
+            "    provider: anthropic\n"
+            "    model: claude-sonnet-4-6\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default:\n"
+            "      provider: anthropic\n"
+            "      model_profile: real_profile\n"
+            "players:\n"
+            "  p01:\n"
+            "    llm_profile: default\n",
+            encoding="utf-8",
+        )
+        router = ModelRouter.from_yaml(yaml_path)
+        assert router.get_llm_profile_for_agent("p01") == "default"
+
+
 class TestFormatException:
     def test_format_exception_returns_message(self) -> None:
         from werewolf_agent.model_gateway.router import _format_exception
