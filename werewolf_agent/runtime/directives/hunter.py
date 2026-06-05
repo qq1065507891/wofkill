@@ -10,8 +10,17 @@ from werewolf_agent.core.models import GameState
 def build_hunter_directive(
     gs: GameState,
     hunter_id: str,
-) -> str:
-    """Build day speech directive for the hunter."""
+) -> dict[str, Any]:
+    """Build day speech directive for the hunter.
+
+    D-4: the return type is now ``dict[str, Any]`` for symmetry with the
+    other role-directive builders in this package.  The directive text is
+    exposed under the ``hunter_speech_directive`` key.
+
+    Backward-compat: callers that index ``result["hunter_speech_directive"]``
+    continue to work; the older "bare str" API was a one-off and is no
+    longer used (the adapter now goes through ``_merge_strategy_directive``).
+    """
     # Check if hunter identity has been publicly revealed
     identity_exposed = False
     for e in gs.events:
@@ -28,7 +37,7 @@ def build_hunter_directive(
             break
 
     if identity_exposed:
-        return (
+        text = (
             "你是猎人，且你的身份已经公开。\n"
             "身份公开后的策略：\n"
             "1) 利用'我有枪'的威慑力，给狼人施加压力\n"
@@ -36,13 +45,15 @@ def build_hunter_directive(
             "3) 不要虚张声势说你会带走某人——如果你被毒杀将无法开枪\n"
             "4) 如果预言家已死，你可以主动承担信息整理和归票的职责"
         )
+    else:
+        text = (
+            "你是猎人，但你的身份尚未公开。\n"
+            "猎人发言策略（核心：隐藏身份）：\n"
+            "1) 不要暴露自己是猎人！狼人知道你是猎人后会避免刀你、改让女巫毒杀来禁枪\n"
+            "2) 像普通村民一样发言，参与讨论、表达站边、分析逻辑\n"
+            "3) 注意观察谁发言矛盾、站边模糊——这些是你未来可能的枪击目标\n"
+            "4) 如果预言家验了你且报了金水，可以帮预言家站边增强好人阵营凝聚力\n"
+            "5) 不需要刻意低调到完全沉默，正常参与讨论即可"
+        )
 
-    return (
-        "你是猎人，但你的身份尚未公开。\n"
-        "猎人发言策略（核心：隐藏身份）：\n"
-        "1) 不要暴露自己是猎人！狼人知道你是猎人后会避免刀你、改让女巫毒杀来禁枪\n"
-        "2) 像普通村民一样发言，参与讨论、表达站边、分析逻辑\n"
-        "3) 注意观察谁发言矛盾、站边模糊——这些是你未来可能的枪击目标\n"
-        "4) 如果预言家验了你且报了金水，可以帮预言家站边增强好人阵营凝聚力\n"
-        "5) 不需要刻意低调到完全沉默，正常参与讨论即可"
-    )
+    return {"hunter_speech_directive": text}

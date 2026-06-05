@@ -48,6 +48,7 @@ from werewolf_agent.runtime.directives import (
     build_idiot_directive as _build_idiot_day_speech_directive,
     build_seer_directive as _build_seer_day_speech_directive,
     build_villager_directive as _build_villager_day_speech_directive,
+    build_witch_directive as _build_witch_day_speech_directive,
     build_wolf_directive as _build_wolf_day_speech_directive,
     build_wolf_vote_directive as _build_wolf_vote_strategy,
 )
@@ -779,13 +780,11 @@ def agent_day_speech(
     elif player_role == "hybrid":
         strategy_directive["hybrid_speech_directive"] = _build_hybrid_day_speech_directive(gs, speaker_id)
     elif player_role == "witch":
-        strategy_directive["witch_speech_constraint"] = (
-            "你是女巫，你掌握的夜间信息（谁被刀、药水使用情况、救了谁、毒了谁）是你的核心优势。"
-            "不要轻易暴露这些信息——一旦公开，狼人会知道你的药水状态并针对性调整策略。"
-            "但在以下情况可以适度透露：1) 你即将死亡需要传递关键信息；"
-            "2) 场上好人阵营信息严重不足，需要你站出来带队；"
-            "3) 有人假冒女巫需要你自证身份。"
-            "透露时也要衡量利弊，不要在第一天就全部交底。"
+        # D-1: delegate to the dedicated witch directive module so the
+        # day-speech guidance is structured (and D-7 enriches it with
+        # the witch's private view of public death-cause claims).
+        strategy_directive.update(
+            _build_witch_day_speech_directive(gs, speaker_id),
         )
     elif player_role == "idiot":
         strategy_directive.update(_build_idiot_day_speech_directive(gs, speaker_id))

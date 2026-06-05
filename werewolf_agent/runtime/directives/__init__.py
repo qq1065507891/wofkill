@@ -12,6 +12,7 @@ from werewolf_agent.runtime.directives.hybrid import build_hybrid_directive
 from werewolf_agent.runtime.directives.idiot import build_idiot_directive
 from werewolf_agent.runtime.directives.seer import build_seer_directive
 from werewolf_agent.runtime.directives.villager import build_villager_directive
+from werewolf_agent.runtime.directives.witch import build_witch_directive
 from werewolf_agent.runtime.directives.wolf import build_wolf_directive, build_wolf_vote_directive
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "build_idiot_directive",
     "build_seer_directive",
     "build_villager_directive",
+    "build_witch_directive",
     "build_wolf_directive",
     "build_wolf_vote_directive",
 ]

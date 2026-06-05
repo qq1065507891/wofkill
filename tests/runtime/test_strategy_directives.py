@@ -623,14 +623,18 @@ class TestHunterStrategyDirectives:
             day_number=2,
         )
         # Identity not exposed
-        directive = _build_hunter_day_speech_directive(gs, "hunter")
+        result = _build_hunter_day_speech_directive(gs, "hunter")
+        assert isinstance(result, dict)
+        directive = result["hunter_speech_directive"]
         assert "不要暴露" in directive or "隐藏" in directive
 
         # Identity exposed by self
         gs2 = replace(gs, events=[
             GameEvent(type="speech", payload={"speaker": "hunter", "text": "我是猎人"}),
         ])
-        directive2 = _build_hunter_day_speech_directive(gs2, "hunter")
+        result2 = _build_hunter_day_speech_directive(gs2, "hunter")
+        assert isinstance(result2, dict)
+        directive2 = result2["hunter_speech_directive"]
         assert "身份已经公开" in directive2
 
 
