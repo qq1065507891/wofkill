@@ -350,6 +350,12 @@ class GameRunner:
         if self._finished:
             return self._state
 
+        # J-3: HITL pause must be enforced. If the interface is paused
+        # (user or auto-trigger), do not iterate the stream — return the
+        # current state unchanged so the runner honors the pause.
+        if self._hitl_interface is not None and self._hitl_interface.is_paused:
+            return self._state
+
         initial = self._build_runtime_state()
         last_phase_snapshot: tuple[str, int, int] | None = None
         stuck_count = 0
@@ -466,6 +472,12 @@ class GameRunner:
             The updated GameState after the step.
         """
         if self._finished:
+            return self._state
+
+        # J-3: HITL pause must be enforced. If the interface is paused
+        # (user or auto-trigger), do not initialize the stream generator
+        # or read from it — return the current state unchanged.
+        if self._hitl_interface is not None and self._hitl_interface.is_paused:
             return self._state
 
         # Initialize stream generator on first call

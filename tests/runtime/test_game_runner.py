@@ -333,6 +333,40 @@ class TestGameRunnerStepByStep:
             runner.run_step()
         assert len(runner.state.players) == 12
 
+    def test_paused_runner_does_not_advance(self) -> None:
+        """J-3: When the HITL interface is paused, run_step() must not
+        advance the graph. Without this, the API step-endpoint rejection
+        (test_step_endpoint_rejects_paused_game) is bypassed by direct
+        runner calls.
+        """
+        config = GameRunnerConfig(
+            seed=42,
+            judge_hitl_enabled=True,
+        )
+        runner = GameRunner(config)
+        assert runner.hitl_interface is not None
+        # Pause BEFORE any run_step() so the stream generator is never
+        # even initialized. This avoids triggering graph nodes that
+        # would otherwise require external resources.
+        runner.hitl_interface.pause()
+        assert runner.hitl_interface.is_paused
+        # Capture initial state
+        steps_before = runner.step_count
+        phase_before = runner.state.phase
+        day_before = runner.state.day_number
+        night_before = runner.state.night_number
+        # Call run_step() multiple times — none should advance
+        for _ in range(5):
+            runner.run_step()
+        # step_count must not have changed
+        assert runner.step_count == steps_before, (
+            f"step_count advanced while paused: {steps_before} -> {runner.step_count}"
+        )
+        # State must not have changed
+        assert runner.state.phase == phase_before
+        assert runner.state.day_number == day_before
+        assert runner.state.night_number == night_before
+
 
 # ---------------------------------------------------------------------------
 # Runtime execution coordinator tests
