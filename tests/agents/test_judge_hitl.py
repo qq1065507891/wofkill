@@ -122,6 +122,77 @@ class TestShowVotesResolved:
         assert "p07" in result["response"]
 
 
+class TestShouldPauseDirectionConsistency:
+    """J-14: lock in the `should_pause` `direction` parameter contract.
+
+    The runtime call sites in ``runtime/nodes/{day,night}.py`` pass
+    ``direction="after"`` explicitly, and the default value of
+    ``should_pause.direction`` is also ``"after"``. This is the
+    uniform contract — the test pins it so future drift gets caught
+    at unit-test time rather than at the integration level.
+    """
+
+    def test_should_pause_direction_default_is_after(self) -> None:
+        """J-14: default ``direction`` argument is the string ``"after"``."""
+        import inspect
+        sig = inspect.signature(JudgeHITLInterface.should_pause)
+        assert "direction" in sig.parameters
+        default = sig.parameters["direction"].default
+        assert default == "after", (
+            f"J-14: should_pause.direction default must be 'after' to "
+            f"match the runtime call-site convention; got {default!r}"
+        )
+
+    def test_should_pause_direction_keyword_callable(self) -> None:
+        """J-14: callers can pass direction as a keyword and the
+        auto-pause branch honours it."""
+        hitl = JudgeHITLInterface(auto_pause_phases={"announce_deaths"})
+        assert hitl.should_pause("announce_deaths", direction="after") is True
+        # Non-trigger phase: no pause
+        assert hitl.should_pause("free_discussion", direction="after") is False
+
+    def test_should_pause_direction_uniform_across_callers(self) -> None:
+        """J-14: scan the codebase for ``should_pause`` / ``_hitl_checkpoint``
+        calls and assert they all use ``direction="after"`` (the documented
+        value). This is the cross-module consistency lock.
+
+        Implementation note: we only flag calls where a *string literal*
+        is passed as the direction value. Internal forwarding calls
+        (e.g. ``_hitl_checkpoint`` -> ``should_pause(phase, direction)``)
+        are allowed to pass the local variable as-is — that's the
+        intended pass-through. Function definitions are also skipped.
+        """
+        import re
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        # Acceptable:  direction="after"   or  ,"after"  as positional literal.
+        ok_positional = re.compile(r""",\s*['"]after['"]""")
+        ok_keyword = re.compile(r"""direction\s*=\s*['"]after['"]""")
+        offenders: list[str] = []
+        for py in (root / "werewolf_agent" / "runtime" / "nodes").rglob("*.py"):
+            src = py.read_text(encoding="utf-8")
+            lines = src.splitlines()
+            for m in re.finditer(r"(should_pause|_hitl_checkpoint)\([^)]*\)", src):
+                snippet = m.group(0)
+                line_no = src.count("\n", 0, m.start()) + 1
+                line = lines[line_no - 1]
+                # Skip function definitions.
+                if line.lstrip().startswith(("def ", "async def ")):
+                    continue
+                # Match either a positional "after" or a keyword "after".
+                if ok_positional.search(snippet) or ok_keyword.search(snippet):
+                    continue
+                # Plain forwarding (no string literal at all) is allowed
+                # when the call site just forwards the parameter.
+                if '"' not in snippet and "'" not in snippet:
+                    continue
+                offenders.append(f"{py}:{line_no}: {snippet}")
+        assert not offenders, (
+            "J-14: every should_pause / _hitl_checkpoint call site must "
+            f"use direction='after'; offenders: {offenders}"
+        )
+
+
 class TestJudgeHITLInterface:
     def test_initial_state_running(self):
         hitl = JudgeHITLInterface()
