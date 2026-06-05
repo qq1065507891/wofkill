@@ -162,24 +162,35 @@ class JudgeHITLInterface:
         """Block waiting for a human command.
 
         In an interactive setting this would read from stdin or an API queue.
-        For the simulation harness, it checks the pending command set via
-        ``send_command()`` and returns immediately.
+        For the simulation harness, it waits on a threading.Event that is set
+        by ``send_command()``. Returns the queued command or ``None`` on
+        timeout.
         """
-        effective_timeout = timeout or self._pause_timeout
+        effective_timeout = timeout if timeout is not None else self._pause_timeout
         self._pause_started = time.time()
 
+        # If a command is already queued, consume it immediately.
         if self._pending_command is not None:
             cmd = self._pending_command
             self._pending_command = None
             return cmd
 
-        # Non-blocking for simulation: return None to indicate timeout/no-input
-        elapsed = time.time() - self._pause_started
-        if elapsed >= effective_timeout:
+        # J-1: Block on the event until send_command() signals or timeout
+        # elapses. Previously this returned None immediately, so the
+        # runner could not actually pause for human input.
+        got_signal = self._command_event.wait(timeout=effective_timeout)
+        if not got_signal:
+            # Timeout — auto-resume back to running
             self._state = HITLState.RUNNING
+            elapsed = time.time() - self._pause_started
             self._log_event("auto_resume", {"reason": "timeout", "elapsed": elapsed})
             return None
-        return None  # Would block in interactive mode
+
+        # Signalled — return the queued command (must be present since
+        # send_command is the only setter).
+        cmd = self._pending_command
+        self._pending_command = None
+        return cmd
 
     def send_command(self, raw: str) -> None:
         """Queue a command from an external source (API, CLI, dashboard).

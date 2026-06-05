@@ -196,6 +196,40 @@ class TestJudgeHITLInterface:
         assert hitl._command_event.is_set(), \
             "send_command must set the threading.Event"
 
+    # ------------------------------------------------------------------
+    # J-1: wait_for_human actually blocks until send_command fires
+    # ------------------------------------------------------------------
+
+    def test_wait_for_human_blocks_until_command(self):
+        """J-1: wait_for_human() must block (not return None immediately).
+
+        Spawn a thread that calls wait_for_human with a long timeout. After
+        ~100ms, the main thread invokes send_command. The wait must return
+        shortly after that (well under 200ms), proving the event was
+        signalled and the waiter woke up.
+        """
+        hitl = JudgeHITLInterface()
+        hitl.pause()  # ensure state is PAUSED_USER
+
+        result_box: dict[str, object] = {}
+
+        def waiter() -> None:
+            result_box["cmd"] = hitl.wait_for_human(timeout=5.0)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        # Sleep enough for the waiter to be inside wait_for_human
+        time.sleep(0.1)
+        sent_at = time.time()
+        hitl.send_command("show_phase")
+        t.join(timeout=2.0)
+        elapsed = time.time() - sent_at
+
+        assert t.is_alive() is False, "wait_for_human did not return"
+        assert result_box.get("cmd") is not None
+        assert result_box["cmd"].command == "show_phase"  # type: ignore[union-attr]
+        assert elapsed < 0.2, f"wait_for_human returned too late: {elapsed}s"
+
 
 class TestHITLGameRunnerIntegration:
     def test_game_runner_creates_hitl_when_enabled(self):
