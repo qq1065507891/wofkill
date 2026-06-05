@@ -18,7 +18,7 @@ from werewolf_agent.cognition.contradiction import ContradictionAlert, Contradic
 from werewolf_agent.cognition.salience import SalienceEngine, SalientFact
 from werewolf_agent.cognition.strategy import StrategyPackage, StrategySelector
 from werewolf_agent.cognition.visibility import VisibilityPolicy
-from werewolf_agent.cognition.world_state import StructuredFact, StructuredWorldState, build_world_state
+from werewolf_agent.cognition.world_state import StructuredFact, build_world_state
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.visible_state import (
     build_public_summary,
