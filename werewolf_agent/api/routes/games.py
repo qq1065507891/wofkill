@@ -380,7 +380,10 @@ def create_game_router(
             raise HTTPException(403, detail=e.reason)
         return build_evaluation(
             state, allowed_view,
-            audit_events=[e.model_dump() for e in checker.audit_log()],
+            audit_events=[
+                e.model_dump() for e in checker.audit_log()
+                if e.game_id == game_id
+            ],
         )
 
     @router.get("/games/{game_id}/cognitive-diff", response_model=CognitiveDiffResponse)
