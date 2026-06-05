@@ -137,7 +137,11 @@ class BeliefUpdater:
         pid = fact.target_player
         if pid and pid in state.beliefs:
             belief = state.beliefs[pid]
-            belief.role_probabilities = {"idiot": 1.0}
+            # Preserve all role keys (downstream consumers iterate the dict)
+            belief.role_probabilities = {
+                r: (1.0 if r == "idiot" else 0.0)
+                for r in belief.role_probabilities
+            }
             belief.faction_lean = "good_lean"
             belief.trust = 0.8
         return state

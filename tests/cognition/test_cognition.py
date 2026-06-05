@@ -532,6 +532,27 @@ class TestBeliefUpdater:
         assert state.beliefs["p02"].role_probabilities["idiot"] == 1.0
         assert state.beliefs["p02"].faction_lean == "good_lean"
 
+    def test_idiot_reveal_preserves_all_role_keys(self):
+        """Idiot reveal must keep all 7 role keys; only the idiot slot becomes 1.0.
+
+        Pre-fix, _apply_idiot_reveal set role_probabilities={"idiot": 1.0},
+        dropping the other 6 role keys. Any consumer that iterated over the
+        dict (e.g. top_role_guess, distribution-aware prompts) would break
+        because the invariant "all roles present" was violated.
+        """
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03"], "p01")
+        fact = StructuredFact(fact_type="idiot_revealed", target_player="p02")
+        state = updater.update(state, [fact], 1)
+        prob = state.beliefs["p02"].role_probabilities
+        # All role keys must still be present
+        expected_roles = {"villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid"}
+        assert set(prob.keys()) == expected_roles
+        # Idiot is 1.0, all others are 0.0
+        assert prob["idiot"] == 1.0
+        for r in expected_roles - {"idiot"}:
+            assert prob[r] == 0.0
+
     def test_role_claim_shifts_probabilities(self):
         updater = BeliefUpdater()
         state = updater.initialize(["p01", "p02", "p03"], "p01")
