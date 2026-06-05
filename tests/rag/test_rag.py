@@ -1461,6 +1461,80 @@ class TestRAGInjector:
             _retriever_mod._QUALITY_ORDER.clear()
             _retriever_mod._QUALITY_ORDER.update(original)
 
+    def test_case_type_warns_when_unregistered(self, caplog) -> None:
+        """N7: when an entry's ``metadata.case_type`` is not in
+        ``_CASE_TYPE_PRIORITY`` (e.g. someone added a new ``CaseType``
+        enum value and forgot to wire its priority), the retriever
+        used to silently default it to 0 via ``dict.get(missing, 0)``
+        with no log line. Operators had no way to spot the missing
+        priority.
+
+        The fix: introduce ``_case_type_priority(case_type,
+        entry_id=...)`` that emits a WARNING when the case_type is
+        missing, then fall through to 0 for backward compatibility.
+        """
+        import logging
+        from werewolf_agent.rag import retriever as _retriever_mod
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        entry = RAGEntry(
+            entry_id="n7_test",
+            title="N7 案例",
+            summary="summary",
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.COMMUNITY_CASE,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                tags=["seer"],
+            ),
+        )
+        retriever = StrategyRetriever([entry])
+        original = dict(_retriever_mod._CASE_TYPE_PRIORITY)
+        try:
+            # Drop ROLE_STRATEGY from the retriever's mapping so the
+            # entry's case_type is "unregistered".
+            del _retriever_mod._CASE_TYPE_PRIORITY[CaseType.ROLE_STRATEGY]
+
+            with caplog.at_level(
+                logging.WARNING, logger="werewolf_agent.rag.retriever",
+            ):
+                hits = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+
+            # Behavior preserved: the entry is still returned (treat
+            # as 0 priority) and the call still completes.
+            assert any(h.entry_id == "n7_test" for h in hits)
+
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and "unregistered" in r.getMessage().lower()
+                and "role_strategy" in r.getMessage().lower()
+            ]
+            assert warnings, (
+                "N7: retriever must emit a WARNING log line identifying "
+                "the unregistered case_type. Got: "
+                f"{[r.getMessage() for r in caplog.records]}"
+            )
+        finally:
+            _retriever_mod._CASE_TYPE_PRIORITY.clear()
+            _retriever_mod._CASE_TYPE_PRIORITY.update(original)
+
 
 # ===================================================================
 # TestRAGBoundaryEnforcement

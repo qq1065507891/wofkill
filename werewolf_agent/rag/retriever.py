@@ -107,6 +107,34 @@ _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
 }
 
 
+def _case_type_priority(case_type: CaseType, *, entry_id: str = "") -> int:
+    """Return the priority for a CaseType, warning on missing.
+
+    N7: ``_CASE_TYPE_PRIORITY.get(missing_case_type, 0)`` silently
+    returned 0 when a new ``CaseType`` enum value was added without
+    wiring its priority. That made the sort key and the rule-based
+    score treat the new case_type as the lowest priority, and the
+    drop was invisible to operators.
+
+    Now: if the case_type is missing from the mapping, emit a
+    WARNING identifying the entry and the case_type, then fall
+    through to 0 (treat as lowest). The behavior is preserved for
+    backward compatibility; the warning is the new operator signal.
+    """
+    priority = _CASE_TYPE_PRIORITY.get(case_type)
+    if priority is None:
+        logger.warning(
+            "RAG entry '%s' has case_type='%s' which is "
+            "unregistered in _CASE_TYPE_PRIORITY; treating as "
+            "lowest priority (0). Add it to _CASE_TYPE_PRIORITY "
+            "in retriever.py.",
+            entry_id,
+            case_type.value if hasattr(case_type, "value") else case_type,
+        )
+        return 0
+    return priority
+
+
 # P1-G8: human-readable display labels for the RAG hit's
 # ``display_annotation`` field. The raw enum values stay on
 # RAGHit.source_type / RAGHit.quality_grade for the audit log; the
@@ -274,8 +302,8 @@ class StrategyRetriever:
         # the rule-based signal.
         scored.sort(
             key=lambda x: (
-                _CASE_TYPE_PRIORITY.get(
-                    x[1].metadata.case_type, 0
+                _case_type_priority(
+                    x[1].metadata.case_type, entry_id=x[1].entry_id,
                 ),
                 # N3: route the quality sort key through
                 # ``_quality_priority`` so a missing grade emits a
@@ -404,7 +432,12 @@ class StrategyRetriever:
         meta = entry.metadata
 
         # Case type priority (0.0–0.3)
-        score += _CASE_TYPE_PRIORITY.get(meta.case_type, 0) * 0.075
+        # N7: route through ``_case_type_priority`` so a missing
+        # case_type logs a WARNING rather than silently defaulting
+        # to 0.
+        score += _case_type_priority(
+            meta.case_type, entry_id=entry.entry_id,
+        ) * 0.075
 
         # Quality grade bonus (0.0–0.3)
         # R20: route through _quality_priority so a missing grade
