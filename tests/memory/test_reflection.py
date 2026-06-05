@@ -537,3 +537,39 @@ def test_tag_filter_or_semantics_documented():
         f"MEM-15: CrossGameQuery.tags must document OR semantics in "
         f"the class docstring / source. cls_doc={cls_doc!r}, src={src!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MEM-NEW-7: ReflectionMemory.store must REJECT a string faction_won
+# rather than silently coercing via ``faction_won == "werewolf"``.
+#
+# Pre-fix: ``bool(faction_won) if isinstance(faction_won, (bool, int))
+# else faction_won == "werewolf"`` swallowed any string and resolved
+# it to a bool by exact string match. A caller passing
+# ``faction_won="true"`` (lowercase, the JSON-decoded form) got
+# faction_won=False — the wrong answer for an unambiguous win
+# indicator.
+#
+# Post-fix: drop the string fallback. Force callers to pass a bool.
+# Raise TypeError on anything else so the bug surfaces immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_faction_won_rejects_string():
+    """MEM-NEW-7: passing faction_won='true' (a string) must raise
+    TypeError, not silently resolve to False via the legacy
+    ``faction_won == 'werewolf'`` comparison."""
+    import pytest
+
+    from werewolf_agent.memory.reflection import ReflectionMemory
+
+    mem = ReflectionMemory()
+    with pytest.raises(TypeError):
+        mem.store(
+            "g_test_mem_new7",
+            player_id="p1",
+            role="seer",
+            faction_won="true",  # type: ignore[arg-type]
+            text="test",
+            tags=["seer"],
+        )

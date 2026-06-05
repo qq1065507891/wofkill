@@ -91,12 +91,23 @@ class ReflectionMemory:
         if isinstance(entry_or_game_id, ReflectionEntry):
             entry = entry_or_game_id
         else:
+            # MEM-NEW-7: faction_won MUST be a bool. The pre-fix code
+            # accepted strings via ``faction_won == "werewolf"``, which
+            # silently mapped "true" / "yes" / "win" to False and
+            # corrupted the reflection's win/loss record. Drop the
+            # string fallback; raise TypeError so the bug surfaces at
+            # the call site, not deep inside a cross-game query.
+            if not isinstance(faction_won, bool):
+                raise TypeError(
+                    f"ReflectionMemory.store: faction_won must be bool, "
+                    f"got {type(faction_won).__name__}: {faction_won!r}"
+                )
             entry = ReflectionEntry(
                 entry_id=uuid.uuid4().hex[:12],
                 game_id=str(entry_or_game_id),
                 player_id=player_id,
                 role=role,
-                faction_won=bool(faction_won) if isinstance(faction_won, (bool, int)) else faction_won == "werewolf",
+                faction_won=faction_won,
                 text=text,
                 tags=tags or [],
                 situation=json.dumps(situation, ensure_ascii=False) if isinstance(situation, dict) else str(situation or ""),
