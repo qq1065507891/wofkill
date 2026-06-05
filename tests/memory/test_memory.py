@@ -1258,6 +1258,55 @@ def test_vector_similarity_cache_distinct_queries():
 
 
 # ---------------------------------------------------------------------------
+# MEM-NEW-5: similarity() must return the cached empty-result dict
+# for an empty query, not recompute it.
+#
+# Pre-fix: the empty-result dict was stored in the cache under
+# ``empty_result`` but never READ on the second call — the code
+# still fell through to the ``if not q_weights and q_norm == 0.0``
+# branch and rebuilt a fresh empty dict. The fix is to check
+# ``cached.get("empty_result")`` and return it directly when
+# present.
+# ---------------------------------------------------------------------------
+
+
+def test_vector_cache_returns_empty_result():
+    """MEM-NEW-5: an empty (whitespace-only) query must return the
+    SAME dict object on the second call (proves the cache hit
+    short-circuits the rebuild). Pre-fix the dict was rebuilt on
+    every call — the cache held the value but never returned it.
+    """
+    from werewolf_agent.memory.vector_index import BagOfWordsVectorIndex
+
+    idx = BagOfWordsVectorIndex()
+    idx.add_text("r1", "站边 预言家")
+    idx.add_text("r2", "金水 轻信")
+    idx.finalize()
+
+    # First call: empty query → empty-result dict stored in cache.
+    first = idx.similarity("")
+    assert first == {"r1": 0.0, "r2": 0.0}
+    cache = idx._query_cache
+    cached_entry = cache.get("")
+    assert cached_entry is not None
+    assert "empty_result" in cached_entry, (
+        f"MEM-NEW-5: empty query must populate the empty_result "
+        f"cache slot; got {cached_entry!r}"
+    )
+
+    # Second call: must return the cached empty_result, not a
+    # fresh dict. Object identity is the proof.
+    second = idx.similarity("")
+    assert second == {"r1": 0.0, "r2": 0.0}
+    assert second is cached_entry["empty_result"], (
+        f"MEM-NEW-5: cached empty_result must be returned directly; "
+        f"got a new dict (object identity mismatch). "
+        f"first id={id(first)} second id={id(second)} "
+        f"cached id={id(cached_entry['empty_result'])}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # MEM-NEW-4: _TOKEN_RE must cover CJK Extension A and CJK Compatibility
 # Ideographs, not just the CJK Unified Ideographs block.
 #

@@ -133,6 +133,15 @@ class BagOfWordsVectorIndex:
         # because the IDF table may have changed.
         cached = self._query_cache.get(query_text)
         if cached is not None:
+            # MEM-NEW-5: short-circuit on the empty-result sentinel
+            # so repeated empty-query calls are O(1) lookups (no
+            # rebuild, no allocs). Pre-fix the empty_result was
+            # stored in the cache but never read — every call
+            # fell through to the dot-product loop's empty branch
+            # and rebuilt a fresh dict.
+            empty = cached.get("empty_result")
+            if empty is not None:
+                return empty
             q_norm = cached["q_norm"]
             q_weights = cached["q_weights"]
         else:
