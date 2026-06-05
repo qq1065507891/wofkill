@@ -263,6 +263,9 @@ def test_session_token_on_private_state_endpoint():
         "caller_role": "moderator",
     })
     game_id = game_resp.json()["game"]["game_id"]
+    # Start the game so players exist; the private-state endpoint
+    # returns 404 (NEW-P2-9) if the requested player is missing.
+    client.post(f"/games/{game_id}/start", json={"caller_id": "mod1", "caller_role": "moderator"})
 
     # Login as moderator
     login_resp = client.post("/auth/login?caller_id=mod1&role=moderator")

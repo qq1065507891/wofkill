@@ -125,6 +125,12 @@ def create_game_router(
 
     @router.post("/games/{game_id}/start", response_model=GameActionResponse)
     def start_game(game_id: str, req: GameActionRequest) -> GameActionResponse:
+        # NEW-P2-4: refuse to start if a runner is already registered
+        # for this game. The runner is the actual long-lived resource;
+        # silently overwriting it would lose in-flight state.
+        with runners_lock:
+            if game_id in runners:
+                raise HTTPException(409, f"Game {game_id} is already running")
         _enforce_moderator_only(req, auth, checker, authorized_callers, game_id, "start")
         state = _get_game(games, game_id)
         if state.phase != "setup":
@@ -196,14 +202,22 @@ def create_game_router(
         state = _get_game(games, game_id)
         if state.paused:
             raise HTTPException(400, "Already paused")
-        event = GameEvent(type="game_paused", payload={
-            "game_id": game_id, "phase": state.phase,
-        })
-        state = replace(state, paused=True, events=state.events + [event])
-        with runners_lock:
-            if game_id in runners:
-                runners[game_id]._state = state
-        _persist(state, games, games_lock, repo)
+        # NEW-P1-4: serialize with in-flight step. try-acquire (non-blocking)
+        # to avoid hanging the API request; if a step is running, return 409.
+        lock = executor.lock_for(game_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "Game is currently executing a step; retry")
+        try:
+            event = GameEvent(type="game_paused", payload={
+                "game_id": game_id, "phase": state.phase,
+            })
+            state = replace(state, paused=True, events=state.events + [event])
+            with runners_lock:
+                if game_id in runners:
+                    runners[game_id]._state = state
+            _persist(state, games, games_lock, repo)
+        finally:
+            lock.release()
         return GameActionResponse(
             game_id=game_id, action="pause", success=True,
             message="Game paused",
@@ -215,14 +229,21 @@ def create_game_router(
         state = _get_game(games, game_id)
         if not state.paused:
             raise HTTPException(400, "Not paused")
-        event = GameEvent(type="game_resumed", payload={
-            "game_id": game_id, "phase": state.phase,
-        })
-        state = replace(state, paused=False, events=state.events + [event])
-        with runners_lock:
-            if game_id in runners:
-                runners[game_id]._state = state
-        _persist(state, games, games_lock, repo)
+        # NEW-P1-4: serialize with in-flight step (see pause_game).
+        lock = executor.lock_for(game_id)
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "Game is currently executing a step; retry")
+        try:
+            event = GameEvent(type="game_resumed", payload={
+                "game_id": game_id, "phase": state.phase,
+            })
+            state = replace(state, paused=False, events=state.events + [event])
+            with runners_lock:
+                if game_id in runners:
+                    runners[game_id]._state = state
+            _persist(state, games, games_lock, repo)
+        finally:
+            lock.release()
         return GameActionResponse(
             game_id=game_id, action="resume", success=True,
             message="Game resumed",
@@ -271,6 +292,12 @@ def create_game_router(
         session_token: str = Query(""),
     ) -> PrivateStateResponse:
         state = _get_game(games, game_id)
+        # NEW-P2-9: 404 when the player doesn't exist in this game.
+        # Previously the view returned role="unknown", which was a
+        # silent bug — a typo or stale player_id would not be flagged
+        # to the caller.
+        if player_id not in state.players:
+            raise HTTPException(404, f"Player {player_id} not found in game {game_id}")
         caller_role = _resolve_caller_role(
             authorized_callers, caller_id, caller_role,
             session_token=session_token, auth_manager=auth,
@@ -338,6 +365,43 @@ def create_game_router(
             raise HTTPException(403, detail=e.reason)
         return build_replay(state, allowed_view, viewer_id=caller_id)
 
+    @router.get("/games/{game_id}/snapshot", response_model=ReplayResponse)
+    def get_snapshot(
+        game_id: str,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.MODERATOR),
+        view_mode: ViewMode = Query(ViewMode.MODERATOR_FULL),
+        session_token: str = Query(""),
+    ) -> ReplayResponse:
+        """NEW-P2-3: snapshot of the current game state.
+
+        The legacy ``/replay`` endpoint is misleadingly named — the
+        response always contains exactly one ``ReplaySnapshot`` built
+        from the *current* ``GameState``, not a sequence of snapshots
+        across the game's history. This endpoint exposes the same
+        behavior under a clearer name and includes a short note in
+        the source annotation so callers don't expect historical
+        playback.
+        """
+        state = _get_game(games, game_id)
+        game_active = state.winning_faction is None
+        caller_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
+        try:
+            allowed_view = checker.check(
+                caller_id=caller_id,
+                caller_role=caller_role,
+                requested_view=view_mode,
+                game_id=game_id,
+                endpoint="snapshot",
+                game_active=game_active,
+            )
+        except PermissionDenied as e:
+            raise HTTPException(403, detail=e.reason)
+        return build_replay(state, allowed_view, viewer_id=caller_id)
+
     @router.get("/games/{game_id}/evaluation", response_model=EvaluationResponse)
     def get_evaluation(
         game_id: str,
@@ -365,7 +429,10 @@ def create_game_router(
             raise HTTPException(403, detail=e.reason)
         return build_evaluation(
             state, allowed_view,
-            audit_events=[e.model_dump() for e in checker.audit_log()],
+            audit_events=[
+                e.model_dump() for e in checker.audit_log()
+                if e.game_id == game_id
+            ],
         )
 
     @router.get("/games/{game_id}/cognitive-diff", response_model=CognitiveDiffResponse)
@@ -393,24 +460,10 @@ def create_game_router(
             )
         except PermissionDenied as e:
             raise HTTPException(403, detail=e.reason)
-        return build_cognitive_diff(state, player_id or "p01", allowed_view)
-
-    @router.get("/games/{game_id}/rag-audit")
-    def get_rag_audit(
-        game_id: str,
-        caller_id: str = Query(""),
-        caller_role: CallerRole = Query(CallerRole.DEBUGGER),
-        session_token: str = Query(""),
-    ) -> dict:
-        state = _get_game(games, game_id)
-        resolved_role = _resolve_caller_role(
-            authorized_callers, caller_id, caller_role,
-            session_token=session_token, auth_manager=auth,
+        return build_cognitive_diff(
+            state, player_id or "p01", allowed_view,
+            cognition_data=_build_cognition_data_for_viewer(state, player_id or "p01"),
         )
-        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
-            raise HTTPException(403, "RAG audit requires moderator or debugger access")
-        rag_events = [e for e in state.events if e.type == "rag_injection_audit"]
-        return {"game_id": game_id, "rag_audits": [e.payload for e in rag_events]}
 
     @router.get("/games/{game_id}/share-summary")
     def get_share_summary(
@@ -540,14 +593,19 @@ def _resolve_caller_role(
         raise HTTPException(403, "Invalid or expired session token")
     if requested_role in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
         if caller_id and authorized_callers.get(caller_id) == requested_role:
+            # NEW-P2-5: only log a warning for elevated legacy auth.
+            # Non-elevated callers (player_agent, spectator) using
+            # query-param auth is the documented dev path and not
+            # security-relevant; the old log was noise.
+            logger.warning(
+                "Legacy query-param auth for elevated role without "
+                "session_token: caller_id=%s, caller_role=%s — no "
+                "cryptographic verification performed",
+                caller_id,
+                requested_role.value,
+            )
             return requested_role
         raise HTTPException(403, "Elevated caller role is not authorized")
-    logger.warning(
-        "Legacy query-param auth without session_token: "
-        "caller_id=%s, caller_role=%s — no cryptographic verification performed",
-        caller_id,
-        requested_role.value,
-    )
     return requested_role
 
 
@@ -621,6 +679,60 @@ def _enforce_create_game_auth(
         raise HTTPException(403, "create_game requires moderator role")
 
 
+def _build_cognition_data_for_viewer(
+    state: GameState, viewer_id: str,
+) -> dict[str, dict[str, Any]]:
+    """NEW-P1-5: build real belief data for the cognitive-diff view.
+
+    Uses the belief updater to initialize a uniform belief state from
+    the current game state, then collapses each player's
+    ``role_probabilities`` into ``{guessed_role, guessed_confidence,
+    faction_read, trust}`` for the view layer.
+    """
+    try:
+        from werewolf_agent.cognition.belief import BeliefUpdater
+        from werewolf_agent.cognition.world_state import build_world_state
+        from werewolf_agent.cognition.visibility import VisibilityPolicy
+    except Exception:
+        return {}
+
+    try:
+        world_state = build_world_state(state)
+    except Exception:
+        return {}
+
+    role_names = [
+        "villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid",
+    ]
+    updater = BeliefUpdater(all_role_names=role_names)
+    belief_state = updater.initialize(list(state.players.keys()), viewer_id)
+
+    # Apply visibility filter so the belief state reflects what the
+    # viewer could realistically infer.
+    try:
+        viewer_role = state.players[viewer_id].role if viewer_id in state.players else "villager"
+        vis_policy = VisibilityPolicy()
+        visible_facts = vis_policy.filter_visible_facts(world_state, viewer_id, viewer_role)
+        belief_state = updater.update(belief_state, visible_facts, state.day_number)
+    except Exception:
+        # Fall back to uniform beliefs on visibility errors.
+        pass
+
+    cognition_data: dict[str, dict[str, Any]] = {}
+    for pid, b in belief_state.beliefs.items():
+        guessed_role, guessed_confidence = b.top_role_guess()
+        faction_read = b.faction_lean if b.faction_lean != "unknown" else "unknown"
+        cognition_data[pid] = {
+            "guessed_role": guessed_role,
+            "guessed_confidence": float(guessed_confidence),
+            "faction_read": faction_read,
+            "trust": float(b.trust),
+            "key_evidence": list(b.open_questions),
+            "belief_changes": [],
+        }
+    return cognition_data
+
+
 def _build_locked_config_snapshot(req: CreateGameRequest, project_root: Path) -> dict:
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", req.ruleset_id):
         raise HTTPException(400, f"Invalid ruleset_id: {req.ruleset_id}")
@@ -670,6 +782,24 @@ def _event_is_public_for_share(event: GameEvent) -> bool:
 
 
 def _pick_public_mvp_candidate(state: GameState) -> str | None:
+    """NEW-P2-11: pick a public-safe MVP candidate.
+
+    The old implementation just sorted by player id, which meant the
+    "MVP" was whoever happened to be ``p01`` — almost always a
+    villager, but for the wrong reason, and broken if ``p01`` happened
+    to be a wolf.
+
+    The fix prefers an alive good-faction player in deterministic
+    id order. If no good player is alive, fall back to any alive
+    player; if none, fall back to the lowest-id player overall.
+    """
+    good_roles = {"villager", "seer", "witch", "hunter", "idiot"}
+    alive_good = sorted(
+        pid for pid, player in state.players.items()
+        if player.alive and player.role in good_roles
+    )
+    if alive_good:
+        return alive_good[0]
     alive_ids = sorted(pid for pid, player in state.players.items() if player.alive)
     if alive_ids:
         return alive_ids[0]

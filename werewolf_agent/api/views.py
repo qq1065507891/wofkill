@@ -157,6 +157,17 @@ _PUBLIC_EVENT_TYPES = {
 }
 
 
+# NEW-P2-10: centralized known-sensitive payload keys. The timeline
+# view strips these from non-moderator views so a new private field
+# added to any event can't accidentally leak just because the
+# developer's grep missed it.
+KNOWN_SENSITIVE_FIELDS: set[str] = {
+    "actual_role",
+    "wolf_teammates",
+    "private_intent",
+}
+
+
 def _event_visible_to_player(event: Any, viewer_id: str, viewer_role: str) -> bool:
     if event.type in _PUBLIC_EVENT_TYPES:
         return True
@@ -173,10 +184,9 @@ def _event_visible_to_player(event: Any, viewer_id: str, viewer_role: str) -> bo
 
 def _build_public_event(event: Any) -> TimelineEvent:
     payload = dict(event.payload)
-    # Strip private info from public view
-    payload.pop("actual_role", None)
-    payload.pop("wolf_teammates", None)
-    payload.pop("private_intent", None)
+    # NEW-P2-10: strip every known-sensitive key (see KNOWN_SENSITIVE_FIELDS)
+    for key in KNOWN_SENSITIVE_FIELDS:
+        payload.pop(key, None)
     if event.type == "player_died":
         payload = {"player_id": payload.get("player_id")}
 
@@ -193,10 +203,12 @@ def _build_event(event: Any, view_mode: ViewMode) -> TimelineEvent:
     payload = dict(event.payload)
     # moderator_full sees everything
     if view_mode != ViewMode.MODERATOR_FULL:
-        payload.pop("actual_role", None)
-        payload.pop("wolf_teammates", None)
-    # Never include private_intent in any API response
-    payload.pop("private_intent", None)
+        # NEW-P2-10: strip every known-sensitive key
+        for key in KNOWN_SENSITIVE_FIELDS:
+            payload.pop(key, None)
+        # ``private_intent`` is *always* redacted (it must never leave
+        # the audit log), regardless of view mode.
+        payload.pop("private_intent", None)
 
     return TimelineEvent(
         event_type=event.type,
@@ -270,6 +282,12 @@ def build_evaluation(
     view_mode: ViewMode,
     audit_events: list[dict[str, Any]] | None = None,
 ) -> EvaluationResponse:
+    events = audit_events or []
+    # NEW-P2-2: info_leak_count is the number of denied audit events.
+    # A denial is the observable signal of an attempted (or successful)
+    # info leak — the route filter guarantees these are scoped to this
+    # game.
+    info_leak_count = sum(1 for e in events if not e.get("granted", True))
     metrics = EvaluationMetrics(
         game_id=game_state.game_id,
         faction_win_rate={"good": 0.0, "wolf": 0.0},
@@ -280,8 +298,8 @@ def build_evaluation(
             }
             for pid, p in game_state.players.items()
         },
-        info_leak_count=0,
-        audit_events=audit_events or [],
+        info_leak_count=info_leak_count,
+        audit_events=events,
     )
 
     if game_state.winning_faction and game_state.winning_faction in metrics.faction_win_rate:

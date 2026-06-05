@@ -12,6 +12,7 @@ import os
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from werewolf_agent.api.auth import AuthManager
@@ -57,6 +58,23 @@ def create_app(
 
     # --- App ---
     app = FastAPI(title="Werewolf Agent API", version="1.0")
+
+    # NEW-P2-7: configurable CORS middleware. Origins come from a
+    # comma-separated env var so production deployments can restrict
+    # access without code changes; the default is permissive for
+    # local dev parity with the previous no-CORS behavior.
+    cors_origins_raw = os.environ.get(
+        "WEREWOLF_CORS_ORIGINS", "http://localhost:3000,http://localhost:8000"
+    ).strip()
+    cors_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     from pathlib import Path
     _static_dir = Path(__file__).parent.parent / "ui" / "static"
