@@ -739,6 +739,36 @@ class TestReviewGenerator:
         )
         assert len(report.improvement_suggestions) > 0
 
+    def test_deceived_by_excludes_hybrid(self):
+        """MEM-NEW-1: hybrid (wolf-aligned via master) must NOT be
+        treated as a good-side deceiver target. A hybrid voted out by
+        wolves was a wolf-aligned player — wolves don't deceive by
+        attacking their own side.
+        """
+        rg = RelationGraph()
+        # p1 voted for p4 (hybrid). p5 (werewolf) also spoke against p4.
+        rg.add_event(RelationEvent(
+            predicate=RelationType.SPOKE_AGAINST, source="p5", target="p4", day=1,
+        ))
+        rg.add_event(RelationEvent(
+            predicate=RelationType.VOTED, source="p1", target="p4", day=1,
+        ))
+
+        gen = ReviewGenerator()
+        report = gen.generate(
+            game_id="g1", player_id="p1", role="seer",
+            faction_won=False,
+            ground_truth={"p4": "hybrid", "p5": "werewolf"},
+            relation_graph=rg,
+        )
+        # Pre-fix: hybrid was in the good-role set, so p5 (werewolf)
+        # got added to deceived_by. Post-fix: hybrid excluded → p5 must
+        # NOT be in deceived_by when the target is a hybrid.
+        assert "p5" not in report.deceived_by, (
+            f"MEM-NEW-1: hybrid voted out by wolves must not be marked "
+            f"as a deception case; got deceived_by={report.deceived_by}"
+        )
+
     def test_summary_generated(self):
         gen = ReviewGenerator()
         report = gen.generate(

@@ -164,7 +164,13 @@ class ReviewGenerator:
             if target is None:
                 continue
             actual_target_role = ground_truth.get(target, "")
-            if actual_target_role in ("villager", "seer", "witch", "hunter", "idiot", "hybrid"):
+            # MEM-NEW-1: hybrid wins with master's original faction.
+            # When the master is a werewolf, hybrid is wolf-side; the
+            # wolves attacking their own ally is NOT a deception. The
+            # pre-fix list mis-classified hybrid as good, which made
+            # every hybrid exile read as "deceived by wolves" — a
+            # wolf team got free credit for exposing its own member.
+            if actual_target_role in ("villager", "seer", "witch", "hunter", "idiot"):
                 attacks = graph.query(
                     predicate=RelationType.SPOKE_AGAINST,
                     target=target,
@@ -179,7 +185,7 @@ class ReviewGenerator:
         if not report.deceived_by:
             for vote in votes:
                 target = vote.target or ""
-                if ground_truth.get(target, "") in ("villager", "seer", "witch", "hunter", "idiot", "hybrid"):
+                if ground_truth.get(target, "") in ("villager", "seer", "witch", "hunter", "idiot"):
                     same_voters = graph.query(
                         predicate=RelationType.VOTED,
                         target=target,
