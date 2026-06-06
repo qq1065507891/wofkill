@@ -2681,3 +2681,165 @@ class TestHybridVotingRule:
         assert "跟随规则" in directive and "质疑" in directive, (
             f"hybrid good-master missing follow rule: {directive!r}"
         )
+
+
+class TestNoSheriffVoteHint:
+    """P0-G3223805846-9: 警徽流失时 vote directive 注入归票 hint。
+
+    Without an active sheriff, the LLM tends to fall back on
+    "loudest voice wins", which is trivially exploitable by the
+    wolf team.  The ``build_sheriff_silent_directive`` builder
+    injects a 归票 hint that points the model at the publicly
+    confirmed 查杀 side, or failing that, at the player with the
+    clearest 站边 (side-taking) logic.
+    """
+
+    def test_no_sheriff_vote_directive_contains_fallback_hint(self):
+        from werewolf_agent.runtime.directives._shared import (
+            build_sheriff_silent_directive,
+        )
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_sheriff_silent_directive(
+            gs, sheriff_id=None, badge_state="torn",
+        )
+        full = (
+            " ".join(str(v) for v in d.values())
+            if isinstance(d, dict) else str(d)
+        )
+        assert "归票" in full or "跟随" in full, (
+            f"no-sheriff directive missing 归票 hint: {full!r}"
+        )
+
+    def test_no_sheriff_vote_directive_key_uses_distinct_name(self):
+        """P0-G3223805846-9: the new hint must use a dict key distinct
+        from ``sheriff_silent`` (which is reserved for the
+        silenced-but-alive sheriff case in agent_adapter.py).  If
+        they collide, the LLM conflates two different no-归票
+        scenarios and the test_no_sheriff_after_tear guards break.
+        """
+        from werewolf_agent.runtime.directives._shared import (
+            build_sheriff_silent_directive,
+        )
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_sheriff_silent_directive(
+            gs, sheriff_id=None, badge_state="torn",
+        )
+        # The silenced-sheriff key must NOT be the one carrying the
+        # 归票 hint for the no-sheriff case.
+        assert "sheriff_silent" not in d, (
+            f"no-sheriff hint must not reuse the sheriff_silent key; "
+            f"got keys: {sorted(d.keys())}"
+        )
+        # And the no-sheriff hint key must actually be present.
+        no_sheriff_keys = [
+            k for k in d
+            if k not in {"sheriff_silent"}
+        ]
+        assert no_sheriff_keys, (
+            f"no-sheriff hint key missing; got keys: {sorted(d.keys())}"
+        )
+
+    def test_no_sheriff_vote_directive_noop_when_sheriff_active(self):
+        """Sanity: if a sheriff IS active (or no badge has been torn),
+        the builder must return an empty dict so callers don't pollute
+        the directive bundle with stale 归票 guidance."""
+        from werewolf_agent.runtime.directives._shared import (
+            build_sheriff_silent_directive,
+        )
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d_active = build_sheriff_silent_directive(
+            gs, sheriff_id="p03", badge_state="active",
+        )
+        assert d_active == {}, (
+            f"active sheriff must not produce no-sheriff hint; "
+            f"got: {d_active!r}"
+        )
+        d_none = build_sheriff_silent_directive(
+            gs, sheriff_id=None, badge_state="none",
+        )
+        assert d_none == {}, (
+            f"badge_state='none' must not produce no-sheriff hint; "
+            f"got: {d_none!r}"
+        )
+
+    def test_no_sheriff_vote_hint_actually_injected_at_runtime(self):
+        """End-to-end regression: the builder must be wired into the
+        agent_adapter pipeline so the 归票 hint actually reaches the
+        LLM.  Without this, having the function in _shared.py is a
+        define-only no-op fix.
+        """
+        # Invoke the day-speech pipeline with badge torn and verify
+        # the no_sheriff_vote_hint key is present in the merged
+        # strategy_directive.
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.agent_adapter import agent_day_speech
+
+        # Minimal 12-player roster; sheriff_id=None + torn badge.
+        roles = (
+            ["werewolf"] * 4
+            + ["villager"] * 3
+            + ["seer", "witch", "hunter", "idiot", "hybrid"]
+        )
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=r, alive=True)
+            for i, r in enumerate(roles, start=1)
+        }
+        gs = GameState(
+            players=players, day_number=2, night_number=2,
+            sheriff_id=None, sheriff_badge_state="torn",
+        )
+
+        class _StubAgent:
+            last_context = None
+            def act(self, context):
+                self.last_context = context
+                from werewolf_agent.agents.schemas import (
+                    ActionType, PlayerAction, RetryInfo,
+                )
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH,
+                        speech="t", reason="t",
+                    ),
+                    RetryInfo(),
+                )
+
+        class _StubRegistry:
+            def __init__(self):
+                self.agent = _StubAgent()
+            def get_agent(self, pid):
+                return self.agent
+
+        registry = _StubRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_day_speech(state, engine, registry, "p04")
+        merged = registry.agent.last_context.strategy_directive
+        assert "no_sheriff_vote_hint" in merged, (
+            f"runtime must inject no_sheriff_vote_hint when badge torn; "
+            f"got keys: {sorted(merged.keys())}"
+        )
+        hint_text = str(merged["no_sheriff_vote_hint"])
+        assert "归票" in hint_text or "跟随" in hint_text, (
+            f"runtime-injected hint missing 归票/跟随 marker: {hint_text!r}"
+        )

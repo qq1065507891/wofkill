@@ -53,6 +53,7 @@ from werewolf_agent.runtime.directives import (
     build_wolf_vote_directive as _build_wolf_vote_strategy,
 )
 from werewolf_agent.runtime.directives._shared import (
+    build_sheriff_silent_directive as _build_sheriff_silent_directive,
     collect_death_order as _collect_death_order,
     collect_public_vote_history as _collect_public_vote_history,
 )
@@ -893,6 +894,14 @@ def agent_day_speech(
     if gs.sheriff_id is None and gs.sheriff_badge_state == "torn":
         strategy_directive["sheriff_election_state"] = (
             "本局无警长；本轮发言顺序随机；无归票人。"
+        )
+        # P0-G3223805846-9: inject 归票 hint so players don't fall back
+        # on "loudest voice wins".  Distinct key from `sheriff_silent`
+        # (which is reserved for the silenced-but-alive sheriff case).
+        strategy_directive.update(
+            _build_sheriff_silent_directive(
+                gs, sheriff_id=None, badge_state="torn",
+            )
         )
 
     # Include sheriff election speeches as salience items for day 1 discussion
