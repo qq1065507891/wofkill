@@ -459,10 +459,17 @@ class StrategyRetriever:
         ) / 20.0
 
         # Role match (0.15)
+        # G-R4-02: ``role_perspective='any'`` is the universal-
+        # perspective marker used by the ``基础常识`` seed family
+        # (金水 / 银水 / 对跳判断 / 警徽票权重, etc.). It must
+        # receive the same wildcard bonus as ``'general'`` so
+        # universal-knowledge seeds rank at parity with the
+        # existing universal seeds rather than being demoted
+        # below role-specific entries regardless of relevance.
         if query.role and meta.role_perspective:
             if query.role == meta.role_perspective:
                 score += 0.15
-            elif meta.role_perspective == "general":
+            elif meta.role_perspective in ("general", "any"):
                 score += 0.05
 
         # Phase match (0.1)

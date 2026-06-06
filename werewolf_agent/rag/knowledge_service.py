@@ -232,9 +232,17 @@ class RAGKnowledgeService:
             # accepts the ``general`` wildcard for universal entries),
             # which preserves role isolation across the metadata
             # fallback path.
+            #
+            # G-R4-02: the role check also accepts ``"any"`` as a
+            # universal-perspective wildcard, matching the convention
+            # used by the ``基础常识`` seed family (金水 / 银水 /
+            # 对跳判断 / 警徽票权重, etc.). Pre-fix the filter only
+            # accepted ``(query.role, "general", "")``, which
+            # silently dropped every "any" entry once at least one
+            # other entry had populated the ``selected`` pool.
             role_ok = (
                 not query.role
-                or meta.role_perspective in (query.role, "general", "")
+                or meta.role_perspective in (query.role, "general", "any", "")
             )
             phase_ok = (
                 not query.phase

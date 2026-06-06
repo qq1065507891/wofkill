@@ -407,3 +407,111 @@ def test_role_phase_fallback_admits_general_wildcard() -> None:
     selected_ids = {entry.entry_id for _, entry in out}
     assert "general_role_speech" in selected_ids
     assert "villager_general_phase" in selected_ids
+
+
+# ---------------------------------------------------------------------------
+# G-R4-02 (P0): ``role_perspective='any'`` seeds must reach the retriever
+# ---------------------------------------------------------------------------
+
+
+def test_role_perspective_any_included_in_metadata_fallback() -> None:
+    """G-R4-02: the metadata fallback path of ``_vector_candidates``
+    previously only accepted ``role_perspective in (query.role,
+    "general", "")`` — which silently dropped every seed whose
+    ``role_perspective`` was ``"any"``. About 11 foundation seeds
+    (金水 / 银水 / 对跳判断 / 警徽票权重, etc.) carry ``"any"`` and
+    were therefore unreachable from the metadata fallback path.
+
+    The bug only manifests when at least one entry IS in the
+    ``selected`` pool (either a vector hit or another entry that
+    passes the metadata filter) — once ``selected`` is non-empty,
+    the function short-circuits the final "return all entries"
+    fallback and the role_perspective='any' entries are dropped
+    on the floor. The test therefore sets up a vector store with
+    a villager role hit so the "any" entry can only reach the
+    candidate pool through the metadata filter.
+    """
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+    from werewolf_agent.rag.vector_store import LocalVectorStore
+
+    any_role_speech = _make_rag_entry(
+        entry_id="any_role_speech",
+        role_perspective="any",
+        phase="speech",
+    )
+    villager_speech = _make_rag_entry(
+        entry_id="villager_speech",
+        role_perspective="villager",
+        phase="speech",
+    )
+    vector_store = LocalVectorStore()
+    # Seed the vector store with the villager entry so it
+    # produces a real hit. ``any_role_speech`` has no vector
+    # representation, so it must be admitted via the metadata
+    # filter — which is the path that the bug breaks.
+    vector_store.add(
+        villager_speech.entry_id,
+        f"{villager_speech.title}\n{villager_speech.summary}",
+        {"role_perspective": "villager", "phase": "speech"},
+    )
+
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [any_role_speech, villager_speech],
+        vector_store=vector_store,
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(role="villager", phase="speech", max_results=5),
+        [any_role_speech, villager_speech],
+    )
+    selected_ids = {entry.entry_id for _, entry in out}
+    # Sanity: the villager entry comes through the vector path.
+    assert "villager_speech" in selected_ids, (
+        f"G-R4-02 sanity: villager entry should be in candidates; "
+        f"selected={selected_ids!r}"
+    )
+    # The "any" entry must ALSO be in the candidate pool, reached
+    # via the metadata fallback. Pre-fix the filter rejected
+    # role_perspective='any' so the final "return all" fallback
+    # was not triggered and the entry was silently dropped.
+    assert "any_role_speech" in selected_ids, (
+        f"G-R4-02: role_perspective='any' seed was silently dropped "
+        f"from the metadata fallback; selected={selected_ids!r}"
+    )
+
+
+def test_role_perspective_any_scores_same_as_general_in_rule_based() -> None:
+    """G-R4-02: the rule-based ``_score`` previously rewarded
+    ``role_perspective='general'`` with a +0.05 bonus over a
+    non-matching role, but did not reward ``'any'`` the same way.
+    After the fix, ``'any'`` must receive the same +0.05 bonus so
+    universal-knowledge seeds rank at parity with the existing
+    ``'general'`` universal seeds.
+    """
+    from werewolf_agent.rag.retriever import StrategyRetriever
+
+    any_entry = _make_rag_entry(
+        entry_id="any_entry",
+        role_perspective="any",
+        phase="speech",
+    )
+    general_entry = _make_rag_entry(
+        entry_id="general_entry",
+        role_perspective="general",
+        phase="speech",
+    )
+
+    retriever = StrategyRetriever([any_entry, general_entry])
+    query = RAGQuery(role="villager", phase="speech", max_results=5)
+
+    score_any = retriever._score(any_entry, query)
+    score_general = retriever._score(general_entry, query)
+    # ``any`` and ``general`` should both contribute the wildcard
+    # bonus (+0.05) when the query role does not match. Pre-fix,
+    # ``any`` got 0.0 here, which put universal-knowledge seeds
+    # below role-specific entries regardless of relevance.
+    assert score_any == score_general, (
+        f"G-R4-02: role_perspective='any' should score the same as "
+        f"'general' for a non-matching query role; got "
+        f"any={score_any!r} general={score_general!r}"
+    )
