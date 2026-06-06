@@ -862,9 +862,15 @@ def agent_day_speech(
             # muted (e.g., poisoned by witch, self-destructed on a prior
             # turn) and cannot speak.  The pre-fix code still told them
             # to 明确归票, which would have been a hallucination.
+            #
+            # P1-3 follow-up (Phase 1 self-audit): explicitly state the
+            # sheriff STILL must submit a vote action — the silence is
+            # on speech only, not on the vote.  Without this the LLM
+            # had been observed to skip the round entirely.
             strategy_directive["sheriff_silent"] = (
-                "本轮你无法发言；若已提前指定归票目标，在 vote action 的 target_id 字段中给出；"
-                "如未指定则由投票开放决定。"
+                "本轮你无法发言，但仍需提交 vote action。"
+                "若已提前指定归票目标，在 vote action 的 target_id 字段中给出；"
+                "如未指定则由投票开放决定，speech 字段留空。"
             )
         else:
             strategy_directive["sheriff_vote_push"] = (

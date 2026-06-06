@@ -286,46 +286,9 @@ class TestAgentIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Phase-1 audit: judge_router task_styles concat (P1-9) + judge jitter (P1-31)
+# Phase-1 audit: judge jitter (P1-31) — task_styles in system_prompt
+# reverted (P1-4) per Phase 1 self-audit
 # ---------------------------------------------------------------------------
-
-
-def test_judge_router_includes_task_style_in_system_prompt():
-    """Phase-1 P1-9: ``JudgeProfileRouter.resolve`` must append the
-    task-type-specific ``task_styles[task_type]`` hint to the persona
-    ``system_prompt`` so the LLM gets per-broadcast style guidance.
-
-    Pre-fix, ``task_styles`` was loaded into the snapshot but never
-    read — the LLM only saw the static ``system_prompt`` text.
-    """
-    from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
-    router = JudgeProfileRouter(
-        profiles={
-            "tournament_referee": {
-                "display_name": "裁判",
-                "tone_variant": "tournament",
-                "base": {},
-                "task_styles": {
-                    "judge_vote_calling": "ritual_structured",
-                    "judge_skill_guide": "directive_clear",
-                },
-                "broadcast_patterns": {},
-                "system_prompt": "你是专业的狼人杀裁判。",
-            },
-        }
-    )
-    snap = router.resolve("tournament_referee", "judge_vote_calling")
-    # task_style hint must be appended to system_prompt
-    assert "ritual_structured" in snap.system_prompt, (
-        f"task_style hint for judge_vote_calling must be in system_prompt; "
-        f"got: {snap.system_prompt!r}"
-    )
-    # The other task_style value must NOT be present (task_type-specific)
-    assert "directive_clear" not in snap.system_prompt, (
-        "Only the task_type-specific style hint should be appended, not all"
-    )
-    # Original system_prompt text must be preserved
-    assert "专业的狼人杀裁判" in snap.system_prompt
 
 
 def test_judge_broadcasts_use_zero_jitter():

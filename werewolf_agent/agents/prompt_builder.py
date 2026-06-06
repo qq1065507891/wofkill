@@ -89,9 +89,12 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "role_alerts",
     # Hard vote pressure (e.g., must-vote target)
     "vote_pressure",
-    # Generic imperative text injected by context.py:1149; binds the
-    # same instructions as must_address_alerts but in natural language.
-    "directive",
+    # Phase 1 self-audit (P1-1 revert): the ``directive`` key
+    # (context.py:1149, "你必须在发言中回应以下矛盾") has been
+    # removed entirely.  ``must_address_alerts`` above already
+    # covers the same imperative — adding ``directive`` as a
+    # second key produced two MUST sub-group renderings of the
+    # same instruction.  Context.py:1149 deletes the producer.
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({
@@ -346,7 +349,16 @@ class PlayerPromptBuilder:
         "_build_persona": "【辅助】",
         "_build_phase_context": "【辅助】",
         "_build_belief_state": "【辅助】",
-        "_build_public_summary": "【参考】",
+        # Phase 1 self-audit (P1-6 label rename): use a distinctive
+        # section label to avoid collision with the strategy_directive
+        # inner sub-group ``【参考】`` marker.  Both labels are
+        # semantically "reference" but refer to different scopes
+        # (this is game-record; the strategy sub-group is internal
+        # reference).  LLM reads ``【场上记录】`` as the public record
+        # section, distinct from the strategy_directive 参考 sub-group.
+        # The priority tier (辅助) and budget-drop semantics are
+        # preserved.
+        "_build_public_summary": "【场上记录】",
         "_build_visible_state": "【辅助】",
         "_build_private_memory_hints": "【辅助】",
         "_build_salience_events": "【辅助】",

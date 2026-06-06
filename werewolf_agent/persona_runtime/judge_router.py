@@ -63,17 +63,15 @@ class JudgeProfileRouter:
 
         base = prof.get("base", {})
         task_styles = prof.get("task_styles", {})
-        # C-fix9: surface the task-type-specific style hint inside the
-        # persona system_prompt.  Previously task_styles was loaded into
-        # the snapshot but never read by JudgeAgent — the LLM only ever
-        # saw the static system_prompt text and ignored per-broadcast
-        # style guidance.  We append a one-line hint that names the
-        # style token (e.g. "ritual_structured") so the LLM can lean
-        # into it without re-reading the full broadcast_patterns map.
-        sys_prompt = prof.get("system_prompt", "")
-        ts_hint = task_styles.get(task_type, "")
-        if ts_hint and ts_hint not in sys_prompt:
-            sys_prompt = f"{sys_prompt}\n本场景播报风格: {ts_hint}。" if sys_prompt else f"本场景播报风格: {ts_hint}。"
+        # Phase 1 self-audit (P1-4 revert): do NOT concatenate
+        # ``task_styles[task_type]`` into ``system_prompt``.  The
+        # s10 architecture (PlayerPromptBuilder docstring) defines
+        # system_prompt as the STABLE half of the prompt — per-
+        # task_type content belongs in user_prompt, otherwise the
+        # prompt cache hash differs per broadcast.  The task_styles
+        # data stays in the snapshot for downstream consumers
+        # (audit log, future per-broadcast style hints) but is not
+        # read by JudgeAgent in this commit.
         return JudgePersonaSnapshot(
             profile_id=profile_id,
             display_name=prof.get("display_name", profile_id),
@@ -81,7 +79,7 @@ class JudgeProfileRouter:
             base_params=dict(base),
             task_styles=dict(task_styles),
             broadcast_patterns=dict(prof.get("broadcast_patterns", {})),
-            system_prompt=sys_prompt,
+            system_prompt=prof.get("system_prompt", ""),
         )
 
     def resolve_by_tone(

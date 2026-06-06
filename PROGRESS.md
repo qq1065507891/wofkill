@@ -4,10 +4,43 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Prompt-Audit Phase 1 — 10 single-file low-risk fixes (P1-1..10)** — 2026-06-06
-- Active task: All 10 P1 items done; full regression `2072 passed, 0 failed`
+- Current phase: **Prompt-Audit Phase 1 — 10 single-file low-risk fixes (P1-1..10) + self-audit fixes (P1-12..15)** — 2026-06-06
+- Active task: All P1 items done; self-audit follow-up fixes applied
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-06
+
+---
+
+## Prompt-Audit Phase 1 Self-Audit Fixes (P1-12..15) — 4 follow-up fixes
+
+Branch: current `master`. Scope: 4 follow-up fixes from a critical
+self-review of commit 13e9509.  All issues are behavior corrections
+identified after the initial commit.
+
+| # | Issue | Source | Files | Commit |
+|---|-------|--------|-------|--------|
+| P1-12 | `sheriff_silent` 措辞补"仍需提交 vote action" — 否则 LLM 跳过整回合 | Self-audit #1 | `agent_adapter.py` | this commit |
+| P1-13 | 撤销 `judge_router` task_styles 注入 system_prompt — 破坏 s10 稳定契约（per-broadcast 内容应入 user_prompt 才不破坏 cache）| Self-audit #2 | `judge_router.py` | this commit |
+| P1-14 | 删除 `directive` 字符串（context.py:1149）和 HARD_CONSTRAINT_KEYS 中的 `"directive"` 条目 — 与 `must_address_alerts` 语义重叠 | Self-audit #3 | `context.py`, `prompt_builder.py` | this commit |
+| P1-15 | `public_summary` 标签 `【参考】` → `【场上记录】` — 消除与 strategy_directive 内 sub-group `【参考】` 的标签碰撞（priority tier 仍 辅助）| Self-audit #4 | `prompt_builder.py` | this commit |
+
+**Test changes** (3 files):
+- `test_prompt_builder.py`:
+  - `test_hard_constraint_keys_include_critical_directives`: 断言 `directive` **不在**任何 group
+  - `test_priority_labels_for_auxiliary_sections_are_consistent`: public_summary 改验 `【场上记录】`
+  - 删除 `test_directive_key_renders_under_hard_section`（无对应 production 行为）
+- `test_judge_agent.py`:
+  - 删除 `test_judge_router_includes_task_style_in_system_prompt`（特性已撤销）
+
+**Test results**: `pytest tests/agents/ tests/runtime/ tests/rules/
+tests/memory/ tests/rag/ tests/skills/ tests/cognition/ tests/model_gateway/`
+→ **2070 passed, 0 failed** in 174s (2:54).  Down from 2072 because
+two Phase 1 tests were removed (their production behavior was
+reverted in this commit).
+
+**Open follow-ups (non-blocking)**:
+- Self-audit #5: `test_sheriff_silent_directive_references_target_id_not_vote_silent` 用 `inspect.getsource` 仍脆 — 应改行为测试。defer 到 Phase 2
+- Self-audit #6/7/8: TDD 纪律 / reasoning 步骤 system vs user / PROGRESS 编号 — 流程问题，无运行时影响
 
 ---
 

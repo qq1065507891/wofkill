@@ -1145,8 +1145,13 @@ def build_agent_context(
             })
 
         if must_address:
+            # Phase 1 self-audit (P1-1 revert): the legacy
+            # ``strategy_directive["directive"] = "你必须在发言中回应..."``
+            # text was deleted.  ``must_address_alerts`` already
+            # conveys the imperative (the MUST sub-group framing
+            # makes the binding explicit).  The duplicate natural-
+            # language imperative was redundant.
             strategy_directive["must_address_alerts"] = must_address
-            strategy_directive["directive"] = "你必须在发言中回应以下矛盾：选择站队、质疑、或明确表示暂不判断。"
     except Exception:
         logger.debug("Contradiction/belief building failed, skipping", exc_info=True)
 

@@ -61,6 +61,9 @@ def _make_ctx_with_directive(directive: dict) -> AgentContext:
 
 def test_hard_constraint_keys_include_critical_directives():
     """The most binding directives must be in the HARD group, not softer tiers."""
+    # Phase 1 self-audit (P1-1 revert): ``directive`` was removed
+    # entirely.  ``must_address_alerts`` alone conveys the imperative
+    # via the MUST sub-group framing.  No second key needed.
     must_be_hard = {
         "wolf_fake_seer_execution",
         "must_address_alerts",
@@ -70,17 +73,16 @@ def test_hard_constraint_keys_include_critical_directives():
         "witch_night_action",
         "role_alerts",
         "vote_pressure",
-        # Phase-1 audit: ``directive`` is a natural-language imperative
-        # injected by context.py:1149 ("你必须在发言中回应以下矛盾"),
-        # same binding semantics as must_address_alerts.  Without
-        # explicit classification it fell through to REFERENCE and
-        # the LLM treated "必须" as soft suggestion.
-        "directive",
     }
     for k in must_be_hard:
         assert k in HARD_CONSTRAINT_KEYS, (
             f"{k!r} must be classified as 硬约束 (hard constraint); got none"
         )
+    # The ``directive`` key must NOT be in any group — it was
+    # deleted in P1-1 revert.
+    assert "directive" not in HARD_CONSTRAINT_KEYS
+    assert "directive" not in SUGGESTION_KEYS
+    assert "directive" not in REFERENCE_KEYS
 
 
 def test_suggestion_keys_include_behavioral_directives():
@@ -1851,14 +1853,17 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
             f"Section with header {header!r} must be preceded by 【辅助】 label, "
             f"got: {preceding!r}"
         )
-    # P1-12: public_summary is now 【参考】 tier (decision-critical
-    # death/exile record survives budget pressure ahead of persona /
-    # belief).  Assert the label is consistent.
+    # P1-6 / P1-12: public_summary now has a distinctive
+    # ``【场上记录】`` label (Phase 1 self-audit P1-4 rename) so the
+    # LLM can distinguish it from the strategy_directive inner
+    # sub-group ``【参考】`` marker.  Priority tier is still 辅助.
     public_summary_idx = prompt.find("当前局公开事实")
     if public_summary_idx >= 0:
         preceding = prompt[max(0, public_summary_idx - 60):public_summary_idx]
-        assert "【参考】" in preceding, (
-            "P1-12: public_summary must now be 【参考】 tier, not 【辅助】"
+        assert "【场上记录】" in preceding, (
+            "P1-12 + self-audit P1-4: public_summary must now use the "
+            "distinctive label 【场上记录】 (not 【参考】, which "
+            "collides with the strategy_directive sub-group marker)"
         )
 
 
@@ -3719,36 +3724,6 @@ def test_reasoning_method_has_three_numbered_steps():
     # The 3-step section header is named
     assert "推理方法-3 步" in sys_prompt, (
         "reasoning method section must be labeled with 3-step marker"
-    )
-
-
-def test_directive_key_renders_under_hard_section():
-    """Phase-1 P0-1: ``directive`` key now lives in HARD_CONSTRAINT_KEYS
-    and renders under the inner MUST sub-group when populated.
-    """
-    ctx = AgentContext(
-        agent_id="p05",
-        task_type=TaskType.SPEECH,
-        phase="day",
-        day_number=2,
-        own_role="villager",
-        legal_actions=[ActionType.SPEECH],
-        legal_targets=["p05"],
-        public_summary="",
-        strategy_directive={
-            "directive": "你必须在发言中回应以下矛盾",
-        },
-    )
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # Find MUST sub-group and confirm directive content is inside it
-    must_idx = prompt.find("以下指令必须遵守（MUST）")
-    assert must_idx >= 0
-    # The directive text must appear AFTER the MUST marker (i.e. inside
-    # the hard sub-group, not the reference fallback).
-    directive_idx = prompt.find("你必须在发言中回应以下矛盾")
-    assert directive_idx > must_idx, (
-        "directive text must appear under MUST sub-group, not after "
-        "the reference section"
     )
 
 
