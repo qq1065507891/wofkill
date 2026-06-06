@@ -1381,3 +1381,60 @@ def test_hide_identity_role_conditional() -> None:
         f"NEW-R4-P2-5: witch and wolf hide_identity fallbacks must "
         f"differ; both got: {witch_text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-6: bold_claim static fallback branches by day.
+# ---------------------------------------------------------------------------
+
+
+def test_bold_claim_advice_varies_by_day() -> None:
+    """NEW-R4-P2-6: the static-fallback path of `bold_claim_handler`
+    binarizes day into `day <= 1` (conf=0.6) vs `day > 1` (conf=0.3).
+    Day 2 (still early) gets the same "晚期悍跳风险极高" advice as
+    day 3+ (genuinely late). The LLM has no way to distinguish
+    "this is day 2, the seer-claim window is still open" from
+    "this is day 3, the window is closed".
+
+    Post-fix: branch on `inp.day` with a 3-way split —
+    day=1 (window open, full 悍跳), day=2 (transitional, conditionally
+    recommended), day>=3 (window closed, deprioritize).
+    """
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    def _fallback(day: int) -> str:
+        inp = SkillInput(
+            role="werewolf", phase="speech", day=day,
+            game_state=None, world_state=None, belief_state=None,
+            contradiction_alerts=[], player_id="p01",
+            task_type="speech",
+        )
+        return apply_skill(SkillName.BOLD_CLAIM, inp).prompt_injectable
+
+    day1 = _fallback(1)
+    day2 = _fallback(2)
+    day3 = _fallback(3)
+
+    # day 1 advice must NOT be the day-3 "don't 悍跳" advice.
+    assert day1 != day3, (
+        f"NEW-R4-P2-6: bold_claim fallback must distinguish day 1 "
+        f"from day 3; both got: {day1!r}"
+    )
+    # day 2 (transitional) must NOT share day 3's late-window advice.
+    # If day 2 == day 3, the LLM has no signal for the day 2
+    # "window still open" case.
+    assert day2 != day3, (
+        f"NEW-R4-P2-6: bold_claim fallback must distinguish day 2 "
+        f"from day 3+; both got: {day2!r}"
+    )
+    # day 1 should be most encouraging ("尽早", "窗口", or high
+    # confidence marker). day 3 should be least encouraging.
+    day1_encouraging = any(k in day1 for k in ("尽早", "立即", "建议跳", "窗口", "最佳"))
+    day3_discouraging = any(k in day3 for k in ("不建议", "风险极高", "放弃", "已过"))
+    assert day1_encouraging, (
+        f"NEW-R4-P2-6: day 1 bold_claim must be encouraging; got: {day1!r}"
+    )
+    assert day3_discouraging, (
+        f"NEW-R4-P2-6: day 3 bold_claim must be discouraging; got: {day3!r}"
+    )

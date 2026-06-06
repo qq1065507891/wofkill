@@ -285,12 +285,38 @@ def _default_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # static fallback — day-conditional branching (NEW-R4-P2-6).
+        # Day 1 = 窗口开放 (strongest encouragement). Day 2 = 过渡期
+        # (still possible, conditional on team plan). Day 3+ = 窗口
+        # 关闭 (deprioritize, advise only if teammate already failed).
         risks = ["悍跳风险：如果对跳方是真预言家，可信度会大幅下降"]
-        if inp.day > 2:
+        if inp.day >= 2:
+            risks.append("悍跳需要完整的假时间线，发言越多越容易暴露")
+        if inp.day >= 3:
             risks.append("晚期悍跳风险更高：已发言轮次多，矛盾点容易被抓")
-        conf = 0.6 if inp.day <= 1 else 0.3
-        prompt = "悍跳建议：尽早跳预言家并报出假查验结果。构建完整的时间线和警徽流。" if conf >= 0.5 else "晚期悍跳风险极高，不建议此时悍跳。"
+        if inp.day <= 1:
+            conf = 0.6
+            prompt = (
+                "悍跳建议：当前为Day 1，悍跳窗口最佳。"
+                "尽早跳预言家并报出假查验结果，构建完整时间线和警徽流。"
+                "队友可配合站边，把假预言家身份坐实。"
+            )
+        elif inp.day == 2:
+            conf = 0.45
+            prompt = (
+                "悍跳建议：当前为Day 2，仍有悍跳窗口但风险上升。"
+                "如果队内尚无假预言家且场上无人跳，可考虑悍跳，"
+                "需准备更精细的假时间线和与Day 1发言的兼容性。"
+                "如果已有队友尝试失败，悍跳会进一步暴露狼队，建议放弃。"
+            )
+        else:  # day >= 3
+            conf = 0.3
+            prompt = (
+                "悍跳建议：当前已过Day 2，悍跳窗口基本关闭。"
+                "除非队内无人尝试且对跳方明显是悍跳失败者，"
+                "否则不建议此时悍跳——风险远大于收益，"
+                "应转为深水或倒钩策略。"
+            )
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["报查验结果", "声明警徽流", "攻击对立面逻辑"],
