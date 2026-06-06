@@ -95,6 +95,33 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     # covers the same imperative — adding ``directive`` as a
     # second key produced two MUST sub-group renderings of the
     # same instruction.  Context.py:1149 deletes the producer.
+    # ─────────────────────────────────────────────────────────────────
+    # Phase 2 P2-1: 13 additional hard-constraint keys that
+    # previously fell through to REFERENCE 兜底.  All contain
+    # "强制执行" / "严禁信息穿越" / "必须" / "不能" framing but
+    # LLM was treating them as soft suggestions because of the
+    # REFERENCE 兜底.  Promoting to HARD restores the binding
+    # signal the directive text already carries.
+    # ─────────────────────────────────────────────────────────────────
+    # Wolf team — must-execute plans
+    "wolf_sheriff_must_claim_seer",      # agent_adapter.py:1896
+    "wolf_no_reveal_seer",              # agent_adapter.py:1908
+    "wolf_fake_seer_teammate",          # directives/wolf.py:148/166 — 严禁信息穿越
+    "wolf_kill_instruction",            # agent_adapter.py:547
+    "wolf_team_discussion",             # agent_adapter.py:676
+    # Hybrid — master-faction binding
+    "hybrid_wolf_master_directive",      # directives/hybrid.py:51
+    "hybrid_good_master_directive",      # directives/hybrid.py:69
+    # Hunter / last words / badge decisions
+    "hunter_shot_directive",            # agent_adapter.py:1555 — 你现在可以开枪
+    "last_words",                       # agent_adapter.py:1410 — 遗言必须简短有力
+    "badge_decision",                   # agent_adapter.py:1487
+    # Sheriff silenced — must still vote
+    "sheriff_silent",                   # agent_adapter.py:865 (P1-3 wording)
+    # Witch deterrent — must not reveal identity
+    "witch_poison_deterrent",           # context.py:883 — 不要明报身份
+    # Generic evaluation requirement
+    "required_evaluation",              # agent_adapter.py:302 — 必须在 reason 中解释
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({

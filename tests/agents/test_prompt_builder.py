@@ -73,6 +73,24 @@ def test_hard_constraint_keys_include_critical_directives():
         "witch_night_action",
         "role_alerts",
         "vote_pressure",
+        # Phase 2 P2-1: 13 wolf / hybrid / hunter / last-words / badge /
+        # sheriff-silent / witch-deterrent directives that contain
+        # "强制执行" / "严禁信息穿越" / "必须" / "不能" framing but
+        # previously fell through to REFERENCE 兜底.  LLM downgraded
+        # them to soft suggestions.  Promote to HARD.
+        "wolf_sheriff_must_claim_seer",
+        "wolf_no_reveal_seer",
+        "wolf_fake_seer_teammate",
+        "hybrid_wolf_master_directive",
+        "hybrid_good_master_directive",
+        "required_evaluation",
+        "wolf_kill_instruction",
+        "wolf_team_discussion",
+        "hunter_shot_directive",
+        "last_words",
+        "badge_decision",
+        "sheriff_silent",
+        "witch_poison_deterrent",
     }
     for k in must_be_hard:
         assert k in HARD_CONSTRAINT_KEYS, (

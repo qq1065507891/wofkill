@@ -104,6 +104,35 @@ def test_reflection_hints_tie_broken_by_game_id_descending() -> None:
     assert [h["text"] for h in hints] == ["newer", "older"]
 
 
+def test_reflection_hints_sort_robust_to_game_id_format() -> None:
+    """P2-9: the chr-invert sort trick (which inverts each char code)
+    was fragile to game_id format variations.  New parser-based sort
+    uses an explicit YYYY-MM-DD regex + arithmetic invert, which
+    correctly ranks the same date across separator styles.
+
+    Pre-fix, ``g_2024-12-20`` and ``g2024-12-20`` could rank differently
+    because the underscore vs no-underscore changed the char-code
+    inversion at that position.  New implementation must rank the
+    same.
+    """
+    refs = [
+        _make_reflection(game_id="g_2024-12-20", role="seer", text="underscore"),
+        _make_reflection(game_id="g2024-12-20", role="seer", text="no_underscore"),
+        _make_reflection(game_id="g_2024-11-15", role="seer", text="old_underscore"),
+    ]
+    hints = _reflection_memory_hints(refs, current_role="seer", current_faction="good")
+    # The 2 same-date entries tie on date; tie-broken by entry_id stable
+    # sort. The 2024-12-20 entries come first (newer than 2024-11-15).
+    texts = [h["text"] for h in hints]
+    assert "old_underscore" not in texts, (
+        "P2-9: older game (2024-11-15) must drop when 2 same-role cap fires"
+    )
+    assert set(texts) == {"underscore", "no_underscore"}, (
+        f"P2-9: 2 same-date entries must both surface, regardless of "
+        f"separator; got {texts!r}"
+    )
+
+
 def test_reflection_hints_same_game_id_orders_by_entry_id_stable() -> None:
     """Within same game_id, sort is stable via entry_id (ascending)."""
     refs = [
@@ -475,28 +504,97 @@ def test_all_six_profile_dims_in_prompt() -> None:
 
     hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
 
-    # P2-M15: all 6 dims must surface as *_rank keys in the hint.
+    # Phase 2 P2-7: inner traits (learning_rate / risk_preference) are
+    # review/judge-only.  They must NOT appear in the player-facing
+    # hint dict.  Pre-fix they leaked as rank keys.
     expected_rank_keys = {
         "logic_rank", "deception_rank", "leadership_rank", "credibility_rank",
-        "learning_rate_rank", "risk_preference_rank",
     }
     for key in expected_rank_keys:
         assert key in hint, f'Missing structured rank key: {key!r}. Hint: {hint!r}'
-        assert hint[key] in {"前 30%", "中等", "需要提升", "较高", "偏低"}, (
+        assert hint[key] in {"前 30%", "中等", "需要提升"}, (
             f'Unexpected rank for {key!r}: {hint[key]!r}'
         )
 
-    # Neutral phrasing for inner traits
-    assert hint["learning_rate_rank"] in {"中等", "较高", "偏低"}
-    assert hint["risk_preference_rank"] in {"中等", "较高", "偏低"}
+    # P2-7: learning_rate_rank / risk_preference_rank must NOT exist
+    assert "learning_rate_rank" not in hint, (
+        "P2-7: learning_rate_rank is review/judge-only, must not appear in player hint"
+    )
+    assert "risk_preference_rank" not in hint, (
+        "P2-7: risk_preference_rank is review/judge-only, must not appear in player hint"
+    )
 
     # Raw floats must not appear
     assert "0.3" not in str(hint), f'Raw learning_rate float leaked: {hint!r}'
     assert "0.5" not in str(hint), f'Raw risk_preference float leaked: {hint!r}'
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 P2-8: profile hint adds win_rate_confidence label
+# ---------------------------------------------------------------------------
 
-def test_all_six_profile_dims_learning_rate_low_uses_neutral_phrasing() -> None:
+
+def test_profile_hint_win_rate_confidence_for_zero_games() -> None:
+    """P2-8: when current_role has 0 historical games, the confidence
+    label must be ``无历史`` so the LLM treats 0% win rate as
+    uninformative, not as definitive 'always lose'."""
+    profile = _make_profile(games_played=0)
+    role_stats: dict[str, dict[str, int]] = {}  # no entries at all
+
+    hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
+
+    assert "win_rate_confidence" in hint, (
+        "P2-8: hint must include win_rate_confidence label"
+    )
+    assert hint["win_rate_confidence"] == "无历史", (
+        f"P2-8: 0 games should yield 无历史; got {hint['win_rate_confidence']!r}"
+    )
+
+
+def test_profile_hint_win_rate_confidence_for_low_n_games() -> None:
+    """P2-8: 1-2 games sample size is too small to trust — label
+    ``样本不足(仅N局)`` so the LLM weights it lightly."""
+    profile = _make_profile(games_played=2)
+    role_stats = {"werewolf": {"count": 2, "wins": 1}}  # 50% from 2 games
+
+    hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
+
+    assert hint["win_rate_confidence"] == "样本不足(仅2局)", (
+        f"P2-8: 2 games should yield 样本不足(仅2局); "
+        f"got {hint['win_rate_confidence']!r}"
+    )
+    # 50% from 2 games is the same as 67% from 3 games numerically;
+    # the LLM must NOT see them as equivalently trustworthy.
+    assert "current_role_win_rate_pct" in hint  # raw pct still present, just contextualized
+
+
+def test_profile_hint_win_rate_confidence_for_medium_n_games() -> None:
+    """P2-8: 3-9 games is the medium-confidence tier."""
+    profile = _make_profile(games_played=5)
+    role_stats = {"werewolf": {"count": 5, "wins": 3}}
+
+    hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
+
+    assert hint["win_rate_confidence"] == "样本中等(5局)", (
+        f"P2-8: 5 games should yield 样本中等(5局); "
+        f"got {hint['win_rate_confidence']!r}"
+    )
+
+
+def test_profile_hint_win_rate_confidence_for_high_n_games() -> None:
+    """P2-8: ≥10 games is the high-confidence tier."""
+    profile = _make_profile(games_played=20)
+    role_stats = {"werewolf": {"count": 15, "wins": 10}}
+
+    hint = _profile_memory_hint(profile, role_stats, current_role="werewolf")
+
+    assert hint["win_rate_confidence"] == "样本充足(15局)", (
+        f"P2-8: 15 games should yield 样本充足(15局); "
+        f"got {hint['win_rate_confidence']!r}"
+    )
+
+
+
     """P0-M5: a low learning_rate (≤ 0.33) renders as '你的学习速度处于偏低'
     (or similar neutral), NOT as a raw '需要提升' rank used for the
     main 4 dims (which is too judgmental for an internal trait)."""

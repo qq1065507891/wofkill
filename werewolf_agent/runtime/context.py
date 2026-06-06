@@ -411,17 +411,36 @@ def _profile_memory_hint(
     leadership_rank = _rank(float(getattr(profile, "leadership", 0.5)))
     credibility_rank = _rank(float(getattr(profile, "credibility", 0.5)))
 
+    def _confidence_label(games: int) -> str:
+        # Phase 2 P2-8: surface the sample size as a Chinese label
+        # so the LLM can distinguish 1-game 100% from 10-game 67%.
+        # Without this label the LLM has been observed to over-trust
+        # small-sample win rates (and abandon "I always lose this role"
+        # when N=1 because the LLM misread the precision).
+        if games == 0:
+            return "无历史"
+        if games < 3:
+            return f"样本不足(仅{games}局)"
+        if games < 10:
+            return f"样本中等({games}局)"
+        return f"样本充足({games}局)"
+
     return {
         "games_played": profile.games_played,
         "current_role": current_role,
         "current_role_games": stats["count"],
         "current_role_win_rate_pct": win_rate_pct,
+        # Phase 2 P2-8: sample-size confidence label
+        "win_rate_confidence": _confidence_label(stats["count"]),
         "logic_rank": logic_rank,
         "deception_rank": deception_rank,
         "leadership_rank": leadership_rank,
         "credibility_rank": credibility_rank,
-        "learning_rate_rank": _inner_rank(float(getattr(profile, "learning_rate", 0.5))),
-        "risk_preference_rank": _inner_rank(float(getattr(profile, "risk_preference", 0.5))),
+        # Phase 2 P2-7: learning_rate_rank / risk_preference_rank
+        # removed from the player-facing hint.  These are review /
+        # judge-only fields per the M4 contract; the schema still
+        # exposes them on ``PlayerProfile`` for review tooling but
+        # the LLM no longer sees them mid-game.
     }
 
 
@@ -443,11 +462,30 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
             priority = 1
         # Include game_id so ties are broken by game recency (newer first).
         # entry_id alone is unreliable because it's a composite
-        # "reflection_{game_id}_{player_id}" string. Invert char codes so
-        # YYYY-MM-DD values sort newest-first under ascending comparison.
-        # Use getattr so reflection-like test doubles without game_id still work.
-        game_id = getattr(r, "game_id", "") or ""
-        neg_game_id = "".join(chr(0x10FFFF - ord(c)) for c in str(game_id))
+        # "reflection_{game_id}_{player_id}" string.
+        #
+        # Phase 2 P2-9: the previous chr-invert trick
+        # (``"".join(chr(0x10FFFF - ord(c)) for c in str(game_id))``)
+        # was brittle to game_id format variations — e.g.
+        # ``g_2024-12-20`` vs ``g2024-12-20`` (with/without separator)
+        # could rank out of order because the underscore vs no-
+        # underscore changed the char-code inversion at that
+        # position.  Replace with a parseable YYYY-MM-DD regex +
+        # arithmetic invert that is robust to any prefix/separator.
+        #
+        # Use getattr so reflection-like test doubles without
+        # game_id still work (empty string falls through to a
+        # stable tiebreaker on entry_id).
+        game_id = str(getattr(r, "game_id", "") or "")
+        ts = re.search(r"(\d{4})[_-]?(\d{2})[_-]?(\d{2})", game_id)
+        if ts is not None:
+            yyyy, mm, dd = int(ts.group(1)), int(ts.group(2)), int(ts.group(3))
+            # Invert each component so that newer dates sort first
+            # under ascending comparison (Python's sort is stable).
+            neg_game_id = f"{(9999 - yyyy):04d}-{(12 - mm):02d}-{(31 - dd):02d}"
+        else:
+            # No parseable date — fall back to entry_id stable sort.
+            neg_game_id = ""
         return (-priority, neg_game_id, str(r.entry_id))
 
     # Sort by priority (highest first), then by game recency (newest
