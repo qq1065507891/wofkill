@@ -467,7 +467,14 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
     consecutive = state.get("consecutive_no_exile_days", 0)
-    votes = state.get("exile_votes", {})
+    raw_votes = state.get("exile_votes", {})
+    # P1-G3223805846-2: 前置过滤死人/vote_enabled=False 的 vote，与 engine.resolve_vote 行为一致。
+    # 防止 checkpoint 恢复/重放时残留的死人票进入 vote_resolved payload 的
+    # weighted_tally / vote_weights / votes 列表，避免审计事件虚高计数。
+    eligible_voter_ids = {
+        pid for pid, p in gs.players.items() if p.alive and p.vote_enabled
+    }
+    votes = {vid: tgt for vid, tgt in raw_votes.items() if vid in eligible_voter_ids}
     result = engine.resolve_vote(
         gs, votes=votes,
         revote=state.get("revote", False),
@@ -543,7 +550,7 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
                     (state.get("vote_action_traces") or {}).get(voter_id)
                 ),
             }
-            for voter_id, target_id in sorted((state.get("exile_votes") or {}).items())
+            for voter_id, target_id in sorted(votes.items())
         ],
     }
     if result.tied_player_ids:
@@ -568,7 +575,7 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
                 f"内心理由={thought.get('private_reason') or '未说明'}"
             )
         vote_trace_events.append(audit_event)
-    gs = replace(gs, votes=state.get("exile_votes", {}),
+    gs = replace(gs, votes=votes,
                  events=gs.events + [GameEvent(
                      type="vote_resolved",
                      payload=payload,
