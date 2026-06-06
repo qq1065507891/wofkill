@@ -2579,3 +2579,12 @@ class TestWolfFakeSeerConsistency:
             assert "话术一致" in text or "保持一致" in text or "对跳" in text, (
                 f"role {role} missing fake-seer consistency clause: {text!r}"
             )
+
+    def test_fake_seer_role_has_self_consistency_clause(self):
+        """fake_seer 是话术源头，必须含自我一致性条款。"""
+        from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
+        text = _WOLF_ROLE_STRATEGY["fake_seer"]
+        # Clause 10 (or equivalent) marker
+        assert "自我一致性" in text or "源头" in text or "fake_seer 话术的源头" in text, (
+            f"fake_seer missing self-consistency clause 10: {text!r}"
+        )
