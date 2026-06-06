@@ -115,12 +115,14 @@ def dedup_hits_by_similarity(
     ``similarity_threshold`` (default 0.6). When a duplicate pair is
     found, the higher-relevance hit wins.
 
-    R13: the returned list is capped at ``min(max_items,
-    _DEDUP_DEFAULT_MAX_ITEMS)`` so a caller that asks for more hits
-    than the module default cannot blow past the 2-hit density
-    target. The caller's value is still respected as a LOWER bound
-    (passing ``max_items=1`` still gives 1 hit), but the module
-    default is the ceiling.
+    G-R4-09: the cap is now caller-controlled. The previous behavior
+    silently capped the returned list at the module default
+    (``_DEDUP_DEFAULT_MAX_ITEMS=2``) regardless of the caller's
+    ``max_items`` — so ``hits_to_prompt_lines(max_items=3)`` was a
+    no-op (always returned 2). The cap is now the caller's
+    ``max_items``; the module default only applies when the caller
+    does not pass it. Callers that want the old density target
+    should pass ``max_items=2`` explicitly.
 
     Parameters
     ----------
@@ -128,27 +130,26 @@ def dedup_hits_by_similarity(
         Hits to dedup. Caller is responsible for any prior ordering
         (typically already ranked by the retriever).
     max_items:
-        Upper bound on the returned list, further capped at
-        :data:`_DEDUP_DEFAULT_MAX_ITEMS` (default 2) so the live
-        prompt density target always wins.
+        Upper bound on the returned list. Defaults to
+        :data:`_DEDUP_DEFAULT_MAX_ITEMS` (2) for backward
+        compatibility. Callers can request more (e.g. 3) and get
+        that many distinct hits.
     similarity_threshold:
         Jaccard threshold in [0.0, 1.0]. Default 0.6.
 
     Returns
     -------
     list[RAGHit]
-        A new list with at most ``min(max_items,
-        _DEDUP_DEFAULT_MAX_ITEMS)`` hits. Order is preserved from
-        the input (which is already relevance-ordered by the
-        retriever); only the lower-relevance member of a
+        A new list with at most ``max_items`` hits. Order is
+        preserved from the input (which is already relevance-ordered
+        by the retriever); only the lower-relevance member of a
         near-duplicate pair is dropped.
     """
     if not hits:
         return []
-    # R13: the caller-controlled cap is an upper bound; the module
-    # default is the actual ceiling so the live-prompt density
-    # target always holds even if a caller asks for more.
-    effective_cap = min(max(int(max_items), 0), _DEDUP_DEFAULT_MAX_ITEMS)
+    # G-R4-09: caller-controlled cap. The module default only applies
+    # via the function's default value, not as an implicit ceiling.
+    effective_cap = max(int(max_items), 0)
     token_cache: list[set[str]] = [
         _tokenize(f"{h.title} {h.summary}") for h in hits
     ]

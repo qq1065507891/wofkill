@@ -160,16 +160,11 @@ class TestPromptRenderDropsMetadata:
         assert lines[1]["title"] == "甲1"
 
     def test_hits_to_prompt_lines_default_max_is_three(self) -> None:
-        # P1-G5: distinct titles + distinct summaries with zero token
-        # overlap so the dedup pass doesn't collapse them.
-        # R13: ``hits_to_prompt_lines`` caps the dedup pass at the
-        # module default (2). The ``max_items=3`` argument to
-        # ``hits_to_prompt_lines`` is honored for the *final render*
-        # (it is the contract callers see on the public helper), but
-        # the internal dedup pass now floors at 2. The two-step
-        # ``hits_to_prompt_lines`` -> ``dedup_hits_by_similarity``
-        # call path therefore returns at most 2 entries regardless
-        # of the caller's ``max_items``.
+        # G-R4-09: the dedup cap is now caller-controlled. The
+        # default of ``hits_to_prompt_lines`` is ``max_items=3``
+        # (matching the live-injection cap), and the public helper
+        # honors it. With 5 distinct hits (no near-duplicates), 3
+        # are returned.
         hits = [
             _make_hit(
                 entry_id=f"ext_{i:03d}",
@@ -179,7 +174,7 @@ class TestPromptRenderDropsMetadata:
             for i in range(5)
         ]
         lines = hits_to_prompt_lines(hits)
-        assert len(lines) == 2
+        assert len(lines) == 3
 
     def test_hits_to_prompt_lines_empty(self) -> None:
         assert hits_to_prompt_lines([]) == []
@@ -551,16 +546,14 @@ class TestNearDuplicateHitsMerged:
         assert len(deduped) == 2
 
     def test_dedup_caps_at_default(self) -> None:
-        """R13: ``dedup_hits_by_similarity`` must cap the output at
-        the module default (_DEDUP_DEFAULT_MAX_ITEMS=2) regardless
-        of a larger ``max_items`` value passed by the caller. The
-        previous code took the caller's ``max_items`` as the final
-        cap, so a caller that asked for 5 hits could blow past the
-        2-hit density target and waste live-prompt context.
+        """G-R4-09: the cap is now caller-controlled. The module default
+        (``_DEDUP_DEFAULT_MAX_ITEMS=2``) only applies when the caller
+        does not pass ``max_items`` at all. Passing ``max_items=5``
+        with 5 distinct hits returns 5 — the previous "module default
+        as ceiling" behavior is removed.
 
-        Test passes ``max_items=5`` with five distinct hits (no
-        near-duplicates) and asserts the returned list has at most
-        the default cap of 2 items.
+        Sanity: calling dedup with no ``max_items`` (i.e. relying on
+        the default) caps at 2.
         """
         from werewolf_agent.rag.prompt_renderer import (
             _DEDUP_DEFAULT_MAX_ITEMS,
@@ -575,13 +568,15 @@ class TestNearDuplicateHitsMerged:
             )
             for i in range(5)
         ]
+        # Caller controls the cap.
         deduped = dedup_hits_by_similarity(hits, max_items=5)
-        assert len(deduped) <= _DEDUP_DEFAULT_MAX_ITEMS, (
-            f"R13: dedup must cap at the module default "
-            f"({_DEDUP_DEFAULT_MAX_ITEMS}); got {len(deduped)} items "
-            f"with max_items=5"
+        assert len(deduped) == 5, (
+            f"G-R4-09: caller asked for 5; got {len(deduped)}. The "
+            f"module default must NOT silently cap caller-supplied values."
         )
-        assert len(deduped) == _DEDUP_DEFAULT_MAX_ITEMS
+        # The module default still applies when no max_items is passed.
+        deduped_default = dedup_hits_by_similarity(hits)
+        assert len(deduped_default) == _DEDUP_DEFAULT_MAX_ITEMS
 
     def test_dedup_empty_input(self) -> None:
         assert dedup_hits_by_similarity([], max_items=2) == []
@@ -589,6 +584,36 @@ class TestNearDuplicateHitsMerged:
     def test_dedup_single_hit(self) -> None:
         hit = _make_hit(entry_id="solo")
         assert dedup_hits_by_similarity([hit], max_items=2) == [hit]
+
+    def test_dedup_honors_caller_max_items(self) -> None:
+        """G-R4-09: the module default (``_DEDUP_DEFAULT_MAX_ITEMS=2``)
+        previously acted as an implicit ceiling — a caller asking for 3
+        distinct hits silently got 2. The fix lets the caller control
+        the cap: ``max_items=3`` with 3 distinct hits returns 3.
+
+        The ``_DEDUP_DEFAULT_MAX_ITEMS=2`` default still applies when
+        the caller does not pass ``max_items`` at all (so existing
+        callers that relied on the old default keep working). The
+        fix is that the default is no longer a CEILING — it is only
+        a default for the argument.
+        """
+        # 3 distinct hits (zero token overlap, Jaccard ~ 0).
+        hits = [
+            _make_hit(
+                entry_id=f"x{i}",
+                title=f"甲{i}",
+                summary=f"乙{i}",
+                relevance=0.5 - i * 0.01,
+            )
+            for i in range(3)
+        ]
+        deduped = dedup_hits_by_similarity(hits, max_items=3)
+        assert len(deduped) == 3, (
+            f"G-R4-09: caller asked for 3 distinct hits; got {len(deduped)}. "
+            f"The module default must NOT act as a ceiling."
+        )
+        # And the order matches the caller's input.
+        assert [h.entry_id for h in deduped] == ["x0", "x1", "x2"]
 
 
 if __name__ == "__main__":
