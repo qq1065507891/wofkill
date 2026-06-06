@@ -1351,6 +1351,13 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             parts.append(f"发言矛盾：{'; '.join(a.description for a in dead_alerts[:2])}。")
         if speech_count:
             parts.append(f"有{speech_count}条发言记录。")
+        # NEW-R4-P2-3: if the dead player has no claims, no
+        # contradictions, and no speeches, parts is just the bare
+        # "p05的遗言：" label with no body — a useless artifact that
+        # wastes prompt budget. Fall back to a placeholder so the
+        # LLM has something to read.
+        if len(parts) == 1:
+            parts.append("无具体遗言内容可分析。")
         all_prompts.append("".join(parts))
 
     if not all_prompts:

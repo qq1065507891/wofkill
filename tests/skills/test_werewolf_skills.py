@@ -1044,3 +1044,77 @@ def test_no_dead_action_locals_in_handlers() -> None:
         f"locals are written and never read. Offending sites: "
         f"{offenders!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-3: last_words handles empty per-death parts gracefully.
+# ---------------------------------------------------------------------------
+
+
+def test_last_words_handles_empty_input() -> None:
+    """NEW-R4-P2-3: when a dead player has NO claims, NO contradictions,
+    and NO speech, the per-death entry should NOT be just an empty
+    `p05的遗言：` label (a useless artifact that wastes prompt
+    budget). Either skip the entry entirely or fall back to a
+    placeholder like `无具体遗言内容可分析`.
+
+    Pre-fix: `parts = [f"{dead_player}的遗言："]` followed by
+    conditional appends. With no claims/alerts/speech, the entry is
+    just the bare label. The LLM gets `p05的遗言：` followed by a
+    newline and no body — it has to invent content.
+
+    Post-fix: when no content is available for a dead player, either
+    skip the entry or substitute `无具体遗言内容可分析`. The
+    rendered prompt must NOT contain a bare `p05的遗言：` label with
+    no following content.
+    """
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # p05 just died and has NO claims, NO speeches, NO alerts.
+    players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    ws.append(StructuredFact(
+        fact_type="player_died", target_player="p05",
+        value="wolf_kill", day=2,
+    ))
+    # Sanity: p05 has no claims/speeches. No contradiction_alerts either.
+
+    inp = SkillInput(
+        role="villager", phase="day", day=2,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.LAST_WORDS_ANALYSIS, inp)
+    text = out.prompt_injectable
+    # The bare `p05的遗言：` label with no body must NOT appear.
+    # Acceptable forms: skipped entry, or `p05的遗言： 无具体遗言内容可分析`
+    # (with placeholder body) — but NOT a bare label.
+    assert "p05的遗言：" not in text or "无具体遗言内容可分析" in text, (
+        f"NEW-R4-P2-3: last_words must not emit a bare `p05的遗言：` "
+        f"label with no content; got: {text!r}"
+    )
+    # A p05 that died AND has no data should still be mentioned
+    # somehow (the dead player matters) — but as a placeholder.
+    if "p05" in text:
+        assert "无具体" in text or "无内容" in text, (
+            f"NEW-R4-P2-3: empty-death entry must include a placeholder; "
+            f"got: {text!r}"
+        )
