@@ -3274,5 +3274,91 @@ def test_salience_fields_include_seer_claim_speaker_result_alignment():
     )
 
 
+# ---------------------------------------------------------------------------
+# D4-2: choice-prompt vote example vote_basis must be role-appropriate
+# ---------------------------------------------------------------------------
+#
+# Audit D4-2 finding: `_format_examples` (FULL_ACTION mode) already
+# branches the example's `vote_basis` by `ctx.own_role`:
+#   - seer       → "seer_check"   (own check)
+#   - non-seer   → "seer_siding"  (siding with a claimed seer)
+# But `_format_choice_prompt` (TARGET_CHOICE mode, used for VOTE) hardcodes
+# `"vote_basis":"seer_check"` for every role. A non-seer agent seeing that
+# example will copy "seer_check" into the audit log — but only the seer
+# has a check, so non-seer agents fabricate a non-existent basis.
+#
+# Game trace g_3528592081 showed non-seer villager votes emitting
+# `vote_basis="seer_check"` (a real audit-trail inconsistency).
+#
+# Fix: make `_format_choice_prompt` mirror `_format_examples` — branch the
+# example's `vote_basis` by `ctx.own_role`. Seer still uses "seer_check";
+# every other role uses "seer_siding".
+
+
+def test_choice_prompt_vote_basis_role_appropriate():
+    """D4-2: for own_role='villager', the choice example uses 'seer_siding'.
+
+    The TARGET_CHOICE pipeline is used for single-action-per-turn flows
+    like VOTE. A non-seer villager agent running through that pipeline
+    must see `vote_basis='seer_siding'` in the example — matching the
+    behavior already established in `_format_examples` (P1-8).
+
+    This test targets the `_format_choice_prompt` path specifically.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p03", "p05", "p07"],
+        public_summary="D2 vote",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Sanity: the prompt is the TARGET_CHOICE prompt, not FULL_ACTION.
+    # It uses "choice" not "action_type" — so extract the example as raw
+    # text rather than parsing it as a PlayerAction.
+    assert "vote_basis" in prompt, (
+        "D4-2: choice prompt must render a vote example with audit fields"
+    )
+    # Villager has no check — example must NOT advertise seer_check.
+    assert '"vote_basis":"seer_check"' not in prompt, (
+        "D4-2: villager choice example must use vote_basis='seer_siding', "
+        "not 'seer_check' (villager has no check of their own). "
+        f"Prompt: {prompt!r}"
+    )
+    # Positive assertion: the example must show seer_siding.
+    assert '"vote_basis":"seer_siding"' in prompt, (
+        "D4-2: villager choice example must use vote_basis='seer_siding'. "
+        f"Prompt: {prompt!r}"
+    )
+
+
+def test_choice_prompt_vote_basis_seer_unchanged():
+    """D4-2 regression: own_role='seer' must still use 'seer_check'.
+
+    The seer has their own check. The TARGET_CHOICE vote example for a
+    seer agent must keep `vote_basis='seer_check'` (mirrors the
+    P1-8 regression in `_format_examples`).
+    """
+    ctx = AgentContext(
+        agent_id="p03",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="seer",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 seer vote",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert '"vote_basis":"seer_check"' in prompt, (
+        "D4-2 regression: seer choice example must keep "
+        "vote_basis='seer_check' (own check). "
+        f"Prompt: {prompt!r}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

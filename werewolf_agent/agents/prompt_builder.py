@@ -1095,10 +1095,20 @@ class PlayerPromptBuilder:
             )
             lines.append(f"{choice} = {target_id}，摘要：{summary}")
         if is_vote:
+            # D4-2: branch the example's vote_basis by own_role. Only a
+            # seer has a check of their own — non-seer roles are
+            # siding with a (claimed) seer. Mirrors the P1-8 fix in
+            # `_format_examples`. Without this, a non-seer villager
+            # voting via the TARGET_CHOICE pipeline would copy
+            # ``vote_basis="seer_check"`` into the audit log and
+            # fabricate a non-existent basis (game trace
+            # g_3528592081 observed this leak).
+            role = ctx.own_role or "villager"
+            choice_vote_basis = "seer_check" if role == "seer" else "seer_siding"
             example = (
                 '{"choice":"A","reason":"投票公开理由",'
                 '"seer_stance":"trust",'
-                '"vote_basis":"seer_check",'
+                f'"vote_basis":"{choice_vote_basis}",'
                 '"standing_with_seer":"站边的预言家或逻辑线",'
                 '"suspect_reason":"为什么怀疑该候选",'
                 '"not_voting_reason":"为什么不投其他候选",'
