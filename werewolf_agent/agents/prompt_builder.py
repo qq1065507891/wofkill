@@ -1240,9 +1240,16 @@ class PlayerPromptBuilder:
 # but the renderer should enforce the boundary so a future change
 # cannot leak `seer_result`, `witch_target`, `wolf_team`, etc. into
 # the player-visible prompt.
+# D4-1: ``speaker`` / ``result`` / ``alignment`` are explicitly public
+# fields. A seer_claim event's whole point is to broadcast who claimed
+# what, so speaker (who) / result (claimed outcome) / alignment
+# (claimed faction) are public-by-construction. The private
+# ``seer_result`` (the raw check result the Seer actually saw) is
+# distinct and stays in _SALIENCE_PRIVATE_KEYS.
 _SALIENCE_PUBLIC_FIELDS: frozenset[str] = frozenset({
     "weight", "bucket", "fact_type", "source", "target", "value",
     "day", "phase", "event_type",
+    "speaker", "result", "alignment",
 })
 _SALIENCE_PRIVATE_KEYS: frozenset[str] = frozenset({
     "seer_result", "witch_target", "wolf_team",

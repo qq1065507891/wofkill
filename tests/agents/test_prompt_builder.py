@@ -3195,5 +3195,84 @@ def test_sheriff_example_includes_withdraw():
     )
 
 
+# ---------------------------------------------------------------------------
+# D4-1: _SALIENCE_PUBLIC_FIELDS must include seer_claim core fields
+# ---------------------------------------------------------------------------
+#
+# Audit D4-1 finding: the public-field whitelist at prompt_builder.py:1243
+# contains `target`, `value`, `event_type` etc., but NOT `speaker`, `result`,
+# or `alignment`. A seer_claim event (a public Seer claim that says
+# "I am the Seer and I checked <target> with <result>") needs those three
+# fields for the LLM to understand who claimed what. Without them, the
+# filtered salience item reads "someone made a seer_claim" — useless for
+# downstream reasoning. Note: `seer_result` (the raw check result) is still
+# a private key and stays out. `result` / `alignment` (the public claimed
+# alignment) is fair game.
+#
+# Fix: extend _SALIENCE_PUBLIC_FIELDS with `speaker`, `result`, `alignment`.
+# The whitelist remains a defense-in-depth boundary; private keys
+# (`seer_result`, `witch_target`, `wolf_team`, `private_intent`,
+# `moderator_full`) are still dropped.
+
+
+def test_salience_fields_include_seer_claim_speaker_result_alignment():
+    """D4-1: a seer_claim salience item must keep its public speaker/result/alignment.
+
+    The seer_claim event is the public record of a Seer claiming a role
+    and announcing a check. Three fields drive the LLM's reasoning:
+    - ``speaker``: who made the claim (public by definition — the claim
+      itself is public)
+    - ``result``: the publicly claimed alignment ("good"/"werewolf")
+    - ``alignment``: same — the public claim, not the raw ``seer_result``
+
+    A future change that limits the whitelist to
+    ``{target, value, event_type, ...}`` would drop these fields and
+    leave the LLM unable to interpret the claim.
+    """
+    seer_claim_item = {
+        "event_type": "seer_claim",
+        "speaker": "p03",
+        "target": "p07",
+        "result": "werewolf",
+        "alignment": "werewolf",
+        "day": 2,
+        "phase": "day",
+        "weight": 0.9,
+    }
+    ctx = _make_ctx_with_salience([seer_claim_item])
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The salience section header is "关键事件" — and the rendered
+    # JSON must include speaker/result/alignment.
+    assert "关键事件" in prompt, (
+        "D4-1: salience section header must be present for non-empty "
+        "salience_items"
+    )
+    # Each public field of the seer_claim must survive the whitelist.
+    # Note: _compact_json uses ``separators=(",", ":")`` — no whitespace
+    # after the colon. We assert on the compact form.
+    assert '"speaker":"p03"' in prompt, (
+        "D4-1: salience whitelist must preserve `speaker` for seer_claim "
+        "events (the claim is public — the speaker is public). "
+        f"prompt: {prompt!r}"
+    )
+    assert '"result":"werewolf"' in prompt, (
+        "D4-1: salience whitelist must preserve `result` (the public "
+        "claimed alignment, NOT `seer_result` the private key). "
+        f"prompt: {prompt!r}"
+    )
+    assert '"alignment":"werewolf"' in prompt, (
+        "D4-1: salience whitelist must preserve `alignment` (public). "
+        f"prompt: {prompt!r}"
+    )
+    # And the private key `seer_result` must STILL be dropped — this
+    # confirms we extended the whitelist without weakening the
+    # private-key defense.
+    assert "seer_result" not in prompt, (
+        "D4-1: private key `seer_result` must still be stripped from "
+        "salience items even after adding `result` to the public "
+        f"whitelist. prompt: {prompt!r}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
