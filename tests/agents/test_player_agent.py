@@ -1165,8 +1165,19 @@ class TestPlayerAgentRetryFallback:
         assert "【信息边界】" in prompt
         assert "知识库提示只是玩法经验，不是当前局发生的事" in prompt
         assert "跨局记忆只是历史经验" in prompt
-        assert "【推理方法】" in prompt
-        assert "盘狼坑时优先看" in prompt
+        # Phase-1 audit (P1-29): reasoning method was restructured
+        # from 4 abstract lines to a numbered 3-step actionable flow.
+        # Update the assertions to match the new label and a key
+        # phrase from the 3-step body.
+        assert "【推理方法-3 步】" in prompt, (
+            "Phase-1 P1-29: reasoning method section must be labeled "
+            "with the 3-step marker; the old single 【推理方法】 label "
+            "is no longer used."
+        )
+        assert "盘狼坑：按发言矛盾" in prompt, (
+            "Phase-1 P1-29: reasoning method must include the 3-step "
+            "盘狼坑 body; the old 盘狼坑时优先看 phrasing is gone."
+        )
         # P0-K1: tool-skill policy replaced with pre-injection policy
         assert "【技能与建议】" in prompt
         assert "技能分析不是裁判真相" in prompt

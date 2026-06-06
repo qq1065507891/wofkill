@@ -4,10 +4,58 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Judge Polish — 8 P2/P3 Issues (J-7..J-14)** — 2026-06-05
-- Active task: J-12 — `_cmd_show_votes` event-type filter misses `vote_resolved` / `sheriff_vote_resolved`
+- Current phase: **Prompt-Audit Phase 1 — 10 single-file low-risk fixes (P1-1..10)** — 2026-06-06
+- Active task: All 10 P1 items done; full regression `2072 passed, 0 failed`
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-05
+- Last updated: 2026-06-06
+
+---
+
+## Prompt-Audit Phase 1 (P1-1..10) — 10 single-file low-risk fixes
+
+Branch: current `master`. Scope: 10 polish issues identified by the
+7-module prompt-design audit (modules A-G dispatched as subagents
+2026-06-06). All issues are single-file, behavior-preserving
+re-classifications, dead-key removals, or text rewording — no
+schema / rule / API changes.
+
+| # | Issue | Source | Files | Commit |
+|---|-------|--------|-------|--------|
+| P1-1  | `directive` 字符串从 REFERENCE 兜底挪进 HARD_CONSTRAINT_KEYS (语义"必须" 误分类) | Module D + C + G consensus | `prompt_builder.py` | this commit |
+| P1-2  | 删 `witch_speech_constraint` 死键 (D-1 改名后未清理) | Module D | `prompt_builder.py` | this commit |
+| P1-3  | `sheriff_silent` 措辞从 `[vote_silent]` 字段改 `target_id` 字段 (schema 校验拒) | Module D | `agent_adapter.py` | this commit |
+| P1-4  | `judge_router.resolve` 真正按 task_type 拼接 `task_styles[task_type]` 提示 (之前 dead data) | Module C | `judge_router.py` | this commit |
+| P1-5  | `_SALIENCE_PUBLIC_FIELDS` 补 `id` + `summary` (LLM 之前只看到 weight, 事件无法跨回合追踪) | Module B | `prompt_builder.py` | this commit |
+| P1-6  | `public_summary` 优先级从【辅助】升【参考】 (含死讯/放逐记录, 关键决策信息) | Module B | `prompt_builder.py` | this commit |
+| P1-7  | private memory caveat 加 `---` 视觉分隔 (避免 LLM 折叠 caveat 进 JSON) | Module F | `prompt_builder.py` | this commit |
+| P1-8  | villager guide 补夜间兜底 (白痴无投票权/猎人不替决); hybrid guide 补"主人死后不能再选"+ 屠边条件 | Module A | `prompt_builder.py` | this commit |
+| P1-9  | reasoning method 4 行抽象改 3 步编号流程 (1)分层 2)盘狼坑 3)决策 | Module A | `prompt_builder.py` | this commit |
+| P1-10 | judge 4 处 LLM 调用 `jitter_seconds=(0,0)` (judge 串行, jitter 只增延迟) | Module C | `judge.py` | this commit |
+| (infra) | `test_phase1_rule_tests_still_pass` 子进程加 `--override-ini=addopts=` (xdist 未装时假阳性失败) | pre-existing test infra bug | `test_graph_lifecycle.py` | this commit |
+
+**Files changed**: 4 production (`prompt_builder.py`, `judge.py`,
+`judge_router.py`, `agent_adapter.py`) + 5 test (`test_prompt_builder.py`,
+`test_judge_agent.py`, `test_player_agent.py`, `test_strategy_directives.py`,
+`test_graph_lifecycle.py`).
+
+**Test results (final, 2026-06-06)**: `pytest tests/agents/ tests/runtime/
+tests/rules/ tests/memory/ tests/rag/ tests/skills/ tests/cognition/
+tests/model_gateway/` → **2072 passed, 0 failed** in 177s
+(2:57).  Only warning: `PytestCacheWarning` (cache dir permission,
+pre-existing, not test failure).
+
+**Cross-module impact**:
+- P1-1 牵动 `context.py:1149` producer 已无需改 (key 已被 producer 写入, 现分类变更)
+- P1-6 牵动 `_SECTION_PRIORITIES` 字典: `public_summary` 从【辅助】升【参考】后, 同 budget 压力下 `public_summary` 比 persona / belief 更耐丢 — 是设计意图
+- P1-7 牵动 `_build_private_memory_hints` 视觉边界, 现有 caveat 测试仍过 (caveat 内容不变)
+- P1-8 牵动 `_build_role_guide` 渲染: villager/hybrid 段变长, 但 `_format_examples` 不引用这些文本
+- P1-9 牵动 `_build_reasoning_method` 段标签变化, 现有 test `test_system_prompt_defines_information_boundaries_and_skill_rules` 已同步更新断言
+- P1-10 牵动 judge 4 处 `_persona_inject` 后调 `model_router.generate`, 现有 judge 测试全过 (4 处统一加 `jitter_seconds=(0,0)`, 无 `_calls_provider_generate` 路径变化)
+
+**Open follow-ups (non-blocking)**:
+- Phase 2: 13 mid-risk items (P0-2 狼队硬约束挪 HARD, P0-3 judge task_type, P0-5 system 输出契约同步 9 字段, P1-8/13/15/16/17/18/19/22/23/24)
+- Phase 3: 7 cross-module items (P0-4 visible_state 剥私钥, P1-10/14/20/21/28/30)
+- P1-32 (contradiction_alerts 渲染) 在 2026-06-06 决策中**明确不做** — 已被 `must_address_alerts` (HARD) 替代, raw alerts 仅 engine 消费
 
 ---
 

@@ -2447,3 +2447,48 @@ class TestSingleSeerBranch:
             f"single-seer branch should mention seer-claimant situation; "
             f"got: {vs!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 audit P1-7: sheriff_silent must reference target_id, not vote_silent
+# ---------------------------------------------------------------------------
+
+
+def test_sheriff_silent_directive_references_target_id_not_vote_silent():
+    """Phase-1 P1-7: when sheriff is silenced, the directive must tell
+    the LLM to use the existing ``target_id`` field on the vote
+    action — NOT a nonexistent ``[vote_silent]`` field.
+
+    Pre-fix the directive said "通过 [vote_silent] 字段指定"; there is
+    no ``vote_silent`` field in any PlayerAction variant, so the LLM
+    fabricated the field, the schema validator rejected it, and the
+    action fell through to a generic fallback.
+
+    Implementation: the directive is built inline in agent_adapter.py
+    (~L865).  We use ``inspect.getsource`` to read the file source
+    and assert the literal strings present/absent there.  This is
+    integration-coupled enough that a full runtime simulation would
+    require mocking game state, registry, etc. — out of scope.
+    """
+    import inspect
+    from werewolf_agent.runtime import agent_adapter as _mod
+    src = inspect.getsource(_mod)
+    # Search for the sheriff_silent assignment block
+    assert '"sheriff_silent"' in src, (
+        "sheriff_silent key assignment must exist in agent_adapter.py"
+    )
+    # The offending [vote_silent] placeholder must NOT appear anywhere
+    # in the source (the LLM-facing directive text).
+    assert "[vote_silent]" not in src, (
+        "P1-7: [vote_silent] placeholder must be removed from "
+        "sheriff_silent directive text in agent_adapter.py"
+    )
+    # The replacement text must mention target_id (the existing
+    # PlayerAction field that silenced sheriffs can still use to
+    # pre-register a vote target).
+    sheriff_silent_idx = src.find('"sheriff_silent"')
+    snippet = src[sheriff_silent_idx:sheriff_silent_idx + 300]
+    assert "target_id" in snippet, (
+        f"P1-7: sheriff_silent directive must reference target_id; "
+        f"got snippet: {snippet!r}"
+    )

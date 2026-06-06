@@ -459,12 +459,26 @@ def test_extract_event_log() -> None:
 # ---------------------------------------------------------------------------
 
 def test_phase1_rule_tests_still_pass() -> None:
-    """Meta-test: confirm we didn't break Phase 1."""
+    """Meta-test: confirm we didn't break Phase 1.
+
+    Note: this test runs the rules tests in a subprocess.  The
+    project pytest.ini sets ``addopts = -n --dist=loadfile`` (xdist
+    parallelism) but xdist is not always installed in dev envs.
+    The subprocess inherits pytest.ini, so without
+    ``--override-ini="addopts="`` the subprocess fails with
+    "unrecognized arguments: -n".  Force-disable addopts for the
+    subprocess so the test works in both xdist-enabled and xdist-free
+    environments.
+    """
     import subprocess
     import sys
     result = subprocess.run(
         [sys.executable, "-m", "pytest",
-         "tests/rules/test_rule_engine_v1.py", "-q"],
+         "tests/rules/test_rule_engine_v1.py", "-q",
+         "--override-ini=addopts="],
         capture_output=True, text=True,
     )
-    assert result.returncode == 0, f"Phase 1 tests failed: {result.stdout[:500]}"
+    assert result.returncode == 0, (
+        f"Phase 1 tests failed: {result.stdout[:500]} "
+        f"(stderr: {result.stderr[:200]})"
+    )

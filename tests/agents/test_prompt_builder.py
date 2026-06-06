@@ -70,6 +70,12 @@ def test_hard_constraint_keys_include_critical_directives():
         "witch_night_action",
         "role_alerts",
         "vote_pressure",
+        # Phase-1 audit: ``directive`` is a natural-language imperative
+        # injected by context.py:1149 ("你必须在发言中回应以下矛盾"),
+        # same binding semantics as must_address_alerts.  Without
+        # explicit classification it fell through to REFERENCE and
+        # the LLM treated "必须" as soft suggestion.
+        "directive",
     }
     for k in must_be_hard:
         assert k in HARD_CONSTRAINT_KEYS, (
@@ -79,6 +85,12 @@ def test_hard_constraint_keys_include_critical_directives():
 
 def test_suggestion_keys_include_behavioral_directives():
     """Behavioral guidance (recommended but not mandatory) lives in 建议."""
+    # Phase-1 audit: ``witch_speech_constraint`` was a dead key
+    # (D-1 renamed the producer to ``witch_speech_directive`` but the
+    # SUGGESTION_KEYS entry was never removed).  Producer grep returns
+    # zero hits.  Dropped from the must_be_suggestion set; the
+    # explicit ``test_witch_speech_constraint_not_in_suggestion_keys``
+    # below confirms it is removed from the frozenset itself.
     must_be_suggestion = {
         "wolf_speech_directive",
         "wolf_universal_rules",
@@ -87,13 +99,21 @@ def test_suggestion_keys_include_behavioral_directives():
         "sheriff_vote_push",
         "speech_originality",
         "seer_speech_directive",
-        "witch_speech_constraint",
         "anti_following_and_peace_night_rule",
     }
     for k in must_be_suggestion:
         assert k in SUGGESTION_KEYS, (
             f"{k!r} must be classified as 建议 (suggestion); got none"
         )
+
+
+def test_witch_speech_constraint_not_in_suggestion_keys():
+    """Phase-1 audit: dead key removed from SUGGESTION_KEYS."""
+    assert "witch_speech_constraint" not in SUGGESTION_KEYS, (
+        "witch_speech_constraint has no producer (D-1 renamed it to "
+        "witch_speech_directive); keeping it in SUGGESTION_KEYS misleads "
+        "future readers and the renderer."
+    )
 
 
 def test_reference_keys_include_background_context():
@@ -154,7 +174,14 @@ def test_strategy_directive_renders_three_section_headers():
 
 
 def test_strategy_directive_only_hard_section_when_only_hard_keys():
-    """Only hard keys → only 硬约束 header (建议/参考 headers absent)."""
+    """Only hard keys → only 硬约束 sub-group marker (建议/参考 sub-group markers absent).
+
+    Phase-1 audit: the bare ``【参考】`` outer label is now also used by
+    ``_build_public_summary`` (P1-12 promoted it from 辅助).  Using
+    the inner P0-S5 sub-group discriminator ``以下为背景信息（REFERENCE）``
+    keeps the test targeted to the strategy_directive sub-group, not
+    the section label.
+    """
     ctx = _make_ctx_with_directive(
         {
             "must_address_alerts": ["p07 accused me"],
@@ -162,9 +189,9 @@ def test_strategy_directive_only_hard_section_when_only_hard_keys():
         }
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert "【硬约束】" in prompt
-    assert "【建议】" not in prompt
-    assert "【参考】" not in prompt
+    assert "以下指令必须遵守（MUST）" in prompt
+    assert "以下指令为建议（SHOULD）" not in prompt
+    assert "以下为背景信息（REFERENCE）" not in prompt
 
 
 def test_strategy_directive_only_suggestion_section_when_only_suggestion_keys():
@@ -279,7 +306,14 @@ def test_suggestion_key_appears_under_suggestion_section():
 
 
 def test_reference_key_appears_under_reference_section():
-    """`skill_tactical_advice` must be rendered under 【参考】."""
+    """`skill_tactical_advice` must be rendered under the inner P0-S5
+    ``以下为背景信息（REFERENCE）`` sub-group.
+
+    Phase-1 audit (P1-12): the bare ``【参考】`` outer label is also
+    used by ``_build_public_summary`` (promoted to 参考 tier).  Using
+    the inner sub-group discriminator keeps the test targeted to the
+    strategy_directive section.
+    """
     ctx = _make_ctx_with_directive(
         {
             "skill_tactical_advice": {"role": "werewolf"},
@@ -288,8 +322,8 @@ def test_reference_key_appears_under_reference_section():
         }
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    hard_idx = prompt.find("【硬约束】")
-    ref_idx = prompt.find("【参考】")
+    hard_idx = prompt.find("以下指令必须遵守（MUST）")
+    ref_idx = prompt.find("以下为背景信息（REFERENCE）")
     assert hard_idx >= 0 and ref_idx >= 0
     assert hard_idx < ref_idx
     ref_body = prompt[ref_idx:]
@@ -342,7 +376,13 @@ def test_hard_section_includes_must_obey_framing():
 
 
 def test_section_ordering_is_hard_then_suggestion_then_reference():
-    """3 sections must appear in priority order: 硬约束 → 建议 → 参考."""
+    """3 sections must appear in priority order: 硬约束 → 建议 → 参考.
+
+    Phase-1 audit (P1-12): public_summary now also carries the bare
+    【参考】 outer label.  Using the inner P0-S5 sub-group
+    discriminators keeps the test targeted to the strategy_directive
+    section ordering, not the global section labels.
+    """
     ctx = _make_ctx_with_directive(
         {
             "must_address_alerts": ["x"],
@@ -351,9 +391,9 @@ def test_section_ordering_is_hard_then_suggestion_then_reference():
         }
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    hard_idx = prompt.find("【硬约束】")
-    sugg_idx = prompt.find("【建议】")
-    ref_idx = prompt.find("【参考】")
+    hard_idx = prompt.find("以下指令必须遵守（MUST）")
+    sugg_idx = prompt.find("以下指令为建议（SHOULD）")
+    ref_idx = prompt.find("以下为背景信息（REFERENCE）")
     assert hard_idx >= 0 and sugg_idx >= 0 and ref_idx >= 0
     assert hard_idx < sugg_idx < ref_idx, (
         "Sections must appear in priority order: 硬约束 < 建议 < 参考"
@@ -1780,6 +1820,10 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
     """P1-S3: 辅助 sections all use the same 【辅助】 label, not mixed
     labels. The LLM should see a uniform priority signal across the
     background context.
+
+    Phase-1 audit (P1-12): ``_build_public_summary`` was promoted from
+    辅助 to 参考.  Removed from the auxiliary_header list and added
+    a parallel assertion that it now bears the 参考 label.
     """
     ctx = _make_ctx_for_priority_label_test()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
@@ -1787,7 +1831,6 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
     auxiliary_headers = [
         "当前阶段",          # phase
         "我的判断",         # belief
-        "当前局公开事实",     # public summary
         "可见状态",          # visible state
         "本局·",            # private memory
         "关键事件",          # salience
@@ -1807,6 +1850,15 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         assert "【辅助】" in preceding, (
             f"Section with header {header!r} must be preceded by 【辅助】 label, "
             f"got: {preceding!r}"
+        )
+    # P1-12: public_summary is now 【参考】 tier (decision-critical
+    # death/exile record survives budget pressure ahead of persona /
+    # belief).  Assert the label is consistent.
+    public_summary_idx = prompt.find("当前局公开事实")
+    if public_summary_idx >= 0:
+        preceding = prompt[max(0, public_summary_idx - 60):public_summary_idx]
+        assert "【参考】" in preceding, (
+            "P1-12: public_summary must now be 【参考】 tier, not 【辅助】"
         )
 
 
@@ -3514,6 +3566,189 @@ def test_rag_hints_survive_budget_pressure() -> None:
         f"【辅助】 section (persona), but '人格设定' is still in the "
         f"prompt. If it survived, the test setup isn't tight enough "
         f"to exercise the budget. prompt[:400]={prompt[:400]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 audit: 7 new behavior tests for items 11, 12, 25, 26, 29
+# ---------------------------------------------------------------------------
+
+
+def test_salience_id_and_summary_preserved_in_prompt():
+    """Phase-1 P1-11: salience items with ``id`` and ``summary`` must
+    surface in the rendered prompt so the LLM can track which event is
+    which across turns.
+
+    Pre-fix, ``_SALIENCE_PUBLIC_FIELDS`` did not include ``id`` /
+    ``summary`` and ``_slim_salience_item`` stripped them — the LLM
+    saw only ``weight`` etc. and could not distinguish salience
+    events from one another.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="",
+        salience_items=[
+            {"id": "sal-7", "weight": 0.5, "summary": "p07 翻票"},
+        ],
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    assert "sal-7" in prompt, (
+        "salience item id 'sal-7' must be preserved in the rendered prompt"
+    )
+    assert "p07 翻票" in prompt, (
+        "salience item summary must be preserved so the LLM can read the event"
+    )
+
+
+def test_private_memory_caveat_wrapped_in_separator_markers():
+    """Phase-1 P1-25: the P1-M10 caveat string is wrapped in ``---``
+    so the LLM cannot mistake it for a JSON key or hint payload entry.
+
+    Pre-fix, the caveat was directly prepended to the JSON dict and
+    the LLM had been observed to fold it into the parsed object.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="",
+        private_memory_hints={"logic_flaws": [{"day": 1, "speaker": "p02", "point": "flip"}]},
+        private_memory_caveat=(
+            "【P1-M10 提示】私有记忆中的'逻辑漏洞'与'合理点'是基于关键词的粗粒度信号"
+        ),
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The caveat must be flanked by --- markers
+    assert "---" in prompt
+    # The caveat text must appear
+    assert "P1-M10" in prompt
+    # Find the position of the marker, ensure it precedes the caveat
+    marker_idx = prompt.find("---")
+    caveat_idx = prompt.find("P1-M10")
+    assert marker_idx < caveat_idx, (
+        "Separator marker --- must precede the caveat text so the LLM "
+        "treats it as a meta-notice, not a JSON field"
+    )
+
+
+def test_villager_guide_includes_night_fallback():
+    """Phase-1 P1-26: villager role guide must include night-time
+    fallback behavior (idiot reveals, hunter shot) — villagers are
+    3 of 12 players in V1.
+
+    Note: role guide lives in the SYSTEM prompt (stable rule), so
+    we assert against ``build_system_prompt()``.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="",
+    )
+    sys_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    assert "夜间阶段" in sys_prompt, (
+        f"villager guide must include night-time fallback behavior; "
+        f"got sys_prompt={sys_prompt[-500:]!r}"
+    )
+    assert "无投票权" in sys_prompt, (
+        "villager guide must mention idiot losing vote after reveal"
+    )
+
+
+def test_hybrid_guide_includes_master_death_lock():
+    """Phase-1 P1-26: hybrid role guide must explicitly state that
+    master's death LOCKS the faction — no reselection, hybrid
+    slaughter conditions differ by master faction.
+
+    Note: role guide lives in the SYSTEM prompt (stable rule).
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="hybrid",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="",
+    )
+    sys_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    assert "不能再选" in sys_prompt, (
+        "hybrid guide must state master is locked after death (no reselection)"
+    )
+    assert "屠边" in sys_prompt, (
+        "hybrid guide must mention slaughter conditions differ by master faction"
+    )
+
+
+def test_reasoning_method_has_three_numbered_steps():
+    """Phase-1 P1-29: reasoning method section must be a 3-step
+    actionable flow, not 4 abstract lines.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="",
+    )
+    sys_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # Each step starts with N) pattern
+    for step in ("1)", "2)", "3)"):
+        assert step in sys_prompt, (
+            f"reasoning method must contain numbered step {step!r}; "
+            f"got sys_prompt={sys_prompt!r}"
+        )
+    # The 3-step section header is named
+    assert "推理方法-3 步" in sys_prompt, (
+        "reasoning method section must be labeled with 3-step marker"
+    )
+
+
+def test_directive_key_renders_under_hard_section():
+    """Phase-1 P0-1: ``directive`` key now lives in HARD_CONSTRAINT_KEYS
+    and renders under the inner MUST sub-group when populated.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05"],
+        public_summary="",
+        strategy_directive={
+            "directive": "你必须在发言中回应以下矛盾",
+        },
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Find MUST sub-group and confirm directive content is inside it
+    must_idx = prompt.find("以下指令必须遵守（MUST）")
+    assert must_idx >= 0
+    # The directive text must appear AFTER the MUST marker (i.e. inside
+    # the hard sub-group, not the reference fallback).
+    directive_idx = prompt.find("你必须在发言中回应以下矛盾")
+    assert directive_idx > must_idx, (
+        "directive text must appear under MUST sub-group, not after "
+        "the reference section"
     )
 
 

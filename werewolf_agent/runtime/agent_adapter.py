@@ -863,7 +863,7 @@ def agent_day_speech(
             # turn) and cannot speak.  The pre-fix code still told them
             # to 明确归票, which would have been a hallucination.
             strategy_directive["sheriff_silent"] = (
-                "本轮你无法发言；若已提前指定归票目标，通过 [vote_silent] 字段指定；"
+                "本轮你无法发言；若已提前指定归票目标，在 vote action 的 target_id 字段中给出；"
                 "如未指定则由投票开放决定。"
             )
         else:

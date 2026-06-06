@@ -283,3 +283,144 @@ class TestAgentIntegration:
         # Usage logged
         usage = model_router.get_usage_log()
         assert len(usage) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 audit: judge_router task_styles concat (P1-9) + judge jitter (P1-31)
+# ---------------------------------------------------------------------------
+
+
+def test_judge_router_includes_task_style_in_system_prompt():
+    """Phase-1 P1-9: ``JudgeProfileRouter.resolve`` must append the
+    task-type-specific ``task_styles[task_type]`` hint to the persona
+    ``system_prompt`` so the LLM gets per-broadcast style guidance.
+
+    Pre-fix, ``task_styles`` was loaded into the snapshot but never
+    read — the LLM only saw the static ``system_prompt`` text.
+    """
+    from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
+    router = JudgeProfileRouter(
+        profiles={
+            "tournament_referee": {
+                "display_name": "裁判",
+                "tone_variant": "tournament",
+                "base": {},
+                "task_styles": {
+                    "judge_vote_calling": "ritual_structured",
+                    "judge_skill_guide": "directive_clear",
+                },
+                "broadcast_patterns": {},
+                "system_prompt": "你是专业的狼人杀裁判。",
+            },
+        }
+    )
+    snap = router.resolve("tournament_referee", "judge_vote_calling")
+    # task_style hint must be appended to system_prompt
+    assert "ritual_structured" in snap.system_prompt, (
+        f"task_style hint for judge_vote_calling must be in system_prompt; "
+        f"got: {snap.system_prompt!r}"
+    )
+    # The other task_style value must NOT be present (task_type-specific)
+    assert "directive_clear" not in snap.system_prompt, (
+        "Only the task_type-specific style hint should be appended, not all"
+    )
+    # Original system_prompt text must be preserved
+    assert "专业的狼人杀裁判" in snap.system_prompt
+
+
+def test_judge_broadcasts_use_zero_jitter():
+    """Phase-1 P1-31: all 4 judge LLM calls (vote_calling, skill_guide,
+    vote_tally, exile) must request ``jitter_seconds=(0.0, 0.0)`` since
+    judge calls are serial and do not contend with the 12-player burst.
+
+    Implementation note: the router applies jitter via ``time.sleep``
+    BEFORE calling the provider (router.py:417-419), and the provider
+    itself does not receive ``jitter_seconds``.  We mock
+    ``time.sleep`` to capture the values that the router would have
+    slept.
+    """
+    import time as _time
+    from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
+    from werewolf_agent.agents.judge import JudgeAgent
+
+    sleep_calls: list[float] = []
+    original_sleep = _time.sleep
+
+    def _capture_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        # No actual sleep in tests.
+
+    _time.sleep = _capture_sleep  # type: ignore[assignment]
+    try:
+        captured: list[dict[str, object]] = []
+
+        class _CaptureProvider:
+            name = "capture"
+
+            def generate(self, prompt, config, system_prompt=None, tools=None,
+                         tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+                captured.append({"prompt": prompt, "system_prompt": system_prompt})
+                from werewolf_agent.model_gateway.router import GenerateResult, UsageRecord
+                return GenerateResult(
+                    text="ok",
+                    provider=self.name,
+                    model=config.model,
+                    usage=UsageRecord(
+                        agent_id="judge", task_type="speech",
+                        provider=self.name, model=config.model,
+                        prompt_tokens=0, completion_tokens=0, latency_ms=0,
+                    ),
+                )
+
+        router = ModelRouter(
+            model_profiles={"cap": {"model": "capture-model"}},
+            llm_profiles={
+                "judge_default": {
+                    "default": {"provider": "capture", "model_profile": "cap"},
+                }
+            },
+            player_assignments={"judge": "judge_default"},
+            providers={"capture": _CaptureProvider()},
+        )
+        profile_router = JudgeProfileRouter(
+            profiles={
+                "neutral_arbiter": {
+                    "display_name": "中立",
+                    "tone_variant": "neutral",
+                    "base": {},
+                    "task_styles": {},
+                    "broadcast_patterns": {},
+                    "system_prompt": "你是中立的狼人杀仲裁者。",
+                },
+            }
+        )
+        judge = JudgeAgent(model_router=router, profile_router=profile_router)
+        # All 4 LLM-call broadcasts in one test to amortize setup
+        judge.broadcast_vote_calling(
+            voter_id="p01", voter_name="玩家一", candidates=["p02"],
+            position=1, total=1, day_number=1,
+        )
+        judge.guide_skill_use(
+            role="witch", player_id="p11", player_name="玩家十一",
+            available_actions=["use_antidote"],
+        )
+        judge.announce_vote_tally(
+            tally={"p05": 5.0}, player_names={"p05": "玩家五"},
+            sheriff_id=None, sheriff_weight=1.5, day_number=1,
+        )
+        judge.announce_exile_result(
+            exiled_player_id="p05", exiled_player_name="玩家五",
+            reason="", tied_player_ids=[], day_number=1,
+        )
+        assert len(captured) == 4, f"expected 4 judge LLM calls, got {len(captured)}"
+        # The router should NOT have slept before any judge call (jitter
+        # is (0,0)).  When jitter is (0, 0), router.py:418 short-circuits
+        # the sleep entirely (R3-MG-3).  So sleep_calls should be empty
+        # OR every sleep should be 0.0.
+        nonzero_sleeps = [s for s in sleep_calls if s > 0.0]
+        assert not nonzero_sleeps, (
+            f"judge calls must use jitter_seconds=(0,0) → no nonzero "
+            f"sleeps in router. Got sleeps={sleep_calls!r}"
+        )
+    finally:
+        _time.sleep = original_sleep  # type: ignore[assignment]

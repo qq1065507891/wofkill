@@ -89,6 +89,9 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "role_alerts",
     # Hard vote pressure (e.g., must-vote target)
     "vote_pressure",
+    # Generic imperative text injected by context.py:1149; binds the
+    # same instructions as must_address_alerts but in natural language.
+    "directive",
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({
@@ -103,7 +106,10 @@ SUGGESTION_KEYS: frozenset[str] = frozenset({
     # Speech style suggestions
     "speech_originality",
     "seer_speech_directive",
-    "witch_speech_constraint",
+    # NOTE: ``witch_speech_constraint`` was renamed to
+    # ``witch_speech_directive`` in D-1 but never removed here.  The
+    # key is dead — no producer exists (grep zero hits).  Dropped in
+    # Phase-1 audit.
     # Behavioral rules (anti-following, peace-night rule)
     "anti_following_and_peace_night_rule",
 })
@@ -211,11 +217,20 @@ class PlayerPromptBuilder:
         )
 
     def _build_reasoning_method(self) -> str:
+        # Phase-1 audit: 3-step actionable flow instead of 4 abstract lines.
+        # The 4-line version (L213-219 historical) had only 1 actionable
+        # step ("投票前比较证据链完整度") and no sequence.  LLM
+        # observations show it was skimmed and ignored.  Numbered
+        # steps are read more reliably and pair with the
+        # ``_build_information_boundaries`` rule that private info
+        # cannot be promoted to fact.
         return (
-            "【推理方法】先区分事实、推测、立场、情绪。"
-            "盘狼坑时优先看：发言矛盾、票型关系、站边链条、收益动机、关键轮次行为。"
-            "投票前比较证据链完整度和出错成本，不盲从多数归票。"
-            "允许保留不确定性，但行动必须给出当前最优理由。"
+            "【推理方法-3 步】\n"
+            "1) 分层：把每条信息标记为「事实 / 推测 / 立场 / 情绪」；"
+            "私有信息、跨局记忆、认知矩阵、技能建议均不能转成「事实」。\n"
+            "2) 盘狼坑：按发言矛盾 > 票型关系 > 站边链条 > 收益动机 > 关键轮次行为 顺序排查；"
+            "每条结论必须附公开记录出处或显式标注「推测」。\n"
+            "3) 决策：投票前比较证据链完整度与误投成本；行动必须给出当前最优理由，不盲从多数归票。"
         )
 
     def _build_skill_policy(self) -> str:
@@ -241,12 +256,20 @@ class PlayerPromptBuilder:
             "witch": "女巫规则：有一瓶解药和一瓶毒药，不能在同一夜同时使用。解药不能自救。N1 / 首夜大概率应该救人。",
             "seer": "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。上警时必须留两夜警徽流。",
             "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
-            "hybrid": "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。主人死亡后阵营不再改变。",
+            "hybrid": (
+                "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。"
+                "主人死亡后阵营不再改变，且不能再选新主人；"
+                "如果主人是狼，狼队屠边仅需消灭3村民胜；"
+                "如果主人是好人，狼队需消灭3村民+混血儿才算屠边。"
+            ),
             "villager": (
                 "村民规则：身份公开时积极表明好人立场；"
                 "分析发言矛盾/票型关系；"
                 "N1 公开讨论中支持解药救人（如有女巫报银水线索）；"
                 "归票基于公开证据链而非情绪。"
+                "夜间阶段：村民无夜间行动，听从公开死亡公告；"
+                "如果白痴被放逐后翻牌，村民继续听其发言但不计入投票（其已无投票权）；"
+                "猎人死后开枪按公开顺序处理，村民不替猎人做决定。"
             ),
         }
         # P2-9: non-wolf roles need a one-line note on which vote_basis
@@ -323,7 +346,7 @@ class PlayerPromptBuilder:
         "_build_persona": "【辅助】",
         "_build_phase_context": "【辅助】",
         "_build_belief_state": "【辅助】",
-        "_build_public_summary": "【辅助】",
+        "_build_public_summary": "【参考】",
         "_build_visible_state": "【辅助】",
         "_build_private_memory_hints": "【辅助】",
         "_build_salience_events": "【辅助】",
@@ -680,7 +703,15 @@ class PlayerPromptBuilder:
         # keyword-signal categories. Omitted when logic_flaws /
         # valid_points are both empty (caveat would be noise).
         caveat = ctx.private_memory_caveat or ""
-        caveat_block = f"{caveat}\n" if caveat else ""
+        # Phase-1 audit: wrap the caveat in ``---`` markers so the
+        # LLM cannot mistake the warning for a JSON key or treat it
+        # as a hint payload entry.  Without the marker, the LLM has
+        # been observed to fold caveat text into the JSON dict
+        # (e.g. parsing "私有记忆" as a key).
+        if caveat:
+            caveat_block = f"---\n{caveat}\n---\n"
+        else:
+            caveat_block = ""
         return (
             f"【本局·{day_label}·私有记忆】以下只代表你在本局形成的观察、站边和私有思考，"
             "不是公开记录。"
@@ -1457,6 +1488,13 @@ _SALIENCE_PUBLIC_FIELDS: frozenset[str] = frozenset({
     "weight", "bucket", "fact_type", "source", "target", "value",
     "day", "phase", "event_type",
     "speaker", "result", "alignment",
+    # Phase-1 audit: ``id`` and ``summary`` are public event identity
+    # and human-readable description.  ``id`` is the dedup key used by
+    # downstream cognition stages; ``summary`` is the only narrative
+    # content the LLM sees for a salience event.  Without these the
+    # LLM has no way to track which salience event is which across
+    # turns (slim dropped everything except numeric weight).
+    "id", "summary",
 })
 _SALIENCE_PRIVATE_KEYS: frozenset[str] = frozenset({
     "seer_result", "witch_target", "wolf_team",

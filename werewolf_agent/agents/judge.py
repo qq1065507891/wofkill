@@ -192,11 +192,17 @@ class JudgeAgent:
                 f"只输出唱票台词，不要输出其他内容。"
             )
             prompt, system_prompt = self._persona_inject(prompt, "judge_vote_calling")
+            # Phase-1 audit (C-fix5): zero jitter for judge broadcasts.
+            # Judge calls are serial by design (one broadcast waits for
+            # the previous to complete) and do not contend with the
+            # 12-player concurrent generation burst.  Default jitter
+            # of 0-0.8s adds latency without any throughput benefit.
             result = self.model_router.generate(
                 agent_id="judge",
                 task_type="speech",
                 prompt=prompt,
                 system_prompt=system_prompt,
+                jitter_seconds=(0.0, 0.0),
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -267,6 +273,7 @@ class JudgeAgent:
                 task_type="speech",
                 prompt=prompt,
                 system_prompt=system_prompt,
+                jitter_seconds=(0.0, 0.0),
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -335,6 +342,7 @@ class JudgeAgent:
                 task_type="speech",
                 prompt=prompt,
                 system_prompt=system_prompt,
+                jitter_seconds=(0.0, 0.0),
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
@@ -412,6 +420,7 @@ class JudgeAgent:
                 task_type="speech",
                 prompt=prompt,
                 system_prompt=system_prompt,
+                jitter_seconds=(0.0, 0.0),
             )
             if result.text and result.text.strip():
                 return JudgeBroadcast(
