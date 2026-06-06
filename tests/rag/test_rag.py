@@ -1081,6 +1081,105 @@ class TestRetriever:
 
 
 # ===================================================================
+# G-R4-11: role_perspective='any' must get the same +0.05 bonus as
+# 'general' in ``_score`` (rule-based retriever).
+#
+# Pre-fix the rule-based score only knew about the ``'general'``
+# wildcard — a ``role_perspective='any'`` seed (used by the
+# ``基础常识`` universal-knowledge family: 金水 / 银水 / 对跳判断 /
+# 警徽票权重) was demoted to 0 bonus and lost every race against
+# role-specific entries regardless of relevance. The metadata
+# filter in ``_vector_candidates`` was fixed in G-R4-02 to admit
+# ``'any'``; the rule-score side was patched in the same commit
+# to give it the ``+0.05`` wildcard bonus. This test locks the
+# contract: ``_score`` must treat ``'any'`` as a wildcard, not as
+# a strict role mismatch.
+# ===================================================================
+
+
+class TestRoleAnyMatchesGeneral:
+    """G-R4-11: ``_score`` must give ``role_perspective='any'`` the
+    same +0.05 wildcard bonus it gives ``'general'``. ``_vector_candidates``
+    already admits ``'any'`` as a universal marker (G-R4-02) — the
+    rule-based ``_score`` must match that semantic so the two paths
+    agree."""
+
+    def test_score_role_any_matches_general(self) -> None:
+        """G-R4-11: build two equivalent entries that differ only in
+        ``role_perspective`` (``'general'`` vs ``'any'``). Query with
+        a *non-matching* role (``witch``). Both must receive the
+        ``+0.05`` wildcard bonus, so the rule-based scores must be
+        equal.
+        """
+        from werewolf_agent.rag.retriever import StrategyRetriever
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            RAGQuery,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        def _entry(role_p: str) -> RAGEntry:
+            return RAGEntry(
+                entry_id=f"g_r4_11_{role_p}",
+                title=f"G-R4-11 {role_p} case",
+                summary="G-R4-11 test summary",
+                key_decisions=["d1"],
+                metadata=CaseMetadata(
+                    case_type=CaseType.ROLE_STRATEGY,
+                    quality_grade=QualityGrade.COMMUNITY_CASE,
+                    review_status=ReviewStatus.APPROVED,
+                    reviewer="test",
+                    ruleset_id="pre_witch_hunter_idiot_mixed",
+                    player_count=12,
+                    phase="speech",
+                    role_perspective=role_p,
+                    visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                    source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                    tags=[role_p],
+                ),
+            )
+
+        general_entry = _entry("general")
+        any_entry = _entry("any")
+        retriever = StrategyRetriever([general_entry, any_entry])
+
+        # Query with a role that matches neither ``general`` nor
+        # ``any`` directly — this is the case where the wildcard
+        # bonus is the only role signal. Both entries must score
+        # identically because both carry the wildcard marker.
+        score_general = retriever._score(
+            general_entry, RAGQuery(role="witch", phase="speech"),
+        )
+        score_any = retriever._score(
+            any_entry, RAGQuery(role="witch", phase="speech"),
+        )
+        assert score_general == score_any, (
+            f"G-R4-11: 'any' must get the same wildcard bonus as "
+            f"'general'; got general={score_general}, any={score_any}. "
+            f"Difference is {abs(score_general - score_any)} — likely "
+            f"the 'any' branch is missing the +0.05 wildcard."
+        )
+        # And the bonus should be positive (i.e. the wildcard is
+        # actually being applied, not silently dropped to 0).
+        # Both scores must be > 0 for the role component. The
+        # rule-based score starts at 0 and adds the case_type
+        # priority (0.075) + quality (3/20 = 0.15) + role wildcard
+        # (0.05) = 0.275. The phase match (speech==speech) adds 0.1.
+        # Total ≈ 0.375 minimum. Use a loose lower bound.
+        assert score_any > 0.30, (
+            f"G-R4-11: 'any' role score too low ({score_any}); "
+            f"expected the +0.05 wildcard bonus on top of case_type "
+            f"and quality contributions."
+        )
+
+
+# ===================================================================
 # TestRAGInjector
 # ===================================================================
 

@@ -483,6 +483,12 @@ class StrategyRetriever:
         # universal-knowledge seeds rank at parity with the
         # existing universal seeds rather than being demoted
         # below role-specific entries regardless of relevance.
+        # G-R4-11: P2 polish — test now locks the contract that
+        # ``_score`` treats ``'any'`` as a wildcard (matches
+        # ``'general'``). The rule-based score had asymmetric
+        # behavior with ``_vector_candidates`` (which dropped
+        # ``'any'`` entirely) before G-R4-02; this regression
+        # test guards against future drift.
         if query.role and meta.role_perspective:
             if query.role == meta.role_perspective:
                 score += 0.15
