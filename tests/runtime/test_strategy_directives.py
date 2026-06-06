@@ -2647,3 +2647,37 @@ class TestHunterShotEvidence:
         assert "2" in directive and "证据" in directive, (
             f"hunter hidden directive missing ≥ 2 证据: {directive!r}"
         )
+
+
+class TestHybridVotingRule:
+    """P0-G3223805846-7: 混血儿投票应基于主人是否被公开质疑切换跟随/独立判断。"""
+
+    def test_hybrid_wolf_master_has_follow_rule(self):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.directives.hybrid import build_hybrid_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p08"] = PlayerState(id="p08", role="hybrid", alive=True)
+        gs = GameState(
+            players=alive, day_number=2, night_number=2,
+            hybrid_master_id="p01", hybrid_master_faction="werewolf",
+        )
+        d = build_hybrid_directive(gs, "p08")
+        directive = d.get("hybrid_wolf_master_directive", "")
+        assert "跟随规则" in directive and "质疑" in directive, (
+            f"hybrid wolf-master missing follow rule: {directive!r}"
+        )
+
+    def test_hybrid_good_master_has_follow_rule(self):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.directives.hybrid import build_hybrid_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p08"] = PlayerState(id="p08", role="hybrid", alive=True)
+        gs = GameState(
+            players=alive, day_number=2, night_number=2,
+            hybrid_master_id="p01", hybrid_master_faction="good",
+        )
+        d = build_hybrid_directive(gs, "p08")
+        directive = d.get("hybrid_good_master_directive", "")
+        assert "跟随规则" in directive and "质疑" in directive, (
+            f"hybrid good-master missing follow rule: {directive!r}"
+        )
