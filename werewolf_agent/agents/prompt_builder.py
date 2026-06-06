@@ -949,6 +949,56 @@ class PlayerPromptBuilder:
                     '"speech": "我不上警，先听警上发言再判断。", '
                     '"reason": "当前信息不足，先观察警上格局", "confidence": 0.6}'
                 )
+        # D4-5: 6 example blocks for action types that the legacy
+        # implementation didn't render. The LLM has no template to
+        # copy without these — game trace g_3528592081 showed
+        # malformed hunter_shot / use_poison payloads that took
+        # multiple retries to repair. Priority order matches the
+        # natural night-action flow: hunter first (it interrupts
+        # the day), then witch actions, then sheriff badge actions,
+        # then hybrid's master choice (only on the first night).
+        elif ActionType.HUNTER_SHOT in ctx.legal_actions:
+            parts.append("示例输出（猎人开枪场景）：")
+            parts.append(
+                '{"action_type": "hunter_shot", "target_id": "p07", '
+                '"speech": "", '
+                '"reason": "我带走最可疑的p07", "confidence": 0.7}'
+            )
+        elif ActionType.USE_ANTIDOTE in ctx.legal_actions:
+            parts.append("示例输出（女巫解药场景）：")
+            parts.append(
+                '{"action_type": "use_antidote", "target_id": "p05", '
+                '"speech": "", '
+                '"reason": "救下被刀的p05", "confidence": 0.7}'
+            )
+        elif ActionType.USE_POISON in ctx.legal_actions:
+            parts.append("示例输出（女巫毒药场景）：")
+            parts.append(
+                '{"action_type": "use_poison", "target_id": "p07", '
+                '"speech": "", '
+                '"reason": "毒死确认的狼人p07", "confidence": 0.7}'
+            )
+        elif ActionType.BADGE_TRANSFER in ctx.legal_actions:
+            parts.append("示例输出（警徽移交场景）：")
+            parts.append(
+                '{"action_type": "badge_transfer", "target_id": "p05", '
+                '"speech": "", '
+                '"reason": "把警徽传给更可信的p05", "confidence": 0.7}'
+            )
+        elif ActionType.BADGE_TEAR in ctx.legal_actions:
+            parts.append("示例输出（撕毁警徽场景）：")
+            parts.append(
+                '{"action_type": "badge_tear", "target_id": null, '
+                '"speech": "", '
+                '"reason": "本局无合适人选，撕毁警徽", "confidence": 0.7}'
+            )
+        elif ActionType.CHOOSE_MASTER in ctx.legal_actions:
+            parts.append("示例输出（混血儿选主场景）：")
+            parts.append(
+                '{"action_type": "choose_master", "target_id": "p05", '
+                '"speech": "", '
+                '"reason": "选择p05作为我的主人", "confidence": 0.7}'
+            )
         else:
             role = ctx.own_role or "villager"
             # P0-1: example_role now follows ctx.own_role so the example's
@@ -1227,22 +1277,55 @@ class PlayerPromptBuilder:
 
     def _compact_json(self, value: Any) -> str:
         text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        return self._truncate_text(text, _MAX_JSON_CONTEXT_CHARS)
+        # P2-4: JSON truncation uses the angle-bracket marker
+        # ``<已截断>`` (preserved from before D4-8) and bypasses the
+        # sentence-boundary preference — JSON has no sentences and
+        # the cut must not chase punctuation that may live inside a
+        # string literal. See _truncate_text for the prose default.
+        return self._truncate_text(
+            text,
+            _MAX_JSON_CONTEXT_CHARS,
+            marker="...<已截断>",
+            prefer_sentence_boundary=False,
+        )
 
     @staticmethod
-    def _truncate_text(text: str, max_chars: int) -> str:
-        # P2-4: when truncated, append a clearly visible `<已截断>`
-        # marker. Truncation may cut mid-string, mid-array, or mid-object,
-        # so the JSON is no longer parseable — the marker is a
-        # signal to the LLM (and to the parse-failure handler) that
-        # the snippet was intentionally cut and is not expected to
-        # round-trip through json.loads. This is an acceptable
-        # compromise: making the cut land on a valid JSON boundary
-        # would require a much larger refactor (re-serialize with
-        # the original document structure in mind).
+    def _truncate_text(
+        text: str,
+        max_chars: int,
+        *,
+        marker: str = "...（已截断）",
+        prefer_sentence_boundary: bool = True,
+    ) -> str:
+        # D4-8 (P2): two improvements on top of the P2-4 marker:
+        #   1. Use the Chinese-parenthetical marker ``（已截断）`` (the
+        #      default ``marker``) to distinguish prose truncation
+        #      (here, default callers) from JSON truncation (P2-4
+        #      used ``<已截断>`` in _compact_json, which still passes
+        #      that marker explicitly). The LLM can now tell the two
+        #      truncation contexts apart.
+        #   2. Prefer a sentence-boundary cut (`.`/`。`/`!`/`?`/`！`/`？`
+        #      plus newline) within the last ~10% of the budget so the
+        #      LLM sees a clean stop rather than a mid-word break.
+        #      JSON callers (which pass ``prefer_sentence_boundary=False``)
+        #      bypass this: JSON has no sentences and the cut must
+        #      land somewhere, not on a punctuation character that
+        #      might be inside a string literal.
         if len(text) <= max_chars:
             return text
-        return text[:max_chars] + "...<已截断>"
+        if prefer_sentence_boundary:
+            slack = max(1, max_chars // 10)
+            search_start = max_chars - slack
+            best_cut = text.rfind("\n", search_start, max_chars)
+            if best_cut < search_start:
+                # No newline in slack window; try sentence-end punctuation.
+                for ch in ".。!！?？":
+                    idx = text.rfind(ch, search_start, max_chars)
+                    if idx > best_cut:
+                        best_cut = idx
+            if best_cut >= search_start:
+                return text[: best_cut + 1] + marker
+        return text[:max_chars] + marker
 
 
 # P0-2 (defense): explicit field whitelist for salience items. The

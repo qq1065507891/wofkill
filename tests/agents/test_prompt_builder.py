@@ -3360,5 +3360,143 @@ def test_choice_prompt_vote_basis_seer_unchanged():
     )
 
 
+# ---------------------------------------------------------------------------
+# D4-8 (P2): _truncate_text must mark the cut and prefer sentence boundary
+# ---------------------------------------------------------------------------
+#
+# Audit D4-8 finding: _truncate_text cuts at the max_chars index without
+# any marker. The LLM looking at the rendered prompt cannot tell the
+# snippet was intentionally cut, so it sometimes treats the truncated
+# text as the full message (e.g., re-summarizes "I am the seer" instead
+# of "I am the seer and I checked p07 and p09 yesterday and p07 was
+# werewolf and also..." truncated mid-sentence).
+#
+# Fix: append ``（已截断）`` marker after truncation. Prefer a
+# sentence-boundary cut (`.`/`。`/`!`/`?`/`！`/`？`) within the last
+# ~10% of the budget so the LLM sees a clean stop rather than a
+# mid-word break. The marker is the same shape used elsewhere in the
+# codebase (P2-4 used `<已截断>` for JSON; here we use `（已截断）`
+# for prose so the LLM can tell the two truncation contexts apart).
+
+
+_SENTENCE_BOUNDARY_CHARS = ".。!！?？"
+
+
+def test_transcript_truncation_has_marker() -> None:
+    """D4-8: a transcript line longer than the cap must end with the
+    ``（已截断）`` marker so the LLM sees the cut was intentional."""
+    long_text = "x" * 300
+    assert len(long_text) > 220, (
+        "D4-8 test setup: long_text must exceed the 220-char transcript cap"
+    )
+
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        recent_transcript=[{"speaker": "p07", "text": long_text}],
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The marker must appear in the rendered prompt so the LLM
+    # notices the truncation.
+    assert "（已截断）" in prompt, (
+        "D4-8: a long transcript line must end with the "
+        "``（已截断）`` marker so the LLM sees the cut was "
+        "intentional. Without the marker the LLM treats the snippet "
+        "as the full message and re-summarizes incorrectly."
+    )
+    # And the cut must not exceed the cap by too much.
+    for line in prompt.splitlines():
+        if "p07" in line and "（已截断）" in line:
+            content_part = line.split("...（已截断）")[0]
+            assert "[p07] " in content_part
+            text_only = content_part.split("[p07] ", 1)[1]
+            assert len(text_only) <= 220, (
+                f"D4-8: truncated text must not exceed the 220-char cap. "
+                f"Got {len(text_only)} chars: {text_only!r}"
+            )
+            break
+    else:
+        pytest.fail(
+            "D4-8: rendered prompt must contain a transcript line for p07 "
+            "with the truncation marker. Prompt: " + prompt
+        )
+
+
+def test_truncate_text_marker_on_simple_long_text() -> None:
+    """D4-8: direct _truncate_text call must append the marker."""
+    out = PlayerPromptBuilder._truncate_text("x" * 500, 100)
+    assert "（已截断）" in out, (
+        f"D4-8: _truncate_text must append （已截断） marker. Got: {out!r}"
+    )
+    # The cut content must be at most max_chars long.
+    content_part = out.split("...（已截断）")[0]
+    assert len(content_part) <= 100, (
+        f"D4-8: content part must be <= max_chars (100). Got {len(content_part)}: "
+        f"{content_part!r}"
+    )
+
+
+def test_truncate_text_prefers_sentence_boundary() -> None:
+    """D4-8: when truncation has a sentence-end in the last ~10% of
+    the budget, the cut should land on that boundary (not arbitrarily).
+    """
+    # Build Chinese text where a `。` lands in the slack window 90..100
+    # so the function should prefer to cut there.
+    sentence = "第一句话讲背景，p07昨天投了p10。"
+    text = sentence * 7
+    assert len(text) > 100
+    out = PlayerPromptBuilder._truncate_text(text, 100)
+    content_part = out.split("...（已截断）")[0]
+    # The cut should be at a sentence boundary, so the last char of
+    # the content part should be `。`.
+    assert content_part.rstrip().endswith("。"), (
+        f"D4-8: truncation should prefer sentence boundary. The cut "
+        f"landed mid-sentence. Content: {content_part!r}"
+    )
+    # And the content length should be near max_chars (within slack).
+    assert 90 <= len(content_part) <= 100, (
+        f"D4-8: content length should be near max_chars (within slack). "
+        f"Got {len(content_part)} chars (expected 90..100). "
+        f"Content: {content_part!r}"
+    )
+
+
+def test_truncate_text_no_marker_when_short() -> None:
+    """D4-8: text shorter than max_chars must NOT have the marker."""
+    out = PlayerPromptBuilder._truncate_text("短文本。", 100)
+    assert "（已截断）" not in out, (
+        f"D4-8: short text must not have the truncation marker. "
+        f"Got: {out!r}"
+    )
+    assert out == "短文本。"
+
+
+def test_compact_json_keeps_p2_4_marker() -> None:
+    """D4-8 + P2-4: _compact_json must keep the ``<已截断>`` marker
+    (not switch to the prose parenthetical form)."""
+    builder = PlayerPromptBuilder(
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+        )
+    )
+    big = {
+        "key_" + str(i): "x" * 200
+        for i in range(50)
+    }
+    out = builder._compact_json(big)
+    assert out.endswith("<已截断>"), (
+        f"D4-8: _compact_json must preserve the P2-4 angle-bracket "
+        f"marker ``<已截断>`` for JSON truncation. Last 30 chars: "
+        f"{out[-30:]!r}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
