@@ -163,6 +163,8 @@ class ActionTrace(BaseModel):
     parse_error: str | None = None
     retry_count: int = 0
     structured_failure_reason: str | None = None
+    # P3-G3223805846-1: 成功路径上累计重试次数（0 表示一次成功）
+    total_retry_count_until_success: int = 0
 
 
 # ---------------------------------------------------------------------------

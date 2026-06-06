@@ -621,6 +621,9 @@ class PlayerAgent:
                 parse_success=parse_success,
                 retry_count=attempt,
             )
+            # P3-G3223805846-1: 记录达到成功一共重试了几次。attempt 是 1-indexed
+            # （首次尝试 attempt=1，无重试），所以 retries = attempt - 1。
+            trace.total_retry_count_until_success = max(attempt - 1, 0)
             self.metrics_collector.record(
                 player_id=context.agent_id,
                 task_type=context.task_type.value,
