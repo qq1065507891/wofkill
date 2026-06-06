@@ -402,13 +402,13 @@ def _profile_memory_hint(
             return "中等"
         return "需要提升"
 
-    def _inner_rank(score: float) -> str:
-        """Neutral rank for private traits; never sounds like a critique."""
-        if score > 0.66:
-            return "较高"
-        if score > 0.33:
-            return "中等"
-        return "偏低"
+    # P2-7 removed the last caller of _inner_rank (the
+    # learning_rate_rank / risk_preference_rank review-only fields
+    # are no longer surfaced in the player-facing hint).  The
+    # helper was kept around for one extra commit in case a future
+    # change wanted to re-introduce inner-trait ranks; Phase 3
+    # audit found no such caller, so removing it now.
+    # Phase 3 (clean-1) dead code removal.
 
     # Filter role stats to current role only; default to zero stats if
     # the player has never played this role before.

@@ -525,13 +525,22 @@ class PlayerAgent:
                 context.legal_actions, context.legal_targets,
             )
             if not valid:
+                # P3-7: indirect the hint — don't expose the full enum
+                # list (LLM was copying the hint verbatim into the
+                # action_type field, then the validator rejected it
+                # for the wrong reason).  Now point the LLM at the
+                # per-turn "最终输出协议" section which already
+                # enumerates the legal action_type and target_id.
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="illegal_action",
                     error_message=validation_error,
-                    correction_hint=f"Legal actions: {[a.value for a in context.legal_actions]}. "
-                                    f"Legal targets: {context.legal_targets}",
+                    correction_hint=(
+                        "你提交的 action_type 不在当前回合合法动作内。"
+                        "请查看上方「最终输出协议」段的 action_type 枚举"
+                        "和 target_id 约束（合法目标或 null）。"
+                    ),
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
