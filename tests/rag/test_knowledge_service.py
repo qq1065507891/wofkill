@@ -515,3 +515,118 @@ def test_role_perspective_any_scores_same_as_general_in_rule_based() -> None:
         f"'general' for a non-matching query role; got "
         f"any={score_any!r} general={score_general!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# G-R4-03 (P1): vector score normalization to 1.0 boosts weak noise hits
+# ---------------------------------------------------------------------------
+
+
+class _FixedScoreVectorStore:
+    """Minimal vector store that returns hand-tuned raw scores for
+    ``_vector_candidates`` tests.
+
+    The real ``LocalVectorStore`` derives scores from token overlap,
+    which makes the score distribution hard to pin down in tests.
+    For G-R4-03 we need to assert that the per-call max
+    normalization in ``_vector_candidates`` does NOT promote weak
+    hits to 1.0, so the score is something the test fully controls.
+    """
+
+    def __init__(self, raw_results: list[dict]) -> None:
+        self._raw = list(raw_results)
+        self.added: list[tuple[str, str, dict]] = []
+
+    def add(self, doc_id, text, metadata):
+        self.added.append((doc_id, text, metadata))
+
+    def query(self, query_text, top_k=5):
+        return self._raw[:top_k]
+
+    def count(self):
+        return len(self._raw)
+
+
+def test_weak_vector_matches_filtered_below_threshold() -> None:
+    """G-R4-03: the normalization ``raw / score_max`` made the top
+    vector hit always anchor at 1.0. When the absolute top raw
+    score was itself weak (e.g. an unrelated corpus hit with no
+    lexical overlap), the normalized score of 1.0 still pulled
+    the merge formula above the rule-only path — so a vector hit
+    with no real signal could outrank a strong rule-only match.
+
+    The fix: entries whose raw vector score falls below a
+    documented absolute threshold (default 0.1) must be dropped
+    from the candidate pool entirely, so a noisy vector result
+    cannot promote an irrelevant entry above a clean rule match.
+
+    The test arranges the noise entry so it is *only* reachable
+    through the vector path (its metadata would not pass the
+    role/phase filter), so any appearance in the candidate pool
+    proves the vector path admitted it.
+    """
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    relevant = {
+        "doc_id": "r_relevant",
+        "text": "狼人杀 抗推预言家 警徽流 神牌信息 京城大师赛 250415",
+        "metadata": {"role_perspective": "werewolf", "phase": "night_discussion"},
+        "score": 3.2,  # strong hit, above threshold
+    }
+    weak_noise = {
+        "doc_id": "r_noise",
+        "text": "玩家 在 某轮 发言 提及 一些 巧合 词汇",
+        "metadata": {"role_perspective": "god_view", "phase": "review"},
+        "score": 0.05,  # below the absolute threshold
+    }
+    vector_store = _FixedScoreVectorStore([relevant, weak_noise])
+
+    # The relevant entry matches the query's role/phase, so it
+    # would be admitted both via the vector path AND the metadata
+    # fallback. The noise entry uses a role_perspective that the
+    # query's role would not match — so the noise entry can only
+    # enter the candidate pool through the vector path.
+    relevant_entry = _make_rag_entry(
+        entry_id="r_relevant",
+        role_perspective="werewolf",
+        phase="night_discussion",
+    )
+    noise_entry = _make_rag_entry(
+        entry_id="r_noise",
+        role_perspective="villager",  # not "werewolf" — would be filtered by role check
+        phase="night_discussion",
+    )
+
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [relevant_entry, noise_entry],
+        vector_store=vector_store,
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(
+            role="werewolf",
+            phase="night_discussion",
+            situation="抗推预言家",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            max_results=5,
+        ),
+        [relevant_entry, noise_entry],
+    )
+    selected_ids = {entry.entry_id for _, entry in out}
+
+    # The strong hit must reach the candidate pool.
+    assert "r_relevant" in selected_ids, (
+        f"G-R4-03: strong vector hit was dropped; selected={selected_ids!r}"
+    )
+    # The weak noise hit must be filtered out by the absolute
+    # threshold. Pre-fix the per-call max normalization promoted
+    # it to 1.0, dragging the merge formula above the rule-only
+    # path for any unrelated entry that was returned by the
+    # vector store. The noise entry is role-mismatched, so it
+    # can only appear in the candidate pool via the vector
+    # path — which is exactly the path the bug corrupts.
+    assert "r_noise" not in selected_ids, (
+        f"G-R4-03: weak vector hit (raw=0.05) was not filtered out "
+        f"by the absolute threshold; the per-call max normalization "
+        f"is still promoting noise to 1.0; selected={selected_ids!r}"
+    )

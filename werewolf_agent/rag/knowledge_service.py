@@ -20,6 +20,20 @@ from werewolf_agent.rag.schemas import RAGEntry, RAGHit, RAGQuery
 logger = logging.getLogger(__name__)
 
 
+# G-R4-03: absolute floor for raw vector scores. Hits below this
+# value are treated as "no real signal" and are dropped from the
+# candidate pool before the per-call max normalization runs.
+# Without this floor the per-call max normalization promoted the
+# weakest top hit to 1.0, which then pulled the merge formula
+# above the rule-only path for any unrelated entry the vector
+# store happened to return. Empirically the LocalVectorStore's
+# TF-IDF score is in [0, log(N)+1] for a corpus of N documents
+# with at least one shared token; a value of 0.1 keeps the floor
+# well below any meaningful single-token hit and well above the
+# 0.0 default for entries the store never scored.
+_WEAK_VECTOR_THRESHOLD: float = 0.1
+
+
 class RAGKnowledgeService:
     """Coordinates seed, repository, vector, and live-safe RAG retrieval."""
 
@@ -210,11 +224,26 @@ class RAGKnowledgeService:
             # IDF is unbounded; a hash-based embedding store could emit
             # negative similarities. Divide each by the per-call max so
             # the top hit anchors at 1.0 and ordering is preserved.
+            #
+            # G-R4-03: also drop hits whose absolute raw score is below
+            # ``_WEAK_VECTOR_THRESHOLD``. The per-call max normalization
+            # alone promoted the weakest top hit to 1.0, which then
+            # pulled the merge formula above the rule-only path for
+            # any unrelated entry the vector store happened to return.
+            # The threshold gives the retriever a documented
+            # "no real signal" floor that keeps the rule path in
+            # charge when the vector recall is empty / noisy.
             raw_scores = [float(r.get("score", 0.0)) for r in vector_results]
             score_max = max((s for s in raw_scores if s > 0.0), default=1.0)
             for result, raw in zip(vector_results, raw_scores):
                 entry = by_id.get(result.get("doc_id"))
                 if entry is None:
+                    continue
+                if raw < _WEAK_VECTOR_THRESHOLD:
+                    # Below the absolute floor: the vector store had
+                    # nothing meaningful to say about this doc, so
+                    # don't let a 1.0-normalized value compete with
+                    # a clean rule-only path.
                     continue
                 normalized = max(0.0, min(1.0, raw / score_max)) if score_max > 0 else 0.0
                 selected[entry.entry_id] = (normalized, entry)
