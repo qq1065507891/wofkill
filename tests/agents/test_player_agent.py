@@ -3097,3 +3097,71 @@ class TestVoteFallbackNotNull:
         assert fb.target_id == "p05", (
             f"expected most-suspect p05, got {fb.target_id}"
         )
+
+
+# ---------------------------------------------------------------------------
+# g_3223805846-B3: seer PK 段 fallback 必须给非空内容
+# ---------------------------------------------------------------------------
+
+
+class TestSeerPKNonEmptyProtection:
+    """P1-G3223805846-3: seer 在 PK 段 (task_type=PK_SPEECH) speech fallback
+    必须给非空内容，并尽量包含查杀信息（my_check_history 中未报过的狼人）。
+    """
+
+    def _make_agent(self) -> PlayerAgent:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p03": "default"},
+            providers={"mock": _JsonProvider("not json")},
+        )
+        return PlayerAgent(agent_id="p03", model_router=router, max_retries=1)
+
+    def test_seer_pk_speech_fallback_uses_check_history(self) -> None:
+        ctx = AgentContext(
+            agent_id="p03",
+            task_type=TaskType.PK_SPEECH,
+            own_role="seer",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02", "p05", "p07"],
+            strategy_directive={
+                "my_check_history": [
+                    {"target": "p07", "alignment": "wolf", "night": 1, "reported": False},
+                ],
+            },
+        )
+        agent = self._make_agent()
+        speech = agent._fallback_speech(ctx)
+        # 必须非空
+        assert speech and len(speech) > 10
+        # 必含查杀信息（"预言家" 身份 + p07 目标）
+        assert "预言家" in speech, (
+            f"seer PK fallback lost identity: {speech!r}"
+        )
+        assert "p07" in speech, (
+            f"seer PK fallback lost check target: {speech!r}"
+        )
+
+    def test_seer_pk_speech_fallback_no_unreported_wolves(self) -> None:
+        """Seer 已报过所有查杀 / 没有狼查杀结果时，仍必须给非空占位内容。"""
+        ctx = AgentContext(
+            agent_id="p03",
+            task_type=TaskType.PK_SPEECH,
+            own_role="seer",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02", "p05", "p07"],
+            strategy_directive={
+                "my_check_history": [
+                    # good — 无可报的狼
+                    {"target": "p02", "alignment": "good", "night": 1, "reported": True},
+                ],
+            },
+        )
+        agent = self._make_agent()
+        speech = agent._fallback_speech(ctx)
+        # 必须非空 + 仍保留预言家身份声明
+        assert speech and len(speech) > 10
+        assert "预言家" in speech, (
+            f"seer PK fallback without wolves lost identity: {speech!r}"
+        )

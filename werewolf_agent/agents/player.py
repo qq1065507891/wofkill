@@ -984,6 +984,26 @@ class PlayerAgent:
         import logging
         _log = logging.getLogger(__name__)
 
+        # P1-G3223805846-3: seer 在 PK 段 (task_type=PK_SPEECH) 必须有非空
+        # 内容；优先用未报过的狼人查杀作为发言载体，否则给占位声明。
+        # 通用 PK 模板是上警风格（"我上警"），对预言家 PK 完全错位且会丢
+        # 身份标签，导致 fallback 掉链。
+        if (getattr(context, "own_role", "") == "seer"
+                and context.task_type == TaskType.PK_SPEECH):
+            check_history = (context.strategy_directive or {}).get("my_check_history", []) or []
+            wolf_checks = [
+                c for c in check_history
+                if c.get("alignment") == "wolf" and not c.get("reported")
+            ]
+            if wolf_checks:
+                wc = wolf_checks[0]
+                return (
+                    f"我是预言家，N{wc.get('night', '?')} 验 "
+                    f"{wc.get('target', '?')} 是狼人。"
+                    f"我是真的预言家，请跟我投票。"
+                )
+            return "我是预言家，请给我一次发言机会详细说明查杀。"
+
         # Hash-based target selection: avoids all agents converging on legal_targets[0]
         seed_str = f"{context.agent_id}:{context.day_number}:{context.phase}"
         seed_hash = int(hashlib.sha256(seed_str.encode()).hexdigest()[:8], 16)
