@@ -4,14 +4,32 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Prompt-Audit Phase 2 — 13 mid-risk fixes (P2-1..13)** — 2026-06-06
-- Active task: P2-commit-1 done (c9daeb2), P2-commit-2 in progress
+- Current phase: **Phase 2 MERGED to master** — 2026-06-06
+- Active task: Awaiting decision on Phase 3 (or push / PR)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-06
 
+### Master history (last 5 commits)
+
+```
+03bd5d5 merge: fix8-prompt-p2 — Phase 2 prompt audit (P2-commit-1 + P2-commit-2)
+66b07c0 polish(prompt): Phase 2 commit-2 — 9 cross-file mid-risk fixes (P2-2..6, P2-10..13)
+c9daeb2 polish(prompt): Phase 2 commit-1 — 4 single-file mid-risk fixes (P2-1, P2-7, P2-8, P2-9)
+60195cc polish(prompt): Phase 1 self-audit fixes (P1-12..15)
+13e9509 polish(prompt): Phase 1 audit — 10 single-file low-risk fixes (P1-1..10)
+```
+
+### Cumulative Phase 1 + Phase 2 + Self-Audit
+
+- **Commits**: 5 (4 polish + 1 merge)
+- **Files changed (unique)**: 11 prod + 5 test + PROGRESS.md
+- **Net LOC**: ~1342 / -252
+- **Test count**: 1345 → 2077 (+732, +16 new tests in Phase 1+2)
+- **Full regression**: 2077 passed, 0 failed (2:33)
+
 ---
 
-## Prompt-Audit Phase 2 (P2-1..13) — 13 mid-risk fixes
+## Prompt-Audit Phase 2 (P2-1..13) — 13 mid-risk fixes (MERGED)
 
 Branch: `fix8-prompt-p2` (worktree `.worktrees/fix8-prompt-p2`).
 Base: `60195cc` (Phase 1 self-audit fixes on master).
