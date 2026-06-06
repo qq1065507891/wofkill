@@ -4,10 +4,32 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Prompt-Audit Phase 3 — 7 cross-module fixes (P3-1..7) + cleanup** — 2026-06-06
-- Active task: P3-commit-1 (4 cross-module mid-risk items)
+- Current phase: **All 3 Prompt-Audit Phases MERGED to master** — 2026-06-06
+- Active task: Awaiting decision on push / PR / further work
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-06
+
+### Master history (last 8 commits)
+
+```
+1733757 merge: fix9-prompt-phase3 — Phase 3 prompt audit
+b2c44fa polish(prompt): Phase 3 commit-2 — 3 cross-module fixes + 2 cleanup
+a684f8a polish(prompt): Phase 3 commit-1 — 4 cross-module mid-risk fixes
+03bd5d5 merge: fix8-prompt-p2 — Phase 2 prompt audit
+66b07c0 polish(prompt): Phase 2 commit-2 — 9 cross-file mid-risk fixes
+c9daeb2 polish(prompt): Phase 2 commit-1 — 4 single-file mid-risk fixes
+60195cc polish(prompt): Phase 1 self-audit fixes
+13e9509 polish(prompt): Phase 1 audit — 10 single-file low-risk fixes
+```
+
+### Cumulative Phase 1+2+3+Self-Audit
+
+- **Commits**: 8 (6 polish + 2 merges)
+- **Polish items applied**: 36 (P1: 10+4=14, P2: 4+9=13, P3: 4+5=9 including cleanup)
+- **Files changed (unique, all phases)**: ~12 prod + 5 test + PROGRESS.md
+- **Net LOC across all phases**: ~+1700 / -300
+- **Test count progression**: 1345 → 2077 (+732, +16 new tests)
+- **Full regression**: 2077 passed, 0 failed (2:41)
 
 ---
 
