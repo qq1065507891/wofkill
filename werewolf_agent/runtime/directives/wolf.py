@@ -6,7 +6,6 @@ import logging
 from typing import Any
 
 from werewolf_agent.core.models import GameState
-from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +72,7 @@ def build_wolf_directive(
         get_wolf_role_assignment as _get_wolf_role_assignment,
         has_publicly_claimed_seer as _has_publicly_claimed_seer,
     )
+    from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants
 
     parts: dict[str, Any] = {}
 
@@ -88,7 +88,6 @@ def build_wolf_directive(
             + ", ".join(sorted(claimants))
             + "。\n讨论/制定狼队策略时，**只参考以上已公开跳预言家的玩家**。"
             "不要凭印象或记忆把'看起来像预言家'的玩家列入。"
-            "如果列表为空，说明当前没有玩家公开跳预言家。"
         )
 
     assignment = _get_wolf_role_assignment(wolf_team_plan, wolf_id)

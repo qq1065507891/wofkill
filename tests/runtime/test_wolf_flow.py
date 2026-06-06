@@ -568,8 +568,8 @@ class TestSoloWolfFallbackTarget:
 class TestWolfDirectiveLiveSeerClaimants:
     """P0-G3223805846-2: 狼 prompt 中'已跳预言家'必须基于 day_speech 实时事件。"""
 
-    def test_wolf_directive_contains_live_seer_claimants_marker(self):
-        """Positive-marker guard: the directive must include the live seer claimants block."""
+    def test_wolf_directive_contains_only_live_seer_claimants(self):
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
         from werewolf_agent.runtime.directives.wolf import build_wolf_directive
 
         alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
@@ -579,29 +579,21 @@ class TestWolfDirectiveLiveSeerClaimants:
             players=alive, day_number=1, night_number=1,
             events=[
                 GameEvent(type="speech", payload={
-                    "speaker": "p01", "text": "我是预言家，第 1 夜验 p02 是狼人。",
+                    "speaker": "p01", "text": "我是预言家，第 1 夜验 p02 是狼人。"
                 }),
                 GameEvent(type="speech", payload={
-                    "speaker": "p02", "text": "我是预言家，第 1 夜验 p01 是好人（金水）。",
+                    "speaker": "p02", "text": "我是预言家，第 1 夜验 p01 是好人（金水）。"
                 }),
                 GameEvent(type="speech", payload={
-                    "speaker": "p07", "text": "我站边 p01，p02 是悍跳。",
+                    "speaker": "p07", "text": "我站边 p01，p02 是悍跳。"
                 }),
             ],
         )
         d = build_wolf_directive(gs, "p01", wolf_team_plan=None)
-        full = " ".join(str(v) for v in d.values())
-        # Must contain the live seer claimants marker (positive guard)
-        assert "已公开跳预言家" in full or "已跳预言家" in full, (
-            f"wolf directive missing live seer claimants block: keys={list(d.keys())}"
-        )
-        # p07 (villager who never claimed seer) must NOT appear in the claimants list
-        claimants_match = [line for line in full.split("\n") if "已" in line and "预言家" in line]
-        # If we found a claimants line, p07 should not be in it
-        if claimants_match:
-            for line in claimants_match:
-                # Only check lines that look like a list of player IDs
-                if any(f"p{i:02d}" in line for i in range(1, 13)):
-                    assert "p07" not in line, (
-                        f"p07 (villager, never claimed seer) wrongly listed as claimant: {line!r}"
-                    )
+        block = d.get("wolf_live_seer_claimants", "")
+        # Positive marker: the live claimants block is present
+        assert "已公开跳预言家" in block, f"missing live seer claimants block: {block!r}"
+        # p01 and p02 must be listed (both publicly claimed)
+        assert "p01" in block and "p02" in block, f"claimants missing: {block!r}"
+        # p07 (villager, never claimed) must NOT be in the claimants list
+        assert "p07" not in block, f"p07 wrongly listed as claimant: {block!r}"
