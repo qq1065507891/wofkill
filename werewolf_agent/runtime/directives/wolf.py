@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from werewolf_agent.core.models import GameState
+from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,21 @@ def build_wolf_directive(
     )
 
     parts: dict[str, Any] = {}
+
+    # P0-G3223805846-2: live seer claimants from day_speech events.
+    # This avoids the N2 hallucination where wolves cited p07 as
+    # the seer claimant (p07 was actually a villager who never
+    # claimed seer).  Source from public events so the prompt
+    # reflects what actually happened on day, not stale memory.
+    claimants = _public_seer_claimants(gs)
+    if claimants:
+        parts["wolf_live_seer_claimants"] = (
+            "【实时场上信息】以下玩家已公开跳预言家："
+            + ", ".join(sorted(claimants))
+            + "。\n讨论/制定狼队策略时，**只参考以上已公开跳预言家的玩家**。"
+            "不要凭印象或记忆把'看起来像预言家'的玩家列入。"
+            "如果列表为空，说明当前没有玩家公开跳预言家。"
+        )
 
     assignment = _get_wolf_role_assignment(wolf_team_plan, wolf_id)
     parts["wolf_speech_directive"] = _WOLF_ROLE_STRATEGY.get(
