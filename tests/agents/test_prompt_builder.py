@@ -3872,5 +3872,23 @@ def test_judge_broadcasts_use_judge_task_types_in_router_calls() -> None:
         assert rec["agent_id"] == "judge"
 
 
+class TestActionTypeFieldName:
+    """P1-G3223805846-4: _format_examples 头部应强化 action_type 字段名。"""
+
+    def test_action_type_guard_constant_exists(self):
+        from werewolf_agent.agents.prompt_builder import _ACTION_TYPE_GUARD
+        text = _ACTION_TYPE_GUARD
+        assert "action_type" in text, f"guard missing 'action_type': {text!r}"
+        assert "intent" in text, f"guard missing 'intent' warning: {text!r}"
+        assert "禁止" in text or "不要" in text, (
+            f"guard missing prohibition: {text!r}"
+        )
+        assert "P1-G3223805846-4" in text
+
+    def test_action_type_guard_length_is_substantial(self):
+        from werewolf_agent.agents.prompt_builder import _ACTION_TYPE_GUARD
+        assert len(_ACTION_TYPE_GUARD) > 100
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
