@@ -909,6 +909,73 @@ def test_rag_failure_distinguishes_expected_vs_anomaly() -> None:
     ), "P2-G11: anomaly path must not silently debug-log"
 
 
+# ---------------------------------------------------------------------------
+# G-R4-07: situation must not contain a ``phase=`` key that collides with
+# the query's own ``phase`` field. The query's phase is the task phase
+# (speech / night_action / wolf_discussion); the situation is supposed
+# to carry the *game* phase (day / night) under a separate, unambiguous
+# key. The previous ``phase=day`` substring in the situation blob was
+# indistinguishable from a task-phase token at retriever-tokenize time.
+# ---------------------------------------------------------------------------
+
+
+def test_rag_situation_no_duplicate_phase() -> None:
+    """G-R4-07: the situation blob and the RAGQuery must not carry the
+    same ``phase=`` key with different semantics. The situation must
+    use a separate key (e.g. ``game_phase=day``) for the game phase,
+    leaving ``query.phase`` as the sole task-phase token.
+    """
+    from werewolf_agent.agents.schemas import (
+        ActionType,
+        AgentContext,
+        TaskType,
+    )
+
+    class _RecordingService:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+            self.calls.append(query)
+            return []
+
+        def hits_to_prompt_lines(self, hits, max_items: int = 3):
+            return []
+
+    fake = _RecordingService()
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="seer",
+        legal_actions=[ActionType.VOTE, ActionType.SPEECH],
+    )
+    _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    situation = fake.calls[0].situation
+    # The situation must NOT contain a bare ``phase=`` token that
+    # collides with the query's task-phase key. Tokenize the same
+    # way the retriever would and confirm no such key exists.
+    keys = {chunk.split("=", 1)[0] for chunk in situation.split() if "=" in chunk}
+    assert "phase" not in keys, (
+        f"G-R4-07: situation still carries ``phase=`` key that collides "
+        f"with query.phase; situation={situation!r}"
+    )
+    # The game phase is preserved under a dedicated, unambiguous key.
+    assert "game_phase" in keys, (
+        f"G-R4-07: situation must carry ``game_phase=`` for the game "
+        f"phase; situation={situation!r}"
+    )
+    # And the value side must still report day.
+    assert "game_phase=day" in situation, (
+        f"G-R4-07: game_phase=day must be present; got {situation!r}"
+    )
+
+
 # P1-M12: reflection hint diversity.
 #
 # `_reflection_memory_hints` previously took the top 5 reflections with

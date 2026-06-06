@@ -185,8 +185,14 @@ def _inject_seed_rag_hints(
         # carried no semantic structure and the rule-based retriever
         # essentially never matched.
         actions = [a.value for a in context.legal_actions]
+        # G-R4-07: the situation carried a bare ``phase=`` key whose
+        # value (day/night) collided with the query's own ``phase``
+        # field (the task phase: speech / night_action / wolf_discussion).
+        # The retriever tokenizes on ``=`` and couldn't tell them
+        # apart. Renamed to ``game_phase=`` so the two fields are
+        # unambiguous at the retriever's tag-overlap scoring step.
         situation = (
-            f"role={context.own_role} phase={context.phase} "
+            f"role={context.own_role} game_phase={context.phase} "
             f"task={context.task_type.value} alive={n_alive} "
             f"actions={actions}"
         )
