@@ -2588,3 +2588,34 @@ class TestWolfFakeSeerConsistency:
         assert "自我一致性" in text or "源头" in text or "fake_seer 话术的源头" in text, (
             f"fake_seer missing self-consistency clause 10: {text!r}"
         )
+
+
+class TestWitchPoisonPublicSource:
+    """P0-G3223805846-5: 女巫毒药 reason 必须能追溯到公开事件。"""
+
+    def test_witch_directive_contains_poison_public_source_rule(self):
+        from werewolf_agent.runtime.directives.witch import build_witch_directive
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_witch_directive(gs, "p03")
+        directive = d.get("witch_speech_directive", "") + " ".join(
+            str(v) for v in d.values() if v != d.get("witch_speech_directive", "")
+        )
+        assert "公开" in directive, f"witch directive missing 公开 source rule: {directive!r}"
+        assert "查杀" in directive or "悍跳" in directive, (
+            f"witch directive missing 查杀/悍跳 marker: {directive!r}"
+        )
+        assert "禁止" in directive or "不能" in directive, (
+            f"witch directive missing prohibition: {directive!r}"
+        )
+
+    def test_witch_directive_contains_antidote_default_rule(self):
+        from werewolf_agent.runtime.directives.witch import build_witch_directive
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_witch_directive(gs, "p03")
+        directive = d.get("witch_speech_directive", "")
+        # 解药默认救狼刀目标
+        assert "解药" in directive and ("默认" in directive or "当晚" in directive), (
+            f"witch directive missing antidote default rule: {directive!r}"
+        )
