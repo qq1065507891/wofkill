@@ -54,6 +54,46 @@ class RAGKnowledgeService:
         self._seed_entries: list[RAGEntry] | None = None
         self._entries_cache: dict[str, RAGEntry] | None = None
         self._last_audit: Any | None = None
+        # G-R4-13: hold a long-lived RAGInjector so the audit log
+        # accumulates across calls (deque maxlen caps the total).
+        # Pre-fix: a fresh RAGInjector was built on every
+        # ``retrieve_live_hints`` call, so the audit log was a
+        # 1-entry deque and the previous turn's audit record was
+        # lost the moment the next call returned. The audit log is
+        # the only observability surface for "why did this hit
+        # surface for this player" — losing it after every turn
+        # defeated the purpose.
+        #
+        # The retriever and (if used) vector scores are wired
+        # per-call via ``_refresh_injector`` so the new candidate
+        # pool reaches the retriever; the injector's audit deque
+        # itself is the long-lived part.
+        self._injector: RAGInjector | None = None
+
+    def _ensure_injector(self) -> RAGInjector:
+        """Return the long-lived RAGInjector, creating it on first use."""
+        if self._injector is None:
+            self._injector = RAGInjector(
+                StrategyRetriever([]),
+            )
+        return self._injector
+
+    def _refresh_injector(
+        self,
+        candidate_entries: list[RAGEntry],
+        vector_scores: dict[str, float] | None,
+    ) -> RAGInjector:
+        """Swap the retriever inside the long-lived injector so the
+        new candidate pool + vector scores reach the per-call
+        StrategyRetriever while the audit deque keeps accumulating.
+        """
+        injector = self._ensure_injector()
+        injector._retriever = StrategyRetriever(
+            candidate_entries,
+            reranker=self._reranker,
+            vector_scores=vector_scores,
+        )
+        return injector
 
     def ensure_seeded(self) -> dict[str, int]:
         """Upsert seed entries into repository and vector store when available."""
@@ -113,12 +153,14 @@ class RAGKnowledgeService:
                 entry.entry_id: score for score, entry in scored if score > 0.0
             }
 
-        injector = RAGInjector(
-            StrategyRetriever(
-                candidate_entries,
-                reranker=self._reranker,
-                vector_scores=vector_scores,
-            )
+        # G-R4-13: reuse the long-lived injector's retriever so the
+        # audit deque keeps accumulating. A new StrategyRetriever is
+        # wired in via ``_refresh_injector`` for this call's
+        # candidate pool + vector scores; the injector's audit log
+        # and last_audit survive across calls.
+        injector = self._refresh_injector(
+            candidate_entries,
+            vector_scores,
         )
         hits = injector.inject(
             query,

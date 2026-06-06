@@ -630,3 +630,60 @@ def test_weak_vector_matches_filtered_below_threshold() -> None:
         f"by the absolute threshold; the per-call max normalization "
         f"is still promoting noise to 1.0; selected={selected_ids!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# G-R4-13: RAGKnowledgeService must hold a long-lived RAGInjector
+# so the audit log persists across calls.
+#
+# Pre-fix: ``retrieve_live_hints`` created a fresh RAGInjector on
+# every call, so ``injector.audit_log()`` returned a 1-entry deque
+# and the previous turn's audit record was lost the moment the
+# next call returned. In production the audit log is the only
+# observability surface for "why did this hit surface for this
+# player" — losing it after every turn defeats the purpose.
+#
+# Post-fix: the service holds a single RAGInjector and reuses it
+# across calls (entries in the audit deque keep accumulating up
+# to the deque maxlen).
+# ---------------------------------------------------------------------------
+
+
+def test_audit_log_persists_across_calls() -> None:
+    """G-R4-13: call ``retrieve_live_hints`` twice on the same
+    service; the audit log on the underlying injector must
+    accumulate BOTH records (modulo the maxlen cap)."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    service = RAGKnowledgeService()
+    q1 = RAGQuery(
+        role="werewolf",
+        phase="night_discussion",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        max_results=3,
+    )
+    q2 = RAGQuery(
+        role="seer",
+        phase="speech",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        max_results=3,
+    )
+    service.retrieve_live_hints(q1, game_id="g1", player_id="p01")
+    service.retrieve_live_hints(q2, game_id="g2", player_id="p02")
+    # The long-lived injector must have BOTH records.
+    injector = getattr(service, "_injector", None)
+    assert injector is not None, (
+        "G-R4-13: RAGKnowledgeService must hold a long-lived "
+        "RAGInjector (e.g. ``self._injector``)."
+    )
+    log = injector.audit_log()
+    assert len(log) >= 2, (
+        f"G-R4-13: audit log must persist across calls; "
+        f"got {len(log)} records, expected at least 2."
+    )
+    # The two records must correspond to the two queries.
+    game_ids = [r.game_id for r in log]
+    assert "g1" in game_ids and "g2" in game_ids, (
+        f"G-R4-13: audit log lost one of the calls; "
+        f"game_ids seen: {game_ids!r}"
+    )
