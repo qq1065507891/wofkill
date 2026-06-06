@@ -902,12 +902,31 @@ class PlayerAgent:
             # For vote actions, exclude self and use evidence-based fallback
             if safe_action == ActionType.VOTE:
                 non_self = [t for t in context.legal_targets if t != context.agent_id]
-                if non_self:
-                    fb = context.strategy_directive.get("_vote_fallback_target") if context.strategy_directive else None
+                if not non_self:
+                    # g_3223805846-B1: vote fallback must never yield a null
+                    # target. If legal_targets only contains self, fall back
+                    # to the first legal target — better to vote anyone than
+                    # to skip the vote and let the engine treat us as abstain.
+                    safe_target = context.legal_targets[0] if context.legal_targets else None
+                else:
+                    fb = (
+                        context.strategy_directive.get("_vote_fallback_target")
+                        if context.strategy_directive else None
+                    )
                     if fb and fb in non_self:
                         safe_target = fb
                     else:
-                        safe_target = non_self[0]
+                        # g_3223805846-B1: prefer the most-suspect target from
+                        # strategy_directive (a player publicly questioned by
+                        # multiple others) over an arbitrary non-self target.
+                        most_suspect = (
+                            context.strategy_directive.get("_most_suspect_target")
+                            if context.strategy_directive else None
+                        )
+                        if most_suspect and most_suspect in non_self:
+                            safe_target = most_suspect
+                        else:
+                            safe_target = non_self[0]
             else:
                 safe_target = context.legal_targets[0]
 

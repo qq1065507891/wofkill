@@ -3048,3 +3048,52 @@ class TestMissingToolCallHintAdaptsToTextFallback:
             "'must use tool call' hint. "
             f"Got hint: {retry.correction_hint!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# g_3223805846-B1: vote fallback target must never be null
+# ---------------------------------------------------------------------------
+
+
+class TestVoteFallbackNotNull:
+    """P1-G3223805846-1: vote fallback must pick a non-null target from
+    legal_targets and prefer the most-suspect target from strategy_directive.
+    """
+
+    def _make_agent(self) -> PlayerAgent:
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p08": "default"},
+            providers={"mock": _JsonProvider("not json")},
+        )
+        return PlayerAgent(agent_id="p08", model_router=router, max_retries=1)
+
+    def test_fallback_vote_never_returns_null_target(self) -> None:
+        ctx = AgentContext(
+            agent_id="p08",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02", "p03", "p05", "p07"],
+            strategy_directive={},
+        )
+        agent = self._make_agent()
+        fb = agent._fallback_action(ctx)
+        assert isinstance(fb, FallbackAction)
+        assert fb.target_id is not None, "vote fallback must pick a target"
+        assert fb.target_id in ctx.legal_targets
+        assert fb.target_id != ctx.agent_id, "vote fallback must not pick self"
+
+    def test_fallback_vote_prefers_most_suspect_when_available(self) -> None:
+        ctx = AgentContext(
+            agent_id="p08",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02", "p03", "p05", "p07"],
+            strategy_directive={"_most_suspect_target": "p05"},
+        )
+        agent = self._make_agent()
+        fb = agent._fallback_action(ctx)
+        assert fb.target_id == "p05", (
+            f"expected most-suspect p05, got {fb.target_id}"
+        )
