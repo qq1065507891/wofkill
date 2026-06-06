@@ -422,7 +422,18 @@ class JudgeAgent:
                     f"请用简洁的中文宣布结果。只输出宣布台词，不要输出其他内容。"
                 )
             else:
-                prompt = f"你是狼人杀游戏的法官。{label}，投票结束。请用简洁的中文宣布。"
+                # P3-4: the pre-fix else-branch prompt was empty of any
+                # context (just "投票结束") so the LLM had to hallucinate
+                # what the result was.  Now we forward ``reason`` and
+                # ``tied`` to the LLM so it can announce the correct
+                # outcome (no-exile / generic-completion / custom).
+                tied_str = f"平票玩家: {'、'.join(tied)}。" if tied else ""
+                reason_str = f"（原因: {reason or '投票已结束'}）" if reason else "（原因: 投票已结束）"
+                prompt = (
+                    f"你是狼人杀游戏的法官。{label}，投票结束。"
+                    f"{reason_str}{tied_str}\n"
+                    f"请用简洁的中文宣布结果。只输出宣布台词，不要输出其他内容。"
+                )
             prompt, system_prompt = self._persona_inject(prompt, "judge_exile")
             # Phase 2 P2-2: see comment in ``broadcast_vote_calling``
             result = self.model_router.generate(
@@ -455,17 +466,69 @@ class JudgeAgent:
         sheriff_id: str | None,
         badge_state: str,
     ) -> JudgeBroadcast:
-        """Translate sheriff election result to broadcast."""
-        if sheriff_id and badge_state == "active":
-            msg = f"选举结果：{sheriff_id} 当选警长。"
-        elif badge_state == "torn":
-            msg = "警长撕掉了警徽，本局不再有警长。"
-        else:
-            msg = "未产生警长。"
+        """Translate sheriff election result to broadcast.
 
+        Phase 3 P3-5: this was the one broadcast that bypassed the
+        LLM (purely hardcoded ``msg``).  The other 4 broadcasts
+        (vote_calling, skill_guide, vote_tally, exile) all use
+        ``_persona_inject + model_router.generate`` so the judge
+        persona style (tournament_referee / variety_show_host /
+        neutral_arbiter / ancient_mystic) is applied.  Now the
+        sheriff result also routes through the LLM, so the
+        tournament-style "pompous formal" persona and the
+        variety-show "playful suspense" persona both apply to
+        the sheriff-election announcement.
+        """
+        if sheriff_id and badge_state == "active":
+            fallback = f"选举结果：{sheriff_id} 当选警长。"
+        elif badge_state == "torn":
+            fallback = "警长撕掉了警徽，本局不再有警长。"
+        else:
+            fallback = "未产生警长。"
+
+        if self.model_router is None:
+            return JudgeBroadcast(
+                broadcast_type="sheriff_result",
+                message=fallback,
+                phase="sheriff_election",
+                public_data={
+                    "sheriff_id": sheriff_id or "",
+                    "badge_state": badge_state,
+                },
+            )
+        try:
+            outcome_str = (
+                f"{sheriff_id} 当选警长" if sheriff_id and badge_state == "active"
+                else ("警长撕徽" if badge_state == "torn" else "未产生警长")
+            )
+            prompt = (
+                f"你是狼人杀游戏的法官。请宣布警长选举结果：{outcome_str}。\n"
+                f"请用简洁的中文宣布结果。只输出宣布台词，不要输出其他内容。"
+            )
+            prompt, system_prompt = self._persona_inject(prompt, "judge_sheriff")
+            # Phase 2 P2-2: see comment in ``broadcast_vote_calling``
+            result = self.model_router.generate(
+                agent_id="judge",
+                task_type="judge_sheriff",
+                prompt=prompt,
+                system_prompt=system_prompt,
+                jitter_seconds=(0.0, 0.0),
+            )
+            if result.text and result.text.strip():
+                return JudgeBroadcast(
+                    broadcast_type="sheriff_result",
+                    message=result.text.strip(),
+                    phase="sheriff_election",
+                    public_data={
+                        "sheriff_id": sheriff_id or "",
+                        "badge_state": badge_state,
+                    },
+                )
+        except Exception:
+            pass
         return JudgeBroadcast(
             broadcast_type="sheriff_result",
-            message=msg,
+            message=fallback,
             phase="sheriff_election",
             public_data={
                 "sheriff_id": sheriff_id or "",

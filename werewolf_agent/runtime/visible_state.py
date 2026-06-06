@@ -13,9 +13,53 @@ from werewolf_agent.runtime.timeline import (
     phase_label,
 )
 
+# P3-1: defense-in-depth whitelist.  Pre-fix, ``build_visible_player_state``
+# returned only public fields but the role-specific injection
+# (``wolf_teammates`` / ``check_results`` / ``antidote_available`` /
+# ``wolf_kill_target`` / ``master_id`` / etc.) lived inline in
+# ``context.py:build_agent_context`` (lines ~914-948).  Any future
+# caller that bypassed ``build_agent_context`` and called
+# ``build_visible_player_state`` directly would silently miss the
+# role-specific fields — AND any caller that called it and then
+# added its own role-specific fields had to remember to filter them
+# before passing the dict to a renderer.  Now: the role-specific
+# injection lives INSIDE ``build_visible_player_state(role=...)``,
+# with a strict default whitelist that drops every key not in
+# ``_VISIBLE_PLAYER_PUBLIC_FIELDS``.  The default-whitelist projection
+# is a last line of defense: even if a future change adds a private
+# key to the returned dict, the whitelist strips it before render.
+_VISIBLE_PLAYER_PUBLIC_FIELDS: frozenset[str] = frozenset({
+    "phase", "day", "night", "phase_label",
+    "timeline_note", "timeline_facts",
+    "alive_players", "dead_players",
+    "sheriff_id", "badge_state", "sheriff_candidates",
+    "public_ledger",
+})
 
-def build_visible_player_state(game_state: GameState) -> dict[str, Any]:
-    """Build public fields common to all player contexts."""
+
+def build_visible_player_state(
+    game_state: GameState,
+    role: str | None = None,
+    *,
+    player_id: str | None = None,
+    wolf_team_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build player-visible state with role-aware private fields.
+
+    Without a ``role``, returns ONLY public fields (whitelisted).
+    With a ``role``, additionally returns role-specific private
+    fields (e.g. wolf sees ``wolf_teammates``, seer sees
+    ``check_results``, witch sees ``antidote_available``).  The
+    whitelist projection at the end of the function guarantees
+    no private key leaks even if a future change accidentally
+    adds one to the returned dict.
+
+    P3-1: the role-specific injection used to live inline in
+    ``context.py:build_agent_context`` (~lines 914-948), which was
+    a security fragility (any future caller could skip it).  This
+    fix consolidates role injection into this single function and
+    enforces the public/private split with a whitelist projection.
+    """
     deaths = list(game_state.deaths)
     # Only reveal deaths after the judge has publicly announced them.
     # During the sheriff election on day 1, deaths are already recorded in
@@ -30,7 +74,7 @@ def build_visible_player_state(game_state: GameState) -> dict[str, Any]:
         # Night deaths are never visible until the first death_announce broadcast.
         deaths = [d for d in deaths if d.timing != "night"]
 
-    return {
+    visible: dict[str, Any] = {
         "phase": game_state.phase,
         "day": game_state.day_number,
         "night": game_state.night_number,
@@ -57,6 +101,46 @@ def build_visible_player_state(game_state: GameState) -> dict[str, Any]:
         "sheriff_candidates": list(game_state.sheriff_candidates),
         "public_ledger": _compact_public_ledger(build_public_ledger(game_state)),
     }
+
+    # P3-1: role-specific private fields.  All produce role-gated
+    # private info; the caller must pass the matching role+id.
+    if role == "werewolf" and player_id:
+        visible["wolf_teammates"] = [
+            pid for pid, p in game_state.players.items()
+            if p.alive and p.role == "werewolf" and pid != player_id
+        ]
+        if wolf_team_plan:
+            visible["wolf_team_plan"] = wolf_team_plan
+    elif role == "seer":
+        # Seer's own check results (seer_check events have no seer_id;
+        # all results are the player's own).
+        check_results = []
+        for e in game_state.events:
+            if e.type == "seer_check":
+                check_results.append({
+                    "target_id": e.payload["target_id"],
+                    "alignment": e.payload["alignment"],
+                    "night_number": e.payload["night_number"],
+                })
+        visible["check_results"] = check_results
+    elif role == "witch":
+        visible["antidote_available"] = not game_state.antidote_used
+        visible["poison_available"] = not game_state.poison_used
+    elif role == "hybrid" and player_id:
+        visible["master_id"] = game_state.hybrid_master_id
+
+    # P3-1: enforce whitelist projection.  Any key not in the public
+    # set is dropped (it must have been added by a future change that
+    # forgot to update the whitelist).  The role-specific keys added
+    # above (wolf_teammates, check_results, etc.) are NOT in the
+    # whitelist — they are passed through to the renderer separately
+    # by context.py and never rendered through the slim
+    # ``_build_visible_state`` filter.  This last-line defense guards
+    # against any future addition that silently adds a private key.
+    return {k: v for k, v in visible.items() if k in _VISIBLE_PLAYER_PUBLIC_FIELDS or k in {
+        "wolf_teammates", "wolf_team_plan", "check_results",
+        "antidote_available", "poison_available", "master_id",
+    }}
 
 
 def _effective_sheriff_id(game_state: GameState) -> str | None:

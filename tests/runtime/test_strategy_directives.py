@@ -1797,6 +1797,13 @@ class TestSheriffDirectiveFallback:
 
         Pre-fix: ``sheriff_vote_push`` was rendered unconditionally for
         the active sheriff, contradicting the silence condition.
+
+        Phase-1 P1-3 follow-up: the sheriff_silent directive must
+        EXPLICITLY state that the sheriff still must submit a vote
+        action (silence is on speech only, not on the vote) and
+        reference the existing target_id field, NOT a nonexistent
+        vote_silent field.  Pre-P1-3 the text said "通过 [vote_silent]
+        字段指定" which is not a real field.
         """
         gs = self._make_sheriff_gs(silenced=True)
         directive = self._invoke_day_speech(gs, "p03")
@@ -1809,11 +1816,28 @@ class TestSheriffDirectiveFallback:
             "silenced sheriff must not receive `sheriff_vote_push`; "
             f"got keys: {sorted(directive.keys())}"
         )
-        # The fallback text should tell the player they can't speak and
-        # nudge them to use vote_silent / open voting.
         text = directive["sheriff_silent"]
-        assert "无法发言" in text or "不能发言" in text
-        assert "vote_silent" in text or "投票" in text
+        # Must tell the LLM the sheriff CANNOT speak
+        assert "无法发言" in text, (
+            f"sheriff_silent must declare speech prohibition; got: {text!r}"
+        )
+        # Must explicitly tell the LLM the sheriff STILL submits vote
+        # action (silence is speech-only, not vote).  P1-3 follow-up.
+        assert "仍需提交 vote action" in text or "仍需提交" in text, (
+            f"P1-3: sheriff_silent must clarify that vote is still required; "
+            f"got: {text!r}"
+        )
+        # Must reference the existing target_id field (NOT a
+        # nonexistent vote_silent field)
+        assert "target_id" in text, (
+            f"P1-3: sheriff_silent must reference the existing target_id "
+            f"field; got: {text!r}"
+        )
+        # Must NOT reference the nonexistent [vote_silent] placeholder
+        assert "[vote_silent]" not in text, (
+            f"P1-3: sheriff_silent must NOT reference the nonexistent "
+            f"[vote_silent] placeholder; got: {text!r}"
+        )
 
     def test_active_sheriff_without_silence_still_gets_vote_push(self) -> None:
         """Sanity: when the sheriff is NOT silenced, the original
@@ -2455,40 +2479,19 @@ class TestSingleSeerBranch:
 
 
 def test_sheriff_silent_directive_references_target_id_not_vote_silent():
-    """Phase-1 P1-7: when sheriff is silenced, the directive must tell
-    the LLM to use the existing ``target_id`` field on the vote
+    """Phase-1 P1-7 + Phase-3 clean-2: sheriff_silent directive must
+    tell the LLM to use the existing ``target_id`` field on the vote
     action — NOT a nonexistent ``[vote_silent]`` field.
 
-    Pre-fix the directive said "通过 [vote_silent] 字段指定"; there is
-    no ``vote_silent`` field in any PlayerAction variant, so the LLM
-    fabricated the field, the schema validator rejected it, and the
-    action fell through to a generic fallback.
-
-    Implementation: the directive is built inline in agent_adapter.py
-    (~L865).  We use ``inspect.getsource`` to read the file source
-    and assert the literal strings present/absent there.  This is
-    integration-coupled enough that a full runtime simulation would
-    require mocking game state, registry, etc. — out of scope.
+    Implementation: this is now a REGRESSION GUARD only.  The
+    behavioral coverage lives in
+    ``test_sheriff_silent_fallback`` above (which invokes
+    ``_invoke_day_speech`` and inspects the returned directive
+    text).  This test stays as a stub to document the historical
+    P1-3 fix without the fragile ``inspect.getsource`` dependency.
     """
-    import inspect
-    from werewolf_agent.runtime import agent_adapter as _mod
-    src = inspect.getsource(_mod)
-    # Search for the sheriff_silent assignment block
-    assert '"sheriff_silent"' in src, (
-        "sheriff_silent key assignment must exist in agent_adapter.py"
-    )
-    # The offending [vote_silent] placeholder must NOT appear anywhere
-    # in the source (the LLM-facing directive text).
-    assert "[vote_silent]" not in src, (
-        "P1-7: [vote_silent] placeholder must be removed from "
-        "sheriff_silent directive text in agent_adapter.py"
-    )
-    # The replacement text must mention target_id (the existing
-    # PlayerAction field that silenced sheriffs can still use to
-    # pre-register a vote target).
-    sheriff_silent_idx = src.find('"sheriff_silent"')
-    snippet = src[sheriff_silent_idx:sheriff_silent_idx + 300]
-    assert "target_id" in snippet, (
-        f"P1-7: sheriff_silent directive must reference target_id; "
-        f"got snippet: {snippet!r}"
-    )
+    # Behavioral test is the source of truth — see
+    # test_sheriff_silent_fallback above.
+    # If you need to verify the literal text again, the existing
+    # behavioral test's assertions include both "target_id" in
+    # the text AND "[vote_silent]" NOT in the text.

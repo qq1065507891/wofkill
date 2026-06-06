@@ -72,13 +72,17 @@ class TestJudgeAgent:
         )
 
     def test_broadcast_sheriff_elected(self) -> None:
-        judge = self._make_judge()
+        # P3-5: broadcast_sheriff_result now routes through LLM.  Use
+        # router=None so the function returns the hardcoded fallback
+        # (which is what the test was originally asserting).
+        judge = JudgeAgent(model_router=None, profile_router=None)
         b = judge.broadcast_sheriff_result("p03", "active")
         assert "p03" in b.message
         assert "当选" in b.message
 
     def test_broadcast_badge_torn(self) -> None:
-        judge = self._make_judge()
+        # P3-5: see above — use router=None for the fallback path
+        judge = JudgeAgent(model_router=None, profile_router=None)
         b = judge.broadcast_sheriff_result(None, "torn")
         assert "撕掉" in b.message
 

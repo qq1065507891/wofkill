@@ -4,10 +4,51 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Phase 2 MERGED to master** — 2026-06-06
-- Active task: Awaiting decision on Phase 3 (or push / PR)
+- Current phase: **Prompt-Audit Phase 3 — 7 cross-module fixes (P3-1..7) + cleanup** — 2026-06-06
+- Active task: P3-commit-1 (4 cross-module mid-risk items)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-06
+
+---
+
+## Prompt-Audit Phase 3 (P3-1..7) — 7 cross-module fixes + cleanup
+
+Branch: `fix9-prompt-phase3` (worktree `.worktrees/fix9-prompt-phase3`).
+Base: `edd4789` (Phase 2 PROGRESS update on master).
+Scope: 7 cross-module polish items from the 7-module prompt-design
+audit (modules A-G, 2026-06-06) + cleanup of items deferred from
+Phase 1 self-audit. All items require cross-file coordination.
+
+### Planned commits
+
+| Commit | Items | Risk | Files (planned) |
+|--------|-------|------|-----------------|
+| **P3-commit-1** | P3-1, P3-2, P3-3, P3-4 | mid (cross-module) | `visible_state.py` + `context.py`, `prompt_builder.py` + `_SECTION_PRIORITIES` 字典, `player.py` + test, `judge.py` + test |
+| **P3-commit-2** | P3-5, P3-6, P3-7 + cleanup | mid | `judge.py`, `skills/*.py` (audit), `player.py`, `context.py` (dead code), test_strategy_directives |
+
+| # | Issue | Source | Files (planned) |
+|---|-------|--------|-----------------|
+| P3-1  | `visible_state` 剥私钥 — `build_visible_player_state` 必须按 role 过滤 `wolf_teammates` / `check_results` / `antidote_available` / `wolf_kill_target` / `master_id` 等（CLAUDE.md "玩家不能看到 moderator_full / 私有信息" 强制）| B + G | `runtime/visible_state.py`, `runtime/context.py:846` |
+| P3-2  | 信息边界列 11 个 section 而非 6 类（同步 `_SECTION_PRIORITIES` 字典）| A | `prompt_builder.py:200-211` (info_boundaries 段) |
+| P3-3  | `speech_quality` / `vote_quality` correction_hint 改为可执行模板（g_3528592081 实际 trace 校验）| G | `player.py:550-578` |
+| P3-4  | `announce_exile_result` 补 reason/tied 上下文（"投票结束"空 prompt 改带原因）| C | `judge.py:407-408` |
+| P3-5  | `broadcast_sheriff_result` 接入 LLM（绕过 persona 修复）| C | `judge.py:434-455` |
+| P3-6  | S-19 audit 现有 skill prompts 引用格式（确认新正则 `[pP]\d+ / \d+号玩家 / 玩家\s*\d+` 是否覆盖所有实际引用）| E | `skills/werewolf_skills/*.py`（grep + manual） |
+| P3-7  | `illegal_action` hint 改为引用 contract section 名（不暴露 enum）| G | `player.py:533-534` |
+| (clean-1) | `_inner_rank` dead code 清理（context.py:389-396 唯一 caller 已被 P2-7 删）| Phase 1 self-audit | `runtime/context.py` |
+| (clean-2) | sheriff_silent 测试改行为测试（替换 `inspect.getsource` 脆弱断言）| Phase 1 self-audit #5 | `tests/runtime/test_strategy_directives.py` |
+
+### Workflow
+
+Strict TDD per item: red test → run (fails) → production fix → run (passes) →
+full regression → commit.  Cross-module items ship together only when
+they're operationally inseparable (e.g. visible_state strip + caller
+update).
+
+### Test baseline (worktree)
+
+`pytest tests/agents/ tests/runtime/ --override-ini="addopts="` →
+**1352 passed, 0 failed** in 153s (2:32).  Full suite must end ≥1352.
 
 ### Master history (last 5 commits)
 
