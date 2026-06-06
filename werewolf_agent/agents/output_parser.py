@@ -237,9 +237,50 @@ def clean_enum_value(value: Any, allowed: set[str]) -> str | None:
     return cleaned if cleaned in allowed else None
 
 
+# D4-6 (P2): placeholder filter set for `clean_reason`. The previous
+# hard-coded set was only 4 entries; real LLM output produces ~15
+# distinct placeholder strings for the reason / private_reason /
+# suspect_reason fields. Anything that survives the parser gets
+# logged into the audit trail and surfaced in the dashboard,
+# polluting downstream review. Set is split 8 Chinese + 4 English +
+# 3 punctuation to make the regression test parametrization
+# explicit.
+_REASON_PLACEHOLDERS: frozenset[str] = frozenset({
+    # Chinese (8)
+    "未说明",
+    "无",
+    "未知",
+    "不清楚",
+    "暂无",
+    "未填",
+    "无理由",
+    "没办法",
+    # English (4)
+    "none",
+    "null",
+    "N/A",
+    "n/a",
+    # Punctuation (3) — what happens when the LLM gives up mid-thought
+    "-",
+    "?",
+    "...",
+})
+
+
 def clean_reason(value: Any) -> str:
     text = str(value or "").strip()
-    if not text or text in {"未说明", "无", "none", "null"}:
+    if not text or text in _REASON_PLACEHOLDERS:
+        # D4-6 (P2): surface the placeholder substitution to ops. A
+        # silent filter would lose the signal that the LLM is
+        # filling the reason field with garbage. We only log on
+        # the filter path (not the empty-string path) so the
+        # volume stays proportional to the LLM's actual failure
+        # rate.
+        if text and text in _REASON_PLACEHOLDERS:
+            logger.warning(
+                "clean_reason: filtered placeholder reason %r to ''",
+                text,
+            )
         return ""
     return text
 
