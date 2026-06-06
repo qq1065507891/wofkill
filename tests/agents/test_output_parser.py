@@ -26,6 +26,7 @@ import pytest
 
 from werewolf_agent.agents.output_parser import (
     clean_reason,
+    extract_json_object_candidates,
     parse_action,
     repair_json_text,
 )
@@ -292,4 +293,122 @@ class TestCleanReasonFiltersCommonPlaceholders:
         assert warning_records, (
             "D4-6: clean_reason must log a WARNING on the output_parser "
             "logger when a placeholder is filtered (ops needs the signal)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# D4-7 (P2): extract_json_object_candidates must reject non-action JSON
+# ---------------------------------------------------------------------------
+#
+# The old code returned ALL balanced JSON objects from the model text if
+# none had an `action_type` field:
+#
+#     action_candidates = [
+#         c for c in candidates
+#         if '"action_type"' in c or "'action_type'" in c
+#     ]
+#     return action_candidates or candidates  # ← falls back to all
+#
+# Real LLM thought chains contain objects like
+# ``{"analysis": "I think p07 is suspicious because..."}`` — balanced
+# JSON, no `action_type`. The fallback then treats that as an action
+# candidate. The downstream ``action_from_data`` either errors (good)
+# or, worse, accepts it if ``analysis`` happens to look like a known
+# field name.
+#
+# Fix: require the first key to be a known ``ActionType`` value OR the
+# object to carry an ``action_type`` field. Otherwise raise
+# ``no_action_type_found`` so the caller can fall back to its
+# "no valid action" path. The thought chain never re-enters the action
+# pipeline as a candidate.
+
+
+class TestExtractJsonRejectsAnalysisObject:
+    """D4-7: extract_json_object_candidates rejects objects without action_type."""
+
+    def test_extract_json_rejects_analysis_object(self) -> None:
+        """The canonical thought-chain JSON must not be returned.
+
+        Real LLM output starts with a thought/analysis block. The
+        parser should not mistake that for an action candidate.
+        """
+        text = (
+            "Let me think about this.\n"
+            '{"analysis": "p07 is suspicious because of their vote pattern"}\n'
+            "OK now I'll act on it."
+        )
+        # Either: the function raises ``no_action_type_found`` ...
+        # ... OR: it returns an empty list.
+        # The task spec says "raise" — we accept either form, but the
+        # thought-chain object must not appear in the result.
+        try:
+            result = extract_json_object_candidates(text)
+        except ValueError as exc:
+            assert "no_action_type_found" in str(exc).lower() or "no_action" in str(exc).lower(), (
+                f"D4-7: if extract_json_object_candidates raises, it must "
+                f"signal 'no_action_type_found' (got: {exc!r})"
+            )
+            result = []
+        assert result == [], (
+            "D4-7: extract_json_object_candidates must reject the "
+            f"thought-chain object. Got: {result!r}"
+        )
+
+    def test_extract_json_rejects_thinking_object(self) -> None:
+        """Same as analysis — ``thinking`` is another common LLM key."""
+        text = '{"thinking": "I should vote p07 because..."}'
+        try:
+            result = extract_json_object_candidates(text)
+        except ValueError:
+            result = []
+        assert result == [], (
+            f"D4-7: extract_json_object_candidates must reject {{thinking:...}}. "
+            f"Got: {result!r}"
+        )
+
+    def test_extract_json_rejects_meta_object(self) -> None:
+        """Random LLM metadata must not be returned as a candidate."""
+        text = '{"step": 1, "thought": "narrowing down", "next": "check p07"}'
+        try:
+            result = extract_json_object_candidates(text)
+        except ValueError:
+            result = []
+        assert result == [], (
+            f"D4-7: extract_json_object_candidates must reject step/thought meta. "
+            f"Got: {result!r}"
+        )
+
+    def test_extract_json_accepts_object_with_action_type(self) -> None:
+        """Sanity: a JSON object with action_type is still returned."""
+        text = '{"action_type": "vote", "target_id": "p07", "reason": "suspicious"}'
+        result = extract_json_object_candidates(text)
+        assert len(result) == 1, (
+            f"D4-7: a valid action JSON must be returned as a candidate. "
+            f"Got: {result!r}"
+        )
+        assert "action_type" in result[0]
+        assert "vote" in result[0]
+
+    def test_extract_json_accepts_object_with_action_type_after_thought(self) -> None:
+        """A real LLM reply interleaves thought and action.
+
+        The action JSON must be returned; the thought JSON must be
+        rejected. The test verifies both at once.
+        """
+        text = (
+            '{"analysis": "thinking about p07..."}\n'
+            "Here's my action:\n"
+            '{"action_type": "speech", "speech": "I am the seer", '
+            '"target_id": "p03", "reason": "standing with seer"}'
+        )
+        try:
+            result = extract_json_object_candidates(text)
+        except ValueError:
+            pytest.fail("D4-7: must not raise when at least one action JSON is present")
+        # The action JSON must be in the result; the thought chain must not.
+        assert any("action_type" in c and "speech" in c for c in result), (
+            f"D4-7: action JSON must be returned when present. Got: {result!r}"
+        )
+        assert not any("analysis" in c for c in result), (
+            f"D4-7: thought-chain JSON must be filtered out. Got: {result!r}"
         )

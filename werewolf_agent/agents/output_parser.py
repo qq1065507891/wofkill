@@ -148,7 +148,19 @@ def repair_json_text(raw: str) -> str:
 
 
 def extract_json_object_candidates(text: str) -> list[str]:
-    """Extract balanced JSON object candidates from mixed model text."""
+    """Extract balanced JSON object candidates from mixed model text.
+
+    D4-7 (P2): an LLM thought chain typically contains
+    ``{"analysis": "..."}`` / ``{"thinking": "..."}`` blocks. The old
+    implementation returned ALL balanced JSON objects when none had
+    ``action_type``, so the thought chain was treated as an action
+    candidate. We now require the first key to be a known
+    ``ActionType`` value OR the object to carry an ``action_type``
+    field. If no candidate passes, raise ``no_action_type_found`` so
+    the caller can take its "no valid action" path (empty list would
+    be ambiguous with "no JSON at all" — the explicit error makes the
+    intent clear to the caller and to the audit log).
+    """
     candidates: list[str] = []
     start: int | None = None
     depth = 0
@@ -179,11 +191,62 @@ def extract_json_object_candidates(text: str) -> list[str]:
                 candidates.append(text[start:idx + 1])
                 start = None
 
-    action_candidates = [
-        candidate for candidate in candidates
-        if '"action_type"' in candidate or "'action_type'" in candidate
-    ]
-    return action_candidates or candidates
+    # Known ActionType string values — used to recognize the
+    # terse-format action envelope `{"vote": {...}}` where the
+    # action_type doubles as the first key.
+    _known_action_types = {t.value for t in ActionType}
+    # Match the first key of an object (double-quoted, single-quoted,
+    # or unquoted). We deliberately accept the unquoted form because
+    # the LLM sometimes omits quotes and the JSON-repair layer is
+    # expected to fix that downstream.
+    _first_key_re = re.compile(
+        r"""^\s*\{\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))\s*:"""
+    )
+
+    def _looks_like_action(candidate: str) -> bool:
+        # Standard action_type discriminator (string or single-quoted).
+        if '"action_type"' in candidate or "'action_type'" in candidate:
+            return True
+        # Choice-pipeline envelope: ``{"choice": "A", "reason": ...}`` —
+        # the choice pipeline (see parse_choice_action) uses ``choice``
+        # as the discriminator letter (A→target, B→target, etc.). The
+        # key is the same role as ``action_type`` in the
+        # action-pipeline format, so we accept it here.
+        if '"choice"' in candidate or "'choice'" in candidate:
+            return True
+        # Speech-intent-pipeline envelope:
+        # ``{"intent": "stand_with_seer", "speech": ...}`` — the speech
+        # intent pipeline (see parse_speech_intent_action) uses
+        # ``intent`` as the discriminator. Same role as action_type
+        # in the action-pipeline format.
+        if '"intent"' in candidate or "'intent'" in candidate:
+            return True
+        # Terse action-as-first-key envelope: ``{"vote": ...}`` where
+        # the LLM uses the action_type value as the first key.
+        m = _first_key_re.match(candidate)
+        if m is None:
+            return False
+        first_key = m.group(1) or m.group(2) or m.group(3)
+        return first_key in _known_action_types
+
+    action_candidates = [c for c in candidates if _looks_like_action(c)]
+    if not action_candidates:
+        # D4-7 (P2): do NOT fall back to all balanced JSON. The
+        # thought chain would re-enter the action pipeline as a
+        # candidate. Surface a clear error so the caller can route
+        # to its "no valid action" path. We only raise when we
+        # actually found balanced JSON — ``[]`` candidates means the
+        # text has no JSON at all, which is a different "no JSON
+        # found" case the caller already handles.
+        if not candidates:
+            return []
+        raise ValueError(
+            "no_action_type_found: extract_json_object_candidates found "
+            f"{len(candidates)} balanced JSON object(s) but none carried an "
+            f"action_type discriminator (first-key form, or "
+            f"action_type field). Refusing to fall back to non-action JSON."
+        )
+    return action_candidates
 
 
 def extract_parameter_tag_action(text: str) -> dict[str, Any] | None:
