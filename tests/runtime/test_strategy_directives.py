@@ -2619,3 +2619,31 @@ class TestWitchPoisonPublicSource:
         assert "解药" in directive and ("默认" in directive or "当晚" in directive), (
             f"witch directive missing antidote default rule: {directive!r}"
         )
+
+
+class TestHunterShotEvidence:
+    """P0-G3223805846-6: 猎人开枪前必须 ≥ 2 独立公开证据，否则倾向 no_action。"""
+
+    def test_hunter_exposed_directive_requires_multi_evidence(self):
+        from werewolf_agent.core.models import GameState
+        from werewolf_agent.runtime.directives.hunter import build_hunter_directive
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_hunter_directive(gs, "p09")
+        directive = d.get("hunter_speech_directive", "")
+        assert "2" in directive and "证据" in directive, (
+            f"hunter exposed directive missing ≥ 2 证据: {directive!r}"
+        )
+        assert "no_action" in directive, (
+            f"hunter directive missing no_action fallback: {directive!r}"
+        )
+
+    def test_hunter_hidden_directive_requires_multi_evidence(self):
+        from werewolf_agent.core.models import GameState
+        from werewolf_agent.runtime.directives.hunter import build_hunter_directive
+        # No speech event recorded → identity not exposed
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_hunter_directive(gs, "p09")
+        directive = d.get("hunter_speech_directive", "")
+        assert "2" in directive and "证据" in directive, (
+            f"hunter hidden directive missing ≥ 2 证据: {directive!r}"
+        )
