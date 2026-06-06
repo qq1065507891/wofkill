@@ -1199,6 +1199,63 @@ def test_rag_hints_filtered_by_type():
         )
 
 
+def test_rag_truncation_note_in_tail():
+    """G-R4-12: when the JSON payload is truncated by ``_truncate_text``
+    (P2-4 marker ``...<已截断>`` appears), the tail reminder must
+    explicitly acknowledge the truncation. Otherwise the LLM sees
+    the head warning + half-JSON + a generic "以上案例仅供参考"
+    tail — and may attempt to parse the half-JSON or treat it as a
+    hard assertion. The tail must call out the truncation so the
+    LLM knows the JSON ended mid-document.
+    """
+    # Force the JSON to exceed the truncation cap. The RAG section
+    # cap is 1800 chars; a single item with a 2k-char summary blows
+    # past it.
+    long_summary = "狼" * 2000
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [{
+            "type": "rag_hit",
+            "title": "超长案例",
+            "summary": long_summary,
+            "key_decisions": ["决策1", "决策2", "决策3"],
+        }],
+    })
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The truncation marker is present.
+    assert "已截断" in prompt, (
+        "G-R4-12: the test setup should force JSON truncation; "
+        "the `<已截断>` marker must be present in the prompt."
+    )
+    # The tail must include an explicit truncation note. The exact
+    # wording is implementation-defined; the contract is just that
+    # the tail text references the truncation (e.g. "JSON 已截断",
+    # "内容已截断", etc.) — not just the generic "以上案例仅供参考".
+    rag_start = prompt.find("知识库提示")
+    assert rag_start != -1, "RAG hints section must be present"
+    rag_section = prompt[rag_start:]
+    # The truncation note must be a clear reference to the cut.
+    truncation_keywords = ("已截断", "被截断", "中途截断", "截断提示")
+    has_truncation_note = any(
+        kw in rag_section for kw in truncation_keywords
+    )
+    # The truncated marker is already in the JSON; the tail must
+    # ALSO mention truncation so the LLM can see the tail's intent
+    # even if it skips the head warning.
+    assert rag_section.count("已截断") >= 2, (
+        f"G-R4-12: tail must include its own truncation note. "
+        f"Got {rag_section.count('已截断')} occurrences of '已截断' "
+        f"in the RAG section. The P2-4 marker is in the JSON body, "
+        f"but the tail reminder must add a second mention so the LLM "
+        f"sees 'this was truncated' in both places."
+    )
+    # And the tail must still carry the existing reference framing.
+    assert "以上案例仅供参考" in rag_section, (
+        "G-R4-12: the truncation note must augment, not replace, the "
+        "existing '以上案例仅供参考' tail reminder."
+    )
+
+
 def test_skill_catalog_not_in_system_prompt_for_seer():
     """P0-R2: seer system prompt must not include the skill catalog.
 
