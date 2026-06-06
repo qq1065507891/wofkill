@@ -598,10 +598,13 @@ def _inject_skill_output(
     from werewolf_agent.skills.schemas import SkillName as _SkillName
     # Build a set of skill names whose applicable_phases includes
     # `last_words` or `review` — these are exempt from S-19.
+    # NEW-R4-P2-8: the actual enum value for REVIEW_CORRECTION is
+    # the real string `review_correct`. The underscored form
+    # was dead code — never matched any enum value.
     _analysis_exempt_skills: set[str] = set()
     for _sn in _SkillName:
-        if _sn.value in ("last_words", "review_correction", "review_correct"):
-            # last_words + review_correct(ion) are exempt
+        if _sn.value in ("last_words", "review_correct"):
+            # last_words + review_correct are exempt
             _analysis_exempt_skills.add(_sn.value)
     # NEW-S19-A: for the exempt skills, build a wider
     # `legal_targets_for_analysis` that includes dead players.

@@ -285,12 +285,38 @@ def _default_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # static fallback — day-conditional branching (NEW-R4-P2-6).
+        # Day 1 = 窗口开放 (strongest encouragement). Day 2 = 过渡期
+        # (still possible, conditional on team plan). Day 3+ = 窗口
+        # 关闭 (deprioritize, advise only if teammate already failed).
         risks = ["悍跳风险：如果对跳方是真预言家，可信度会大幅下降"]
-        if inp.day > 2:
+        if inp.day >= 2:
+            risks.append("悍跳需要完整的假时间线，发言越多越容易暴露")
+        if inp.day >= 3:
             risks.append("晚期悍跳风险更高：已发言轮次多，矛盾点容易被抓")
-        conf = 0.6 if inp.day <= 1 else 0.3
-        prompt = "悍跳建议：尽早跳预言家并报出假查验结果。构建完整的时间线和警徽流。" if conf >= 0.5 else "晚期悍跳风险极高，不建议此时悍跳。"
+        if inp.day <= 1:
+            conf = 0.6
+            prompt = (
+                "悍跳建议：当前为Day 1，悍跳窗口最佳。"
+                "尽早跳预言家并报出假查验结果，构建完整时间线和警徽流。"
+                "队友可配合站边，把假预言家身份坐实。"
+            )
+        elif inp.day == 2:
+            conf = 0.45
+            prompt = (
+                "悍跳建议：当前为Day 2，仍有悍跳窗口但风险上升。"
+                "如果队内尚无假预言家且场上无人跳，可考虑悍跳，"
+                "需准备更精细的假时间线和与Day 1发言的兼容性。"
+                "如果已有队友尝试失败，悍跳会进一步暴露狼队，建议放弃。"
+            )
+        else:  # day >= 3
+            conf = 0.3
+            prompt = (
+                "悍跳建议：当前已过Day 2，悍跳窗口基本关闭。"
+                "除非队内无人尝试且对跳方明显是悍跳失败者，"
+                "否则不建议此时悍跳——风险远大于收益，"
+                "应转为深水或倒钩策略。"
+            )
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["报查验结果", "声明警徽流", "攻击对立面逻辑"],
@@ -381,8 +407,17 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     # needs to defend their check result and rip the faker's timeline.
     # A WOLF countering a real seer (i.e. doing the "悍跳" pair-up)
     # needs to fabricate a matching timeline and steer the room.
+    # NEW-R4-P2-1: a HYBRID with `hybrid_master_faction='werewolf'`
+    # is on the wolf side and gets the same 悍跳 framing as a real
+    # werewolf (faking-seer is one of the hybrid's wolf-team jobs).
     is_seer = inp.role == "seer"
     is_wolf = inp.role == "werewolf"
+    is_hybrid_wolf = (
+        inp.role == "hybrid"
+        and gs is not None
+        and getattr(gs, "hybrid_master_faction", None) == "werewolf"
+    )
+    effective_wolf = is_wolf or is_hybrid_wolf
     if gs is None:
         # static fallback — role-tailored phrasing
         if is_seer:
@@ -408,6 +443,24 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
                 prompt_injectable=_cap_prompt_injectable(
                     "对跳建议（狼队悍跳视角）：你作为狼的悍跳者，需要准备完整的"
                     "假验人时间线来对跳真预言家。重点攻击对方的验人动机和警徽流漏洞，"
+                    "并用排坑占边把节奏拉到自己这边。"
+                ),
+            )
+        if is_hybrid_wolf:
+            # NEW-R4-P2-1: hybrid-with-wolf-master gets the same 悍跳
+            # framing as a real werewolf when faking seer. The wolf
+            # team plan relies on the hybrid building a matching
+            # fake-check timeline.
+            return SkillOutput(
+                skill_name=skill.name.value,
+                speech_structure=["准备完整的假验人记录", "攻击真预言家的逻辑漏洞", "排坑占边"],
+                risk_alerts=["悍跳风险：如果对方是真预言家，可信度会大幅下降"],
+                confidence=0.55,
+                reasoning="悍跳对跳（混合体视角）：核心是构建与狼队一致的假时间线",
+                prompt_injectable=_cap_prompt_injectable(
+                    "对跳建议（混合体悍跳视角）：你作为混合体且主人是狼，"
+                    "你与狼队一起行动。你需要准备完整的假验人时间线来对跳真预言家。"
+                    "重点攻击对方的验人动机和警徽流漏洞，"
                     "并用排坑占边把节奏拉到自己这边。"
                 ),
             )
@@ -491,6 +544,36 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
                 "用排坑占边为团队创造空间",
             ]
         risks = [f"悍跳 {target} 需要完整的假验人记录，时间线断裂会暴露"]
+    elif is_hybrid_wolf:
+        # NEW-R4-P2-1: hybrid-with-wolf-master uses wolf 悍跳 framing
+        # in the dynamic branch (mirrors the static fallback).
+        if has_claim_conflict:
+            prompt = (
+                f"对跳分析（混合体悍跳视角）：{target} 的发言已经暴露矛盾（claim_conflict）。"
+                f"作为混合体与狼队一起行动，抓住这个矛盾猛攻，"
+                f"把场上风向拉到对你和狼队有利的方向。"
+                f"用你准备的假验人时间线作为正面证据。"
+            )
+            conf = 0.6
+            speech = [
+                f"放大{target}的发言矛盾",
+                "用你准备好的假时间线作为正面证据",
+                "排坑占边把节奏拉到自己这边",
+            ]
+        else:
+            prompt = (
+                f"对跳分析（混合体悍跳视角）：{target} 的发言暂时没明显漏洞。"
+                f"作为混合体与狼队一起行动，不要正面硬刚，从侧面找漏洞"
+                f"（验人动机、警徽流合理性）。如果真预言家时间线无漏洞，"
+                f"转为排坑占边策略。"
+            )
+            conf = 0.4
+            speech = [
+                f"侧面质疑{target}的验人动机",
+                "准备完整的假时间线作为预案",
+                "用排坑占边为狼队创造空间",
+            ]
+        risks = [f"悍跳 {target} 需要完整的假验人记录，时间线断裂会暴露"]
     else:
         # Other roles (villager/...) — neutral dynamic advice.
         if has_claim_conflict:
@@ -538,7 +621,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 "选择嫌疑最大的人作为你的投票目标。"
             )
             speech = ["确认你的最终投票目标", "回顾其嫌疑证据", "准备投出选票"]
-            action = "vote"
         else:
             # Default (and speech-task): rhetoric-focused push.
             prompt = (
@@ -546,7 +628,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 "陈述理由时需要有理有据，号召全场跟随。"
             )
             speech = ["陈述归票理由", "分析目标嫌疑", "号召全场归票"]
-            action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=speech,
@@ -568,16 +649,13 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 "归票建议（投票阶段）：当前信息不足，没有明确嫌疑目标。"
                 "选择一个相对最可疑的目标投票，避免弃票。"
             )
-            action = "vote"
         elif is_speech_task:
             prompt = (
                 "归票建议（发言阶段）：当前信息不足，没有明确嫌疑目标。"
                 "在发言中表示需要观察，避免无依据地号召归票。"
             )
-            action = "speech"
         else:
             prompt = "归票建议：当前信息不足，建议观察发言后再决定归票方向。"
-            action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
             confidence=0.4,
@@ -610,7 +688,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             f"理由：{reason_text}。"
             f"请直接选 {primary} 作为你的投票目标。"
         )
-        action = "vote"
         speech = [f"确认{primary}为最终投票目标", f"回顾{primary}的嫌疑证据", "投出选票"]
         risks = ["归票错误目标可能导致好人损失"]
     elif is_speech_task:
@@ -620,7 +697,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             f"理由：{reason_text}。"
             f"在发言中陈述理由，号召全场集中票数归出 {primary}。"
         )
-        action = "speech"
         speech = [f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"]
         risks = ["归票错误目标可能导致好人损失"]
     else:
@@ -629,7 +705,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             f"归票建议：根据场上信息，{primary} 的嫌疑最大。"
             f"理由：{reason_text}。号召全场集中票数归出 {primary}。"
         )
-        action = "vote"
         speech = [f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"]
         risks = ["归票错误目标可能导致好人损失"]
 
@@ -846,13 +921,21 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # NEW-R4-P2-7: when no game_state is provided, the handler
+        # has no signals to analyze. The previous fallback used
+        # abstract "系统性分析" advice that gave the LLM no
+        # concrete next step. Replace with an explicit "wait" —
+        # the dynamic branch is the real value-add; the fallback
+        # is a placeholder.
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
             confidence=0.5,
             reasoning="找神需要综合多个信号源进行推断",
-            prompt_injectable=_cap_prompt_injectable("找神建议：关注发言中信息量异常的玩家（可能知道夜晚信息）、投票倾向保守的玩家、以及试图保护某些位置的玩家，这些可能是神职。"),
+            prompt_injectable=_cap_prompt_injectable(
+                "找神建议：当前信息不足，等待关键发言出现后再下判断。"
+                "重点关注信息量异常的玩家、保守的投票倾向，以及对特定玩家的保护行为。"
+            ),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -930,15 +1013,46 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # NEW-R4-P2-5: role-tailored static fallback. Seer hides
+        # 查验 / 警徽; witch hides 药剂 / 救人时机; wolf hides
+        # 夜杀 / 队友 / 夜间信息. Villagers (and other roles with
+        # no night info to leak) keep the generic advice.
         risks = ["藏身份过久可能导致无法在关键时刻发挥作用"]
+        if inp.role == "seer":
+            prompt = (
+                "藏身份建议（预言家视角）：不要提前暴露查验结果和金水。"
+                "如果还没到必须跳预言家的时候，保持中立发言节奏，"
+                "避免在发言中泄露警徽流和验人动机。"
+                "被质疑时，用侧面试探而非直接亮金水。"
+            )
+        elif inp.role == "witch":
+            prompt = (
+                "藏身份建议（女巫视角）：不要暴露你的药剂状态——"
+                "既不要让人知道解药是否已用，也不要暗示毒药还在。"
+                "发言中避免讨论'该救谁'或'该毒谁'。"
+                "保持低调，让狼队无法锁定你的身份。"
+            )
+        elif inp.role == "werewolf":
+            prompt = (
+                "藏身份建议（狼队视角）：不要暴露任何夜间信息——"
+                "夜杀目标、队友配合、悍跳分工都属高度机密。"
+                "发言中避免提及'昨晚'、'夜里'、'队友'等暗示性词汇。"
+                "用归票和站边制造好人之间的内讧来掩盖狼队身份。"
+            )
+        else:
+            # Villager / hunter / idiot / hybrid / unknown — generic
+            # advice (villagers have no night info to leak).
+            prompt = (
+                "藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。"
+                "如果被质疑，适度释放信息自证但不要全露底牌。"
+            )
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["保持中立发言", "避免暴露信息优势", "控制发言节奏"],
             risk_alerts=risks,
             confidence=0.6,
             reasoning="藏身份需要在隐匿和发挥作用之间找到平衡",
-            prompt_injectable=_cap_prompt_injectable("藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。如果被质疑，适度释放信息自证但不要全露底牌。"),
+            prompt_injectable=_cap_prompt_injectable(prompt),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1025,7 +1139,6 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     pushers = [v["source"] for v in votes_against if v.get("day", 0) == inp.game_state.day_number]
 
     risks = ["过度防御可能加深怀疑", "攻击质疑者会适得其反"]
-
     if is_seer_checked:
         checker = seer_checks[0]["source"] if seer_checks else "未知"
         prompt = (
@@ -1074,13 +1187,22 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # NEW-R4-P2-7: when no game_state is provided, the handler
+        # has no suspects/excludes to analyze. The previous
+        # fallback used abstract "系统性分析" advice that gave the
+        # LLM no concrete next step. Replace with an explicit
+        # "wait" — the dynamic branch is the real value-add; the
+        # fallback is a placeholder.
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["列出嫌疑人", "分析各嫌疑人证据", "排除法缩小范围"],
             confidence=0.5,
             reasoning="盘狼坑需要系统性分析所有嫌疑人的行为链",
-            prompt_injectable=_cap_prompt_injectable("盘狼坑建议：系统性分析所有嫌疑人的行为链。从发言矛盾、投票链异常、验人冲突等维度排查，用排除法缩小狼坑范围。"),
+            prompt_injectable=_cap_prompt_injectable(
+                "盘狼坑建议：当前信息不足，等待关键发言出现后再下判断。"
+                "重点关注发言矛盾、投票链异常、验人冲突等维度，"
+                "用排除法缩小狼坑范围。"
+            ),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1141,10 +1263,23 @@ def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     suspect_lines = [f"{pid}({reason})" for pid, reason in unique_suspects[:5]]
     exclude_lines = [f"{pid}({reason})" for pid, reason in unique_excluded[:5]]
 
+    # NEW-R4-P2-4: when the visible list is a slice of the full
+    # deduped list, surface the (shown/total) count so the LLM has
+    # one truncation signal, not two (the second one being the
+    # `...（已省略）` from `_cap_prompt_injectable`). When nothing
+    # was truncated, the bare `N人` form is fine.
+    def _count_label(shown: int, total: int) -> str:
+        if shown == total:
+            return f"({total}人)"
+        return f"({shown}/{total}人)"
+
+    suspect_count = _count_label(len(suspect_lines), len(unique_suspects))
+    exclude_count = _count_label(len(exclude_lines), len(unique_excluded))
+
     prompt = (
         f"盘狼坑分析：当前存活{alive_count}人中，"
-        f"嫌疑区({len(unique_suspects)}人)：{'；'.join(suspect_lines) if suspect_lines else '暂无明确嫌疑人'}。"
-        f"排除区({len(unique_excluded)}人)：{'；'.join(exclude_lines) if exclude_lines else '暂无排除'}。"
+        f"嫌疑区{suspect_count}：{'；'.join(suspect_lines) if suspect_lines else '暂无明确嫌疑人'}。"
+        f"排除区{exclude_count}：{'；'.join(exclude_lines) if exclude_lines else '暂无排除'}。"
         f"需要继续关注投票链和发言一致性来缩小范围。"
     )
 
@@ -1181,6 +1316,12 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     # to protect from wolf night-kill.
     power_roles = {"seer", "witch", "hunter", "idiot"}
     at_risk: list[dict[str, Any]] = []
+    # NEW-R4-P2-9: also collect *candidate* power roles — players
+    # whose top_role_guess is in power_roles but who currently have
+    # no vote/pressure. We need this list to give the LLM concrete
+    # names when the at_risk set is empty (the previous fallback
+    # was a circular "继续观察" with no actionable info).
+    candidates: list[tuple[str, str, float]] = []  # (pid, role, prob)
 
     if bs is not None:
         for pid, belief in bs.beliefs.items():
@@ -1200,6 +1341,8 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
                         "votes": len(votes_on),
                         "suspect_claims": suspect_pressure,
                     })
+                else:
+                    candidates.append((pid, top_role, prob))
 
     risks = ["过度保护某个玩家反而暴露其身份"]
 
@@ -1216,10 +1359,28 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         )
         conf = 0.6
     else:
-        prompt = (
-            f"保护强神建议：场上疑似神职暂时安全，无被推票压力。"
-            f"继续观察，注意保护已识别的疑似神职不被狼队发现。"
-        )
+        # NEW-R4-P2-9: when no power role is currently under pressure,
+        # the previous fallback said only "继续观察" — circular and
+        # useless. List the concrete candidates the handler has
+        # identified so the LLM knows WHO to keep an eye on, and
+        # give a concrete next-step suggestion.
+        if candidates:
+            cand_str = "、".join(
+                f"{pid}({role},置信{prob:.0%})"
+                for pid, role, prob in candidates[:3]
+            )
+            prompt = (
+                f"保护强神建议：场上暂无被推票压力的疑似神职，"
+                f"但已识别以下候选需要持续关注：{cand_str}。"
+                f"建议在发言中适度认可其逻辑（'我觉得X的分析有道理'），"
+                f"建立'保护性'站边，同时避免直接公开其身份。"
+            )
+        else:
+            prompt = (
+                f"保护强神建议：当前未识别到高置信度疑似神职。"
+                f"继续观察重点发言，"
+                f"留意今晚死亡信息以缩小下一轮的神职候选范围。"
+            )
         conf = 0.45
 
     return SkillOutput(
@@ -1302,6 +1463,13 @@ def last_words_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             parts.append(f"发言矛盾：{'; '.join(a.description for a in dead_alerts[:2])}。")
         if speech_count:
             parts.append(f"有{speech_count}条发言记录。")
+        # NEW-R4-P2-3: if the dead player has no claims, no
+        # contradictions, and no speeches, parts is just the bare
+        # "p05的遗言：" label with no body — a useless artifact that
+        # wastes prompt budget. Fall back to a placeholder so the
+        # LLM has something to read.
+        if len(parts) == 1:
+            parts.append("无具体遗言内容可分析。")
         all_prompts.append("".join(parts))
 
     if not all_prompts:
@@ -1339,7 +1507,167 @@ def review_correction_handler(inp: SkillInput, skill: SkillDefinition) -> SkillO
             reasoning="复盘纠错以事实为基础，系统性地回顾决策过程",
             prompt_injectable=_cap_prompt_injectable("复盘建议：回顾每个Day的站边选择和投票决策。找出判断失误的关键节点，分析误判原因（信息不足？逻辑链断裂？被误导？），总结改进方向。"),
         )
-    # dynamic analysis
+    # NEW-R4-P1-2: werewolves need wolf-specific review. Voting OUT
+    # wolves would be betraying the team, so a "missed wolf" metric
+    # inverts the wolf team's actual objective. Branch on role.
+    if inp.role == "werewolf":
+        return _review_correction_wolf(inp, skill)
+    return _review_correction_good(inp, skill)
+
+
+def _review_correction_wolf(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+    """Werewolf-side review. Focus on team-coordination signals that
+    actually matter to a wolf — bold-claim exposure, night-kill chain
+    safety, and whether teammate vote patterns leaked information.
+
+    NEW-R4-P1-2: this branch is goal-aligned with the wolf team.
+    A wolf's day-vote "correctness" is NOT measured by how many
+    wolves it voted out (that would be betrayal); it's measured by
+    how well it executed 悍跳 / 归票 / 夜杀.
+    """
+    gs = inp.game_state
+    ws = inp.world_state
+    day = gs.day_number
+    my_id = inp.player_id
+
+    # Build the wolf team roster.
+    wolf_ids = [pid for pid, p in gs.players.items() if p.role == "werewolf"]
+    alive_wolves = [pid for pid, p in gs.players.items() if p.alive and p.role == "werewolf"]
+
+    # Count deaths by cause.
+    deaths_by_wolf = 0
+    deaths_by_exile = 0
+    exiled_players: list[str] = []
+    wolf_killed_players: list[str] = []
+    if ws is not None:
+        for f in ws.facts_of_type("player_died"):
+            reason = f.value or ""
+            if "wolf" in reason:
+                deaths_by_wolf += 1
+                if f.target_player:
+                    wolf_killed_players.append(f.target_player)
+            elif "exile" in reason:
+                deaths_by_exile += 1
+                if f.target_player:
+                    exiled_players.append(f.target_player)
+
+    # Collect this wolf's day votes (and which ones hit good vs wolf).
+    my_votes: list[str] = []
+    if ws is not None:
+        for f in ws.facts_of_type("vote"):
+            if f.source_player == my_id and f.target_player:
+                my_votes.append(f.target_player)
+    wolf_votes_on_good = [t for t in my_votes if t not in wolf_ids]
+    wolf_votes_on_wolf = [t for t in my_votes if t in wolf_ids]
+
+    # Check for 悍跳 exposure: a wolf who publicly claimed seer is a
+    # coordination risk; if the real seer hasn't been silenced, the
+    # claimer will be cross-checked.
+    bold_claim_facts: list[str] = []
+    if ws is not None:
+        for f in ws.facts_of_type("claimed_role"):
+            if f.value == "seer" and f.source_player in wolf_ids:
+                bold_claim_facts.append(f.source_player)
+
+    # Build wolf-specific advice.
+    parts: list[str] = []
+    parts.append(
+        f"狼队复盘：Day {day}，狼队{len(wolf_ids)}人，现存活{len(alive_wolves)}人。"
+    )
+    parts.append(f"狼队战绩：狼刀{deaths_by_wolf}人，被放逐{deaths_by_exile}人。")
+    if wolf_killed_players:
+        parts.append(f"狼刀成功：{'、'.join(wolf_killed_players[:6])}。")
+    if exiled_players:
+        parts.append(f"被放逐玩家：{'、'.join(exiled_players[:6])}。")
+
+    if bold_claim_facts:
+        parts.append(
+            f"悍跳状态：{'、'.join(bold_claim_facts)}已跳预言家。"
+            "检查悍跳是否被真预言家反咬、警徽流是否被识破。"
+        )
+    else:
+        parts.append("悍跳状态：暂无跳预言家动作，可考虑D1/D2悍跳压制真预言家。")
+
+    if my_votes:
+        if wolf_votes_on_wolf:
+            parts.append(
+                f"警告：你有{len(wolf_votes_on_wolf)}票投给了队友（"
+                f"{'、'.join(wolf_votes_on_wolf)}）"
+                "——这是反向暴露，需要立即调整站边。"
+            )
+        if wolf_votes_on_good:
+            parts.append(
+                f"归票分析：你投出的{len(wolf_votes_on_good)}票（"
+                f"{'、'.join(wolf_votes_on_good[:6])}）"
+                "都归到好人阵营，符合狼队归票目标。"
+            )
+
+    # Detect "piled-on" targets: 2+ teammates voting the same person
+    # on the same day → tells good side the wolf team is small.
+    from collections import Counter
+    day_targets: list[tuple[int, str]] = []
+    if ws is not None:
+        for wid in wolf_ids:
+            if wid == my_id:
+                continue
+            for f in ws.facts_of_type("vote"):
+                if f.source_player == wid and f.target_player and f.day is not None:
+                    day_targets.append((f.day, f.target_player))
+    if day_targets:
+        per_day: dict[int, list[str]] = {}
+        for d, t in day_targets:
+            per_day.setdefault(d, []).append(t)
+        piles: list[str] = []
+        for d, targets in sorted(per_day.items()):
+            counts = Counter(targets)
+            for tgt, c in counts.items():
+                if c >= 2:
+                    piles.append(f"Day{d}的{tgt}（{c}票）")
+        if piles:
+            parts.append(
+                "票型暴露：以下目标被多名队友同天归票（"
+                f"{'、'.join(piles[:3])}"
+                "），可能暴露狼队人数，需要分散归票。"
+            )
+
+    # Night-kill chain safety: did we kill power roles?
+    if wolf_killed_players:
+        power_killed = [
+            tgt for tgt in wolf_killed_players
+            if gs.players.get(tgt) and gs.players[tgt].role in (
+                "seer", "witch", "hunter",
+            )
+        ]
+        if power_killed:
+            parts.append(
+                f"夜刀成果：已成功击杀关键神职（{'、'.join(power_killed)}），"
+                "夜杀链目标正确。"
+            )
+        else:
+            parts.append(
+                "夜刀成果：未击杀神职，下次夜杀优先考虑预言家/女巫/猎人。"
+            )
+
+    parts.append(
+        "狼队改进方向：检查悍跳是否暴露、票型是否被识破、夜杀目标是否包含神职。"
+    )
+
+    conf = 0.75 if bold_claim_facts or wolf_votes_on_wolf else 0.65
+    return SkillOutput(
+        skill_name=skill.name.value,
+        speech_structure=["回顾狼队战绩", "识别悍跳/夜杀/票型问题", "总结狼队改进方向"],
+        confidence=conf,
+        reasoning="狼队动态复盘：基于悍跳状态、夜杀链、队友票型进行复盘",
+        prompt_injectable=_cap_prompt_injectable("\n".join(parts)),
+    )
+
+
+def _review_correction_good(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+    """Good-side (non-werewolf) review. Vote accuracy against the
+    wolf set is the right metric here — voting OUT wolves is the
+    good team's objective.
+    """
+    gs = inp.game_state
     ws = inp.world_state
 
     winner = gs.winning_faction or "unknown"

@@ -20,6 +20,48 @@ from werewolf_agent.runtime.context import (
 )
 
 
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-8: _analysis_exempt_skills uses correct enum value
+# ---------------------------------------------------------------------------
+
+
+def test_analysis_exempt_uses_correct_enum_value() -> None:
+    """NEW-R4-P2-8: the `_analysis_exempt_skills` set in
+    `context.py` was built with a hard-coded tuple
+    `("last_words", "review_correction", "review_correct")`.
+    But the actual enum value is `"review_correct"` (the Python
+    name is `REVIEW_CORRECTION`, but the enum value is
+    `"review_correct"`). The string `"review_correction"` never
+    matches any enum, so the check is partially dead.
+
+    Post-fix: the tuple only contains real enum values
+    (`"last_words"` and `"review_correct"`). The dead string is
+    removed.
+
+    This test scans the context module source to confirm there
+    is NO literal string `"review_correction"` referenced in
+    the exempt set construction.
+    """
+    from pathlib import Path as _Path
+    from werewolf_agent.runtime import context as _ctx
+
+    src = _Path(_ctx.__file__).read_text(encoding="utf-8")
+    # The dead string `review_correction` (the underscored form,
+    # not the actual enum value `review_correct`) must NOT appear
+    # as a bare string literal in the context module source.
+    assert '"review_correction"' not in src, (
+        "NEW-R4-P2-8: context.py must not reference the dead "
+        "string 'review_correction' (the actual enum value is "
+        "'review_correct' for SkillName.REVIEW_CORRECTION). "
+        "Remove the dead string from the exempt tuple."
+    )
+    # And the real enum value MUST appear (positive control).
+    assert '"review_correct"' in src, (
+        "NEW-R4-P2-8: context.py must reference 'review_correct' "
+        "(the real enum value) in the exempt set construction."
+    )
+
+
 def _make_reflection(
     *, game_id: str, role: str, player_id: str = "p01", text: str = "t", faction_won: bool = False
 ) -> ReflectionEntry:
