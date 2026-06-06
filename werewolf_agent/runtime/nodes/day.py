@@ -209,6 +209,16 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
     # Filter out dead players from any pre-existing or auto-generated speech_order
     speech_order = [pid for pid in speech_order if pid not in gs.players or gs.players[pid].alive]
 
+    # P0-G3223805846-A3: persist the freshly-computed order back onto `state`
+    # BEFORE dispatching to `agent_day_speech` below.  Without this, the very
+    # first speech of the day reads `state.get("speech_order")` == [] (the
+    # local `speech_order` is only written into the returned `advance_speaker`
+    # dict, which LangGraph applies AFTER this node returns), so the seer's
+    # late-position "jump immediately" directive could never trigger on the
+    # first speaker.  In-place mutation is safe: the canonical state update
+    # still propagates via `advance_speaker()`'s return value.
+    state["speech_order"] = speech_order
+
     if speech_index == 0 and not speaker_id:
         order_names = "、".join(_player_display(state, pid) for pid in speech_order)
         gs, _ = _judge_broadcast(

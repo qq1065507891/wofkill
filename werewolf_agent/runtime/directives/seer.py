@@ -7,6 +7,10 @@ from typing import Any
 from werewolf_agent.core.models import GameState
 
 
+# P0-G3223805846-A3: position index / total >= this triggers jump-immediately
+LATE_POSITION_RATIO = 0.5
+
+
 def build_seer_directive(
     gs: GameState,
     seer_id: str,
@@ -118,7 +122,7 @@ def build_seer_directive(
     if speech_order and seer_id in speech_order:
         pos = speech_order.index(seer_id)
         total = len(speech_order)
-        if total > 0 and pos >= total * 0.5:
+        if total > 0 and pos >= total * LATE_POSITION_RATIO:
             reporting_parts.append(
                 f"\n【后位硬约束】你当前排在发言顺序第 {pos + 1}/{total} 位（后段）。"
                 "**必须在本次发言的第 1 句就公开声明预言家身份 + 报出首夜查杀**，"
