@@ -100,7 +100,7 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
                     }
                     sd = context.strategy_directive or {}
                     sd.update(extra_directive)
-                    context = replace(context, strategy_directive=sd)
+                    context = context.model_copy(update={"strategy_directive": sd})
 
                     action, _retry_info = agent.act(context)
                     summary_text = getattr(action, "speech", "") or ""
