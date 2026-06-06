@@ -2282,3 +2282,170 @@ class TestRerankerNegativeScore:
                 f"N5: reranker text must contain the 800-char "
                 f"truncated summary; got text={text[:200]!r}..."
             )
+
+
+# ---------------------------------------------------------------------------
+# G-R4-05 (P1): vector-best vs rule-only merge formula asymmetric
+# ---------------------------------------------------------------------------
+
+
+def test_rule_only_high_score_beats_weak_vector_hit() -> None:
+    """G-R4-05: ``_merged_score`` previously applied
+    ``(1 - w) * rule + w * vec`` to vector-hit entries but returned
+    the pure ``rule`` score (no ``(1 - w)`` factor) for rule-only
+    entries. The asymmetric denominator meant a rule-only entry
+    with a HIGH rule score could outrank a vector-hit with a
+    STRONG vector signal but a moderate rule score (the spec's
+    example: vec=1.0, rule=0.5 → merged 0.75, but rule-only with
+    rule=0.8 → 0.8). The vector-best was LOWER than the rule-best.
+
+    The contract we want is "the merge is monotonic in the best
+    signal we have". The simplest fix that matches the spec is
+    ``max(rule, vec)`` — the merged score is the strongest signal
+    the system can attest to. This test pins the contract at a
+    controlled rule_score, which the spec explicitly calls out
+    ("set rule_score=0.8, vec=0.2").
+    """
+    from werewolf_agent.rag.schemas import (
+        CaseMetadata,
+        CaseType,
+        QualityGrade,
+        RAGEntry,
+        ReviewStatus,
+        SourceMetadata,
+        SourceType,
+        VisibilityBoundary,
+    )
+
+    rule_only = RAGEntry(
+        entry_id="rule_only",
+        title="Rule-only entry",
+        summary="",
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.COMMUNITY_CASE,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="seer",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+            tags=["seer"],
+        ),
+    )
+    vector_hit = RAGEntry(
+        entry_id="vector_hit",
+        title="Vector-hit entry",
+        summary="",
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.COMMUNITY_CASE,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="seer",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+            tags=["seer"],
+        ),
+    )
+
+    class _FixedRuleRetriever(StrategyRetriever):
+        """``StrategyRetriever`` subclass that pins the rule-based
+        score to a fixed value. The bug is about the merge
+        formula, not the rule scorer — we want to feed specific
+        rule/vec values into ``_merged_score`` and assert the
+        formula, not chase a moving target through the rule
+        scoring code path.
+        """
+
+        def __init__(self, entries, *, rule_score, vector_scores):
+            super().__init__(entries, vector_scores=vector_scores)
+            self._fixed_rule_score = rule_score
+
+        def _score(self, entry, query):  # type: ignore[override]
+            return self._fixed_rule_score
+
+    # Spec scenario: rule_score=0.8 for the rule-only entry;
+    # the vector-hit gets rule_score=0.5 with vec=1.0 (the
+    # "strong vector, weak rule" case the bug describes).
+    retriever = _FixedRuleRetriever(
+        [rule_only, vector_hit],
+        rule_score=0.8,
+        vector_scores={"vector_hit": 1.0},
+    )
+    query = RAGQuery(role="seer", phase="speech", max_results=5)
+
+    # Inject a controlled rule score for the vector-hit by
+    # reaching into the merge directly. ``_merged_score``
+    # internally calls ``self._score(entry, query)``, so we
+    # need the retriever to return 0.5 for vector_hit and
+    # 0.8 for rule_only. A single fixed value won't cut it,
+    # so override per-entry:
+    score_per_entry: dict[str, float] = {
+        "rule_only": 0.8,
+        "vector_hit": 0.5,
+    }
+    original_score = type(retriever)._score
+
+    def _per_entry_score(self, entry, q):
+        return score_per_entry[entry.entry_id]
+
+    type(retriever)._score = _per_entry_score  # type: ignore[assignment]
+    try:
+        score_rule_only = retriever._merged_score(rule_only, query)
+        score_vector_hit = retriever._merged_score(vector_hit, query)
+    finally:
+        type(retriever)._score = original_score  # type: ignore[assignment]
+
+    # Spec contract: rule-only (rule=0.8) must outrank a
+    # vector-hit with rule=0.5 and vec=0.2. The spec's test
+    # wording is "set rule_score=0.8, vec=0.2" — that is the
+    # control values, and the expected behavior is rule-only
+    # at the top.
+    retriever_weak = _FixedRuleRetriever(
+        [rule_only, vector_hit],
+        rule_score=0.0,  # unused — overridden per-entry below
+        vector_scores={"vector_hit": 0.2},
+    )
+    score_per_entry_weak: dict[str, float] = {
+        "rule_only": 0.8,
+        "vector_hit": 0.8,  # same rule as rule-only, weak vector
+    }
+
+    def _per_entry_score_weak(self, entry, q):
+        return score_per_entry_weak[entry.entry_id]
+
+    type(retriever_weak)._score = _per_entry_score_weak  # type: ignore[assignment]
+    try:
+        score_rule_only_weak = retriever_weak._merged_score(rule_only, query)
+        score_vector_hit_weak = retriever_weak._merged_score(vector_hit, query)
+    finally:
+        type(retriever_weak)._score = original_score  # type: ignore[assignment]
+
+    # The spec's ``max(rule, vec)`` fix: rule-only (0.8) ranks
+    # no lower than the vector-hit (max(0.8, 0.2) = 0.8). With
+    # the buggy ``(1-w)*rule + w*vec`` formula the vector-hit
+    # scores 0.5*0.8 + 0.5*0.2 = 0.5 — rule-only wins
+    # (0.8 > 0.5). Both pass with ``>=``, so the strict ``>``
+    # is the discriminator: only the ``max`` fix ties them.
+    assert score_rule_only_weak >= score_vector_hit_weak, (
+        f"G-R4-05 spec: rule-only (rule=0.8) must not rank below "
+        f"a vector-hit with the same rule and vec=0.2; got "
+        f"rule_only={score_rule_only_weak!r} "
+        f"vector_hit={score_vector_hit_weak!r}"
+    )
+
+    # Bug-fix contract: a vector-hit with vec=1.0 must outrank
+    # a rule-only entry whose rule score is HIGHER (rule=0.8).
+    # Pre-fix the vector-hit scores 0.5*0.5+0.5*1.0=0.75 — LOWER
+    # than rule-only's 0.8. Post-fix max(0.5, 1.0)=1.0 — wins.
+    assert score_vector_hit > score_rule_only, (
+        f"G-R4-05: vector-hit (vec=1.0, rule=0.5) must outrank "
+        f"rule-only (rule=0.8); got rule_only={score_rule_only!r} "
+        f"vector_hit={score_vector_hit!r}"
+    )

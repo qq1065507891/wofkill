@@ -516,18 +516,24 @@ class StrategyRetriever:
         """Combine the rule-based score with the optional vector score.
 
         R2: when no vector score is registered for the entry, returns
-        the pure rule-based score (legacy behavior). When a vector
-        score is registered, returns a convex combination weighted by
-        ``merge_vector_score``. The merge happens on already-clamped
-        [0,1] values; result is clamped to [0,1] for the RAGHit
-        relevance_score field.
+        the pure rule-based score (legacy behavior).
+
+        G-R4-05: when a vector score IS registered, return
+        ``max(rule, vec)`` rather than the asymmetric
+        ``(1 - w) * rule + w * vec``. The asymmetric denominator
+        had two failure modes: (1) a strong vector signal was
+        diluted by a moderate rule score (vec=1.0, rule=0.5
+        → merged 0.75, LOWER than a rule-only with rule=0.8);
+        (2) a weak vector signal unfairly suppressed a strong
+        rule-only match (vec=0.2, rule=0.8 → merged 0.5).
+        ``max(rule, vec)`` is the strongest signal the system
+        can attest to, which is the contract we want.
         """
         rule = self._score(entry, query)
         if not self._vector_scores or entry.entry_id not in self._vector_scores:
             return rule
-        w = self._merge_vector_score
         vec = max(0.0, min(1.0, float(self._vector_scores[entry.entry_id])))
-        merged = (1.0 - w) * rule + w * vec
+        merged = max(rule, vec)
         return max(0.0, min(1.0, merged))
 
     def _entry_to_hit(self, entry: RAGEntry, score: float, query: RAGQuery) -> RAGHit:
