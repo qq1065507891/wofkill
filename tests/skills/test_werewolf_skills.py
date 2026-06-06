@@ -1306,3 +1306,78 @@ def test_wolf_pit_shows_total_count() -> None:
         f"NEW-R4-P2-4: wolf_pit must NOT show bare total `嫌疑区(8人)` "
         f"when truncated; got: {text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-5: hide_identity static fallback branches on role.
+# ---------------------------------------------------------------------------
+
+
+def test_hide_identity_role_conditional() -> None:
+    """NEW-R4-P2-5: the static-fallback path (no game_state) of
+    `hide_identity_handler` returned a one-size-fits-all string
+    regardless of role. But seer/witch/wolf each have different
+    "what to hide" priorities:
+    - seer hides 查验信息 (check info) and 警徽流
+    - witch hides 药剂 (antidote/poison availability) and 救人时机
+    - wolf hides 夜间会议 (night meeting) and teammate coordination
+    - villager hides almost nothing (no night info to leak)
+
+    Post-fix: branch on `inp.role` so the fallback advice is
+    role-tailored. The seer fallback must mention 查验 / 警徽;
+    the witch fallback must mention 药剂 / 解药 / 毒药; the wolf
+    fallback must mention 夜杀 / 队友 / 夜间信息. A villager
+    fallback stays generic.
+    """
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    seer_inp = SkillInput(
+        role="seer", phase="day", day=1,
+        game_state=None, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    seer_text = apply_skill(SkillName.HIDE_IDENTITY, seer_inp).prompt_injectable
+    assert any(k in seer_text for k in ("查验", "警徽", "金水")), (
+        f"NEW-R4-P2-5: seer hide_identity fallback must mention "
+        f"查验 / 警徽 / 金水; got: {seer_text!r}"
+    )
+
+    witch_inp = SkillInput(
+        role="witch", phase="day", day=1,
+        game_state=None, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    witch_text = apply_skill(SkillName.HIDE_IDENTITY, witch_inp).prompt_injectable
+    assert any(k in witch_text for k in ("药剂", "解药", "毒药", "救人", "女巫")), (
+        f"NEW-R4-P2-5: witch hide_identity fallback must mention "
+        f"药剂 / 解药 / 毒药 / 救人 / 女巫; got: {witch_text!r}"
+    )
+
+    wolf_inp = SkillInput(
+        role="werewolf", phase="day", day=1,
+        game_state=None, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    wolf_text = apply_skill(SkillName.HIDE_IDENTITY, wolf_inp).prompt_injectable
+    assert any(k in wolf_text for k in ("夜杀", "夜刀", "狼队", "队友", "夜间")), (
+        f"NEW-R4-P2-5: wolf hide_identity fallback must mention "
+        f"夜杀 / 狼队 / 队友 / 夜间; got: {wolf_text!r}"
+    )
+
+    # Sanity: the three role-specific fallbacks are NOT all the same.
+    assert seer_text != witch_text, (
+        f"NEW-R4-P2-5: seer and witch hide_identity fallbacks must "
+        f"differ; both got: {seer_text!r}"
+    )
+    assert seer_text != wolf_text, (
+        f"NEW-R4-P2-5: seer and wolf hide_identity fallbacks must "
+        f"differ; both got: {seer_text!r}"
+    )
+    assert witch_text != wolf_text, (
+        f"NEW-R4-P2-5: witch and wolf hide_identity fallbacks must "
+        f"differ; both got: {witch_text!r}"
+    )

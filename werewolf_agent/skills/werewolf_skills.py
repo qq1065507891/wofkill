@@ -979,15 +979,46 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # NEW-R4-P2-5: role-tailored static fallback. Seer hides
+        # 查验 / 警徽; witch hides 药剂 / 救人时机; wolf hides
+        # 夜杀 / 队友 / 夜间信息. Villagers (and other roles with
+        # no night info to leak) keep the generic advice.
         risks = ["藏身份过久可能导致无法在关键时刻发挥作用"]
+        if inp.role == "seer":
+            prompt = (
+                "藏身份建议（预言家视角）：不要提前暴露查验结果和金水。"
+                "如果还没到必须跳预言家的时候，保持中立发言节奏，"
+                "避免在发言中泄露警徽流和验人动机。"
+                "被质疑时，用侧面试探而非直接亮金水。"
+            )
+        elif inp.role == "witch":
+            prompt = (
+                "藏身份建议（女巫视角）：不要暴露你的药剂状态——"
+                "既不要让人知道解药是否已用，也不要暗示毒药还在。"
+                "发言中避免讨论'该救谁'或'该毒谁'。"
+                "保持低调，让狼队无法锁定你的身份。"
+            )
+        elif inp.role == "werewolf":
+            prompt = (
+                "藏身份建议（狼队视角）：不要暴露任何夜间信息——"
+                "夜杀目标、队友配合、悍跳分工都属高度机密。"
+                "发言中避免提及'昨晚'、'夜里'、'队友'等暗示性词汇。"
+                "用归票和站边制造好人之间的内讧来掩盖狼队身份。"
+            )
+        else:
+            # Villager / hunter / idiot / hybrid / unknown — generic
+            # advice (villagers have no night info to leak).
+            prompt = (
+                "藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。"
+                "如果被质疑，适度释放信息自证但不要全露底牌。"
+            )
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["保持中立发言", "避免暴露信息优势", "控制发言节奏"],
             risk_alerts=risks,
             confidence=0.6,
             reasoning="藏身份需要在隐匿和发挥作用之间找到平衡",
-            prompt_injectable=_cap_prompt_injectable("藏身份建议：发言保持中立，不要暴露你知道的夜晚信息。如果被质疑，适度释放信息自证但不要全露底牌。"),
+            prompt_injectable=_cap_prompt_injectable(prompt),
         )
     # dynamic analysis
     ws = inp.world_state
