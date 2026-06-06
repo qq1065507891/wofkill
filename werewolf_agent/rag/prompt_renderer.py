@@ -60,6 +60,19 @@ _FORBIDDEN_LIVE_FIELDS: frozenset[str] = frozenset({
 _MAX_KEY_DECISIONS_IN_PROMPT = 3
 
 
+# P2-6: single source of truth for the live-prompt RAG cap.  Three
+# places previously hard-coded ``3``:
+#   - context.py:287 (retriever max_results)
+#   - context.py:298 (slim-renderer max_items)
+#   - prompt_builder.py:737 and prompt_builder.py:794 (slice [:3])
+# Drift between any of these would let a stray case slip through
+# past the LLM-visible cap.  Import this constant in all 3 sites.
+# The cap is intentionally small — the LLM only needs 2-3 distinct
+# reference cases per turn; more inflates the prompt budget without
+# changing decisions.
+RAG_LIVE_PROMPT_CAP = 3
+
+
 # P1-G5: Jaccard threshold for "near-duplicate" RAG hits. 0.6 is a
 # reasonable middle ground for tokenized Chinese: two cases covering
 # the same tactic typically share >60% of their title+summary tokens.

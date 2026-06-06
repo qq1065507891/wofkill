@@ -1881,6 +1881,68 @@ def test_skill_output_filters_illegal_targets():
         register_handler(SkillName.PUSH_VOTE)(push_vote_handler)
 
 
+def test_skill_output_s19_widened_regex_catches_chinese_player_ids():
+    """Phase 2 P2-10: the S-19 illegal-target post-step must catch
+    Chinese-numbered player references that the old ``p\\d{2}`` regex
+    missed.
+
+    Pre-fix: advice that said "投10号玩家" or "玩家 03" slipped
+    through S-19 because ``p\\d{2}`` only matched the bare pNN form.
+    New regexes:
+      - ``\\b[pP]\\d+\\b``            (uppercase P or single-digit)
+      - ``(\\d+)\\s*号\\s*玩家?``     (Chinese "10号玩家")
+      - ``玩家\\s*(\\d+)``            ("玩家 03")
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import StructuredWorldState
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.skills.schemas import SkillName, SkillOutput
+    from werewolf_agent.skills.werewolf_skills import register_handler
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test", game_id="g", phase="speech",
+        day_number=1, night_number=1, players=players,
+    )
+    ws = StructuredWorldState()
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    # Three different illegal-target styles to verify the widened regex.
+    def _chinese_handler(inp, skill):
+        return SkillOutput(
+            skill_name=skill.name.value,
+            speech_structure=["投10号玩家"],
+            confidence=0.6,
+            reasoning="chinese variant test",
+            prompt_injectable="归票建议：投票 10号玩家（illegal）",
+        )
+    register_handler(SkillName.PUSH_VOTE)(_chinese_handler)
+
+    try:
+        legal = [f"p{i:02d}" for i in range(1, 13) if i != 10 and f"p{i:02d}" != "p01"]
+        directive, _ = _inject_skill_output(
+            {}, gs, "p01", ws, bs, alerts, "speech",
+            legal_targets=legal,
+        )
+        advice = directive.get("skill_tactical_advice", [])
+        # Every push_vote entry must NOT reference p10 in any variant
+        for entry in advice:
+            if isinstance(entry, dict) and entry.get("skill") == "push_vote":
+                assert "10号" not in entry.get("advice", ""), (
+                    f"P2-10: push_vote advice must not reference illegal "
+                    f"target via Chinese '10号玩家' variant; got: {entry!r}"
+                )
+    finally:
+        from werewolf_agent.skills.werewolf_skills import push_vote_handler
+        register_handler(SkillName.PUSH_VOTE)(push_vote_handler)
+
+
 # ---------------------------------------------------------------------------
 # S-07: skill_tactical_advice is a structured list of dicts.
 # ---------------------------------------------------------------------------

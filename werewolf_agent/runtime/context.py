@@ -259,22 +259,37 @@ def _inject_seed_rag_hints(
         # The retriever tokenizes on ``=`` and couldn't tell them
         # apart. Renamed to ``game_phase=`` so the two fields are
         # unambiguous at the retriever's tag-overlap scoring step.
-        situation = (
-            f"role={context.own_role} game_phase={context.phase} "
-            f"task={context.task_type.value} alive={n_alive} "
-            f"actions={actions_tags}"
-        )
+        # P2-12: when legal_actions is empty (or all actions map to
+        # no tags), skip the ``actions=`` segment entirely.  Otherwise
+        # the situation string ends with a trailing ``actions=`` and
+        # the retriever's tag-overlap scoring picks up that empty
+        # token as a stray feature.  Filter tokens are now exactly
+        # the non-empty ones.
+        situation_parts = [
+            f"role={context.own_role}",
+            f"game_phase={context.phase}",
+            f"task={context.task_type.value}",
+            f"alive={n_alive}",
+        ]
+        if actions_tags:
+            situation_parts.append(f"actions={actions_tags}")
+        situation = " ".join(situation_parts)
         # R18: build the RAGQuery through the RAGInjector helper so the
         # query defaults (ruleset_id, max_results) live in one place.
         # Adding a new default there now also flows through this path.
+        # P2-6: import the live-prompt cap constant from the slim
+        # renderer so the 3 sites (this max_results, the slim
+        # max_items below, and prompt_builder.py's [:3] slices) all
+        # share one source of truth.
         from werewolf_agent.rag.injector import RAGInjector
+        from werewolf_agent.rag.prompt_renderer import RAG_LIVE_PROMPT_CAP
 
         query = RAGInjector.build_rag_query(
             role=context.own_role,
             phase=phase,
             situation=situation,
             ruleset_id=ruleset_id,
-            max_results=3,
+            max_results=RAG_LIVE_PROMPT_CAP,
         )
         hits = rag_service.retrieve_live_hints(
             query,
@@ -285,7 +300,8 @@ def _inject_seed_rag_hints(
         # never the audit-only fields (relevance, quality, source type,
         # visibility, display annotation). Audit data stays on the
         # ``RAGInjector.audit_log()`` side.
-        items = rag_service.hits_to_prompt_lines(hits, max_items=3)
+        # P2-6: use the shared live-prompt cap constant.
+        items = rag_service.hits_to_prompt_lines(hits, max_items=RAG_LIVE_PROMPT_CAP)
         if not items:
             return context
         existing = [
@@ -586,20 +602,11 @@ def _inject_skill_output(
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """Dispatch applicable skills once; inject non-tool advice, collect tool analyses.
+    """Inject skill advice into strategy_directive, return (directive, analyses).
 
-    Returns (updated strategy_directive, tool_analyses).
-
-    S-05: the 7th positional parameter is `task_type` (renamed from the
-    misnamed `phase`). The production call site (`build_agent_context`)
-    passes `task_type.value` here — that's the precise task-type value
-    (e.g. "speech", "vote", "night_action", "wolf_discussion"). The
-    older `phase: str` parameter shadowed the kwarg `task_type: str`
-    below; the kwarg was never set, so `dispatch_for_role` always saw
-    `task_type=""` and the P0-K2 precise filter never fired.
-
-    P0-K2: `task_type` is forwarded to `dispatch_for_role` so the
-    `applies_to_task_types` filter can refine the dispatch.
+    The positional order is role/.../legal_targets; ``task_type`` is
+    a kwarg forwarded to ``SkillRegistry.dispatch_for_role`` so the
+    ``applies_to_task_types`` filter (P0-K2) can refine the dispatch.
     """
     player = gs.players.get(player_id)
     if not player or not player.alive:
@@ -608,12 +615,7 @@ def _inject_skill_output(
     registry = SkillRegistry()
     skill_input = SkillInput(
         role=player.role,
-        # S-05: the 7th param IS the task_type; SkillInput.phase
-        # historically received it (a task-type value rendered as
-        # phase). We pass it through for backward compatibility
-        # with handlers that still read inp.phase as a coarse phase
-        # hint. New handlers should branch on inp.task_type.
-        phase=task_type,
+        phase=task_type,  # legacy kwarg, kept for backward compat
         day=gs.day_number,
         game_state=gs,
         world_state=world_state,
@@ -622,7 +624,6 @@ def _inject_skill_output(
         player_id=player_id,
         legal_targets=legal_targets or [],
         extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
-        # P1-K5: forward task_type so handlers can branch on it.
         task_type=task_type,
     )
 
@@ -748,10 +749,26 @@ def _inject_skill_output(
             and prompt
             and skill_name not in _analysis_exempt_skills
         ):
-            # Extract p\d{2} tokens from the prompt and check whether
-            # any of them is OUTSIDE the legal set.
+            # P2-10: widened regex to catch all player-ID variants
+            # observed in skill prompts:
+            #   - ``p05``        → \bp\d+\b (lowercase)
+            #   - ``P10``        → \bP\d+\b (uppercase, single digit ok)
+            #   - ``10号玩家``   → \d+号玩家
+            #   - ``玩家 10``    → 玩家\s*\d+
+            # Pre-fix the single ``p\d{2}`` regex missed 3 of 4 forms,
+            # causing advice that mentioned dead players (e.g. via
+            # Chinese-numbered references) to slip through S-19 and
+            # be injected into the prompt.  Each variant is parsed
+            # into a ``p\d+`` canonical form before the legal-set
+            # check.
             import re as _re
-            mentioned = set(_re.findall(r"p\d{2}", prompt))
+            mentioned: set[str] = set()
+            for m in _re.finditer(r"\b[pP](\d+)\b", prompt):
+                mentioned.add(f"p{int(m.group(1)):02d}")
+            for m in _re.finditer(r"(\d+)\s*号\s*玩家?", prompt):
+                mentioned.add(f"p{int(m.group(1)):02d}")
+            for m in _re.finditer(r"玩家\s*(\d+)", prompt):
+                mentioned.add(f"p{int(m.group(1)):02d}")
             illegal = mentioned - legal_set
             if illegal:
                 # Drop this entry — it recommends an illegal target.

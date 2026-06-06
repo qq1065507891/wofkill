@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **Prompt-Audit Phase 2 — 13 mid-risk fixes (P2-1..13)** — 2026-06-06
-- Active task: P2-commit-1 (4 single-file low-mid risk items: P2-1, P2-7, P2-8, P2-9)
+- Active task: P2-commit-1 done (c9daeb2), P2-commit-2 in progress
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-06
 
@@ -16,48 +16,47 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 Branch: `fix8-prompt-p2` (worktree `.worktrees/fix8-prompt-p2`).
 Base: `60195cc` (Phase 1 self-audit fixes on master).
 Scope: 13 mid-risk polish issues identified by the 7-module prompt-design
-audit (modules A-G, 2026-06-06). Items span single-file re-classifications,
-contract syncs, cross-module consolidations, and 1 model-router + YAML
-sync. No rule / schema / API contract changes (audit-driven polish only).
+audit (modules A-G, 2026-06-06). No rule / schema / API contract changes
+(audit-driven polish only).
 
-### Planned commits
+### Commit status
 
-| Commit | Items | Risk | Files (planned) |
-|--------|-------|------|-----------------|
-| **P2-commit-1** | P2-1, P2-7, P2-8, P2-9 | low-mid (single file) | `prompt_builder.py`, `context.py` |
-| **P2-commit-2** | P2-2, P2-3, P2-4, P2-5, P2-6, P2-10, P2-11, P2-12, P2-13 | mid (cross-file) | `judge.py` + `models.yaml` + 5 sites, `agent_adapter.py`, `runtime/visible_state.py` + `context.py`, `prompt_renderer.py` + `context.py` + `prompt_builder.py`, `private_memory.py` |
+| Commit | Items | Risk | Status | SHA |
+|--------|-------|------|--------|-----|
+| **P2-commit-1** | P2-1, P2-7, P2-8, P2-9 | low-mid (single file) | DONE | `c9daeb2` |
+| **P2-commit-2** | P2-2, P2-3, P2-4, P2-5, P2-6, P2-10, P2-11, P2-12, P2-13 | mid (cross-file) | in progress | TBD |
 
-| # | Issue | Source module | Files (planned) |
-|---|-------|--------|-----------------|
-| P2-1  | 13 狼队硬约束挪 HARD（`wolf_sheriff_must_claim_seer` / `wolf_no_reveal_seer` / `wolf_fake_seer_teammate` / `hybrid_wolf_master_directive` / `hybrid_good_master_directive` / `required_evaluation` / `wolf_kill_instruction` / `wolf_team_discussion` / `hunter_shot_directive` / `last_words` / `badge_decision` / `sheriff_silent` / `witch_poison_deterrent`）| D | `prompt_builder.py` |
-| P2-2  | 5 处 judge `task_type="speech"` → JUDGE_* enum；`models.yaml` 加 5 条 task→model 映射（同档模型）| C | `judge.py` + `config/models.yaml` |
-| P2-3  | system 输出契约同步 9 字段 | A + G | `prompt_builder.py` |
-| P2-4  | 合并 `_ROLE_NAMES` / `_ROLE_LABEL_CN` 到 `private_memory.py` 单一源 | A + G | `private_memory.py` + 5+ import sites |
-| P2-5  | transcript 按时序稳定排序 | B | `prompt_builder.py` |
-| P2-6  | RAG cap 单源化（3 层 cap 抽 `RAG_LIVE_PROMPT_CAP = 3`）| E | `prompt_renderer.py` + `context.py` + `prompt_builder.py` |
-| P2-7  | profile 删内禀 trait (`learning_rate_rank` / `risk_preference_rank` review-only 泄漏) | F | `context.py` |
-| P2-8  | profile 加 `win_rate_confidence` 标签（区分 1/3/10+ 局样本量）| F | `context.py` |
-| P2-9  | chr-invert sort 改 parseable timestamp（脆弱排序修复）| F | `context.py` |
-| P2-10 | S-19 玩家 ID 正则拓宽（`p\d+` + 中文变体）| E | `context.py` |
-| P2-11 | RAG warning 防 tactic 误用 | E | `prompt_builder.py` |
-| P2-12 | RAG situation 末尾 `actions=` 噪声（空 actions_tags 时跳过）| E | `context.py` |
-| P2-13 | skill 注释清理（`_inject_skill_output` 文档串重写）| E | `context.py` |
+### P2-commit-1 (DONE, c9daeb2)
 
-### Workflow
+| # | Issue | File |
+|---|-------|------|
+| P2-1  | 13 hard-constraint keys promoted REFERENCE 兜底 → HARD | `prompt_builder.py:76-128` |
+| P2-7  | Profile hint drops `learning_rate_rank` / `risk_preference_rank` (review-only leakage) | `context.py:414-441` |
+| P2-8  | Profile hint adds `win_rate_confidence` 4-tier label (无历史 / 样本不足 / 中等 / 充足) | `context.py:414-441` |
+| P2-9  | Reflection sort: chr-invert → parseable YYYY-MM-DD regex + arithmetic invert | `context.py:445-466` |
 
-Strict TDD per item: red test → run (fails) → production fix → run (passes) →
-full `tests/agents/ tests/runtime/` regression → commit.  No cross-module edits
-in a single commit unless explicitly required by the item.
+### P2-commit-2 (in progress)
+
+| # | Issue | Files |
+|---|-------|-------|
+| P2-2  | 5 judge LLM calls `task_type="speech"` → `judge_vote_calling` etc.; `models.yaml` adds 5 JUDGE_* task mappings under `minimax_default` + `pro_reasoner` | `judge.py` (4 sites), `config/models.yaml` |
+| P2-3  | System output contract advertises 9 fields (TARGET_CHOICE+VOTE) instead of 5 (FULL_ACTION) | `prompt_builder.py:325-348` |
+| P2-4  | Consolidate `_ROLE_NAMES` (prompt_builder) + `_ROLE_LABEL_CN` (private_memory) to single source in `private_memory.py` | `prompt_builder.py:24-29`, `private_memory.py:19-27` |
+| P2-5  | Transcript builder sorts items by `(day_number, phase_order)` stable; re-entry speeches no longer jump to top | `prompt_builder.py:1014-1039` |
+| P2-6  | RAG cap single source: `RAG_LIVE_PROMPT_CAP = 3` in `prompt_renderer.py`; 3 sites import | `prompt_renderer.py:60-68`, `context.py:286, 304`, `prompt_builder.py:807, 871` |
+| P2-10 | S-19 widened regex: `\\b[pP]\\d+\\b` + `\\d+号玩家` + `玩家\\s*\\d+` | `context.py:744-770` |
+| P2-11 | RAG warning head extended to flag TACTIC reuse (not just ID reuse) | `prompt_builder.py:813-822` |
+| P2-12 | RAG situation trailing `actions=` noise: skip when `actions_tags` empty | `context.py:262-275` |
+| P2-13 | `_inject_skill_output` docstring rewrite (drop 50-line historical narrative) | `context.py:578-606` |
 
 ### Test baseline (worktree)
 
-`pytest tests/agents/ tests/runtime/ --override-ini="addopts="` →
-**1345 passed, 0 failed** in 152s (2:32).  Phase 2 must end ≥1345.
-
-### Deferred (open from Phase 1 self-audit, NOT in this Phase)
-- Self-audit #5: `test_sheriff_silent_directive_references_target_id_not_vote_silent`
-  用 `inspect.getsource` 仍脆 — 改行为测试 deferred
-- Self-audit #6/7/8: TDD 纪律 / reasoning 3 步 system vs user / PROGRESS 编号 — 流程问题
+`pytest tests/agents/ tests/runtime/ tests/rules/ tests/memory/
+tests/rag/ tests/skills/ tests/cognition/ tests/model_gateway/
+--override-ini="addopts="` → **2074 passed, 0 failed** in 156s
+(2:36).  After P2-commit-1: **2074 passed, 0 failed** in 161s (2:41).
+P2-commit-2 in-progress adds 3 new tests (P2-3 vote-fields, P2-10
+S-19 widened, P2-2 judge task_type).
 
 ---
 

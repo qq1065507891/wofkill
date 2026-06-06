@@ -21,12 +21,13 @@ from werewolf_agent.agents.schemas import (
     TaskType,
 )
 
-# Role name mapping for Chinese prompts
-_ROLE_NAMES = {
-    "werewolf": "狼人", "villager": "村民", "seer": "预言家",
-    "witch": "女巫", "hunter": "猎人", "idiot": "白痴",
-    "hybrid": "混血儿",
-}
+# P2-4: role name mapping was previously duplicated as
+# ``_ROLE_NAMES`` here AND ``_ROLE_LABEL_CN`` in
+# ``runtime.private_memory``.  Two definitions meant any role
+# addition had to be edited in two places (and would silently drift
+# if one was forgotten).  Now we import the single source of truth
+# from private_memory; the duplicate here is deleted.
+from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES  # noqa: E402
 
 # P0-K1: skill catalog removed (tool path is dead code). Skill analyses
 # are pre-injected via skill_analysis_hints — no separate tool catalog.
@@ -323,11 +324,27 @@ class PlayerPromptBuilder:
         return "\n".join(lines) if lines else ""
 
     def _build_output_contract(self) -> str:
-        """Stable output format rules — same regardless of phase."""
+        """Stable output format rules — same regardless of phase.
+
+        P2-3: synchronised the field list to match the per-turn
+        TARGET_CHOICE+VOTE schema (9 fields) rather than the bare
+        5-field full-action list.  Pre-fix the system prompt
+        advertised 5 fields but the user prompt's
+        ``_build_strict_output_contract`` emitted 9 for VOTE — the
+        LLM was getting conflicting requirements.  Field count
+        here is the upper bound; per-action-type tasks (e.g. wolf
+        kill) may use a strict subset, but the system prompt should
+        advertise the max so the LLM is never surprised by a field
+        the per-turn contract adds.
+        """
         return (
             "请优先通过 submit_player_action 工具提交结构化行动。"
             "如果当前模型无法调用工具，则只输出一个JSON对象，不要解释、不要Markdown。"
-            "字段必须包含 action_type、target_id、speech、reason、confidence。"
+            "投票回合字段最多9个：choice、reason、seer_stance、vote_basis、"
+            "standing_with_seer、suspect_reason、not_voting_reason、private_reason、confidence。"
+            "发言回合最多5个：action_type、target_id、speech、reason、confidence。"
+            "技能行动（kill/check/poison/shoot/choose_master/badge 等）"
+            "最少5个：action_type、target_id、speech（空）、reason、confidence。"
             "重要：speech字段必须使用中文，这是你在游戏中的公开发言。"
         )
 
@@ -804,15 +821,26 @@ class PlayerPromptBuilder:
         ]
         if not rag_only:
             return ""
-        slim_items = self._slim_rag_hint_items(rag_only[:3])
+        # P2-6: cap on total hits uses the shared live-prompt
+        # constant from rag.prompt_renderer (one source of truth for
+        # the 3 retriever / slim-renderer / prompt-builder caps).
+        from werewolf_agent.rag.prompt_renderer import RAG_LIVE_PROMPT_CAP
+        slim_items = self._slim_rag_hint_items(rag_only[:RAG_LIVE_PROMPT_CAP])
         # P0-G3: hard-constraint prefix MUST come before the JSON
         # payload. Without this the LLM has been observed to parrot
         # case-specific player IDs (e.g., p04 / p09 in seed cases) as
         # if they were this game's player IDs, which is information
         # leakage and tactical error.
+        # P2-11: extended the head warning to cover TACTIC reuse in
+        # addition to player-ID reuse.  Pre-fix the warning only
+        # flagged ID leakage, but the LLM was also observed to
+        # wholesale-copy case tactics (e.g. "case used anti-herd and
+        # won, so do anti-herd this game") regardless of local
+        # context.  Add explicit anti-tactic-reuse framing.
         warning = (
-            "⚠️ RAG 案例中的玩家 ID 与本局无关；"
-            "不得直接套用案例中具体玩家的发言或票型。\n"
+            "⚠️ RAG 案例中的玩家 ID 与战术选择仅供启发；"
+            "本局的玩家 ID、票型、遗言均与案例无关；"
+            "不得直接套用案例中具体玩家的动作、票型或决策链。\n"
         )
         json_payload = self._compact_json(slim_items)
         # R19: a tail reminder after the JSON re-anchors the model at
@@ -854,6 +882,7 @@ class PlayerPromptBuilder:
         has the three prompt-safe keys; otherwise it picks out those
         three keys, falling back to ``""`` / ``""`` / ``[]`` if absent.
         """
+        from werewolf_agent.rag.prompt_renderer import _MAX_KEY_DECISIONS_IN_PROMPT
         slim: list[dict[str, Any]] = []
         for item in items:
             if not isinstance(item, dict):
@@ -861,7 +890,8 @@ class PlayerPromptBuilder:
             slim.append({
                 "title": str(item.get("title", "") or ""),
                 "summary": str(item.get("summary", "") or ""),
-                "key_decisions": list(item.get("key_decisions") or [])[:3],
+                # P2-6: cap uses the shared renderer constant.
+                "key_decisions": list(item.get("key_decisions") or [])[:_MAX_KEY_DECISIONS_IN_PROMPT],
             })
         return slim
 
@@ -1008,8 +1038,26 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.recent_transcript:
             return ""
+        # P2-5: stable sort the items by (day_number, phase_order) so
+        # re-entry speeches (appended later in the list) don't jump
+        # to the top of the rendered block.  Pre-fix, ``[-N:]`` was
+        # taken before any sort, so an out-of-order append could
+        # make a re-entry speech appear BEFORE an earlier speech,
+        # confusing the LLM's review of the conversation arc.
+        #
+        # The ``phase_order`` key sorts speeches within a single day
+        # (pre-PK → PK → last_words); absent the key we fall back
+        # to 0 (i.e. original list order) which is stable on
+        # Python's sort.
+        items = sorted(
+            ctx.recent_transcript[-_MAX_TRANSCRIPT_ITEMS:],
+            key=lambda it: (
+                it.get("day_number", it.get("day", 0)),
+                it.get("phase_order", 0),
+            ),
+        )
         lines: list[str] = ["近期发言:"]
-        for item in ctx.recent_transcript[-_MAX_TRANSCRIPT_ITEMS:]:
+        for item in items:
             speaker = item.get("speaker", "?")
             text = self._truncate_text(
                 str(item.get("text", "")),

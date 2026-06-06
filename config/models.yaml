@@ -119,6 +119,30 @@ llm_profiles:
       night_action:
         provider: minimax
         model_profile: minimax_m27_default
+      # Phase 2 P2-2: 5 JUDGE_* task types now map to the same
+      # model as ``speech`` (per Phase 1 decision).  Judge
+      # broadcasts are serial and don't need the extra quality of
+      # the default profile, but routing them through a cheaper
+      # model (e.g. ``minimax_m27_fast``) is an independent
+      # optimisation that can be enabled in a follow-up.  Each
+      # judge_* task type is listed explicitly so future per-task
+      # tuning (different max_tokens, temperature, etc.) is
+      # straightforward.
+      judge_vote_calling:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_skill_guide:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_vote_tally:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_exile:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_sheriff:
+        provider: minimax
+        model_profile: minimax_m27_default
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
@@ -133,6 +157,22 @@ llm_profiles:
         provider: minimax
         model_profile: minimax_m27_reflection
       speech:
+        provider: minimax
+        model_profile: minimax_m27_default
+      # Phase 2 P2-2: see comment in minimax_default above
+      judge_vote_calling:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_skill_guide:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_vote_tally:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_exile:
+        provider: minimax
+        model_profile: minimax_m27_default
+      judge_sheriff:
         provider: minimax
         model_profile: minimax_m27_default
     fallback:

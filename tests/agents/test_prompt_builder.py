@@ -1161,10 +1161,12 @@ def test_rag_hints_include_player_id_warning():
         }],
     })
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The exact prefix the plan specifies.
+    # The exact prefix — Phase 2 P2-11 extended it to cover
+    # TACTIC reuse (not just player ID reuse).
     expected_prefix = (
-        "⚠️ RAG 案例中的玩家 ID 与本局无关；"
-        "不得直接套用案例中具体玩家的发言或票型。"
+        "⚠️ RAG 案例中的玩家 ID 与战术选择仅供启发；"
+        "本局的玩家 ID、票型、遗言均与案例无关；"
+        "不得直接套用案例中具体玩家的动作、票型或决策链。"
     )
     assert expected_prefix in prompt, (
         f"P0-G3: the RAG hints section must include the hard-constraint "
@@ -3743,6 +3745,121 @@ def test_reasoning_method_has_three_numbered_steps():
     assert "推理方法-3 步" in sys_prompt, (
         "reasoning method section must be labeled with 3-step marker"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 P2-3: system output contract must advertise 9 fields for VOTE
+# ---------------------------------------------------------------------------
+
+
+def test_system_output_contract_advertises_vote_nine_fields():
+    """Phase 2 P2-3: the stable system output contract must advertise
+    the 9 fields used by TARGET_CHOICE+VOTE (the per-turn contract
+    emits 9 fields for VOTE, not 5).  Pre-fix the system prompt
+    advertised only 5, conflicting with the user prompt's
+    per-turn contract and causing the LLM to omit the vote-audit
+    fields on first try.
+    """
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p02", "p03"],
+    )
+    sys_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+    # 9 vote-audit fields must all be advertised in the system prompt
+    for field in (
+        "choice", "reason", "seer_stance", "vote_basis",
+        "standing_with_seer", "suspect_reason", "not_voting_reason",
+        "private_reason", "confidence",
+    ):
+        assert field in sys_prompt, (
+            f"P2-3: system output contract must mention vote field "
+            f"{field!r} so the LLM doesn't omit it on first try"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 P2-2: judge LLM calls use JUDGE_* task types (not "speech")
+# ---------------------------------------------------------------------------
+
+
+def test_judge_broadcasts_use_judge_task_types_in_router_calls() -> None:
+    """Phase 2 P2-2: all 4 JudgeAgent broadcast LLM calls must use
+    the JUDGE_* task_type enum values so the model_gateway router
+    can route them to a dedicated profile (or override timeouts)
+    per the JUDGE_* keys in ``config/models.yaml``.
+
+    Pre-fix: 4 calls all used ``task_type="speech"`` which routed
+    judge broadcasts through the player-speech code path.  This
+    conflated audit logs and prevented per-judge-task tuning.
+
+    Implementation: construct a real ``ModelRouter`` and replace
+    its ``generate`` method with a recorder.  Mocking the class
+    attribute on a generic MagicMock doesn't work; we need a real
+    router instance whose method we can patch.
+    """
+    from unittest.mock import MagicMock, patch
+    from werewolf_agent.agents.judge import JudgeAgent
+    from werewolf_agent.model_gateway.router import ModelRouter, GenerateResult, UsageRecord
+
+    mock_provider = MagicMock()
+    router = ModelRouter(
+        model_profiles={"cap": {"model": "capture-model"}},
+        llm_profiles={"judge_default": {
+            "default": {"provider": "cap", "model_profile": "cap"},
+        }},
+        player_assignments={"judge": "judge_default"},
+        providers={"cap": mock_provider},
+    )
+    captured: list[dict[str, object]] = []
+
+    def _capture_generate(self, agent_id, task_type, prompt, **kwargs):  # type: ignore[no-untyped-def]
+        captured.append({"agent_id": agent_id, "task_type": task_type})
+        return GenerateResult(
+            text="ok", provider="cap", model="capture-model",
+            usage=UsageRecord(
+                agent_id=agent_id, task_type=task_type,
+                provider="cap", model="capture-model",
+                prompt_tokens=0, completion_tokens=0, latency_ms=0,
+            ),
+        )
+
+    judge = JudgeAgent(model_router=router, profile_router=None)
+    with patch.object(type(router), "generate", _capture_generate):
+        judge.broadcast_vote_calling(
+            voter_id="p01", voter_name="玩家一", candidates=["p02"],
+            position=1, total=1, day_number=1,
+        )
+        judge.guide_skill_use(
+            role="witch", player_id="p11", player_name="玩家十一",
+            available_actions=["use_antidote"],
+        )
+        judge.announce_vote_tally(
+            tally={"p05": 5.0}, player_names={"p05": "玩家五"},
+            sheriff_id=None, sheriff_weight=1.5, day_number=1,
+        )
+        judge.announce_exile_result(
+            exiled_player_id="p05", exiled_player_name="玩家五",
+            reason="", tied_player_ids=[], day_number=1,
+        )
+
+    assert len(captured) == 4
+    expected_task_types = {
+        "judge_vote_calling", "judge_skill_guide",
+        "judge_vote_tally", "judge_exile",
+    }
+    actual = {rec["task_type"] for rec in captured}
+    assert actual == expected_task_types, (
+        f"P2-2: 4 judge LLM calls must use JUDGE_* task types; "
+        f"got {actual!r}, expected {expected_task_types!r}"
+    )
+    # All calls must use agent_id="judge" for routing
+    for rec in captured:
+        assert rec["agent_id"] == "judge"
 
 
 if __name__ == "__main__":
