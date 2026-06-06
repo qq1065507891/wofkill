@@ -613,24 +613,31 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     if plan.get("evidence_quality") == "none":
         return None
     evidence = plan.get("evidence_from_discussion") or []
+    # P1-G3223805846-B6: primary 必须存活；若 primary 不可达（死亡 / 是狼 /
+    # 缺失），强制走 backup 且绕过 evidence 校验 —— 狼队没有其他合法目标。
+    primary_alive = _first_alive_target(gs, plan.get("night_kill_primary"))
+    force_backup = primary_alive is None
     for key in ("night_kill_primary", "night_kill_backup"):
         target = _first_alive_target(gs, plan.get(key))
-        if target:
+        if target is None:
+            continue
+        # primary 死亡时，backup 不再卡 evidence；其他情况保留原 evidence 校验。
+        if not (force_backup and key == "night_kill_backup"):
             has_target_evidence = any(item.get("target") == target for item in evidence)
             if not has_target_evidence and plan.get("evidence_quality") != "strong":
                 continue
-            logger.debug(f"  [狼人决策] 按狼队计划击杀: {_player_display(state, target)}")
-            event = GameEvent(
-                type="wolf_kill_selected",
-                payload={
-                    "night_number": gs.night_number,
-                    "target_id": target,
-                    "reason": "wolf_team_plan",
-                    "plan_key": key,
-                },
-            )
-            gs = replace(gs, events=gs.events + [event])
-            return {"game_state": gs, "wolf_kill_target_id": target}
+        logger.debug(f"  [狼人决策] 按狼队计划击杀: {_player_display(state, target)}")
+        event = GameEvent(
+            type="wolf_kill_selected",
+            payload={
+                "night_number": gs.night_number,
+                "target_id": target,
+                "reason": "wolf_team_plan",
+                "plan_key": key,
+            },
+        )
+        gs = replace(gs, events=gs.events + [event])
+        return {"game_state": gs, "wolf_kill_target_id": target}
     return None
 
 
