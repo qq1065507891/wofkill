@@ -2675,3 +2675,137 @@ class TestRetryCountConsistency:
         # fallback_used attempt is consistent with the trace.
         assert profile.sample_count >= 1
         assert profile.fallback_count == 1
+
+
+# ---------------------------------------------------------------------------
+# D4-3: empty_response hint must only suggest no_action when it's legal
+# ---------------------------------------------------------------------------
+#
+# Audit D4-3 finding: the timeout fallback hint at player.py:381-395
+# suggests `action_type='no_action'` whenever the empty_response is
+# categorized as a timeout. But for VOTE (legal_actions=[VOTE]), no_action
+# is NOT in the legal set — the LLM would copy the hint and the agent
+# would reject the action. The fix: only inject the no_action suggestion
+# when `ActionType.NO_ACTION in ctx.legal_actions`; otherwise fall back
+# to a target-suggestion hint that names one of the legal targets.
+
+
+class TestEmptyResponseHintValidatesNoAction:
+    """D4-3: timeout hint must respect legal_actions."""
+
+    def _build_timeout_provider(self, latency_ms: int):
+        """Build a provider that returns empty text with high latency
+        so ``_categorize_failure_category`` returns ``"timeout"``.
+        """
+        from werewolf_agent.model_gateway.router import (
+            GenerateResult,
+            UsageRecord,
+        )
+
+        class _TimeoutProvider:
+            @property
+            def name(self) -> str:
+                return "timeout"
+
+            def generate(self, prompt, config, system_prompt=None):
+                return GenerateResult(
+                    text="",
+                    provider="timeout",
+                    model=config.model,
+                    usage=UsageRecord(
+                        agent_id="",
+                        task_type="",
+                        provider="timeout",
+                        model=config.model,
+                        latency_ms=latency_ms,
+                    ),
+                )
+
+        return _TimeoutProvider()
+
+    def test_empty_response_hint_only_suggests_no_action_when_legal(self):
+        """D4-3: VOTE-only context (no NO_ACTION) must not suggest no_action.
+
+        Pre-fix: the timeout hint always suggested ``no_action``, even
+        when VOTE was the only legal action — the LLM copied the hint,
+        the validator rejected the action, and the player had to retry.
+        The fix: only inject the ``no_action`` hint when
+        ``ActionType.NO_ACTION in ctx.legal_actions``.
+        """
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = self._build_timeout_provider(latency_ms=31_000)  # > 30s threshold
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p05": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p05", model_router=router, max_retries=1)
+        # VOTE-only — no NO_ACTION in legal_actions.
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07", "p08"],
+            public_summary="D2 vote",
+        )
+
+        action, retry = agent.act(ctx)
+
+        # Sanity: the empty_response path was taken (otherwise the test
+        # is meaningless).
+        assert retry.error_code == "empty_response", (
+            f"D4-3: expected empty_response retry, got {retry.error_code!r}"
+        )
+        # The hint must NOT contain "no_action" as a suggestion because
+        # the only legal action is VOTE — the LLM would copy it and
+        # the validator would reject it.
+        assert "no_action" not in retry.correction_hint, (
+            "D4-3: timeout hint for VOTE-only context must NOT mention "
+            "`no_action` (it's not in legal_actions). The LLM would copy "
+            "the suggestion and the validator would reject the action. "
+            f"Got hint: {retry.correction_hint!r}"
+        )
+
+    def test_empty_response_hint_suggests_no_action_when_legal(self):
+        """D4-3: when NO_ACTION is legal, the hint SHOULD still mention it.
+
+        Regression guard: the fix must not over-correct. If the
+        context allows no_action, the timeout hint should still
+        suggest it (P0-R2's whole point).
+        """
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = self._build_timeout_provider(latency_ms=31_000)
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p05": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p05", model_router=router, max_retries=1)
+        # NO_ACTION is legal — keep the original P0-R2 hint.
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.SHERIFF_REGISTRATION,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.SHERIFF_WITHDRAW, ActionType.NO_ACTION],
+            legal_targets=[],
+            public_summary="D1 sheriff election",
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert retry.error_code == "empty_response"
+        # NO_ACTION is legal — the hint should still mention it.
+        assert "no_action" in retry.correction_hint, (
+            "D4-3 regression: when NO_ACTION is legal, the timeout hint "
+            "must still mention it (P0-R2). "
+            f"Got hint: {retry.correction_hint!r}"
+        )

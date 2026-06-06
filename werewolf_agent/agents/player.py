@@ -386,13 +386,26 @@ class PlayerAgent:
                 # 3 empty retries and fell back to a default target —
                 # a '如果超时, 返回 no_action' hint would have let it
                 # safely no-op the second time around.
+                # D4-3: but only suggest ``no_action`` when it's actually
+                # legal. For VOTE-only contexts, ``no_action`` is not in
+                # legal_actions — the LLM would copy the hint, the
+                # validator would reject the action, and we'd loop
+                # forever. Fall back to a target-suggestion hint for
+                # those cases.
                 timeout_hint = ""
                 if failure_category == "timeout":
-                    timeout_hint = (
-                        " 如果超时，请直接返回 no_action 而非空响应"
-                        "（action_type='no_action', target_id=null,"
-                        "reason='timeout - safe no-op'）。"
-                    )
+                    if ActionType.NO_ACTION in context.legal_actions:
+                        timeout_hint = (
+                            " 如果超时，请直接返回 no_action 而非空响应"
+                            "（action_type='no_action', target_id=null,"
+                            "reason='timeout - safe no-op'）。"
+                        )
+                    elif context.legal_targets:
+                        first_target = context.legal_targets[0]
+                        timeout_hint = (
+                            f" 如果超时，请直接选择一个合法目标 "
+                            f"（例如 {first_target}）并提交结构化JSON。"
+                        )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
