@@ -921,13 +921,21 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # NEW-R4-P2-7: when no game_state is provided, the handler
+        # has no signals to analyze. The previous fallback used
+        # abstract "系统性分析" advice that gave the LLM no
+        # concrete next step. Replace with an explicit "wait" —
+        # the dynamic branch is the real value-add; the fallback
+        # is a placeholder.
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["分析发言信息量", "观察投票倾向", "识别保护行为"],
             confidence=0.5,
             reasoning="找神需要综合多个信号源进行推断",
-            prompt_injectable=_cap_prompt_injectable("找神建议：关注发言中信息量异常的玩家（可能知道夜晚信息）、投票倾向保守的玩家、以及试图保护某些位置的玩家，这些可能是神职。"),
+            prompt_injectable=_cap_prompt_injectable(
+                "找神建议：当前信息不足，等待关键发言出现后再下判断。"
+                "重点关注信息量异常的玩家、保守的投票倾向，以及对特定玩家的保护行为。"
+            ),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1131,7 +1139,6 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     pushers = [v["source"] for v in votes_against if v.get("day", 0) == inp.game_state.day_number]
 
     risks = ["过度防御可能加深怀疑", "攻击质疑者会适得其反"]
-
     if is_seer_checked:
         checker = seer_checks[0]["source"] if seer_checks else "未知"
         prompt = (
@@ -1180,13 +1187,22 @@ def resist_push_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 def wolf_pit_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     gs = inp.game_state
     if gs is None:
-        # static fallback
+        # NEW-R4-P2-7: when no game_state is provided, the handler
+        # has no suspects/excludes to analyze. The previous
+        # fallback used abstract "系统性分析" advice that gave the
+        # LLM no concrete next step. Replace with an explicit
+        # "wait" — the dynamic branch is the real value-add; the
+        # fallback is a placeholder.
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["列出嫌疑人", "分析各嫌疑人证据", "排除法缩小范围"],
             confidence=0.5,
             reasoning="盘狼坑需要系统性分析所有嫌疑人的行为链",
-            prompt_injectable=_cap_prompt_injectable("盘狼坑建议：系统性分析所有嫌疑人的行为链。从发言矛盾、投票链异常、验人冲突等维度排查，用排除法缩小狼坑范围。"),
+            prompt_injectable=_cap_prompt_injectable(
+                "盘狼坑建议：当前信息不足，等待关键发言出现后再下判断。"
+                "重点关注发言矛盾、投票链异常、验人冲突等维度，"
+                "用排除法缩小狼坑范围。"
+            ),
         )
     # dynamic analysis
     ws = inp.world_state

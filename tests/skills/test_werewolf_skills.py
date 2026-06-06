@@ -1438,3 +1438,58 @@ def test_bold_claim_advice_varies_by_day() -> None:
     assert day3_discouraging, (
         f"NEW-R4-P2-6: day 3 bold_claim must be discouraging; got: {day3!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-7: wolf_pit / find_power static fallback says "wait".
+# ---------------------------------------------------------------------------
+
+
+def test_wolf_pit_static_fallback_waits_for_signal() -> None:
+    """NEW-R4-P2-7: when no specific signal is available (gs is
+    None, or ws is empty), the wolf_pit and find_power static
+    fallbacks used abstract "系统性分析..." advice that gives the
+    LLM nothing actionable. Replace with explicit "wait for
+    critical speech" — the skill value is the dynamic analysis, the
+    fallback is just a placeholder.
+    """
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    wolf_pit_inp = SkillInput(
+        role="werewolf", phase="speech", day=1,
+        game_state=None, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    wolf_pit_text = apply_skill(
+        SkillName.WOLF_PIT_ANALYSIS, wolf_pit_inp,
+    ).prompt_injectable
+    # The abstract "系统性分析" advice must NOT appear — it gives
+    # the LLM no concrete next step.
+    assert "系统性分析" not in wolf_pit_text, (
+        f"NEW-R4-P2-7: wolf_pit static fallback must not use abstract "
+        f"'系统性分析' advice; got: {wolf_pit_text!r}"
+    )
+    # The fallback should suggest waiting for a specific signal.
+    assert any(k in wolf_pit_text for k in (
+        "等待", "关键", "出现", "再下判断", "观察",
+    )), (
+        f"NEW-R4-P2-7: wolf_pit static fallback should say to wait "
+        f"for critical signal; got: {wolf_pit_text!r}"
+    )
+
+    # find_power fallback has the same problem and same fix.
+    find_power_inp = SkillInput(
+        role="villager", phase="speech", day=1,
+        game_state=None, world_state=None, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    find_power_text = apply_skill(
+        SkillName.FIND_POWER, find_power_inp,
+    ).prompt_injectable
+    assert "系统性分析" not in find_power_text, (
+        f"NEW-R4-P2-7: find_power static fallback must not use abstract "
+        f"'系统性分析' advice; got: {find_power_text!r}"
+    )
