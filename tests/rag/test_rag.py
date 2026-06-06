@@ -696,6 +696,95 @@ class TestRetriever:
             assert hit.display_annotation  # Non-empty
             assert "|" in hit.display_annotation  # Contains source|quality format
 
+    def test_reranker_input_includes_title_and_key_decisions(self) -> None:
+        """G-R4-04: the reranker's input contract is ``text_key`` —
+        it scores each document on the field named by that key. The
+        retriever previously passed ``text_key="summary"`` and only
+        built a ``"summary"`` field per document, so the reranker
+        scored on the summary alone. The title and key_decisions
+        (often the most informative parts of a RAG case — e.g.
+        ``"金水是拉票策略，不是对被验者表现的认可"``) were dropped on
+        the floor.
+
+        After the fix the reranker input must include the title and
+        the key_decisions joined into the text the model sees, with
+        a documented 1500-char cap to bound the reranker's input
+        budget.
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        title = "金水的战略意义是拉票"
+        key_dec = [
+            "金水是拉票策略，不是对被验者表现的认可",
+            "悍跳狼倾向给中立玩家发金水来拉票",
+        ]
+        entry = RAGEntry(
+            entry_id="rerank_test",
+            title=title,
+            summary="summary text that is otherwise unique",
+            key_decisions=key_dec,
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.EXPERT_REVIEW,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+                tags=["seer"],
+            ),
+        )
+
+        seen_texts: list[str] = []
+
+        class _CapturingReranker:
+            def rerank_hits(self, *, query, documents, text_key="text", top_n=None):
+                # Capture exactly the text the reranker would see
+                # for the target document — the ``text_key`` field
+                # is the model's input.
+                for d in documents:
+                    seen_texts.append(str(d.get(text_key, "")))
+                return [
+                    {
+                        **d,
+                        "rerank_score": 0.5,
+                    }
+                    for d in documents[: (top_n or len(documents))]
+                ]
+
+        retriever = StrategyRetriever([entry], reranker=_CapturingReranker())
+        hits = retriever.retrieve(
+            RAGQuery(role="seer", phase="speech", max_results=1)
+        )
+        assert hits
+        # The reranker must have been called with at least one
+        # document; the text it scored on must include the title
+        # and the key_decisions, not just the summary.
+        assert seen_texts, "G-R4-04: reranker was not invoked"
+        merged = "\n".join(seen_texts)
+        assert title in merged, (
+            f"G-R4-04: reranker input is missing the title; "
+            f"texts={seen_texts!r}"
+        )
+        # The summary is a substring of itself, so we need a
+        # non-summary marker to verify key_decisions are present.
+        assert "金水是拉票策略，不是对被验者表现的认可" in merged, (
+            f"G-R4-04: reranker input is missing the key_decisions; "
+            f"texts={seen_texts!r}"
+        )
+
     def test_display_annotation_human_readable(self) -> None:
         """P1-G8: display_annotation uses human-readable Chinese /
         English labels, not the raw enum values like
@@ -2141,8 +2230,12 @@ class TestRerankerNegativeScore:
         2000-char entry would show 800 chars in audit but the model
         would have scored on the full 2000.
 
-        Truncate to 800 chars before building the reranker input
-        dict so both paths agree on what the model sees.
+        G-R4-04: the reranker input is now built as
+        ``f"{title}\n{summary}\n{key_decisions}"[:1500]`` and
+        exposed under the ``"text"`` key (the title and
+        key_decisions used to be dropped). The truncation still
+        applies — both to the summary slice inside the union and
+        to the final ``[:1500]`` cap.
         """
         long_summary = "狼" * 2000  # 2000 Chinese characters
         entry = _make_entry(
@@ -2155,7 +2248,7 @@ class TestRerankerNegativeScore:
         captured: list[list[dict]] = []
 
         class _SpyReranker:
-            def rerank_hits(self, *, query, documents, text_key="summary", top_n=None):
+            def rerank_hits(self, *, query, documents, text_key="text", top_n=None):
                 # Copy the docs so later mutations don't change what we saw.
                 captured.append([dict(d) for d in documents])
                 out = []
@@ -2172,11 +2265,20 @@ class TestRerankerNegativeScore:
 
         assert captured, "N5: reranker must be called"
         docs = captured[0]
-        # The single document's summary must be truncated to 800 chars
-        # — the same cap ``_entry_to_hit`` enforces on the audit side.
+        # The single document's input union must respect the
+        # 1500-char cap and the summary slice inside the union
+        # must be the 800-char truncated version — same cap
+        # ``_entry_to_hit`` enforces on the audit side.
         for doc in docs:
-            assert len(doc["summary"]) == 800, (
-                f"N5: reranker must see 800-char truncated summary; "
-                f"got {len(doc['summary'])} chars"
+            text = doc.get("text", "")
+            assert len(text) <= 1500, (
+                f"N5/G-R4-04: reranker text must respect the "
+                f"1500-char cap; got {len(text)} chars"
             )
-            assert doc["summary"] == long_summary[:800]
+            # The truncated summary (800 chars) must be embedded
+            # in the union between the title and the
+            # key_decisions.
+            assert long_summary[:800] in text, (
+                f"N5: reranker text must contain the 800-char "
+                f"truncated summary; got text={text[:200]!r}..."
+            )

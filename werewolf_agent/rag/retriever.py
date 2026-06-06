@@ -335,17 +335,34 @@ class StrategyRetriever:
             # scored on text the operator never saw in the audit
             # JSON. Truncating up front means the two paths agree on
             # what the model sees.
+            #
+            # G-R4-04: include the title and key_decisions in the
+            # text the reranker scores on. The reranker's input
+            # contract is ``text_key`` — it scores on whatever
+            # field is named by that key. Pre-fix we built a
+            # ``"summary"``-only field and dropped the title and
+            # key_decisions (often the most informative parts of
+            # a RAG case) on the floor. The new field is
+            # ``"text"`` and is built as
+            # ``f"{title}\n{summary}\n{key_decisions}"[:1500]``:
+            # the 1500-char cap keeps the reranker's input budget
+            # bounded and the union is exposed under a single
+            # key so the reranker doesn't need to know about the
+            # three sub-fields.
             reranked = self._reranker.rerank_hits(
                 query=query_text,
                 documents=[
                     {
                         "score": s,
                         "entry": e,
-                        "summary": e.summary[:800],
+                        "text": (
+                            f"{e.title}\n{e.summary[:800]}\n"
+                            f"{' '.join(e.key_decisions)}"
+                        )[:1500],
                     }
                     for s, e in rerank_pool
                 ],
-                text_key="summary",
+                text_key="text",
                 top_n=query.max_results,
             )
             results: list[RAGHit] = []
