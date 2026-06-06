@@ -878,3 +878,124 @@ def test_find_power_skips_dead_players() -> None:
         f"Sanity: alive p07 (high seer prob) must be in candidates. "
         f"Got prompt: {text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-1: counter_claim hybrid wolf-master receives 悍跳-specific advice.
+# ---------------------------------------------------------------------------
+
+
+def test_counter_claim_hybrid_wolf_master_receives_悍跳_advice() -> None:
+    """NEW-R4-P2-1: when a HYBRID with `hybrid_master_faction='werewolf'`
+    is faking-seer (counter_claiming a real seer), the counter_claim
+    handler must give 悍跳-specific advice (wolf team plan), NOT the
+    neutral "对跳建议" villagers receive.
+
+    Pre-fix: `is_wolf = inp.role == 'werewolf'` is False for a hybrid,
+    so the static-fallback and dynamic branches both fell through to
+    the neutral `else` branch. A hybrid-wolf-master faking-seer then
+    got "指出对方漏洞" (villager-style) advice instead of "假验人
+    时间线" (wolf-style). That defeats the entire purpose of the
+    hybrid-wolf-master mechanic.
+
+    Post-fix: compute `effective_faction = WOLF` when
+    `(role == 'werewolf') or (role == 'hybrid' and
+    gs.hybrid_master_faction == 'werewolf')`; the handler branches
+    on effective_faction so the hybrid gets 悍跳 framing.
+    """
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12 players; p03 is a hybrid whose master is a werewolf.
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    players["p03"] = PlayerState(id="p03", role="hybrid", alive=True)
+    # p05 is the real seer (claimant); p03 is the hybrid faking seer.
+    players["p05"] = PlayerState(id="p05", role="seer", alive=True)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+        hybrid_master_id="p01",  # master is a werewolf (p01)
+        hybrid_master_faction="werewolf",
+    )
+
+    # No world_state — exercise the static-fallback branch (gs is None
+    # is the typical P2 test path).  But here gs is NOT None — we want
+    # the dynamic branch (with `world_state=None` is also valid in
+    # some handlers but counter_claim's dynamic branch assumes ws).
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    ws = StructuredWorldState()
+    ws.append(StructuredFact(
+        fact_type="claimed_role", source_player="p05", value="seer",
+        day=1,
+    ))
+
+    # Sanity: a VILLAGER role with no wolf-master hybrid context must
+    # NOT get the 悍跳 framing.
+    villager_inp = SkillInput(
+        role="villager", phase="speech", day=1,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p04",
+        task_type="speech",
+    )
+    villager_out = apply_skill(SkillName.COUNTER_CLAIM, villager_inp)
+    villager_text = villager_out.prompt_injectable
+    assert "悍跳" not in villager_text, (
+        f"NEW-R4-P2-1: villager counter_claim must not use 悍跳 framing; "
+        f"got: {villager_text!r}"
+    )
+
+    # Hybrid with wolf master counter-claiming real seer MUST get
+    # 悍跳-specific advice (same as werewolf would).
+    hybrid_inp = SkillInput(
+        role="hybrid", phase="speech", day=1,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p03",
+        task_type="speech",
+    )
+    hybrid_out = apply_skill(SkillName.COUNTER_CLAIM, hybrid_inp)
+    hybrid_text = hybrid_out.prompt_injectable
+    assert any(k in hybrid_text for k in ("悍跳", "假", "时间线", "排坑")), (
+        f"NEW-R4-P2-1: hybrid-with-wolf-master counter_claim must use "
+        f"悍跳 framing; got: {hybrid_text!r}"
+    )
+
+    # The hybrid advice must DIFFER from the villager advice (proves
+    # the role branch fired).
+    assert hybrid_text != villager_text, (
+        f"NEW-R4-P2-1: hybrid and villager should get different "
+        f"counter_claim advice; both got: {hybrid_text!r}"
+    )
+
+    # A hybrid-with-GOOD-master must NOT get the 悍跳 framing.
+    gs_good_master = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+        hybrid_master_id="p04",  # master is a villager
+        hybrid_master_faction="good",
+    )
+    good_inp = SkillInput(
+        role="hybrid", phase="speech", day=1,
+        game_state=gs_good_master, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p03",
+        task_type="speech",
+    )
+    good_out = apply_skill(SkillName.COUNTER_CLAIM, good_inp)
+    good_text = good_out.prompt_injectable
+    assert "悍跳" not in good_text, (
+        f"NEW-R4-P2-1: hybrid-with-GOOD-master counter_claim must NOT "
+        f"use 悍跳 framing; got: {good_text!r}"
+    )

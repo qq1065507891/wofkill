@@ -381,8 +381,17 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     # needs to defend their check result and rip the faker's timeline.
     # A WOLF countering a real seer (i.e. doing the "悍跳" pair-up)
     # needs to fabricate a matching timeline and steer the room.
+    # NEW-R4-P2-1: a HYBRID with `hybrid_master_faction='werewolf'`
+    # is on the wolf side and gets the same 悍跳 framing as a real
+    # werewolf (faking-seer is one of the hybrid's wolf-team jobs).
     is_seer = inp.role == "seer"
     is_wolf = inp.role == "werewolf"
+    is_hybrid_wolf = (
+        inp.role == "hybrid"
+        and gs is not None
+        and getattr(gs, "hybrid_master_faction", None) == "werewolf"
+    )
+    effective_wolf = is_wolf or is_hybrid_wolf
     if gs is None:
         # static fallback — role-tailored phrasing
         if is_seer:
@@ -408,6 +417,24 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
                 prompt_injectable=_cap_prompt_injectable(
                     "对跳建议（狼队悍跳视角）：你作为狼的悍跳者，需要准备完整的"
                     "假验人时间线来对跳真预言家。重点攻击对方的验人动机和警徽流漏洞，"
+                    "并用排坑占边把节奏拉到自己这边。"
+                ),
+            )
+        if is_hybrid_wolf:
+            # NEW-R4-P2-1: hybrid-with-wolf-master gets the same 悍跳
+            # framing as a real werewolf when faking seer. The wolf
+            # team plan relies on the hybrid building a matching
+            # fake-check timeline.
+            return SkillOutput(
+                skill_name=skill.name.value,
+                speech_structure=["准备完整的假验人记录", "攻击真预言家的逻辑漏洞", "排坑占边"],
+                risk_alerts=["悍跳风险：如果对方是真预言家，可信度会大幅下降"],
+                confidence=0.55,
+                reasoning="悍跳对跳（混合体视角）：核心是构建与狼队一致的假时间线",
+                prompt_injectable=_cap_prompt_injectable(
+                    "对跳建议（混合体悍跳视角）：你作为混合体且主人是狼，"
+                    "你与狼队一起行动。你需要准备完整的假验人时间线来对跳真预言家。"
+                    "重点攻击对方的验人动机和警徽流漏洞，"
                     "并用排坑占边把节奏拉到自己这边。"
                 ),
             )
@@ -489,6 +516,36 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
                 f"侧面质疑{target}的验人动机",
                 "准备完整的假时间线作为预案",
                 "用排坑占边为团队创造空间",
+            ]
+        risks = [f"悍跳 {target} 需要完整的假验人记录，时间线断裂会暴露"]
+    elif is_hybrid_wolf:
+        # NEW-R4-P2-1: hybrid-with-wolf-master uses wolf 悍跳 framing
+        # in the dynamic branch (mirrors the static fallback).
+        if has_claim_conflict:
+            prompt = (
+                f"对跳分析（混合体悍跳视角）：{target} 的发言已经暴露矛盾（claim_conflict）。"
+                f"作为混合体与狼队一起行动，抓住这个矛盾猛攻，"
+                f"把场上风向拉到对你和狼队有利的方向。"
+                f"用你准备的假验人时间线作为正面证据。"
+            )
+            conf = 0.6
+            speech = [
+                f"放大{target}的发言矛盾",
+                "用你准备好的假时间线作为正面证据",
+                "排坑占边把节奏拉到自己这边",
+            ]
+        else:
+            prompt = (
+                f"对跳分析（混合体悍跳视角）：{target} 的发言暂时没明显漏洞。"
+                f"作为混合体与狼队一起行动，不要正面硬刚，从侧面找漏洞"
+                f"（验人动机、警徽流合理性）。如果真预言家时间线无漏洞，"
+                f"转为排坑占边策略。"
+            )
+            conf = 0.4
+            speech = [
+                f"侧面质疑{target}的验人动机",
+                "准备完整的假时间线作为预案",
+                "用排坑占边为狼队创造空间",
             ]
         risks = [f"悍跳 {target} 需要完整的假验人记录，时间线断裂会暴露"]
     else:
