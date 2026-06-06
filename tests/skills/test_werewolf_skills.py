@@ -1578,3 +1578,47 @@ def _vote_targets_for_player(ws, player_id):
         for f in ws.facts_of_type("vote")
         if f.target_player == player_id
     ]
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-10: last_words has no dead `night` field reference.
+# ---------------------------------------------------------------------------
+
+
+def test_last_words_no_dead_night_field() -> None:
+    """NEW-R4-P2-10: last_words's `f.day or f.night if hasattr(f,
+    "night") else ""` style reference is dead code. Scan the
+    module to confirm there's no `f.night` or
+    `hasattr(f, "night")` access — the `night` field does not
+    exist on `StructuredFact` and the reference is leftover from
+    a refactor.
+    """
+    import ast
+    from pathlib import Path as _Path
+    from werewolf_agent.skills import werewolf_skills as _ws
+
+    src = _Path(_ws.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    offenders: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        # `f.night` access (ast.Attribute).
+        if isinstance(node, ast.Attribute) and node.attr == "night":
+            offenders.append(("attribute", getattr(node, "lineno", 0)))
+        # `hasattr(f, "night")` — match a Call to `hasattr` whose
+        # second positional arg is a Constant string "night".
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "hasattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "night"
+        ):
+            offenders.append(("hasattr", node.lineno))
+
+    assert not offenders, (
+        f"NEW-R4-P2-10: dead `f.night` / `hasattr(f, 'night')` "
+        f"references in last_words or anywhere in "
+        f"werewolf_skills.py; offenders: {offenders!r}"
+    )
