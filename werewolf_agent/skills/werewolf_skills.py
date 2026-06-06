@@ -595,7 +595,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 "选择嫌疑最大的人作为你的投票目标。"
             )
             speech = ["确认你的最终投票目标", "回顾其嫌疑证据", "准备投出选票"]
-            action = "vote"
         else:
             # Default (and speech-task): rhetoric-focused push.
             prompt = (
@@ -603,7 +602,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 "陈述理由时需要有理有据，号召全场跟随。"
             )
             speech = ["陈述归票理由", "分析目标嫌疑", "号召全场归票"]
-            action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=speech,
@@ -625,16 +623,13 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 "归票建议（投票阶段）：当前信息不足，没有明确嫌疑目标。"
                 "选择一个相对最可疑的目标投票，避免弃票。"
             )
-            action = "vote"
         elif is_speech_task:
             prompt = (
                 "归票建议（发言阶段）：当前信息不足，没有明确嫌疑目标。"
                 "在发言中表示需要观察，避免无依据地号召归票。"
             )
-            action = "speech"
         else:
             prompt = "归票建议：当前信息不足，建议观察发言后再决定归票方向。"
-            action = "speech" if is_speech_task else "vote"
         return SkillOutput(
             skill_name=skill.name.value,
             confidence=0.4,
@@ -667,7 +662,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             f"理由：{reason_text}。"
             f"请直接选 {primary} 作为你的投票目标。"
         )
-        action = "vote"
         speech = [f"确认{primary}为最终投票目标", f"回顾{primary}的嫌疑证据", "投出选票"]
         risks = ["归票错误目标可能导致好人损失"]
     elif is_speech_task:
@@ -677,7 +671,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             f"理由：{reason_text}。"
             f"在发言中陈述理由，号召全场集中票数归出 {primary}。"
         )
-        action = "speech"
         speech = [f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"]
         risks = ["归票错误目标可能导致好人损失"]
     else:
@@ -686,7 +679,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             f"归票建议：根据场上信息，{primary} 的嫌疑最大。"
             f"理由：{reason_text}。号召全场集中票数归出 {primary}。"
         )
-        action = "vote"
         speech = [f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"]
         risks = ["归票错误目标可能导致好人损失"]
 

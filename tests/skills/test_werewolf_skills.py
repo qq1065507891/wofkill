@@ -999,3 +999,48 @@ def test_counter_claim_hybrid_wolf_master_receives_悍跳_advice() -> None:
         f"NEW-R4-P2-1: hybrid-with-GOOD-master counter_claim must NOT "
         f"use 悍跳 framing; got: {good_text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-2: dead `action = "..."` locals in handlers.
+# ---------------------------------------------------------------------------
+
+
+def test_no_dead_action_locals_in_handlers() -> None:
+    """NEW-R4-P2-2: handlers must not assign to a local named `action`
+    that is never read. S-19 removed `recommended_action` from the
+    `SkillOutput` schema, so any `action = "..."` in handler bodies
+    is dead — the local is assigned but never returned. We scan the
+    module with `ast` to find every `ast.Assign` whose target name is
+    `action` inside a function (handler) body and assert there are
+    none.
+    """
+    import ast
+    from pathlib import Path as _Path
+    from werewolf_agent.skills import werewolf_skills as _ws
+
+    src = _Path(_ws.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    offenders: list[tuple[str, int]] = []
+    # Walk only the top-level function defs (handlers, helpers).
+    # We allow `action` locals in tests or in module-level constants.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Assign):
+                continue
+            for tgt in sub.targets:
+                if (
+                    isinstance(tgt, ast.Name)
+                    and tgt.id == "action"
+                ):
+                    offenders.append((node.name, sub.lineno))
+
+    assert not offenders, (
+        f"NEW-R4-P2-2: dead `action = ...` assignments in handlers; "
+        f"S-19 removed `recommended_action` from the schema so these "
+        f"locals are written and never read. Offending sites: "
+        f"{offenders!r}"
+    )
