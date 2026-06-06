@@ -4,10 +4,59 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Prompt-Audit Phase 1 — 10 single-file low-risk fixes (P1-1..10) + self-audit fixes (P1-12..15)** — 2026-06-06
-- Active task: All P1 items done; self-audit follow-up fixes applied
+- Current phase: **Prompt-Audit Phase 2 — 13 mid-risk fixes (P2-1..13)** — 2026-06-06
+- Active task: P2-commit-1 done (c9daeb2), P2-commit-2 in progress
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-06
+
+---
+
+## Prompt-Audit Phase 2 (P2-1..13) — 13 mid-risk fixes
+
+Branch: `fix8-prompt-p2` (worktree `.worktrees/fix8-prompt-p2`).
+Base: `60195cc` (Phase 1 self-audit fixes on master).
+Scope: 13 mid-risk polish issues identified by the 7-module prompt-design
+audit (modules A-G, 2026-06-06). No rule / schema / API contract changes
+(audit-driven polish only).
+
+### Commit status
+
+| Commit | Items | Risk | Status | SHA |
+|--------|-------|------|--------|-----|
+| **P2-commit-1** | P2-1, P2-7, P2-8, P2-9 | low-mid (single file) | DONE | `c9daeb2` |
+| **P2-commit-2** | P2-2, P2-3, P2-4, P2-5, P2-6, P2-10, P2-11, P2-12, P2-13 | mid (cross-file) | in progress | TBD |
+
+### P2-commit-1 (DONE, c9daeb2)
+
+| # | Issue | File |
+|---|-------|------|
+| P2-1  | 13 hard-constraint keys promoted REFERENCE 兜底 → HARD | `prompt_builder.py:76-128` |
+| P2-7  | Profile hint drops `learning_rate_rank` / `risk_preference_rank` (review-only leakage) | `context.py:414-441` |
+| P2-8  | Profile hint adds `win_rate_confidence` 4-tier label (无历史 / 样本不足 / 中等 / 充足) | `context.py:414-441` |
+| P2-9  | Reflection sort: chr-invert → parseable YYYY-MM-DD regex + arithmetic invert | `context.py:445-466` |
+
+### P2-commit-2 (in progress)
+
+| # | Issue | Files |
+|---|-------|-------|
+| P2-2  | 5 judge LLM calls `task_type="speech"` → `judge_vote_calling` etc.; `models.yaml` adds 5 JUDGE_* task mappings under `minimax_default` + `pro_reasoner` | `judge.py` (4 sites), `config/models.yaml` |
+| P2-3  | System output contract advertises 9 fields (TARGET_CHOICE+VOTE) instead of 5 (FULL_ACTION) | `prompt_builder.py:325-348` |
+| P2-4  | Consolidate `_ROLE_NAMES` (prompt_builder) + `_ROLE_LABEL_CN` (private_memory) to single source in `private_memory.py` | `prompt_builder.py:24-29`, `private_memory.py:19-27` |
+| P2-5  | Transcript builder sorts items by `(day_number, phase_order)` stable; re-entry speeches no longer jump to top | `prompt_builder.py:1014-1039` |
+| P2-6  | RAG cap single source: `RAG_LIVE_PROMPT_CAP = 3` in `prompt_renderer.py`; 3 sites import | `prompt_renderer.py:60-68`, `context.py:286, 304`, `prompt_builder.py:807, 871` |
+| P2-10 | S-19 widened regex: `\\b[pP]\\d+\\b` + `\\d+号玩家` + `玩家\\s*\\d+` | `context.py:744-770` |
+| P2-11 | RAG warning head extended to flag TACTIC reuse (not just ID reuse) | `prompt_builder.py:813-822` |
+| P2-12 | RAG situation trailing `actions=` noise: skip when `actions_tags` empty | `context.py:262-275` |
+| P2-13 | `_inject_skill_output` docstring rewrite (drop 50-line historical narrative) | `context.py:578-606` |
+
+### Test baseline (worktree)
+
+`pytest tests/agents/ tests/runtime/ tests/rules/ tests/memory/
+tests/rag/ tests/skills/ tests/cognition/ tests/model_gateway/
+--override-ini="addopts="` → **2074 passed, 0 failed** in 156s
+(2:36).  After P2-commit-1: **2074 passed, 0 failed** in 161s (2:41).
+P2-commit-2 in-progress adds 3 new tests (P2-3 vote-fields, P2-10
+S-19 widened, P2-2 judge task_type).
 
 ---
 

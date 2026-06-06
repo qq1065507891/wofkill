@@ -197,9 +197,16 @@ class JudgeAgent:
             # the previous to complete) and do not contend with the
             # 12-player concurrent generation burst.  Default jitter
             # of 0-0.8s adds latency without any throughput benefit.
+            # Phase 2 P2-2: use the JUDGE_* task type so the
+            # ``model_gateway`` router can route judge broadcasts to a
+            # dedicated model profile (or override timeouts) per
+            # the JUDGE_* keys in ``config/models.yaml``.  The task
+            # type now matches the ``TaskType`` enum value
+            # (``judge_vote_calling`` etc.) so the audit log can
+            # distinguish judge calls from player speech calls.
             result = self.model_router.generate(
                 agent_id="judge",
-                task_type="speech",
+                task_type="judge_vote_calling",
                 prompt=prompt,
                 system_prompt=system_prompt,
                 jitter_seconds=(0.0, 0.0),
@@ -268,9 +275,10 @@ class JudgeAgent:
                 f"只输出引导台词，不要输出其他内容。"
             )
             prompt, system_prompt = self._persona_inject(prompt, "judge_skill_guide")
+            # Phase 2 P2-2: see comment in ``broadcast_vote_calling``
             result = self.model_router.generate(
                 agent_id="judge",
-                task_type="speech",
+                task_type="judge_skill_guide",
                 prompt=prompt,
                 system_prompt=system_prompt,
                 jitter_seconds=(0.0, 0.0),
@@ -337,9 +345,10 @@ class JudgeAgent:
                 f"请用简洁的中文宣布投票结果。只输出宣布台词，不要输出其他内容。"
             )
             prompt, system_prompt = self._persona_inject(prompt, "judge_vote_tally")
+            # Phase 2 P2-2: see comment in ``broadcast_vote_calling``
             result = self.model_router.generate(
                 agent_id="judge",
-                task_type="speech",
+                task_type="judge_vote_tally",
                 prompt=prompt,
                 system_prompt=system_prompt,
                 jitter_seconds=(0.0, 0.0),
@@ -415,9 +424,10 @@ class JudgeAgent:
             else:
                 prompt = f"你是狼人杀游戏的法官。{label}，投票结束。请用简洁的中文宣布。"
             prompt, system_prompt = self._persona_inject(prompt, "judge_exile")
+            # Phase 2 P2-2: see comment in ``broadcast_vote_calling``
             result = self.model_router.generate(
                 agent_id="judge",
-                task_type="speech",
+                task_type="judge_exile",
                 prompt=prompt,
                 system_prompt=system_prompt,
                 jitter_seconds=(0.0, 0.0),
