@@ -407,3 +407,283 @@ def test_role_phase_fallback_admits_general_wildcard() -> None:
     selected_ids = {entry.entry_id for _, entry in out}
     assert "general_role_speech" in selected_ids
     assert "villager_general_phase" in selected_ids
+
+
+# ---------------------------------------------------------------------------
+# G-R4-02 (P0): ``role_perspective='any'`` seeds must reach the retriever
+# ---------------------------------------------------------------------------
+
+
+def test_role_perspective_any_included_in_metadata_fallback() -> None:
+    """G-R4-02: the metadata fallback path of ``_vector_candidates``
+    previously only accepted ``role_perspective in (query.role,
+    "general", "")`` — which silently dropped every seed whose
+    ``role_perspective`` was ``"any"``. About 11 foundation seeds
+    (金水 / 银水 / 对跳判断 / 警徽票权重, etc.) carry ``"any"`` and
+    were therefore unreachable from the metadata fallback path.
+
+    The bug only manifests when at least one entry IS in the
+    ``selected`` pool (either a vector hit or another entry that
+    passes the metadata filter) — once ``selected`` is non-empty,
+    the function short-circuits the final "return all entries"
+    fallback and the role_perspective='any' entries are dropped
+    on the floor. The test therefore sets up a vector store with
+    a villager role hit so the "any" entry can only reach the
+    candidate pool through the metadata filter.
+    """
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+    from werewolf_agent.rag.vector_store import LocalVectorStore
+
+    any_role_speech = _make_rag_entry(
+        entry_id="any_role_speech",
+        role_perspective="any",
+        phase="speech",
+    )
+    villager_speech = _make_rag_entry(
+        entry_id="villager_speech",
+        role_perspective="villager",
+        phase="speech",
+    )
+    vector_store = LocalVectorStore()
+    # Seed the vector store with the villager entry so it
+    # produces a real hit. ``any_role_speech`` has no vector
+    # representation, so it must be admitted via the metadata
+    # filter — which is the path that the bug breaks.
+    vector_store.add(
+        villager_speech.entry_id,
+        f"{villager_speech.title}\n{villager_speech.summary}",
+        {"role_perspective": "villager", "phase": "speech"},
+    )
+
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [any_role_speech, villager_speech],
+        vector_store=vector_store,
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(role="villager", phase="speech", max_results=5),
+        [any_role_speech, villager_speech],
+    )
+    selected_ids = {entry.entry_id for _, entry in out}
+    # Sanity: the villager entry comes through the vector path.
+    assert "villager_speech" in selected_ids, (
+        f"G-R4-02 sanity: villager entry should be in candidates; "
+        f"selected={selected_ids!r}"
+    )
+    # The "any" entry must ALSO be in the candidate pool, reached
+    # via the metadata fallback. Pre-fix the filter rejected
+    # role_perspective='any' so the final "return all" fallback
+    # was not triggered and the entry was silently dropped.
+    assert "any_role_speech" in selected_ids, (
+        f"G-R4-02: role_perspective='any' seed was silently dropped "
+        f"from the metadata fallback; selected={selected_ids!r}"
+    )
+
+
+def test_role_perspective_any_scores_same_as_general_in_rule_based() -> None:
+    """G-R4-02: the rule-based ``_score`` previously rewarded
+    ``role_perspective='general'`` with a +0.05 bonus over a
+    non-matching role, but did not reward ``'any'`` the same way.
+    After the fix, ``'any'`` must receive the same +0.05 bonus so
+    universal-knowledge seeds rank at parity with the existing
+    ``'general'`` universal seeds.
+    """
+    from werewolf_agent.rag.retriever import StrategyRetriever
+
+    any_entry = _make_rag_entry(
+        entry_id="any_entry",
+        role_perspective="any",
+        phase="speech",
+    )
+    general_entry = _make_rag_entry(
+        entry_id="general_entry",
+        role_perspective="general",
+        phase="speech",
+    )
+
+    retriever = StrategyRetriever([any_entry, general_entry])
+    query = RAGQuery(role="villager", phase="speech", max_results=5)
+
+    score_any = retriever._score(any_entry, query)
+    score_general = retriever._score(general_entry, query)
+    # ``any`` and ``general`` should both contribute the wildcard
+    # bonus (+0.05) when the query role does not match. Pre-fix,
+    # ``any`` got 0.0 here, which put universal-knowledge seeds
+    # below role-specific entries regardless of relevance.
+    assert score_any == score_general, (
+        f"G-R4-02: role_perspective='any' should score the same as "
+        f"'general' for a non-matching query role; got "
+        f"any={score_any!r} general={score_general!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# G-R4-03 (P1): vector score normalization to 1.0 boosts weak noise hits
+# ---------------------------------------------------------------------------
+
+
+class _FixedScoreVectorStore:
+    """Minimal vector store that returns hand-tuned raw scores for
+    ``_vector_candidates`` tests.
+
+    The real ``LocalVectorStore`` derives scores from token overlap,
+    which makes the score distribution hard to pin down in tests.
+    For G-R4-03 we need to assert that the per-call max
+    normalization in ``_vector_candidates`` does NOT promote weak
+    hits to 1.0, so the score is something the test fully controls.
+    """
+
+    def __init__(self, raw_results: list[dict]) -> None:
+        self._raw = list(raw_results)
+        self.added: list[tuple[str, str, dict]] = []
+
+    def add(self, doc_id, text, metadata):
+        self.added.append((doc_id, text, metadata))
+
+    def query(self, query_text, top_k=5):
+        return self._raw[:top_k]
+
+    def count(self):
+        return len(self._raw)
+
+
+def test_weak_vector_matches_filtered_below_threshold() -> None:
+    """G-R4-03: the normalization ``raw / score_max`` made the top
+    vector hit always anchor at 1.0. When the absolute top raw
+    score was itself weak (e.g. an unrelated corpus hit with no
+    lexical overlap), the normalized score of 1.0 still pulled
+    the merge formula above the rule-only path — so a vector hit
+    with no real signal could outrank a strong rule-only match.
+
+    The fix: entries whose raw vector score falls below a
+    documented absolute threshold (default 0.1) must be dropped
+    from the candidate pool entirely, so a noisy vector result
+    cannot promote an irrelevant entry above a clean rule match.
+
+    The test arranges the noise entry so it is *only* reachable
+    through the vector path (its metadata would not pass the
+    role/phase filter), so any appearance in the candidate pool
+    proves the vector path admitted it.
+    """
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    relevant = {
+        "doc_id": "r_relevant",
+        "text": "狼人杀 抗推预言家 警徽流 神牌信息 京城大师赛 250415",
+        "metadata": {"role_perspective": "werewolf", "phase": "night_discussion"},
+        "score": 3.2,  # strong hit, above threshold
+    }
+    weak_noise = {
+        "doc_id": "r_noise",
+        "text": "玩家 在 某轮 发言 提及 一些 巧合 词汇",
+        "metadata": {"role_perspective": "god_view", "phase": "review"},
+        "score": 0.05,  # below the absolute threshold
+    }
+    vector_store = _FixedScoreVectorStore([relevant, weak_noise])
+
+    # The relevant entry matches the query's role/phase, so it
+    # would be admitted both via the vector path AND the metadata
+    # fallback. The noise entry uses a role_perspective that the
+    # query's role would not match — so the noise entry can only
+    # enter the candidate pool through the vector path.
+    relevant_entry = _make_rag_entry(
+        entry_id="r_relevant",
+        role_perspective="werewolf",
+        phase="night_discussion",
+    )
+    noise_entry = _make_rag_entry(
+        entry_id="r_noise",
+        role_perspective="villager",  # not "werewolf" — would be filtered by role check
+        phase="night_discussion",
+    )
+
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [relevant_entry, noise_entry],
+        vector_store=vector_store,
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(
+            role="werewolf",
+            phase="night_discussion",
+            situation="抗推预言家",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            max_results=5,
+        ),
+        [relevant_entry, noise_entry],
+    )
+    selected_ids = {entry.entry_id for _, entry in out}
+
+    # The strong hit must reach the candidate pool.
+    assert "r_relevant" in selected_ids, (
+        f"G-R4-03: strong vector hit was dropped; selected={selected_ids!r}"
+    )
+    # The weak noise hit must be filtered out by the absolute
+    # threshold. Pre-fix the per-call max normalization promoted
+    # it to 1.0, dragging the merge formula above the rule-only
+    # path for any unrelated entry that was returned by the
+    # vector store. The noise entry is role-mismatched, so it
+    # can only appear in the candidate pool via the vector
+    # path — which is exactly the path the bug corrupts.
+    assert "r_noise" not in selected_ids, (
+        f"G-R4-03: weak vector hit (raw=0.05) was not filtered out "
+        f"by the absolute threshold; the per-call max normalization "
+        f"is still promoting noise to 1.0; selected={selected_ids!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# G-R4-13: RAGKnowledgeService must hold a long-lived RAGInjector
+# so the audit log persists across calls.
+#
+# Pre-fix: ``retrieve_live_hints`` created a fresh RAGInjector on
+# every call, so ``injector.audit_log()`` returned a 1-entry deque
+# and the previous turn's audit record was lost the moment the
+# next call returned. In production the audit log is the only
+# observability surface for "why did this hit surface for this
+# player" — losing it after every turn defeats the purpose.
+#
+# Post-fix: the service holds a single RAGInjector and reuses it
+# across calls (entries in the audit deque keep accumulating up
+# to the deque maxlen).
+# ---------------------------------------------------------------------------
+
+
+def test_audit_log_persists_across_calls() -> None:
+    """G-R4-13: call ``retrieve_live_hints`` twice on the same
+    service; the audit log on the underlying injector must
+    accumulate BOTH records (modulo the maxlen cap)."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    service = RAGKnowledgeService()
+    q1 = RAGQuery(
+        role="werewolf",
+        phase="night_discussion",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        max_results=3,
+    )
+    q2 = RAGQuery(
+        role="seer",
+        phase="speech",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        max_results=3,
+    )
+    service.retrieve_live_hints(q1, game_id="g1", player_id="p01")
+    service.retrieve_live_hints(q2, game_id="g2", player_id="p02")
+    # The long-lived injector must have BOTH records.
+    injector = getattr(service, "_injector", None)
+    assert injector is not None, (
+        "G-R4-13: RAGKnowledgeService must hold a long-lived "
+        "RAGInjector (e.g. ``self._injector``)."
+    )
+    log = injector.audit_log()
+    assert len(log) >= 2, (
+        f"G-R4-13: audit log must persist across calls; "
+        f"got {len(log)} records, expected at least 2."
+    )
+    # The two records must correspond to the two queries.
+    game_ids = [r.game_id for r in log]
+    assert "g1" in game_ids and "g2" in game_ids, (
+        f"G-R4-13: audit log lost one of the calls; "
+        f"game_ids seen: {game_ids!r}"
+    )

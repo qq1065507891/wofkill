@@ -137,13 +137,76 @@ def _rag_phase_for_task(task_type: TaskType, phase: str) -> str:
     return phase or "general"
 
 
+# G-R4-14: legal_action → RAG tag mapping. The previous code
+# serialized ``[a.value for a in context.legal_actions]`` directly
+# into the situation as a Python list repr, e.g.
+# ``actions=['wolf_kill', 'sheriff_vote']``. Seed entry tags live
+# in a different shape (``[werewolf, deep_hook, deception]``), so
+# the retriever's tag-overlap scoring never surfaced a match.
+#
+# The mapping below is intentionally aligned with the seed tag
+# vocabulary (``seer``, ``werewolf``, ``witch``, ``hunter``,
+# ``sheriff``, ``speech``, ``deception``, ``seer_check``,
+# ``witch_save``, ``witch_poison``, ``hunter_shot``, etc.). A
+# legal action of e.g. ``WOLF_KILL`` contributes the tags
+# ``werewolf`` (role) + ``wolf_kill`` (action); a
+# ``SHERIFF_REGISTER`` contributes ``sheriff_register`` (action).
+_LEGAL_ACTION_TAGS: dict[str, tuple[str, ...]] = {
+    "vote": ("vote",),
+    "wolf_kill": ("werewolf", "wolf_kill"),
+    "wolf_no_kill": ("werewolf", "wolf_no_kill"),
+    "use_antidote": ("witch", "witch_save", "antidote"),
+    "use_poison": ("witch", "witch_poison", "poison"),
+    "check_alignment": ("seer", "seer_check"),
+    "choose_master": ("hybrid", "hybrid_master"),
+    "hunter_shot": ("hunter", "hunter_shot"),
+    "self_destruct": ("idiot", "idiot_reveal"),
+    "sheriff_register": ("sheriff", "sheriff_register"),
+    "sheriff_withdraw": ("sheriff", "sheriff_withdraw"),
+    "sheriff_vote": ("sheriff", "sheriff_vote"),
+    "badge_transfer": ("sheriff", "badge_transfer", "badge_flow"),
+    "badge_tear": ("sheriff", "badge_tear"),
+    "speech": ("speech",),
+    "no_action": (),
+}
+
+
+def _normalize_legal_actions_to_tags(
+    legal_actions: list[ActionType],
+) -> str:
+    """G-R4-14: serialize legal_actions as a deduplicated,
+    space-joined tag string (no list repr, no quote chars) so the
+    retriever's tag-overlap scoring can match against seed entry
+    tag shapes. Unknown actions fall back to their raw value so a
+    future ActionType addition does not silently drop the action
+    from the situation.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for action in legal_actions:
+        key = action.value if hasattr(action, "value") else str(action)
+        for tag in _LEGAL_ACTION_TAGS.get(key, (key,)):
+            if tag not in seen:
+                seen.add(tag)
+                out.append(tag)
+    return " ".join(out)
+
+
 # P1-G6: RAG retrieval is wasted on REFLECTION (post-game review of
 # the agent's own play — strategy hints are not actionable in that
 # context) and on JUDGE_* tasks (moderator persona; strategy hints
 # don't apply). Skipping them saves an unnecessary embed/rerank call
 # and keeps the live prompt free of irrelevant cases.
+#
+# G-R4-08: LAST_WORDS is a deathbed speech — strategy hints are not
+# actionable, and the task type falls through ``_rag_phase_for_task``
+# to the raw game phase (day/night), which never matches any seed
+# entry's ``phase`` value (seeds are tagged
+# ``speech``/``night_action``/``night_discussion``/etc.). Skipping
+# avoids a guaranteed-miss retrieval call.
 _RAG_SKIPPED_TASK_TYPES: frozenset[TaskType] = frozenset({
     TaskType.REFLECTION,
+    TaskType.LAST_WORDS,
     TaskType.JUDGE_PHASE,
     TaskType.JUDGE_DEATH,
     TaskType.JUDGE_VOTE_CALLING,
@@ -184,11 +247,22 @@ def _inject_seed_rag_hints(
         # path cleanly. The old format ('speech day vote speech')
         # carried no semantic structure and the rule-based retriever
         # essentially never matched.
-        actions = [a.value for a in context.legal_actions]
+        # G-R4-14: legal_actions are now normalized to a deduplicated
+        # space-joined tag string (no Python list repr). The mapping
+        # table in ``_LEGAL_ACTION_TAGS`` aligns the action values
+        # with the seed entry tag vocabulary so the retriever's
+        # tag-overlap scoring has a chance to surface a match.
+        actions_tags = _normalize_legal_actions_to_tags(context.legal_actions)
+        # G-R4-07: the situation carried a bare ``phase=`` key whose
+        # value (day/night) collided with the query's own ``phase``
+        # field (the task phase: speech / night_action / wolf_discussion).
+        # The retriever tokenizes on ``=`` and couldn't tell them
+        # apart. Renamed to ``game_phase=`` so the two fields are
+        # unambiguous at the retriever's tag-overlap scoring step.
         situation = (
-            f"role={context.own_role} phase={context.phase} "
+            f"role={context.own_role} game_phase={context.phase} "
             f"task={context.task_type.value} alive={n_alive} "
-            f"actions={actions}"
+            f"actions={actions_tags}"
         )
         # R18: build the RAGQuery through the RAGInjector helper so the
         # query defaults (ruleset_id, max_results) live in one place.

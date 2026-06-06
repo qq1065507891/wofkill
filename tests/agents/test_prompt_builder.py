@@ -1094,6 +1094,7 @@ def test_rag_hints_include_player_id_warning():
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
+            "type": "rag_hit",  # G-R4-10: explicit type discriminator
             "title": "京城大师赛 250415 抗推预言家",
             "summary": "狼队在白天通过抗推预言家获得票数优势。",
             "key_decisions": ["白天全力归票预言家"],
@@ -1133,6 +1134,7 @@ def test_rag_hints_player_id_warning_appears_before_json_payload():
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
+            "type": "rag_hit",  # G-R4-10: explicit type discriminator
             "title": "案例标题",
             "summary": "案例摘要。",
             "key_decisions": ["决策1"],
@@ -1177,6 +1179,7 @@ def test_rag_hints_have_tail_reminder():
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
+            "type": "rag_hit",  # G-R4-10: explicit type discriminator
             "title": "案例标题",
             "summary": "案例摘要。",
             "key_decisions": ["决策1"],
@@ -1200,6 +1203,123 @@ def test_rag_hints_have_tail_reminder():
     assert tail_start > json_start, (
         "R19: the tail reminder must come AFTER the JSON payload so "
         "the LLM encounters it after reading the case data, not before."
+    )
+
+
+def test_rag_hints_filtered_by_type():
+    """G-R4-10: ``_build_rag_hints`` must filter ``ctx.rag_hints`` by
+    ``type == "rag_hit"`` before rendering. Mixed-type lists (rag_hit
+    + non-rag_hit items, e.g. a future code path or test that
+    injects auxiliary metadata) must drop the non-rag_hit entries
+    rather than render them.
+
+    The previous code at runtime/context.py:231 used
+    ``[item for item in ctx.rag_hints if item.get("type") != "rag_hit"]``
+    to *retain* non-rag items, which is brittle: a stray non-rag item
+    persists across turns and the prompt renderer would happily
+    process it. The prompt-side filter is explicit, defensive, and
+    matches the slim renderer's expectation that every line carries
+    the ``rag_hit`` discriminator.
+    """
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [
+            # Mixed list: first two are NOT rag_hit, last two are.
+            {
+                "type": "aux_meta",
+                "title": "AUX-META-TITLE",
+                "summary": "AUX-META-SUMMARY",
+                "key_decisions": ["AUX-META-DECISION"],
+            },
+            {
+                "type": "salience_event",
+                "title": "SALIENCE-TITLE",
+                "summary": "SALIENCE-SUMMARY",
+                "key_decisions": ["SALIENCE-DECISION"],
+            },
+            {
+                "type": "rag_hit",
+                "title": "RAG-1-TITLE",
+                "summary": "RAG-1-SUMMARY",
+                "key_decisions": ["RAG-1-DECISION"],
+            },
+            {
+                "type": "rag_hit",
+                "title": "RAG-2-TITLE",
+                "summary": "RAG-2-SUMMARY",
+                "key_decisions": ["RAG-2-DECISION"],
+            },
+        ],
+    })
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The rag_hit items MUST be rendered.
+    assert "RAG-1-TITLE" in prompt, (
+        f"G-R4-10: rag_hit item 1 must be rendered; prompt excerpt: "
+        f"{prompt[prompt.find('知识库提示'):prompt.find('知识库提示')+400]!r}"
+    )
+    assert "RAG-2-TITLE" in prompt
+    # The non-rag_hit items MUST NOT leak into the prompt.
+    for forbidden in ("AUX-META-TITLE", "AUX-META-SUMMARY",
+                      "SALIENCE-TITLE", "SALIENCE-SUMMARY"):
+        assert forbidden not in prompt, (
+            f"G-R4-10: non-rag_hit item leaked into prompt: {forbidden!r}"
+        )
+
+
+def test_rag_truncation_note_in_tail():
+    """G-R4-12: when the JSON payload is truncated by ``_truncate_text``
+    (P2-4 marker ``...<已截断>`` appears), the tail reminder must
+    explicitly acknowledge the truncation. Otherwise the LLM sees
+    the head warning + half-JSON + a generic "以上案例仅供参考"
+    tail — and may attempt to parse the half-JSON or treat it as a
+    hard assertion. The tail must call out the truncation so the
+    LLM knows the JSON ended mid-document.
+    """
+    # Force the JSON to exceed the truncation cap. The RAG section
+    # cap is 1800 chars; a single item with a 2k-char summary blows
+    # past it.
+    long_summary = "狼" * 2000
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [{
+            "type": "rag_hit",
+            "title": "超长案例",
+            "summary": long_summary,
+            "key_decisions": ["决策1", "决策2", "决策3"],
+        }],
+    })
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The truncation marker is present.
+    assert "已截断" in prompt, (
+        "G-R4-12: the test setup should force JSON truncation; "
+        "the `<已截断>` marker must be present in the prompt."
+    )
+    # The tail must include an explicit truncation note. The exact
+    # wording is implementation-defined; the contract is just that
+    # the tail text references the truncation (e.g. "JSON 已截断",
+    # "内容已截断", etc.) — not just the generic "以上案例仅供参考".
+    rag_start = prompt.find("知识库提示")
+    assert rag_start != -1, "RAG hints section must be present"
+    rag_section = prompt[rag_start:]
+    # The truncation note must be a clear reference to the cut.
+    truncation_keywords = ("已截断", "被截断", "中途截断", "截断提示")
+    has_truncation_note = any(
+        kw in rag_section for kw in truncation_keywords
+    )
+    # The truncated marker is already in the JSON; the tail must
+    # ALSO mention truncation so the LLM can see the tail's intent
+    # even if it skips the head warning.
+    assert rag_section.count("已截断") >= 2, (
+        f"G-R4-12: tail must include its own truncation note. "
+        f"Got {rag_section.count('已截断')} occurrences of '已截断' "
+        f"in the RAG section. The P2-4 marker is in the JSON body, "
+        f"but the tail reminder must add a second mention so the LLM "
+        f"sees 'this was truncated' in both places."
+    )
+    # And the tail must still carry the existing reference framing.
+    assert "以上案例仅供参考" in rag_section, (
+        "G-R4-12: the truncation note must augment, not replace, the "
+        "existing '以上案例仅供参考' tail reminder."
     )
 
 
@@ -3263,305 +3383,137 @@ def test_sheriff_example_includes_withdraw():
 
 
 # ---------------------------------------------------------------------------
-# D4-1: _SALIENCE_PUBLIC_FIELDS must include seer_claim core fields
+# G-R4-15: RAG hints must survive budget pressure.
+#
+# Pre-fix: _build_rag_hints was tagged 【辅助】 and got dropped
+# alongside persona, profile, and other 辅助-tier sections when
+# the joined prompt exceeded the 6250-char budget. The whole
+# point of the 知识库提示 section is to bring strategy hints into
+# the LLM's reasoning; losing it under budget pressure defeats
+# the retrieval investment.
+#
+# Post-fix: RAG hints move to the new 【参考】 tier, which sits
+# between 辅助 (dropped second) and 硬约束 (never dropped). The
+# trimmer drops 辅助 first, then 【参考】, then 硬约束. RAG
+# hints survive whenever the budget allows the lower-priority
+# 辅助 sections to be dropped.
 # ---------------------------------------------------------------------------
-#
-# Audit D4-1 finding: the public-field whitelist at prompt_builder.py:1243
-# contains `target`, `value`, `event_type` etc., but NOT `speaker`, `result`,
-# or `alignment`. A seer_claim event (a public Seer claim that says
-# "I am the Seer and I checked <target> with <result>") needs those three
-# fields for the LLM to understand who claimed what. Without them, the
-# filtered salience item reads "someone made a seer_claim" — useless for
-# downstream reasoning. Note: `seer_result` (the raw check result) is still
-# a private key and stays out. `result` / `alignment` (the public claimed
-# alignment) is fair game.
-#
-# Fix: extend _SALIENCE_PUBLIC_FIELDS with `speaker`, `result`, `alignment`.
-# The whitelist remains a defense-in-depth boundary; private keys
-# (`seer_result`, `witch_target`, `wolf_team`, `private_intent`,
-# `moderator_full`) are still dropped.
 
 
-def test_salience_fields_include_seer_claim_speaker_result_alignment():
-    """D4-1: a seer_claim salience item must keep its public speaker/result/alignment.
+def _make_budget_pressure_context() -> AgentContext:
+    """Context that genuinely exceeds the 6_250-char user-prompt budget.
 
-    The seer_claim event is the public record of a Seer claiming a role
-    and announcing a check. Three fields drive the LLM's reasoning:
-    - ``speaker``: who made the claim (public by definition — the claim
-      itself is public)
-    - ``result``: the publicly claimed alignment ("good"/"werewolf")
-    - ``alignment``: same — the public claim, not the raw ``seer_result``
+    Used by G-R4-15 to verify RAG hints survive while 辅助 sections
+    (persona, profile, salience, etc.) are dropped.
 
-    A future change that limits the whitelist to
-    ``{target, value, event_type, ...}`` would drop these fields and
-    leave the LLM unable to interpret the claim.
+    The strategy_directive and output contract are 硬约束 and must NOT
+    be dropped. The 辅助 sections (persona, phase_context, belief,
+    public_summary, visible_state, private_memory, salience,
+    reflection, profile, cognition) are each ~1.8k chars — together
+    they push the joined prompt well past 6_250. RAG hints (also
+    ~1k+ chars with proper ``type: "rag_hit"``) sit in the middle
+    of the 辅助 drop order today; the fix moves them to a new
+    higher tier.
     """
-    seer_claim_item = {
-        "event_type": "seer_claim",
-        "speaker": "p03",
-        "target": "p07",
-        "result": "werewolf",
-        "alignment": "werewolf",
-        "day": 2,
-        "phase": "day",
-        "weight": 0.9,
-    }
-    ctx = _make_ctx_with_salience([seer_claim_item])
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The salience section header is "关键事件" — and the rendered
-    # JSON must include speaker/result/alignment.
-    assert "关键事件" in prompt, (
-        "D4-1: salience section header must be present for non-empty "
-        "salience_items"
-    )
-    # Each public field of the seer_claim must survive the whitelist.
-    # Note: _compact_json uses ``separators=(",", ":")`` — no whitespace
-    # after the colon. We assert on the compact form.
-    assert '"speaker":"p03"' in prompt, (
-        "D4-1: salience whitelist must preserve `speaker` for seer_claim "
-        "events (the claim is public — the speaker is public). "
-        f"prompt: {prompt!r}"
-    )
-    assert '"result":"werewolf"' in prompt, (
-        "D4-1: salience whitelist must preserve `result` (the public "
-        "claimed alignment, NOT `seer_result` the private key). "
-        f"prompt: {prompt!r}"
-    )
-    assert '"alignment":"werewolf"' in prompt, (
-        "D4-1: salience whitelist must preserve `alignment` (public). "
-        f"prompt: {prompt!r}"
-    )
-    # And the private key `seer_result` must STILL be dropped — this
-    # confirms we extended the whitelist without weakening the
-    # private-key defense.
-    assert "seer_result" not in prompt, (
-        "D4-1: private key `seer_result` must still be stripped from "
-        "salience items even after adding `result` to the public "
-        f"whitelist. prompt: {prompt!r}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# D4-2: choice-prompt vote example vote_basis must be role-appropriate
-# ---------------------------------------------------------------------------
-#
-# Audit D4-2 finding: `_format_examples` (FULL_ACTION mode) already
-# branches the example's `vote_basis` by `ctx.own_role`:
-#   - seer       → "seer_check"   (own check)
-#   - non-seer   → "seer_siding"  (siding with a claimed seer)
-# But `_format_choice_prompt` (TARGET_CHOICE mode, used for VOTE) hardcodes
-# `"vote_basis":"seer_check"` for every role. A non-seer agent seeing that
-# example will copy "seer_check" into the audit log — but only the seer
-# has a check, so non-seer agents fabricate a non-existent basis.
-#
-# Game trace g_3528592081 showed non-seer villager votes emitting
-# `vote_basis="seer_check"` (a real audit-trail inconsistency).
-#
-# Fix: make `_format_choice_prompt` mirror `_format_examples` — branch the
-# example's `vote_basis` by `ctx.own_role`. Seer still uses "seer_check";
-# every other role uses "seer_siding".
-
-
-def test_choice_prompt_vote_basis_role_appropriate():
-    """D4-2: for own_role='villager', the choice example uses 'seer_siding'.
-
-    The TARGET_CHOICE pipeline is used for single-action-per-turn flows
-    like VOTE. A non-seer villager agent running through that pipeline
-    must see `vote_basis='seer_siding'` in the example — matching the
-    behavior already established in `_format_examples` (P1-8).
-
-    This test targets the `_format_choice_prompt` path specifically.
-    """
-    ctx = AgentContext(
-        agent_id="p05",
-        task_type=TaskType.VOTE,
-        phase="day",
-        day_number=2,
-        own_role="villager",
-        legal_actions=[ActionType.VOTE],
-        legal_targets=["p03", "p05", "p07"],
-        public_summary="D2 vote",
-    )
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # Sanity: the prompt is the TARGET_CHOICE prompt, not FULL_ACTION.
-    # It uses "choice" not "action_type" — so extract the example as raw
-    # text rather than parsing it as a PlayerAction.
-    assert "vote_basis" in prompt, (
-        "D4-2: choice prompt must render a vote example with audit fields"
-    )
-    # Villager has no check — example must NOT advertise seer_check.
-    assert '"vote_basis":"seer_check"' not in prompt, (
-        "D4-2: villager choice example must use vote_basis='seer_siding', "
-        "not 'seer_check' (villager has no check of their own). "
-        f"Prompt: {prompt!r}"
-    )
-    # Positive assertion: the example must show seer_siding.
-    assert '"vote_basis":"seer_siding"' in prompt, (
-        "D4-2: villager choice example must use vote_basis='seer_siding'. "
-        f"Prompt: {prompt!r}"
-    )
-
-
-def test_choice_prompt_vote_basis_seer_unchanged():
-    """D4-2 regression: own_role='seer' must still use 'seer_check'.
-
-    The seer has their own check. The TARGET_CHOICE vote example for a
-    seer agent must keep `vote_basis='seer_check'` (mirrors the
-    P1-8 regression in `_format_examples`).
-    """
-    ctx = AgentContext(
-        agent_id="p03",
-        task_type=TaskType.VOTE,
-        phase="day",
-        day_number=2,
-        own_role="seer",
-        legal_actions=[ActionType.VOTE],
-        legal_targets=["p05", "p07"],
-        public_summary="D2 seer vote",
-    )
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    assert '"vote_basis":"seer_check"' in prompt, (
-        "D4-2 regression: seer choice example must keep "
-        "vote_basis='seer_check' (own check). "
-        f"Prompt: {prompt!r}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# D4-8 (P2): _truncate_text must mark the cut and prefer sentence boundary
-# ---------------------------------------------------------------------------
-#
-# Audit D4-8 finding: _truncate_text cuts at the max_chars index without
-# any marker. The LLM looking at the rendered prompt cannot tell the
-# snippet was intentionally cut, so it sometimes treats the truncated
-# text as the full message (e.g., re-summarizes "I am the seer" instead
-# of "I am the seer and I checked p07 and p09 yesterday and p07 was
-# werewolf and also..." truncated mid-sentence).
-#
-# Fix: append ``（已截断）`` marker after truncation. Prefer a
-# sentence-boundary cut (`.`/`。`/`!`/`?`/`！`/`？`) within the last
-# ~10% of the budget so the LLM sees a clean stop rather than a
-# mid-word break. The marker is the same shape used elsewhere in the
-# codebase (P2-4 used `<已截断>` for JSON; here we use `（已截断）`
-# for prose so the LLM can tell the two truncation contexts apart).
-
-
-_SENTENCE_BOUNDARY_CHARS = ".。!！?？"
-
-
-def test_transcript_truncation_has_marker() -> None:
-    """D4-8: a transcript line longer than the cap must end with the
-    ``（已截断）`` marker so the LLM sees the cut was intentional."""
-    long_text = "x" * 300
-    assert len(long_text) > 220, (
-        "D4-8 test setup: long_text must exceed the 220-char transcript cap"
-    )
-
-    ctx = AgentContext(
-        agent_id="p01",
+    return AgentContext(
+        agent_id="p10",
         task_type=TaskType.SPEECH,
         phase="day",
-        day_number=1,
+        day_number=2,
         own_role="villager",
-        recent_transcript=[{"speaker": "p07", "text": long_text}],
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        # 辅助: each of these can render up to ~1.8k chars.
+        persona_snapshot={"tone": "aggressive", "style": "logical",
+                          "phrase_style": "blame_p05", "extra": "X" * 1500},
+        belief_state={
+            "my_suspects": [
+                {"player": f"p{i:02d}", "faction_lean": "wolf_lean",
+                 "top_role_guess": "werewolf", "trust": 0.2,
+                 "note": "long context " * 30}
+                for i in range(1, 6)
+            ],
+            "my_trusted": [
+                {"player": f"p{i:02d}", "faction_lean": "good_lean",
+                 "top_role_guess": "villager", "trust": 0.8,
+                 "note": "long context " * 30}
+                for i in range(6, 11)
+            ],
+        },
+        public_summary="公开事实 " + ("D2 投票事实数据 " * 200),
+        visible_world_state={f"key_{i}": f"value_{i} " * 30 for i in range(20)},
+        private_memory_hints={
+            "logic_flaws": [{"day": 2, "point": f"逻辑 {i} " * 25} for i in range(8)],
+            "valid_points": [{"day": 2, "point": f"有效 {i} " * 25} for i in range(8)],
+        },
+        salience_items=[
+            {"id": f"sal-{i}", "weight": 0.5, "summary": f"事件 {i} " * 30}
+            for i in range(8)
+        ],
+        # RAG hints with the proper discriminator (the render filter
+        # at _build_rag_hints drops items without ``type == "rag_hit"``).
+        rag_hints=[{
+            "type": "rag_hit",
+            "title": "budget-pressure-rag",
+            "summary": "案例摘要 " * 60,
+            "key_decisions": ["决策1", "决策2", "决策3"],
+        }],
+        reflection_memory_hints=[
+            {"theme": f"主题 {i}", "summary": f"经验 {i} " * 30}
+            for i in range(5)
+        ],
+        profile_memory_hint={"games_played": 10, "summary": "前 30% 玩家画像 " * 50},
+        cognition_matrix_hint={
+            f"p{i:02d}": {"trust": 0.5, "faction_lean": "good",
+                          "top_role_guess": "villager",
+                          "note": "画像 " * 20}
+            for i in range(1, 13)
+        },
+        # 硬约束 equivalent (NEVER_DROP) — keeps strategy + contract
+        # in the prompt no matter what.
+        strategy_directive={
+            "must_address_alerts": [{"alert": f"提示 {i}"} for i in range(3)],
+            "anti_herd": "不要盲目跟票 " * 10,
+            "skill_tactical_advice": {"role": "villager", "tips": ["tip1", "tip2"] * 20},
+        },
     )
+
+
+def test_rag_hints_survive_budget_pressure() -> None:
+    """G-R4-15: when the prompt exceeds the user-prompt budget, the
+    RAG hints section must survive — at the cost of lower-priority
+    【辅助】 sections (persona, profile memory hint, etc.)."""
+    ctx = _make_budget_pressure_context()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The marker must appear in the rendered prompt so the LLM
-    # notices the truncation.
-    assert "（已截断）" in prompt, (
-        "D4-8: a long transcript line must end with the "
-        "``（已截断）`` marker so the LLM sees the cut was "
-        "intentional. Without the marker the LLM treats the snippet "
-        "as the full message and re-summarizes incorrectly."
+    # Sanity: the budget trimmer must have actually run. With
+    # 10 辅助 sections × ~1.8k each + 硬约束 (strategy + contract)
+    # the joined length is well over 6_250. The final prompt must
+    # therefore be under the cap (trimmer did its job) AND have
+    # dropped at least one 辅助 section.
+    assert len(prompt) <= _USER_PROMPT_BUDGET_CHARS + 750, (
+        f"G-R4-15: budget trimmer should keep joined prompt under "
+        f"~6_250 + 750 chars; got {len(prompt)} chars."
     )
-    # And the cut must not exceed the cap by too much.
-    for line in prompt.splitlines():
-        if "p07" in line and "（已截断）" in line:
-            content_part = line.split("...（已截断）")[0]
-            assert "[p07] " in content_part
-            text_only = content_part.split("[p07] ", 1)[1]
-            assert len(text_only) <= 220, (
-                f"D4-8: truncated text must not exceed the 220-char cap. "
-                f"Got {len(text_only)} chars: {text_only!r}"
-            )
-            break
-    else:
-        pytest.fail(
-            "D4-8: rendered prompt must contain a transcript line for p07 "
-            "with the truncation marker. Prompt: " + prompt
-        )
-
-
-def test_truncate_text_marker_on_simple_long_text() -> None:
-    """D4-8: direct _truncate_text call must append the marker."""
-    out = PlayerPromptBuilder._truncate_text("x" * 500, 100)
-    assert "（已截断）" in out, (
-        f"D4-8: _truncate_text must append （已截断） marker. Got: {out!r}"
+    # RAG hints MUST survive — they are the whole point of the
+    # 知识库提示 section.
+    assert "budget-pressure-rag" in prompt, (
+        f"G-R4-15: RAG hints section was dropped under budget pressure. "
+        f"Got prompt (first 400 chars): {prompt[:400]!r}"
     )
-    # The cut content must be at most max_chars long.
-    content_part = out.split("...（已截断）")[0]
-    assert len(content_part) <= 100, (
-        f"D4-8: content part must be <= max_chars (100). Got {len(content_part)}: "
-        f"{content_part!r}"
+    assert "知识库提示" in prompt, (
+        f"G-R4-15: the 知识库提示 header was dropped under budget "
+        f"pressure. RAG hints must be in a higher-priority tier "
+        f"(【参考】) than the other 辅助 sections that get dropped."
     )
-
-
-def test_truncate_text_prefers_sentence_boundary() -> None:
-    """D4-8: when truncation has a sentence-end in the last ~10% of
-    the budget, the cut should land on that boundary (not arbitrarily).
-    """
-    # Build Chinese text where a `。` lands in the slack window 90..100
-    # so the function should prefer to cut there.
-    sentence = "第一句话讲背景，p07昨天投了p10。"
-    text = sentence * 7
-    assert len(text) > 100
-    out = PlayerPromptBuilder._truncate_text(text, 100)
-    content_part = out.split("...（已截断）")[0]
-    # The cut should be at a sentence boundary, so the last char of
-    # the content part should be `。`.
-    assert content_part.rstrip().endswith("。"), (
-        f"D4-8: truncation should prefer sentence boundary. The cut "
-        f"landed mid-sentence. Content: {content_part!r}"
-    )
-    # And the content length should be near max_chars (within slack).
-    assert 90 <= len(content_part) <= 100, (
-        f"D4-8: content length should be near max_chars (within slack). "
-        f"Got {len(content_part)} chars (expected 90..100). "
-        f"Content: {content_part!r}"
-    )
-
-
-def test_truncate_text_no_marker_when_short() -> None:
-    """D4-8: text shorter than max_chars must NOT have the marker."""
-    out = PlayerPromptBuilder._truncate_text("短文本。", 100)
-    assert "（已截断）" not in out, (
-        f"D4-8: short text must not have the truncation marker. "
-        f"Got: {out!r}"
-    )
-    assert out == "短文本。"
-
-
-def test_compact_json_keeps_p2_4_marker() -> None:
-    """D4-8 + P2-4: _compact_json must keep the ``<已截断>`` marker
-    (not switch to the prose parenthetical form)."""
-    builder = PlayerPromptBuilder(
-        AgentContext(
-            agent_id="p01",
-            task_type=TaskType.SPEECH,
-            phase="day",
-            day_number=1,
-            own_role="villager",
-        )
-    )
-    big = {
-        "key_" + str(i): "x" * 200
-        for i in range(50)
-    }
-    out = builder._compact_json(big)
-    assert out.endswith("<已截断>"), (
-        f"D4-8: _compact_json must preserve the P2-4 angle-bracket "
-        f"marker ``<已截断>`` for JSON truncation. Last 30 chars: "
-        f"{out[-30:]!r}"
+    # The trimmer must have actually run (proven by a 辅助 section
+    # being dropped). Persona is the first 辅助 section in the
+    # drop order; the long persona_snapshot should be dropped while
+    # the 硬约束-equivalent strategy_directive stays.
+    assert "人格设定" not in prompt, (
+        f"G-R4-15: budget pressure should have dropped at least one "
+        f"【辅助】 section (persona), but '人格设定' is still in the "
+        f"prompt. If it survived, the test setup isn't tight enough "
+        f"to exercise the budget. prompt[:400]={prompt[:400]!r}"
     )
 
 

@@ -951,6 +951,192 @@ def test_rag_failure_distinguishes_expected_vs_anomaly() -> None:
     ), "P2-G11: anomaly path must not silently debug-log"
 
 
+# ---------------------------------------------------------------------------
+# G-R4-07: situation must not contain a ``phase=`` key that collides with
+# the query's own ``phase`` field. The query's phase is the task phase
+# (speech / night_action / wolf_discussion); the situation is supposed
+# to carry the *game* phase (day / night) under a separate, unambiguous
+# key. The previous ``phase=day`` substring in the situation blob was
+# indistinguishable from a task-phase token at retriever-tokenize time.
+# ---------------------------------------------------------------------------
+
+
+def test_rag_situation_no_duplicate_phase() -> None:
+    """G-R4-07: the situation blob and the RAGQuery must not carry the
+    same ``phase=`` key with different semantics. The situation must
+    use a separate key (e.g. ``game_phase=day``) for the game phase,
+    leaving ``query.phase`` as the sole task-phase token.
+    """
+    from werewolf_agent.agents.schemas import (
+        ActionType,
+        AgentContext,
+        TaskType,
+    )
+
+    class _RecordingService:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+            self.calls.append(query)
+            return []
+
+        def hits_to_prompt_lines(self, hits, max_items: int = 3):
+            return []
+
+    fake = _RecordingService()
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="seer",
+        legal_actions=[ActionType.VOTE, ActionType.SPEECH],
+    )
+    _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    situation = fake.calls[0].situation
+    # The situation must NOT contain a bare ``phase=`` token that
+    # collides with the query's task-phase key. Tokenize the same
+    # way the retriever would and confirm no such key exists.
+    keys = {chunk.split("=", 1)[0] for chunk in situation.split() if "=" in chunk}
+    assert "phase" not in keys, (
+        f"G-R4-07: situation still carries ``phase=`` key that collides "
+        f"with query.phase; situation={situation!r}"
+    )
+    # The game phase is preserved under a dedicated, unambiguous key.
+    assert "game_phase" in keys, (
+        f"G-R4-07: situation must carry ``game_phase=`` for the game "
+        f"phase; situation={situation!r}"
+    )
+    # And the value side must still report day.
+    assert "game_phase=day" in situation, (
+        f"G-R4-07: game_phase=day must be present; got {situation!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# G-R4-08: LAST_WORDS must be in the RAG-skip set. The task type falls
+# through ``_rag_phase_for_task`` to the raw game phase (``day``/``night``)
+# which never matches any seed entry's ``phase`` value (seeds are tagged
+# ``speech``/``night_action``/``night_discussion``/etc.). Retrieval runs
+# for nothing, burning an embed/rerank call on a task type where the
+# strategy hints are also of limited use (last-words are an end-of-life
+# speech, not a decision point).
+# ---------------------------------------------------------------------------
+
+
+def test_last_words_rag_skipped() -> None:
+    """G-R4-08: LAST_WORDS is a deathbed speech — strategy hints don't
+    apply and the raw phase token (day/night) never matches any seed
+    entry's phase, so retrieval should be skipped entirely."""
+    from werewolf_agent.agents.schemas import TaskType
+
+    fake = _FakeRAGService()
+    ctx = _make_ctx(TaskType.LAST_WORDS, own_role="villager", phase="day")
+    out = _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    # RAG service must NOT be called for LAST_WORDS.
+    assert fake.calls == [], (
+        f"G-R4-08: LAST_WORDS must skip RAG retrieval; got calls {fake.calls!r}"
+    )
+    # Context returned unchanged.
+    assert out.rag_hints == ctx.rag_hints
+
+
+# ---------------------------------------------------------------------------
+# G-R4-14: legal_actions must be normalized to RAG tags before the
+# situation is built. The previous format
+# ``actions=['wolf_kill', 'sheriff_vote']`` had a Python list repr that
+# never matched any seed entry's tag set (seeds use shape like
+# ``[werewolf, deep_hook, deception]``). The retriever's tag-overlap
+# scoring therefore never had a chance to surface a wolf_kill case for
+# a wolf_kill query.
+#
+# Fix: maintain a ``legal_action → tag`` mapping table. Tags use the
+# same shape as the seed entries so the retriever's tag-overlap
+# scoring picks up the legal-action signal.
+# ---------------------------------------------------------------------------
+
+
+def test_rag_situation_actions_normalized_to_tags() -> None:
+    """G-R4-14: the situation's ``actions=`` value must be a
+    space-joined string of normalized tags, NOT a Python list repr
+    of raw ``ActionType.value`` strings.
+    """
+    from werewolf_agent.agents.schemas import (
+        ActionType,
+        AgentContext,
+        TaskType,
+    )
+
+    class _RecordingService:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+            self.calls.append(query)
+            return []
+
+        def hits_to_prompt_lines(self, hits, max_items: int = 3):
+            return []
+
+    fake = _RecordingService()
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        own_role="werewolf",
+        legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL, ActionType.SPEECH],
+    )
+    _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    situation = fake.calls[0].situation
+    # The action value list-repr (e.g. ``['wolf_kill']``) must NOT
+    # appear in the situation. Tag-overlap scoring cannot recover
+    # from a Python list repr.
+    assert "['wolf_kill" not in situation, (
+        f"G-R4-14: situation still carries raw action list repr; "
+        f"got situation={situation!r}"
+    )
+    # The normalized tag substring must be present. The exact tag
+    # shape is implementation-defined (it lives in a mapping table);
+    # the contract is that the action value ``wolf_kill`` is mapped
+    # to a tag token that the seed entries would actually use.
+    actions_part = situation.split("actions=", 1)[1] if "actions=" in situation else ""
+    tokens = actions_part.split()
+    # The first three tokens should include the werewolf-side tags.
+    # At least one of the legal actions must contribute a token
+    # that's recognizable as a RAG tag (matches the seed entry tag
+    # shape — e.g. ``werewolf`` or ``wolf_kill``).
+    recognized_tags = {"werewolf", "wolf_kill", "wolf_no_kill", "speech",
+                       "witch_save", "witch_poison", "seer_check", "hunter_shot",
+                       "sheriff_vote", "sheriff_register", "hybrid_master"}
+    matched = [t.strip("[],'\"") for t in tokens if t.strip("[],'\"") in recognized_tags]
+    assert matched, (
+        f"G-R4-14: actions part of situation should contain normalized "
+        f"tags; got tokens={tokens!r}, expected at least one of "
+        f"{recognized_tags!r}. Situation: {situation!r}"
+    )
+    # And the raw 'wolf_kill' string from the previous code path must
+    # NOT survive as a standalone list element token in the situation.
+    # (It might still appear inside a tag mapping, but it must not be
+    # inside a ``[`` / ``]`` pair with quote chars around it.)
+    assert "['wolf_kill']" not in situation
+    assert "['wolf_kill'," not in situation
+
+
 # P1-M12: reflection hint diversity.
 #
 # `_reflection_memory_hints` previously took the top 5 reflections with

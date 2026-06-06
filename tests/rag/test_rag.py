@@ -696,6 +696,95 @@ class TestRetriever:
             assert hit.display_annotation  # Non-empty
             assert "|" in hit.display_annotation  # Contains source|quality format
 
+    def test_reranker_input_includes_title_and_key_decisions(self) -> None:
+        """G-R4-04: the reranker's input contract is ``text_key`` —
+        it scores each document on the field named by that key. The
+        retriever previously passed ``text_key="summary"`` and only
+        built a ``"summary"`` field per document, so the reranker
+        scored on the summary alone. The title and key_decisions
+        (often the most informative parts of a RAG case — e.g.
+        ``"金水是拉票策略，不是对被验者表现的认可"``) were dropped on
+        the floor.
+
+        After the fix the reranker input must include the title and
+        the key_decisions joined into the text the model sees, with
+        a documented 1500-char cap to bound the reranker's input
+        budget.
+        """
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        title = "金水的战略意义是拉票"
+        key_dec = [
+            "金水是拉票策略，不是对被验者表现的认可",
+            "悍跳狼倾向给中立玩家发金水来拉票",
+        ]
+        entry = RAGEntry(
+            entry_id="rerank_test",
+            title=title,
+            summary="summary text that is otherwise unique",
+            key_decisions=key_dec,
+            metadata=CaseMetadata(
+                case_type=CaseType.ROLE_STRATEGY,
+                quality_grade=QualityGrade.EXPERT_REVIEW,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="seer",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+                tags=["seer"],
+            ),
+        )
+
+        seen_texts: list[str] = []
+
+        class _CapturingReranker:
+            def rerank_hits(self, *, query, documents, text_key="text", top_n=None):
+                # Capture exactly the text the reranker would see
+                # for the target document — the ``text_key`` field
+                # is the model's input.
+                for d in documents:
+                    seen_texts.append(str(d.get(text_key, "")))
+                return [
+                    {
+                        **d,
+                        "rerank_score": 0.5,
+                    }
+                    for d in documents[: (top_n or len(documents))]
+                ]
+
+        retriever = StrategyRetriever([entry], reranker=_CapturingReranker())
+        hits = retriever.retrieve(
+            RAGQuery(role="seer", phase="speech", max_results=1)
+        )
+        assert hits
+        # The reranker must have been called with at least one
+        # document; the text it scored on must include the title
+        # and the key_decisions, not just the summary.
+        assert seen_texts, "G-R4-04: reranker was not invoked"
+        merged = "\n".join(seen_texts)
+        assert title in merged, (
+            f"G-R4-04: reranker input is missing the title; "
+            f"texts={seen_texts!r}"
+        )
+        # The summary is a substring of itself, so we need a
+        # non-summary marker to verify key_decisions are present.
+        assert "金水是拉票策略，不是对被验者表现的认可" in merged, (
+            f"G-R4-04: reranker input is missing the key_decisions; "
+            f"texts={seen_texts!r}"
+        )
+
     def test_display_annotation_human_readable(self) -> None:
         """P1-G8: display_annotation uses human-readable Chinese /
         English labels, not the raw enum values like
@@ -989,6 +1078,105 @@ class TestRetriever:
             f"P1-G4 contract: key_decisions cap raised to 5; got {len(hit.key_decisions)}"
         )
         assert hit.key_decisions == decisions[:5]
+
+
+# ===================================================================
+# G-R4-11: role_perspective='any' must get the same +0.05 bonus as
+# 'general' in ``_score`` (rule-based retriever).
+#
+# Pre-fix the rule-based score only knew about the ``'general'``
+# wildcard — a ``role_perspective='any'`` seed (used by the
+# ``基础常识`` universal-knowledge family: 金水 / 银水 / 对跳判断 /
+# 警徽票权重) was demoted to 0 bonus and lost every race against
+# role-specific entries regardless of relevance. The metadata
+# filter in ``_vector_candidates`` was fixed in G-R4-02 to admit
+# ``'any'``; the rule-score side was patched in the same commit
+# to give it the ``+0.05`` wildcard bonus. This test locks the
+# contract: ``_score`` must treat ``'any'`` as a wildcard, not as
+# a strict role mismatch.
+# ===================================================================
+
+
+class TestRoleAnyMatchesGeneral:
+    """G-R4-11: ``_score`` must give ``role_perspective='any'`` the
+    same +0.05 wildcard bonus it gives ``'general'``. ``_vector_candidates``
+    already admits ``'any'`` as a universal marker (G-R4-02) — the
+    rule-based ``_score`` must match that semantic so the two paths
+    agree."""
+
+    def test_score_role_any_matches_general(self) -> None:
+        """G-R4-11: build two equivalent entries that differ only in
+        ``role_perspective`` (``'general'`` vs ``'any'``). Query with
+        a *non-matching* role (``witch``). Both must receive the
+        ``+0.05`` wildcard bonus, so the rule-based scores must be
+        equal.
+        """
+        from werewolf_agent.rag.retriever import StrategyRetriever
+        from werewolf_agent.rag.schemas import (
+            CaseMetadata,
+            CaseType,
+            QualityGrade,
+            RAGEntry,
+            RAGQuery,
+            ReviewStatus,
+            SourceMetadata,
+            SourceType,
+            VisibilityBoundary,
+        )
+
+        def _entry(role_p: str) -> RAGEntry:
+            return RAGEntry(
+                entry_id=f"g_r4_11_{role_p}",
+                title=f"G-R4-11 {role_p} case",
+                summary="G-R4-11 test summary",
+                key_decisions=["d1"],
+                metadata=CaseMetadata(
+                    case_type=CaseType.ROLE_STRATEGY,
+                    quality_grade=QualityGrade.COMMUNITY_CASE,
+                    review_status=ReviewStatus.APPROVED,
+                    reviewer="test",
+                    ruleset_id="pre_witch_hunter_idiot_mixed",
+                    player_count=12,
+                    phase="speech",
+                    role_perspective=role_p,
+                    visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                    source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
+                    tags=[role_p],
+                ),
+            )
+
+        general_entry = _entry("general")
+        any_entry = _entry("any")
+        retriever = StrategyRetriever([general_entry, any_entry])
+
+        # Query with a role that matches neither ``general`` nor
+        # ``any`` directly — this is the case where the wildcard
+        # bonus is the only role signal. Both entries must score
+        # identically because both carry the wildcard marker.
+        score_general = retriever._score(
+            general_entry, RAGQuery(role="witch", phase="speech"),
+        )
+        score_any = retriever._score(
+            any_entry, RAGQuery(role="witch", phase="speech"),
+        )
+        assert score_general == score_any, (
+            f"G-R4-11: 'any' must get the same wildcard bonus as "
+            f"'general'; got general={score_general}, any={score_any}. "
+            f"Difference is {abs(score_general - score_any)} — likely "
+            f"the 'any' branch is missing the +0.05 wildcard."
+        )
+        # And the bonus should be positive (i.e. the wildcard is
+        # actually being applied, not silently dropped to 0).
+        # Both scores must be > 0 for the role component. The
+        # rule-based score starts at 0 and adds the case_type
+        # priority (0.075) + quality (3/20 = 0.15) + role wildcard
+        # (0.05) = 0.275. The phase match (speech==speech) adds 0.1.
+        # Total ≈ 0.375 minimum. Use a loose lower bound.
+        assert score_any > 0.30, (
+            f"G-R4-11: 'any' role score too low ({score_any}); "
+            f"expected the +0.05 wildcard bonus on top of case_type "
+            f"and quality contributions."
+        )
 
 
 # ===================================================================
@@ -2141,8 +2329,12 @@ class TestRerankerNegativeScore:
         2000-char entry would show 800 chars in audit but the model
         would have scored on the full 2000.
 
-        Truncate to 800 chars before building the reranker input
-        dict so both paths agree on what the model sees.
+        G-R4-04: the reranker input is now built as
+        ``f"{title}\n{summary}\n{key_decisions}"[:1500]`` and
+        exposed under the ``"text"`` key (the title and
+        key_decisions used to be dropped). The truncation still
+        applies — both to the summary slice inside the union and
+        to the final ``[:1500]`` cap.
         """
         long_summary = "狼" * 2000  # 2000 Chinese characters
         entry = _make_entry(
@@ -2155,7 +2347,7 @@ class TestRerankerNegativeScore:
         captured: list[list[dict]] = []
 
         class _SpyReranker:
-            def rerank_hits(self, *, query, documents, text_key="summary", top_n=None):
+            def rerank_hits(self, *, query, documents, text_key="text", top_n=None):
                 # Copy the docs so later mutations don't change what we saw.
                 captured.append([dict(d) for d in documents])
                 out = []
@@ -2172,11 +2364,187 @@ class TestRerankerNegativeScore:
 
         assert captured, "N5: reranker must be called"
         docs = captured[0]
-        # The single document's summary must be truncated to 800 chars
-        # — the same cap ``_entry_to_hit`` enforces on the audit side.
+        # The single document's input union must respect the
+        # 1500-char cap and the summary slice inside the union
+        # must be the 800-char truncated version — same cap
+        # ``_entry_to_hit`` enforces on the audit side.
         for doc in docs:
-            assert len(doc["summary"]) == 800, (
-                f"N5: reranker must see 800-char truncated summary; "
-                f"got {len(doc['summary'])} chars"
+            text = doc.get("text", "")
+            assert len(text) <= 1500, (
+                f"N5/G-R4-04: reranker text must respect the "
+                f"1500-char cap; got {len(text)} chars"
             )
-            assert doc["summary"] == long_summary[:800]
+            # The truncated summary (800 chars) must be embedded
+            # in the union between the title and the
+            # key_decisions.
+            assert long_summary[:800] in text, (
+                f"N5: reranker text must contain the 800-char "
+                f"truncated summary; got text={text[:200]!r}..."
+            )
+
+
+# ---------------------------------------------------------------------------
+# G-R4-05 (P1): vector-best vs rule-only merge formula asymmetric
+# ---------------------------------------------------------------------------
+
+
+def test_rule_only_high_score_beats_weak_vector_hit() -> None:
+    """G-R4-05: ``_merged_score`` previously applied
+    ``(1 - w) * rule + w * vec`` to vector-hit entries but returned
+    the pure ``rule`` score (no ``(1 - w)`` factor) for rule-only
+    entries. The asymmetric denominator meant a rule-only entry
+    with a HIGH rule score could outrank a vector-hit with a
+    STRONG vector signal but a moderate rule score (the spec's
+    example: vec=1.0, rule=0.5 → merged 0.75, but rule-only with
+    rule=0.8 → 0.8). The vector-best was LOWER than the rule-best.
+
+    The contract we want is "the merge is monotonic in the best
+    signal we have". The simplest fix that matches the spec is
+    ``max(rule, vec)`` — the merged score is the strongest signal
+    the system can attest to. This test pins the contract at a
+    controlled rule_score, which the spec explicitly calls out
+    ("set rule_score=0.8, vec=0.2").
+    """
+    from werewolf_agent.rag.schemas import (
+        CaseMetadata,
+        CaseType,
+        QualityGrade,
+        RAGEntry,
+        ReviewStatus,
+        SourceMetadata,
+        SourceType,
+        VisibilityBoundary,
+    )
+
+    rule_only = RAGEntry(
+        entry_id="rule_only",
+        title="Rule-only entry",
+        summary="",
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.COMMUNITY_CASE,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="seer",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+            tags=["seer"],
+        ),
+    )
+    vector_hit = RAGEntry(
+        entry_id="vector_hit",
+        title="Vector-hit entry",
+        summary="",
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.COMMUNITY_CASE,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="seer",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+            tags=["seer"],
+        ),
+    )
+
+    class _FixedRuleRetriever(StrategyRetriever):
+        """``StrategyRetriever`` subclass that pins the rule-based
+        score to a fixed value. The bug is about the merge
+        formula, not the rule scorer — we want to feed specific
+        rule/vec values into ``_merged_score`` and assert the
+        formula, not chase a moving target through the rule
+        scoring code path.
+        """
+
+        def __init__(self, entries, *, rule_score, vector_scores):
+            super().__init__(entries, vector_scores=vector_scores)
+            self._fixed_rule_score = rule_score
+
+        def _score(self, entry, query):  # type: ignore[override]
+            return self._fixed_rule_score
+
+    # Spec scenario: rule_score=0.8 for the rule-only entry;
+    # the vector-hit gets rule_score=0.5 with vec=1.0 (the
+    # "strong vector, weak rule" case the bug describes).
+    retriever = _FixedRuleRetriever(
+        [rule_only, vector_hit],
+        rule_score=0.8,
+        vector_scores={"vector_hit": 1.0},
+    )
+    query = RAGQuery(role="seer", phase="speech", max_results=5)
+
+    # Inject a controlled rule score for the vector-hit by
+    # reaching into the merge directly. ``_merged_score``
+    # internally calls ``self._score(entry, query)``, so we
+    # need the retriever to return 0.5 for vector_hit and
+    # 0.8 for rule_only. A single fixed value won't cut it,
+    # so override per-entry:
+    score_per_entry: dict[str, float] = {
+        "rule_only": 0.8,
+        "vector_hit": 0.5,
+    }
+    original_score = type(retriever)._score
+
+    def _per_entry_score(self, entry, q):
+        return score_per_entry[entry.entry_id]
+
+    type(retriever)._score = _per_entry_score  # type: ignore[assignment]
+    try:
+        score_rule_only = retriever._merged_score(rule_only, query)
+        score_vector_hit = retriever._merged_score(vector_hit, query)
+    finally:
+        type(retriever)._score = original_score  # type: ignore[assignment]
+
+    # Spec contract: rule-only (rule=0.8) must outrank a
+    # vector-hit with rule=0.5 and vec=0.2. The spec's test
+    # wording is "set rule_score=0.8, vec=0.2" — that is the
+    # control values, and the expected behavior is rule-only
+    # at the top.
+    retriever_weak = _FixedRuleRetriever(
+        [rule_only, vector_hit],
+        rule_score=0.0,  # unused — overridden per-entry below
+        vector_scores={"vector_hit": 0.2},
+    )
+    score_per_entry_weak: dict[str, float] = {
+        "rule_only": 0.8,
+        "vector_hit": 0.8,  # same rule as rule-only, weak vector
+    }
+
+    def _per_entry_score_weak(self, entry, q):
+        return score_per_entry_weak[entry.entry_id]
+
+    type(retriever_weak)._score = _per_entry_score_weak  # type: ignore[assignment]
+    try:
+        score_rule_only_weak = retriever_weak._merged_score(rule_only, query)
+        score_vector_hit_weak = retriever_weak._merged_score(vector_hit, query)
+    finally:
+        type(retriever_weak)._score = original_score  # type: ignore[assignment]
+
+    # The spec's ``max(rule, vec)`` fix: rule-only (0.8) ranks
+    # no lower than the vector-hit (max(0.8, 0.2) = 0.8). With
+    # the buggy ``(1-w)*rule + w*vec`` formula the vector-hit
+    # scores 0.5*0.8 + 0.5*0.2 = 0.5 — rule-only wins
+    # (0.8 > 0.5). Both pass with ``>=``, so the strict ``>``
+    # is the discriminator: only the ``max`` fix ties them.
+    assert score_rule_only_weak >= score_vector_hit_weak, (
+        f"G-R4-05 spec: rule-only (rule=0.8) must not rank below "
+        f"a vector-hit with the same rule and vec=0.2; got "
+        f"rule_only={score_rule_only_weak!r} "
+        f"vector_hit={score_vector_hit_weak!r}"
+    )
+
+    # Bug-fix contract: a vector-hit with vec=1.0 must outrank
+    # a rule-only entry whose rule score is HIGHER (rule=0.8).
+    # Pre-fix the vector-hit scores 0.5*0.5+0.5*1.0=0.75 — LOWER
+    # than rule-only's 0.8. Post-fix max(0.5, 1.0)=1.0 — wins.
+    assert score_vector_hit > score_rule_only, (
+        f"G-R4-05: vector-hit (vec=1.0, rule=0.5) must outrank "
+        f"rule-only (rule=0.8); got rule_only={score_rule_only!r} "
+        f"vector_hit={score_vector_hit!r}"
+    )

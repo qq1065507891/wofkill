@@ -335,17 +335,34 @@ class StrategyRetriever:
             # scored on text the operator never saw in the audit
             # JSON. Truncating up front means the two paths agree on
             # what the model sees.
+            #
+            # G-R4-04: include the title and key_decisions in the
+            # text the reranker scores on. The reranker's input
+            # contract is ``text_key`` — it scores on whatever
+            # field is named by that key. Pre-fix we built a
+            # ``"summary"``-only field and dropped the title and
+            # key_decisions (often the most informative parts of
+            # a RAG case) on the floor. The new field is
+            # ``"text"`` and is built as
+            # ``f"{title}\n{summary}\n{key_decisions}"[:1500]``:
+            # the 1500-char cap keeps the reranker's input budget
+            # bounded and the union is exposed under a single
+            # key so the reranker doesn't need to know about the
+            # three sub-fields.
             reranked = self._reranker.rerank_hits(
                 query=query_text,
                 documents=[
                     {
                         "score": s,
                         "entry": e,
-                        "summary": e.summary[:800],
+                        "text": (
+                            f"{e.title}\n{e.summary[:800]}\n"
+                            f"{' '.join(e.key_decisions)}"
+                        )[:1500],
                     }
                     for s, e in rerank_pool
                 ],
-                text_key="summary",
+                text_key="text",
                 top_n=query.max_results,
             )
             results: list[RAGHit] = []
@@ -459,10 +476,23 @@ class StrategyRetriever:
         ) / 20.0
 
         # Role match (0.15)
+        # G-R4-02: ``role_perspective='any'`` is the universal-
+        # perspective marker used by the ``基础常识`` seed family
+        # (金水 / 银水 / 对跳判断 / 警徽票权重, etc.). It must
+        # receive the same wildcard bonus as ``'general'`` so
+        # universal-knowledge seeds rank at parity with the
+        # existing universal seeds rather than being demoted
+        # below role-specific entries regardless of relevance.
+        # G-R4-11: P2 polish — test now locks the contract that
+        # ``_score`` treats ``'any'`` as a wildcard (matches
+        # ``'general'``). The rule-based score had asymmetric
+        # behavior with ``_vector_candidates`` (which dropped
+        # ``'any'`` entirely) before G-R4-02; this regression
+        # test guards against future drift.
         if query.role and meta.role_perspective:
             if query.role == meta.role_perspective:
                 score += 0.15
-            elif meta.role_perspective == "general":
+            elif meta.role_perspective in ("general", "any"):
                 score += 0.05
 
         # Phase match (0.1)
@@ -492,18 +522,24 @@ class StrategyRetriever:
         """Combine the rule-based score with the optional vector score.
 
         R2: when no vector score is registered for the entry, returns
-        the pure rule-based score (legacy behavior). When a vector
-        score is registered, returns a convex combination weighted by
-        ``merge_vector_score``. The merge happens on already-clamped
-        [0,1] values; result is clamped to [0,1] for the RAGHit
-        relevance_score field.
+        the pure rule-based score (legacy behavior).
+
+        G-R4-05: when a vector score IS registered, return
+        ``max(rule, vec)`` rather than the asymmetric
+        ``(1 - w) * rule + w * vec``. The asymmetric denominator
+        had two failure modes: (1) a strong vector signal was
+        diluted by a moderate rule score (vec=1.0, rule=0.5
+        → merged 0.75, LOWER than a rule-only with rule=0.8);
+        (2) a weak vector signal unfairly suppressed a strong
+        rule-only match (vec=0.2, rule=0.8 → merged 0.5).
+        ``max(rule, vec)`` is the strongest signal the system
+        can attest to, which is the contract we want.
         """
         rule = self._score(entry, query)
         if not self._vector_scores or entry.entry_id not in self._vector_scores:
             return rule
-        w = self._merge_vector_score
         vec = max(0.0, min(1.0, float(self._vector_scores[entry.entry_id])))
-        merged = (1.0 - w) * rule + w * vec
+        merged = max(rule, vec)
         return max(0.0, min(1.0, merged))
 
     def _entry_to_hit(self, entry: RAGEntry, score: float, query: RAGQuery) -> RAGHit:
