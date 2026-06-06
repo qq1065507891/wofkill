@@ -976,6 +976,39 @@ def test_rag_situation_no_duplicate_phase() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# G-R4-08: LAST_WORDS must be in the RAG-skip set. The task type falls
+# through ``_rag_phase_for_task`` to the raw game phase (``day``/``night``)
+# which never matches any seed entry's ``phase`` value (seeds are tagged
+# ``speech``/``night_action``/``night_discussion``/etc.). Retrieval runs
+# for nothing, burning an embed/rerank call on a task type where the
+# strategy hints are also of limited use (last-words are an end-of-life
+# speech, not a decision point).
+# ---------------------------------------------------------------------------
+
+
+def test_last_words_rag_skipped() -> None:
+    """G-R4-08: LAST_WORDS is a deathbed speech — strategy hints don't
+    apply and the raw phase token (day/night) never matches any seed
+    entry's phase, so retrieval should be skipped entirely."""
+    from werewolf_agent.agents.schemas import TaskType
+
+    fake = _FakeRAGService()
+    ctx = _make_ctx(TaskType.LAST_WORDS, own_role="villager", phase="day")
+    out = _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    # RAG service must NOT be called for LAST_WORDS.
+    assert fake.calls == [], (
+        f"G-R4-08: LAST_WORDS must skip RAG retrieval; got calls {fake.calls!r}"
+    )
+    # Context returned unchanged.
+    assert out.rag_hints == ctx.rag_hints
+
+
 # P1-M12: reflection hint diversity.
 #
 # `_reflection_memory_hints` previously took the top 5 reflections with

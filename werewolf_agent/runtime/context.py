@@ -142,8 +142,16 @@ def _rag_phase_for_task(task_type: TaskType, phase: str) -> str:
 # context) and on JUDGE_* tasks (moderator persona; strategy hints
 # don't apply). Skipping them saves an unnecessary embed/rerank call
 # and keeps the live prompt free of irrelevant cases.
+#
+# G-R4-08: LAST_WORDS is a deathbed speech — strategy hints are not
+# actionable, and the task type falls through ``_rag_phase_for_task``
+# to the raw game phase (day/night), which never matches any seed
+# entry's ``phase`` value (seeds are tagged
+# ``speech``/``night_action``/``night_discussion``/etc.). Skipping
+# avoids a guaranteed-miss retrieval call.
 _RAG_SKIPPED_TASK_TYPES: frozenset[TaskType] = frozenset({
     TaskType.REFLECTION,
+    TaskType.LAST_WORDS,
     TaskType.JUDGE_PHASE,
     TaskType.JUDGE_DEATH,
     TaskType.JUDGE_VOTE_CALLING,
