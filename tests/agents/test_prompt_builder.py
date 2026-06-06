@@ -2820,7 +2820,12 @@ def test_persona_in_user_prompt_not_system():
         f"user_prompt[:500]={user_prompt[:500]!r}"
     )
     # Persona MUST NOT be in the system prompt.
-    assert "人格设定" not in system_prompt, (
+    # P3-2: the info_boundaries text now lists "人格设定" as one
+    # of the 11 user-prompt sections.  Use the persona section's
+    # section-header marker ("人格设定: " with colon) to avoid a
+    # substring collision — only the persona section uses this
+    # exact prefix; the info_boundaries list has it without colon.
+    assert "人格设定: " not in system_prompt, (
         "persona must NOT appear in system_prompt after P2-S10 "
         "(per s10 architecture, system_prompt holds stable sections only). "
         f"system_prompt={system_prompt!r}"
@@ -2848,8 +2853,13 @@ def test_persona_empty_snapshot_is_noop():
     builder = PlayerPromptBuilder(ctx)
     system_prompt = builder.build_system_prompt()
     user_prompt = builder.build_user_prompt(RetryInfo())
-    assert "人格设定" not in system_prompt
-    assert "人格设定" not in user_prompt
+    # P3-2: the info_boundaries text now lists "人格设定" as one of
+    # the 11 user-prompt sections.  Use the persona section's
+    # section header marker ("人格设定: " with colon) to avoid a
+    # substring collision — only the persona section uses this
+    # exact prefix.
+    assert "人格设定: " not in system_prompt
+    assert "人格设定: " not in user_prompt
 
 
 # ---------------------------------------------------------------------------

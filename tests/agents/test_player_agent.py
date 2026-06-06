@@ -2274,11 +2274,18 @@ def test_speech_quality_correction_hint_differs_from_error_message():
         assert retry is not None
         # The key regression check: correction_hint must be the SHORT
         # action-oriented hint, NOT the long enumeration.
+        # P3-3: correction_hint is the executable template with
+        # 1) 2) 3) numbered steps the LLM can mechanically follow.
+        # error_message keeps the long detail for the audit log.
         assert retry.correction_hint == (
-            "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"
+            "发言缺少以下必填字段: 发言不完整。需要表明你的身份立场。。"
+            "请基于公开记录重写发言，在 speech 字段中体现："
+            "1) 你的身份立场（至少引用一处公开事实）；"
+            "2) 攻击或防御的明确论点（PK 阶段必填）。"
+            "不要写「按公开信息判断」之类的占位文本。"
         ), (
-            f"speech_quality correction_hint must be the short action-"
-            f"oriented hint, got: {retry.correction_hint!r}"
+            f"P3-3: speech_quality correction_hint must be the executable "
+            f"1) 2) template; got: {retry.correction_hint!r}"
         )
         # error_message keeps the long detail
         assert "发言不完整" in retry.error_message, (
@@ -2323,11 +2330,21 @@ def test_vote_quality_correction_hint_differs_from_error_message():
         action, retry = agent.act(ctx)
     # Fallback should fire after 1 retry. retry object should be populated.
     assert retry is not None
+    # P3-3: correction_hint is the executable template with
+    # 1) 2) 3) 4) numbered steps.  error_message keeps the long
+    # detail for the audit log.
     assert retry.correction_hint == (
-        "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+        "投票理由缺少以下必填字段: 投票理由缺少具体逻辑依据。"
+        "请引用以下至少一种：查验结果、警徽流。。"
+        "请基于以下公开来源重写 vote reason："
+        "1) 预言家查杀声明（金水/查杀 + 报验人+夜数）；"
+        "2) 票型异常（谁跟谁、票型突变）；"
+        "3) 警徽流状态（撕徽/未撕）；"
+        "4) 公开记录里的具体发言引用。"
+        "不要写「综合分析」之类的占位文本。"
     ), (
-        f"vote_quality correction_hint must be the short action-oriented "
-        f"hint, got: {retry.correction_hint!r}"
+        f"P3-3: vote_quality correction_hint must be the executable "
+        f"1) 2) 3) 4) template; got: {retry.correction_hint!r}"
     )
     assert "投票理由缺少具体逻辑依据" in retry.error_message
 

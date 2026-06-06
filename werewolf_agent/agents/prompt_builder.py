@@ -235,15 +235,27 @@ class PlayerPromptBuilder:
         )
 
     def _build_information_boundaries(self) -> str:
+        # Phase 3 P3-2: list the 11 actual user-prompt sections that
+        # the LLM sees (per ``_SECTION_PRIORITIES``), not the 6 abstract
+        # categories the LLM was told about pre-fix.  When the section
+        # list is abstract, the LLM doesn't know which prompts map to
+        # which tier and falls back to treating all input as one big
+        # "background info" blob.  Listing concrete sections lets the
+        # LLM correctly distinguish "人格设定" (a hint) from
+        # "公开事实" (a record) from "私信" (private).
         return (
-            "【信息边界】你收到的信息分为：当前局公开事实、当前局私有信息、知识库提示、"
-            "跨局记忆、认知矩阵、技能分析结果、模型推测。"
-            "公开发言时，只有当前局公开事实可以称为“场上已知”或“公开记录”。"
-            "私有信息可以用于决策，但不能伪装成公开事实。"
+            "【信息边界】你收到 11 类 user-prompt 段（每段前有【硬约束/辅助/参考/可选】"
+            "或【场上记录/策略指令】标签）："
+            "人格设定、阶段上下文、我的判断、当前局公开事实、可见世界状态、"
+            "本局·私有记忆、关键事件、知识库提示、跨局反思记忆、长期能力画像、我的认知矩阵、"
+            "策略指令（含技能战术建议）、近期发言、阶段输出契约。"
+            "公开发言时，只有『当前局公开事实』『可见世界状态』『近期发言』『关键事件』"
+            "可以称为「场上已知」或「公开记录」。"
+            "私信可以用于决策，但不能伪装成公开事实。"
             "知识库提示只是玩法经验，不是当前局发生的事。"
             "跨局记忆只是历史经验，不代表本局任何玩家真实身份。"
             "认知矩阵只是你自己的判断倾向，不是事实。"
-            "技能分析只是辅助推理，不改变规则、身份或公开记录。"
+            "技能战术建议只是辅助推理，不改变规则、身份或公开记录。"
             "不确定内容必须表达为推测。"
         )
 

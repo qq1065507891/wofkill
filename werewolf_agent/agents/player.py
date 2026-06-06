@@ -547,13 +547,22 @@ class PlayerAgent:
                 # action-oriented line so the LLM knows what KIND of action
                 # to take. The detailed enumeration is too noisy to copy
                 # back into the LLM as a "do this" instruction.
+                # P3-3: executable hint — g_3528592081 trace showed the
+                # LLM was copying the meta-description ("发言必须包含:")
+                # directly into the speech field instead of following it.
+                # The new hint lists the SPECIFIC fields the speech
+                # must mention and gives a concrete anti-pattern.
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="speech_quality",
                     error_message=speech_quality_err,
                     correction_hint=(
-                        "发言必须包含:角色身份/攻击或防御论点 (PK 阶段)"
+                        f"发言缺少以下必填字段: {speech_quality_err}。"
+                        f"请基于公开记录重写发言，在 speech 字段中体现："
+                        f"1) 你的身份立场（至少引用一处公开事实）；"
+                        f"2) 攻击或防御的明确论点（PK 阶段必填）。"
+                        f"不要写「按公开信息判断」之类的占位文本。"
                     ),
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
@@ -564,16 +573,24 @@ class PlayerAgent:
                 continue
             vote_quality_err = self._vote_quality_error(context, action)
             if vote_quality_err:
-                # P1-S6 (residual): see note above. Short action-oriented
-                # hint so the LLM knows the categories of evidence to cite
-                # in the vote reason field.
+                # P3-3: executable hint — g_3528592081 trace showed the
+                # LLM was copying the meta-description into the vote
+                # reason field.  The new hint names SPECIFIC public
+                # evidence sources the vote must cite and gives an
+                # anti-pattern.
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code="vote_quality",
                     error_message=vote_quality_err,
                     correction_hint=(
-                        "投票理由必须基于:预言家查杀/票型/警徽流/发言分析 (公开来源)"
+                        f"投票理由缺少以下必填字段: {vote_quality_err}。"
+                        f"请基于以下公开来源重写 vote reason："
+                        f"1) 预言家查杀声明（金水/查杀 + 报验人+夜数）；"
+                        f"2) 票型异常（谁跟谁、票型突变）；"
+                        f"3) 警徽流状态（撕徽/未撕）；"
+                        f"4) 公开记录里的具体发言引用。"
+                        f"不要写「综合分析」之类的占位文本。"
                     ),
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(

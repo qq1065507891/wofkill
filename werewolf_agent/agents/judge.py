@@ -422,7 +422,18 @@ class JudgeAgent:
                     f"请用简洁的中文宣布结果。只输出宣布台词，不要输出其他内容。"
                 )
             else:
-                prompt = f"你是狼人杀游戏的法官。{label}，投票结束。请用简洁的中文宣布。"
+                # P3-4: the pre-fix else-branch prompt was empty of any
+                # context (just "投票结束") so the LLM had to hallucinate
+                # what the result was.  Now we forward ``reason`` and
+                # ``tied`` to the LLM so it can announce the correct
+                # outcome (no-exile / generic-completion / custom).
+                tied_str = f"平票玩家: {'、'.join(tied)}。" if tied else ""
+                reason_str = f"（原因: {reason or '投票已结束'}）" if reason else "（原因: 投票已结束）"
+                prompt = (
+                    f"你是狼人杀游戏的法官。{label}，投票结束。"
+                    f"{reason_str}{tied_str}\n"
+                    f"请用简洁的中文宣布结果。只输出宣布台词，不要输出其他内容。"
+                )
             prompt, system_prompt = self._persona_inject(prompt, "judge_exile")
             # Phase 2 P2-2: see comment in ``broadcast_vote_calling``
             result = self.model_router.generate(

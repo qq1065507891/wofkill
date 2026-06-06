@@ -897,8 +897,18 @@ def build_agent_context(
     if player is None:
         return AgentContext(agent_id=player_id, task_type=task_type)
 
-    # Build simplified visible state
-    visible: dict[str, Any] = build_visible_player_state(gs)
+    # P3-1: pass role+player_id so ``build_visible_player_state`` does
+    # the role-specific injection (wolf_teammates / check_results /
+    # antidote_available / master_id) instead of inlining here.  The
+    # function now has a whitelist projection that strips any
+    # accidentally-added private key — a defense-in-depth improvement
+    # over the previous inline approach.
+    visible: dict[str, Any] = build_visible_player_state(
+        gs,
+        role=player.role if player else None,
+        player_id=player_id,
+        wolf_team_plan=wolf_team_plan,
+    )
     # MEM-NEW-8: build_private_memory now returns a tuple
     # ``(memory, caveat)`` — the caveat is no longer a meta key in
     # the memory dict, so no ``pop()`` is needed. The schema is
@@ -909,46 +919,44 @@ def build_agent_context(
         visible["private_memory"] = private_memory
     private_memory_hints = private_memory or {}
 
-    # Role-specific private info
+    # P3-1: the static role-specific private fields (wolf_teammates /
+    # check_results / antidote_available / poison_available / master_id)
+    # are now injected inside ``build_visible_player_state(role=...)``
+    # above, with a whitelist projection.  The inline role branches
+    # that used to live here have been deleted — see the
+    # defense-in-depth whitelist in ``visible_state.py``.
+    #
+    # The strategy_directive still needs role-specific entries that
+    # carry imperative text (witch poison deterrent, etc.).  These
+    # are NOT private state for the LLM; they are prompt-side
+    # behavioral guidance.  Keep the witch poison_deterrent
+    # branch here.
     strategy_directive: dict[str, Any] = {}
-    if player.role == "werewolf":
-        visible["wolf_teammates"] = [
-            pid for pid, p in gs.players.items()
-            if p.alive and p.role == "werewolf" and pid != player_id
-        ]
-        if wolf_team_plan:
-            visible["wolf_team_plan"] = wolf_team_plan
-    elif player.role == "seer":
-        # 预言家可见自己的验人结果（seer_check 不含 seer_id，所有结果均属预言家）
-        check_results = []
-        for e in gs.events:
-            if e.type == "seer_check":
-                check_results.append({
-                    "target_id": e.payload["target_id"],
-                    "alignment": e.payload["alignment"],
-                    "night_number": e.payload["night_number"],
-                })
-        visible["check_results"] = check_results
-    elif player.role == "witch":
-        visible["antidote_available"] = not gs.antidote_used
-        visible["poison_available"] = not gs.poison_used
-        if not gs.poison_used and gs.phase == "day":
-            alive = sum(1 for p in gs.players.values() if p.alive)
-            if alive <= 8:
-                strategy_directive["witch_poison_deterrent"] = (
-                    "你的毒药还未使用。如果场上有人持续踩你、试图把你放逐出局，"
-                    "你可以在发言中暗示自己有底牌——'我手里还有东西没用，不要太冲动'。"
-                    "狼人听到这种暗示可能会退缩。但不要明报身份。"
-                )
-        if wolf_kill_target_id:
-            visible["wolf_kill_target"] = wolf_kill_target_id
-        # Poison pressure targets from public state
-        if not gs.poison_used:
-            pressure_targets = _build_witch_pressure_targets(gs)
-            if pressure_targets:
-                visible["poison_pressure_targets"] = pressure_targets
-    elif player.role == "hybrid" and gs.hybrid_master_id:
-        visible["master_id"] = gs.hybrid_master_id
+    if (
+        player.role == "witch"
+        and not gs.poison_used
+        and gs.phase == "day"
+    ):
+        alive = sum(1 for p in gs.players.values() if p.alive)
+        if alive <= 8:
+            strategy_directive["witch_poison_deterrent"] = (
+                "你的毒药还未使用。如果场上有人持续踩你、试图把你放逐出局，"
+                "你可以在发言中暗示自己有底牌——'我手里还有东西没用，不要太冲动'。"
+                "狼人听到这种暗示可能会退缩。但不要明报身份。"
+            )
+    # Per-night transient fields (still inline — they're not static
+    # role state, they depend on a specific GameState.event payload
+    # that context.py has access to via wolf_kill_target_id).  These
+    # are private to the witch only and bypass the public-fields
+    # whitelist in ``build_visible_player_state``; if a future change
+    # wants to surface them through the slim path, the whitelist
+    # there should be updated.
+    if player.role == "witch" and wolf_kill_target_id:
+        visible["wolf_kill_target"] = wolf_kill_target_id
+    if player.role == "witch" and not gs.poison_used:
+        pressure_targets = _build_witch_pressure_targets(gs)
+        if pressure_targets:
+            visible["poison_pressure_targets"] = pressure_targets
 
     # Build recent transcript: speeches + votes (up to 12 items for pattern analysis)
     transcript: list[dict[str, Any]] = []
