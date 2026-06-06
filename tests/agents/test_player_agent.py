@@ -55,6 +55,14 @@ class _JsonProvider:
         return "json_provider"
 
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        # D4-4 follow-up: production providers set text_fallback_used
+        # when they return text without a tool call on a model that
+        # allows text fallback. Mirror that so the agent's missing_tool_call
+        # gate (which uses this flag) behaves the same in tests and prod.
+        # Without this, real-config test setups (allow_text_tool_fallback=True)
+        # would enter the missing_tool_call branch on every call and never
+        # parse the text — see test_full_pipeline_persona_model_agent.
+        text_fallback_used = bool(self._response and not tool_choice)
         return GenerateResult(
             text=self._response,
             provider=self.name,
@@ -62,6 +70,7 @@ class _JsonProvider:
             tool_call_required=bool(tool_choice),
             tool_call_received=bool(tool_choice),
             tool_call_name=(tool_choice or {}).get("name", ""),
+            text_fallback_used=text_fallback_used,
             usage=UsageRecord(
                 agent_id="test", task_type="vote",
                 provider=self.name, model=config.model,
