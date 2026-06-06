@@ -835,7 +835,14 @@ def agent_day_speech(
         )
         strategy_directive.update(wolf_parts)
     elif player_role == "seer":
-        seer_speech_parts = _build_seer_day_speech_directive(gs, speaker_id)
+        # P0-G3223805846-3: pass the day's speech order so the seer directive
+        # can enforce the "jump immediately when speaking late" rule.  The
+        # order lives on RuntimeState (populated by free_discussion); fall
+        # back to None when not yet materialised so the directive still
+        # works in unit tests / early-day planning contexts.
+        seer_speech_parts = _build_seer_day_speech_directive(
+            gs, speaker_id, speech_order=state.get("speech_order"),
+        )
         strategy_directive.update(seer_speech_parts)
     elif player_role == "hunter":
         strategy_directive["hunter_speech_directive"] = _build_hunter_day_speech_directive(gs, speaker_id)

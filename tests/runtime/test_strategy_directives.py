@@ -2516,3 +2516,54 @@ class TestWolfDirectiveNoLeakKill:
         full = " ".join(str(v) for v in d.values())
         assert "真实刀口" in full, "assembled wolf directive missing no-leak rule"
         assert "模糊话术" in full, "assembled wolf directive missing vague-phrasing guidance"
+
+
+class TestSeerDirectiveLatePosition:
+    """P0-G3223805846-3: 预言家排到发言顺序后段（≥ 50%）时，必须在第 1 句就亮身份 + 报查杀。"""
+
+    def test_late_position_seer_has_jump_immediately_rule(self):
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        # p01 sits at index 10 of 12 (>= 50% boundary), i.e. position 11/12
+        speech_order = ["p08", "p11", "p02", "p12", "p06", "p04", "p10",
+                        "p05", "p07", "p03", "p01", "p09"]
+        gs = GameState(players=alive, day_number=1, night_number=1)
+        d = build_seer_directive(gs, "p01", speech_order=speech_order)
+        directive = d.get("seer_speech_directive", "")
+        assert "后段" in directive and "第 1 句" in directive, (
+            f"late-position seer missing jump-immediately rule: {directive!r}"
+        )
+
+    def test_early_position_seer_no_jump_immediately_rule(self):
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        # p01 is position 1/12 — clearly front of the queue
+        speech_order = ["p01", "p02", "p03", "p04", "p05", "p06",
+                        "p07", "p08", "p09", "p10", "p11", "p12"]
+        gs = GameState(players=alive, day_number=1, night_number=1)
+        d = build_seer_directive(gs, "p01", speech_order=speech_order)
+        directive = d.get("seer_speech_directive", "")
+        assert "后段" not in directive, (
+            f"early seer incorrectly tagged as late: {directive!r}"
+        )
+
+    def test_mid_position_seer_no_jump_immediately_rule(self):
+        """Exactly 50% boundary should NOT trigger the late rule (use >= 50% to be inclusive only on the late side).
+
+        With 12 players, position 6 (index 5) = 6/12 = 50% — must not trigger.
+        """
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        # p01 at index 5 = position 6/12, exactly the 50% boundary
+        speech_order = ["p02", "p03", "p04", "p05", "p06", "p01",
+                        "p07", "p08", "p09", "p10", "p11", "p12"]
+        gs = GameState(players=alive, day_number=1, night_number=1)
+        d = build_seer_directive(gs, "p01", speech_order=speech_order)
+        directive = d.get("seer_speech_directive", "")
+        # 6/12 == 0.5 exactly, so the rule pos >= total*0.5 means 5 >= 6 is False → no late rule
+        assert "后段" not in directive, (
+            f"boundary-position seer (6/12) incorrectly tagged as late: {directive!r}"
+        )
