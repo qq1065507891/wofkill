@@ -775,6 +775,15 @@ class PlayerPromptBuilder:
         and no priority signal — had to guess hard vs soft. Now keys are
         grouped into 【硬约束】 (MUST), 【建议】 (SHOULD), 【参考】
         (REFERENCE). Unknown keys fall through to 参考 for forward-compat.
+
+        NEW-R4-P1-1: ``skill_tactical_advice`` is a structured list of
+        ``[{skill, advice, confidence}, ...]`` (S-07 contract). Running
+        the whole section through ``_compact_json`` wraps it in a
+        ``{"skill_tactical_advice":[{...}, ...]}`` JSON envelope that
+        the LLM has to parse before reading the advice — wasted tokens
+        and a parse-failure surface. We render that key with a
+        dedicated human-readable bullet renderer:
+        ``- [skill_name/confidence] advice_text``.
         """
         ctx = self.context
         if not ctx.strategy_directive:
@@ -804,8 +813,58 @@ class PlayerPromptBuilder:
             section = grouped[header]
             if not section:
                 continue
-            parts.append(f"{header} {label}\n" + self._compact_json(section))
+            parts.append(
+                f"{header} {label}\n" + self._render_strategy_section(section)
+            )
         return "\n\n".join(parts)
+
+    def _render_strategy_section(self, section: dict[str, Any]) -> str:
+        """Render a single strategy_directive section.
+
+        NEW-R4-P1-1: if the section contains ``skill_tactical_advice``
+        (a structured list per S-07), use a dedicated bullet renderer
+        for that key and render the remaining keys via ``_compact_json``.
+        This avoids the raw JSON envelope the LLM would otherwise have
+        to parse before reading the advice.
+        """
+        advice = section.get("skill_tactical_advice")
+        if not advice or not isinstance(advice, list):
+            return self._compact_json(section)
+        # Render the advice as a human-readable bullet list. Other keys
+        # in the section still go through _compact_json — only the
+        # structured advice is humanized.
+        bullets = self._render_skill_tactical_advice(advice)
+        rest = {k: v for k, v in section.items() if k != "skill_tactical_advice"}
+        if not rest:
+            return bullets
+        return bullets + "\n" + self._compact_json(rest)
+
+    @staticmethod
+    def _render_skill_tactical_advice(advice: list[Any]) -> str:
+        """Render the S-07 ``skill_tactical_advice`` list as bullets.
+
+        Format: ``- [skill_name/confidence] advice_text`` (one per line).
+        Entries that are not dicts or that lack the expected keys are
+        rendered defensively via ``json.dumps`` so a single bad entry
+        doesn't break the whole list.
+
+        NEW-R4-P1-1: bypasses ``_compact_json`` so the LLM sees plain
+        text rather than a JSON envelope.
+        """
+        lines: list[str] = ["技能战术建议:"]
+        for entry in advice:
+            if not isinstance(entry, dict):
+                lines.append(f"- {json.dumps(entry, ensure_ascii=False)}")
+                continue
+            skill = entry.get("skill", "")
+            conf = entry.get("confidence", "")
+            text = entry.get("advice", "")
+            try:
+                conf_str = f"{float(conf):.2f}"
+            except (TypeError, ValueError):
+                conf_str = str(conf)
+            lines.append(f"- [{skill}/{conf_str}] {text}")
+        return "\n".join(lines)
 
     def _build_skill_analysis_hints(self) -> str:
         # NEW-S04-A: this method is dead code. The dual-render path

@@ -378,6 +378,73 @@ def test_strategy_directive_still_has_section_prefix():
 
 
 # ---------------------------------------------------------------------------
+# NEW-R4-P1-1: skill_tactical_advice must render as a human-readable list
+# (not a raw JSON envelope) once the value is a structured
+# [{skill, advice, confidence}, ...] list (S-07 contract).
+# ---------------------------------------------------------------------------
+
+
+def test_skill_tactical_advice_rendered_as_human_readable_list():
+    """The strategy_directive.skill_tactical_advice list must be rendered
+    as a human-readable bullet list, not as raw JSON.
+
+    Pre-fix: ``_build_strategy_directive`` ran the whole
+    ``strategy_directive`` dict through ``_compact_json`` and emitted
+    ``{"skill_tactical_advice":[{...}, ...]}`` as a JSON envelope. The
+    LLM had to parse ~200 chars of JSON to read the advice, wasting
+    10-20% of the directive budget and inviting parse errors on the
+    renderer side.
+
+    Post-fix: a dedicated renderer for the ``skill_tactical_advice`` key
+    bypasses ``_compact_json`` and emits one bullet per entry:
+    ``- [skill_name/confidence] advice_text``. This is the format the
+    LLM can read directly without an extra parse step.
+    """
+    ctx = _make_ctx_with_directive(
+        {
+            "skill_tactical_advice": [
+                {
+                    "skill": "push_vote",
+                    "advice": "归票建议: p05 发言逻辑矛盾，盘他",
+                    "confidence": 0.65,
+                },
+                {
+                    "skill": "bold_claim",
+                    "advice": "悍跳建议: 上警直接抢预言家",
+                    "confidence": 0.45,
+                },
+            ],
+        }
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    # The rendered bullet list must show up under 【参考】 and the
+    # first entry's `归票建议:` Chinese must be visible to the LLM
+    # (not hidden inside a JSON string).
+    ref_idx = prompt.find("【参考】")
+    assert ref_idx >= 0, "skill_tactical_advice lives in 【参考】 group"
+    ref_body = prompt[ref_idx:]
+    assert "- [" in ref_body, (
+        "skill_tactical_advice must be rendered as bullet list with "
+        "'- [' prefix (NEW-R4-P1-1); got ref_body:\n" + ref_body
+    )
+    assert "归票建议:" in ref_body, (
+        "skill_tactical_advice advice text must be visible to LLM "
+        "(NEW-R4-P1-1); got ref_body:\n" + ref_body
+    )
+
+    # Negative: the raw JSON envelope (the bug) must NOT appear.
+    # If we see `[{"skill":` in the prompt, the renderer is still
+    # handing the list to _compact_json and the LLM has to parse it.
+    assert '[{"skill":' not in ref_body, (
+        "skill_tactical_advice must NOT be rendered as raw JSON "
+        "envelope; got ref_body:\n" + ref_body
+    )
+    # The dict key "skill_tactical_advice" may still appear as a
+    # label, but the value must not be a JSON array of objects.
+
+
+# ---------------------------------------------------------------------------
 # P0-S6: retry hint reordering + error snippet inclusion
 # ---------------------------------------------------------------------------
 #
