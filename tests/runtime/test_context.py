@@ -1009,6 +1009,92 @@ def test_last_words_rag_skipped() -> None:
     assert out.rag_hints == ctx.rag_hints
 
 
+# ---------------------------------------------------------------------------
+# G-R4-14: legal_actions must be normalized to RAG tags before the
+# situation is built. The previous format
+# ``actions=['wolf_kill', 'sheriff_vote']`` had a Python list repr that
+# never matched any seed entry's tag set (seeds use shape like
+# ``[werewolf, deep_hook, deception]``). The retriever's tag-overlap
+# scoring therefore never had a chance to surface a wolf_kill case for
+# a wolf_kill query.
+#
+# Fix: maintain a ``legal_action → tag`` mapping table. Tags use the
+# same shape as the seed entries so the retriever's tag-overlap
+# scoring picks up the legal-action signal.
+# ---------------------------------------------------------------------------
+
+
+def test_rag_situation_actions_normalized_to_tags() -> None:
+    """G-R4-14: the situation's ``actions=`` value must be a
+    space-joined string of normalized tags, NOT a Python list repr
+    of raw ``ActionType.value`` strings.
+    """
+    from werewolf_agent.agents.schemas import (
+        ActionType,
+        AgentContext,
+        TaskType,
+    )
+
+    class _RecordingService:
+        def __init__(self) -> None:
+            self.calls: list[Any] = []
+
+        def retrieve_live_hints(self, query, *, game_id: str = "", player_id: str = ""):
+            self.calls.append(query)
+            return []
+
+        def hits_to_prompt_lines(self, hits, max_items: int = 3):
+            return []
+
+    fake = _RecordingService()
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        own_role="werewolf",
+        legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL, ActionType.SPEECH],
+    )
+    _inject_seed_rag_hints(
+        ctx,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        rag_service=fake,
+        game_id="g_test",
+    )
+    situation = fake.calls[0].situation
+    # The action value list-repr (e.g. ``['wolf_kill']``) must NOT
+    # appear in the situation. Tag-overlap scoring cannot recover
+    # from a Python list repr.
+    assert "['wolf_kill" not in situation, (
+        f"G-R4-14: situation still carries raw action list repr; "
+        f"got situation={situation!r}"
+    )
+    # The normalized tag substring must be present. The exact tag
+    # shape is implementation-defined (it lives in a mapping table);
+    # the contract is that the action value ``wolf_kill`` is mapped
+    # to a tag token that the seed entries would actually use.
+    actions_part = situation.split("actions=", 1)[1] if "actions=" in situation else ""
+    tokens = actions_part.split()
+    # The first three tokens should include the werewolf-side tags.
+    # At least one of the legal actions must contribute a token
+    # that's recognizable as a RAG tag (matches the seed entry tag
+    # shape — e.g. ``werewolf`` or ``wolf_kill``).
+    recognized_tags = {"werewolf", "wolf_kill", "wolf_no_kill", "speech",
+                       "witch_save", "witch_poison", "seer_check", "hunter_shot",
+                       "sheriff_vote", "sheriff_register", "hybrid_master"}
+    matched = [t.strip("[],'\"") for t in tokens if t.strip("[],'\"") in recognized_tags]
+    assert matched, (
+        f"G-R4-14: actions part of situation should contain normalized "
+        f"tags; got tokens={tokens!r}, expected at least one of "
+        f"{recognized_tags!r}. Situation: {situation!r}"
+    )
+    # And the raw 'wolf_kill' string from the previous code path must
+    # NOT survive as a standalone list element token in the situation.
+    # (It might still appear inside a tag mapping, but it must not be
+    # inside a ``[`` / ``]`` pair with quote chars around it.)
+    assert "['wolf_kill']" not in situation
+    assert "['wolf_kill'," not in situation
+
+
 # P1-M12: reflection hint diversity.
 #
 # `_reflection_memory_hints` previously took the top 5 reflections with
