@@ -7,7 +7,26 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - Current phase: **All 3 Prompt-Audit Phases MERGED to master** — 2026-06-06
 - Active task: Awaiting decision on push / PR / further work
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-06
+- Last updated: 2026-06-07
+
+### fix10 A2 follow-up (g_3223805846) — 2026-06-07
+
+Branch: `fix10-prompt-g3223805846` (worktree `.worktrees/fix10-prompt`).
+
+Code-quality follow-up to commit `636d5db` (A2 of the post-review
+issues). 4 issues, 1 commit, 0 behavior change.
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| A2-1 | Drop dead "如果列表为空" sentence from wolf live-seer-claimants block (unreachable behind `if claimants:` guard) | `werewolf_agent/runtime/directives/wolf.py:86-91` | `621c438` |
+| A2-2 | Move `_public_seer_claimants` import from module level into `build_wolf_directive` body (consistent with `villager.py`/`seer.py`) | `werewolf_agent/runtime/directives/wolf.py:8-10, 71-75` | `621c438` |
+| A2-3 | Tighten test positive-guard from `or` (loose) to exact phrase `"已公开跳预言家"` | `tests/runtime/test_wolf_flow.py:571-599` | `621c438` |
+| A2-4 | Replace nested `if` over split lines with direct `d["wolf_live_seer_claimants"]` assertion | `tests/runtime/test_wolf_flow.py:593-599` | `621c438` |
+
+**Test results** (final, 2026-06-07):
+- `pytest tests/runtime/test_wolf_flow.py::TestWolfDirectiveLiveSeerClaimants -v` → **1 passed**
+- `pytest tests/runtime/test_wolf_flow.py tests/runtime/test_strategy_directives.py` → **98 passed** (74 + 24, 0 failed, 9.4s)
+- No regression across the affected modules.
 
 ### Master history (last 8 commits)
 
