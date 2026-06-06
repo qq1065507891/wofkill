@@ -2567,3 +2567,15 @@ class TestSeerDirectiveLatePosition:
         assert "后段" not in directive, (
             f"boundary-position seer (6/12) incorrectly tagged as late: {directive!r}"
         )
+
+
+class TestWolfFakeSeerConsistency:
+    """P0-G3223805846-4: 狼 fake_seer 启用时各角色 prompt 必须有话术一致条款。"""
+
+    def test_all_wolf_roles_have_consistency_clause(self):
+        from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
+        for role in ("fake_seer", "pusher", "hooker", "deep_cover", "unassigned"):
+            text = _WOLF_ROLE_STRATEGY.get(role, "")
+            assert "话术一致" in text or "保持一致" in text or "对跳" in text, (
+                f"role {role} missing fake-seer consistency clause: {text!r}"
+            )
