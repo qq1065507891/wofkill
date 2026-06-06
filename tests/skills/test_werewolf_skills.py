@@ -881,6 +881,119 @@ def test_find_power_skips_dead_players() -> None:
 
 
 # ---------------------------------------------------------------------------
+# NEW-R4-P1-2: review_correction_handler must branch on role.
+# ---------------------------------------------------------------------------
+
+
+def test_review_correction_handler_wolf_receives_wolf_advice():
+    """NEW-R4-P1-2: review_correction_handler must NOT give wolves the
+    good-side vote-accuracy review ("未命中狼人，需要反思站边").
+
+    For a werewolf player, ``my_votes`` is a list of day-vote targets.
+    Cross-referencing those targets against ``wolf_ids`` is almost
+    always 0 — wolves are SUPPOSED to not vote out other wolves, that's
+    their team-coordination goal. Calling that a "miss" inverts the
+    wolf team's actual objective and confuses the LLM with
+    goal-inverted feedback.
+
+    Post-fix: branch on ``inp.role == "werewolf"`` and emit wolf-side
+    advice focused on 悍跳 / night kill / teammate vote patterns
+    instead. The good-side vote-accuracy branch remains for
+    non-werewolf roles.
+    """
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12-player game. p01 = werewolf (subject of review).
+    # p02, p03, p04 = werewolf teammates. p05..p12 = good-side.
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    players["p01"] = PlayerState(id="p01", role="werewolf", alive=True)
+    players["p02"] = PlayerState(id="p02", role="werewolf", alive=True)
+    players["p03"] = PlayerState(id="p03", role="werewolf", alive=True)
+    players["p04"] = PlayerState(id="p04", role="werewolf", alive=True)
+    # Day 3 — well into the game, plenty of vote history to review.
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="day",
+        day_number=3,
+        night_number=2,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    # Exile a good player (p05) on Day 1 — wolf team won the vote.
+    ws.append(StructuredFact(
+        fact_type="vote", source_player="p01", target_player="p05",
+        day=1, value="voted_for",
+    ))
+    ws.append(StructuredFact(
+        fact_type="vote", source_player="p02", target_player="p05",
+        day=1, value="voted_for",
+    ))
+    ws.append(StructuredFact(
+        fact_type="vote", source_player="p06", target_player="p05",
+        day=1, value="voted_for",
+    ))
+    # Day 1 exile of p05
+    ws.append(StructuredFact(
+        fact_type="player_died", target_player="p05",
+        value="exile", day=1,
+    ))
+    # Day 2 exile of another good player (p07) — p01 voted with team.
+    ws.append(StructuredFact(
+        fact_type="vote", source_player="p01", target_player="p07",
+        day=2, value="voted_for",
+    ))
+    ws.append(StructuredFact(
+        fact_type="vote", source_player="p03", target_player="p07",
+        day=2, value="voted_for",
+    ))
+    ws.append(StructuredFact(
+        fact_type="player_died", target_player="p07",
+        value="exile", day=2,
+    ))
+    # Day 2 night kill of p08 — wolf team's first night kill
+    ws.append(StructuredFact(
+        fact_type="player_died", target_player="p08",
+        value="wolf_kill", day=2,
+    ))
+
+    inp = SkillInput(
+        role="werewolf", phase="day", day=3,
+        game_state=gs, world_state=ws, belief_state=None,
+        contradiction_alerts=[], player_id="p01",
+        task_type="review",
+    )
+    out = apply_skill(SkillName.REVIEW_CORRECTION, inp)
+    text = out.prompt_injectable
+
+    # NEW-R4-P1-2: wolf-side advice must NOT tell the wolf that its
+    # votes "missed" wolves — voting OUT wolves would be betraying
+    # the team.
+    assert "未命中狼人" not in text, (
+        f"NEW-R4-P1-2: review_correction must NOT tell a werewolf "
+        f"that their votes 'missed' wolves; got: {text!r}"
+    )
+    # The advice should reference wolf-specific concerns: 悍跳
+    # (bold-claim coordination), night kill chain, or teammate
+    # vote patterns. Any of these markers means the role branch fired.
+    wolf_markers = ("悍跳", "夜杀", "夜刀", "狼刀", "狼队", "队友",
+                    "归票", "放逐链", "队内", "狼同伴")
+    assert any(m in text for m in wolf_markers), (
+        f"NEW-R4-P1-2: review_correction for a werewolf should "
+        f"reference wolf-specific advice (悍跳 / 夜杀 / 狼队 / 队友); "
+        f"got: {text!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # NEW-R4-P2-1: counter_claim hybrid wolf-master receives 悍跳-specific advice.
 # ---------------------------------------------------------------------------
 
@@ -1118,3 +1231,78 @@ def test_last_words_handles_empty_input() -> None:
             f"NEW-R4-P2-3: empty-death entry must include a placeholder; "
             f"got: {text!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-4: wolf_pit shows total count when truncated.
+# ---------------------------------------------------------------------------
+
+
+def test_wolf_pit_shows_total_count() -> None:
+    """NEW-R4-P2-4: wolf_pit slices `unique_suspects[:5]` for the
+    prompt body, but the header `嫌疑区({len(unique_suspects)}人)`
+    shows the *untruncated* total. The LLM sees `嫌疑区(8人)` followed
+    by 5 entries and a separate `...（已省略）` from the
+    `_cap_prompt_injectable` 800-char ceiling — two different
+    truncation signals, no clarity on what was cut.
+
+    Post-fix: when the visible lines are a slice, the count in the
+    header must read `(shown/total)`, e.g. `嫌疑区(5/8人)`. The
+    `(shown/total)` form tells the LLM exactly how many entries
+    were dropped and how many remain.
+    """
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact, StructuredWorldState, build_world_state,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12 players, 8 with seer_check_claim "wolf" — should land in
+    # unique_suspects after the wolf_pit handler dedupes.
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = build_world_state(gs)
+    # Add 8 seer_check_claim "wolf" facts.
+    for i in range(1, 9):
+        ws.append(StructuredFact(
+            fact_type="seer_check_claim",
+            source_player="p07", target_player=f"p{i:02d}",
+            value="wolf", day=1,
+        ))
+
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    bs = BeliefUpdater().update(bs, ws.facts, gs.day_number)
+
+    inp = SkillInput(
+        role="werewolf", phase="speech", day=2,
+        game_state=gs, world_state=ws, belief_state=bs,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.WOLF_PIT_ANALYSIS, inp)
+    text = out.prompt_injectable
+    # The header must show the (shown/total) form when the list was
+    # truncated. With 8 suspects and a [:5] cap, the header should
+    # read `嫌疑区(5/8人)` (or similar slash form).
+    assert "5/8" in text, (
+        f"NEW-R4-P2-4: wolf_pit must show (5/8) shown/total when "
+        f"truncating 8 suspects to 5; got: {text!r}"
+    )
+    # And the bare `嫌疑区(8人)` form (only the total, no shown count)
+    # must NOT appear.
+    assert "嫌疑区(8人)" not in text, (
+        f"NEW-R4-P2-4: wolf_pit must NOT show bare total `嫌疑区(8人)` "
+        f"when truncated; got: {text!r}"
+    )
