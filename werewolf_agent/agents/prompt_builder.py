@@ -690,7 +690,25 @@ class PlayerPromptBuilder:
         # must only see title / summary / key_decisions. Audit data
         # (relevance, quality, source, visibility, display annotation)
         # belongs in the audit log, not the LLM context window.
-        slim_items = self._slim_rag_hint_items(ctx.rag_hints[:3])
+        #
+        # G-R4-10: explicit ``type == "rag_hit"`` filter so a future
+        # code path (or a test, or a manual debug call) that injects
+        # auxiliary metadata (salience events, profile snapshots,
+        # etc.) into ``ctx.rag_hints`` cannot leak into the prompt.
+        # The previous code at runtime/context.py:231 used
+        # ``if item.get("type") != "rag_hit"`` to *retain* non-rag
+        # items, which is brittle — a stray non-rag item persists
+        # across turns and the renderer would happily process it.
+        # The prompt-side filter is explicit, defensive, and matches
+        # the slim renderer's expectation that every line carries
+        # the ``rag_hit`` discriminator.
+        rag_only = [
+            item for item in ctx.rag_hints
+            if isinstance(item, dict) and item.get("type") == "rag_hit"
+        ]
+        if not rag_only:
+            return ""
+        slim_items = self._slim_rag_hint_items(rag_only[:3])
         # P0-G3: hard-constraint prefix MUST come before the JSON
         # payload. Without this the LLM has been observed to parrot
         # case-specific player IDs (e.g., p04 / p09 in seed cases) as

@@ -1027,6 +1027,7 @@ def test_rag_hints_include_player_id_warning():
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
+            "type": "rag_hit",  # G-R4-10: explicit type discriminator
             "title": "京城大师赛 250415 抗推预言家",
             "summary": "狼队在白天通过抗推预言家获得票数优势。",
             "key_decisions": ["白天全力归票预言家"],
@@ -1066,6 +1067,7 @@ def test_rag_hints_player_id_warning_appears_before_json_payload():
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
+            "type": "rag_hit",  # G-R4-10: explicit type discriminator
             "title": "案例标题",
             "summary": "案例摘要。",
             "key_decisions": ["决策1"],
@@ -1110,6 +1112,7 @@ def test_rag_hints_have_tail_reminder():
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
+            "type": "rag_hit",  # G-R4-10: explicit type discriminator
             "title": "案例标题",
             "summary": "案例摘要。",
             "key_decisions": ["决策1"],
@@ -1134,6 +1137,66 @@ def test_rag_hints_have_tail_reminder():
         "R19: the tail reminder must come AFTER the JSON payload so "
         "the LLM encounters it after reading the case data, not before."
     )
+
+
+def test_rag_hints_filtered_by_type():
+    """G-R4-10: ``_build_rag_hints`` must filter ``ctx.rag_hints`` by
+    ``type == "rag_hit"`` before rendering. Mixed-type lists (rag_hit
+    + non-rag_hit items, e.g. a future code path or test that
+    injects auxiliary metadata) must drop the non-rag_hit entries
+    rather than render them.
+
+    The previous code at runtime/context.py:231 used
+    ``[item for item in ctx.rag_hints if item.get("type") != "rag_hit"]``
+    to *retain* non-rag items, which is brittle: a stray non-rag item
+    persists across turns and the prompt renderer would happily
+    process it. The prompt-side filter is explicit, defensive, and
+    matches the slim renderer's expectation that every line carries
+    the ``rag_hit`` discriminator.
+    """
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [
+            # Mixed list: first two are NOT rag_hit, last two are.
+            {
+                "type": "aux_meta",
+                "title": "AUX-META-TITLE",
+                "summary": "AUX-META-SUMMARY",
+                "key_decisions": ["AUX-META-DECISION"],
+            },
+            {
+                "type": "salience_event",
+                "title": "SALIENCE-TITLE",
+                "summary": "SALIENCE-SUMMARY",
+                "key_decisions": ["SALIENCE-DECISION"],
+            },
+            {
+                "type": "rag_hit",
+                "title": "RAG-1-TITLE",
+                "summary": "RAG-1-SUMMARY",
+                "key_decisions": ["RAG-1-DECISION"],
+            },
+            {
+                "type": "rag_hit",
+                "title": "RAG-2-TITLE",
+                "summary": "RAG-2-SUMMARY",
+                "key_decisions": ["RAG-2-DECISION"],
+            },
+        ],
+    })
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # The rag_hit items MUST be rendered.
+    assert "RAG-1-TITLE" in prompt, (
+        f"G-R4-10: rag_hit item 1 must be rendered; prompt excerpt: "
+        f"{prompt[prompt.find('知识库提示'):prompt.find('知识库提示')+400]!r}"
+    )
+    assert "RAG-2-TITLE" in prompt
+    # The non-rag_hit items MUST NOT leak into the prompt.
+    for forbidden in ("AUX-META-TITLE", "AUX-META-SUMMARY",
+                      "SALIENCE-TITLE", "SALIENCE-SUMMARY"):
+        assert forbidden not in prompt, (
+            f"G-R4-10: non-rag_hit item leaked into prompt: {forbidden!r}"
+        )
 
 
 def test_skill_catalog_not_in_system_prompt_for_seer():
