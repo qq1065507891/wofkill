@@ -327,7 +327,17 @@ class PlayerPromptBuilder:
         "_build_visible_state": "【辅助】",
         "_build_private_memory_hints": "【辅助】",
         "_build_salience_events": "【辅助】",
-        "_build_rag_hints": "【辅助】",
+        # G-R4-15: RAG hints were 【辅助】 but got dropped alongside
+        # persona, profile, and other 辅助-tier sections under tight
+        # budgets. The whole point of the 知识库提示 section is to
+        # bring strategy hints into the LLM's reasoning; losing it
+        # defeats the retrieval investment. Promote to 【参考】 so
+        # the trimmer drops 辅助 first, then 【参考】, then 硬约束.
+        # The inner P0-S5 strategy_directive 【参考】 sub-group and
+        # this outer RAG-hint 【参考】 label are conceptually aligned
+        # (both are "reference" material the LLM should consult but
+        # is not strictly bound to).
+        "_build_rag_hints": "【参考】",
         "_build_reflection_memory_hints": "【辅助】",
         "_build_profile_memory_hint": "【辅助】",
         "_build_cognition_matrix_hint": "【辅助】",
@@ -435,11 +445,10 @@ class PlayerPromptBuilder:
 
         Implementation note (carries over from prior fix): ``drop_indices``
         here is the EXCLUSION set — indices still in the set are EXCLUDED
-        from the joined prompt. ``drop_indices.discard(idx)`` therefore
-        means "stop excluding idx" = "include idx in the joined". The
-        loop iterates the droppable list in priority order (lowest
-        priority first) and discards one at a time, growing the joined.
-        The loop exits as soon as the joined fits under the budget.
+        from the joined prompt. The loop iterates the droppable list in
+        priority order (lowest priority first) and removes (drops) one
+        section at a time, shrinking the joined. The loop exits as soon
+        as the joined fits under the budget.
         """
         # Fast path: the full prompt is already under budget.
         full_joined = "\n\n".join(p for _, p in parts if p)
@@ -461,8 +470,17 @@ class PlayerPromptBuilder:
             label = priority.get(name, "")
             if label == "【硬约束】":
                 continue
-            # 可选 drops first (priority 0), 辅助 drops second (priority 1).
-            tier = 0 if label == "【可选】" else 1
+            # G-R4-15: tier ordering is now 可选 (0) → 辅助 (1) →
+            # 【参考】 (2) → never drop 硬约束. RAG hints (now 【参考】)
+            # survive whenever 辅助 sections can be dropped to fit
+            # the budget.
+            if label == "【可选】":
+                tier = 0
+            elif label == "【参考】":
+                tier = 2
+            else:
+                # 辅助 and any unlabeled-but-not-NEVER_DROP sections.
+                tier = 1
             droppable.append((tier, idx))
         # Sort by tier first, then keep original order within a tier
         # (stable sort). Note: this means within a tier, sections
@@ -471,59 +489,67 @@ class PlayerPromptBuilder:
         # contract). That's the opposite of "drop from the end"
         # but it's deterministic and predictable.
         droppable.sort(key=lambda x: x[0])
-        drop_indices = {idx for _, idx in droppable}
-        # AUDIT-2-02: maintain a running total of the joined length
-        # and update it O(1) per discard instead of re-joining the
-        # full prompt on every iteration. The previous implementation
-        # called ``joined = "\n\n".join(... filter ...)`` inside the
-        # loop, which is O(N) per iteration and gives O(N²) total
-        # work for tight budgets.
+        # AUDIT-2-02 (corrected for G-R4-15): maintain a running total
+        # of the joined length and update it O(1) per drop instead of
+        # re-joining the full prompt on every iteration. ``drop_indices``
+        # here is the INCLUSION set — indices in the set are KEPT in
+        # the joined prompt, indices not in the set are dropped. We
+        # start with drop_indices = set() (nothing kept, full prompt
+        # would just be empty) — no wait, that doesn't match either.
         #
-        # Per the implementation note above, ``drop_indices`` is the
-        # EXCLUSION set. We start with all 13 droppable parts
-        # excluded (joined = non-droppable parts only) and grow the
-        # joined as we discard (include). Each inclusion ADDS the
-        # body length + 2 chars for one separator (the part gains
-        # one neighbor and one new "\n\n" between it and its
-        # predecessor in the joined string).
-        non_droppable = [
-            p for i, (_, p) in enumerate(parts)
-            if p and i not in drop_indices
-        ]
-        running_total = sum(len(p) for p in non_droppable)
-        n_active = len(non_droppable)
-        if n_active > 0:
-            running_total += 2 * (n_active - 1)
-        # Walk droppable in stable tier+order; discard (include)
-        # each section whose label is in the matching tier, until
-        # the budget is satisfied or droppable is exhausted. The
-        # 硬约束 filter is applied up-front so they never appear
-        # here.
+        # Re-deriving from scratch: the full_joined is len(13548)
+        # in the test scenario. We want to drop sections until total
+        # fits under budget (6250). So drop_indices is the set of
+        # indices we have DROPPED so far. We start with all parts
+        # included (drop_indices = set()) and ADD to drop_indices
+        # as we drop. ``joined = total`` starts at full_joined and
+        # decreases.
+        total = len(full_joined)
+        dropped: set[int] = set()
+        # Walk droppable in stable tier+order; DROP each section
+        # whose label is in the matching tier, until the budget
+        # is satisfied or droppable is exhausted. The 硬约束
+        # filter is applied up-front so they never appear here.
         for tier, idx in droppable:
-            if running_total <= _USER_PROMPT_BUDGET_CHARS:
+            if total <= _USER_PROMPT_BUDGET_CHARS:
                 break
-            if idx in drop_indices and parts[idx][0]:
-                # Only discard (include) if the section's label is
-                # in the matching tier; otherwise skip and continue.
-                label = priority.get(parts[idx][0], "")
-                expected_tier = 0 if label == "【可选】" else 1
-                if expected_tier != tier:
-                    continue
-                drop_indices.discard(idx)
-                # Update running total: ADD the body + 1 separator.
-                # Empty body means the section was already filtered
-                # out of non_droppable, so the only effect is on
-                # drop_indices; the running total is unchanged.
-                body = parts[idx][1]
-                if body:
-                    running_total += len(body) + 2
-                    n_active += 1
+            if idx in dropped:
+                continue
+            # Only drop if the section's label is in the matching
+            # tier; otherwise skip and continue. G-R4-15: tier
+            # mapping matches the outer build step — 可选=0,
+            # 辅助=1, 【参考】=2.
+            label = priority.get(parts[idx][0], "")
+            if label == "【可选】":
+                expected_tier = 0
+            elif label == "【参考】":
+                expected_tier = 2
+            else:
+                expected_tier = 1
+            if expected_tier != tier:
+                continue
+            # Mark as dropped and update running total: SUBTRACT
+            # the body + 2 chars (one separator for the part that
+            # just left the joined string). Empty body means the
+            # section was already filtered out of the joined, so
+            # the only effect is on dropped; the running total is
+            # unchanged.
+            body = parts[idx][1]
+            if body:
+                dropped.add(idx)
+                total -= len(body) + 2
+            else:
+                # Empty body contributes nothing to joined; we
+                # still mark it as "processed" so we don't try to
+                # drop it again on a future iteration (the
+                # ``idx in dropped`` guard handles this).
+                dropped.add(idx)
         # AUDIT-2-02: reconstruct the joined string ONCE in O(N)
-        # from the (post-discard) drop_indices. The previous
+        # from the (post-drop) ``dropped`` set. The previous
         # implementation re-joined the whole prompt on every
         # iteration — O(N²) for tight budgets.
         active = [
-            p for i, (_, p) in enumerate(parts) if i not in drop_indices and p
+            p for i, (_, p) in enumerate(parts) if i not in dropped and p
         ]
         return "\n\n".join(active)
 

@@ -3315,5 +3315,140 @@ def test_sheriff_example_includes_withdraw():
     )
 
 
+# ---------------------------------------------------------------------------
+# G-R4-15: RAG hints must survive budget pressure.
+#
+# Pre-fix: _build_rag_hints was tagged 【辅助】 and got dropped
+# alongside persona, profile, and other 辅助-tier sections when
+# the joined prompt exceeded the 6250-char budget. The whole
+# point of the 知识库提示 section is to bring strategy hints into
+# the LLM's reasoning; losing it under budget pressure defeats
+# the retrieval investment.
+#
+# Post-fix: RAG hints move to the new 【参考】 tier, which sits
+# between 辅助 (dropped second) and 硬约束 (never dropped). The
+# trimmer drops 辅助 first, then 【参考】, then 硬约束. RAG
+# hints survive whenever the budget allows the lower-priority
+# 辅助 sections to be dropped.
+# ---------------------------------------------------------------------------
+
+
+def _make_budget_pressure_context() -> AgentContext:
+    """Context that genuinely exceeds the 6_250-char user-prompt budget.
+
+    Used by G-R4-15 to verify RAG hints survive while 辅助 sections
+    (persona, profile, salience, etc.) are dropped.
+
+    The strategy_directive and output contract are 硬约束 and must NOT
+    be dropped. The 辅助 sections (persona, phase_context, belief,
+    public_summary, visible_state, private_memory, salience,
+    reflection, profile, cognition) are each ~1.8k chars — together
+    they push the joined prompt well past 6_250. RAG hints (also
+    ~1k+ chars with proper ``type: "rag_hit"``) sit in the middle
+    of the 辅助 drop order today; the fix moves them to a new
+    higher tier.
+    """
+    return AgentContext(
+        agent_id="p10",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        # 辅助: each of these can render up to ~1.8k chars.
+        persona_snapshot={"tone": "aggressive", "style": "logical",
+                          "phrase_style": "blame_p05", "extra": "X" * 1500},
+        belief_state={
+            "my_suspects": [
+                {"player": f"p{i:02d}", "faction_lean": "wolf_lean",
+                 "top_role_guess": "werewolf", "trust": 0.2,
+                 "note": "long context " * 30}
+                for i in range(1, 6)
+            ],
+            "my_trusted": [
+                {"player": f"p{i:02d}", "faction_lean": "good_lean",
+                 "top_role_guess": "villager", "trust": 0.8,
+                 "note": "long context " * 30}
+                for i in range(6, 11)
+            ],
+        },
+        public_summary="公开事实 " + ("D2 投票事实数据 " * 200),
+        visible_world_state={f"key_{i}": f"value_{i} " * 30 for i in range(20)},
+        private_memory_hints={
+            "logic_flaws": [{"day": 2, "point": f"逻辑 {i} " * 25} for i in range(8)],
+            "valid_points": [{"day": 2, "point": f"有效 {i} " * 25} for i in range(8)],
+        },
+        salience_items=[
+            {"id": f"sal-{i}", "weight": 0.5, "summary": f"事件 {i} " * 30}
+            for i in range(8)
+        ],
+        # RAG hints with the proper discriminator (the render filter
+        # at _build_rag_hints drops items without ``type == "rag_hit"``).
+        rag_hints=[{
+            "type": "rag_hit",
+            "title": "budget-pressure-rag",
+            "summary": "案例摘要 " * 60,
+            "key_decisions": ["决策1", "决策2", "决策3"],
+        }],
+        reflection_memory_hints=[
+            {"theme": f"主题 {i}", "summary": f"经验 {i} " * 30}
+            for i in range(5)
+        ],
+        profile_memory_hint={"games_played": 10, "summary": "前 30% 玩家画像 " * 50},
+        cognition_matrix_hint={
+            f"p{i:02d}": {"trust": 0.5, "faction_lean": "good",
+                          "top_role_guess": "villager",
+                          "note": "画像 " * 20}
+            for i in range(1, 13)
+        },
+        # 硬约束 equivalent (NEVER_DROP) — keeps strategy + contract
+        # in the prompt no matter what.
+        strategy_directive={
+            "must_address_alerts": [{"alert": f"提示 {i}"} for i in range(3)],
+            "anti_herd": "不要盲目跟票 " * 10,
+            "skill_tactical_advice": {"role": "villager", "tips": ["tip1", "tip2"] * 20},
+        },
+    )
+
+
+def test_rag_hints_survive_budget_pressure() -> None:
+    """G-R4-15: when the prompt exceeds the user-prompt budget, the
+    RAG hints section must survive — at the cost of lower-priority
+    【辅助】 sections (persona, profile memory hint, etc.)."""
+    ctx = _make_budget_pressure_context()
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # Sanity: the budget trimmer must have actually run. With
+    # 10 辅助 sections × ~1.8k each + 硬约束 (strategy + contract)
+    # the joined length is well over 6_250. The final prompt must
+    # therefore be under the cap (trimmer did its job) AND have
+    # dropped at least one 辅助 section.
+    assert len(prompt) <= _USER_PROMPT_BUDGET_CHARS + 750, (
+        f"G-R4-15: budget trimmer should keep joined prompt under "
+        f"~6_250 + 750 chars; got {len(prompt)} chars."
+    )
+    # RAG hints MUST survive — they are the whole point of the
+    # 知识库提示 section.
+    assert "budget-pressure-rag" in prompt, (
+        f"G-R4-15: RAG hints section was dropped under budget pressure. "
+        f"Got prompt (first 400 chars): {prompt[:400]!r}"
+    )
+    assert "知识库提示" in prompt, (
+        f"G-R4-15: the 知识库提示 header was dropped under budget "
+        f"pressure. RAG hints must be in a higher-priority tier "
+        f"(【参考】) than the other 辅助 sections that get dropped."
+    )
+    # The trimmer must have actually run (proven by a 辅助 section
+    # being dropped). Persona is the first 辅助 section in the
+    # drop order; the long persona_snapshot should be dropped while
+    # the 硬约束-equivalent strategy_directive stays.
+    assert "人格设定" not in prompt, (
+        f"G-R4-15: budget pressure should have dropped at least one "
+        f"【辅助】 section (persona), but '人格设定' is still in the "
+        f"prompt. If it survived, the test setup isn't tight enough "
+        f"to exercise the budget. prompt[:400]={prompt[:400]!r}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
