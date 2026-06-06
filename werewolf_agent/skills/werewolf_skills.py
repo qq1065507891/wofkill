@@ -1316,6 +1316,12 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     # to protect from wolf night-kill.
     power_roles = {"seer", "witch", "hunter", "idiot"}
     at_risk: list[dict[str, Any]] = []
+    # NEW-R4-P2-9: also collect *candidate* power roles — players
+    # whose top_role_guess is in power_roles but who currently have
+    # no vote/pressure. We need this list to give the LLM concrete
+    # names when the at_risk set is empty (the previous fallback
+    # was a circular "继续观察" with no actionable info).
+    candidates: list[tuple[str, str, float]] = []  # (pid, role, prob)
 
     if bs is not None:
         for pid, belief in bs.beliefs.items():
@@ -1335,6 +1341,8 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
                         "votes": len(votes_on),
                         "suspect_claims": suspect_pressure,
                     })
+                else:
+                    candidates.append((pid, top_role, prob))
 
     risks = ["过度保护某个玩家反而暴露其身份"]
 
@@ -1351,10 +1359,28 @@ def protect_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         )
         conf = 0.6
     else:
-        prompt = (
-            f"保护强神建议：场上疑似神职暂时安全，无被推票压力。"
-            f"继续观察，注意保护已识别的疑似神职不被狼队发现。"
-        )
+        # NEW-R4-P2-9: when no power role is currently under pressure,
+        # the previous fallback said only "继续观察" — circular and
+        # useless. List the concrete candidates the handler has
+        # identified so the LLM knows WHO to keep an eye on, and
+        # give a concrete next-step suggestion.
+        if candidates:
+            cand_str = "、".join(
+                f"{pid}({role},置信{prob:.0%})"
+                for pid, role, prob in candidates[:3]
+            )
+            prompt = (
+                f"保护强神建议：场上暂无被推票压力的疑似神职，"
+                f"但已识别以下候选需要持续关注：{cand_str}。"
+                f"建议在发言中适度认可其逻辑（'我觉得X的分析有道理'），"
+                f"建立'保护性'站边，同时避免直接公开其身份。"
+            )
+        else:
+            prompt = (
+                f"保护强神建议：当前未识别到高置信度疑似神职。"
+                f"继续观察重点发言，"
+                f"留意今晚死亡信息以缩小下一轮的神职候选范围。"
+            )
         conf = 0.45
 
     return SkillOutput(

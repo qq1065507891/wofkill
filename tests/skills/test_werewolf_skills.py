@@ -1493,3 +1493,88 @@ def test_wolf_pit_static_fallback_waits_for_signal() -> None:
         f"NEW-R4-P2-7: find_power static fallback must not use abstract "
         f"'系统性分析' advice; got: {find_power_text!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# NEW-R4-P2-9: protect_power empty at_risk lists concrete candidates.
+# ---------------------------------------------------------------------------
+
+
+def test_protect_power_empty_at_risk_specific() -> None:
+    """NEW-R4-P2-9: when no power role is currently under pressure
+    (`at_risk` empty), the previous fallback said only "继续观察"
+    — circular, gave the LLM no concrete next step. Post-fix: list
+    the identified power candidates (with role + confidence) and
+    suggest a concrete protective action.
+    """
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.world_state import build_world_state
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    # 12 players. p03 is a suspected seer (high seer prob) but NOT
+    # under vote pressure — so at_risk stays empty.
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    players["p03"] = PlayerState(id="p03", role="seer", alive=True)
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players=players,
+    )
+    ws = build_world_state(gs)
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    bs = BeliefUpdater().update(bs, ws.facts, gs.day_number)
+    # Force p03 to look like a seer (top role seer, high prob).
+    bs.beliefs["p03"].role_probabilities = {
+        "seer": 0.9, "werewolf": 0.05, "villager": 0.05,
+    }
+    # Make sure p03 has no vote/pressure on them.
+    assert not _vote_targets_for_player(ws, "p03"), (
+        "Test setup: p03 must have no votes for at_risk to be empty"
+    )
+
+    inp = SkillInput(
+        role="villager", phase="speech", day=2,
+        game_state=gs, world_state=ws, belief_state=bs,
+        contradiction_alerts=[], player_id="p01",
+        task_type="speech",
+    )
+    out = apply_skill(SkillName.PROTECT_POWER, inp)
+    text = out.prompt_injectable
+    # The circular "继续观察" advice (no concrete candidate) must
+    # NOT be the only thing the LLM gets.
+    assert text != (
+        "保护强神建议：场上疑似神职暂时安全，无被推票压力。"
+        "继续观察，注意保护已识别的疑似神职不被狼队发现。"
+    ), (
+        f"NEW-R4-P2-9: protect_power empty-at_risk fallback must not "
+        f"be the circular '继续观察' advice; got: {text!r}"
+    )
+    # The concrete p03 candidate must appear so the LLM has a name
+    # to work with.
+    assert "p03" in text, (
+        f"NEW-R4-P2-9: protect_power empty-at_risk fallback must "
+        f"list the identified candidate; got: {text!r}"
+    )
+    # And the role label (seer).
+    assert "seer" in text, (
+        f"NEW-R4-P2-9: protect_power empty-at_risk fallback must "
+        f"include the candidate's likely role; got: {text!r}"
+    )
+
+
+def _vote_targets_for_player(ws, player_id):
+    """Local helper — mirror of the production helper for use in
+    this test module without depending on the production symbol."""
+    return [
+        {"source": f.source_player, "day": f.day, "value": f.value}
+        for f in ws.facts_of_type("vote")
+        if f.target_player == player_id
+    ]
