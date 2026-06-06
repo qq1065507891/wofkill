@@ -386,13 +386,26 @@ class PlayerAgent:
                 # 3 empty retries and fell back to a default target —
                 # a '如果超时, 返回 no_action' hint would have let it
                 # safely no-op the second time around.
+                # D4-3: but only suggest ``no_action`` when it's actually
+                # legal. For VOTE-only contexts, ``no_action`` is not in
+                # legal_actions — the LLM would copy the hint, the
+                # validator would reject the action, and we'd loop
+                # forever. Fall back to a target-suggestion hint for
+                # those cases.
                 timeout_hint = ""
                 if failure_category == "timeout":
-                    timeout_hint = (
-                        " 如果超时，请直接返回 no_action 而非空响应"
-                        "（action_type='no_action', target_id=null,"
-                        "reason='timeout - safe no-op'）。"
-                    )
+                    if ActionType.NO_ACTION in context.legal_actions:
+                        timeout_hint = (
+                            " 如果超时，请直接返回 no_action 而非空响应"
+                            "（action_type='no_action', target_id=null,"
+                            "reason='timeout - safe no-op'）。"
+                        )
+                    elif context.legal_targets:
+                        first_target = context.legal_targets[0]
+                        timeout_hint = (
+                            f" 如果超时，请直接选择一个合法目标 "
+                            f"（例如 {first_target}）并提交结构化JSON。"
+                        )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
@@ -420,22 +433,37 @@ class PlayerAgent:
                 tool_call_required
                 and not tool_call_received
                 and not allow_text_tool_fallback
-                and not _model_text_fallback
             ):
                 structured_failure_reason = (
                     getattr(result, "structured_failure_reason", None)
                     or "missing_tool_call"
                 )
                 parse_error_str = "missing required tool call: submit_player_action"
+                # D4-4: branch the hint on `_model_text_fallback`. For
+                # text-fallback-allowed models, the strict "must use
+                # tool call" wording contradicts the model's own
+                # configuration — the model is allowed to emit plain-text
+                # JSON when no tool schema is available. The adapted
+                # hint mentions that text JSON is acceptable as a
+                # fallback, while still preferring a tool call.
+                if _model_text_fallback:
+                    correction_hint = (
+                        "优先通过 submit_player_action 工具调用提交结构化参数；"
+                        "如果模型没有 tool schema 或工具调用不可用，允许"
+                        "提交纯文本 JSON（action_type、target_id、speech、"
+                        "reason、confidence 等字段）。"
+                    )
+                else:
+                    correction_hint = (
+                        "必须通过 submit_player_action 工具调用提交结构化参数；"
+                        "不要把JSON写在普通文本内容里。"
+                    )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
                     error_code=structured_failure_reason,
                     error_message=parse_error_str,
-                    correction_hint=(
-                        "必须通过 submit_player_action 工具调用提交结构化参数；"
-                        "不要把JSON写在普通文本内容里。"
-                    ),
+                    correction_hint=correction_hint,
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,

@@ -55,6 +55,14 @@ class _JsonProvider:
         return "json_provider"
 
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        # D4-4 follow-up: production providers set text_fallback_used
+        # when they return text without a tool call on a model that
+        # allows text fallback. Mirror that so the agent's missing_tool_call
+        # gate (which uses this flag) behaves the same in tests and prod.
+        # Without this, real-config test setups (allow_text_tool_fallback=True)
+        # would enter the missing_tool_call branch on every call and never
+        # parse the text — see test_full_pipeline_persona_model_agent.
+        text_fallback_used = bool(self._response and not tool_choice)
         return GenerateResult(
             text=self._response,
             provider=self.name,
@@ -62,6 +70,7 @@ class _JsonProvider:
             tool_call_required=bool(tool_choice),
             tool_call_received=bool(tool_choice),
             tool_call_name=(tool_choice or {}).get("name", ""),
+            text_fallback_used=text_fallback_used,
             usage=UsageRecord(
                 agent_id="test", task_type="vote",
                 provider=self.name, model=config.model,
@@ -2675,3 +2684,339 @@ class TestRetryCountConsistency:
         # fallback_used attempt is consistent with the trace.
         assert profile.sample_count >= 1
         assert profile.fallback_count == 1
+
+
+# ---------------------------------------------------------------------------
+# D4-3: empty_response hint must only suggest no_action when it's legal
+# ---------------------------------------------------------------------------
+#
+# Audit D4-3 finding: the timeout fallback hint at player.py:381-395
+# suggests `action_type='no_action'` whenever the empty_response is
+# categorized as a timeout. But for VOTE (legal_actions=[VOTE]), no_action
+# is NOT in the legal set — the LLM would copy the hint and the agent
+# would reject the action. The fix: only inject the no_action suggestion
+# when `ActionType.NO_ACTION in ctx.legal_actions`; otherwise fall back
+# to a target-suggestion hint that names one of the legal targets.
+
+
+class TestEmptyResponseHintValidatesNoAction:
+    """D4-3: timeout hint must respect legal_actions."""
+
+    def _build_timeout_provider(self, latency_ms: int):
+        """Build a provider that returns empty text with high latency
+        so ``_categorize_failure_category`` returns ``"timeout"``.
+        """
+        from werewolf_agent.model_gateway.router import (
+            GenerateResult,
+            UsageRecord,
+        )
+
+        class _TimeoutProvider:
+            @property
+            def name(self) -> str:
+                return "timeout"
+
+            def generate(self, prompt, config, system_prompt=None):
+                return GenerateResult(
+                    text="",
+                    provider="timeout",
+                    model=config.model,
+                    usage=UsageRecord(
+                        agent_id="",
+                        task_type="",
+                        provider="timeout",
+                        model=config.model,
+                        latency_ms=latency_ms,
+                    ),
+                )
+
+        return _TimeoutProvider()
+
+    def test_empty_response_hint_only_suggests_no_action_when_legal(self):
+        """D4-3: VOTE-only context (no NO_ACTION) must not suggest no_action.
+
+        Pre-fix: the timeout hint always suggested ``no_action``, even
+        when VOTE was the only legal action — the LLM copied the hint,
+        the validator rejected the action, and the player had to retry.
+        The fix: only inject the ``no_action`` hint when
+        ``ActionType.NO_ACTION in ctx.legal_actions``.
+        """
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = self._build_timeout_provider(latency_ms=31_000)  # > 30s threshold
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p05": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p05", model_router=router, max_retries=1)
+        # VOTE-only — no NO_ACTION in legal_actions.
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07", "p08"],
+            public_summary="D2 vote",
+        )
+
+        action, retry = agent.act(ctx)
+
+        # Sanity: the empty_response path was taken (otherwise the test
+        # is meaningless).
+        assert retry.error_code == "empty_response", (
+            f"D4-3: expected empty_response retry, got {retry.error_code!r}"
+        )
+        # The hint must NOT contain "no_action" as a suggestion because
+        # the only legal action is VOTE — the LLM would copy it and
+        # the validator would reject it.
+        assert "no_action" not in retry.correction_hint, (
+            "D4-3: timeout hint for VOTE-only context must NOT mention "
+            "`no_action` (it's not in legal_actions). The LLM would copy "
+            "the suggestion and the validator would reject the action. "
+            f"Got hint: {retry.correction_hint!r}"
+        )
+
+    def test_empty_response_hint_suggests_no_action_when_legal(self):
+        """D4-3: when NO_ACTION is legal, the hint SHOULD still mention it.
+
+        Regression guard: the fix must not over-correct. If the
+        context allows no_action, the timeout hint should still
+        suggest it (P0-R2's whole point).
+        """
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = self._build_timeout_provider(latency_ms=31_000)
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p05": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p05", model_router=router, max_retries=1)
+        # NO_ACTION is legal — keep the original P0-R2 hint.
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.SHERIFF_REGISTRATION,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SHERIFF_REGISTER, ActionType.SHERIFF_WITHDRAW, ActionType.NO_ACTION],
+            legal_targets=[],
+            public_summary="D1 sheriff election",
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert retry.error_code == "empty_response"
+        # NO_ACTION is legal — the hint should still mention it.
+        assert "no_action" in retry.correction_hint, (
+            "D4-3 regression: when NO_ACTION is legal, the timeout hint "
+            "must still mention it (P0-R2). "
+            f"Got hint: {retry.correction_hint!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# D4-4: missing_tool_call hint must adapt to allow_text_tool_fallback
+# ---------------------------------------------------------------------------
+#
+# Audit D4-4 finding: the missing_tool_call hint at player.py:432-452
+# says "必须通过 submit_player_action 工具调用..." even when the model
+# is configured with `allow_text_tool_fallback=True`. The hint contradicts
+# the model's own behavior — the model is allowed to emit plain-text
+# JSON when it has no tool schema, but the agent tells it not to.
+#
+# Game trace g_3528592081 showed text-fallback-allowed models
+# oscillating between tool-call and text-JSON output, repeatedly
+# hitting this hint. The fix: branch the hint on `_model_text_fallback`
+# — fallback-allowed models get "优先工具调用，无 tool schema 时允许文本 JSON"
+# instead of the strict "必须工具调用".
+
+
+class TestMissingToolCallHintAdaptsToTextFallback:
+    """D4-4: missing_tool_call hint must respect allow_text_tool_fallback."""
+
+    def test_missing_tool_call_hint_adapts_to_text_fallback(self):
+        """D4-4: model with text fallback gets the adapted hint, not the strict one.
+
+        Pre-fix: when ``_model_text_fallback=True`` and the model
+        returned a result with no tool call (text_fallback_used=False),
+        the agent skipped the branch entirely. When the branch was
+        entered, the hint always said "must use tool call" — which
+        contradicts the model's own configuration. The fix: the hint
+        must mention that plain-text JSON is allowed for fallback
+        models.
+        """
+        from werewolf_agent.model_gateway.router import (
+            GenerateResult,
+            ModelRouter,
+            UsageRecord,
+        )
+
+        class _TextFallbackNoToolProvider:
+            """Provider that returns text without setting text_fallback_used.
+
+            Simulates a model with ``allow_text_tool_fallback=True`` on
+            config, but the result's ``text_fallback_used=False`` —
+            forcing the agent into the missing_tool_call branch (the
+            test target). Text is non-empty so we don't trip
+            empty_response instead.
+            """
+
+            @property
+            def name(self) -> str:
+                return "text_fallback_no_tool"
+
+            def generate(self, prompt, config, system_prompt=None):
+                return GenerateResult(
+                    text="<some non-JSON text response>",
+                    provider="text_fallback_no_tool",
+                    model=config.model,
+                    tool_call_required=True,
+                    tool_call_received=False,
+                    text_fallback_used=False,  # <-- key for the test
+                    structured_failure_reason="missing_tool_call",
+                    usage=UsageRecord(
+                        agent_id="",
+                        task_type="",
+                        provider="text_fallback_no_tool",
+                        model=config.model,
+                    ),
+                )
+
+        router = ModelRouter(
+            model_profiles={
+                "text_model": {
+                    "model": "text-v1",
+                    "provider": "text_fallback_no_tool",
+                    "allow_text_tool_fallback": True,  # <-- key for the test
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "text_fallback_no_tool",
+                        "model_profile": "text_model",
+                    },
+                },
+            },
+            player_assignments={"p05": "default"},
+            providers={"text_fallback_no_tool": _TextFallbackNoToolProvider()},
+        )
+        agent = PlayerAgent(agent_id="p05", model_router=router, max_retries=1)
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07", "p08"],
+            public_summary="D2 vote",
+        )
+
+        action, retry = agent.act(ctx)
+
+        # Sanity: the missing_tool_call path was taken.
+        assert retry.error_code == "missing_tool_call", (
+            f"D4-4: expected missing_tool_call retry, got {retry.error_code!r}"
+        )
+        # The hint must NOT use the strict "必须通过... 工具调用" wording
+        # for a model that is allowed to use text fallback. It should
+        # mention that text JSON is acceptable.
+        # The strict version starts with "必须通过 submit_player_action".
+        assert "必须通过 submit_player_action 工具调用" not in retry.correction_hint, (
+            "D4-4: missing_tool_call hint for text-fallback-allowed model "
+            "must not use the strict 'must use tool call' wording — the "
+            "model is configured to allow text JSON. "
+            f"Got hint: {retry.correction_hint!r}"
+        )
+        # The hint should mention text JSON / 文本 JSON as acceptable.
+        assert "文本" in retry.correction_hint or "text" in retry.correction_hint.lower(), (
+            "D4-4: missing_tool_call hint for text-fallback-allowed model "
+            "should mention that text JSON is acceptable. "
+            f"Got hint: {retry.correction_hint!r}"
+        )
+
+    def test_missing_tool_call_hint_strict_for_tool_only_models(self):
+        """D4-4 regression: tool-only models still get the strict hint.
+
+        When the model is NOT configured with ``allow_text_tool_fallback``,
+        the strict "must use tool call" hint is correct — text JSON is
+        not a valid fallback for these models. The fix must not
+        over-correct: tool-only models keep the original strict hint.
+        """
+        from werewolf_agent.model_gateway.router import (
+            GenerateResult,
+            ModelRouter,
+            UsageRecord,
+        )
+
+        class _ToolOnlyNoToolProvider:
+            """Provider for tool-only models — no text fallback allowed."""
+
+            @property
+            def name(self) -> str:
+                return "tool_only_no_tool"
+
+            def generate(self, prompt, config, system_prompt=None):
+                return GenerateResult(
+                    text="<some non-JSON text response>",
+                    provider="tool_only_no_tool",
+                    model=config.model,
+                    tool_call_required=True,
+                    tool_call_received=False,
+                    text_fallback_used=False,
+                    structured_failure_reason="missing_tool_call",
+                    usage=UsageRecord(
+                        agent_id="",
+                        task_type="",
+                        provider="tool_only_no_tool",
+                        model=config.model,
+                    ),
+                )
+
+        router = ModelRouter(
+            model_profiles={
+                "tool_only_model": {
+                    "model": "tool-v1",
+                    "provider": "tool_only_no_tool",
+                    # NOTE: no allow_text_tool_fallback → tool-only
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "tool_only_no_tool",
+                        "model_profile": "tool_only_model",
+                    },
+                },
+            },
+            player_assignments={"p05": "default"},
+            providers={"tool_only_no_tool": _ToolOnlyNoToolProvider()},
+        )
+        agent = PlayerAgent(agent_id="p05", model_router=router, max_retries=1)
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.VOTE,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p07", "p08"],
+            public_summary="D2 vote",
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert retry.error_code == "missing_tool_call"
+        # Tool-only model — strict hint is correct.
+        assert "必须通过 submit_player_action 工具调用" in retry.correction_hint, (
+            "D4-4 regression: tool-only model must keep the strict "
+            "'must use tool call' hint. "
+            f"Got hint: {retry.correction_hint!r}"
+        )
