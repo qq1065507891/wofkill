@@ -4,10 +4,45 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Post-Post-Review Fixes MERGED to master** — 2026-06-07
+- Current phase: **Perf Skill Cache MERGED to master** — 2026-06-07
 - Active task: Awaiting decision on push / PR / further work
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-07
+
+---
+
+## Perf Skill Cache — 2026-06-07
+
+Skill-layer memoization for `evaluate_wolf_kill_target`. Solves 2 of the 3 v3-deferred performance issues (double-call + O(N²)).
+
+Branch: `perf-skill-cache` (worktree `.worktrees/perf-skill-cache`).
+**MERGED** to master.
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| Perf-1 | `evaluate_wolf_kill_target` 加 dict cache（key: `(game_id, night, wolf_id, legal_targets)`）| `werewolf_agent/runtime/strategy/wolf.py` | `bb0f59f` |
+
+**Why dict cache (not `lru_cache`)**: `GameState` is a frozen dataclass with unhashable `dict`/`list` fields (`players`, `events`, `votes`). `functools.lru_cache` hashes all positional + keyword args to build its key (underscore convention only excludes from `inspect.signature`, not from the cache key). Manual dict keyed on `(game_id, night_number, wolf_id, tuple(legal_targets))` is correct and O(1).
+
+**Performance impact**:
+- Per night: `2 × 4 × O(N) = O(8N)` → `4 × O(N) = O(4N)` (2× reduction)
+- Over 5-night game: 4 wolves × ~10 calls per (wolf,night) pair → 4 wolves × 1 call (cached)
+- O(N²) "wolves × inner events loop" → O(N) "wolves × 1 (cached) × inner events loop"
+
+**Public hook**: `clear_kill_value_cache()` exposed for test isolation. Production process model is short-lived; long-running process should call hook between games.
+
+**Test count progression**: 2680 → 2691 (+11 new tests)
+
+### Remaining v3 deferred
+
+- 性能: time.sleep 串行 LLM 调度（需要并发/async 重构）
+- Directive builders 拿 `gs` 而非 `visible`（跨 9 个文件大改）
+- views.py 拆 projections.py
+- Extractor 完整收敛（仅做了 seer_check，剩余 17 个 extractor 仍 `(event, state)` 签名）
+
+### Final test results (master, post-merge)
+
+- `pytest tests/runtime/ tests/agents/ tests/skills/ tests/rules/ tests/memory/ tests/rag/ tests/cognition/ tests/model_gateway/ tests/storage/ tests/api/ tests/customization/ tests/tools/ tests/evaluation/ tests/core/ tests/persona_runtime/` → **2691 passed, 0 failed** in 89.33s
 
 ---
 
