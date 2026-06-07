@@ -554,6 +554,59 @@ def create_game_router(
         page = all_game_ids[offset:offset + limit]
         return {"game_ids": page, "total": len(all_game_ids)}
 
+    # ------------------------------------------------------------------
+    # RAG audit (U1: re-add endpoint — dashboard.js expects it)
+    # ------------------------------------------------------------------
+
+    @router.get("/games/{game_id}/rag-audit")
+    def get_rag_audit(
+        game_id: str,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.MODERATOR),
+        session_token: str = Query(""),
+    ) -> dict:
+        """U1: 返该局所有 RAG 注入审计事件。"""
+        state = _get_game(games, game_id)
+        # 复用 list_games 的鉴权：moderator/debugger 才能看
+        resolved_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
+        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
+            raise HTTPException(
+                403,
+                "rag-audit requires moderator or debugger role",
+            )
+
+        # 从 repo 拉事件（如果 repo 支持）
+        audits: list[dict] = []
+        if repo is not None and hasattr(repo, "load_events"):
+            try:
+                events = repo.load_events(game_id)
+            except Exception:
+                events = state.events
+            for e in events:
+                # events 可能是 GameEvent 或 dict
+                etype = getattr(e, "type", None) or (
+                    e.get("type") if isinstance(e, dict) else None
+                )
+                if etype == "rag_injection_audit":
+                    payload = getattr(e, "payload", None) or (
+                        e.get("payload") if isinstance(e, dict) else {}
+                    )
+                    audits.append(payload if isinstance(payload, dict) else {})
+        else:
+            # Fallback: 扫内存 state.events
+            for e in state.events:
+                if getattr(e, "type", None) == "rag_injection_audit":
+                    audits.append(e.payload)
+
+        return {
+            "game_id": game_id,
+            "rag_audits": audits,
+            "audits": audits,  # 双 key 兼容
+        }
+
     return router
 
 

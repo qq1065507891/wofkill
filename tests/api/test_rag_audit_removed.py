@@ -1,8 +1,13 @@
-"""Tests for the NEW-P2-6 removal of dead /rag-audit endpoint.
+"""Tests for the U1 (post-review-v2) restoration of the /rag-audit endpoint.
 
-The /games/{id}/rag-audit endpoint queried state.events for
-'rag_injection_audit' entries, but no code path emits that event type —
-the endpoint always returned an empty list. It is removed.
+History: NEW-P2-6 had removed this endpoint because it always returned an
+empty list (no code path emits ``rag_injection_audit`` events). U1 reverses
+that decision because ``dashboard.js`` calls the endpoint unconditionally
+and the resulting 404 in the browser console is a visible regression.
+
+The endpoint is now useful for any future code path that emits
+``rag_injection_audit`` events (e.g. RAG injection logging in
+``rag/knowledge_service.py``) — see the rag_audit_event_type.
 """
 
 from __future__ import annotations
@@ -16,24 +21,51 @@ from werewolf_agent.storage.memory_store import InMemoryGameRepository
 _TEST_SECRET = "test-secret-key-for-unit-tests-only"
 
 
-def test_rag_audit_endpoint_removed():
-    """NEW-P2-6: /games/{id}/rag-audit must return 404 (not 200) because
-    the endpoint was removed (it was always returning an empty list)."""
+def test_rag_audit_endpoint_exists() -> None:
+    """U1: /games/{id}/rag-audit 路由已加回；moderator 可调用并收到
+    {"rag_audits": [...]} 响应。"""
     auth = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
     app = create_app(repository=InMemoryGameRepository(), auth_manager=auth)
     client = TestClient(app)
     mod = {"caller_id": "mod1", "caller_role": "moderator"}
-    resp = client.post("/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", **mod})
+    resp = client.post(
+        "/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", **mod}
+    )
     game_id = resp.json()["game"]["game_id"]
     client.post(f"/games/{game_id}/start", json=mod)
 
-    # The endpoint should not exist (404). With the dead endpoint
-    # present, it would have returned 200 with an empty rag_audits list.
     resp = client.get(
         f"/games/{game_id}/rag-audit",
         params={"caller_id": "mod1", "caller_role": "moderator"},
     )
-    assert resp.status_code == 404, (
-        f"NEW-P2-6 not fixed: /rag-audit endpoint should be removed "
-        f"(404), got {resp.status_code} body={resp.text!r}"
+    assert resp.status_code == 200, (
+        f"U1: /rag-audit endpoint should return 200 (route re-added), "
+        f"got {resp.status_code} body={resp.text!r}"
+    )
+    data = resp.json()
+    assert "rag_audits" in data, f"U1: response missing 'rag_audits' key: {data!r}"
+    assert isinstance(data["rag_audits"], list)
+    # 当前 game 没有 RAG 注入事件，列表应为空
+    assert data["rag_audits"] == []
+
+
+def test_rag_audit_endpoint_denies_spectator() -> None:
+    """U1: spectator 角色不能看 rag-audit（403）。"""
+    auth = AuthManager(AuthConfig(mode="local", secret_key=_TEST_SECRET))
+    app = create_app(repository=InMemoryGameRepository(), auth_manager=auth)
+    client = TestClient(app)
+    mod = {"caller_id": "mod1", "caller_role": "moderator"}
+    resp = client.post(
+        "/games", json={"ruleset_id": "pre_witch_hunter_idiot_mixed", **mod}
+    )
+    game_id = resp.json()["game"]["game_id"]
+    client.post(f"/games/{game_id}/start", json=mod)
+
+    # Spectator without auth
+    resp = client.get(
+        f"/games/{game_id}/rag-audit",
+        params={"caller_id": "spec1", "caller_role": "spectator"},
+    )
+    assert resp.status_code in (403, 401), (
+        f"U1: spectator should be denied, got {resp.status_code}"
     )
