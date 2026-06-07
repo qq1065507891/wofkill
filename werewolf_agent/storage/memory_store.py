@@ -129,3 +129,43 @@ class InMemoryGameRepository:
     def delete_memory_snapshot(self, snapshot_id: str) -> None:
         self.__init_memory()
         self._memory_snapshots.pop(snapshot_id, None)
+
+    # -- Reflections (S4 post-review-v2) -------------------------------------
+
+    def __init_reflections(self) -> None:
+        if not hasattr(self, "_reflections"):
+            self._reflections: dict[str, dict[str, Any]] = {}
+
+    def save_reflection(self, entry: dict[str, Any]) -> None:
+        self.__init_reflections()
+        entry_id = str(entry.get("entry_id", ""))
+        self._reflections[entry_id] = dict(entry)
+
+    def load_reflection(self, entry_id: str) -> dict[str, Any] | None:
+        self.__init_reflections()
+        record = self._reflections.get(entry_id)
+        return dict(record) if record is not None else None
+
+    def load_reflections_by_game(self, game_id: str) -> list[dict[str, Any]]:
+        self.__init_reflections()
+        return [
+            dict(entry)
+            for entry in self._reflections.values()
+            if entry.get("game_id") == game_id
+        ]
+
+    def load_reflections_by_player(self, player_id: str) -> list[dict[str, Any]]:
+        self.__init_reflections()
+        return [
+            dict(entry)
+            for entry in self._reflections.values()
+            if entry.get("player_id") == player_id
+        ]
+
+    def load_all_reflections(self) -> list[dict[str, Any]]:
+        self.__init_reflections()
+        return [dict(entry) for entry in self._reflections.values()]
+
+    def delete_reflection(self, entry_id: str) -> None:
+        self.__init_reflections()
+        self._reflections.pop(entry_id, None)
