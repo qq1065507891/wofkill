@@ -3044,15 +3044,23 @@ def test_format_examples_seer_vote_uses_own_check():
         )
 
 
-def test_format_examples_non_seer_vote_keeps_p03_example():
-    """P0-4 / P1-8: non-seer roles keep the p03 / seer_siding example.
+def test_format_examples_non_seer_vote_keeps_pXX_example():
+    """P0-4 / P1-8 / C4: non-seer roles keep a non-empty standing_with_seer example.
 
-    Regression: the seer-specific fix must NOT remove the original
-    p03 example for non-seer roles (villager, witch, hunter, idiot,
-    hybrid, werewolf). Those roles DO side with an external seer
-    claim, so the example is still meaningful. P1-8 updated
-    ``vote_basis`` from "seer_check" (own check, only seers have
-    that) to "seer_siding" (standing with another seer).
+    Regression: the seer-specific fix must NOT remove the non-seer
+    branch (villager, witch, hunter, idiot, hybrid, werewolf). Those
+    roles DO side with an external seer claim, so the example is
+    still meaningful. P1-8 updated ``vote_basis`` from "seer_check"
+    (own check, only seers have that) to "seer_siding" (standing with
+    another seer).
+
+    C4 review fix: standing_with_seer is no longer hardcoded to a
+    concrete player ID ("p03"). It is a placeholder ("pXX") the LLM
+    should replace with the actual seer ID in the current game. The
+    contract being tested here is that the field stays *non-empty* for
+    non-seer roles (they need an external seer to stand with) and
+    *empty* for the seer (own check is implicit, no other seer to
+    side with).
     """
     for role in ("villager", "witch", "hunter", "idiot", "hybrid", "werewolf"):
         ctx = _make_full_action_ctx(role)
@@ -3065,12 +3073,25 @@ def test_format_examples_non_seer_vote_keeps_p03_example():
             f"Expected a vote example for role={role!r}"
         )
         for ex in vote_examples:
-            # Non-seer roles still see the p03 standing-with-seer
-            # example (they side with an external seer).
-            assert ex.get("standing_with_seer") == "p03", (
-                f"Non-seer role={role!r} must keep the 'p03' example "
-                f"for standing_with_seer (they side with an external seer), "
-                f"got {ex.get('standing_with_seer')!r}. Full example: {ex}"
+            # C4 fix: standing_with_seer is a placeholder ("pXX"), not
+            # a hardcoded player ID. Assert the field is non-empty (the
+            # contract is "non-seer roles side with an external seer")
+            # and matches the placeholder pattern.
+            value = ex.get("standing_with_seer", "")
+            assert value and value != "", (
+                f"Non-seer role={role!r} must keep a non-empty "
+                f"standing_with_seer example (they side with an external "
+                f"seer), got {value!r}. Full example: {ex}"
+            )
+            # C4: prefer the explicit "pXX" placeholder. Allow other
+            # placeholder-looking values (anything not a concrete p0X)
+            # so the test does not lock the placeholder name.
+            import re as _re_placeholder
+            assert not _re_placeholder.match(r"^p\d{2}$", value), (
+                f"Non-seer role={role!r} standing_with_seer must NOT be "
+                f"a hardcoded concrete player ID (e.g., 'p03'); got "
+                f"{value!r}. Use a placeholder (e.g., 'pXX') so the LLM "
+                f"replaces it with the actual seer ID."
             )
             # P1-8: vote_basis is "seer_siding" for non-seer roles
             # (they have no check of their own).
@@ -3945,6 +3966,31 @@ class TestHardConstraintLabelUniqueness:
         assert count <= 1, (
             f"multiple 硬约束 labels in single prompt: {count} occurrences\n{user_prompt!r}"
         )
+
+
+class TestFormatExamplesNoHardcodedID:
+    """审查 C4: vote 示例不应硬编码 p03 作为预言家 ID。"""
+
+    def test_vote_example_does_not_hardcode_p03(self):
+        # Use a VOTE action context (not VOTE-only) so _format_examples
+        # branch is taken and the vote example is rendered. We use a
+        # non-seer own_role so the non-seer branch (which had the p03
+        # hardcode) is taken.
+        from unittest.mock import MagicMock
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        from werewolf_agent.agents.schemas import ActionType
+        mock_ctx = MagicMock()
+        mock_ctx.legal_actions = [ActionType.VOTE]
+        mock_ctx.legal_targets = [f"p{i:02d}" for i in range(1, 13)]
+        mock_ctx.own_role = "villager"  # non-seer branch (had p03 hardcode)
+        mock_ctx.task_type = None
+        # 触发 _format_examples 路径
+        builder = PlayerPromptBuilder(mock_ctx)
+        examples = builder._format_examples()
+        # 不应出现 "standing_with_seer": "p03" 这类硬编码
+        import re as _re
+        match = _re.search(r'"standing_with_seer"\s*:\s*"p03"', examples)
+        assert not match, f"_format_examples hardcodes p03 as seer: {match.group(0)}"
 
 
 if __name__ == "__main__":

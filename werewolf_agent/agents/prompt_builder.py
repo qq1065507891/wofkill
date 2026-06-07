@@ -1321,7 +1321,11 @@ class PlayerPromptBuilder:
                 # vote_basis is "seer_siding" not "seer_check".
                 vote_basis = "seer_check"
             else:
-                vote_standing_with_seer = "p03"
+                # C4: vote 段示例 standing_with_seer 用 pXX 占位符 —
+                # 占位符标记此处填的是"本局真实预言家 ID"，由 LLM
+                # 替换为当前局实际的预言家 ID（不应硬编码 p03，避免
+                # LLM 把示例里的 ID 直接抄到输出里）。
+                vote_standing_with_seer = "pXX"
                 vote_basis = "seer_siding"
             parts.append("示例输出（投票场景）：")
             parts.append('{"action_type": "vote", "target_id": "p05", '
