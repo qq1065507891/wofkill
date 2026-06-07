@@ -4,10 +4,65 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **All 3 Prompt-Audit Phases MERGED to master** — 2026-06-06
+- Current phase: **g_3223805846 Postmortem Fixes MERGED to master** — 2026-06-07
 - Active task: Awaiting decision on push / PR / further work
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-07
+
+---
+
+## g_3223805846 Postmortem — 2026-06-07
+
+Analyzed game `game_g_3223805846.json` (werewolf 胜, 4 days / 5 nights).
+Identified 24 issues spanning prompt design (12) and engineering (12).
+Implemented 22 fixes (3 deferred to v2) via 2 worktree branches in subagent-driven mode.
+
+Plan: `docs/superpowers/plans/2026-06-07-g3223805846-fixes.md`.
+
+### fix10-prompt-g3223805846 (9 prompt fixes + 5 follow-ups, 14 commits)
+
+Branch: `fix10-prompt-g3223805846` (worktree `.worktrees/fix10-prompt`).
+**MERGED** to master: `6a412c9`.
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| A1 | fake-seer 公开话术禁止列举真实刀口 ID | `werewolf_agent/runtime/directives/wolf.py:13-23` | `649ad7d` + `6ed38f2` (test guard fix) |
+| A2 | 狼 prompt 注入实时'已跳预言家'列表（解 N2 幻觉） | `werewolf_agent/runtime/directives/wolf.py:71-92` | `636d5db` + `621c438` (dead-text + test tighten) + `608632f` (PROGRESS) |
+| A3 | seer 后位硬约束：第 1 句亮身份 + 报查杀 | `werewolf_agent/runtime/directives/seer.py` + `agent_adapter.py:838-844` | `2b31996` + `02ff2b4` (state persist pre-dispatch) |
+| A4 | 各狼角色 fake_seer 话术一致条款 | `werewolf_agent/runtime/directives/wolf.py` | `2cfda85` + `a646553` (explicit self-consistency test) |
+| A5 | 女巫毒药/解药加公开依据硬约束 | `werewolf_agent/runtime/directives/witch.py:29-50` | `52235a5` |
+| A6 | 猎人开枪前 ≥2 独立公开证据 + 孤证 no_action 兜底 | `werewolf_agent/runtime/directives/hunter.py:39-62` | `38ba673` |
+| A7 | 混血儿跟随规则按主人可见性切换 | `werewolf_agent/runtime/directives/hybrid.py:48-90` | `193837d` |
+| A8 | vote 阶段 reason 私视角表述禁令牌 | `werewolf_agent/agents/prompt_builder.py` | `cec2657` |
+| A9 | 警徽流失时 vote 加归票 hint | `werewolf_agent/runtime/directives/_shared.py` + `agent_adapter.py` | `8e72855` |
+
+### fix11-engineering-g3223805846 (6 engineering + 1 observability, 7 commits)
+
+Branch: `fix11-engineering-g3223805846` (worktree `.worktrees/fix11-engineering`).
+**MERGED** to master: `77e3d97`.
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| B1 | vote fallback target 永不为 null + 优先 suspect | `werewolf_agent/agents/player.py:888-928` | `8af5b91` |
+| B2 | tally 排除死人 vote | `werewolf_agent/runtime/nodes/day.py:470-578` | `4b8d199` |
+| B3 | seer PK 段 fallback 必须给非空内容 | `werewolf_agent/agents/player.py` (`_fallback_speech`) | `7d15f31` |
+| B4 | `_format_examples` 头部强化 action_type 字段名 | `werewolf_agent/agents/prompt_builder.py` | `41d1714` |
+| B5 | 常见 LLM typo 归一化 | `werewolf_agent/agents/output_parser.py` | `8f7744d` |
+| B6 | `_planned_wolf_kill` 跳过死人 primary | `werewolf_agent/runtime/nodes/_shared.py:610-643` | `4aafa1f` |
+| C1 | `ActionTrace.total_retry_count_until_success` 字段 | `werewolf_agent/agents/schemas.py:166` + `player.py:624-626` | `f953cae` |
+
+### Deferred to v2 (not in this batch)
+
+- 狼 N5 决策全靠 FALLBACK（solo-wolf fallback 增强）
+- `wolf_kill_selected.action_traces` 结构统一
+- trace 体积优化（541KB → silent mode）
+
+### Final test results (master, post-merge)
+
+- `pytest tests/runtime/ tests/agents/ tests/rules/ tests/memory/ tests/rag/ tests/skills/ tests/cognition/ tests/model_gateway/` → **2117 passed, 0 failed** in 74.33s
+- Test count progression: 2097 (post-fix10) → 2097 (post-fix11) → 2117 (master post-merge)
+- Net +20 new tests across 16 commits (excluding 2 follow-up commits and 1 PROGRESS doc commit)
+- 2 test-file merge conflicts resolved (both at file end, kept both `class` blocks)
 
 ### fix10 A2 follow-up (g_3223805846) — 2026-06-07
 
