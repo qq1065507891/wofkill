@@ -1458,3 +1458,69 @@ def _build_must_address_alerts(alerts, viewer_id=None):
             }
             result.append(entry)
     return result
+
+
+# =====================================================================
+# E2 (post-review-v2): _extract_seer_check 不应全表扫 state.players 找 seer
+# =====================================================================
+
+class TestExtractorSeerCheckSignature:
+    """E2 (post-review-v2): _extract_seer_check 签名应接受 seer_id 参数，不做全表扫。"""
+
+    def test_seer_check_extractor_does_not_loop_state_players(self):
+        from werewolf_agent.cognition import world_state
+        import inspect
+        # _extract_seer_check 源码不应再做 `for p in state.players` 全表扫
+        fn = getattr(world_state, "_extract_seer_check", None)
+        assert fn is not None, "world_state._extract_seer_check must exist"
+        fn_src = inspect.getsource(fn)
+        # 旧实现: next(p for pid, p in state.players.items() if p.role == "seer")
+        # 新实现: 应直接接 seer_id 参数
+        assert "state.players" not in fn_src, (
+            f"_extract_seer_check still loops state.players (全表扫):\n{fn_src[:500]}"
+        )
+        assert "for.*p in state.players" not in fn_src or "seer_id" in fn_src, (
+            f"_extract_seer_check still scans state.players for seer:\n{fn_src[:500]}"
+        )
+
+    def test_seer_check_extractor_accepts_seer_id_param(self):
+        from werewolf_agent.cognition import world_state
+        import inspect
+        fn = getattr(world_state, "_extract_seer_check", None)
+        assert fn is not None
+        sig = inspect.signature(fn)
+        params = list(sig.parameters.keys())
+        # 应包含 seer_id 参数
+        assert "seer_id" in params, (
+            f"_extract_seer_check should accept seer_id as parameter, got: {params}"
+        )
+
+    def test_seer_check_extractor_uses_seer_id(self):
+        """E2 (post-review-v2): _extract_seer_check 实际调用时使用传入的 seer_id。"""
+        from werewolf_agent.cognition.world_state import _extract_seer_check
+        event = GameEvent(
+            type="seer_check",
+            payload={"target_id": "p01", "alignment": "werewolf", "night_number": 1},
+        )
+        # 直接调用，传入 seer_id="p08"
+        facts = _extract_seer_check(event, seer_id="p08")
+        assert len(facts) == 1
+        assert facts[0].source_player == "p08", (
+            f"_extract_seer_check should use injected seer_id, got: {facts[0].source_player}"
+        )
+        assert facts[0].target_player == "p01"
+        assert facts[0].value == "werewolf"
+
+    def test_extract_facts_seer_check_via_dispatch(self):
+        """E2 (post-review-v2): extract_facts 调度 seer_check 时也用注入的 seer_id。"""
+        from werewolf_agent.cognition.world_state import extract_facts
+        state = _make_state()
+        event = GameEvent(
+            type="seer_check",
+            payload={"target_id": "p01", "alignment": "werewolf", "night_number": 1},
+        )
+        facts = extract_facts(event, state)
+        # _make_state 中 p08 是 seer
+        assert facts[0].source_player == "p08", (
+            f"extract_facts did not resolve seer_id to p08: {facts[0].source_player}"
+        )
