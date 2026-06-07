@@ -4,6 +4,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+_GOOD_ROLES = frozenset({"villager", "seer", "witch", "hunter", "idiot"})
+
+
+def _derive_faction(role: str) -> str | None:
+    """E3 (post-review-v2): 从 role 推导 faction。"""
+    if role == "werewolf":
+        return "werewolf"
+    if role in _GOOD_ROLES:
+        return "good"
+    # hybrid 在未选 master 时 faction 是 None
+    return None
+
+
 @dataclass(frozen=True)
 class PlayerState:
     id: str
@@ -13,6 +26,14 @@ class PlayerState:
     vote_enabled: bool = True
     badge_eligible: bool = True
     exile_immune: bool = False
+    faction: str | None = None  # E3: 缺省从 role 推导（hybrid → None）
+
+    def __post_init__(self) -> None:
+        # E3 (post-review-v2): faction 缺省时按 role 推导
+        if self.faction is None and self.role:
+            derived = _derive_faction(self.role)
+            if derived is not None:
+                object.__setattr__(self, "faction", derived)
 
 
 @dataclass(frozen=True)

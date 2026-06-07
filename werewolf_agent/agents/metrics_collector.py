@@ -71,9 +71,21 @@ class MetricsCollector:
         with self._lock:
             return self._profiles.get(player_id, PlayerFailureProfile(player_id=player_id))
 
-    def get_top_failures(self, *, n: int = 5) -> list[PlayerFailureProfile]:
+    def get_top_failures(
+        self, *, n: int = 5, min_sample_count: int = 0
+    ) -> list[PlayerFailureProfile]:
+        """P-A1 (post-review-v2): 过滤小样本玩家，避免冷启动单人拉高排序。
+
+        Args:
+            n: 返回 top N。
+            min_sample_count: 最小样本数阈值，低于此值的玩家被排除。默认 0
+                （保持向后兼容）。
+        """
         with self._lock:
-            candidates = [p for p in self._profiles.values() if p.sample_count > 0]
+            candidates = [
+                p for p in self._profiles.values()
+                if p.sample_count >= min_sample_count and p.sample_count > 0
+            ]
             candidates.sort(key=lambda p: (p.fallback_rate, p.sample_count), reverse=True)
             return candidates[:n]
 

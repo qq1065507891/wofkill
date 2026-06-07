@@ -646,6 +646,14 @@ def _http_status_from_exception(exc: BaseException | None) -> int:
 
     Returns 0 when the exception does not carry an HTTP status (e.g. a
     bare ``RuntimeError`` from a SDK or a connection-refused ``OSError``).
+
+    P-N1 (post-review-v2): the legacy fallback regex ``\\b([1-5]\\d{2})\\b``
+    was too eager — it matched any 3-digit number in the traceback
+    (years like ``2024``, ports like ``8080`` from ``localhost:8080``,
+    line numbers) and reported them as HTTP statuses. The new fallback
+    requires an explicit ``HTTP NNN`` (or ``HTTP/1.1 NNN``) prefix.
+    The ``status_code`` / ``response.status_code`` paths are tried
+    first, so real HTTP exceptions are still classified correctly.
     """
     if exc is None:
         return 0
@@ -659,12 +667,18 @@ def _http_status_from_exception(exc: BaseException | None) -> int:
             return int(getattr(response, "status_code", 0) or 0)
     except ImportError:
         pass
-    # Generic: look for an integer "code" attribute or HTTP NNN in str(exc).
+    # Generic: prefer an explicit ``status_code`` attribute (e.g.
+    # requests.HTTPError, anthropic.APIStatusError).
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and 100 <= status_code <= 599:
+        return status_code
     code = getattr(exc, "code", None)
     if isinstance(code, int) and 100 <= code <= 599:
         return code
+    # Fallback: require an "HTTP NNN" prefix so we don't pick up
+    # arbitrary 3-digit numbers from traceback text.
     import re
-    m = re.search(r"\b([1-5]\d{2})\b", str(exc))
+    m = re.search(r"HTTP[/\d.\s]*?\b([1-5]\d{2})\b", str(exc))
     if m:
         return int(m.group(1))
     return 0

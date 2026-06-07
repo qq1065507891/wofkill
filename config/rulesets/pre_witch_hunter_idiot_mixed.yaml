@@ -453,3 +453,7 @@ validation:
   exactly_one_idiot: true
   werewolf_count: 4
   villager_count: 3
+
+game_rules:
+  base_vote_weight: 2
+  sheriff_weight: 1.5

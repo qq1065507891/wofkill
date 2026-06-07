@@ -370,15 +370,14 @@ def _extract_vote(event: GameEvent, state: GameState) -> list[StructuredFact]:
     )]
 
 
-def _extract_seer_check(event: GameEvent, state: GameState) -> list[StructuredFact]:
+def _extract_seer_check(event: GameEvent, seer_id: str) -> list[StructuredFact]:
+    """E2 (post-review-v2): seer_id 由外部 dispatch 注入，函数体不做全表扫。"""
     target = event.payload.get("target_id", "?")
     alignment = event.payload.get("alignment") or event.payload.get("result", "?")
     night = event.payload.get("night_number", 0)
-    # seer_id not in payload (only one seer), mark source as seer role
-    seer = next((pid for pid, p in state.players.items() if p.role == "seer"), "?")
     return [StructuredFact(
         fact_type="seer_check",
-        source_player=seer,
+        source_player=seer_id,
         target_player=target,
         night=night,
         value=str(alignment),
@@ -427,6 +426,13 @@ def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
             fact_type=event.type,
             value=str(event.payload)[:200],
         )]
+    # E2 (post-review-v2): seer_check 走特殊路径，seer_id 在 dispatch 入口预计算
+    if event.type == "seer_check":
+        seer_id = next(
+            (pid for pid, p in state.players.items() if p.role == "seer" and p.alive),
+            "?",
+        )
+        return _extract_seer_check(event, seer_id)
     return extractor(event, state)
 
 

@@ -28,3 +28,11 @@ def test_sqlite_schema_matches_migration_v1():
         f"schema drift:\n  in _SCHEMA only: {schema_tables - migration_tables}\n"
         f"  in migration v1 only: {migration_tables - schema_tables}"
     )
+
+
+def test_sqlite_schema_has_reflections_table():
+    """S3 (post-review-v2): SQLite _SCHEMA 应含 reflections 表。"""
+    from werewolf_agent.storage.sqlite_store import _SCHEMA
+    assert "CREATE TABLE IF NOT EXISTS reflections" in _SCHEMA, (
+        f"SQLite _SCHEMA missing reflections table"
+    )

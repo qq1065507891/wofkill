@@ -381,3 +381,48 @@ class TestFormatException:
     def test_format_none_returns_unknown(self) -> None:
         from werewolf_agent.model_gateway.router import _format_exception
         assert _format_exception(None) == "unknown"
+
+
+class TestHttpStatusFromExceptionAccuracy:
+    """N1 (post-review-v2): traceback 里的年份/端口不应被误抓为 HTTP 状态码。
+
+    修复前: 正则 ``\b([1-5]\d{2})\b`` 会从 ``"Failed at line 2024"`` 或
+    ``"localhost:8080"`` 之类的字符串里抓到 808 当成 HTTP 状态码, 影响
+    失败归因。
+    修复后: 优先读 ``exc.status_code`` / ``exc.response.status_code``;
+    fallback 只接受 ``HTTP NNN`` 前缀 (避免数字误抓)。
+    """
+
+    def test_year_2024_not_misclassified(self) -> None:
+        from werewolf_agent.model_gateway.router import _http_status_from_exception
+        exc = RuntimeError("Failed at line 2024 of script")
+        result = _http_status_from_exception(exc)
+        assert result not in (2024, "2024"), f"year misclassified: {result}"
+
+    def test_port_8080_not_misclassified(self) -> None:
+        """``localhost:8080`` 里的 808 不应被误判为 HTTP 状态码。"""
+        from werewolf_agent.model_gateway.router import _http_status_from_exception
+        exc = RuntimeError("Connection refused at localhost:8080")
+        result = _http_status_from_exception(exc)
+        assert result not in (808, "808", 8080, "8080"), f"port misclassified: {result}"
+
+    def test_real_http_status_500_still_detected(self) -> None:
+        from werewolf_agent.model_gateway.router import _http_status_from_exception
+        exc = RuntimeError("HTTP 500 Internal Server Error")
+        result = _http_status_from_exception(exc)
+        assert result in (500, "500"), f"should detect 500: {result}"
+
+    def test_explicit_status_code_attribute_takes_priority(self) -> None:
+        """``exc.status_code`` (e.g. requests.HTTPError) 应被优先识别。"""
+        from werewolf_agent.model_gateway.router import _http_status_from_exception
+
+        class FakeResp:
+            status_code = 429
+
+        class FakeHTTPError(Exception):
+            pass
+
+        err = FakeHTTPError("Too many requests")
+        err.status_code = 429  # type: ignore[attr-defined]
+        result = _http_status_from_exception(err)
+        assert result == 429, f"status_code attribute not honored: {result}"

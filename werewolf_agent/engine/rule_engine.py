@@ -495,7 +495,7 @@ class RuleEngine:
             if target_id not in legal_targets:
                 continue
             sheriff_weight = float(self.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
-            base_weight = 2
+            base_weight = int(self.ruleset.raw.get("game_rules", {}).get("base_vote_weight", 2))
             weight = round(sheriff_weight * base_weight) if (
                 voter_id == state.sheriff_id and state.sheriff_badge_state == "active"
             ) else base_weight

@@ -152,36 +152,43 @@ def _openai_chat_completions_url(base_url: str) -> str:
     real OpenAI-compatible gateways that use non-/v1 API versions
     (e.g. ``/v1beta/chat/completions``).
 
-    New rules:
-    - last segment is integer ``/vN`` (v1, v2, v3, v4, ...): append
-      /chat/completions — matches the documented ``/v1`` and integer
-      ``/vN`` OpenAI-compatible versions.
-    - last segment is a non-integer versioned path (e.g. ``/v1beta``,
-      ``/v2beta``): fall back to the canonical
-      ``{scheme://host}/v1/chat/completions`` URL — the legacy
-      substring check erroneously matched these.
+    P-N2 (post-review-v2): the post-R3-MG-10 "fall back to /v1" fix
+    was itself too aggressive — it stripped declared version segments
+    like ``/v1beta``, ``/v2beta``, ``/v4beta``, ``/v5alpha`` and
+    re-routed to ``/v1/chat/completions``, which 404s on gateways that
+    use the versioned path. Real OpenAI-compatible gateways
+    (Zhipu / Baidu / Anthropic-compatible) treat ``vN`` / ``vNbeta`` /
+    ``vNalpha`` as legitimate, stable API versions. The new rule
+    preserves ANY versioned segment the caller declared.
+
+    Rules:
+    - last segment is ``vN`` (integer) or ``vN<letters>`` (e.g.
+      ``v1``, ``v2``, ``v1beta``, ``v2beta``, ``v4beta``, ``v5alpha``):
+      append ``/chat/completions`` directly.
     - last segment is something else (e.g. ``/coding``, ``/api``):
-      preserve the path and append /chat/completions — preserves
+      preserve the path and append ``/chat/completions`` — preserves
       real-world OpenAI-compatible gateways like
       ``https://qianfan.baidubce.com/v2/coding`` whose /vN lives in
       the middle of the path, not at the end.
-    - last segment is the bare host (no path at all): default to
-      /v1/chat/completions.
+    - last segment is the bare host (no path at all) or default
+      ``https://api.openai.com``: default to /v1/chat/completions.
+    - URL already ends in ``/chat/completions``: return as-is.
     """
     import re
     from urllib.parse import urlparse
     normalized = base_url.rstrip("/")
+    # Pass through if the URL is already a chat-completions URL.
+    if normalized.endswith("/chat/completions"):
+        return normalized
     last_segment = normalized.rsplit("/", 1)[-1] if normalized else ""
-    if re.fullmatch(r"v\d+", last_segment):
-        return f"{normalized}/chat/completions"
+    # P-N2: preserve ANY versioned suffix (v1, v2, v1beta, v4beta,
+    # v5alpha, ...). The R3-MG-10 "fall back to /v1" branch was
+    # wrong — it stripped the caller's declared version.
     if re.fullmatch(r"v\d+\w*", last_segment):
-        # Non-integer versioned segment (e.g. v1beta, v2beta) — the
-        # legacy substring check erroneously appended /chat/completions
-        # here. Strip the bad segment and fall back to canonical /v1.
-        parsed = urlparse(normalized)
-        host = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme else normalized
-        return f"{host}/v1/chat/completions"
-    if normalized != "https://api.openai.com":
+        return f"{normalized}/chat/completions"
+    # Non-versioned last segment with a path (e.g. /v2/coding) — keep
+    # the path the caller declared and append /chat/completions.
+    if normalized and normalized != "https://api.openai.com":
         return f"{normalized}/chat/completions"
     return f"{normalized}/v1/chat/completions"
 

@@ -76,6 +76,14 @@ MIGRATIONS: list[Migration] = [
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS reflections (
+            entry_id TEXT PRIMARY KEY,
+            game_id TEXT NOT NULL,
+            player_id TEXT NOT NULL,
+            entry_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_reflections_game ON reflections (game_id);
+        CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id);
         """,
     ),
 ]
