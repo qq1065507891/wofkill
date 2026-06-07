@@ -4,10 +4,77 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Post-Review Fixes MERGED to master** — 2026-06-07
+- Current phase: **Post-Post-Review Fixes MERGED to master** — 2026-06-07
 - Active task: Awaiting decision on push / PR / further work
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-07
+
+---
+
+## Post-Post-Review Fixes — 2026-06-07
+
+Second-round reviews (4 subagent reports) surfaced 21 issues. Implemented 19 fixes (1 deferred to v2) via 3 worktree branches in subagent-driven mode. The 7 P0 issues were regressions / incomplete fixes from the previous batch.
+
+Plan: `docs/superpowers/plans/2026-06-07-post-review-v2-fixes.md`.
+
+### fix15-prompt-v2 (4 commits, MERGED)
+
+Branch: `fix15-prompt-v2` (worktree `.worktrees/fix15-prompt`).
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| P1 | vote 示例 13 处硬编码 p0X 改 pXX 占位符 (C4 完整化) | `werewolf_agent/agents/prompt_builder.py:1330-1343` | `190ce3a` |
+| P2 | FULL_ACTION vote 路径也注入 _VOTE_REASON_PRIVACY_GUARD (A8 回归) | `werewolf_agent/agents/prompt_builder.py:1175-1183` | `46104fb` |
+| P3 | wolf_universal_rules / anti_herd 从 SUGGESTION 移 HARD (tier 漂移) | `werewolf_agent/agents/prompt_builder.py:142-160` | `07bacec` |
+| P4 | 移除 _most_suspect_target 死分支 (B1 半成品) | `werewolf_agent/agents/player.py:906-932` | `a3babbd` |
+
+### fix16-arch-v2 (12 commits, MERGED)
+
+Branch: `fix16-arch-v2` (worktree `.worktrees/fix16-arch`).
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| S1 | PostgresGameRepository 30 个 SQL 方法加 self._lock 包裹 | `werewolf_agent/storage/postgres_store.py` | `474e265` |
+| S2 | Postgres _ensure_schema 补 schema_version 表 | `werewolf_agent/storage/postgres_store.py` | `f45b817` |
+| S3 | SQLite _SCHEMA 补 reflections 表 + migrations v1 同步 | `werewolf_agent/storage/sqlite_store.py` + `migrations.py` | `99e2a59` |
+| S4 | GameRepository Protocol 补 8 reflection/snapshot 方法 + InMemoryGameRepository 实现 | `werewolf_agent/storage/repository.py` + `memory_store.py` | `e2689a1` |
+| M1 | MemoryStore.save_review 持久化到 repo | `werewolf_agent/memory/store.py` | `d2c9be3` |
+| N1 | _http_status_from_exception 优先读 exc.status_code | `werewolf_agent/model_gateway/router.py` | `6f26f3f` |
+| N2 | OpenAI URL 归一化保留 v4beta / v5beta 等版本号 | `werewolf_agent/model_gateway/providers/openai.py` | `1d0df67` |
+| N3 | Anthropic text-fallback 改标准 JSON 解析，移除 `{"` 前缀注入 | `werewolf_agent/model_gateway/providers/anthropic.py` + `minimax.py` | `0c591df` |
+| E1 | sheriff 票权重从 ruleset.base_vote_weight 读取 | `werewolf_agent/engine/rule_engine.py` + YAML | `a2e01b2` |
+| E2 | _extract_seer_check 签名收敛，seer_id 由 extract_facts 注入 | `werewolf_agent/cognition/world_state.py` | `1ba5735` |
+| E3 | PlayerState 加 faction 字段，默认从 role 推导 | `werewolf_agent/core/models.py` | `7a30314` |
+| A1 | metrics_collector.get_top_failures 加 min_sample_count 过滤 | `werewolf_agent/agents/metrics_collector.py` | `6cbfb6f` |
+
+### fix17-periphery-v2 (5 commits, MERGED)
+
+Branch: `fix17-periphery-v2` (worktree `.worktrees/fix17-periphery`).
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| SK1 | SKILL.md 正文注入到 prompt (markdown-driven 真正生效) | `werewolf_agent/skills/werewolf_skills.py` + `registry.py` + `schemas.py` | `8f27f08` |
+| P5 | judge_router.task_styles 拼进 system_prompt (撤销 P1-4 revert) | `werewolf_agent/persona_runtime/judge_router.py` | `06f88fc` |
+| C1 | _UNICODE_SUSPICIOUS_RANGES 改 \u 转义 | `werewolf_agent/customization/validators.py` | `88d2d69` |
+| C2 | persona_adapter._slug 显式 CJK 范围 | `werewolf_agent/customization/persona_adapter.py` | `97b9d97` |
+| U1 | /games/{id}/rag-audit 路由加回，修 dashboard.js 404 | `werewolf_agent/api/routes/games.py` | `07fbe19` |
+
+### Deferred to v3
+
+- 性能三大问题（time.sleep 串行 / O(N²) 评估 / 双重计算）— 仍占每局 ~800s 墙钟
+- Directive builders 拿 `gs` 而非 `visible`（架构大改）— 跨 9 个 directive 文件
+- world_state extractor 全表扫只对 `_extract_seer_check` 收敛，剩余 18 个 extractor 保留 `(event, state)` 签名（E2 spec 已记 deferred）
+- views.py 拆 projections.py
+- evaluation/runner.py mock-based 决策
+- `evaluate_wolf_kill_target` 在 `_single_wolf_vote` + `_build_wolf_kill_directive` 双重计算
+
+### Final test results (master, post-3-branch-merge)
+
+- `pytest tests/runtime/ tests/agents/ tests/rules/ tests/memory/ tests/rag/ tests/skills/ tests/cognition/ tests/model_gateway/ tests/storage/ tests/api/ tests/customization/ tests/tools/ tests/evaluation/ tests/core/ tests/persona_runtime/` → **2680 passed, 0 failed** in 76.17s
+- Test count progression: 2628 (post post-review-v1) → 2680 (post post-review-v2) — +52 新增测试
+- 19 commits (4+12+5) across 3 worktree branches
+- 3 个 `--no-ff` merge，**0 conflict**
+- 2 个 false-positive 由前轮 implementer 验证（U1.3 + N1 之前的 hunter 6 状态）
 
 ---
 
