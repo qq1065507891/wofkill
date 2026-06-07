@@ -157,7 +157,19 @@ class SkillRegistry:
             if s.faction in allowed
             and s.is_applicable(effective_role, phase, task_type=task_type)
         ]
-        return [self.dispatch(s.name, skill_input) for s in skills]
+        outputs = [self.dispatch(s.name, skill_input) for s in skills]
+        # P-SK1: 把 SKILL.md 正文（markdown body）追加到每个
+        # SkillOutput.prompt_injectable 末尾的 "## 技能说明" 段。
+        # 散文形式的设计/使用/注意事项由此真正进入 LLM 的视野 —
+        # markdown-driven 设计的"驱动"语义由此字段落地。无 body
+        # 的 skill（如纯 Python handler 自带完整 advice 的）保持
+        # 现状不变。
+        for skill_def, out in zip(skills, outputs):
+            if skill_def.body and out.prompt_injectable:
+                out.prompt_injectable += (
+                    f"\n\n## 技能说明\n{skill_def.body}\n"
+                )
+        return outputs
 
     def names(self) -> list[str]:
         return [s.name.value for s in self._skills.values()]

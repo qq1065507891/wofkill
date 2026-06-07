@@ -110,16 +110,17 @@ PROMPT_INJECTION_MARKERS = (
 )
 
 # Unicode 同形字符检测：零宽字符和混淆字符
+# C1 (post-review-v2): 用 \u 转义避免 IDE/工具链误删不可见字符。
 _UNICODE_SUSPICIOUS_RANGES = (
-    "​",  # 零宽空格
-    "‌",  # 零宽非连接符
-    "‍",  # 零宽连接符
-    "﻿",  # BOM / 零宽不换行空格
-    "‪",  # 从左到右嵌入
-    "‫",  # 从右到左嵌入
-    "‬",  # 弹出方向格式
-    "‭",  # 从左到右覆盖
-    "‮",  # 从右到左覆盖
+    "​",  # ​ zero-width space
+    "‌",  # ‌ zero-width non-joiner
+    "‍",  # ‷ zero-width joiner
+    "﻿",  # ﻿ BOM / 零宽不换行空格
+    "‪",  # ‪ LRM (left-to-right mark)
+    "‫",  # ‫ RLM (right-to-left mark)
+    "‬",  # ‬ ALM (deprecated in 2024)
+    "‭",  # ‭ LRO (left-to-right override)
+    "‮",  # ‮ RLO (right-to-left override)
 )
 
 

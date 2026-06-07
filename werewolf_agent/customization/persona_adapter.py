@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -79,9 +80,18 @@ def _level(value: Any) -> float:
 
 
 def _slug(value: Any) -> str:
-    text = str(value or "default").strip().lower()
-    chars = [ch if ch.isalnum() else "_" for ch in text]
-    slug = "".join(chars).strip("_")
-    while "__" in slug:
-        slug = slug.replace("__", "_")
-    return slug or "default"
+    """C2 (post-review-v2): 保留 ASCII alnum + CJK 字符 + 日文假名。
+
+    原始实现使用 ``str.isalnum()``，虽然对 CJK 有效，但意图不显式：
+    一旦 Python 解释器/locale 改变（例如窄构建或 pypy 行为差异），
+    行为就可能回退为把 CJK 替换为 ``_``。本实现显式列出允许的
+    Unicode 区间，让行为可预测、可审计。
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return "default"
+    # \w 覆盖 ASCII 字母数字 + 下划线；再显式加上 CJK 统一表意符号
+    # 和日文平假名/片假名。其它字符压成 ``-`` 以便 profile_id 可读。
+    cleaned = re.sub(r"[^\w一-鿿぀-ヿ]+", "-", text)
+    cleaned = cleaned.strip("-")
+    return cleaned or "default"
