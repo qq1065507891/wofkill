@@ -3057,7 +3057,15 @@ class TestMissingToolCallHintAdaptsToTextFallback:
 
 class TestVoteFallbackNotNull:
     """P1-G3223805846-1: vote fallback must pick a non-null target from
-    legal_targets and prefer the most-suspect target from strategy_directive.
+    legal_targets.
+
+    P4 (post-review-v2): the prior "prefer _most_suspect_target" assertion
+    is removed — that key has no producer (grep returns zero hits outside
+    the consumer in player.py), so the path is dead code.  The
+    ``_vote_fallback_target`` key still drives the choice when present,
+    otherwise the fallback falls through to ``non_self[0]``.  See
+    ``TestMostSuspectTargetResolution`` for the explicit dead-path
+    regression.
     """
 
     def _make_agent(self) -> PlayerAgent:
@@ -3083,20 +3091,6 @@ class TestVoteFallbackNotNull:
         assert fb.target_id is not None, "vote fallback must pick a target"
         assert fb.target_id in ctx.legal_targets
         assert fb.target_id != ctx.agent_id, "vote fallback must not pick self"
-
-    def test_fallback_vote_prefers_most_suspect_when_available(self) -> None:
-        ctx = AgentContext(
-            agent_id="p08",
-            task_type=TaskType.VOTE,
-            legal_actions=[ActionType.VOTE],
-            legal_targets=["p02", "p03", "p05", "p07"],
-            strategy_directive={"_most_suspect_target": "p05"},
-        )
-        agent = self._make_agent()
-        fb = agent._fallback_action(ctx)
-        assert fb.target_id == "p05", (
-            f"expected most-suspect p05, got {fb.target_id}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -3164,4 +3158,28 @@ class TestSeerPKNonEmptyProtection:
         assert speech and len(speech) > 10
         assert "预言家" in speech, (
             f"seer PK fallback without wolves lost identity: {speech!r}"
+        )
+
+
+class TestMostSuspectTargetResolution:
+    """P4 (post-review-v2): _most_suspect_target 路径在无 producer 时不应被消费。"""
+
+    def test_most_suspect_target_falls_through_to_non_self(self):
+        from werewolf_agent.agents.player import PlayerAgent
+        from werewolf_agent.agents.schemas import (
+            ActionType, AgentContext, FallbackAction, TaskType,
+        )
+        ctx = AgentContext(
+            agent_id="p08",
+            task_type=TaskType.VOTE,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02", "p03", "p05", "p07"],
+            strategy_directive={"_most_suspect_target": "p05"},
+        )
+        agent = PlayerAgent(agent_id="p08", model_router=None)
+        fb = agent._fallback_action(ctx)
+        # _most_suspect_target 路径已删除，fallthrough 到 non_self[0] = p02
+        assert fb.target_id == "p02", (
+            f"_most_suspect_target still consumed (no producer exists): got {fb.target_id}, want p02"
         )
