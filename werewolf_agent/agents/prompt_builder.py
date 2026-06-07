@@ -1171,6 +1171,15 @@ class PlayerPromptBuilder:
         # use_poison / badge_transfer / badge_tear / choose_master /
         # speech / vote), 在示例渲染前一次性注入,比每个分支都改更稳。
         parts.append(_ACTION_TYPE_GUARD)
+        # P2 (post-review-v2): vote 阶段 FULL_ACTION 路径也注入
+        # _VOTE_REASON_PRIVACY_GUARD。 之前该 guard 只在
+        # ``_format_choice_prompt`` (单动作 [VOTE] → TARGET_CHOICE)
+        # 注入；当 legal_actions 含 VOTE + 其他动作 (例如 VOTE +
+        # NO_ACTION) 时路由到 FULL_ACTION 走 ``_format_examples``，
+        # 隐私 guard 缺失，LLM 在 reason 字段会写入私视角表述
+        # (g_3223805846 复现)。 与 _format_choice_prompt 路径对齐。
+        if ActionType.VOTE in (ctx.legal_actions or []):
+            parts.append(_VOTE_REASON_PRIVACY_GUARD)
         # P0-S7: claimed_view is documented as an identity-perspective
         # identifier (PrivateIntent schema), not a free-form Chinese
         # phrase. Use the canonical enum-style values so the LLM copies

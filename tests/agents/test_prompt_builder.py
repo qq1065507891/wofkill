@@ -4017,5 +4017,27 @@ class TestFormatExamplesNoHardcodedIDComplete:
             )
 
 
+class TestVoteReasonGuardInFullActionPath:
+    """P2 (post-review-v2): vote 阶段 FULL_ACTION 模式也应注入 _VOTE_REASON_PRIVACY_GUARD。"""
+
+    def test_vote_full_action_includes_privacy_guard(self):
+        from werewolf_agent.agents.schemas import ActionType, AgentContext, RetryInfo, TaskType
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],  # 多动作触发 FULL_ACTION
+            legal_targets=[f"p{i:02d}" for i in range(1, 13)],
+            strategy_directive={},
+        )
+        builder = PlayerPromptBuilder(ctx)
+        user_prompt = builder.build_user_prompt(RetryInfo())
+        # 隐私 guard 关键词必出现（"禁止" + "private_intent"）
+        assert "禁止" in user_prompt and "private_intent" in user_prompt, (
+            f"FULL_ACTION vote path missing _VOTE_REASON_PRIVACY_GUARD"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
