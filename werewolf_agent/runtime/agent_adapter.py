@@ -1018,6 +1018,64 @@ def agent_sheriff_pick_speech_order(
     return None
 
 
+def agent_sheriff_endorse(
+    state: dict[str, Any],
+    engine: RuleEngine,
+    registry: AgentRegistry,
+    sheriff_id: str,
+) -> dict[str, Any] | None:
+    """Sheriff privately decides endorsement target via VOTE action.
+
+    Returns dict with endorse_target / private_reason / action_trace
+    (or None for scripted fallback when no agent is registered).
+    """
+    gs: GameState = state["game_state"]
+    agent = registry.get_agent(sheriff_id)
+    if agent is None:
+        return None
+
+    alive_others = [
+        pid for pid, p in gs.players.items()
+        if p.alive and pid != sheriff_id
+    ]
+
+    strategy_directive = {
+        "sheriff_endorse": (
+            "你是警长。现在所有玩家已经发言完毕，即将开始放逐投票。"
+            "作为警长，你需要归票——选择你认为应该被投票放逐的玩家。"
+            "这是你的私人决策，你的内心理由不会让其他玩家看到。"
+            "但你的归票目标会被法官公开宣布。"
+        ),
+        "legal_endorse_targets": alive_others,
+    }
+
+    context = build_agent_context(
+        engine, gs, sheriff_id, TaskType.VOTE,
+        legal_actions=[ActionType.VOTE],
+        legal_targets=alive_others,
+        wolf_team_plan=state.get("wolf_team_plan"),
+        rag_service=state.get("rag_service"),
+        restored_memory=state.get("restored_memory"),
+    )
+    context = _merge_strategy_directive(context, strategy_directive)
+
+    action, retry_info = agent.act(context)
+    target = action.target_id if action.action_type == ActionType.VOTE else None
+
+    # Validate target is alive and not self
+    if target and target in alive_others:
+        return {
+            "endorse_target": target,
+            "private_reason": getattr(action, "reason", "") or "",
+            "action_trace": _action_trace_payload(action),
+        }
+    return {
+        "endorse_target": "",
+        "private_reason": "",
+        "action_trace": None,
+    }
+
+
 def agent_pk_speech(
     state: dict[str, Any],
     engine: RuleEngine,
