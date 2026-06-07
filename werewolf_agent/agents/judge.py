@@ -7,6 +7,7 @@ It MUST NOT directly decide game outcomes.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
@@ -23,6 +24,8 @@ from werewolf_agent.persona_runtime.judge_router import (
     JudgeProfileRouter,
 )
 from werewolf_agent.runtime.timeline import phase_label
+
+logger = logging.getLogger(__name__)
 
 
 class JudgeAgent:
@@ -220,7 +223,11 @@ class JudgeAgent:
                     public_data={"voter_id": voter_id},
                 )
         except Exception:
-            pass
+            # Review U11: log the underlying failure with traceback
+            # so the audit log captures why the LLM-driven broadcast
+            # was abandoned. The fallback path is preserved so the
+            # game continues to make forward progress.
+            logger.warning("judge.broadcast_vote_calling failed", exc_info=True)
         return JudgeBroadcast(
             broadcast_type="vote_calling",
             message=fallback,
@@ -291,7 +298,8 @@ class JudgeAgent:
                     public_data={"role": role, "player_id": player_id},
                 )
         except Exception:
-            pass
+            # Review U11: see comment in broadcast_vote_calling.
+            logger.warning("judge.guide_skill_use failed", exc_info=True)
         return JudgeBroadcast(
             broadcast_type="skill_guide",
             message=fallback,
@@ -362,7 +370,8 @@ class JudgeAgent:
                     public_data=public_data,
                 )
         except Exception:
-            pass
+            # Review U11: see comment in broadcast_vote_calling.
+            logger.warning("judge.announce_vote_tally failed", exc_info=True)
         return JudgeBroadcast(
             broadcast_type="vote_tally",
             message=fallback,
@@ -452,7 +461,8 @@ class JudgeAgent:
                     public_data=public_data,
                 )
         except Exception:
-            pass
+            # Review U11: see comment in broadcast_vote_calling.
+            logger.warning("judge.announce_exile_result failed", exc_info=True)
         return JudgeBroadcast(
             broadcast_type="exile_result",
             message=fallback,
@@ -525,7 +535,8 @@ class JudgeAgent:
                     },
                 )
         except Exception:
-            pass
+            # Review U11: see comment in broadcast_vote_calling.
+            logger.warning("judge.broadcast_sheriff_result failed", exc_info=True)
         return JudgeBroadcast(
             broadcast_type="sheriff_result",
             message=fallback,
