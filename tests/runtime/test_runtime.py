@@ -182,7 +182,6 @@ from tests.runtime.test_graph_lifecycle import (
     test_route_victory_continues_when_no_winner,
     test_route_after_vote_exile,
     test_route_after_vote_tie,
-    test_route_after_announce_night1_goes_to_free_discussion,
     test_route_after_announce_day2_discussion,
     test_route_after_free_discussion_continues_until_speech_queue_done,
     test_replay_from_events_matches_state,

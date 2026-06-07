@@ -257,7 +257,20 @@ def route_victory(state: RuntimeState) -> str:
 
 def route_after_announce(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
-    if gs.sheriff_interrupt_count == 1 and gs.sheriff_id is None:
+    # P-fix-sheriff-announce-route: D1 first-night (count=0) and after self-destruct
+    # (count=1) both need to enter sheriff_first_day_entry. Only count>=2
+    # means the badge is permanently torn.
+    #
+    # Note: cannot reuse _needs_sheriff_before_deaths() because (a) it
+    # requires count==0 (we need < 2 here so count==1 still routes to the
+    # re-election) and (b) it keys on night_number==1 (we key on
+    # day_number==1 so D2+ without a sheriff skips the re-election).
+    if (
+        gs.sheriff_id is None
+        and gs.sheriff_interrupt_count < 2
+        and gs.day_number == 1
+        and gs.sheriff_badge_state not in ("torn", "active")
+    ):
         return "sheriff_first_day_entry"
     return "free_discussion"
 

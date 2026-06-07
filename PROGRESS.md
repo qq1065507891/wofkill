@@ -5,10 +5,10 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **STOP & SHIP** — 2026-06-07
-- Active task: Push to remote / open PR. v3 留作单独规划。
+- Active task: `fix-sheriff-announce-route` 完成 (commit `2fb56a0`)，等用户决定是否继续 push / merge
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-07
-- **57 commits across 6 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
+- Last updated: 2026-06-08
+- **58 commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
 
 ---
 
@@ -103,6 +103,30 @@ Branch: `fix-route-sheriff-entry` (worktree `.worktrees/fix-route-sheriff`).
 **Open risks**:
 - The user's task description was based on a snapshot before commit `89b865b`. The two-line "fix" suggested in the task would re-introduce the previous skip-deaths bug. If the user actually wants `sheriff_first_day_entry` for D1, the existing tests in `test_sheriff_flow.py` would need to be revised and the design doc would need to be updated to match. Recommend the user review this deviation before merging.
 - No way to inspect the actual `game_g_2521588929.json` in this worktree to confirm whether the "skipped sheriff election" symptom is from this code path or from `route_after_announce` (which routes D1+count=0 to `free_discussion` once the badge is torn).
+
+---
+
+## fix-sheriff-announce-route — 2026-06-07
+
+Branch: `fix-sheriff-announce-route` (worktree `.worktrees/fix-sheriff-announce`).
+
+Second half of the sheriff election skip bug. `fix-sheriff-entry` (commit `d156d3d`) fixed `route_after_resolve_night` so D1 N1 stops hitting `announce_deaths_with_badge_loss`. But the **post-announce** router still had the gap: `route_after_announce` only matched `count == 1`, so D1 N1 first resolve (`count == 0`) skipped the sheriff election AGAIN — it dropped straight to `free_discussion`.
+
+| # | Change | File |
+|---|--------|------|
+| A1 | `route_after_announce` 用内联 check（`no_sheriff AND count < 2 AND day_number == 1 AND badge_state not in (torn, active)`）替代只匹配 `count == 1` 的老逻辑 | `werewolf_agent/runtime/graph.py:258-274` |
+| A2 | 4 个 routing 测试：D1 count=0/1/2 + D2 count=0 | `tests/runtime/test_graph_lifecycle.py` |
+| A3 | 删除已废弃的 `test_route_after_announce_night1_goes_to_free_discussion`（断言与新设计相反），并从 `tests/runtime/test_runtime.py` 的 import 列表里清掉它 | `tests/runtime/test_graph_lifecycle.py`, `tests/runtime/test_runtime.py` |
+
+**Why not reuse `_needs_sheriff_before_deaths(gs)` (as the original task description suggested)**:
+- 它要求 `count == 0`，会让 `test_d1_count_1_routes_to_sheriff` 失败（自爆后 count 升到 1 的 D1 仍要进 `sheriff_first_day_entry` 重新选举）
+- 它用 `night_number == 1` 判 D1，但 `test_d2_count_0_routes_to_discussion` 故意用 `day_number=2, night_number=1` 模拟"D2 没有警徽就跳过重选"，两者冲突
+- 因此改成内联四项 check + 注释解释为什么不用 helper
+
+**Verification**:
+- `pytest tests/runtime/ -p no:cacheprovider -q` → **826 passed** in 51.42s
+- `pytest tests/runtime/test_sheriff_flow.py tests/runtime/test_sheriff_policy.py -p no:cacheprovider -q` → **36 passed** in 8.17s
+- 与 fix-sheriff-entry 的 `_needs_sheriff_before_deaths` 调用方（`route_after_resolve_night:187`、`_post_hunter_route:156`、`_route_after_badge_transfer:241`）全部不受影响——只在 `route_after_announce` 内做局部修复，没改 helper 签名
 
 ---
 
