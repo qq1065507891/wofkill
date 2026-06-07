@@ -1156,7 +1156,15 @@ class TestVillagerStrategyDirectives:
         assert "猎人" in guard
 
     def test_idiot_uses_villager_strategy(self) -> None:
-        """Idiot should get the same analysis strategy as villager."""
+        """Villager directive builder must NOT label itself '白痴'.
+
+        The idiot role has its own directive (idiot.py) and the production
+        pipeline routes idiot speech through that builder, not the villager
+        one. The villager directive must therefore be role-agnostic and
+        refer to itself as '普通村民' regardless of the speaker's role
+        attribute. The actual idiot framing lives in
+        build_idiot_directive.
+        """
         from werewolf_agent.runtime.agent_adapter import _build_villager_day_speech_directive
         gs = GameState(
             game_id="idiot_speech_test",
@@ -1169,7 +1177,8 @@ class TestVillagerStrategyDirectives:
         )
         result = _build_villager_day_speech_directive(gs, "idiot")
         directive = result["villager_speech_directive"]
-        assert "白痴" in directive
+        assert "普通村民" in directive
+        assert "白痴" not in directive
 
     def test_vote_history_in_speech(self) -> None:
         """Villager speech should include vote history when available."""
@@ -2842,4 +2851,79 @@ class TestNoSheriffVoteHint:
         hint_text = str(merged["no_sheriff_vote_hint"])
         assert "归票" in hint_text or "跟随" in hint_text, (
             f"runtime-injected hint missing 归票/跟随 marker: {hint_text!r}"
+        )
+
+
+class TestVillagerNoSeerPrivateLeak:
+    """审查 C1: villager 金水/银水判定不能读私有 seer_check 事件。"""
+
+    def test_villager_directive_does_not_mention_seer_check_keyword(self):
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.directives.villager import build_villager_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        gs = GameState(
+            players=alive, day_number=2, night_number=2,
+            events=[
+                GameEvent(type="seer_check", payload={
+                    "target_id": "p07", "alignment": "good", "night_number": 1,
+                }),
+            ],
+        )
+        d = build_villager_directive(gs, "p07")
+        full = " ".join(str(v) for v in d.values())
+        assert "seer_check" not in full.lower(), (
+            f"villager directive leaks seer_check keyword: {full!r}"
+        )
+
+    def test_villager_gold_water_only_from_public_seer_claim(self):
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.directives.villager import build_villager_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        gs_private = GameState(
+            players=alive, day_number=2, night_number=2,
+            events=[
+                GameEvent(type="seer_check", payload={
+                    "target_id": "p07", "alignment": "good", "night_number": 1,
+                }),
+            ],
+        )
+        gs_public = GameState(
+            players=alive, day_number=2, night_number=2,
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "p01",
+                    "text": "我是预言家，第 1 夜验了 p07 是好人（金水）。",
+                }),
+            ],
+        )
+        d_a = build_villager_directive(gs_private, "p07")
+        d_b = build_villager_directive(gs_public, "p07")
+        full_a = " ".join(str(v) for v in d_a.values())
+        full_b = " ".join(str(v) for v in d_b.values())
+        # private only → 不应有 gold_water_duty 段
+        assert "gold_water_duty" not in d_a, (
+            f"villager gold_water_duty triggered by private seer_check: {full_a!r}"
+        )
+        # public claim → 应该有 gold_water_duty 段
+        assert "gold_water_duty" in d_b, (
+            f"villager gold_water_duty missing for public claim: {full_b!r}"
+        )
+
+
+class TestHunterLastWordsBehaviorConsistency:
+    """审查 C6: 遗言中提示与 _hunter_shot_target_from_last_words 实际行为一致。"""
+
+    def test_hunter_exile_directive_does_not_force_shot(self):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.directives.hunter import build_hunter_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p09"] = PlayerState(id="p09", role="hunter", alive=True)
+        gs = GameState(players=alive, day_number=2, night_number=2)
+        d = build_hunter_directive(gs, "p09")
+        directive = d.get("hunter_speech_directive", "")
+        # 不应强制"必须开枪"（必须开枪是 prompt 误导，行为是 no_action）
+        assert "必须开枪" not in directive, (
+            f"hunter exile directive forces shot but actual behavior allows no_action: {directive!r}"
         )
