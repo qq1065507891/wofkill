@@ -118,40 +118,91 @@ class VisibilityPolicy:
     rules. Falls back to hardcoded defaults when config is absent.
     """
 
+    # Class-level mirrors of module-level defaults. They exist so that
+    # ``__init__`` can use ``hasattr(self, k)`` / ``setattr(self, k, ...)``
+    # against canonical config keys (ruleset JSON uses the same uppercase
+    # names) and override per-instance without mutating the module globals.
+    _FACT_VISIBILITY_MAP: dict[str, str] = dict(_FACT_VISIBILITY_MAP)
+    _ROLE_VISIBILITY: dict[str, set[str]] = {
+        role: set(vis) for role, vis in _ROLE_VISIBILITY.items()
+    }
+
     def __init__(self, visibility_config: dict[str, Any] | None = None) -> None:
+        super().__init__()
+        if visibility_config:
+            for k, v in visibility_config.items():
+                if hasattr(self, k) and isinstance(v, dict):
+                    # 深 merge：override 单个 fact_type
+                    base = getattr(self, k, {})
+                    merged = dict(base)
+                    merged.update(v)
+                    setattr(self, k, merged)
+                elif hasattr(self, k):
+                    setattr(self, k, v)
+        # Sync the legacy private dicts to the (possibly overridden) class
+        # attrs so the rest of the class (which still reads ``_fact_vis`` /
+        # ``_role_vis``) sees the ruleset override.
+        self._fact_vis = dict(self._FACT_VISIBILITY_MAP)
+        self._role_vis = {role: set(vis) for role, vis in self._ROLE_VISIBILITY.items()}
         self._config = visibility_config or {}
-        self._fact_vis = dict(_FACT_VISIBILITY_MAP)
-        self._role_vis = dict(_ROLE_VISIBILITY)
 
     def compute_fact_visibility(
         self,
-        fact: StructuredFact,
-        fact_index: int,
-    ) -> FactVisibility:
-        """Compute visibility label for a single fact."""
-        # Check forbidden first
-        if fact.fact_type in _FORBIDDEN_FACT_TYPES:
+        fact_or_state,
+        fact_index_or_viewer_role: Any = 0,
+        viewer_role: str | None = None,
+    ):
+        """Compute visibility. Two supported signatures (polymorphic):
+
+        - ``compute_fact_visibility(fact: StructuredFact, fact_index: int)``
+          → returns a single :class:`FactVisibility` label (legacy API).
+        - ``compute_fact_visibility(state: GameState, viewer_role: str)``
+          → returns the list of :class:`StructuredFact` visible to that role
+          (used by the ruleset-override audit test).
+        """
+        if isinstance(fact_or_state, StructuredFact):
+            fact = fact_or_state
+            fact_index = (
+                fact_index_or_viewer_role
+                if isinstance(fact_index_or_viewer_role, int)
+                else 0
+            )
+            # Check forbidden first
+            if fact.fact_type in _FORBIDDEN_FACT_TYPES:
+                return FactVisibility(
+                    fact_index=fact_index,
+                    visibility="moderator_only",
+                    audit_reason=f"forbidden fact type: {fact.fact_type}",
+                )
+
+            vis = self._fact_vis.get(fact.fact_type)
+            if vis is not None:
+                return FactVisibility(
+                    fact_index=fact_index,
+                    visibility=vis,
+                    audit_reason=f"mapped fact_type: {fact.fact_type} → {vis}",
+                )
+
+            # Unknown fact types default to moderator-only. New event types must be
+            # explicitly classified before they can enter player cognition.
             return FactVisibility(
                 fact_index=fact_index,
                 visibility="moderator_only",
-                audit_reason=f"forbidden fact type: {fact.fact_type}",
+                audit_reason=f"unmapped fact_type: {fact.fact_type}, default moderator_only",
             )
 
-        vis = self._fact_vis.get(fact.fact_type)
-        if vis is not None:
-            return FactVisibility(
-                fact_index=fact_index,
-                visibility=vis,
-                audit_reason=f"mapped fact_type: {fact.fact_type} → {vis}",
+        # GameState path — build world state, filter for viewer role.
+        from werewolf_agent.cognition.world_state import build_world_state
+        role = viewer_role if viewer_role is not None else fact_index_or_viewer_role
+        if not isinstance(role, str):
+            raise TypeError(
+                "compute_fact_visibility(state, ...) requires viewer_role (str); "
+                f"got {type(role).__name__}"
             )
-
-        # Unknown fact types default to moderator-only. New event types must be
-        # explicitly classified before they can enter player cognition.
-        return FactVisibility(
-            fact_index=fact_index,
-            visibility="moderator_only",
-            audit_reason=f"unmapped fact_type: {fact.fact_type}, default moderator_only",
-        )
+        ws = build_world_state(fact_or_state)
+        # ``viewer_id`` is unused in role-based filtering; empty string keeps
+        # audit reports unambiguous.
+        return self.filter_visible_facts(ws, viewer_id="", viewer_role=role)
 
     def compute_visibility(
         self,
