@@ -28,6 +28,28 @@ if TYPE_CHECKING:
     from werewolf_agent.storage.repository import GameRepository
 
 
+def _persist_custom_config_impl(repo: Any, record: Any) -> None:
+    """P-A3: persist a custom-config record via the game repository.
+
+    Surfaces a WARNING when the repo lacks ``save_custom_config`` so the
+    silent data loss is visible during ops review — otherwise the
+    customization save API would return 200 OK while the record is
+    dropped on the next restart.
+    """
+    from werewolf_agent.api.routes.customization import _record_to_storage_dict
+
+    if repo is not None and hasattr(repo, "save_custom_config"):
+        repo.save_custom_config(_record_to_storage_dict(record))
+        logger.info("Persisted custom config %s", getattr(record, "config_id", "?"))
+    else:
+        logger.warning(
+            "Repository %s lacks save_custom_config — custom config %s "
+            "will be lost on restart",
+            type(repo).__name__ if repo is not None else "None",
+            getattr(record, "config_id", "?"),
+        )
+
+
 def create_app(
     repository: GameRepository | None = None,
     auth_manager: AuthManager | None = None,
@@ -132,10 +154,12 @@ def create_app(
         logger.warning("RAG knowledge service initialization failed: %s", exc)
 
     # --- Persistence helper ---
+    # P-A3: the real work is in the module-level _persist_custom_config_impl
+    # so tests can exercise it without spinning up the full app factory.
+    # The closure below keeps the original ``persist_fn(record)`` shape
+    # that the customization router expects.
     def _persist_custom_config(record: Any) -> None:
-        from werewolf_agent.api.routes.customization import _record_to_storage_dict
-        if repo is not None and hasattr(repo, "save_custom_config"):
-            repo.save_custom_config(_record_to_storage_dict(record))
+        _persist_custom_config_impl(repo, record)
 
     # --- Project root ---
     _project_root = Path(__file__).resolve().parent.parent.parent
