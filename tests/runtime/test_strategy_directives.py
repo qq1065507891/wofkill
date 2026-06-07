@@ -2910,3 +2910,20 @@ class TestVillagerNoSeerPrivateLeak:
         assert "gold_water_duty" in d_b, (
             f"villager gold_water_duty missing for public claim: {full_b!r}"
         )
+
+
+class TestHunterLastWordsBehaviorConsistency:
+    """审查 C6: 遗言中提示与 _hunter_shot_target_from_last_words 实际行为一致。"""
+
+    def test_hunter_exile_directive_does_not_force_shot(self):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.directives.hunter import build_hunter_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p09"] = PlayerState(id="p09", role="hunter", alive=True)
+        gs = GameState(players=alive, day_number=2, night_number=2)
+        d = build_hunter_directive(gs, "p09")
+        directive = d.get("hunter_speech_directive", "")
+        # 不应强制"必须开枪"（必须开枪是 prompt 误导，行为是 no_action）
+        assert "必须开枪" not in directive, (
+            f"hunter exile directive forces shot but actual behavior allows no_action: {directive!r}"
+        )
