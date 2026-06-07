@@ -3908,5 +3908,44 @@ class TestActionTypeFieldName:
         assert len(_ACTION_TYPE_GUARD) > 100
 
 
+class TestHardConstraintLabelUniqueness:
+    """审查 C3: 单一硬约束标签层。"""
+
+    def test_no_duplicate_hard_constraint_markers(self):
+        # Use a NIGHT_ACTION context with WOLF_KILL — this routes to
+        # OutputMode.FULL_ACTION, which calls _format_examples (which
+        # injects _ACTION_TYPE_GUARD with the "【硬约束 P1-...】" inner
+        # sub-group label) AND also renders the output contract (with
+        # the outer "【硬约束】" section label). The test asserts the
+        # combined count of "硬约束" substrings is <= 1, which requires
+        # the inner sub-group label to be removed (fix) and the outer
+        # section label to remain (current).
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        from werewolf_agent.agents.schemas import (
+            ActionType, AgentContext, RetryInfo, TaskType,
+        )
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.NIGHT_ACTION,
+            own_role="werewolf",
+            legal_actions=[ActionType.WOLF_KILL],
+            legal_targets=[],
+            # No hard-constraint keys → strategy_directive inner
+            # 【硬约束】 sub-group header does not render.
+            strategy_directive={
+                "anti_herd": "不要盲目跟票",
+            },
+        )
+        builder = PlayerPromptBuilder(ctx)
+        # build_user_prompt requires a RetryInfo arg.
+        user_prompt = builder.build_user_prompt(RetryInfo())
+        # 计数 "硬约束" 出现次数：fix 后内层 sub-group 标签移除，
+        # 整个 user prompt 内只剩输出契约外层 "【硬约束】" 1 处。
+        count = user_prompt.count("硬约束")
+        assert count <= 1, (
+            f"multiple 硬约束 labels in single prompt: {count} occurrences\n{user_prompt!r}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
