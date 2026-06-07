@@ -15,12 +15,18 @@ from werewolf_agent.runtime.strategy.seer import public_seer_claimants
 logger = logging.getLogger(__name__)
 
 
-def evaluate_wolf_kill_target(
+def _evaluate_wolf_kill_target_impl(
     gs: GameState,
     wolf_id: str,
     legal_targets: list[str],
 ) -> dict[str, Any] | None:
-    """Score potential kill targets by threat level for the wolf team."""
+    """Score potential kill targets by threat level for the wolf team.
+
+    P-v3: this is the body of the original ``evaluate_wolf_kill_target``,
+    split out so the public entry point can wrap it with a manual
+    dict-cache and dedupe the double-call from
+    ``_build_wolf_kill_directive`` and ``_single_wolf_vote``.
+    """
     if not legal_targets:
         return None
 
@@ -138,6 +144,66 @@ def evaluate_wolf_kill_target(
             "无明确高威胁目标，可自由选择"
         ),
     }
+
+
+# P-v3: skill-layer memoization for evaluate_wolf_kill_target.
+#
+# Why a manual dict (not functools.lru_cache):
+#   GameState is a frozen dataclass with dict/list fields (players, events,
+#   votes, …) which are unhashable.  lru_cache hashes all positional and
+#   keyword args to build its key, so any attempt to pass gs through it
+#   raises ``TypeError: unhashable type: 'dict'`` at the first call.
+#   A manual dict keyed only on the hashable tuple
+#   ``(game_id, night_number, wolf_id, legal_targets)`` is both correct
+#   and O(1).
+#
+# Cache key:
+#   ``(game_id, night_number, wolf_id, tuple(legal_targets))`` —
+#   excludes ``gs`` (which is the whole point: gs.events alone can be
+#   hundreds of speech events).  ``legal_targets`` is included so two
+#   callers passing different subsets (e.g. a test passing 4 of 8
+#   alive non-wolves) get independent cache slots.  In production both
+#   call sites pass the same full list, so they collapse onto the same
+#   entry.
+#
+# Lifecycle:
+#   Unbounded by design — V1 games have at most 4 wolves × ~10 nights
+#   × 2 distinct legal_targets (night-time and post-death snapshots),
+#   i.e. fewer than 100 entries.  ``clear_kill_value_cache`` is the
+#   public reset hook for tests and game boundaries.
+_KILL_VALUE_CACHE: dict[tuple, dict[str, Any] | None] = {}
+
+
+def clear_kill_value_cache() -> None:
+    """P-v3: test helper to reset the kill-value-assessment cache.
+
+    Call this between games (or between tests) so a stale cached value
+    for one game_id/night_number does not leak into a subsequent game.
+    """
+    _KILL_VALUE_CACHE.clear()
+
+
+def evaluate_wolf_kill_target(
+    gs: GameState,
+    wolf_id: str,
+    legal_targets: list[str],
+) -> dict[str, Any] | None:
+    """Score potential kill targets by threat level for the wolf team.
+
+    P-v3: this public entry is memoized.  The cache key is
+    ``(game_id, night_number, wolf_id, tuple(legal_targets))`` so
+    repeated calls for the same wolf in the same night (e.g. once
+    from ``_build_wolf_kill_directive`` and once from
+    ``_single_wolf_vote``) collapse to a single impl invocation.
+    The cost goes from ``2 × 4 × N_nights`` to ``4 × N_nights`` per
+    game, and the O(N) inner loop is no longer paid twice.
+    """
+    key = (gs.game_id, gs.night_number, wolf_id, tuple(legal_targets))
+    cached = _KILL_VALUE_CACHE.get(key)
+    if cached is None and key not in _KILL_VALUE_CACHE:
+        cached = _evaluate_wolf_kill_target_impl(gs, wolf_id, legal_targets)
+        _KILL_VALUE_CACHE[key] = cached
+    return cached
 
 
 def get_wolf_role_assignment(
