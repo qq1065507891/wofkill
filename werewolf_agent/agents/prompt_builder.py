@@ -124,6 +124,14 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "wolf_fake_seer_teammate",          # directives/wolf.py:148/166 — 严禁信息穿越
     "wolf_kill_instruction",            # agent_adapter.py:547
     "wolf_team_discussion",             # agent_adapter.py:676
+    # P3 (post-review-v2): wolf universal rules contain
+    # "绝对不要提到你的队友是狼人" / "严禁暴露" framing — must
+    # be obeyed, not merely suggested.  Promoted from SUGGESTION.
+    "wolf_universal_rules",             # directives/wolf.py:105 — 绝对 / 严禁
+    # P3 (post-review-v2): anti_herd is P0-K6 hard constraint
+    # (independent judgment over following the crowd) — promoted
+    # from SUGGESTION to HARD.
+    "anti_herd",                        # runtime/agent_adapter.py:1276 — 严禁跟票
     # Hybrid — master-faction binding
     "hybrid_wolf_master_directive",      # directives/hybrid.py:51
     "hybrid_good_master_directive",      # directives/hybrid.py:69
@@ -140,13 +148,13 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({
-    # Wolf speech style / universal rules
+    # Wolf speech style (hard variants — wolf_universal_rules — promoted
+    # to HARD_CONSTRAINT_KEYS in P3 because the directive text uses
+    # 绝对 / 严禁 framing).
     "wolf_speech_directive",
-    "wolf_universal_rules",
     # Good-side vote quality guard
     "good_vote_decision_guard",
-    # Anti-herd / sheriff vote push
-    "anti_herd",
+    # Sheriff vote push (soft: only a "should")
     "sheriff_vote_push",
     # Speech style suggestions
     "speech_originality",
