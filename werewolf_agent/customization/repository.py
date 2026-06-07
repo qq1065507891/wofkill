@@ -30,6 +30,10 @@ class CustomConfigRecord:
 class InMemoryCustomizationRepository:
     """内存中的自定义配置仓库，使用私有 _records 字典存储。"""
     _records: dict[str, CustomConfigRecord] = field(default_factory=dict)
+    # P-A2: simple in-memory ruleset cache, keyed by ruleset_id. Holds raw
+    # dict payloads (post-validation normalized form) so save/load round
+    # trips work without going through the heavier CustomConfigRecord path.
+    _rulesets: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def records(self) -> dict[str, CustomConfigRecord]:
@@ -77,3 +81,13 @@ class InMemoryCustomizationRepository:
         )
         self._records[config_id] = record
         return record
+
+    # P-A2: minimal ruleset save/load pair. Used by the in-memory backend
+    # for symmetry with the durable PostgresGameRepository custom_config
+    # path. Returns None when the ruleset id is unknown.
+
+    def save_ruleset(self, ruleset_id: str, config: dict[str, Any]) -> None:
+        self._rulesets[ruleset_id] = config
+
+    def load_ruleset(self, ruleset_id: str) -> dict[str, Any] | None:
+        return self._rulesets.get(ruleset_id)
