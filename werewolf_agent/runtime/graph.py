@@ -175,17 +175,16 @@ def route_after_resolve_night(state: RuntimeState) -> str:
         return "check_victory"
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
-    # fix-sheriff-entry: D1 N1 first resolve must NOT unconditionally
-    # tear the badge. announce_deaths_with_badge_loss emits
-    # "警徽因两度中断永久流失" — that message is only correct when
-    # the sheriff was actually interrupted twice. For count=0 we use
-    # the plain announce_deaths (which preserves the design doc flow
-    # announce_deaths -> last_words -> sheriff_election and the
-    # D1 self-destruct fix from commit 89b865b).
+    # D1-flow-rewire: D1 N1 first resolve must go to sheriff_first_day_entry
+    # BEFORE announcing deaths. V1 design: 天亮 → 警长竞选 → 死讯广播 →
+    # 遗言 → 自由讨论. D2+ days skip the election block and go straight to
+    # announce_deaths (preserves the prior post-sheriff announce_deaths path
+    # via route_after_sheriff_vote).
+    if _needs_sheriff_before_deaths(gs):
+        return "sheriff_first_day_entry"
+    # D1 with count>=2 (badge already torn) → badge_loss
     if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
         return "announce_deaths_with_badge_loss"
-    if _needs_sheriff_before_deaths(gs):
-        return "announce_deaths"
     return "announce_deaths"
 
 
@@ -256,22 +255,12 @@ def route_victory(state: RuntimeState) -> str:
 
 
 def route_after_announce(state: RuntimeState) -> str:
-    gs: GameState = state["game_state"]
-    # P-fix-sheriff-announce-route: D1 first-night (count=0) and after self-destruct
-    # (count=1) both need to enter sheriff_first_day_entry. Only count>=2
-    # means the badge is permanently torn.
-    #
-    # Note: cannot reuse _needs_sheriff_before_deaths() because (a) it
-    # requires count==0 (we need < 2 here so count==1 still routes to the
-    # re-election) and (b) it keys on night_number==1 (we key on
-    # day_number==1 so D2+ without a sheriff skips the re-election).
-    if (
-        gs.sheriff_id is None
-        and gs.sheriff_interrupt_count < 2
-        and gs.day_number == 1
-        and gs.sheriff_badge_state not in ("torn", "active")
-    ):
-        return "sheriff_first_day_entry"
+    # D1-flow-rewire: V1 design moves the sheriff election BEFORE
+    # announce_deaths / night_death_last_words, so after
+    # night_death_last_words we always enter free_discussion. The
+    # previous sheriff_first_day_entry branch (commits 2fb56a0 +
+    # d156d3d) only existed because the legacy flow did
+    # announce_deaths → last_words → sheriff.
     return "free_discussion"
 
 
@@ -339,6 +328,27 @@ def route_self_destruct_check(state: RuntimeState) -> str:
     if speech_order and speech_index < len(speech_order):
         return "continue_discussion"
     return "summarize_positions"
+
+
+def route_after_self_destruct(state: RuntimeState) -> str:
+    """D1-flow-rewire: after a wolf self-destructs, decide whether the
+    night deaths still need a public broadcast before continuing.
+
+    - D1 self-destruct during sheriff election: N1 deaths were NOT yet
+      announced (sheriff election moved ahead of announce_deaths in the
+      rewired flow), so the game must still run announce_deaths →
+      night_death_last_words before the day continues. Legacy flow
+      (commit 89b865b) avoided this by always running announce_deaths
+      before the election, but that contradicts the V1 design that the
+      election starts first.
+    - D2+ self-destructs happen during free_discussion (handled by
+      route_self_destruct_check above), so the deaths are already
+      announced and the game can proceed to check_victory.
+    """
+    gs: GameState = state["game_state"]
+    if gs.day_number == 1 and gs.sheriff_id is None and not _deaths_already_announced(gs):
+        return "announce_deaths"
+    return "check_victory"
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +487,6 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_edge("announce_deaths_with_badge_loss", "night_death_last_words")
     graph.add_conditional_edges("night_death_last_words", route_after_announce, {
         "free_discussion": "free_discussion",
-        "sheriff_first_day_entry": "sheriff_first_day_entry",
     })
     graph.add_conditional_edges("free_discussion", route_self_destruct_check, {
         "resolve_self_destruct": "resolve_self_destruct",
@@ -489,7 +498,10 @@ def _add_all_edges(graph: StateGraph) -> None:
         "day_vote": "day_vote",
     })
     graph.add_edge("sheriff_endorse", "day_vote")
-    graph.add_edge("resolve_self_destruct", "check_victory")
+    graph.add_conditional_edges("resolve_self_destruct", route_after_self_destruct, {
+        "announce_deaths": "announce_deaths",
+        "check_victory": "check_victory",
+    })
     graph.add_edge("day_vote", "resolve_vote_node")
     graph.add_conditional_edges("resolve_vote_node", route_after_vote, {
         "resolve_exile": "resolve_exile",

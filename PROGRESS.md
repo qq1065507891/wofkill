@@ -4,11 +4,48 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **STOP & SHIP** — 2026-06-07
-- Active task: `fix-sheriff-announce-route` 完成 (commit `2fb56a0`)，等用户决定是否继续 push / merge
+- Current phase: **D1-flow-rewire** — 2026-06-08
+- Active task: D1 流程重构（V1 设计修正：警长竞选前置）
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-08
-- **58 commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
+- **58+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
+
+---
+
+## D1-flow-rewire — 2026-06-08
+
+**背景**：跑真实游戏 `g_2765993470` 时 user 报告"上警环节被跳过"。经系统调查：
+
+1. 调查发现 `graph.py` 实现 + `docs/design/werewolf-agent-v1-design.md §3.4` + `CLAUDE.md:65` 三处**全部一致**地把 D1 流程实现为「死讯广播 → 遗言 → 警长竞选」。
+2. 但 user 确认 V1 正确设计是「天亮 → 警长竞选 → 死讯广播 → 遗言 → 警长指定发言顺序 → 自由讨论」(D1) 和「天亮 → 死讯广播 → 遗言 → 警长指定发言顺序 → 自由讨论」(D2+)。
+3. 当前 `game_runner` 进程在 `night_death_last_words` dispatch 完 p01 遗言后被 user 中断 (user 已确认)。结合设计错位，造成"天亮 + 死讯 + 遗言都输出了，怎么上警还没开始"的 false alarm。
+4. 真正的根因：**V1 设计文档 + CLAUDE.md + graph 实现三处都把 D1 流程顺序写反了**。user 的正确设计需要**先警长竞选（天亮后第一时间），再死讯广播、遗言、讨论**。
+
+**改动**：
+
+| # | 改动 | 文件 |
+|---|------|------|
+| D1-1 | `route_after_resolve_night` 翻转 `_needs_sheriff_before_deaths` 分支目标：D1 N1 count=0 → `sheriff_first_day_entry`（不再走 announce_deaths） | `werewolf_agent/runtime/graph.py:178-189` |
+| D1-2 | `route_after_announce` 简化为只返回 `free_discussion`（移除 `sheriff_first_day_entry` 分支） | `werewolf_agent/runtime/graph.py:258-275` |
+| D1-3 | 新增 `route_after_self_destruct` 路由器：D1 + no_sheriff + deaths未广播 → `announce_deaths`（保证 D1 self-destruct 路径下 N1 deaths 仍被广播）；否则 → `check_victory` | `werewolf_agent/runtime/graph.py` |
+| D1-4 | `_add_all_edges` 把 `resolve_self_destruct` 直边改为 conditional edges 接 `route_after_self_destruct` | `werewolf_agent/runtime/graph.py` |
+| D1-5 | 删除 `TestRouteAfterAnnounceSheriffEntry` 整个 class | `tests/runtime/test_graph_lifecycle.py:405-452` |
+| D1-6 | 改名 + 改期望：`test_route_after_resolve_night_d1_interrupt0_routes_to_announce_deaths` → `..._routes_to_sheriff_first_day_entry` | `tests/runtime/test_graph_lifecycle.py:480-493` |
+| D1-7 | 改名 + 改期望：`test_self_destruct_during_sheriff_election_announces_deaths_first` → `..._routes_to_sheriff_first_day_entry` | `tests/runtime/test_sheriff_flow.py:466-502` |
+| D1-8 | 改期望：`test_no_sheriff_death_routes_to_sheriff_election_on_night1` 期望 `sheriff_first_day_entry` | `tests/runtime/test_sheriff_flow.py:168-183` |
+| D1-9 | 设计文档 §3.4 重写为 D1 / D2+ 双流程 | `docs/design/werewolf-agent-v1-design.md:146-185` |
+| D1-10 | CLAUDE.md Day flow 描述更新 | `CLAUDE.md:65-69` |
+| D1-11 | `day_flow` 块加 `d1_order` + `d2_plus_order`，保留 `standard_order` 兼容 | `config/rulesets/pre_witch_hunter_idiot_mixed.yaml:279-307` |
+
+**验证**：
+- 单元测试：tests/runtime/ 823 passed, tests/integration/test_live_game_flow.py 通过, tests/rules/ + tests/engine/ 全量 pass
+- Trace：D1 fresh game 13-16 步进入 sheriff_first_day_entry，新流程顺序正确
+- `route_after_self_destruct` 4 个 case 验证：D1+no_sheriff+未广播 → announce_deaths，其他 → check_victory
+- 真实游戏：`python scripts/run_real_game.py --delay -1` 跑完整 D1 验证
+
+**风险**：
+- D1 self-destruct 路径需要 trace 验证（已加 `route_after_self_destruct` 路由器）
+- 旧 `commits 89b865b / d156d3d / 2fb56a0` 的"先死讯再上警"是当时的临时方案，与 V1 正确设计矛盾
 
 ---
 

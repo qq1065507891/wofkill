@@ -277,6 +277,28 @@ timers:
       event_type: speech_timeout
 
 day_flow:
+  # D1-flow-rewire (2026-06-08): V1 design is "天亮 → 警长竞选 → 死讯广播
+  # → 遗言 → 自由讨论" for D1, and "死讯广播 → 遗言 → 自由讨论" for D2+.
+  # d1_order reflects the first-day flow (election BEFORE death
+  # announcement). d2_plus_order preserves the prior post-sheriff
+  # announce_deaths path (announce_deaths first, then free_discussion).
+  d1_order:
+    - sheriff_election        # sheriff_registration → sheriff_speech → sheriff_withdraw → sheriff_vote
+    - death_announcement      # announce_deaths
+    - last_words              # night_death_last_words
+    - free_discussion         # 警长指定发言顺序 + 自由讨论
+    - exile_vote              # day_vote
+    - resolve_exile_and_skills
+    - check_victory
+  d2_plus_order:
+    - death_announcement
+    - last_words
+    - free_discussion
+    - exile_vote
+    - resolve_exile_and_skills
+    - check_victory
+  # standard_order is preserved for backward compatibility with any
+  # consumer reading it; semantically equivalent to d2_plus_order.
   standard_order:
     - announce_deaths
     - last_words
@@ -286,7 +308,9 @@ day_flow:
     - resolve_exile_and_skills
     - check_victory
   first_day:
-    sheriff_election_after_death_announcement_and_last_words: true
+    sheriff_election_after_death_announcement_and_last_words: false
+    sheriff_election_before_death_announcement: true
+    self_destruct_interrupts_election_then_announces_deaths: true
   speech:
     sheriff_chooses_order: true
     no_sheriff_order_policy: random_start_then_seat_order

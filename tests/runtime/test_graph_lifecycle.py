@@ -402,54 +402,17 @@ def test_route_after_announce_day2_discussion() -> None:
     assert route_after_announce({"game_state": gs}) == "free_discussion"
 
 
-class TestRouteAfterAnnounceSheriffEntry:
-    """fix-sheriff-announce-route: D1 night_death_last_words should route to sheriff_first_day_entry when no sheriff."""
-
-    def _make_state(self, *, day_number: int, interrupt_count: int):
-        from werewolf_agent.core.models import GameState, PlayerState
-        from unittest.mock import MagicMock
-        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
-        gs = GameState(
-            players=alive,
-            day_number=day_number,
-            night_number=1,
-            sheriff_interrupt_count=interrupt_count,
-        )
-        engine = MagicMock()
-        engine.check_victory.return_value = MagicMock(winner=None)
-        return {"game_state": gs, "engine": engine}
-
-    def test_d1_count_0_routes_to_sheriff(self):
-        from werewolf_agent.runtime.graph import route_after_announce
-        state = self._make_state(day_number=1, interrupt_count=0)
-        result = route_after_announce(state)
-        assert result == "sheriff_first_day_entry", (
-            f"D1 count=0 must go to sheriff_first_day_entry, got {result}"
-        )
-
-    def test_d1_count_1_routes_to_sheriff(self):
-        from werewolf_agent.runtime.graph import route_after_announce
-        state = self._make_state(day_number=1, interrupt_count=1)
-        result = route_after_announce(state)
-        assert result == "sheriff_first_day_entry", (
-            f"D1 count=1 (post self-destruct) must go to sheriff_first_day_entry, got {result}"
-        )
-
-    def test_d1_count_2_routes_to_discussion(self):
-        from werewolf_agent.runtime.graph import route_after_announce
-        state = self._make_state(day_number=1, interrupt_count=2)
-        result = route_after_announce(state)
-        assert result == "free_discussion", (
-            f"D1 count=2 (badge torn) must go to free_discussion, got {result}"
-        )
-
-    def test_d2_count_0_routes_to_discussion(self):
-        from werewolf_agent.runtime.graph import route_after_announce
-        state = self._make_state(day_number=2, interrupt_count=0)
-        result = route_after_announce(state)
-        assert result == "free_discussion", (
-            f"D2+ without sheriff should go to free_discussion, got {result}"
-        )
+def test_route_after_announce_d1_routes_only_to_discussion() -> None:
+    """D1-flow-rewire: after night_death_last_words, route_after_announce
+    always returns free_discussion. The sheriff election now happens
+    BEFORE announce_deaths (via route_after_resolve_night), so there is
+    no longer a sheriff_first_day_entry branch in route_after_announce.
+    """
+    from werewolf_agent.runtime.graph import route_after_announce
+    gs = GameState(day_number=1, night_number=1)
+    assert route_after_announce({"game_state": gs}) == "free_discussion"
+    gs = GameState(day_number=2, night_number=2)
+    assert route_after_announce({"game_state": gs}) == "free_discussion"
 
 
 def test_route_after_free_discussion_continues_until_speech_queue_done() -> None:
@@ -514,19 +477,19 @@ def _make_resolve_night_state(*, day_number: int, interrupt_count: int) -> Runti
     }
 
 
-def test_route_after_resolve_night_d1_interrupt0_routes_to_announce_deaths() -> None:
-    """D1 N1 first resolve, no sheriff, interrupt_count=0 → announce_deaths.
+def test_route_after_resolve_night_d1_interrupt0_routes_to_sheriff_first_day_entry() -> None:
+    """D1 N1 first resolve, no sheriff, interrupt_count=0 → sheriff_first_day_entry.
 
-    Regression (fix-sheriff-entry): previously routed to
-    announce_deaths_with_badge_loss, which unconditionally emitted
-    '警徽因两度中断永久流失' even though the count was 0 and the badge
-    should remain "none" until a real election interruption occurs.
+    D1-flow-rewire: V1 design moves the sheriff election BEFORE
+    announce_deaths / night_death_last_words. The prior test name asserted
+    announce_deaths (matching the old announce_deaths → last_words →
+    sheriff order); see commits 2fb56a0 / d156d3d for the legacy path.
     """
     state = _make_resolve_night_state(day_number=1, interrupt_count=0)
     result = route_after_resolve_night(state)
-    assert result == "announce_deaths", (
+    assert result == "sheriff_first_day_entry", (
         f"D1 N1 first resolve with interrupt_count=0 must go to "
-        f"announce_deaths (preserving the design doc flow), got {result!r}"
+        f"sheriff_first_day_entry (election before death announcement), got {result!r}"
     )
 
 

@@ -64,7 +64,10 @@ External links, RAG content, examples, and model output are strategy references 
 - Hybrid slaughter rule is conditional: if the master is good, wolves must eliminate the 3 villagers plus hybrid to win by villager slaughter; if the master is wolf, wolves only need to eliminate the 3 villagers.
 - Sheriff can pass badge or tear badge after any death cause. If badge is torn, no sheriff remains for the game and later speech starts randomly.
 - First tie enters PK speech and revote. Second tie means no exile and immediate night.
-- Day flow is death announcement, last words, then first-day sheriff election.
+- Day flow:
+  - D1: 天亮 → 警长竞选 (sheriff_registration → sheriff_speech → sheriff_withdraw → sheriff_vote) → 死讯广播 → 遗言 → 警长指定发言顺序 → 自由讨论。
+  - D2+: 死讯广播 → 遗言 → 警长指定发言顺序 → 自由讨论。
+  - D1 self-destruct during sheriff election: N1 deaths still broadcast before continuing (route_after_self_destruct → announce_deaths).
 
 ## Model Usage
 
