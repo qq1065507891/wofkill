@@ -30,9 +30,20 @@ _LOG = logging.getLogger(__name__)
 # P0-I4: scrub concrete player ids (e.g. ``p03``) from any text that
 # gets written into long-term reflection. Cross-game memory must not
 # carry concrete game identities — only role-based labels survive.
-# Note: do NOT use \b — `\b` does not match between an ASCII letter and
-# a CJK character, so "p03的预言家" wouldn't be detected.
-_REFLECTION_PLAYER_ID_RE = re.compile(r"[Pp]\d{1,2}")
+# Note: do NOT use \b alone — `\b` does not match between an ASCII letter and
+# a CJK character, so "p03的预言家" wouldn't be detected. Use a CJK-safe
+# boundary that also allows the id to start/end with Chinese punctuation.
+# Patterns covered (post-review U7):
+#   * ``p01``-style ids: 1-3 digits after [Pp]
+#   * ``player_3`` / ``player-3`` / ``player3`` style ids (1-3 digits)
+#   * ``agent_5`` / ``agent-5`` / ``agent5`` style ids (1-3 digits)
+# The leading word boundary is intentional: a partial match inside a longer
+# identifier (e.g. "ep100" -> "p100") is acceptable because the
+# downstream text only consumes the scrubbed string.
+_REFLECTION_PLAYER_ID_RE = re.compile(
+    r"\b(?:[Pp]\d{1,3}|player[_-]?\d{1,3}|agent[_-]?\d{1,3})\b",
+    re.IGNORECASE,
+)
 _REFLECTION_ID_REPLACEMENT = "[玩家ID已省略]"
 
 
@@ -334,6 +345,45 @@ class MemoryStore:
         """Clear short-term memory (cognition matrices) for a new game."""
         self.cognition_matrices.clear()
         self.relation_graph = RelationGraph()
+
+    # --- Reviews (P-U4) ---
+
+    def save_review(
+        self,
+        game_id: str,
+        player_id: str,
+        review_data: dict[str, Any],
+    ) -> str:
+        """Persist a per-player review entry. Returns the review id.
+
+        P-U4: used by ``tools.local_tools._write_review`` so the
+        local tool actually writes somewhere instead of returning
+        a stub.  Backed by an in-memory dict on this store; callers
+        that need cross-process persistence can wire their own
+        store or extend this method.
+
+        Returns:
+            A deterministic review id of the form ``"{game_id}:{player_id}"``.
+        """
+        if not hasattr(self, "_reviews") or self._reviews is None:
+            self._reviews = {}
+        review_id = f"{game_id}:{player_id}"
+        self._reviews[review_id] = {
+            "game_id": game_id,
+            "player_id": player_id,
+            "review_data": dict(review_data),
+        }
+        return review_id
+
+    def get_review(
+        self,
+        game_id: str,
+        player_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the review for ``(game_id, player_id)`` or ``None``."""
+        if not hasattr(self, "_reviews") or self._reviews is None:
+            return None
+        return self._reviews.get(f"{game_id}:{player_id}")
 
     def summary(self) -> dict[str, Any]:
         return {

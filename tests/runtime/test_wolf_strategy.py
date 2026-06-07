@@ -224,3 +224,20 @@ class TestRoundRequirements:
         reqs = round_requirements(night_number=2, round_number=1)
         # Later nights should focus on review, not role assignment
         assert reqs is not None
+
+
+class TestNegationCharClassAlignment:
+    """审查 U2: _NEGATION_WORDS 在 wolf/hunter 字符类应一致。"""
+
+    def test_negation_words_match_between_wolf_and_hunter(self):
+        from werewolf_agent.runtime.strategy import wolf as wolf_mod
+        from werewolf_agent.runtime.strategy import hunter as hunter_mod
+        wolf_words = getattr(wolf_mod, "_NEGATION_WORDS", None)
+        hunter_words = getattr(hunter_mod, "_NEGATION_WORDS", None)
+        # 两个模块都应导入同一来源
+        if wolf_words is None or hunter_words is None:
+            pytest.skip("local _NEGATION_WORDS removed (already shared)")
+        # 关键 token 必两处都有
+        for token in ("不是", "不", "没", "无", "非"):
+            assert token in wolf_words
+            assert token in hunter_words

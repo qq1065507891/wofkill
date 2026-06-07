@@ -67,7 +67,6 @@ from werewolf_agent.runtime.nodes.sheriff import (
 )
 
 from werewolf_agent.runtime.nodes.skills import (
-    post_exile_skills,
     resolve_hunter_shot,
     _hunter_shot_target_from_last_words,
     resolve_self_destruct_node,
@@ -153,7 +152,6 @@ __all__ = [
     "reflection",
     "_route_after_summarize",
     # skills
-    "post_exile_skills",
     "resolve_hunter_shot",
     "_hunter_shot_target_from_last_words",
     "resolve_self_destruct_node",

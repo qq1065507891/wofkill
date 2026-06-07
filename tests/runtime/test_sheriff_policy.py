@@ -303,3 +303,12 @@ def test_filter_keeps_all_when_valid():
     }
     result = filter_sheriff_candidates(gs, candidates, speeches)
     assert result == ["p03", "p04"]
+
+
+def test_sheriff_policy_stable_seed_is_shared():
+    """P-U3: sheriff_policy._stable_seed 应是 _shared._stable_seed 的同一对象。"""
+    from werewolf_agent.runtime.sheriff_policy import _stable_seed
+    from werewolf_agent.runtime.nodes._shared import _stable_seed as shared_seed
+    assert _stable_seed is shared_seed, (
+        f"sheriff_policy has its own _stable_seed implementation; should import from _shared"
+    )

@@ -6,21 +6,22 @@ No natural language, no LLM calls -- pure rule logic.
 
 from __future__ import annotations
 
-import hashlib
 import random as _random
 import re
 
 from werewolf_agent.core.models import GameState
+from werewolf_agent.runtime._stable_seed import _stable_seed
 
 
 # ---------------------------------------------------------------------------
-# Deterministic seed helper (local copy to avoid circular import:
-#   sheriff_policy → _shared → nodes/__init__ → day → sheriff_policy)
+# Deterministic seed helper is now shared (P-U3).
+# Imported from the leaf module ``werewolf_agent.runtime._stable_seed``
+# (which ``nodes._shared`` also re-exports) so both sites see the
+# same function object.  The leaf module is used because importing
+# from ``nodes._shared`` would trigger the
+# ``sheriff_policy → nodes.__init__ → day → sheriff_policy`` circular
+# import chain.
 # ---------------------------------------------------------------------------
-
-def _stable_seed(*parts: object) -> int:
-    raw = "|".join(str(part) for part in parts).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") & 0xFFFFFFFF
 
 
 def eligible_sheriff_voters(

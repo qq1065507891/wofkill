@@ -630,7 +630,6 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
         visibility="moderator_only",
     )
     state = {**state, "game_state": gs}
-    _ = AGENT_TIMEOUTS.wolf_consensus  # referenced for timeout contract, wired in future
     planned = _planned_wolf_kill(state)
     if planned is not None and not state.get("wolf_action"):
         result = planned

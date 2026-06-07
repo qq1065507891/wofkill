@@ -703,3 +703,37 @@ class TestToolBoundary:
             result = executor.execute(call, state)
             assert result.source == ToolSource.LOCAL
             assert result.is_suggestion is False
+
+
+# ---------------------------------------------------------------------------
+# P-U4: local_tools._query_cognition_matrix / _write_review 接通 MemoryStore
+# ---------------------------------------------------------------------------
+
+class TestLocalToolsStubWired:
+    """P-U4: local_tools._query_cognition_matrix / _write_review 不再是 stub。"""
+
+    def _fresh_store_with_pair(self):
+        """Helper: build a MemoryStore that has a cognition matrix for (p01, p02)."""
+        from werewolf_agent.memory.store import MemoryStore
+        store = MemoryStore()
+        store.init_matrix("p01", ["p01", "p02"])
+        return store
+
+    def test_query_cognition_matrix_returns_real_data(self):
+        from werewolf_agent.tools.local_tools import _query_cognition_matrix
+        store = self._fresh_store_with_pair()
+        result = _query_cognition_matrix("p01", "p02", memory_store=store)
+        assert result.get("available") is True
+        # 期望：含 cognition matrix 字段
+        assert any(k in result for k in ("faction_read", "trust", "key_evidence")), (
+            f"_query_cognition_matrix is still a stub: {result}"
+        )
+
+    def test_write_review_persists(self):
+        from werewolf_agent.tools.local_tools import _write_review
+        from werewolf_agent.memory.store import MemoryStore
+        store = MemoryStore()
+        result = _write_review("g_test", "p01", {"logic": 0.5}, memory_store=store)
+        # 期望：返回 persisted=True 和 review_id
+        assert result.get("persisted") is True
+        assert "review_id" in result or "ok" in result

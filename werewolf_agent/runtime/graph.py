@@ -92,7 +92,6 @@ from werewolf_agent.runtime.nodes.sheriff_pk import (  # noqa: F401
 
 from werewolf_agent.runtime.nodes.skills import (  # noqa: F401
     _hunter_shot_target_from_last_words,
-    post_exile_skills,
     resolve_hunter_shot,
     resolve_self_destruct_node,
     sheriff_badge_transfer,
@@ -212,10 +211,6 @@ def route_after_vote(state: RuntimeState) -> str:
                 return "tie_pk_speech"
             break
     return "check_victory"
-
-
-def route_after_exile(state: RuntimeState) -> str:
-    return "post_exile_skills"
 
 
 def route_after_post_exile(state: RuntimeState) -> str:
@@ -393,7 +388,6 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("tie_revote", tie_revote)
     graph.add_node("resolve_exile", resolve_exile)
     graph.add_node("exile_last_words", exile_last_words)
-    graph.add_node("post_exile_skills", post_exile_skills)
     graph.add_node("resolve_hunter_shot", resolve_hunter_shot)
     graph.add_node("check_victory", check_victory)
     graph.add_node("sheriff_badge_transfer", sheriff_badge_transfer)
@@ -488,8 +482,7 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_edge("tie_pk_speech", "tie_revote")
     graph.add_edge("tie_revote", "day_vote")
     graph.add_edge("resolve_exile", "exile_last_words")
-    graph.add_edge("exile_last_words", "post_exile_skills")
-    graph.add_conditional_edges("post_exile_skills", route_after_post_exile, {
+    graph.add_conditional_edges("exile_last_words", route_after_post_exile, {
         "resolve_hunter_shot": "resolve_hunter_shot",
         "check_victory": "check_victory",
     })

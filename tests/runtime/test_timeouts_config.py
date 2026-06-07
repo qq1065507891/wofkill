@@ -33,7 +33,6 @@ def test_phase_timeout_table_matches_real_game_contract() -> None:
     "node_name,expected",
     [
         ("wolf_discussion", "AGENT_TIMEOUTS.wolf_discussion_per_player"),
-        ("wolf_consensus", "AGENT_TIMEOUTS.wolf_consensus"),
         ("night_witch", "AGENT_TIMEOUTS.witch_action"),
         ("night_seer", "AGENT_TIMEOUTS.seer_check"),
         ("free_discussion", "AGENT_TIMEOUTS.day_speech"),

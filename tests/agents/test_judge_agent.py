@@ -391,3 +391,114 @@ def test_judge_broadcasts_use_zero_jitter():
         )
     finally:
         _time.sleep = original_sleep  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# Review U11: judge LLM catch-all blocks must log a warning (exc_info=True)
+# instead of silently swallowing the exception. The fallback path is fine
+# to keep (so the game still gets a broadcast), but the underlying failure
+# must be observable in the audit log.
+# ---------------------------------------------------------------------------
+
+
+import logging
+from unittest.mock import MagicMock
+
+from werewolf_agent.agents.judge import JudgeAgent
+from werewolf_agent.model_gateway.router import ModelRouter, MockProvider
+from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
+
+
+def _make_judge_with_broken_router() -> JudgeAgent:
+    """Build a judge whose model_router.generate raises a RuntimeError."""
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={},
+        providers={"mock": MockProvider()},
+    )
+    profile_router = JudgeProfileRouter(
+        profiles={
+            "neutral_arbiter": {
+                "display_name": "中立",
+                "tone_variant": "neutral",
+                "base": {},
+                "task_styles": {},
+                "broadcast_patterns": {},
+                "system_prompt": "你是中立的狼人杀仲裁者。",
+            },
+        }
+    )
+    judge = JudgeAgent(model_router=router, profile_router=profile_router)
+    # Replace the bound method with one that always raises
+    judge.model_router.generate = MagicMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("boom"),
+    )
+    return judge
+
+
+class TestJudgeCatchAllLogging:
+    """审查 U11: judge.py LLM catch-all 异常应记 logger.warning(exc_info=True) 而非静默。"""
+
+    def test_guide_skill_use_logs_on_exception(self, caplog) -> None:
+        judge = _make_judge_with_broken_router()
+        with caplog.at_level(logging.WARNING, logger="werewolf_agent.agents.judge"):
+            b = judge.guide_skill_use(
+                role="witch", player_id="p11", player_name="玩家十一",
+                available_actions=["use_antidote"],
+            )
+        # Fallback must still be returned (game must continue)
+        assert b.message
+        # Catch-all must have logged a warning, not silently swallowed
+        matching = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and ("guide_skill_use" in r.message or "boom" in r.message)
+        ]
+        assert matching, (
+            f"judge.guide_skill_use catch-all swallowed exception silently: "
+            f"{[r.message for r in caplog.records]}"
+        )
+        # exc_info must be set on the warning record so the traceback
+        # is preserved for audit
+        assert any(getattr(r, "exc_info", None) for r in matching), (
+            "logger.warning must include exc_info=True for traceback preservation"
+        )
+
+    def test_announce_exile_result_logs_on_exception(self, caplog) -> None:
+        judge = _make_judge_with_broken_router()
+        with caplog.at_level(logging.WARNING, logger="werewolf_agent.agents.judge"):
+            b = judge.announce_exile_result(
+                exiled_player_id="p05", exiled_player_name="玩家五",
+                reason="", tied_player_ids=[], day_number=1,
+            )
+        assert b.message
+        matching = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and ("announce_exile_result" in r.message or "boom" in r.message)
+        ]
+        assert matching, (
+            f"judge.announce_exile_result catch-all swallowed exception silently: "
+            f"{[r.message for r in caplog.records]}"
+        )
+        assert any(getattr(r, "exc_info", None) for r in matching), (
+            "logger.warning must include exc_info=True for traceback preservation"
+        )
+
+    def test_broadcast_sheriff_result_logs_on_exception(self, caplog) -> None:
+        judge = _make_judge_with_broken_router()
+        with caplog.at_level(logging.WARNING, logger="werewolf_agent.agents.judge"):
+            b = judge.broadcast_sheriff_result("p03", "active")
+        assert b.message
+        matching = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and ("broadcast_sheriff_result" in r.message or "boom" in r.message)
+        ]
+        assert matching, (
+            f"judge.broadcast_sheriff_result catch-all swallowed exception silently: "
+            f"{[r.message for r in caplog.records]}"
+        )
+        assert any(getattr(r, "exc_info", None) for r in matching), (
+            "logger.warning must include exc_info=True for traceback preservation"
+        )

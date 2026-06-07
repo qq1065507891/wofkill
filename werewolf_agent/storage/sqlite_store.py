@@ -41,6 +41,11 @@ def _deserialize_game_state(raw: str) -> GameState:
 
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+    description TEXT
+);
 CREATE TABLE IF NOT EXISTS games (
     game_id TEXT PRIMARY KEY,
     state_json TEXT NOT NULL

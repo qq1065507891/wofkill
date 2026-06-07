@@ -20,11 +20,129 @@ from werewolf_agent.tools.schemas import (
 from werewolf_agent.tools.tool_logger import ToolCallLogger
 
 
+# ---------------------------------------------------------------------------
+# P-U4: module-level helpers that actually consult MemoryStore.
+#
+# These used to be method-shaped stubs that returned a hard-coded
+# "available" / "recorded" payload without ever touching
+# MemoryStore.  They are now module-level functions that:
+#   1. accept an explicit ``memory_store`` (the wired instance), or
+#   2. fall back to a module-level default created on first use
+#      (so test/demo paths work without explicit wiring).
+#
+# The ``LocalToolExecutor`` methods below delegate to these
+# helpers, so production callers get the same behavior whether
+# the executor was constructed with a wired ``memory_store`` or
+# not.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MEMORY_STORE: Any = None
+
+
+def _get_default_memory_store() -> Any:
+    """Return the module-level default MemoryStore, creating on first use."""
+    global _DEFAULT_MEMORY_STORE
+    if _DEFAULT_MEMORY_STORE is None:
+        from werewolf_agent.memory.store import MemoryStore
+        _DEFAULT_MEMORY_STORE = MemoryStore()
+    return _DEFAULT_MEMORY_STORE
+
+
+def _query_cognition_matrix(
+    viewer_id: str,
+    target_id: str,
+    memory_store: Any | None = None,
+) -> dict[str, Any]:
+    """P-U4: Real cognition matrix query.
+
+    Returns the entry for ``(viewer_id, target_id)`` from the wired
+    ``MemoryStore``.  When ``memory_store`` is None, falls back to
+    a module-level default (lazy-initialized on first call).
+
+    The response always includes ``viewer_id`` and ``target_id``
+    (preserving the previous stub's shape).  When the matrix is
+    not yet initialized for the viewer, the function auto-inits
+    it with the (viewer, target) pair so the tool is useful for
+    first-time queries before the game's normal init pipeline
+    runs.  This auto-init is purely a convenience — production
+    callers should pre-init via ``MemoryStore.init_matrix``.
+    """
+    if memory_store is None:
+        memory_store = _get_default_memory_store()
+    response: dict[str, Any] = {
+        "viewer_id": viewer_id,
+        "target_id": target_id,
+    }
+    matrix = memory_store.get_matrix(viewer_id)
+    if matrix is None:
+        # Lazy-init with the (viewer, target) pair so the entry
+        # below resolves.  Production code normally pre-inits
+        # matrices during game setup.
+        try:
+            memory_store.init_matrix(
+                viewer_id, sorted({viewer_id, target_id})
+            )
+            matrix = memory_store.get_matrix(viewer_id)
+        except Exception:
+            matrix = None
+    entry = matrix.get(target_id) if matrix is not None else None
+    if entry is None:
+        response["available"] = False
+        response["note"] = f"no cognition entry for {target_id}"
+        return response
+    response["available"] = True
+    response["faction_read"] = entry.faction_read
+    response["trust"] = entry.trust
+    response["key_evidence"] = [
+        e.to_dict() if hasattr(e, "to_dict") else e
+        for e in entry.key_evidence
+    ]
+    response["open_questions"] = list(entry.open_questions)
+    response["role_probabilities"] = dict(entry.role_probabilities)
+    return response
+
+
+def _write_review(
+    game_id: str,
+    player_id: str,
+    review_data: dict[str, Any],
+    memory_store: Any | None = None,
+) -> dict[str, Any]:
+    """P-U4: Real review write to MemoryStore.
+
+    Persists ``review_data`` under a deterministic id
+    ``"{game_id}:{player_id}"`` via ``MemoryStore.save_review``.
+    Returns a dict with ``persisted=True`` and ``review_id`` on
+    success, or ``persisted=False`` with an ``error`` key on
+    failure (e.g. MemoryStore raised).
+    """
+    if memory_store is None:
+        memory_store = _get_default_memory_store()
+    try:
+        review_id = memory_store.save_review(
+            game_id=game_id,
+            player_id=player_id,
+            review_data=review_data,
+        )
+        return {"persisted": True, "review_id": review_id}
+    except Exception as exc:  # noqa: BLE001 — surface to tool caller
+        return {"persisted": False, "error": str(exc)}
+
+
 class LocalToolExecutor:
     """Executes internal LangGraph tools against local game state."""
 
-    def __init__(self, logger: ToolCallLogger | None = None) -> None:
+    def __init__(
+        self,
+        logger: ToolCallLogger | None = None,
+        memory_store: Any | None = None,
+    ) -> None:
         self._logger = logger or ToolCallLogger()
+        # P-U4: when wired, ``_query_cognition_matrix`` /
+        # ``_write_review`` delegate to this instance instead of
+        # the module-level default.  ``None`` is fine — the
+        # module-level default is used as a fallback.
+        self._memory_store = memory_store
 
     @property
     def logger(self) -> ToolCallLogger:
@@ -175,41 +293,48 @@ class LocalToolExecutor:
     def _query_cognition_matrix(
         self, call: ToolCall, state: GameState,
     ) -> dict[str, Any]:
-        """Query cognition matrix for a viewer. Returns belief state."""
-        # Returns empty if no matrix is stored — this is a read-only query
+        """Query cognition matrix for a viewer. Returns belief state.
+
+        P-U4: delegates to the module-level
+        ``_query_cognition_matrix`` helper which actually consults
+        the wired ``MemoryStore`` (or the module-level default if
+        not wired).  Passes ``target_id`` from ``call.params`` so
+        callers can scope the query to a single target.
+        """
         viewer_id = call.params.get("viewer_id", "")
-        return {
-            "viewer_id": viewer_id,
-            "note": "Cognition matrix is managed by MemoryStore. "
-                    "This tool returns the query interface status.",
-            "available": True,
-        }
+        target_id = call.params.get("target_id", "")
+        return _query_cognition_matrix(
+            viewer_id, target_id, memory_store=self._memory_store,
+        )
 
     def _write_review(
         self, call: ToolCall, state: GameState,
     ) -> dict[str, Any]:
-        """Write review entry. Validates that game has ended.
+        """Write review entry. P-U4 delegates to MemoryStore.save_review.
 
-        Review is logged via ToolCallLogger for audit trail.
-        Persistent storage is handled by MemoryStore / PersistentMemoryCoordinator
-        at game end.
+        Validates that the game has ended (returns an ``error`` key
+        otherwise).  When valid, delegates to the module-level
+        ``_write_review`` helper which persists via
+        ``MemoryStore.save_review``.
         """
         if state.winning_faction is None:
             return {"error": "Cannot write review: game not ended"}
 
         player_id = call.params.get("player_id", "")
         review_text = call.params.get("review_text", "")
-        review_event = {
+        review_data = {
             "player_id": player_id,
             "review_text": review_text,
-            "game_id": state.game_id,
         }
-        return {
-            "player_id": player_id,
-            "review_text": review_text,
-            "game_id": state.game_id,
-            "status": "recorded",
-        }
+        result = _write_review(
+            state.game_id, player_id, review_data,
+            memory_store=self._memory_store,
+        )
+        # Preserve the historical ``status: "recorded"`` key the
+        # existing tool contract expects.
+        result["status"] = "recorded"
+        result["game_id"] = state.game_id
+        return result
 
     def _call_evaluator(
         self, call: ToolCall, state: GameState,
