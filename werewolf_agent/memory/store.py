@@ -362,17 +362,55 @@ class MemoryStore:
         that need cross-process persistence can wire their own
         store or extend this method.
 
+        P-M1 (post-review-v2): also writes the record to the
+        underlying ``GameRepository`` (when one is configured) so
+        the review survives process restarts. The repo's
+        ``save_reflection`` interface takes a dict with an
+        ``entry_id`` key; we synthesize one from ``review_id``.
+        The on-disk schema already accepts a generic dict, so we
+        embed the review payload under ``data`` and the original
+        review_id under ``entry_id`` for round-tripping via
+        ``load_reflection``.
+
         Returns:
             A deterministic review id of the form ``"{game_id}:{player_id}"``.
         """
         if not hasattr(self, "_reviews") or self._reviews is None:
             self._reviews = {}
         review_id = f"{game_id}:{player_id}"
-        self._reviews[review_id] = {
+        record = {
             "game_id": game_id,
             "player_id": player_id,
             "review_data": dict(review_data),
         }
+        self._reviews[review_id] = record
+        # P-M1: persist to the underlying repository so the review
+        # survives process restarts. The repo is shared with
+        # ``self.reflections`` (which receives it via __init__), so
+        # the natural place to fetch it is from there. We also
+        # fall back to ``self._repo`` / ``self.repo`` for callers
+        # that wire the repo at a different layer.
+        repo = getattr(self.reflections, "_repo", None)
+        if repo is None:
+            repo = getattr(self, "_repo", None) or getattr(self, "repo", None)
+        if repo is not None and hasattr(repo, "save_reflection"):
+            try:
+                # save_reflection takes a dict with ``entry_id``;
+                # keep the rest of the round-trip metadata alongside.
+                payload = dict(record)
+                payload["entry_id"] = review_id
+                payload["data"] = dict(review_data)
+                repo.save_reflection(payload)
+            except Exception:
+                # Never let a repo write failure break the in-memory
+                # path: callers still get a valid review_id and the
+                # data is available via ``get_review`` for the
+                # lifetime of this process.
+                _LOG.warning(
+                    "MemoryStore.save_review: repo persistence failed "
+                    "for %s",
+                    review_id, exc_info=True,
+                )
         return review_id
 
     def get_review(
