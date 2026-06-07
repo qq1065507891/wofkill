@@ -10,6 +10,7 @@ from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     agent_sheriff_election_speech,
+    agent_sheriff_endorse,
     agent_sheriff_pick_speech_order,
     agent_sheriff_register,
     agent_sheriff_vote,
@@ -503,85 +504,12 @@ def _sheriff_endorse_adapter(
 ) -> dict[str, Any]:
     """Adapter: sheriff privately decides endorsement target.
 
-    Uses VOTE action so the sheriff's private reasoning stays in
-    private_intent and action_trace — never visible to other players.
+    A6: thin wrapper around the new ``agent_sheriff_endorse`` adapter
+    (which itself uses ``build_agent_context`` + ``agent.act(context)``).
+    The sheriff's private reasoning stays in ``private_intent`` and
+    ``action_trace`` — never visible to other players.
     """
-    agent = registry.get_agent(sheriff_id)
-    if agent is None:
+    result = agent_sheriff_endorse(state, engine, registry, sheriff_id)
+    if result is None:
         return {}
-
-    from werewolf_agent.agents.schemas import ActionType, TaskType
-    gs: GameState = state["game_state"]
-
-    alive_others = [
-        pid for pid, p in gs.players.items()
-        if p.alive and pid != sheriff_id
-    ]
-    legal_actions = [ActionType.VOTE]
-
-    context = None
-    try:
-        from werewolf_agent.runtime.context import build_agent_context
-        context = build_agent_context(
-            engine, gs, sheriff_id, TaskType.VOTE,
-            legal_actions=legal_actions,
-            rag_service=state.get("rag_service"),
-            restored_memory=state.get("restored_memory"),
-        )
-    except Exception:
-        logger.warning("Failed to build agent context for sheriff endorse", exc_info=True)
-
-    system_prompt = (
-        "你是警长。现在所有玩家已经发言完毕，即将开始放逐投票。"
-        "作为警长，你需要归票——选择你认为应该被投票放逐的玩家。"
-        "这是你的私人决策，你的内心理由不会让其他玩家看到。"
-        "但你的归票目标会被法官公开宣布。"
-    )
-    prompt = (
-        f"合法归票目标: {', '.join(alive_others)}\n"
-        f"请选择你要归票的玩家。输出你的内心理由（不公开）。"
-    )
-    if context:
-        prompt = (
-            f"Visible state: {context.visible_world_state}\n"
-            f"合法归票目标: {', '.join(alive_others)}\n"
-            f"请选择归票目标，内心理由不公开。"
-        )
-
-    try:
-        action = agent.act(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            task_type=TaskType.VOTE,
-            legal_actions=legal_actions,
-        )
-        target = (
-            getattr(action, "target_id", None)
-            or getattr(action, "target", None)
-        )
-        if isinstance(action, dict):
-            target = action.get("target_id") or action.get("target")
-        if not target and hasattr(action, "speech_text"):
-            import re
-            m = re.search(r"p\d{2}", str(action.speech_text))
-            if m:
-                target = m.group()
-        # Validate target is alive and not self
-        if target and target in alive_others:
-            endorse_target = target
-            private_reason = getattr(action, "reason", "") or ""
-            action_trace = getattr(action, "action_trace", None)
-        else:
-            endorse_target = ""
-            private_reason = ""
-            action_trace = None
-    except Exception:
-        endorse_target = ""
-        private_reason = ""
-        action_trace = None
-
-    return {
-        "endorse_target": endorse_target,
-        "private_reason": private_reason,
-        "action_trace": action_trace,
-    }
+    return result

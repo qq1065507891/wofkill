@@ -500,3 +500,22 @@ def test_self_destruct_during_sheriff_election_announces_deaths_first() -> None:
         f"announce_deaths[_with_badge_loss] so D1 self-destruct can publish "
         f"N1 deaths; got {result!r}"
     )
+
+
+class TestSheriffEndorseAdapterModernization:
+    """审查 A6: _sheriff_endorse_adapter 不再用老 4 参 agent.act() 接口。"""
+
+    def test_endorse_adapter_uses_build_agent_context(self):
+        """Endorse 路径应走 build_agent_context + adapter agent_sheriff_endorse。"""
+        import inspect
+        from werewolf_agent.runtime.nodes import sheriff
+        if not hasattr(sheriff, "_sheriff_endorse_adapter"):
+            pytest.skip("function not found")
+        src = inspect.getsource(sheriff._sheriff_endorse_adapter)
+        # 新接口特征：build_agent_context + adapter agent_sheriff_endorse
+        has_modern = ("build_agent_context" in src) or ("agent_sheriff_endorse" in src)
+        # 老接口特征：直接 agent.act(prompt=..., system_prompt=..., task_type=..., legal_actions=...)
+        has_legacy = ("agent.act(" in src) and ("prompt=" in src) and ("system_prompt=" in src)
+        assert has_modern and not has_legacy, (
+            f"_sheriff_endorse_adapter still uses old 4-arg agent.act() interface:\n{src[:500]}"
+        )

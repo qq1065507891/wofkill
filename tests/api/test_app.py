@@ -78,3 +78,84 @@ def test_app_passes_none_reranker_when_api_key_unset(monkeypatch):
         "N1: reranker must default to None when no API key is set; "
         "got non-None reranker"
     )
+
+
+# ---------------------------------------------------------------------------
+# P-A3: _persist_custom_config must surface a WARNING when the game repo
+# lacks save_custom_config — otherwise the customization save succeeds
+# from the caller's perspective but the record is silently dropped on
+# restart. The closure inside create_app() reads the outer `repo`, so
+# the test exercises the module-level impl directly.
+# ---------------------------------------------------------------------------
+
+
+class TestPersistCustomConfigNoOp:
+    """审查 A3: 缺 save_custom_config 时必须 warn，不再静默丢数据。"""
+
+    def test_persist_writes_when_repo_supports_it(self):
+        from werewolf_agent.api.app import _persist_custom_config_impl
+        from werewolf_agent.customization.repository import CustomConfigRecord
+
+        class StubRepo:
+            def __init__(self):
+                self.saved = []
+
+            def save_custom_config(self, record):
+                self.saved.append(record)
+
+        record = CustomConfigRecord(
+            config_id="test_id",
+            config_type="ruleset",
+            raw_yaml="ruleset_id: t",
+            normalized={"ruleset_id": "t"},
+            validation_result={"valid": True},
+            content_hash="abc",
+            status="playable",
+            version="1",
+            maturity="validated",
+            compatibility_matrix={"status": "playable"},
+            diff_against_default=[],
+            creator_id="mod1",
+            created_at="2026-06-07T00:00:00+00:00",
+            updated_at="2026-06-07T00:00:00+00:00",
+        )
+
+        repo = StubRepo()
+        _persist_custom_config_impl(repo, record)
+
+        assert len(repo.saved) == 1
+        assert repo.saved[0]["config_id"] == "test_id"
+        assert repo.saved[0]["config_type"] == "ruleset"
+
+    def test_persist_warns_when_repo_lacks_method(self, caplog):
+        from werewolf_agent.api.app import _persist_custom_config_impl
+        from werewolf_agent.customization.repository import CustomConfigRecord
+
+        record = CustomConfigRecord(
+            config_id="test_id",
+            config_type="ruleset",
+            raw_yaml="",
+            normalized={},
+            validation_result={},
+            content_hash="",
+            status="draft",
+            version="1",
+            maturity="validated",
+            compatibility_matrix={},
+            diff_against_default=[],
+            creator_id="mod1",
+            created_at="2026-06-07T00:00:00+00:00",
+            updated_at="2026-06-07T00:00:00+00:00",
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="werewolf_agent.api.app"):
+            _persist_custom_config_impl(type("NoOpRepo", (), {})(), record)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, f"no WARNING logged: {[r.message for r in caplog.records]}"
+        assert any("save_custom_config" in r.message for r in warnings), (
+            f"WARNING should mention save_custom_config: "
+            f"{[r.message for r in warnings]}"
+        )

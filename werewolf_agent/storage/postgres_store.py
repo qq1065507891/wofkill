@@ -285,6 +285,62 @@ class PostgresGameRepository:
         conn.execute("DELETE FROM reflections WHERE entry_id = %s", (entry_id,))
         conn.commit()
 
+    # -- Customization configs ----------------------------------------------
+
+    def save_custom_config(self, record: dict[str, Any]) -> None:
+        """P-A1: persist a full custom-config record (upsert by config_id)."""
+        conn = self._ensure_connection()
+        conn.execute(
+            """
+            INSERT INTO custom_configs
+                (config_id, config_type, record_json, created_at, updated_at)
+            VALUES (%s, %s, %s::jsonb, %s, %s)
+            ON CONFLICT (config_id) DO UPDATE SET
+                config_type = EXCLUDED.config_type,
+                record_json = EXCLUDED.record_json,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (
+                str(record["config_id"]),
+                str(record.get("config_type", "")),
+                json.dumps(record, ensure_ascii=False),
+                str(record.get("created_at", "")),
+                str(record.get("updated_at", "")),
+            ),
+        )
+        conn.commit()
+
+    def load_custom_config(self, config_id: str) -> dict[str, Any] | None:
+        """P-A1: load custom-config record by id, None if missing."""
+        conn = self._ensure_connection()
+        row = conn.execute(
+            "SELECT record_json FROM custom_configs WHERE config_id = %s",
+            (config_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        raw = row[0]
+        return raw if isinstance(raw, dict) else json.loads(raw)
+
+    def list_custom_configs(self, config_type: str | None = None) -> list[dict[str, Any]]:
+        """P-A1: list all custom configs, optionally filtered by config_type."""
+        conn = self._ensure_connection()
+        if config_type is None:
+            rows = conn.execute(
+                "SELECT record_json FROM custom_configs ORDER BY created_at, config_id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT record_json FROM custom_configs "
+                "WHERE config_type = %s ORDER BY created_at, config_id",
+                (config_type,),
+            ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            raw = row[0]
+            results.append(raw if isinstance(raw, dict) else json.loads(raw))
+        return results
+
     def _connect(self) -> Any:
         if self._conn is not None:
             return self._conn
@@ -371,8 +427,10 @@ class PostgresGameRepository:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS custom_configs (
                 config_id TEXT PRIMARY KEY,
-                config_json JSONB NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                config_type TEXT NOT NULL,
+                record_json JSONB NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.execute("""
