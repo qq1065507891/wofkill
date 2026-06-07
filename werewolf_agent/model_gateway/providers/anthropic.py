@@ -41,8 +41,16 @@ class AnthropicProvider(_BaseHttpProvider):
     ) -> GenerateResult:
         messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
         forcing_tool = bool(tool_choice and tool_choice.get("name"))
-        if config.allow_text_tool_fallback and not forcing_tool:
-            messages.append({"role": "assistant", "content": "{"})
+        # P-N3 (post-review-v2): the legacy text-fallback path injected
+        # a literal ``{"`` assistant message to "prime" the model into
+        # starting its reply with ``{``. The mechanism was brittle:
+        # the model would often return leading whitespace, a BOM, or
+        # markdown code fences, which then collided with the
+        # ``text[0] != "{"`` recovery below and produced invalid JSON.
+        # We drop the priming entirely; the system prompt already
+        # instructs the model to emit JSON, and the downstream
+        # ``repair_json_text`` + ``json.loads`` chain handles
+        # whitespace / BOM / fence cleanup.
 
         payload: dict[str, Any] = {
             "model": config.model,
@@ -74,8 +82,12 @@ class AnthropicProvider(_BaseHttpProvider):
         data = response.json()
         tool_call_received = _has_anthropic_tool_use(data)
         text = _extract_anthropic_text(data)
-        if config.allow_text_tool_fallback and not forcing_tool and text:
-            text = "{" + text if text[0] != "{" else text
+        # P-N3 (post-review-v2): the legacy code re-attached a ``{"``
+        # prefix to the response when ``text[0] != "{"``. That
+        # corrupted any response with leading whitespace, BOM, or
+        # markdown fences. We return the text verbatim and let the
+        # consumer parse it with ``repair_json_text`` + ``json.loads``,
+        # which already strips leading whitespace and handles BOM.
         usage = data.get("usage", {})
         return GenerateResult(
             text=text,

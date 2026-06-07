@@ -52,8 +52,12 @@ class MiniMaxProvider(_BaseHttpProvider):
     ) -> GenerateResult:
         messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
         forcing_tool = bool(tool_choice and tool_choice.get("name"))
-        if config.allow_text_tool_fallback and not forcing_tool:
-            messages.append({"role": "assistant", "content": "{"})
+        # P-N3 (post-review-v2): removed ``{"`` priming and post-hoc
+        # prefix injection. The legacy text-fallback path was brittle
+        # against leading whitespace, BOM, or markdown fences. The
+        # downstream ``repair_json_text`` + ``json.loads`` chain
+        # handles all those cases. See anthropic.py for the
+        # matching change and rationale.
 
         payload: dict[str, Any] = {
             "model": config.model,
@@ -84,8 +88,8 @@ class MiniMaxProvider(_BaseHttpProvider):
 
         tool_call_received = _has_anthropic_tool_use(data)
         text = _extract_anthropic_text(data)
-        if config.allow_text_tool_fallback and not forcing_tool and text:
-            text = "{" + text if text[0] != "{" else text
+        # P-N3 (post-review-v2): removed ``{" + text`` re-attachment.
+        # Return text verbatim; downstream parser handles it.
         usage = data.get("usage", {})
         return GenerateResult(
             text=text,
