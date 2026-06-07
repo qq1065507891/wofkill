@@ -502,3 +502,109 @@ def test_day_vote_announces_vote_collection_and_end() -> None:
     ]
 
     assert phases == ["vote_start", "vote_collect", "vote_end", "vote_result"]
+
+
+class TestDeadVoterFiltered:
+    """P1-G3223805846-2: 死人的 vote 不应进入 tally result。"""
+
+    def test_dead_voter_excluded_from_vote_resolved_payload(self) -> None:
+        """Stale vote from a dead player (e.g. restored checkpoint) must be filtered."""
+        from werewolf_agent.runtime.graph import resolve_vote
+
+        engine = _new_engine()
+        players = {
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p11": PlayerState(id="p11", role="villager", alive=False),  # 昨夜死
+        }
+        gs = GameState(game_id="dead_vote_filter", players=players, day_number=2)
+
+        # p11 已死但其 vote 仍在 exile_votes（模拟 checkpoint 恢复/重放残留）
+        result = resolve_vote({
+            "game_state": gs,
+            "engine": engine,
+            "exile_votes": {"p11": "p02", "p01": "p02"},
+            "revote": False,
+            "consecutive_no_exile_days": 0,
+        })
+
+        vote_event = next(
+            (e for e in result["game_state"].events if e.type == "vote_resolved"),
+            None,
+        )
+        assert vote_event is not None, "vote_resolved event missing"
+
+        # p11 是死人，vote 不应出现在 payload["votes"]
+        voters_in_payload = [v["voter"] for v in vote_event.payload["votes"]]
+        assert "p11" not in voters_in_payload, (
+            f"dead voter p11 leaked into votes payload: {vote_event.payload['votes']}"
+        )
+
+        # p11 的票不应计入 weighted_tally
+        assert vote_event.payload["weighted_tally"] == {"p02": 1.0}, (
+            f"dead voter inflated weighted_tally: {vote_event.payload['weighted_tally']}"
+        )
+
+        # p11 不应在 vote_weights 中
+        assert "p11" not in vote_event.payload["vote_weights"], (
+            f"dead voter in vote_weights: {vote_event.payload['vote_weights']}"
+        )
+
+    def test_dead_vote_disabled_voter_also_excluded(self) -> None:
+        """白痴亮牌后 vote_enabled=False，同样不应进入 payload。"""
+        from werewolf_agent.runtime.graph import resolve_vote
+
+        engine = _new_engine()
+        players = {
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p05": PlayerState(id="p05", role="idiot", alive=True, vote_enabled=False),
+        }
+        gs = GameState(game_id="vote_disabled_filter", players=players, day_number=2)
+
+        # p05 是白痴，vote_enabled=False 但其 vote 仍在 exile_votes
+        result = resolve_vote({
+            "game_state": gs,
+            "engine": engine,
+            "exile_votes": {"p05": "p02", "p01": "p02"},
+            "revote": False,
+            "consecutive_no_exile_days": 0,
+        })
+
+        vote_event = next(
+            (e for e in result["game_state"].events if e.type == "vote_resolved"),
+            None,
+        )
+        assert vote_event is not None
+
+        voters_in_payload = [v["voter"] for v in vote_event.payload["votes"]]
+        assert "p05" not in voters_in_payload, (
+            f"vote-disabled voter p05 leaked into payload: {vote_event.payload['votes']}"
+        )
+        assert vote_event.payload["weighted_tally"] == {"p02": 1.0}
+
+    def test_dead_vote_filter_does_not_change_exile_choice(self) -> None:
+        """dead vote 被过滤后，tally result 与 engine.resolve_vote 一致（不死人票计入）。"""
+        from werewolf_agent.runtime.graph import resolve_vote
+
+        engine = _new_engine()
+        players = {
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id="p03", role="villager", alive=True),
+            "p11": PlayerState(id="p11", role="villager", alive=False),
+        }
+        gs = GameState(game_id="dead_vote_filter_choice", players=players, day_number=2)
+
+        # p11 (dead) 投 p01；p02/p03 (alive) 投 p01；p01 (alive) 投 p02
+        # 死票过滤后，p01 应获 2 票 (p02, p03)，p02 应获 1 票 (p01)
+        result = resolve_vote({
+            "game_state": gs,
+            "engine": engine,
+            "exile_votes": {"p11": "p01", "p02": "p01", "p03": "p01", "p01": "p02"},
+            "revote": False,
+            "consecutive_no_exile_days": 0,
+        })
+
+        # exile 应是 p01（多数）
+        assert result["_vote_result"].exiled_player_id == "p01"

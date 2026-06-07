@@ -621,6 +621,9 @@ class PlayerAgent:
                 parse_success=parse_success,
                 retry_count=attempt,
             )
+            # P3-G3223805846-1: 记录达到成功一共重试了几次。attempt 是 1-indexed
+            # （首次尝试 attempt=1，无重试），所以 retries = attempt - 1。
+            trace.total_retry_count_until_success = max(attempt - 1, 0)
             self.metrics_collector.record(
                 player_id=context.agent_id,
                 task_type=context.task_type.value,
@@ -902,12 +905,31 @@ class PlayerAgent:
             # For vote actions, exclude self and use evidence-based fallback
             if safe_action == ActionType.VOTE:
                 non_self = [t for t in context.legal_targets if t != context.agent_id]
-                if non_self:
-                    fb = context.strategy_directive.get("_vote_fallback_target") if context.strategy_directive else None
+                if not non_self:
+                    # g_3223805846-B1: vote fallback must never yield a null
+                    # target. If legal_targets only contains self, fall back
+                    # to the first legal target — better to vote anyone than
+                    # to skip the vote and let the engine treat us as abstain.
+                    safe_target = context.legal_targets[0] if context.legal_targets else None
+                else:
+                    fb = (
+                        context.strategy_directive.get("_vote_fallback_target")
+                        if context.strategy_directive else None
+                    )
                     if fb and fb in non_self:
                         safe_target = fb
                     else:
-                        safe_target = non_self[0]
+                        # g_3223805846-B1: prefer the most-suspect target from
+                        # strategy_directive (a player publicly questioned by
+                        # multiple others) over an arbitrary non-self target.
+                        most_suspect = (
+                            context.strategy_directive.get("_most_suspect_target")
+                            if context.strategy_directive else None
+                        )
+                        if most_suspect and most_suspect in non_self:
+                            safe_target = most_suspect
+                        else:
+                            safe_target = non_self[0]
             else:
                 safe_target = context.legal_targets[0]
 
@@ -964,6 +986,26 @@ class PlayerAgent:
         import hashlib
         import logging
         _log = logging.getLogger(__name__)
+
+        # P1-G3223805846-3: seer 在 PK 段 (task_type=PK_SPEECH) 必须有非空
+        # 内容；优先用未报过的狼人查杀作为发言载体，否则给占位声明。
+        # 通用 PK 模板是上警风格（"我上警"），对预言家 PK 完全错位且会丢
+        # 身份标签，导致 fallback 掉链。
+        if (getattr(context, "own_role", "") == "seer"
+                and context.task_type == TaskType.PK_SPEECH):
+            check_history = (context.strategy_directive or {}).get("my_check_history", []) or []
+            wolf_checks = [
+                c for c in check_history
+                if c.get("alignment") == "wolf" and not c.get("reported")
+            ]
+            if wolf_checks:
+                wc = wolf_checks[0]
+                return (
+                    f"我是预言家，N{wc.get('night', '?')} 验 "
+                    f"{wc.get('target', '?')} 是狼人。"
+                    f"我是真的预言家，请跟我投票。"
+                )
+            return "我是预言家，请给我一次发言机会详细说明查杀。"
 
         # Hash-based target selection: avoids all agents converging on legal_targets[0]
         seed_str = f"{context.agent_id}:{context.day_number}:{context.phase}"

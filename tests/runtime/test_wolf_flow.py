@@ -597,3 +597,124 @@ class TestWolfDirectiveLiveSeerClaimants:
         assert "p01" in block and "p02" in block, f"claimants missing: {block!r}"
         # p07 (villager, never claimed) must NOT be in the claimants list
         assert "p07" not in block, f"p07 wrongly listed as claimant: {block!r}"
+
+
+# ---------------------------------------------------------------------------
+# Issue 6 (Task B6): _planned_wolf_kill must validate primary alive;
+# if primary is unreachable, force backup selection regardless of evidence.
+# ---------------------------------------------------------------------------
+
+
+class TestPlannedWolfKillPrimaryAlive:
+    """P1-G3223805846-B6: wolf plan primary 必须存活，否则从 backup 选。
+
+    背景：狼队讨论后形成 night_kill_primary + night_kill_backup 计划。
+    但从狼队讨论到 wolf_consensus 执行击杀之间，primary 可能因白天投票
+    出局而死亡。旧逻辑仅依赖 _first_alive_target 跳过死人 primary，然后
+    用相同的 evidence 检查判断 backup；当 backup 没有证据且 quality 非
+    strong 时，函数错误返回 None，调用方跌回 _legacy_wolf_consensus 随机
+    选人。修复：当 primary 不可达时，强制使用 backup（绕过 evidence 校验）。
+    """
+
+    def _make_state(
+        self,
+        *,
+        primary: str | None,
+        backup: str | None,
+        primary_alive: bool,
+        backup_alive: bool,
+        evidence_quality: str = "strong",
+        evidence_targets: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Build a minimal RuntimeState for _planned_wolf_kill.
+
+        evidence_targets lists which targets appear in evidence_from_discussion.
+        """
+        players: dict[str, PlayerState] = {
+            "w1": PlayerState(id="w1", role="werewolf", alive=True),
+            "p07": PlayerState(id="p07", role="villager", alive=primary_alive),
+            "p03": PlayerState(id="p03", role="villager", alive=backup_alive),
+            "p08": PlayerState(id="p08", role="villager", alive=True),
+        }
+        gs = GameState(
+            game_id="planned_wolf_kill_primary_alive",
+            players=players,
+            night_number=1,
+        )
+        evidence = [{"target": t} for t in (evidence_targets or [])]
+        return {
+            "game_state": gs,
+            "wolf_team_plan": {
+                "night_kill_primary": primary,
+                "night_kill_backup": backup,
+                "evidence_quality": evidence_quality,
+                "evidence_from_discussion": evidence,
+            },
+        }
+
+    def test_skips_dead_primary_picks_alive_backup(self) -> None:
+        """Primary 死亡时，强制使用 backup（即使 backup 无 evidence）。"""
+        from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
+
+        state = self._make_state(
+            primary="p07",
+            backup="p03",
+            primary_alive=False,   # primary 死了
+            backup_alive=True,     # backup 还活着
+            evidence_quality="weak",
+            evidence_targets=[],   # backup 也没有 evidence
+        )
+        result = _planned_wolf_kill(state)
+        assert result is not None, "primary 死亡时应强制返回 backup"
+        assert result["wolf_kill_target_id"] == "p03", (
+            f"expected backup p03 (primary p07 dead), got {result['wolf_kill_target_id']}"
+        )
+
+    def test_returns_alive_primary_when_present(self) -> None:
+        """Primary 存活时优先使用 primary。"""
+        from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
+
+        state = self._make_state(
+            primary="p07",
+            backup="p03",
+            primary_alive=True,    # primary 活着
+            backup_alive=True,
+            evidence_quality="strong",
+            evidence_targets=["p07"],
+        )
+        result = _planned_wolf_kill(state)
+        assert result is not None
+        assert result["wolf_kill_target_id"] == "p07", (
+            f"expected primary p07, got {result['wolf_kill_target_id']}"
+        )
+
+    def test_returns_none_when_both_dead(self) -> None:
+        """Primary 和 backup 都死亡时返回 None（让调用方走 solo-wolf fallback）。"""
+        from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
+
+        state = self._make_state(
+            primary="p07",
+            backup="p03",
+            primary_alive=False,   # 都死了
+            backup_alive=False,
+            evidence_quality="strong",
+            evidence_targets=["p07", "p03"],
+        )
+        result = _planned_wolf_kill(state)
+        assert result is None, f"expected None when both dead, got {result}"
+
+    def test_dead_primary_with_evidence_only_for_primary_still_picks_backup(self) -> None:
+        """Primary 死亡、evidence 只列了 primary 时，函数不应死锁，应选 backup。"""
+        from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
+
+        state = self._make_state(
+            primary="p07",
+            backup="p03",
+            primary_alive=False,
+            backup_alive=True,
+            evidence_quality="weak",
+            evidence_targets=["p07"],  # 只有死人 primary 在 evidence 里
+        )
+        result = _planned_wolf_kill(state)
+        assert result is not None, "primary 死亡时即使 evidence 不含 backup 也应返回 backup"
+        assert result["wolf_kill_target_id"] == "p03"

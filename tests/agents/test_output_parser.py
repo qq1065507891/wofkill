@@ -412,3 +412,42 @@ class TestExtractJsonRejectsAnalysisObject:
         assert not any("analysis" in c for c in result), (
             f"D4-7: thought-chain JSON must be filtered out. Got: {result!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestSchemaTypoTolerance
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaTypoTolerance:
+    """P1-G3223805846-5: 解析器对常见 LLM typo 容错。"""
+
+    def test_not_vading_reason_typo_normalized(self):
+        from werewolf_agent.agents.output_parser import _normalize_typos
+        result = _normalize_typos({"not_vading_reason": "wolf pattern", "action_type": "vote"})
+        assert "not_voting_reason" in result
+        assert "not_vading_reason" not in result
+        # 其他字段保留
+        assert result.get("action_type") == "vote"
+
+    def test_targe_id_typo_normalized(self):
+        from werewolf_agent.agents.output_parser import _normalize_typos
+        result = _normalize_typos({"targe_id": "p02", "action_type": "vote"})
+        assert "target_id" in result
+        assert "targe_id" not in result
+        assert result["target_id"] == "p02"
+
+    def test_no_typos_unchanged(self):
+        from werewolf_agent.agents.output_parser import _normalize_typos
+        d = {"action_type": "vote", "target_id": "p02", "reason": "test"}
+        assert _normalize_typos(d) == d
+
+    def test_does_not_mutate_input(self):
+        from werewolf_agent.agents.output_parser import _normalize_typos
+        original = {"not_vading_reason": "x"}
+        result = _normalize_typos(original)
+        # 原对象不应被改
+        assert "not_vading_reason" in original
+        # 新 dict 应被修正
+        assert "not_voting_reason" in result
+        assert result is not original

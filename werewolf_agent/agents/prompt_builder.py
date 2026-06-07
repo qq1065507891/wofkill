@@ -183,6 +183,21 @@ _STRATEGY_GROUP_ORDER: tuple[frozenset[str], str, str] = (
     (REFERENCE_KEYS, "【参考】", "以下为背景信息（REFERENCE），仅供决策参考："),
 )
 
+# P1-G3223805846-4: 头部硬约束强调 JSON 顶层字段必须使用 ``action_type``。
+# 游戏回放 g_3223805846 显示 LLM 在示例区之后仍输出 ``{"intent": "..."}``,
+# 导致解析器拒绝并触发 fallback。 在示例块前注入这个 guard 提示,让模型在
+# 模仿示例之前先看清字段名约束。 `_format_examples` 是示例输出的源头,所有
+# skill action (wolf_kill / hunter_shot / use_antidote / use_poison /
+# badge_transfer / badge_tear / choose_master) 和 speech / vote 示例都
+# 走这条路径; 在入口注入一次即可覆盖所有示例。
+_ACTION_TYPE_GUARD = (
+    "\n【硬约束 P1-G3223805846-4】你输出的 JSON 顶层字段名必须使用 `action_type`，"
+    "**不要**使用 `intent`、`command`、`action` 等其他名字。"
+    "如果你写 `{\"intent\": \"...\"}` 整个输出会被解析器拒绝。\n"
+    "正确的字段名：`action_type`, `target_id`, `speech`, `reason`, `confidence`, "
+    "`private_intent`（可选嵌套对象）。\n"
+)
+
 
 class PlayerPromptBuilder:
     """Assembles player prompts as a pipeline of independently-built sections.
@@ -1149,6 +1164,13 @@ class PlayerPromptBuilder:
     def _format_examples(self) -> str:
         ctx = self.context
         parts: list[str] = []
+        # P1-G3223805846-4: 在所有示例块之前先告诉 LLM 顶层字段名必须是
+        # ``action_type`` 而不是 ``intent``。 这条 guard 覆盖下面所有
+        # 路径 (wolf_kill / wolf_no_kill / sheriff_register /
+        # sheriff_withdraw / no_action / hunter_shot / use_antidote /
+        # use_poison / badge_transfer / badge_tear / choose_master /
+        # speech / vote), 在示例渲染前一次性注入,比每个分支都改更稳。
+        parts.append(_ACTION_TYPE_GUARD)
         # P0-S7: claimed_view is documented as an identity-perspective
         # identifier (PrivateIntent schema), not a free-form Chinese
         # phrase. Use the canonical enum-style values so the LLM copies

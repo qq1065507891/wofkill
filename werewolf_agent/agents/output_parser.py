@@ -293,6 +293,33 @@ def normalize_action_data(data: Any) -> Any:
     return normalized
 
 
+# P1-G3223805846-5: 常见 LLM 字段名 typo 归一化映射。LLM 经常写出
+# 拼写错误的字段名（如 `not_vading_reason`、`targe_id`），直接在解析
+# 入口做归一化，避免下游 Pydantic 校验把这些数据当 schema error
+# 丢弃。映射表只覆盖反复出现过的 typo，不要试图做成模糊匹配。
+_TYPO_ALIASES: dict[str, str] = {
+    "not_vading_reason": "not_voting_reason",
+    "not_vote_reason": "not_voting_reason",
+    "targe_id": "target_id",
+    "targt_id": "target_id",
+}
+
+
+def _normalize_typos(data: dict[str, Any]) -> dict[str, Any]:
+    """P1-G3223805846-5: 归一常见 LLM typo。返回新 dict，不修改原对象。
+
+    仅在原 dict 同时缺少正确字段名时才替换，避免覆盖下游已经
+    填好的合法值。返回新对象，调用方拿到 dict 即可安全复用。
+    """
+    if not isinstance(data, dict):
+        return data
+    result = dict(data)
+    for typo, correct in _TYPO_ALIASES.items():
+        if typo in result and correct not in result:
+            result[correct] = result.pop(typo)
+    return result
+
+
 def clean_enum_value(value: Any, allowed: set[str]) -> str | None:
     if value is None:
         return None
@@ -435,6 +462,10 @@ def action_from_data(data: Any) -> tuple[PlayerAction | None, str | None]:
     # (pipeline-optimization Task 5). ``model_validate`` is overridden on
     # the base class to route the data through the Union's TypeAdapter,
     # which dispatches on the ``action_type`` discriminator.
+    if isinstance(data, dict):
+        # P1-G3223805846-5: 解析入口归一常见 LLM 字段名 typo
+        # (如 `not_vading_reason` → `not_voting_reason`)。
+        data = _normalize_typos(data)
     data = normalize_action_data(data)
     # P1-S7 (residual): always sanitize private_intent before validation.
     # The previous code only sanitized on validation failure, which let

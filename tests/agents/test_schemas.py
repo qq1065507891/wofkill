@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from werewolf_agent.agents.schemas import (
+    ActionTrace,
     ActionType,
     AgentContext,
     BadgeTransferPlayerAction,
@@ -817,3 +818,35 @@ class TestClaimedViewEnum:
                 "faction_goal": "find_wolves",
                 "claimed_view": "随便写点啥",  # noqa: E501 — not in enum
             })
+
+
+class TestActionTraceRetryField:
+    """P3-G3223805846-1: ActionTrace 加 total_retry_count_until_success 字段。
+
+    语义：成功路径上 LLM 一共重试了多少次才成功。
+    - 第一次尝试就成功 → 0
+    - 第 N 次尝试才成功 → N-1
+    """
+
+    def test_default_total_retry_count_is_zero(self) -> None:
+        """未指定时，total_retry_count_until_success 必须默认为 0。"""
+        trace = ActionTrace()
+        assert trace.total_retry_count_until_success == 0
+
+    def test_explicit_total_retry_count_round_trips(self) -> None:
+        """显式赋值必须可被读取（model_dump 也得带上）。"""
+        trace = ActionTrace.model_validate({
+            "total_retry_count_until_success": 3,
+        })
+        assert trace.total_retry_count_until_success == 3
+        dumped = trace.model_dump()
+        assert dumped["total_retry_count_until_success"] == 3
+
+    def test_total_retry_count_in_model_fields(self) -> None:
+        """字段必须声明在 ActionTrace.model_fields 里（避免 typo 静默写入）。"""
+        assert "total_retry_count_until_success" in ActionTrace.model_fields
+        field = ActionTrace.model_fields["total_retry_count_until_success"]
+        # 必须有默认值
+        assert field.default == 0
+        # 必须是 int 类型
+        assert field.annotation is int
