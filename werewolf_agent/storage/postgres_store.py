@@ -400,6 +400,15 @@ class PostgresGameRepository:
         conn = self._ensure_connection()
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )
+        """)
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (1) ON CONFLICT DO NOTHING"
+        )
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS games (
                 game_id TEXT PRIMARY KEY,
                 state_json JSONB NOT NULL

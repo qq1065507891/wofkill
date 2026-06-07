@@ -818,3 +818,18 @@ class TestPostgresStoreThreadSafety:
             assert "self._lock" in src, (
                 f"PostgresGameRepository.{method} missing self._lock acquisition"
             )
+
+
+# ===========================================================================
+# 12. schema_version table (post-review S2)
+# ===========================================================================
+
+
+def test_postgres_ensure_schema_has_schema_version():
+    """S2 (post-review-v2): PostgresGameRepository._ensure_schema 应含 schema_version 表。"""
+    from werewolf_agent.storage.postgres_store import PostgresGameRepository
+    import inspect
+    src = inspect.getsource(PostgresGameRepository)
+    assert "schema_version" in src, (
+        f"Postgres _ensure_schema missing schema_version table"
+    )
