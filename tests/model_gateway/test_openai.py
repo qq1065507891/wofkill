@@ -36,17 +36,41 @@ class TestOpenAIUrlNormalization:
         url = _build_url("https://example.com/v2")
         assert url == "https://example.com/v2/chat/completions"
 
-    def test_url_normalization_v1beta_falls_back_to_v1(self) -> None:
-        """R3-MG-10: a base URL ending in /v1beta must NOT trigger the
-        /chat/completions append (which would 404). It should fall back
-        to the default /v1/chat/completions.
+    def test_url_normalization_v1beta_preserved(self) -> None:
+        """N2 (post-review-v2): a base URL ending in /v1beta must be
+        preserved as-is, not stripped and re-routed to /v1/chat/completions.
+
+        Rationale: real OpenAI-compatible gateways (Zhipu, Baidu, etc.)
+        use ``/v1beta`` as a stable API version path. The legacy
+        "fall back to /v1" behavior was a 404 source for these
+        gateways. The new rule preserves ANY ``/vN`` / ``/vNbeta`` /
+        ``/vNalpha`` suffix the caller declared.
         """
         url = _build_url("https://example.com/v1beta")
-        assert url == "https://example.com/v1/chat/completions"
+        assert "v1beta" in url, f"v1beta lost: {url}"
+        assert "/v1/chat/completions" not in url, f"v1beta misrouted: {url}"
+        assert url == "https://example.com/v1beta/chat/completions"
 
-    def test_url_normalization_v2beta_falls_back_to_v1(self) -> None:
+    def test_url_normalization_v2beta_preserved(self) -> None:
         url = _build_url("https://example.com/v2beta")
-        assert url == "https://example.com/v1/chat/completions"
+        assert "v2beta" in url, f"v2beta lost: {url}"
+        assert url == "https://example.com/v2beta/chat/completions"
+
+    def test_v4beta_url_preserved(self) -> None:
+        """N2 (post-review-v2): /v4beta /v5beta URLs must NOT be misrouted
+        to /v1/chat/completions (the legacy fallback dropped the version
+        and produced 404s on real OpenAI-compatible gateways that use
+        versioned paths like /v4beta)."""
+        url = _build_url("https://api.example.com/v4beta")
+        assert "v4beta" in url, f"v4beta lost: {url}"
+        assert "/v1/chat/completions" not in url, f"v4beta misrouted: {url}"
+        assert url == "https://api.example.com/v4beta/chat/completions"
+
+    def test_v5alpha_url_preserved(self) -> None:
+        """N2 (post-review-v2): /v5alpha is also a valid versioned path."""
+        url = _build_url("https://api.example.com/v5alpha")
+        assert "v5alpha" in url, f"v5alpha lost: {url}"
+        assert url == "https://api.example.com/v5alpha/chat/completions"
 
     def test_url_normalization_trailing_slash(self) -> None:
         url = _build_url("https://example.com/v1/")
