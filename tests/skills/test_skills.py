@@ -691,3 +691,22 @@ class TestSkillToolDefinitions:
         ctx = AgentContext(agent_id="p01", task_type=TaskType.VOTE)
         assert ctx.skill_analyses == {}
         assert ctx.skill_analysis_hints == {}
+
+
+# ---------------------------------------------------------------------------
+# SK1 (post-review-v2): SKILL.md 正文应被注入到 prompt
+# ---------------------------------------------------------------------------
+
+class TestSkillMarkdownBodyInjected:
+    """SK1 (post-review-v2): SKILL.md 正文应被注入到 prompt。"""
+
+    def test_skill_body_field_loaded(self):
+        from werewolf_agent.skills.werewolf_skills import _load_manifests
+        manifests = _load_manifests()
+        if not manifests:
+            pytest.skip("no skills")
+        # 至少一个 skill 应有 body 字段
+        any_with_body = any(getattr(s, "body", None) for s in manifests)
+        assert any_with_body, (
+            f"no skill loaded markdown body: {[(s.name, bool(getattr(s, 'body', None))) for s in manifests]}"
+        )

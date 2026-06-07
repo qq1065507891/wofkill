@@ -43,24 +43,30 @@ def get_handler(name: SkillName) -> Callable | None:
 # 12 core werewolf skills
 # ---------------------------------------------------------------------------
 
-def _parse_skill_frontmatter(text: str) -> dict[str, Any]:
-    """Extract YAML frontmatter from a SKILL.md file (delimited by ---)."""
-    import yaml
-    if not text.startswith("---"):
-        return {}
+def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """P-SK1: 解析 YAML frontmatter + 保留剩余 markdown body。
+
+    Returns (meta_dict, body_str). body 是 frontmatter 之后剩余的 markdown
+    散文，用于在 prompt 中以"## 技能说明"段注入。SKILL.md 若没有
+    frontmatter，body 等于原始文本（strip 后）。
+    """
     parts = text.split("---", 2)
     if len(parts) < 3:
-        return {}
-    return yaml.safe_load(parts[1]) or {}
+        return {}, text.strip()
+    yaml_block, body = parts[1], parts[2]
+    import yaml
+    meta = yaml.safe_load(yaml_block) or {}
+    return meta, body.strip()
 
 
 def _load_manifests(root: "Path | None" = None) -> list[SkillDefinition]:
     """Load skill metadata from SKILL.md files under skill directories.
 
     Each skill directory contains a SKILL.md with YAML frontmatter
-    (name, description, applicable roles/phases, faction, tags).
-    The dynamic analysis logic lives in Python handlers — only static
-    metadata is stored here.
+    (name, description, applicable roles/phases, faction, tags) plus an
+    optional markdown body that captures prose guidance. The dynamic
+    analysis logic lives in Python handlers — frontmatter is the
+    manifest; body is the LLM-facing skill description.
 
     The `root` parameter is a test seam: production callers omit it
     (it defaults to this module's parent directory); tests pass a
@@ -77,7 +83,7 @@ def _load_manifests(root: "Path | None" = None) -> list[SkillDefinition]:
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():
             continue
-        data = _parse_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
+        data, body = _parse_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
         if not data:
             continue
         try:
@@ -94,6 +100,10 @@ def _load_manifests(root: "Path | None" = None) -> list[SkillDefinition]:
                 applies_to_task_types=data.get("applies_to_task_types", []),
                 faction=SkillFaction(data.get("faction", "common")),
                 tags=data.get("tags", []),
+                # P-SK1: SKILL.md 正文 — 散文形式的技能说明，在
+                # dispatch_for_role 处被注入到 prompt 的"## 技能说明"段。
+                # markdown-driven skills 的实际"驱动"由此字段承载。
+                body=body,
             ))
         except (KeyError, ValueError) as exc:
             import logging

@@ -107,6 +107,12 @@ class SkillDefinition:
     applies_to_task_types: list[str] = field(default_factory=list)
     faction: SkillFaction = SkillFaction.COMMON
     tags: list[str] = field(default_factory=list)
+    # P-SK1: SKILL.md 正文（frontmatter 之后的 markdown 散文）。由
+    # `werewolf_skills._load_manifests` 加载，registry 在
+    # `dispatch_for_role` 处将其作为 "## 技能说明" 段拼接到
+    # `prompt_injectable` 末尾。markdown-driven skills 的实际"驱动"
+    # 由此字段承载 — Python handler 给出战术建议，body 给出散文背景。
+    body: str = ""
 
     def is_applicable(
         self,
