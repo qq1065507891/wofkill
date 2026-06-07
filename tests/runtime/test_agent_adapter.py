@@ -34,3 +34,84 @@ class TestSheriffPickSpeechOrderContract:
         assert "model_copy" not in code_only or "legal_actions" not in code_only, (
             f"agent_sheriff_pick_speech_order still mutates legal_actions via model_copy:\n{fn_src}"
         )
+
+
+class TestKillValueAssessmentAdapterContract:
+    """P-v3: kill_value_assessment 在 agent_adapter 的两个 call site
+    （_build_wolf_kill_directive + _single_wolf_vote）必须共享同一份 cache。
+
+    这两个 call site 历史上各自独立调 evaluate_wolf_kill_target, 每夜
+    4 狼 × 2 次 = 8 次 O(N) 重算. P-v3 之后应只剩 4 次（1 次/狼/夜）.
+    """
+
+    def test_adapter_and_strategy_share_same_cached_entry(self) -> None:
+        """agent_adapter._evaluate_wolf_kill_target 与
+        strategy.wolf.evaluate_wolf_kill_target 必须指向同一份 cache.
+
+        防御性: 防止有人未来误改成局部 cache / lru_cache 副本, 重新
+        引入 double-call.
+        """
+        # 清空 cache 拿到基线
+        from werewolf_agent.runtime.strategy import wolf as wolf_strategy
+        wolf_strategy.clear_kill_value_cache()
+
+        from werewolf_agent.core.models import GameState, PlayerState
+
+        players = {
+            f"p{i:02d}": PlayerState(
+                id=f"p{i:02d}",
+                role="werewolf" if i <= 4 else "villager",
+                alive=True,
+            )
+            for i in range(1, 10)
+        }
+        gs = GameState(
+            game_id="g_dup_test",
+            night_number=1,
+            players=players,
+        )
+        legal = [pid for pid, p in gs.players.items()
+                 if p.alive and p.role != "werewolf"]
+
+        # 经由 agent_adapter 的 re-export 调一次
+        agent_adapter._evaluate_wolf_kill_target(gs, "p01", legal)
+        # 经由 strategy.wolf 调一次 (相同 key)
+        wolf_strategy.evaluate_wolf_kill_target(gs, "p01", legal)
+        # 第三次: 再次经 agent_adapter (相同 key)
+        agent_adapter._evaluate_wolf_kill_target(gs, "p01", legal)
+
+        # impl 实际被调的次数 - 1 (第一次的真正计算)
+        # 通过再次以新 key 调用, 触发 impl 一次, 然后检查 cache size 增量
+        # 来推断历史 call 数
+        # 简化做法: 直接看 _evaluate_wolf_kill_target_impl 的真实调用次数
+        # 这里通过 patch 验证
+        from unittest.mock import patch
+
+        wolf_strategy.clear_kill_value_cache()
+        with patch.object(
+            wolf_strategy,
+            "_evaluate_wolf_kill_target_impl",
+            wraps=wolf_strategy._evaluate_wolf_kill_target_impl,
+        ) as mock_impl:
+            # 模拟两个 call site 的 3 次调用 (相同 key)
+            agent_adapter._evaluate_wolf_kill_target(gs, "p01", legal)
+            wolf_strategy.evaluate_wolf_kill_target(gs, "p01", legal)
+            agent_adapter._evaluate_wolf_kill_target(gs, "p01", legal)
+            assert mock_impl.call_count == 1, (
+                f"shared cache: expected 1 impl call across adapter + strategy, "
+                f"got {mock_impl.call_count}"
+            )
+
+    def test_wolf_kill_directive_and_single_wolf_vote_use_same_module(self) -> None:
+        """_build_wolf_kill_directive 与 _single_wolf_vote 调用的必须是
+        ``werewolf_agent.runtime.strategy.wolf.evaluate_wolf_kill_target``
+        (或经由 _evaluate_wolf_kill_target 的 re-export) — 不能用本地副本
+        或 inline 实现绕开 cache.
+        """
+        adapter_src = inspect.getsource(agent_adapter)
+        # 必须至少有 2 处引用 evaluate_wolf_kill_target (导入 + 实际调用)
+        refs = adapter_src.count("evaluate_wolf_kill_target")
+        assert refs >= 2, (
+            f"agent_adapter should import + call evaluate_wolf_kill_target "
+            f"in at least 2 places (directive + single_wolf_vote), got {refs}"
+        )
