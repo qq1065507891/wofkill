@@ -18,6 +18,8 @@ Fix: render 3 sub-sections in the prompt:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from werewolf_agent.agents.prompt_builder import (
@@ -3991,6 +3993,28 @@ class TestFormatExamplesNoHardcodedID:
         import re as _re
         match = _re.search(r'"standing_with_seer"\s*:\s*"p03"', examples)
         assert not match, f"_format_examples hardcodes p03 as seer: {match.group(0)}"
+
+
+class TestFormatExamplesNoHardcodedIDComplete:
+    """P1 (post-review-v2): vote 示例所有 p0X 硬编码 ID 改占位符。"""
+
+    def test_vote_example_no_real_p0X_hardcoded(self):
+        from unittest.mock import MagicMock
+        from werewolf_agent.agents.schemas import ActionType
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        mock_ctx = MagicMock()
+        mock_ctx.legal_actions = [ActionType.VOTE]
+        mock_ctx.legal_targets = [f"p{i:02d}" for i in range(1, 13)]
+        builder = PlayerPromptBuilder(mock_ctx)
+        examples = builder._format_examples()
+        # vote 段不应出现 "p01"-"p12" 真实 ID 字符串（应全部为 pXX 占位符）
+        vote_section_match = re.search(r'(vote[^#]*?)(?=##|$)', examples, re.DOTALL)
+        if vote_section_match:
+            vote_section = vote_section_match.group(1)
+            real_id_hits = re.findall(r'"p(?:0[1-9]|1[0-2])"', vote_section)
+            assert len(real_id_hits) == 0, (
+                f"vote 示例段仍含硬编码 player IDs: {real_id_hits}\n\n{vote_section[:600]}"
+            )
 
 
 if __name__ == "__main__":

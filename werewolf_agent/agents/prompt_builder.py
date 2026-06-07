@@ -1327,20 +1327,26 @@ class PlayerPromptBuilder:
                 # LLM 把示例里的 ID 直接抄到输出里）。
                 vote_standing_with_seer = "pXX"
                 vote_basis = "seer_siding"
+            # P1 (post-review-v2): vote 段示例所有 player ID 一律改占位符 pXX
+            # — 任何出现在示例里的 p0X 都可能被 LLM 误抄到当前局输出。
+            # LLM 看到 pXX 后应替换为"本局真实玩家 ID"，示例 ID 不是
+            # 真实参考。覆盖 target_id、standing_with_seer、pressure_target
+            # 三个 JSON 字段以及 reason / suspect_reason / not_voting_reason /
+            # private_reason 四个文本字段里的 p0X 引用。
             parts.append("示例输出（投票场景）：")
-            parts.append('{"action_type": "vote", "target_id": "p05", '
+            parts.append('{"action_type": "vote", "target_id": "pXX", '
                          '"speech": "", '
-                         '"reason": "公开理由：p05发言可疑", '
+                         '"reason": "公开理由：pXX发言可疑", '
                          '"seer_stance": "trust", '
                          f'"vote_basis": "{vote_basis}", '
                          f'"standing_with_seer": "{vote_standing_with_seer}", '
-                         '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
-                         '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
-                         '"private_reason": "心里活动：我更信p03的预言家线，p05像狼队抗推失败后的防守位，所以投p05。", '
+                         '"suspect_reason": "pXX没有回应pXX的查杀逻辑，发言前后不一致", '
+                         '"not_voting_reason": "pXX虽然被踩，但目前没有明确查验或票型证据", '
+                         '"private_reason": "心里活动：我更信pXX的预言家线，pXX像狼队抗推失败后的防守位，所以投pXX。", '
                          '"confidence": 0.8, '
                          f'"private_intent": {{"true_role": "{example_role}", '
                          f'"faction_goal": "{vote_example_goal}", "claimed_view": "{vote_example_view}", '
-                         '"pressure_target": "p05", "risk_flags": []}}')
+                         '"pressure_target": "pXX", "risk_flags": []}}')
         return "\n".join(parts)
 
     def _build_strict_output_contract(self) -> str:
