@@ -109,7 +109,6 @@ class TestHunterShotTiming:
     def test_hunter_exiled_can_shoot_in_post_exile(self) -> None:
         """Hunter killed by exile must route to resolve_hunter_shot before victory."""
         from werewolf_agent.runtime.graph import (
-            post_exile_skills,
             resolve_hunter_shot,
             route_after_post_exile,
         )
@@ -129,18 +128,13 @@ class TestHunterShotTiming:
             deaths=[death],
         )
 
-        result = post_exile_skills({
-            "game_state": gs,
-            "engine": engine,
-            "hunter_shot_target_id": "v1",
-        })
-
-        pending_state = result["game_state"]
-        assert pending_state.players["v1"].alive is True
-        assert route_after_post_exile({"game_state": pending_state, "engine": engine}) == "resolve_hunter_shot"
+        # exile_last_words routes to resolve_hunter_shot when a hunter
+        # triggered_skill is pending. The conditional edge used to be hung
+        # off the now-removed `post_exile_skills` placeholder node.
+        assert route_after_post_exile({"game_state": gs, "engine": engine}) == "resolve_hunter_shot"
 
         shot_result = resolve_hunter_shot({
-            "game_state": pending_state,
+            "game_state": gs,
             "engine": engine,
             "hunter_shot_target_id": "v1",
         })
@@ -239,40 +233,6 @@ class TestHunterShotOrdering:
         )
 
         assert route_after_post_exile({"game_state": gs, "engine": engine}) == "resolve_hunter_shot"
-
-    def test_post_exile_skills_does_not_resolve_scripted_hunter_shot_silently(self) -> None:
-        from werewolf_agent.runtime.graph import post_exile_skills
-
-        engine = _new_engine()
-        hunter_death = Death(
-            player_id="hunter",
-            reason="exile",
-            timing="day_vote",
-            resolution_batch="day_4_vote",
-            triggered_skills=["hunter_shot"],
-        )
-        players = {
-            "hunter": PlayerState(id="hunter", role="hunter", alive=False),
-            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
-            "villager": PlayerState(id="villager", role="villager", alive=True),
-        }
-        gs = GameState(
-            game_id="hunter_post_exile_pending",
-            players=players,
-            deaths=[hunter_death],
-            day_number=4,
-            phase="day",
-        )
-
-        result = post_exile_skills({
-            "game_state": gs,
-            "engine": engine,
-            "hunter_shot_target_id": "wolf",
-        })
-
-        new_state = result["game_state"]
-        assert new_state.players["wolf"].alive is True
-        assert route_after_post_exile({"game_state": new_state, "engine": engine}) == "resolve_hunter_shot"
 
     def test_daytime_hunter_shot_returns_to_victory_check_not_night_announcement(self) -> None:
         engine = _new_engine()

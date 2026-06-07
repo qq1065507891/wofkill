@@ -30,13 +30,6 @@ from werewolf_agent.runtime.nodes._shared import (
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 
 
-def post_exile_skills(state: RuntimeState) -> dict[str, Any]:
-    gs: GameState = state["game_state"]
-    # Skill effects are resolved by their dedicated nodes so broadcasts,
-    # agent choices, and audit events cannot be skipped.
-    return {"game_state": gs}
-
-
 def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
     """Resolve pending hunter shot after night wolf-kill, before victory check."""
     engine: RuleEngine = state["engine"]
