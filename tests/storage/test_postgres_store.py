@@ -767,3 +767,32 @@ class TestJsonbHandling:
         config = repo.load_config_snapshot("g1")
         assert isinstance(config, dict)
         assert config["seed"] == 42
+
+
+# ===========================================================================
+# 10. Custom configs (post-review A1)
+# ===========================================================================
+
+
+class TestPostgresStoreCustomConfig:
+    """审查 A1: PostgresGameRepository 补齐 custom_config 3 个方法。"""
+
+    def test_postgres_has_custom_config_methods(self):
+        from werewolf_agent.storage.postgres_store import PostgresGameRepository
+        for method in ("save_custom_config", "load_custom_config", "list_custom_configs"):
+            assert hasattr(PostgresGameRepository, method), (
+                f"PostgresGameRepository missing method: {method}"
+            )
+
+    def test_postgres_custom_configs_init_dict(self):
+        from werewolf_agent.storage.postgres_store import PostgresGameRepository
+        # __new__ skips __init__ so direct attribute test
+        pg = PostgresGameRepository.__new__(PostgresGameRepository)
+        # Methods should be callable (not NotImplementedError stubs)
+        import inspect
+        src = inspect.getsource(PostgresGameRepository.save_custom_config)
+        assert "NotImplementedError" not in src, "save_custom_config is a stub"
+        src = inspect.getsource(PostgresGameRepository.load_custom_config)
+        assert "NotImplementedError" not in src
+        src = inspect.getsource(PostgresGameRepository.list_custom_configs)
+        assert "NotImplementedError" not in src
