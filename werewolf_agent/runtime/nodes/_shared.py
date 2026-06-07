@@ -122,9 +122,13 @@ def _new_engine() -> RuleEngine:
     return RuleEngine.from_yaml(RULESET_PATH)
 
 
-def _stable_seed(*parts: object) -> int:
-    raw = "|".join(str(part) for part in parts).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") & 0xFFFFFFFF
+# P-U3: ``_stable_seed`` is the single source of truth for
+# deterministic seeding across the runtime.  Imported here from the
+# leaf module ``werewolf_agent.runtime._stable_seed`` so the rest of
+# the codebase that already does
+# ``from werewolf_agent.runtime.nodes._shared import _stable_seed``
+# keeps working without modification.
+from werewolf_agent.runtime._stable_seed import _stable_seed  # noqa: E402, F401
 
 
 def _player_ids(gs: GameState) -> list[str]:
