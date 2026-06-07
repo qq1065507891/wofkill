@@ -396,19 +396,60 @@ def test_route_after_vote_tie() -> None:
     assert result == "tie_pk_speech"
 
 
-def test_route_after_announce_night1_goes_to_free_discussion() -> None:
-    """N1 sheriff election now runs BEFORE announce_deaths, so after announce
-    the router goes straight to free_discussion."""
-    from werewolf_agent.runtime.graph import route_after_announce
-    engine = _new_engine()
-    gs = GameState(day_number=1, night_number=1)
-    assert route_after_announce({"game_state": gs, "engine": engine}) == "free_discussion"
-
-
 def test_route_after_announce_day2_discussion() -> None:
     from werewolf_agent.runtime.graph import route_after_announce
     gs = GameState(day_number=2, night_number=2)
     assert route_after_announce({"game_state": gs}) == "free_discussion"
+
+
+class TestRouteAfterAnnounceSheriffEntry:
+    """fix-sheriff-announce-route: D1 night_death_last_words should route to sheriff_first_day_entry when no sheriff."""
+
+    def _make_state(self, *, day_number: int, interrupt_count: int):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from unittest.mock import MagicMock
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        gs = GameState(
+            players=alive,
+            day_number=day_number,
+            night_number=1,
+            sheriff_interrupt_count=interrupt_count,
+        )
+        engine = MagicMock()
+        engine.check_victory.return_value = MagicMock(winner=None)
+        return {"game_state": gs, "engine": engine}
+
+    def test_d1_count_0_routes_to_sheriff(self):
+        from werewolf_agent.runtime.graph import route_after_announce
+        state = self._make_state(day_number=1, interrupt_count=0)
+        result = route_after_announce(state)
+        assert result == "sheriff_first_day_entry", (
+            f"D1 count=0 must go to sheriff_first_day_entry, got {result}"
+        )
+
+    def test_d1_count_1_routes_to_sheriff(self):
+        from werewolf_agent.runtime.graph import route_after_announce
+        state = self._make_state(day_number=1, interrupt_count=1)
+        result = route_after_announce(state)
+        assert result == "sheriff_first_day_entry", (
+            f"D1 count=1 (post self-destruct) must go to sheriff_first_day_entry, got {result}"
+        )
+
+    def test_d1_count_2_routes_to_discussion(self):
+        from werewolf_agent.runtime.graph import route_after_announce
+        state = self._make_state(day_number=1, interrupt_count=2)
+        result = route_after_announce(state)
+        assert result == "free_discussion", (
+            f"D1 count=2 (badge torn) must go to free_discussion, got {result}"
+        )
+
+    def test_d2_count_0_routes_to_discussion(self):
+        from werewolf_agent.runtime.graph import route_after_announce
+        state = self._make_state(day_number=2, interrupt_count=0)
+        result = route_after_announce(state)
+        assert result == "free_discussion", (
+            f"D2+ without sheriff should go to free_discussion, got {result}"
+        )
 
 
 def test_route_after_free_discussion_continues_until_speech_queue_done() -> None:
