@@ -335,6 +335,45 @@ class MemoryStore:
         self.cognition_matrices.clear()
         self.relation_graph = RelationGraph()
 
+    # --- Reviews (P-U4) ---
+
+    def save_review(
+        self,
+        game_id: str,
+        player_id: str,
+        review_data: dict[str, Any],
+    ) -> str:
+        """Persist a per-player review entry. Returns the review id.
+
+        P-U4: used by ``tools.local_tools._write_review`` so the
+        local tool actually writes somewhere instead of returning
+        a stub.  Backed by an in-memory dict on this store; callers
+        that need cross-process persistence can wire their own
+        store or extend this method.
+
+        Returns:
+            A deterministic review id of the form ``"{game_id}:{player_id}"``.
+        """
+        if not hasattr(self, "_reviews") or self._reviews is None:
+            self._reviews = {}
+        review_id = f"{game_id}:{player_id}"
+        self._reviews[review_id] = {
+            "game_id": game_id,
+            "player_id": player_id,
+            "review_data": dict(review_data),
+        }
+        return review_id
+
+    def get_review(
+        self,
+        game_id: str,
+        player_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the review for ``(game_id, player_id)`` or ``None``."""
+        if not hasattr(self, "_reviews") or self._reviews is None:
+            return None
+        return self._reviews.get(f"{game_id}:{player_id}")
+
     def summary(self) -> dict[str, Any]:
         return {
             "cognition_matrices": len(self.cognition_matrices),
