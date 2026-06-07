@@ -2495,3 +2495,351 @@ def test_sheriff_silent_directive_references_target_id_not_vote_silent():
     # If you need to verify the literal text again, the existing
     # behavioral test's assertions include both "target_id" in
     # the text AND "[vote_silent]" NOT in the text.
+
+
+class TestWolfDirectiveNoLeakKill:
+    """P0-G3223805846-1: wolf fake-seer 公开话术禁止列举真实刀口 ID 列表。"""
+
+    def test_fake_seer_directive_contains_no_leak_rule(self):
+        """Positive-marker guard: rule 9 must be present in fake_seer directive."""
+        from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
+        text = _WOLF_ROLE_STRATEGY["fake_seer"]
+        # rule 9 marker — without this the directive has no no-leak clause
+        assert "真实刀口" in text, "fake_seer directive missing no-leak rule 9"
+        assert "严禁" in text, "fake_seer directive missing prohibition marker"
+
+    def test_wolf_universal_rules_assembled_directive_contains_rule(self):
+        """Verify the rule is actually present in the assembled directive output."""
+        from werewolf_agent.runtime.directives.wolf import build_wolf_directive
+        gs = GameState(players={}, day_number=1, night_number=1)
+        d = build_wolf_directive(gs, "p01", wolf_team_plan={"fake_seer": "p01"})
+        full = " ".join(str(v) for v in d.values())
+        assert "真实刀口" in full, "assembled wolf directive missing no-leak rule"
+        assert "模糊话术" in full, "assembled wolf directive missing vague-phrasing guidance"
+
+
+class TestSeerDirectiveLatePosition:
+    """P0-G3223805846-3: 预言家排到发言顺序后段（≥ 50%）时，必须在第 1 句就亮身份 + 报查杀。"""
+
+    def test_late_position_seer_has_jump_immediately_rule(self):
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        # p01 sits at index 10 of 12 (>= 50% boundary), i.e. position 11/12
+        speech_order = ["p08", "p11", "p02", "p12", "p06", "p04", "p10",
+                        "p05", "p07", "p03", "p01", "p09"]
+        gs = GameState(players=alive, day_number=1, night_number=1)
+        d = build_seer_directive(gs, "p01", speech_order=speech_order)
+        directive = d.get("seer_speech_directive", "")
+        assert "后段" in directive and "第 1 句" in directive, (
+            f"late-position seer missing jump-immediately rule: {directive!r}"
+        )
+
+    def test_early_position_seer_no_jump_immediately_rule(self):
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        # p01 is position 1/12 — clearly front of the queue
+        speech_order = ["p01", "p02", "p03", "p04", "p05", "p06",
+                        "p07", "p08", "p09", "p10", "p11", "p12"]
+        gs = GameState(players=alive, day_number=1, night_number=1)
+        d = build_seer_directive(gs, "p01", speech_order=speech_order)
+        directive = d.get("seer_speech_directive", "")
+        assert "后段" not in directive, (
+            f"early seer incorrectly tagged as late: {directive!r}"
+        )
+
+    def test_mid_position_seer_no_jump_immediately_rule(self):
+        """Exactly 50% boundary should NOT trigger the late rule (use >= 50% to be inclusive only on the late side).
+
+        With 12 players, position 6 (index 5) = 6/12 = 50% — must not trigger.
+        """
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        # p01 at index 5 = position 6/12, exactly the 50% boundary
+        speech_order = ["p02", "p03", "p04", "p05", "p06", "p01",
+                        "p07", "p08", "p09", "p10", "p11", "p12"]
+        gs = GameState(players=alive, day_number=1, night_number=1)
+        d = build_seer_directive(gs, "p01", speech_order=speech_order)
+        directive = d.get("seer_speech_directive", "")
+        # 6/12 == 0.5 exactly, so the rule pos >= total*0.5 means 5 >= 6 is False → no late rule
+        assert "后段" not in directive, (
+            f"boundary-position seer (6/12) incorrectly tagged as late: {directive!r}"
+        )
+
+
+class TestWolfFakeSeerConsistency:
+    """P0-G3223805846-4: 狼 fake_seer 启用时各角色 prompt 必须有话术一致条款。"""
+
+    def test_all_wolf_roles_have_consistency_clause(self):
+        from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
+        for role in ("fake_seer", "pusher", "hooker", "deep_cover", "unassigned"):
+            text = _WOLF_ROLE_STRATEGY.get(role, "")
+            assert "话术一致" in text or "保持一致" in text or "对跳" in text, (
+                f"role {role} missing fake-seer consistency clause: {text!r}"
+            )
+
+    def test_fake_seer_role_has_self_consistency_clause(self):
+        """fake_seer 是话术源头，必须含自我一致性条款。"""
+        from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
+        text = _WOLF_ROLE_STRATEGY["fake_seer"]
+        # Clause 10 (or equivalent) marker
+        assert "自我一致性" in text or "源头" in text or "fake_seer 话术的源头" in text, (
+            f"fake_seer missing self-consistency clause 10: {text!r}"
+        )
+
+
+class TestWitchPoisonPublicSource:
+    """P0-G3223805846-5: 女巫毒药 reason 必须能追溯到公开事件。"""
+
+    def test_witch_directive_contains_poison_public_source_rule(self):
+        from werewolf_agent.runtime.directives.witch import build_witch_directive
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_witch_directive(gs, "p03")
+        directive = d.get("witch_speech_directive", "") + " ".join(
+            str(v) for v in d.values() if v != d.get("witch_speech_directive", "")
+        )
+        assert "公开" in directive, f"witch directive missing 公开 source rule: {directive!r}"
+        assert "查杀" in directive or "悍跳" in directive, (
+            f"witch directive missing 查杀/悍跳 marker: {directive!r}"
+        )
+        assert "禁止" in directive or "不能" in directive, (
+            f"witch directive missing prohibition: {directive!r}"
+        )
+
+    def test_witch_directive_contains_antidote_default_rule(self):
+        from werewolf_agent.runtime.directives.witch import build_witch_directive
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_witch_directive(gs, "p03")
+        directive = d.get("witch_speech_directive", "")
+        # 解药默认救狼刀目标
+        assert "解药" in directive and ("默认" in directive or "当晚" in directive), (
+            f"witch directive missing antidote default rule: {directive!r}"
+        )
+
+
+class TestHunterShotEvidence:
+    """P0-G3223805846-6: 猎人开枪前必须 ≥ 2 独立公开证据，否则倾向 no_action。"""
+
+    def test_hunter_exposed_directive_requires_multi_evidence(self):
+        from werewolf_agent.core.models import GameState
+        from werewolf_agent.runtime.directives.hunter import build_hunter_directive
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_hunter_directive(gs, "p09")
+        directive = d.get("hunter_speech_directive", "")
+        assert "2" in directive and "证据" in directive, (
+            f"hunter exposed directive missing ≥ 2 证据: {directive!r}"
+        )
+        assert "no_action" in directive, (
+            f"hunter directive missing no_action fallback: {directive!r}"
+        )
+
+    def test_hunter_hidden_directive_requires_multi_evidence(self):
+        from werewolf_agent.core.models import GameState
+        from werewolf_agent.runtime.directives.hunter import build_hunter_directive
+        # No speech event recorded → identity not exposed
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_hunter_directive(gs, "p09")
+        directive = d.get("hunter_speech_directive", "")
+        assert "2" in directive and "证据" in directive, (
+            f"hunter hidden directive missing ≥ 2 证据: {directive!r}"
+        )
+
+
+class TestHybridVotingRule:
+    """P0-G3223805846-7: 混血儿投票应基于主人是否被公开质疑切换跟随/独立判断。"""
+
+    def test_hybrid_wolf_master_has_follow_rule(self):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.directives.hybrid import build_hybrid_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p08"] = PlayerState(id="p08", role="hybrid", alive=True)
+        gs = GameState(
+            players=alive, day_number=2, night_number=2,
+            hybrid_master_id="p01", hybrid_master_faction="werewolf",
+        )
+        d = build_hybrid_directive(gs, "p08")
+        directive = d.get("hybrid_wolf_master_directive", "")
+        assert "跟随规则" in directive and "质疑" in directive, (
+            f"hybrid wolf-master missing follow rule: {directive!r}"
+        )
+
+    def test_hybrid_good_master_has_follow_rule(self):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.directives.hybrid import build_hybrid_directive
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p08"] = PlayerState(id="p08", role="hybrid", alive=True)
+        gs = GameState(
+            players=alive, day_number=2, night_number=2,
+            hybrid_master_id="p01", hybrid_master_faction="good",
+        )
+        d = build_hybrid_directive(gs, "p08")
+        directive = d.get("hybrid_good_master_directive", "")
+        assert "跟随规则" in directive and "质疑" in directive, (
+            f"hybrid good-master missing follow rule: {directive!r}"
+        )
+
+
+class TestNoSheriffVoteHint:
+    """P0-G3223805846-9: 警徽流失时 vote directive 注入归票 hint。
+
+    Without an active sheriff, the LLM tends to fall back on
+    "loudest voice wins", which is trivially exploitable by the
+    wolf team.  The ``build_sheriff_silent_directive`` builder
+    injects a 归票 hint that points the model at the publicly
+    confirmed 查杀 side, or failing that, at the player with the
+    clearest 站边 (side-taking) logic.
+    """
+
+    def test_no_sheriff_vote_directive_contains_fallback_hint(self):
+        from werewolf_agent.runtime.directives._shared import (
+            build_sheriff_silent_directive,
+        )
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_sheriff_silent_directive(
+            gs, sheriff_id=None, badge_state="torn",
+        )
+        full = (
+            " ".join(str(v) for v in d.values())
+            if isinstance(d, dict) else str(d)
+        )
+        assert "归票" in full or "跟随" in full, (
+            f"no-sheriff directive missing 归票 hint: {full!r}"
+        )
+
+    def test_no_sheriff_vote_directive_key_uses_distinct_name(self):
+        """P0-G3223805846-9: the new hint must use a dict key distinct
+        from ``sheriff_silent`` (which is reserved for the
+        silenced-but-alive sheriff case in agent_adapter.py).  If
+        they collide, the LLM conflates two different no-归票
+        scenarios and the test_no_sheriff_after_tear guards break.
+        """
+        from werewolf_agent.runtime.directives._shared import (
+            build_sheriff_silent_directive,
+        )
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d = build_sheriff_silent_directive(
+            gs, sheriff_id=None, badge_state="torn",
+        )
+        # The silenced-sheriff key must NOT be the one carrying the
+        # 归票 hint for the no-sheriff case.
+        assert "sheriff_silent" not in d, (
+            f"no-sheriff hint must not reuse the sheriff_silent key; "
+            f"got keys: {sorted(d.keys())}"
+        )
+        # And the no-sheriff hint key must actually be present.
+        no_sheriff_keys = [
+            k for k in d
+            if k not in {"sheriff_silent"}
+        ]
+        assert no_sheriff_keys, (
+            f"no-sheriff hint key missing; got keys: {sorted(d.keys())}"
+        )
+
+    def test_no_sheriff_vote_directive_noop_when_sheriff_active(self):
+        """Sanity: if a sheriff IS active (or no badge has been torn),
+        the builder must return an empty dict so callers don't pollute
+        the directive bundle with stale 归票 guidance."""
+        from werewolf_agent.runtime.directives._shared import (
+            build_sheriff_silent_directive,
+        )
+        from werewolf_agent.core.models import GameState
+        gs = GameState(players={}, day_number=2, night_number=2)
+        d_active = build_sheriff_silent_directive(
+            gs, sheriff_id="p03", badge_state="active",
+        )
+        assert d_active == {}, (
+            f"active sheriff must not produce no-sheriff hint; "
+            f"got: {d_active!r}"
+        )
+        d_none = build_sheriff_silent_directive(
+            gs, sheriff_id=None, badge_state="none",
+        )
+        assert d_none == {}, (
+            f"badge_state='none' must not produce no-sheriff hint; "
+            f"got: {d_none!r}"
+        )
+
+    def test_no_sheriff_vote_hint_actually_injected_at_runtime(self):
+        """End-to-end regression: the builder must be wired into the
+        agent_adapter pipeline so the 归票 hint actually reaches the
+        LLM.  Without this, having the function in _shared.py is a
+        define-only no-op fix.
+        """
+        # Invoke the day-speech pipeline with badge torn and verify
+        # the no_sheriff_vote_hint key is present in the merged
+        # strategy_directive.
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.agent_adapter import agent_day_speech
+
+        # Minimal 12-player roster; sheriff_id=None + torn badge.
+        roles = (
+            ["werewolf"] * 4
+            + ["villager"] * 3
+            + ["seer", "witch", "hunter", "idiot", "hybrid"]
+        )
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=r, alive=True)
+            for i, r in enumerate(roles, start=1)
+        }
+        gs = GameState(
+            players=players, day_number=2, night_number=2,
+            sheriff_id=None, sheriff_badge_state="torn",
+        )
+
+        class _StubAgent:
+            last_context = None
+            def act(self, context):
+                self.last_context = context
+                from werewolf_agent.agents.schemas import (
+                    ActionType, PlayerAction, RetryInfo,
+                )
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH,
+                        speech="t", reason="t",
+                    ),
+                    RetryInfo(),
+                )
+
+        class _StubRegistry:
+            def __init__(self):
+                self.agent = _StubAgent()
+            def get_agent(self, pid):
+                return self.agent
+
+        registry = _StubRegistry()
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+        }
+        agent_day_speech(state, engine, registry, "p04")
+        merged = registry.agent.last_context.strategy_directive
+        assert "no_sheriff_vote_hint" in merged, (
+            f"runtime must inject no_sheriff_vote_hint when badge torn; "
+            f"got keys: {sorted(merged.keys())}"
+        )
+        hint_text = str(merged["no_sheriff_vote_hint"])
+        assert "归票" in hint_text or "跟随" in hint_text, (
+            f"runtime-injected hint missing 归票/跟随 marker: {hint_text!r}"
+        )

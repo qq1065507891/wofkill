@@ -7,11 +7,33 @@ from typing import Any
 from werewolf_agent.core.models import GameState
 
 
+# P0-G3223805846-A3: position index / total >= this triggers jump-immediately
+LATE_POSITION_RATIO = 0.5
+
+
 def build_seer_directive(
     gs: GameState,
     seer_id: str,
+    speech_order: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build structured day speech directives for the seer."""
+    """Build structured day speech directives for the seer.
+
+    Parameters
+    ----------
+    gs:
+        Current game state.
+    seer_id:
+        The seer player id.
+    speech_order:
+        Optional ordered list of alive player ids for the current day's
+        speech queue.  When supplied and ``seer_id`` sits in the back
+        half of the queue (position index >= 50% of length), a
+        "jump-immediately" rule is appended that hard-requires the seer
+        to claim identity + report the night-1 check in the very first
+        sentence.  Pass ``None`` (the default) to skip the position-based
+        rule — useful for callers that have not yet materialised the
+        speech order (e.g. early in the day's planning).
+    """
     from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants
 
     parts: dict[str, Any] = {}
@@ -95,6 +117,20 @@ def build_seer_directive(
     reporting_parts.append(
         "注意：混血儿验出是'好人'，但可能属于狼人阵营，注意这个盲区。"
     )
+
+    # P0-G3223805846-3: late-speech-position seer must jump immediately
+    if speech_order and seer_id in speech_order:
+        pos = speech_order.index(seer_id)
+        total = len(speech_order)
+        if total > 0 and pos >= total * LATE_POSITION_RATIO:
+            reporting_parts.append(
+                f"\n【后位硬约束】你当前排在发言顺序第 {pos + 1}/{total} 位（后段）。"
+                "**必须在本次发言的第 1 句就公开声明预言家身份 + 报出首夜查杀**，"
+                "不能等别人先跳。前段玩家会先你发言完毕，他们的错误共识一旦形成，"
+                "你越晚亮身份被错杀的概率越高。"
+                "格式：'我是预言家，第 1 夜验了 pXX 是 [好人/狼人]'——"
+                "首句先报这两件事，再展开分析。"
+            )
 
     parts["seer_speech_directive"] = "\n".join(reporting_parts)
 

@@ -19,7 +19,11 @@ _WOLF_ROLE_STRATEGY = {
         "5) 你可以报一个好人做金水来拉拢，或者报一个好人查杀来推人\n"
         "6) 不要暴露你的队友——你'验出'的好人可以是你的队友（假金水）\n"
         "7) 如果真预言家验出了狼（你的队友），你必须质疑该验人结果的可信度\n"
-        "8) 不要慌张——对跳预言家是正常游戏行为，保持自信和逻辑连贯"
+        "8) 不要慌张——对跳预言家是正常游戏行为，保持自信和逻辑连贯\n"
+        "9) **严禁在公开发言/投票理由中列举真实刀口 ID 列表**（如'刀口指向 p0X'、'昨夜倒下的是 p0X'）。"
+        "质疑真预言家时只能使用模糊话术（'时间线对不上'、'逻辑说不通'），"
+        "若必须提到死亡名单只能引用'昨夜死亡 X'的公开广播文字。\n"
+        "10) **自我一致性提示**：你作为悍跳狼，是 fake_seer 话术的源头；其他狼队友会复用你报的金水/查杀口径，所以你的查验内容必须和狼队击杀策略对齐（如声称查杀 p06 时狼队当晚确实要动 p06）。"
     ),
     "pusher": (
         "你是冲锋狼。白天发言策略：\n"
@@ -28,7 +32,8 @@ _WOLF_ROLE_STRATEGY = {
         "3) 可以质疑预言家的验人结果，为悍跳狼队友站台\n"
         "4) 发言要有攻击性但不要无脑——每个指控都需要'理由'\n"
         "5) 如果悍跳狼被质疑，你要主动为其辩护或转移话题\n"
-        "6) 不要直接暴露和队友的配合关系——表现得像独立判断"
+        "6) 不要直接暴露和队友的配合关系——表现得像独立判断\n"
+        "7) **fake_seer 话术一致**：队友悍跳时报的金水/查杀/警徽流你在公开场必须复用 TA 口径——若 TA 报'p01 是金水'你就不要公开质疑 p01；不要说出与 TA 矛盾的死亡名单或刀口。"
     ),
     "hooker": (
         "你是倒钩狼。白天发言策略：\n"
@@ -37,7 +42,8 @@ _WOLF_ROLE_STRATEGY = {
         "3) 踩队友时必须用独立逻辑——'我觉得X的验人时间线不对'而不是'他是狼'\n"
         "4) 投票时可以跟好人走（投队友）来加深信任\n"
         "5) 不要太早暴露——N1/D1尽量低调，D2+再开始'独立分析'\n"
-        "6) 关键时刻（4-5人残局）你可以突然跳出来带节奏推好人"
+        "6) 关键时刻（4-5人残局）你可以突然跳出来带节奏推好人\n"
+        "7) **fake_seer 话术一致**：轻踩悍跳狼时**只质疑 TA 的验人逻辑**（'时间线对不上'），**不要说出与 TA 报出的查验结果矛盾的具体死亡名单**。你踩的是 TA 的'论证方式'，不是 TA 的'结论'。"
     ),
     "deep_cover": (
         "你是深水狼。白天发言策略：\n"
@@ -47,14 +53,16 @@ _WOLF_ROLE_STRATEGY = {
         "4) 可以帮真预言家站边（如果真预言家已经暴露），增强你的好人面\n"
         "5) 不要主动为队友辩护——那会暴露你们的关系\n"
         "6) 如果队友被推，表现得'意外'并附和好人的推人逻辑\n"
-        "7) 你的目标是活到最后阶段（3-4人残局），那时你的1票就能决定胜负"
+        "7) 你的目标是活到最后阶段（3-4人残局），那时你的1票就能决定胜负\n"
+        "8) **fake_seer 话术一致**：悍跳狼存活时 TA 报的金水/查杀是你在公开场接受的事实，不要在发言中说出与 TA 矛盾的内容。"
     ),
     "unassigned": (
         "你是狼人，但没有特定角色分工。白天发言策略：\n"
         "1) 表现得像一个普通好人——参与讨论、表达站边\n"
         "2) 不要暴露队友，不要暴露自己\n"
         "3) 观察场上局势，配合队友的节奏\n"
-        "4) 投票时注意不要和队友完全一致"
+        "4) 投票时注意不要和队友完全一致\n"
+        "5) **fake_seer 话术一致**：悍跳狼报的查验是你接受的事实，不要在发言中引用与 TA 矛盾的死亡名单或刀口信息。"
     ),
 }
 
@@ -69,8 +77,23 @@ def build_wolf_directive(
         get_wolf_role_assignment as _get_wolf_role_assignment,
         has_publicly_claimed_seer as _has_publicly_claimed_seer,
     )
+    from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants
 
     parts: dict[str, Any] = {}
+
+    # P0-G3223805846-2: live seer claimants from day_speech events.
+    # This avoids the N2 hallucination where wolves cited p07 as
+    # the seer claimant (p07 was actually a villager who never
+    # claimed seer).  Source from public events so the prompt
+    # reflects what actually happened on day, not stale memory.
+    claimants = _public_seer_claimants(gs)
+    if claimants:
+        parts["wolf_live_seer_claimants"] = (
+            "【实时场上信息】以下玩家已公开跳预言家："
+            + ", ".join(sorted(claimants))
+            + "。\n讨论/制定狼队策略时，**只参考以上已公开跳预言家的玩家**。"
+            "不要凭印象或记忆把'看起来像预言家'的玩家列入。"
+        )
 
     assignment = _get_wolf_role_assignment(wolf_team_plan, wolf_id)
     parts["wolf_speech_directive"] = _WOLF_ROLE_STRATEGY.get(

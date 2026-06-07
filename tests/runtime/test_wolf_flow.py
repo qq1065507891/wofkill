@@ -555,3 +555,45 @@ class TestSoloWolfFallbackTarget:
         plan = _build_wolf_team_plan(gs, previous_plan=prev_plan)
         # No claimed Seer → use day_push_target
         assert plan.get("night_kill_primary") == "p05"
+
+
+# ---------------------------------------------------------------------------
+# P0-G3223805846-2: Wolf prompt must include live "已跳预言家" list sourced
+# from day_speech events, not from stale model memory.  Without this, the
+# wolf prompt hallucinates "p07 跳预言家" even though p07 was a villager
+# who never publicly claimed seer (N2 hallucination).
+# ---------------------------------------------------------------------------
+
+
+class TestWolfDirectiveLiveSeerClaimants:
+    """P0-G3223805846-2: 狼 prompt 中'已跳预言家'必须基于 day_speech 实时事件。"""
+
+    def test_wolf_directive_contains_only_live_seer_claimants(self):
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.directives.wolf import build_wolf_directive
+
+        alive = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True) for i in range(1, 13)}
+        alive["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        alive["p02"] = PlayerState(id="p02", role="werewolf", alive=True)
+        gs = GameState(
+            players=alive, day_number=1, night_number=1,
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "p01", "text": "我是预言家，第 1 夜验 p02 是狼人。"
+                }),
+                GameEvent(type="speech", payload={
+                    "speaker": "p02", "text": "我是预言家，第 1 夜验 p01 是好人（金水）。"
+                }),
+                GameEvent(type="speech", payload={
+                    "speaker": "p07", "text": "我站边 p01，p02 是悍跳。"
+                }),
+            ],
+        )
+        d = build_wolf_directive(gs, "p01", wolf_team_plan=None)
+        block = d.get("wolf_live_seer_claimants", "")
+        # Positive marker: the live claimants block is present
+        assert "已公开跳预言家" in block, f"missing live seer claimants block: {block!r}"
+        # p01 and p02 must be listed (both publicly claimed)
+        assert "p01" in block and "p02" in block, f"claimants missing: {block!r}"
+        # p07 (villager, never claimed) must NOT be in the claimants list
+        assert "p07" not in block, f"p07 wrongly listed as claimant: {block!r}"

@@ -60,6 +60,20 @@ _MAX_JSON_CONTEXT_CHARS = 1800
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
 _MAX_SALIENCE_ITEMS = 3
+# P0-G3223805846-8: vote 阶段的 ``reason`` 字段是公开发言可见的（对所有
+# 玩家公开），禁止任何私视角表述。游戏轨迹 g_3223805846 观察到 LLM 把
+# ``我作为预言家`` / ``狼队 N1 刀了 p0X`` 等私有意图写入 ``reason`` 字段，
+# 暴露自己的真实身份 / 狼队行动，破坏信息隔离。
+_VOTE_REASON_PRIVACY_GUARD = (
+    "\n【硬约束 P0-G3223805846-8】你输出的 `reason` 字段是公开发言可见的"
+    "（对所有玩家公开）。**禁止**在 `reason` 中出现以下私视角表述：\n"
+    "- '我作为预言家'、'我是女巫'、'我查验了'、'我的金水'、'我的银水'\n"
+    "- '我昨晚刀了'、'狼队 N1 刀了 p0X'、'我们狼队'\n"
+    "- 任何 'private_intent' 字段中的内容\n"
+    "如果你要表达'基于 X 的查验'，应改写为'基于场上 X 报出的查验结果'；"
+    "如果你要表达'我作为预言家认为'，应改写为"
+    "'X 报出的查验有 Y 漏洞，因此'\n"
+)
 # P1-5: global user-prompt budget. ≈ 2,500 CJK tokens at the rough
 # 2.5 chars/token ratio. The 16 user-prompt sections are truncated
 # per-section, but the SUM can still run 3,000-5,000 tokens when many
@@ -1416,6 +1430,12 @@ class PlayerPromptBuilder:
             "示例：",
             example,
         ])
+        # P0-G3223805846-8: vote 阶段的 ``reason`` 字段是公开可见的，
+        # 注入隐私硬约束到 prompt 开头以保证 LLM 不会写入私视角表述。
+        # 仅在 vote 阶段注入；其他 choice（wolf_kill/poison/...）不写
+        # reason 公开字段，不需要此 guard。
+        if is_vote:
+            return _VOTE_REASON_PRIVACY_GUARD + "\n".join(lines)
         return "\n".join(lines)
 
     def _format_speech_intent_prompt(self) -> str:

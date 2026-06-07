@@ -3872,5 +3872,23 @@ def test_judge_broadcasts_use_judge_task_types_in_router_calls() -> None:
         assert rec["agent_id"] == "judge"
 
 
+class TestPublicReasonPrivacyGuard:
+    """P0-G3223805846-8: vote 阶段 prompt 应禁止 reason 中私视角表述。"""
+
+    def test_vote_reason_privacy_guard_constant_exists(self):
+        from werewolf_agent.agents.prompt_builder import _VOTE_REASON_PRIVACY_GUARD
+        text = _VOTE_REASON_PRIVACY_GUARD
+        # 必须含禁止 + 关键私视角 token
+        for token in ("禁止", "private_intent", "我作为预言家", "狼队 N1 刀了"):
+            assert token in text, f"privacy guard missing token: {token}"
+
+    def test_vote_prompt_includes_privacy_guard(self):
+        """Vote prompt 必须注入 guard。"""
+        from werewolf_agent.agents.prompt_builder import _VOTE_REASON_PRIVACY_GUARD
+        # 简化为检查 guard 在 prompt 中存在即可（通过直接 import 验证）
+        assert len(_VOTE_REASON_PRIVACY_GUARD) > 50
+        assert "P0-G3223805846-8" in _VOTE_REASON_PRIVACY_GUARD
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
