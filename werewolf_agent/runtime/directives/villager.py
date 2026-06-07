@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from werewolf_agent.core.models import GameState
@@ -12,7 +13,11 @@ def build_villager_directive(
     gs: GameState,
     villager_id: str,
 ) -> dict[str, Any]:
-    """Build day speech directive for villager/idiot -- pure analysis, no private info."""
+    """Build day speech directive for villager -- pure analysis, no private info.
+
+    Note: the idiot role has its own directive (idiot.py) and is not
+    routed through this function, so we do not branch on role_label here.
+    """
     from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants
 
     parts: dict[str, Any] = {}
@@ -49,33 +54,45 @@ def build_villager_directive(
     if death_order:
         death_analysis = "\n\n【死亡顺序】" + death_order
 
-    role_label = "白痴" if gs.players.get(villager_id, None) and gs.players[villager_id].role == "idiot" else "普通村民"
+    # Determine gold-water targets strictly from public seer claims + their
+    # public speeches. We MUST NOT read private seer_check events here, since
+    # villager agents must never see private night information belonging to
+    # the seer. A target is "publicly announced as gold water" only if a
+    # public seer-claimant explicitly named them as a good check in speech.
+    gold_water_targets: set[str] = set()
+    if seer_claimants:
+        for e in gs.events:
+            if e.type not in ("speech", "sheriff_speech"):
+                continue
+            if e.payload.get("speaker") not in seer_claimants:
+                continue
+            text = str(e.payload.get("text", ""))
+            for match in re.finditer(
+                r"验[了过]?\s*(p\d+).*?好人|验[了过]?\s*(p\d+).*?金水",
+                text,
+            ):
+                target = match.group(1) or match.group(2)
+                if target:
+                    gold_water_targets.add(target)
 
-    # Check if this villager is seer-verified gold water
-    gold_water_duty = ""
-    for e in gs.events:
-        if e.type == "seer_check" and e.payload.get("target_id") == villager_id:
-            if e.payload.get("alignment") == "good":
-                seer = next(
-                    (pid for pid, p in gs.players.items() if p.role == "seer"), None
-                )
-                if seer:
-                    gold_water_duty = (
-                        f"\n\n【你是预言家{seer}的金水】你在好人视角是最高身份。"
-                        f"你有义务为预言家站边——你是场上最应该信他的人。"
-                        f"如果预言家被多人踩，你必须站出来帮他拉票、分析谁在冲票。"
-                    )
-            break
+    if villager_id in gold_water_targets:
+        parts["gold_water_duty"] = (
+            f"你是{villager_id}，公开场上预言家已报你为金水。"
+            "请基于此身份积极帮助好人阵营：\n"
+            "1) 主动站边公开预言家，传递信任信号；\n"
+            "2) 发言中可适度引用预言家给你的金水身份，但不要伪造额外查杀信息；\n"
+            "3) 投票时优先跟随查杀方归票，保留对悍跳狼的质疑能力。"
+        )
 
     parts["villager_speech_directive"] = (
-        f"你是{role_label}，没有夜间技能和私有信息，你的核心价值是逻辑分析能力。\n\n"
+        f"你是普通村民，没有夜间技能和私有信息，你的核心价值是逻辑分析能力。\n\n"
         "发言策略：\n"
         "1) 不要复述别人的观点——提出你自己的分析和判断\n"
         "2) 引用具体的发言内容和投票数据来支撑你的论点\n"
         "3) 如果你有独立的怀疑对象，说明理由；不要无证据跟风\n"
         "4) 不要冒充任何角色——你没有信息来支撑冒充\n"
         "5) 如果预言家已死或被怀疑，好人阵营需要你站出来做逻辑整理"
-        f"{gold_water_duty}{seer_analysis}{vote_analysis}{death_analysis}"
+        f"{seer_analysis}{vote_analysis}{death_analysis}"
     )
 
     return parts
