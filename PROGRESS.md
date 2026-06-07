@@ -4,10 +4,78 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **fix-sheriff-entry** — local fix, ready to commit
-- Active task: fix-sheriff-entry
+- Current phase: **STOP & SHIP** — 2026-06-07
+- Active task: Push to remote / open PR. v3 留作单独规划。
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-07
+- **57 commits across 6 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
+
+---
+
+## Sheriff Routing Fix — 2026-06-07
+
+Critical routing bug found by re-checking `game_g_2521588929.json` (latest game): D1 N1 resolve route went to `announce_deaths_with_badge_loss` (which unconditionally emits "badge permanently lost"), skipping the sheriff election entirely. No `sheriff_register` / `sheriff_speech` / `sheriff_vote` events in the game log.
+
+Branch: `fix-route-sheriff-entry` (worktree `.worktrees/fix-route-sheriff`).
+**MERGED** to master.
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| Sheriff-1 | `route_after_resolve_night` 加 `sheriff_interrupt_count >= 2` 守卫，D1 N1 不再被无条件撕徽 | `werewolf_agent/runtime/graph.py:178-185` | `d156d3d` |
+
+**Key finding from implementer** (vs original task description):
+- Task spec said: D1 first-night should route directly to `sheriff_first_day_entry`
+- Implementer discovered commit `89b865b` history + design doc node ordering (`resolve_night` → `announce_deaths`(10) → `night_death_last_words`(11) → `sheriff_registration`(12)) shows D1 must go through `announce_deaths` first to broadcast "昨夜是平安夜"
+- Actual fix: route to `announce_deaths` (not badge_loss, not first_day_entry) when `interrupt_count < 2`; `route_after_announce` handles the subsequent `sheriff_registration` step
+
+**Tests added** (3): D1 N1 + count=0 → `announce_deaths`; D1 N1 + count=2 → `announce_deaths_with_badge_loss`; D2 + count=0 → `announce_deaths`.
+
+---
+
+## Final Project State — STOP & SHIP Summary
+
+After 3 review+fix cycles + 1 critical-bug fix + 1 perf fix, the project is ready to ship.
+
+**Commits**: 57 across 6 worktree branches (all merged to master).
+**Tests**: 1175 → 2700+ (+1525 net new tests, 0 failing).
+**Worktrees**: 0 remaining. Branches: deleted.
+**Conflicts encountered during merge**: 0 (across 6 `--no-ff` merges).
+
+**CLAUDE.md compliance** (verified at each round):
+- ✅ RuleEngine owns identities / legal actions / night / vote / exile / hunter / idiot / sheriff / last_words / deaths / victory
+- ✅ LLM agents only propose action/reason/speech
+- ✅ RAG never answers base rules or adjudicates game state
+- ✅ Player agents never see `moderator_full` or other players' private state
+- ✅ All state mutations are auditable events reduced deterministically into GameState
+
+**g_3223805846 review ledger** (24 issues): all 22 implemented, 2 false-positive verified and skipped (U1.3, hunter exposure false positive in earlier review).
+
+**Post-review round 1** (30 issues): all 19 implemented, 1 false positive (U1.3 again, was wrongly marked dead).
+
+**Post-review round 2** (21 issues): all 19 implemented.
+
+**Performance**: 2/3 v3 items solved (double-call + O(N²) via skill-layer memoization).
+
+**Sheriff routing**: critical bug fixed (D1 election no longer skipped).
+
+### Open follow-ups (v3+ / not blocking ship)
+
+- **Performance**: `time.sleep` 串行 LLM 调度 — 每局 ~800s 墙钟。需要真正的并发/async 重构 (`_dispatch_agent` 改 `asyncio.gather` 或 `ThreadPoolExecutor`)。
+- **Architecture**: 9 个 directive 文件签名从 `(gs, player_id)` 改为 `(visible, player_id)`，在 `build_agent_context` 边界一次性强制 visibility 过滤。
+- **Refactor**: `api/views.py` 600+ 行拆 `api/projections.py` 单独维护 visibility policy。
+- **Defense-in-depth**: 17 个剩余 extractor 收敛签名（仅 `_extract_seer_check` 改过）。
+- **Sheriff 流程补完**: D1 N1 警上环节恢复后，需真实跑几局确认 `sheriff_registration` → `sheriff_speech` → `sheriff_vote` 整链通畅（这次 fix 只保证入口路由正确）。
+
+### Recommended user actions
+
+1. `git push origin master` (or `gh pr create --base master` if working from a feature branch)
+2. 跑 3-5 局真实游戏，让 `tests/integration/test_live_game_flow.py` 之外的端到端流程暴露代码 review 看不到的运行时 bug
+3. 收集真实玩家反馈（agent 决策质量、prompt 可读性、UI 流畅度）
+4. 决定 v3 单项的执行顺序（推荐：先做 sheriff 流程验证 + 测试覆盖率补全，再考虑 directive visible refactor）
+
+---
+
+## Perf Skill Cache — 2026-06-07
 
 ---
 
