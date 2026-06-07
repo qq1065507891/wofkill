@@ -30,9 +30,20 @@ _LOG = logging.getLogger(__name__)
 # P0-I4: scrub concrete player ids (e.g. ``p03``) from any text that
 # gets written into long-term reflection. Cross-game memory must not
 # carry concrete game identities — only role-based labels survive.
-# Note: do NOT use \b — `\b` does not match between an ASCII letter and
-# a CJK character, so "p03的预言家" wouldn't be detected.
-_REFLECTION_PLAYER_ID_RE = re.compile(r"[Pp]\d{1,2}")
+# Note: do NOT use \b alone — `\b` does not match between an ASCII letter and
+# a CJK character, so "p03的预言家" wouldn't be detected. Use a CJK-safe
+# boundary that also allows the id to start/end with Chinese punctuation.
+# Patterns covered (post-review U7):
+#   * ``p01``-style ids: 1-3 digits after [Pp]
+#   * ``player_3`` / ``player-3`` / ``player3`` style ids (1-3 digits)
+#   * ``agent_5`` / ``agent-5`` / ``agent5`` style ids (1-3 digits)
+# The leading word boundary is intentional: a partial match inside a longer
+# identifier (e.g. "ep100" -> "p100") is acceptable because the
+# downstream text only consumes the scrubbed string.
+_REFLECTION_PLAYER_ID_RE = re.compile(
+    r"\b(?:[Pp]\d{1,3}|player[_-]?\d{1,3}|agent[_-]?\d{1,3})\b",
+    re.IGNORECASE,
+)
 _REFLECTION_ID_REPLACEMENT = "[玩家ID已省略]"
 
 
