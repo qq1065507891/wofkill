@@ -988,9 +988,12 @@ def agent_sheriff_pick_speech_order(
     if not alive_players:
         return None
 
+    # A5 fix: build the context with VOTE action semantics from the start.
+    # The sheriff picks a target (first speaker) via a VOTE-style action,
+    # so task_type and legal_actions must align (no model_copy mutation).
     context = build_agent_context(
-        engine, gs, sheriff_id, TaskType.SHERIFF_SPEECH,
-        legal_actions=[ActionType.SPEECH],
+        engine, gs, sheriff_id, TaskType.VOTE,
+        legal_actions=[ActionType.VOTE],
         legal_targets=alive_players,
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
@@ -1004,12 +1007,6 @@ def agent_sheriff_pick_speech_order(
         "alive_players": alive_players,
     }
     context = _merge_strategy_directive(context, strategy_directive)
-
-    # Use VOTE action to pick a target (first speaker)
-    context = context.model_copy(update={
-        "legal_actions": [ActionType.VOTE],
-        "legal_targets": alive_players,
-    })
 
     action, retry_info = agent.act(context)
     first_speaker = action.target_id if action.action_type == ActionType.VOTE else None
