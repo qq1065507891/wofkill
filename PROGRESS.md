@@ -4,10 +4,76 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **g_3223805846 Postmortem Fixes MERGED to master** — 2026-06-07
+- Current phase: **Post-Review Fixes MERGED to master** — 2026-06-07
 - Active task: Awaiting decision on push / PR / further work
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-07
+
+---
+
+## Post-Review Fixes — 2026-06-07
+
+Module-level reviews surfaced ~30 issues across 6 subagent reports. Implemented 18 fixes (1 marked as false positive in review) via 3 worktree branches in subagent-driven mode.
+
+Plan: `docs/superpowers/plans/2026-06-07-post-review-fixes.md`.
+
+### fix12-prompt-review (5 commits, MERGED)
+
+Branch: `fix12-prompt-review` (worktree `.worktrees/fix12-prompt`).
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| C1 | villager gold_water_duty 改读公开 seer_claim，不再泄漏 seer_check 私有事件 | `werewolf_agent/runtime/directives/villager.py` | `1a099d7` |
+| C2 | visibility.py __init__ 真正生效 visibility_config | `werewolf_agent/cognition/visibility.py` | `c6b9afd` |
+| C3 | 简化双层"硬约束"标签（外层保留，内层 sub-group 移除） | `werewolf_agent/agents/prompt_builder.py:67,194,257` | `1ec66de` |
+| C4 | `_format_examples` vote 段预言家 ID 改占位符 pXX | `werewolf_agent/agents/prompt_builder.py:1324` | `b77bfd8` |
+| C6 | hunter 遗言加一致性条款 | `werewolf_agent/runtime/directives/hunter.py` | `2f9e301` |
+
+### fix13-arch-review (5 commits, MERGED)
+
+Branch: `fix13-arch-review` (worktree `.worktrees/fix13-arch`).
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| A1 | PostgresGameRepository 补齐 save_custom_config/load/list | `werewolf_agent/storage/postgres_store.py` | `b133ae8` |
+| A2 | InMemoryCustomizationRepository 补 save/load_ruleset 闭环 | `werewolf_agent/customization/repository.py` | `3585d06` |
+| A3 | _persist_custom_config 加 warn 日志，repo 缺方法时不再静默丢 | `werewolf_agent/api/app.py` | `87d26ef` |
+| A5 | agent_sheriff_pick_speech_order 移除 model_copy 改 legal_actions | `werewolf_agent/runtime/agent_adapter.py` | `1072ff9` |
+| A6 | _sheriff_endorse_adapter 迁移到 build_agent_context | `werewolf_agent/runtime/nodes/sheriff.py` + `agent_adapter.py` | `b566359` |
+
+### fix14-cleanup (8 commits, MERGED)
+
+Branch: `fix14-cleanup` (worktree `.worktrees/fix14-cleanup`).
+
+| # | Issue | File | Commit |
+|---|-------|------|--------|
+| U1.1 | 删除 _legacy_wolf_consensus 入口占位注释 | `werewolf_agent/runtime/nodes/night.py:633` | `06f5912` |
+| U1.2 | 删除 post_exile_skills 空节点 | `werewolf_agent/runtime/nodes/skills.py` + `graph.py` | `765a1e3` |
+| U2 | _NEGATION_WORDS 抽到 _shared.py，wolf/hunter 字符类对齐 | `werewolf_agent/runtime/strategy/_shared.py` (new) | `a5152b2` |
+| U3 | sheriff_policy 复用 _stable_seed (新叶子模块避免循环导入) | `werewolf_agent/runtime/_stable_seed.py` (new) | `b8a4401` |
+| U4 | local_tools._query_cognition_matrix / _write_review 真正接 MemoryStore | `werewolf_agent/tools/local_tools.py` + `memory/store.py` | `3659653` |
+| U7 | _REFLECTION_PLAYER_ID_RE 扩展覆盖 p100+/player_N/agent_N | `werewolf_agent/memory/store.py` | `06fbdac` |
+| U10 | _SCHEMA 与 migrations v1 对齐（补 `schema_version` 表） | `werewolf_agent/storage/sqlite_store.py` | `77200a8` |
+| U11 | judge.py 5 处 catch-all 异常改 logger.warning(exc_info=True) | `werewolf_agent/agents/judge.py` | `f3ae633` |
+
+### False positive (review claim reverted by implementer)
+
+- **U1.3** "RuntimeState.runtime_timer / agent_call_timeout 是死字段" — implementer 验证后发现 `runtime_timer` 被 `day.py:248` / `night.py:76` 通过 `_timer_expired` 调用，`agent_call_timeout` 被 `game_runner.py:240-241` 设置并被 `_agent_timeout` 读取。两者是**真实运行机制**，非死代码。Review ledger 标记为误报。
+
+### Deferred to v2
+
+- skills 散文未注入（`werewolf_agent/skills/werewolf_skills.py:106` eager-load + SKILL.md 散文被 Python handler 替代）— 设计问题，需先决定"markdown-driven"语义
+- world_state extractor 签名收敛（U9）— 影响面广，留作单独规划
+- dashboard.js 调 `/games/{id}/rag-audit` 等路由在 server 端缺失（404）— UI/server 协同
+- `evaluate_wolf_kill_target` 在 `_single_wolf_vote` 与 `_build_wolf_kill_directive` 双重计算（性能）— 优化而非 bug
+- `_legacy_wolf_consensus` 三段回退路径清理（脆弱但仍工作）— 大改
+
+### Final test results (master, post-3-branch-merge)
+
+- `pytest tests/runtime/ tests/agents/ tests/rules/ tests/memory/ tests/rag/ tests/skills/ tests/cognition/ tests/model_gateway/ tests/storage/ tests/api/ tests/customization/ tests/tools/ tests/evaluation/` → **2628 passed, 0 failed** in 85.00s
+- Test count progression: 2117 (post g_3223805846) → 2628 (post post-review) — +511 新增测试
+- 18 commits (5+5+8) across 3 worktree branches
+- 2 个 false-positive 被 implementer 及时发现并跳过（U1.3 + 若干 follow-up）
 
 ---
 
