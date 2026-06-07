@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import types
 from dataclasses import asdict
 from typing import Any
@@ -79,6 +80,7 @@ def _make_repo_without_init() -> Any:
     repo = PostgresGameRepository.__new__(PostgresGameRepository)
     repo._dsn = "postgresql://test:test@localhost:5432/test"
     repo._conn = None
+    repo._lock = threading.Lock()
     return repo
 
 
@@ -796,3 +798,23 @@ class TestPostgresStoreCustomConfig:
         assert "NotImplementedError" not in src
         src = inspect.getsource(PostgresGameRepository.list_custom_configs)
         assert "NotImplementedError" not in src
+
+
+# ===========================================================================
+# 11. Thread safety (post-review S1)
+# ===========================================================================
+
+
+class TestPostgresStoreThreadSafety:
+    """S1 (post-review-v2): PostgresGameRepository 方法应包裹 self._lock。"""
+
+    def test_postgres_lock_acquired_in_all_sql_methods(self):
+        from werewolf_agent.storage.postgres_store import PostgresGameRepository
+        import inspect
+        # 抽样检查 6 个核心方法都用了 self._lock
+        for method in ("save_game", "load_game", "append_events", "save_deaths",
+                       "save_custom_config", "save_reflection"):
+            src = inspect.getsource(getattr(PostgresGameRepository, method))
+            assert "self._lock" in src, (
+                f"PostgresGameRepository.{method} missing self._lock acquisition"
+            )
