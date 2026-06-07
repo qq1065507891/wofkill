@@ -175,13 +175,17 @@ def route_after_resolve_night(state: RuntimeState) -> str:
         return "check_victory"
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
-    # D1 sheriff-first: deaths must still be announced before sheriff
-    # election (design doc §day_flow). If a wolf self-destructs during
-    # the sheriff election, route_after_self_destruct ensures deaths
-    # are still published. Use the badge-loss variant because the
-    # self-destruct path may also tear the badge.
-    if _needs_sheriff_before_deaths(gs):
+    # fix-sheriff-entry: D1 N1 first resolve must NOT unconditionally
+    # tear the badge. announce_deaths_with_badge_loss emits
+    # "警徽因两度中断永久流失" — that message is only correct when
+    # the sheriff was actually interrupted twice. For count=0 we use
+    # the plain announce_deaths (which preserves the design doc flow
+    # announce_deaths -> last_words -> sheriff_election and the
+    # D1 self-destruct fix from commit 89b865b).
+    if gs.sheriff_interrupt_count >= 2 and gs.sheriff_id is None:
         return "announce_deaths_with_badge_loss"
+    if _needs_sheriff_before_deaths(gs):
+        return "announce_deaths"
     return "announce_deaths"
 
 

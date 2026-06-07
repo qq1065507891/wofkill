@@ -4,10 +4,37 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **Perf Skill Cache MERGED to master** — 2026-06-07
-- Active task: Awaiting decision on push / PR / further work
+- Current phase: **fix-sheriff-entry** — local fix, ready to commit
+- Active task: fix-sheriff-entry
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-07
+
+---
+
+## fix-sheriff-entry — 2026-06-07
+
+Branch: `fix-route-sheriff-entry` (worktree `.worktrees/fix-route-sheriff`).
+
+`route_after_resolve_night` previously routed `_needs_sheriff_before_deaths` (D1 N1 first resolve, no sheriff) to `announce_deaths_with_badge_loss`. That node UNCONDITIONALLY emits `警徽因两度中断永久流失` and tears the badge (`sheriff_badge_state = "torn"`), even when `sheriff_interrupt_count == 0`. Side effect: D1 sheriff election is effectively skipped because subsequent routing sees badge as torn.
+
+**Fix**: add the `sheriff_interrupt_count >= 2 and sheriff_id is None` guard before the badge-loss branch, and route the plain D1 case to `announce_deaths` (preserving the design doc flow `announce_deaths -> last_words -> sheriff_election` and the D1 self-destruct fix from commit `89b865b`).
+
+**Important deviation from task description**: the task suggested routing `_needs_sheriff_before_deaths` to `sheriff_first_day_entry` to mirror `_post_hunter_route`. That would re-introduce the previous bug fixed in `89b865b` (skipping `announce_deaths` and breaking the D1 self-destruct path). The design doc (`docs/design/werewolf-agent-v1-design.md` §day_flow node order: `resolve_night` → `announce_deaths` (10) → `night_death_last_words` (11) → `sheriff_registration` (12)) supports `announce_deaths` first. Existing tests `test_no_sheriff_death_routes_to_sheriff_election_on_night1` and `test_self_destruct_during_sheriff_election_announces_deaths_first` in `tests/runtime/test_sheriff_flow.py` also enforce this. Kept the guard pattern from `_post_hunter_route` but used `announce_deaths` as the D1 target.
+
+| # | Change | File |
+|---|--------|------|
+| F1 | Add `sheriff_interrupt_count >= 2` guard before badge-loss routing | `werewolf_agent/runtime/graph.py` |
+| F2 | Route `_needs_sheriff_before_deaths` to `announce_deaths` (not `sheriff_first_day_entry` or `announce_deaths_with_badge_loss`) | `werewolf_agent/runtime/graph.py` |
+| F3 | 3 new routing tests covering D1 count=0/2, D2 count=0 | `tests/runtime/test_graph_lifecycle.py` |
+
+**Verification**:
+- `pytest tests/runtime/ -p no:cacheprovider -q` → **824 passed** in 56.49s
+- `pytest tests/ -p no:cacheprovider -q --ignore=tests/api --ignore=tests/agents --ignore=tests/storage --ignore=tests/rag --ignore=tests/tools --ignore=tests/integration` → **1561 passed** in 61.80s
+- Pre-existing `tests/integration/test_final_delivery.py::TestAPIStartup::test_api_health_check` fails on master too (auth / 403) — unrelated to this fix.
+
+**Open risks**:
+- The user's task description was based on a snapshot before commit `89b865b`. The two-line "fix" suggested in the task would re-introduce the previous skip-deaths bug. If the user actually wants `sheriff_first_day_entry` for D1, the existing tests in `test_sheriff_flow.py` would need to be revised and the design doc would need to be updated to match. Recommend the user review this deviation before merging.
+- No way to inspect the actual `game_g_2521588929.json` in this worktree to confirm whether the "skipped sheriff election" symptom is from this code path or from `route_after_announce` (which routes D1+count=0 to `free_discussion` once the badge is torn).
 
 ---
 

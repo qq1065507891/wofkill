@@ -431,6 +431,87 @@ def test_route_after_free_discussion_continues_until_speech_queue_done() -> None
 
 
 # ---------------------------------------------------------------------------
+# fix-sheriff-entry: route_after_resolve_night must not unconditionally
+# route to announce_deaths_with_badge_loss. The badge-loss variant emits
+# "警徽因两度中断永久流失" which is only correct when the sheriff election
+# was actually interrupted twice. For D1 N1 first resolve (count=0) we
+# must use plain announce_deaths so the design doc flow
+# (announce_deaths -> last_words -> sheriff_election) is preserved
+# and the badge stays "none" — see commit 89b865b for the D1
+# self-destruct fix that established this behavior.
+# ---------------------------------------------------------------------------
+
+def _make_resolve_night_state(*, day_number: int, interrupt_count: int) -> RuntimeState:
+    """Build a minimal state for routing tests of route_after_resolve_night.
+
+    12 alive players with the standard role mix so check_victory returns
+    no winner and the routing decision depends only on sheriff fields.
+    night_number mirrors day_number: on D1 we just finished N1, on D2 we
+    just finished N2, etc. (D1 has interrupt_count=0, others may vary.)
+    """
+    roles = (
+        ["werewolf"] * 4
+        + ["villager"] * 3
+        + ["seer", "witch", "hunter", "idiot", "hybrid"]
+    )
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=True)
+        for i, role in enumerate(roles, start=1)
+    }
+    gs = GameState(
+        game_id=f"resolve_night_d{day_number}_i{interrupt_count}",
+        players=players,
+        day_number=day_number,
+        night_number=day_number,
+        sheriff_id=None,
+        sheriff_badge_state="none",
+        sheriff_interrupt_count=interrupt_count,
+    )
+    return {
+        "game_state": gs,
+        "engine": _new_engine(),
+    }
+
+
+def test_route_after_resolve_night_d1_interrupt0_routes_to_announce_deaths() -> None:
+    """D1 N1 first resolve, no sheriff, interrupt_count=0 → announce_deaths.
+
+    Regression (fix-sheriff-entry): previously routed to
+    announce_deaths_with_badge_loss, which unconditionally emitted
+    '警徽因两度中断永久流失' even though the count was 0 and the badge
+    should remain "none" until a real election interruption occurs.
+    """
+    state = _make_resolve_night_state(day_number=1, interrupt_count=0)
+    result = route_after_resolve_night(state)
+    assert result == "announce_deaths", (
+        f"D1 N1 first resolve with interrupt_count=0 must go to "
+        f"announce_deaths (preserving the design doc flow), got {result!r}"
+    )
+
+
+def test_route_after_resolve_night_d1_interrupt2_routes_to_badge_loss() -> None:
+    """D1 N1 with interrupt_count=2 (two previous election interruptions) →
+    announce_deaths_with_badge_loss. Preserves the actual 2-interrupt case.
+    """
+    state = _make_resolve_night_state(day_number=1, interrupt_count=2)
+    result = route_after_resolve_night(state)
+    assert result == "announce_deaths_with_badge_loss", (
+        f"D1 with interrupt_count=2 should go to badge_loss, got {result!r}"
+    )
+
+
+def test_route_after_resolve_night_d2_no_sheriff_routes_to_announce_deaths() -> None:
+    """D2+ resolve, no sheriff, interrupt_count=0 → announce_deaths.
+    Sheriff election only happens on D1.
+    """
+    state = _make_resolve_night_state(day_number=2, interrupt_count=0)
+    result = route_after_resolve_night(state)
+    assert result == "announce_deaths", (
+        f"D2 without sheriff should announce deaths, got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Replay tests
 # ---------------------------------------------------------------------------
 
