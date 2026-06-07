@@ -912,6 +912,12 @@ class PlayerAgent:
                     # to skip the vote and let the engine treat us as abstain.
                     safe_target = context.legal_targets[0] if context.legal_targets else None
                 else:
+                    # P4 (post-review-v2): the previous _most_suspect_target
+                    # read here is dead code — no producer populates that
+                    # key (grep returns zero hits outside this consumer
+                    # and a stale test).  Drop the branch and let
+                    # _vote_fallback_target (when present) drive the
+                    # choice, otherwise fall through to non_self[0].
                     fb = (
                         context.strategy_directive.get("_vote_fallback_target")
                         if context.strategy_directive else None
@@ -919,17 +925,7 @@ class PlayerAgent:
                     if fb and fb in non_self:
                         safe_target = fb
                     else:
-                        # g_3223805846-B1: prefer the most-suspect target from
-                        # strategy_directive (a player publicly questioned by
-                        # multiple others) over an arbitrary non-self target.
-                        most_suspect = (
-                            context.strategy_directive.get("_most_suspect_target")
-                            if context.strategy_directive else None
-                        )
-                        if most_suspect and most_suspect in non_self:
-                            safe_target = most_suspect
-                        else:
-                            safe_target = non_self[0]
+                        safe_target = non_self[0]
             else:
                 safe_target = context.legal_targets[0]
 

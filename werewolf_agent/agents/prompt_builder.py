@@ -124,6 +124,14 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "wolf_fake_seer_teammate",          # directives/wolf.py:148/166 — 严禁信息穿越
     "wolf_kill_instruction",            # agent_adapter.py:547
     "wolf_team_discussion",             # agent_adapter.py:676
+    # P3 (post-review-v2): wolf universal rules contain
+    # "绝对不要提到你的队友是狼人" / "严禁暴露" framing — must
+    # be obeyed, not merely suggested.  Promoted from SUGGESTION.
+    "wolf_universal_rules",             # directives/wolf.py:105 — 绝对 / 严禁
+    # P3 (post-review-v2): anti_herd is P0-K6 hard constraint
+    # (independent judgment over following the crowd) — promoted
+    # from SUGGESTION to HARD.
+    "anti_herd",                        # runtime/agent_adapter.py:1276 — 严禁跟票
     # Hybrid — master-faction binding
     "hybrid_wolf_master_directive",      # directives/hybrid.py:51
     "hybrid_good_master_directive",      # directives/hybrid.py:69
@@ -140,13 +148,13 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({
-    # Wolf speech style / universal rules
+    # Wolf speech style (hard variants — wolf_universal_rules — promoted
+    # to HARD_CONSTRAINT_KEYS in P3 because the directive text uses
+    # 绝对 / 严禁 framing).
     "wolf_speech_directive",
-    "wolf_universal_rules",
     # Good-side vote quality guard
     "good_vote_decision_guard",
-    # Anti-herd / sheriff vote push
-    "anti_herd",
+    # Sheriff vote push (soft: only a "should")
     "sheriff_vote_push",
     # Speech style suggestions
     "speech_originality",
@@ -1171,6 +1179,15 @@ class PlayerPromptBuilder:
         # use_poison / badge_transfer / badge_tear / choose_master /
         # speech / vote), 在示例渲染前一次性注入,比每个分支都改更稳。
         parts.append(_ACTION_TYPE_GUARD)
+        # P2 (post-review-v2): vote 阶段 FULL_ACTION 路径也注入
+        # _VOTE_REASON_PRIVACY_GUARD。 之前该 guard 只在
+        # ``_format_choice_prompt`` (单动作 [VOTE] → TARGET_CHOICE)
+        # 注入；当 legal_actions 含 VOTE + 其他动作 (例如 VOTE +
+        # NO_ACTION) 时路由到 FULL_ACTION 走 ``_format_examples``，
+        # 隐私 guard 缺失，LLM 在 reason 字段会写入私视角表述
+        # (g_3223805846 复现)。 与 _format_choice_prompt 路径对齐。
+        if ActionType.VOTE in (ctx.legal_actions or []):
+            parts.append(_VOTE_REASON_PRIVACY_GUARD)
         # P0-S7: claimed_view is documented as an identity-perspective
         # identifier (PrivateIntent schema), not a free-form Chinese
         # phrase. Use the canonical enum-style values so the LLM copies
@@ -1327,20 +1344,26 @@ class PlayerPromptBuilder:
                 # LLM 把示例里的 ID 直接抄到输出里）。
                 vote_standing_with_seer = "pXX"
                 vote_basis = "seer_siding"
+            # P1 (post-review-v2): vote 段示例所有 player ID 一律改占位符 pXX
+            # — 任何出现在示例里的 p0X 都可能被 LLM 误抄到当前局输出。
+            # LLM 看到 pXX 后应替换为"本局真实玩家 ID"，示例 ID 不是
+            # 真实参考。覆盖 target_id、standing_with_seer、pressure_target
+            # 三个 JSON 字段以及 reason / suspect_reason / not_voting_reason /
+            # private_reason 四个文本字段里的 p0X 引用。
             parts.append("示例输出（投票场景）：")
-            parts.append('{"action_type": "vote", "target_id": "p05", '
+            parts.append('{"action_type": "vote", "target_id": "pXX", '
                          '"speech": "", '
-                         '"reason": "公开理由：p05发言可疑", '
+                         '"reason": "公开理由：pXX发言可疑", '
                          '"seer_stance": "trust", '
                          f'"vote_basis": "{vote_basis}", '
                          f'"standing_with_seer": "{vote_standing_with_seer}", '
-                         '"suspect_reason": "p05没有回应p03的查杀逻辑，发言前后不一致", '
-                         '"not_voting_reason": "p07虽然被踩，但目前没有明确查验或票型证据", '
-                         '"private_reason": "心里活动：我更信p03的预言家线，p05像狼队抗推失败后的防守位，所以投p05。", '
+                         '"suspect_reason": "pXX没有回应pXX的查杀逻辑，发言前后不一致", '
+                         '"not_voting_reason": "pXX虽然被踩，但目前没有明确查验或票型证据", '
+                         '"private_reason": "心里活动：我更信pXX的预言家线，pXX像狼队抗推失败后的防守位，所以投pXX。", '
                          '"confidence": 0.8, '
                          f'"private_intent": {{"true_role": "{example_role}", '
                          f'"faction_goal": "{vote_example_goal}", "claimed_view": "{vote_example_view}", '
-                         '"pressure_target": "p05", "risk_flags": []}}')
+                         '"pressure_target": "pXX", "risk_flags": []}}')
         return "\n".join(parts)
 
     def _build_strict_output_contract(self) -> str:

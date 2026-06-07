@@ -18,6 +18,8 @@ Fix: render 3 sub-sections in the prompt:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from werewolf_agent.agents.prompt_builder import (
@@ -111,11 +113,11 @@ def test_suggestion_keys_include_behavioral_directives():
     # zero hits.  Dropped from the must_be_suggestion set; the
     # explicit ``test_witch_speech_constraint_not_in_suggestion_keys``
     # below confirms it is removed from the frozenset itself.
+    # P3 (post-review-v2): ``wolf_universal_rules`` (绝对 / 严禁 framing)
+    # and ``anti_herd`` (P0-K6 hard constraint) promoted to HARD tier.
     must_be_suggestion = {
         "wolf_speech_directive",
-        "wolf_universal_rules",
         "good_vote_decision_guard",
-        "anti_herd",
         "sheriff_vote_push",
         "speech_originality",
         "seer_speech_directive",
@@ -222,10 +224,14 @@ def test_strategy_directive_only_suggestion_section_when_only_suggestion_keys():
     MUST/SHOULD/REFERENCE markers (P0-S5 inner sub-group discriminators)
     instead of the bare "【硬约束】" label, so the test still verifies that
     only the 建议 inner sub-group renders when only suggestion keys exist.
+
+    P3 (post-review-v2): ``anti_herd`` was promoted to HARD, so it can no
+    longer serve as the "suggestion" sample.  Use ``speech_originality``
+    and ``good_vote_decision_guard`` (both remain in SUGGESTION_KEYS).
     """
     ctx = _make_ctx_with_directive(
         {
-            "anti_herd": "不要盲目跟票",
+            "good_vote_decision_guard": "不要盲目跟票",
             "speech_originality": "避免模板化",
         }
     )
@@ -285,12 +291,17 @@ def test_strategy_directive_omits_section_when_empty():
 
 
 def test_hard_key_appears_under_hard_section():
-    """`must_address_alerts` must be rendered under 【硬约束】, not other sections."""
+    """`must_address_alerts` must be rendered under 【硬约束】, not other sections.
+
+    P3 (post-review-v2): ``anti_herd`` was promoted to HARD, so it can
+    no longer serve as the "suggestion" sample.  Use
+    ``good_vote_decision_guard`` (still in SUGGESTION_KEYS).
+    """
     ctx = _make_ctx_with_directive(
         {
             "must_address_alerts": ["p07 accused me"],
             # Also add a suggestion key to ensure both sections render
-            "anti_herd": "不要盲目跟票",
+            "good_vote_decision_guard": "不要盲目跟票",
         }
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
@@ -302,14 +313,19 @@ def test_hard_key_appears_under_hard_section():
     hard_body = prompt[hard_idx:sugg_idx]
     assert "must_address_alerts" in hard_body
     # The hard body should NOT contain keys from other sections
-    assert "anti_herd" not in hard_body
+    assert "good_vote_decision_guard" not in hard_body
 
 
 def test_suggestion_key_appears_under_suggestion_section():
-    """`anti_herd` must be rendered under 【建议】."""
+    """`good_vote_decision_guard` must be rendered under 【建议】.
+
+    P3 (post-review-v2): ``anti_herd`` was promoted to HARD, so it can
+    no longer serve as the "suggestion" sample.  Replaced with
+    ``good_vote_decision_guard`` (still in SUGGESTION_KEYS).
+    """
     ctx = _make_ctx_with_directive(
         {
-            "anti_herd": "不要盲目跟票",
+            "good_vote_decision_guard": "不要盲目跟票",
             # Add a hard key to ensure both sections render
             "must_address_alerts": ["p07 accused me"],
         }
@@ -320,7 +336,7 @@ def test_suggestion_key_appears_under_suggestion_section():
     assert hard_idx >= 0 and sugg_idx >= 0
     sugg_body = prompt[sugg_idx:]
     # Reference section absent, so whole rest of prompt is 建议
-    assert "anti_herd" in sugg_body
+    assert "good_vote_decision_guard" in sugg_body
     # Hard keys must not appear in the suggestion body
     assert "must_address_alerts" not in sugg_body
 
@@ -402,11 +418,15 @@ def test_section_ordering_is_hard_then_suggestion_then_reference():
     【参考】 outer label.  Using the inner P0-S5 sub-group
     discriminators keeps the test targeted to the strategy_directive
     section ordering, not the global section labels.
+
+    P3 (post-review-v2): ``anti_herd`` was promoted to HARD, so the
+    "suggestion" sample is now ``good_vote_decision_guard`` (still in
+    SUGGESTION_KEYS).
     """
     ctx = _make_ctx_with_directive(
         {
             "must_address_alerts": ["x"],
-            "anti_herd": "y",
+            "good_vote_decision_guard": "y",
             "master_behavior_summary": "z",
         }
     )
@@ -2256,6 +2276,10 @@ def test_strategy_directive_inner_subgroups_still_three_tiers():
     The inner sub-headers carry the priority signal for the directive
     keys. With hard+soft+reference keys present, all 3 inner headers
     must still render.
+
+    P3 (post-review-v2): ``anti_herd`` was promoted to HARD, so the
+    "suggestion" sample is now ``good_vote_decision_guard`` (still in
+    SUGGESTION_KEYS).
     """
     ctx = AgentContext(
         agent_id="p05",
@@ -2270,7 +2294,7 @@ def test_strategy_directive_inner_subgroups_still_three_tiers():
             # hard
             "must_address_alerts": ["p07 accused me"],
             # suggestion
-            "anti_herd": "do not follow the herd",
+            "good_vote_decision_guard": "do not follow the herd",
             # reference
             "master_behavior_summary": "master last round attacked p05",
         },
@@ -3941,6 +3965,12 @@ class TestHardConstraintLabelUniqueness:
         # combined count of "硬约束" substrings is <= 1, which requires
         # the inner sub-group label to be removed (fix) and the outer
         # section label to remain (current).
+        #
+        # P3 (post-review-v2): ``anti_herd`` was promoted to HARD, so
+        # using it here would now trigger the strategy_directive inner
+        # 【硬约束】 sub-group header (the very thing this test tries to
+        # suppress).  Use ``speech_originality`` (still SUGGESTION_KEYS)
+        # as a non-hard sample to keep the no-inner-sub-group invariant.
         from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
         from werewolf_agent.agents.schemas import (
             ActionType, AgentContext, RetryInfo, TaskType,
@@ -3954,7 +3984,7 @@ class TestHardConstraintLabelUniqueness:
             # No hard-constraint keys → strategy_directive inner
             # 【硬约束】 sub-group header does not render.
             strategy_directive={
-                "anti_herd": "不要盲目跟票",
+                "speech_originality": "不要模板化",
             },
         )
         builder = PlayerPromptBuilder(ctx)
@@ -3991,6 +4021,70 @@ class TestFormatExamplesNoHardcodedID:
         import re as _re
         match = _re.search(r'"standing_with_seer"\s*:\s*"p03"', examples)
         assert not match, f"_format_examples hardcodes p03 as seer: {match.group(0)}"
+
+
+class TestFormatExamplesNoHardcodedIDComplete:
+    """P1 (post-review-v2): vote 示例所有 p0X 硬编码 ID 改占位符。"""
+
+    def test_vote_example_no_real_p0X_hardcoded(self):
+        from unittest.mock import MagicMock
+        from werewolf_agent.agents.schemas import ActionType
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        mock_ctx = MagicMock()
+        mock_ctx.legal_actions = [ActionType.VOTE]
+        mock_ctx.legal_targets = [f"p{i:02d}" for i in range(1, 13)]
+        builder = PlayerPromptBuilder(mock_ctx)
+        examples = builder._format_examples()
+        # vote 段不应出现 "p01"-"p12" 真实 ID 字符串（应全部为 pXX 占位符）
+        vote_section_match = re.search(r'(vote[^#]*?)(?=##|$)', examples, re.DOTALL)
+        if vote_section_match:
+            vote_section = vote_section_match.group(1)
+            real_id_hits = re.findall(r'"p(?:0[1-9]|1[0-2])"', vote_section)
+            assert len(real_id_hits) == 0, (
+                f"vote 示例段仍含硬编码 player IDs: {real_id_hits}\n\n{vote_section[:600]}"
+            )
+
+
+class TestVoteReasonGuardInFullActionPath:
+    """P2 (post-review-v2): vote 阶段 FULL_ACTION 模式也应注入 _VOTE_REASON_PRIVACY_GUARD。"""
+
+    def test_vote_full_action_includes_privacy_guard(self):
+        from werewolf_agent.agents.schemas import ActionType, AgentContext, RetryInfo, TaskType
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            own_role="villager",
+            legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],  # 多动作触发 FULL_ACTION
+            legal_targets=[f"p{i:02d}" for i in range(1, 13)],
+            strategy_directive={},
+        )
+        builder = PlayerPromptBuilder(ctx)
+        user_prompt = builder.build_user_prompt(RetryInfo())
+        # 隐私 guard 关键词必出现（"禁止" + "private_intent"）
+        assert "禁止" in user_prompt and "private_intent" in user_prompt, (
+            f"FULL_ACTION vote path missing _VOTE_REASON_PRIVACY_GUARD"
+        )
+
+
+class TestHardConstraintTierAccuracy:
+    """P3 (post-review-v2): 含'严禁/绝对'约束应归 HARD_CONSTRAINT_KEYS。"""
+
+    def test_wolf_universal_rules_in_hard_tier(self):
+        from werewolf_agent.agents.prompt_builder import (
+            HARD_CONSTRAINT_KEYS, SUGGESTION_KEYS,
+        )
+        # wolf_universal_rules 含"绝对不要提到你的队友是狼人"等硬约束
+        assert "wolf_universal_rules" in HARD_CONSTRAINT_KEYS, (
+            f"wolf_universal_rules 含硬约束应归 HARD: HARD={HARD_CONSTRAINT_KEYS}, SUGGESTION={SUGGESTION_KEYS}"
+        )
+
+    def test_anti_herd_in_hard_tier(self):
+        from werewolf_agent.agents.prompt_builder import HARD_CONSTRAINT_KEYS
+        # anti_herd 是 P0-K6 硬约束
+        assert "anti_herd" in HARD_CONSTRAINT_KEYS, (
+            f"anti_herd 应在 HARD_CONSTRAINT_KEYS"
+        )
 
 
 if __name__ == "__main__":
