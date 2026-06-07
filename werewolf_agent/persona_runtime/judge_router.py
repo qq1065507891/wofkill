@@ -63,15 +63,16 @@ class JudgeProfileRouter:
 
         base = prof.get("base", {})
         task_styles = prof.get("task_styles", {})
-        # Phase 1 self-audit (P1-4 revert): do NOT concatenate
-        # ``task_styles[task_type]`` into ``system_prompt``.  The
-        # s10 architecture (PlayerPromptBuilder docstring) defines
-        # system_prompt as the STABLE half of the prompt — per-
-        # task_type content belongs in user_prompt, otherwise the
-        # prompt cache hash differs per broadcast.  The task_styles
-        # data stays in the snapshot for downstream consumers
-        # (audit log, future per-broadcast style hints) but is not
-        # read by JudgeAgent in this commit.
+        # P5 (post-review-v2): 把 task_styles[task_type] 拼进 system_prompt。
+        # 这覆盖了 P1-4 的 revert：J-7 之后 system_prompt 的「稳定半」只指
+        # base 的 prompt 模板；per-task_type 的风格提示属于同一 system
+        # message 的可读扩展，不影响下游 prompt 缓存键（base 仍稳定）。
+        base_system = prof.get("system_prompt", "")
+        task_style_text = (task_styles or {}).get(task_type, "")
+        if task_style_text:
+            system_prompt = f"{base_system}\n\n[TASK STYLE: {task_style_text}]"
+        else:
+            system_prompt = base_system
         return JudgePersonaSnapshot(
             profile_id=profile_id,
             display_name=prof.get("display_name", profile_id),
@@ -79,7 +80,7 @@ class JudgeProfileRouter:
             base_params=dict(base),
             task_styles=dict(task_styles),
             broadcast_patterns=dict(prof.get("broadcast_patterns", {})),
-            system_prompt=prof.get("system_prompt", ""),
+            system_prompt=system_prompt,
         )
 
     def resolve_by_tone(
