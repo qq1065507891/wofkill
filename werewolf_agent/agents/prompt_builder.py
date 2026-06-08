@@ -36,6 +36,27 @@ from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES 
 # prompt builder hard-coded ``[:5]``, silently dropping 3 hints.
 from werewolf_agent.runtime.context import HINT_BUDGET  # noqa: E402
 
+# M2-3 (2026-06-09): single source of truth for the output schema
+# field set.  Both ``_build_output_contract`` (system prompt) and
+# ``_build_strict_output_contract`` (per-turn strict) must reference
+# these constants.  P2-3 attempted to sync them but two literal
+# string lists still drift on future edits.  The constants are the
+# MAX-set the stable contract advertises to the LLM; per-turn
+# strict subsets (e.g. non-vote TARGET_CHOICE, SPEECH_INTENT) remain
+# as literals because they are different schemas, not the same
+# schema with fewer fields.
+_OUTPUT_SCHEMA_VOTE_FIELDS: tuple[str, ...] = (
+    "choice", "reason", "seer_stance", "vote_basis",
+    "standing_with_seer", "suspect_reason", "not_voting_reason",
+    "private_reason", "confidence",
+)
+_OUTPUT_SCHEMA_SPEECH_FIELDS: tuple[str, ...] = (
+    "action_type", "target_id", "speech", "reason", "confidence",
+)
+_OUTPUT_SCHEMA_SKILL_FIELDS: tuple[str, ...] = (
+    "action_type", "target_id", "speech", "reason", "confidence",
+)
+
 # P0-K1: skill catalog removed (tool path is dead code). Skill analyses
 # are pre-injected via skill_analysis_hints — no separate tool catalog.
 
@@ -392,15 +413,34 @@ class PlayerPromptBuilder:
         kill) may use a strict subset, but the system prompt should
         advertise the max so the LLM is never surprised by a field
         the per-turn contract adds.
+
+        M2-3: field lists are now sourced from the module-level
+        ``_OUTPUT_SCHEMA_*_FIELDS`` constants so the system prompt
+        and the per-turn strict contract cannot drift on future
+        edits.  The constants encode the *max* set; the per-turn
+        ``_build_strict_output_contract`` may emit strict subsets
+        (non-vote TARGET_CHOICE drops to 3 fields, SPEECH_INTENT
+        uses ``intent`` instead of ``action_type``) but those are
+        different schemas, not the same schema with fewer fields.
         """
+        vote_fields = "、".join(_OUTPUT_SCHEMA_VOTE_FIELDS)
+        speech_fields = "、".join(_OUTPUT_SCHEMA_SPEECH_FIELDS)
+        # The skill field list includes a "（空）" hint on the
+        # ``speech`` field so the LLM knows skill actions carry an
+        # empty speech payload.  The constant holds the field name;
+        # the hint is appended here to preserve the original P0
+        # framing.
+        skill_fields = "、".join(
+            f"{f}（空）" if f == "speech" else f
+            for f in _OUTPUT_SCHEMA_SKILL_FIELDS
+        )
         return (
             "请优先通过 submit_player_action 工具提交结构化行动。"
             "如果当前模型无法调用工具，则只输出一个JSON对象，不要解释、不要Markdown。"
-            "投票回合字段最多9个：choice、reason、seer_stance、vote_basis、"
-            "standing_with_seer、suspect_reason、not_voting_reason、private_reason、confidence。"
-            "发言回合最多5个：action_type、target_id、speech、reason、confidence。"
+            f"投票回合字段最多{len(_OUTPUT_SCHEMA_VOTE_FIELDS)}个：{vote_fields}。"
+            f"发言回合最多{len(_OUTPUT_SCHEMA_SPEECH_FIELDS)}个：{speech_fields}。"
             "技能行动（kill/check/poison/shoot/choose_master/badge 等）"
-            "最少5个：action_type、target_id、speech（空）、reason、confidence。"
+            f"最少{len(_OUTPUT_SCHEMA_SKILL_FIELDS)}个：{skill_fields}。"
             "重要：speech字段必须使用中文，这是你在游戏中的公开发言。"
         )
 
@@ -1405,7 +1445,24 @@ class PlayerPromptBuilder:
         return "\n".join(parts)
 
     def _build_strict_output_contract(self) -> str:
-        """Per-turn output contract — adapts to task type."""
+        """Per-turn output contract — adapts to task type.
+
+        M2-3: the VOTE branch sources its 9-field list from the
+        module-level ``_OUTPUT_SCHEMA_VOTE_FIELDS`` constant so the
+        per-turn contract cannot drift from
+        ``_build_output_contract`` (the system prompt's stable
+        advertisement).  The non-vote TARGET_CHOICE branch (3
+        fields: ``choice``, ``reason``, ``confidence``) and the
+        SPEECH_INTENT branch (uses ``intent`` instead of
+        ``action_type``) keep literal field lists because they are
+        *different schemas*, not subsets of the VOTE/SKILL/SPEECH
+        constants.  The full-action (SKILL) branch inherits its
+        schema from the same constant the system prompt uses
+        (``_OUTPUT_SCHEMA_SKILL_FIELDS``) — the per-turn branch
+        only adds the *per-turn* rules (legal_actions,
+        legal_targets, vote audit fields) per P1-4, but those
+        per-turn rules reference the same underlying schema.
+        """
         ctx = self.context
         output_mode = self._select_output_mode()
         legal_actions = [a.value for a in ctx.legal_actions]
@@ -1414,10 +1471,7 @@ class PlayerPromptBuilder:
         if output_mode == OutputMode.TARGET_CHOICE:
             output_fields = "choice、reason、confidence"
             if ctx.legal_actions == [ActionType.VOTE]:
-                output_fields = (
-                    "choice、reason、seer_stance、vote_basis、standing_with_seer、suspect_reason、"
-                    "not_voting_reason、private_reason、confidence"
-                )
+                output_fields = "、".join(_OUTPUT_SCHEMA_VOTE_FIELDS)
             lines = [
                 "",
                 "最终输出协议（必须遵守）：",
@@ -1448,6 +1502,13 @@ class PlayerPromptBuilder:
             lines.append("现在提交行动。")
             return "\n".join(lines)
 
+        # Full-action (SKILL) branch.  P1-4 deliberately removed the
+        # field-list duplication here — the system prompt's stable
+        # ``_build_output_contract`` (which sources its field list
+        # from ``_OUTPUT_SCHEMA_SKILL_FIELDS`` per M2-3) already
+        # advertises the SKILL schema, so this per-turn branch only
+        # adds the *per-turn* rules (legal_actions, legal_targets,
+        # vote audit fields).
         lines = [
             "",
             "最终输出协议（必须遵守）：",
@@ -1456,12 +1517,6 @@ class PlayerPromptBuilder:
             "3. JSON必须以{开头、以}结尾，且只能有一个对象。",
             "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
         ]
-        # P1-4: the field list (action_type、target_id、speech、reason、
-        # confidence) was duplicated from the system prompt. The system
-        # prompt's ``_build_output_contract`` already advertises it as a
-        # stable rule; the user prompt should keep ONLY the per-turn
-        # phase-specific rules (legal_actions, legal_targets, vote
-        # audit fields).
         if legal_actions:
             lines.append(f"5. action_type只能取：{legal_actions}。")
         if legal_targets:

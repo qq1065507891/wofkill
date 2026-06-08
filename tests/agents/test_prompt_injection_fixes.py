@@ -47,3 +47,14 @@ def test_reflection_hints_slice_uses_budget_8() -> None:
         f"Expected 8 reflection hints in output, got {item_count}. "
         f"Budget is 8 in context.py but prompt_builder slices with [:5]."
     )
+
+
+def test_output_schema_constants_used_by_both_renderers():
+    """M2-3: both renderers must reference the same field constants."""
+    from werewolf_agent.agents import prompt_builder
+    assert hasattr(prompt_builder, "_OUTPUT_SCHEMA_VOTE_FIELDS")
+    assert hasattr(prompt_builder, "_OUTPUT_SCHEMA_SPEECH_FIELDS")
+    assert hasattr(prompt_builder, "_OUTPUT_SCHEMA_SKILL_FIELDS")
+    assert len(prompt_builder._OUTPUT_SCHEMA_VOTE_FIELDS) >= 5
+    assert len(prompt_builder._OUTPUT_SCHEMA_SPEECH_FIELDS) >= 3
+    assert len(prompt_builder._OUTPUT_SCHEMA_SKILL_FIELDS) >= 3
