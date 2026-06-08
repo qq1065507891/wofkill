@@ -58,3 +58,20 @@ def test_output_schema_constants_used_by_both_renderers():
     assert len(prompt_builder._OUTPUT_SCHEMA_VOTE_FIELDS) >= 5
     assert len(prompt_builder._OUTPUT_SCHEMA_SPEECH_FIELDS) >= 3
     assert len(prompt_builder._OUTPUT_SCHEMA_SKILL_FIELDS) >= 3
+
+
+def test_vote_audit_fields_derived_from_constant():
+    """M2-3: 投票审计字段必须从 _OUTPUT_SCHEMA_VOTE_FIELDS 派生,不重复字面。"""
+    from werewolf_agent.agents import prompt_builder
+    # 必须有 _VOTE_AUDIT_FIELDS 常量
+    assert hasattr(prompt_builder, "_VOTE_AUDIT_FIELDS")
+    # 必须等于 VOTE 减去 {choice, reason, confidence}
+    vote = prompt_builder._OUTPUT_SCHEMA_VOTE_FIELDS
+    audit = prompt_builder._VOTE_AUDIT_FIELDS
+    expected = tuple(f for f in vote if f not in ("choice", "reason", "confidence"))
+    assert audit == expected, (
+        f"_VOTE_AUDIT_FIELDS 必须是 VOTE 减去 {{choice, reason, confidence}}. "
+        f"Got: {audit!r}, expected: {expected!r}"
+    )
+    # 必须 non-empty (VOTE 9 fields - 3 = 6 期望)
+    assert len(audit) >= 3, f"_VOTE_AUDIT_FIELDS 必须 >= 3 fields, got {len(audit)}"

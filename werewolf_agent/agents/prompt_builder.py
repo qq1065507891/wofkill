@@ -57,6 +57,18 @@ _OUTPUT_SCHEMA_SKILL_FIELDS: tuple[str, ...] = (
     "action_type", "target_id", "speech", "reason", "confidence",
 )
 
+# M2-3 (2026-06-09): derived list of vote fields BEYOND choice/reason/confidence.
+# Subtracted from _OUTPUT_SCHEMA_VOTE_FIELDS so future additions to
+# the VOTE constant automatically propagate to the strict-contract
+# audit check. The strict prompt advertises these as "additional
+# required fields" on top of the stable choice/reason/confidence
+# trio, so any field added to VOTE that's not in the subtracted set
+# becomes a required audit field for free.
+_VOTE_AUDIT_FIELDS: tuple[str, ...] = tuple(
+    f for f in _OUTPUT_SCHEMA_VOTE_FIELDS
+    if f not in ("choice", "reason", "confidence")
+)
+
 # P0-K1: skill catalog removed (tool path is dead code). Skill analyses
 # are pre-injected via skill_analysis_hints — no separate tool catalog.
 
@@ -1482,8 +1494,7 @@ class PlayerPromptBuilder:
             ]
             if ctx.legal_actions == [ActionType.VOTE]:
                 lines.append(
-                    "5. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
-                    "suspect_reason、not_voting_reason、private_reason，理由字段不能写「未说明」。"
+                    f"5. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
                 )
             lines.append("现在提交行动。")
             return "\n".join(lines)
@@ -1523,8 +1534,7 @@ class PlayerPromptBuilder:
             lines.append(f"6. target_id只能取这些玩家之一或null：{legal_targets}。")
         if ActionType.VOTE in ctx.legal_actions:
             lines.append(
-                "7. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
-                "suspect_reason、not_voting_reason、private_reason，理由字段不能写「未说明」。"
+                f"7. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
             )
         lines.append("现在提交行动。")
         return "\n".join(lines)
