@@ -5,11 +5,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T1 M4-1 reflection budget sync (DONE)
+- Active task: T2 M2-3 输出 schema 统一 (DONE) — derived _VOTE_AUDIT_FIELDS
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
-- **58+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
-- **本次新增**: T1 M4-1 单点修复 + 1 个回归测试, prompt_builder 与 context.py budget 单一源点化
+- **59+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
+- **本次新增**: T2 M2-3 字面去重, _VOTE_AUDIT_FIELDS 从 VOTE 派生 (6 字段自动同步), 1 个新回归测试
 
 ---
 
@@ -109,6 +109,29 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 **风险**:
 - 模块级 `HINT_BUDGET` 现在是 public-ish 名字 (无下划线) — 故意为之,跨模块引用需要它 public。如果嫌太暴露可改回 `HINT_BUDGET_FOR_PROMPT_BUILDER` 之类,但当前命名简短且语义清晰
 - 把 constant 从闭包提到 module 触发了 `runtime.context` 启动期 import `HINT_BUDGET` — 该 module 已被 `agent_adapter` 等大量模块 import,确认无循环 import 风险 (smoke import 验证通过)
+
+**T2 (M2-3) DONE — derive _VOTE_AUDIT_FIELDS from VOTE constant**:
+- **问题**: T2 commit `9bbe2bd` 把 `_OUTPUT_SCHEMA_VOTE_FIELDS` 提到 module 顶部 (9 字段),但 `_build_strict_output_contract` 在 CHOICE (item 5) 和 SKILL (item 7) 两条分支上仍各硬编码 6 个 vote 审计字段的字符串字面 (`seer_stance、vote_basis、standing_with_seer、suspect_reason、not_voting_reason、private_reason`)。未来若给 VOTE 加新字段,字面不更新 → LLM prompt 与 schema 漂移,且回归测试 `test_output_schema_constants_used_by_both_renderers` 抓不到 (它只检查 const 存在,不看 literal 一致性)
+- **修复**: 加派生常量 `_VOTE_AUDIT_FIELDS = tuple(f for f in _OUTPUT_SCHEMA_VOTE_FIELDS if f not in ("choice", "reason", "confidence"))` (VOTE 9 - 3 = 6 字段);两处 literal 改用 `f"...{ '、'.join(_VOTE_AUDIT_FIELDS) }..."`。新测试 `test_vote_audit_fields_derived_from_constant` 显式断言 `_VOTE_AUDIT_FIELDS == VOTE 减去 {choice, reason, confidence}`,未来加 VOTE 字段会立即触发 VOTE/AUDIT 不一致,需要在 f-string 调用点检查是否需要更新 subtracted set
+- **文件**:
+  - `werewolf_agent/agents/prompt_builder.py:60-70` (新 `_VOTE_AUDIT_FIELDS` 常量,带 M2-3 注释解释派生语义)
+  - `werewolf_agent/agents/prompt_builder.py:1494-1497` (CHOICE 路径 item 5 改用 f-string)
+  - `werewolf_agent/agents/prompt_builder.py:1534-1537` (SKILL 路径 item 7 改用 f-string)
+  - `tests/agents/test_prompt_injection_fixes.py:62-77` (新测试)
+- **测试**: 1 个新测试 (`test_vote_audit_fields_derived_from_constant`)
+- **byte-identical 验证**:
+  - CHOICE 输出仍含原 `5. 投票还必须包含seer_stance、vote_basis、...` 字符串 (assert `'...seer_stance、vote_basis、...'` in out1)
+  - SKILL 输出仍含原 `7. 投票还必须包含seer_stance、vote_basis、...` 字符串 (assert `'...seer_stance、vote_basis、...'` in out2)
+  - 字符串 `repr()` 字节级完全相同
+- **验证**:
+  - `pytest tests/agents/test_prompt_injection_fixes.py -v` → 3 passed (M4-1 + 旧 M2-3 + 新 M2-3)
+  - `pytest tests/agents/ -p no:cacheprovider` → 591 passed (含新测试)
+  - `pytest tests/ -p no:cacheprovider --ignore=tests/api --ignore=tests/agents --ignore=tests/storage --ignore=tests/rag --ignore=tests/tools` → 5 failures, 全部为 pre-existing baseline: `TestAPIStartup::*` (3) + `TestRealRunConfiguration::test_provider_dotenv_loading_does_not_enable_postgres_app_storage` (1) + `TestDirectiveRoleGating::test_witch_directive_isolated` (1)。已在 `9bbe2bd` (无本次改动) 复现确认全部与本次无关
+- **commit**: `48699cb fix(prompt): M2-3 derive _VOTE_AUDIT_FIELDS from VOTE constant, close drift hole`
+
+**风险**:
+- 派生 `tuple(f for f in VOTE if f not in (...))` 是基于字符串字面比较的派生,若未来有人把 `choice/reason/confidence` 在 VOTE 常量里重命名或换大小写,字面"减去"集合可能 silent miss。考虑可以改成基于位置的切片 (VOTE[:1]+VOTE[2:3]+VOTE[3:]... 太脆弱),当前按字面减去是 simple-and-good-enough,新测试用 `expected = tuple(f for f in vote if f not in (...))` 同步断言,等 VOTE 改名时一处改、两处都改
+- VOTE 未来若加非 audit 字段 (例如 `vote_id` 这种纯标识符而非理由字段),需要决定是否在 subtracted set 中加它,新测试目前只校验 derived == 减去,不会自动 catch"非 audit 字段被混入"的语义错误。这是设计上的取舍:严格定义"audit = 除 choice/reason/confidence 之外的全部"在当前 9 字段 schema 下是合理的 (VOTE 里其他 6 字段确实是 audit 类:seer 立场、投票依据、与预言家站队、怀疑理由、不投票理由、私下理由),但若 VOTE 加纯 ID 字段,需要在减去集合加
 
 ---
 
