@@ -5,11 +5,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T2 M2-3 输出 schema 统一 (DONE) — derived _VOTE_AUDIT_FIELDS
+- Active task: T3 M2-2 vote_basis 移出 system (DONE) — per-turn strategy_directive injection
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
-- **59+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
-- **本次新增**: T2 M2-3 字面去重, _VOTE_AUDIT_FIELDS 从 VOTE 派生 (6 字段自动同步), 1 个新回归测试
+- **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
+- **本次新增**: T3 M2-2 _VOTE_BASIS_GUIDANCE 从 system prompt role_guide 移到 6 个 per-turn adapter (agent_day_speech, agent_day_vote, agent_sheriff_vote, agent_sheriff_election_speech, agent_pk_speech, agent_defense_speech) 的 strategy_directive["vote_basis_hint"] 注入;seer 豁免,夜间动作不再看到投票字段指南;3 个新回归测试 (test_prompt_injection_fixes.py:2 + test_prompt_builder.py:1)
 
 ---
 
