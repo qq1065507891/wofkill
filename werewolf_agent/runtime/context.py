@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
@@ -461,14 +462,18 @@ def _profile_memory_hint(
 
 
 def _reflection_memory_hints(reflections: list[Any], current_role: str, current_faction: str) -> list[dict[str, Any]]:
-    # P1-M12: cap at 2 hints per role so the top 5 surface reflections
+    # P1-M12: cap at 2 hints per role so the top hints surface reflections
     # from multiple perspectives rather than 5 from the same role /
-    # scenario. The 5-hint output budget is preserved; we only restrict
+    # scenario. The hint output budget is preserved; we only restrict
     # how many may come from a single role.
+    #
+    # reflect-cross-2: budget 5 → 8. 4 局真实游戏分析显示 top-5 经常被
+    # 同一角色填满 (max 2 per role × 2~3 roles),跨角色学习受限。
+    # 8 hints × 2 per role = 覆盖 4 角色族,适合好人阵营 5 角色 + 狼 1 角色场景。
     MAX_PER_ROLE = 2
-    HINT_BUDGET = 5
+    HINT_BUDGET = 8
 
-    def _ref_score(r: Any) -> tuple[int, str, str]:
+    def _ref_score(r: Any) -> tuple[int, int, str, str]:
         priority = 0
         if r.role == current_role:
             priority = 2
@@ -476,6 +481,9 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
             r.role != "werewolf" and current_faction == "good"
         ):
             priority = 1
+        # reflect-cross-3: 胜局反思优先 (成功模式可复用)。
+        # 同 priority 内,faction_won=True 排前 → LLM 优先看"做对的事"而非"做错的事"。
+        won = 1 if getattr(r, "faction_won", False) else 0
         # Include game_id so ties are broken by game recency (newer first).
         # entry_id alone is unreliable because it's a composite
         # "reflection_{game_id}_{player_id}" string.
@@ -502,11 +510,11 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
         else:
             # No parseable date — fall back to entry_id stable sort.
             neg_game_id = ""
-        return (-priority, neg_game_id, str(r.entry_id))
+        return (-priority, -won, neg_game_id, str(r.entry_id))
 
-    # Sort by priority (highest first), then by game recency (newest
-    # first). Walk the sorted list and admit each reflection that fits
-    # within the role cap and the total budget.
+    # Sort by priority (highest first), then by faction_won (winning first),
+    # then by game recency (newest first). Walk the sorted list and admit
+    # each reflection that fits within the role cap and the total budget.
     role_counts: dict[str, int] = {}
     hints: list[dict[str, Any]] = []
     for ref in sorted(reflections, key=_ref_score):
@@ -523,6 +531,101 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
             "situation": ref.situation,
         })
     return hints
+
+
+# ---------------------------------------------------------------------------
+# Error pattern aggregation (reflect-cross-1)
+# ---------------------------------------------------------------------------
+
+# Section header → category mapping. Templates in agent_adapter.py emit
+# these headers; we parse them to derive error categories without an
+# extra LLM call.
+_REFLECTION_HEADER_CATEGORIES: dict[str, str] = {
+    "【投票错误】": "vote_mistake",
+    "【信息缺失】": "info_miss",
+    "【神职执行】": "role_execution",
+    "【悍跳分析】": "claim_failed",
+    "【暴露原因】": "exposure",
+    "【角色分工】": "role_execution",
+    "【保留的优点】": "preserved_strength",
+}
+
+
+def _categorize_reflection_text(text: str) -> list[str]:
+    """从反思文本中解析章节头,返回 category 列表。
+
+    Section header regex: ``【...】`` 出现在文本中即视为该类目命中。
+    同类目多次出现算 1 次 (去重),保证权重不被重复章节头放大。
+    """
+    if not text:
+        return []
+    cats: list[str] = []
+    seen: set[str] = set()
+    for header, cat in _REFLECTION_HEADER_CATEGORIES.items():
+        if header in text and cat not in seen:
+            cats.append(cat)
+            seen.add(cat)
+    return cats
+
+
+def _compute_error_pattern(
+    reflections: list[Any],
+    current_role: str,
+) -> dict[str, Any]:
+    """聚合某 player 跨局反思,提取 top 错误模式 + 保留优点。
+
+    返回 dict:
+      - top_mistakes: list[(category, count)] 前 2 类错误 (按频次)
+      - preserved_strength_count: int 含【保留的优点】段的反思数
+      - total_reflections: int
+      - same_role_reflections: int 与当前角色相同的反思数
+      - dominant_mistake_ratio: float 最高频错误 / 总错误数 (0~1)
+      - current_role: str
+
+    用途:作为 error_pattern_hint 注入 LLM prompt,让 LLM 看到
+    "你历史最常犯的错误是 X" 这种聚合信号,而不只是单条反思。
+    """
+    if not reflections:
+        return {
+            "top_mistakes": [],
+            "preserved_strength_count": 0,
+            "total_reflections": 0,
+            "same_role_reflections": 0,
+            "dominant_mistake_ratio": 0.0,
+            "current_role": current_role,
+        }
+
+    mistake_counter: Counter = Counter()
+    preserved_count = 0
+    same_role_reflections = 0
+
+    for r in reflections:
+        r_text = getattr(r, "text", "") or ""
+        cats = _categorize_reflection_text(r_text)
+        if "preserved_strength" in cats:
+            preserved_count += 1
+            cats.remove("preserved_strength")
+        if getattr(r, "role", "") == current_role:
+            same_role_reflections += 1
+        for c in cats:
+            mistake_counter[c] += 1
+
+    top_mistakes = mistake_counter.most_common(2)
+    total_mistakes = sum(mistake_counter.values())
+    dominant_ratio = (
+        round(mistake_counter.most_common(1)[0][1] / total_mistakes, 2)
+        if total_mistakes > 0 and mistake_counter
+        else 0.0
+    )
+
+    return {
+        "top_mistakes": top_mistakes,
+        "preserved_strength_count": preserved_count,
+        "total_reflections": len(reflections),
+        "same_role_reflections": same_role_reflections,
+        "dominant_mistake_ratio": dominant_ratio,
+        "current_role": current_role,
+    }
 
 
 def _evidence_id_ref(text: str) -> str:
@@ -1277,6 +1380,7 @@ def build_agent_context(
     profile_memory_hint: dict[str, Any] = {}
     reflection_memory_hints: list[dict[str, Any]] = []
     cognition_matrix_hint: dict[str, Any] = {}
+    error_pattern_hint: dict[str, Any] = {}
     if restored_memory is not None:
         try:
             profile = restored_memory.get_profile(player_id)
@@ -1310,6 +1414,11 @@ def build_agent_context(
                     reflection_memory_hints = _reflection_memory_hints(
                         all_refs, current_role, current_faction
                     )
+                    # reflect-cross-1: 跨局错误模式聚合 (top 2 错误类别 + 保留优点段)。
+                    # 不调 LLM,纯 section header regex 解析 + 频率统计。
+                    error_pattern_hint = _compute_error_pattern(
+                        all_refs, current_role
+                    )
             cognition_matrix_hint = _cognition_matrix_hint(restored_memory, player_id)
         except Exception:
             logger.debug("Failed to inject cross-game memory for %s", player_id, exc_info=True)
@@ -1330,6 +1439,7 @@ def build_agent_context(
         reflection_memory_hints=reflection_memory_hints,
         profile_memory_hint=profile_memory_hint,
         cognition_matrix_hint=cognition_matrix_hint,
+        error_pattern_hint=error_pattern_hint,
         recent_transcript=transcript,
         contradiction_alerts=ctx_alerts,
         belief_state=belief_dict,

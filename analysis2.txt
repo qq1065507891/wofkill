@@ -1,0 +1,113 @@
+======================================================================
+最近 4 局深度分析(纠错版)
+======================================================================
+
+--- game_g_1324779695.json ---
+winner=werewolf, day=5, night=5
+  死亡原因: {'exile': 5, 'wolf_kill': 4}
+  死亡角色分布: {'werewolf': 3, 'seer': 1, 'villager': 3, 'witch': 1, 'hybrid': 1}
+  预言家查验: [('p01', 'werewolf', 'werewolf'), ('p03', 'villager', 'good')]
+  狼队击杀序列:
+    N1: p03 (villager)
+    N2: p11 (seer)
+    N3: p09 (villager)
+    N4: p04 (witch)
+    N5: p03 (villager)
+  放逐序列:
+    day_1_vote: p01 (werewolf)
+    day_2_vote: p07 (villager)
+    day_3_vote: p02 (werewolf)
+    day_4_vote: p08 (werewolf)
+    day_5_vote: p05 (hybrid)
+  女巫用药: {'unk': {'antidote': 'p03', 'poison': 'p11'}}
+  主动/超时空刀次数: 0
+  狼人自爆次数: 0
+  猎人开枪: []
+  白痴翻牌次数: 0
+  警长竞选: 上警=[('p02', 'werewolf'), ('p03', 'villager'), ('p07', 'villager'), ('p08', 'werewolf'), ('p10', 'idiot'), ('p11', 'seer')], 当选=p02(werewolf), 撕徽=True
+  放逐票型(每个投票日):
+    1 : {'p11': (1.0, 'seer'), 'p01': (11.5, 'werewolf')}
+    2 : {'p03': (1.5, 'villager'), 'p07': (7.0, 'villager'), 'p09': (1.0, 'villager'), 'p02': (1.0, 'werewolf')}
+    3 : {'p05': (1.5, 'hybrid'), 'p02': (5.0, 'werewolf'), 'p08': (1.0, 'werewolf'), 'p10': (1.0, 'idiot')}
+    4 : {'p08': (4.0, 'werewolf'), 'p03': (2.0, 'villager')}
+    5 : {'p10': (2.0, 'idiot'), 'p05': (2.0, 'hybrid')}
+    5 : {'p10': (1.0, 'idiot'), 'p05': (3.0, 'hybrid')}
+
+--- game_g_3457280709.json ---
+winner=good, day=5, night=5
+  死亡原因: {'exile': 5, 'wolf_kill': 4, 'witch_poison': 1}
+  死亡角色分布: {'werewolf': 4, 'hybrid': 1, 'seer': 1, 'villager': 2, 'idiot': 1, 'witch': 1}
+  预言家查验: [('p01', 'werewolf', 'werewolf'), ('p05', 'idiot', 'good')]
+  狼队击杀序列:
+    N1: p02 (villager)
+    N2: p06 (hybrid)
+    N3: p02 (villager)
+    N4: p05 (idiot)
+    N5: p09 (witch)
+  放逐序列:
+    day_1_vote: p01 (werewolf)
+    day_2_vote: p03 (werewolf)
+    day_3_vote: p04 (villager)
+    day_4_vote: p07 (werewolf)
+    day_5_vote: p10 (werewolf)
+  女巫用药: {'unk': {'antidote': 'p02', 'poison': 'p11'}}
+  主动/超时空刀次数: 0
+  狼人自爆次数: 0
+  猎人开枪: []
+  白痴翻牌次数: 0
+  警长竞选: 上警=[('p01', 'werewolf'), ('p02', 'villager'), ('p04', 'villager'), ('p05', 'idiot'), ('p06', 'hybrid'), ('p07', 'werewolf'), ('p08', 'hunter'), ('p10', 'werewolf'), ('p11', 'seer')], 当选=p01(werewolf), 撕徽=False
+  放逐票型(每个投票日):
+    1 : {'p11': (5.5, 'seer'), 'p01': (7.0, 'werewolf')}
+    2 : {'p03': (4.0, 'werewolf'), 'p04': (3.0, 'villager'), 'p10': (1.5, 'werewolf'), 'p02': (1.0, 'villager')}
+    3 : {'p07': (1.5, 'werewolf'), 'p04': (6.0, 'villager')}
+    4 : {'p10': (1.0, 'werewolf'), 'p07': (2.0, 'werewolf'), 'p08': (1.0, 'hunter'), 'p09': (1.5, 'witch')}
+    5 : {'p10': (2.5, 'werewolf'), 'p08': (1.0, 'hunter')}
+
+--- game_g_3828404435.json ---
+winner=werewolf, day=3, night=4
+  死亡原因: {'exile': 3, 'wolf_kill': 3, 'witch_poison': 1}
+  死亡角色分布: {'werewolf': 2, 'villager': 3, 'seer': 1, 'hybrid': 1}
+  预言家查验: [('p01', 'werewolf', 'werewolf'), ('p07', 'hybrid', 'good'), ('p02', 'werewolf', 'werewolf')]
+  狼队击杀序列:
+    N1: p03 (villager)
+    N2: p10 (villager)
+    N3: p05 (seer)
+    N4: p07 (hybrid)
+  放逐序列:
+    day_1_vote: p01 (werewolf)
+    day_2_vote: p04 (villager)
+    day_3_vote: p02 (werewolf)
+  女巫用药: {'unk': {'antidote': 'p03', 'poison': 'p03'}}
+  主动/超时空刀次数: 0
+  狼人自爆次数: 0
+  猎人开枪: []
+  白痴翻牌次数: 0
+  警长竞选: 上警=[('p03', 'villager'), ('p04', 'villager'), ('p05', 'seer'), ('p06', 'idiot'), ('p07', 'hybrid'), ('p10', 'villager')], 当选=p03(villager), 撕徽=False
+  放逐票型(每个投票日):
+    1 : {'p03': (3.0, 'villager'), 'p05': (1.0, 'seer'), 'p01': (8.5, 'werewolf')}
+    2 : {'p04': (7.5, 'villager'), 'p08': (1.0, 'werewolf'), 'p02': (1.0, 'werewolf')}
+    3 : {'p06': (3.0, 'idiot'), 'p02': (4.5, 'werewolf')}
+
+--- game_g_4058590270.json ---
+winner=werewolf, day=3, night=3
+  死亡原因: {'exile': 3, 'wolf_kill': 2, 'witch_poison': 1, 'hunter_shot': 1}
+  死亡角色分布: {'hybrid': 1, 'idiot': 1, 'seer': 1, 'hunter': 1, 'werewolf': 1, 'villager': 1, 'witch': 1}
+  预言家查验: [('p01', 'hybrid', 'good'), ('p08', 'villager', 'good')]
+  狼队击杀序列:
+    N1: p04 (seer)
+    N2: p07 (idiot)
+    N3: p08 (villager)
+  放逐序列:
+    day_1_vote: p01 (hybrid)
+    day_2_vote: p05 (hunter)
+    day_3_vote: p02 (witch)
+  女巫用药: {'unk': {'antidote': 'p04', 'poison': 'p04'}}
+  主动/超时空刀次数: 0
+  狼人自爆次数: 0
+  猎人开枪: [('p03', 'p05', 'hunter')]
+  白痴翻牌次数: 0
+  警长竞选: 上警=[('p03', 'werewolf'), ('p04', 'seer'), ('p05', 'hunter'), ('p06', 'werewolf'), ('p08', 'villager'), ('p10', 'villager'), ('p11', 'villager')], 当选=p03(werewolf), 撕徽=True
+  放逐票型(每个投票日):
+    1 : {'p04': (2.5, 'seer'), 'p01': (9.0, 'hybrid'), 'p03': (1.0, 'werewolf')}
+    2 : {'p05': (6.5, 'hunter'), 'p08': (1.0, 'villager'), 'p10': (1.0, 'villager'), 'p03': (1.0, 'werewolf')}
+    3 : {'p09': (1.0, 'werewolf'), 'p02': (3.0, 'witch'), 'p12': (1.0, 'werewolf'), 'p10': (1.0, 'villager')}

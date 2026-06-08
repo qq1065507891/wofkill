@@ -156,3 +156,214 @@ def test_no_seed_duplicates_base_rules() -> None:
                     f"rule ({label}); pattern={pattern!r}; text snippet="
                     f"{text[:80]!r}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# rag-hardening-2 + rag-hardening-3: PII + identity-leak patterns
+# ---------------------------------------------------------------------------
+
+
+from werewolf_agent.rag.ingestion import CaseIngester, IngestionError
+from werewolf_agent.rag.schemas import (
+    CaseMetadata,
+    QualityGrade,
+    RAGEntry,
+    ReviewStatus,
+    SourceMetadata,
+    SourceType,
+    VisibilityBoundary,
+    CaseType,
+)
+
+
+def _make_entry(
+    *,
+    entry_id: str = "rag_test_1",
+    title: str = "测试条目",
+    summary: str = "测试摘要",
+    key_decisions: list[str] | None = None,
+    tags: list[str] | None = None,
+) -> RAGEntry:
+    """Build a minimal RAGEntry for ingestion tests.
+
+    NOTE: RAGEntry has a top-level ``tags`` field that is dropped
+    silently by pydantic (the schema has no such attribute).
+    The actual scanned field is ``metadata.tags``, so this helper
+    maps the kwarg to ``metadata.tags`` to match the validator.
+    """
+    return RAGEntry(
+        entry_id=entry_id,
+        title=title,
+        summary=summary,
+        key_decisions=key_decisions or ["决策1", "决策2"],
+        metadata=CaseMetadata(
+            case_type=CaseType.ROLE_STRATEGY,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="any",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            tags=tags or ["test"],
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+            ),
+        ),
+    )
+
+
+class TestRagHardeningPII:
+    """rag-hardening-2: PII / player-ID filter in
+    ``_validate_forbidden_content``.
+
+    The 12-player V1 board uses ``pNN`` exclusively, so the
+    ``\bp\d{2}\b`` regex is a precise match. Seeds that name a
+    specific player slot leak past-game identity that could match
+    a real player in the current game.
+    """
+
+    def test_rejects_pnn_in_summary(self) -> None:
+        ingester = CaseIngester()
+        entry = _make_entry(summary="p05 是狼人,查杀了他")
+        with pytest.raises(IngestionError, match="player-ID"):
+            ingester.ingest(entry)
+
+    def test_rejects_pnn_in_key_decisions(self) -> None:
+        ingester = CaseIngester()
+        entry = _make_entry(key_decisions=["p03 悍跳预言家失败"])
+        with pytest.raises(IngestionError, match="player-ID"):
+            ingester.ingest(entry)
+
+    def test_rejects_pnn_in_tags(self) -> None:
+        """rag-hardening-2: tags scanned too — a clean title/summary
+        with a forbidden tag must still fail."""
+        ingester = CaseIngester()
+        entry = _make_entry(tags=["strategy", "p07"])
+        with pytest.raises(IngestionError, match="player-ID"):
+            ingester.ingest(entry)
+
+    def test_accepts_generic_descriptions_without_pnn(self) -> None:
+        ingester = CaseIngester()
+        entry = _make_entry(
+            title="基础常识：警上起跳",
+            summary="预言家首夜空刀,悍跳狼失败",
+        )
+        # Should not raise — no p\d{2} token anywhere.
+        ingester.ingest(entry)
+
+    def test_pnn_regex_precise_to_two_digits(self) -> None:
+        """The regex matches p01..p12 only, not p1 or p123.
+
+        ``p1`` is one digit (not in V1), ``p123`` is three digits
+        (also not in V1). Both should pass to avoid false
+        positives against tokens like ``p3`` (page 3) or
+        ``p1234`` (route id).
+        """
+        ingester = CaseIngester()
+        # p1 (one digit) — should be allowed
+        entry_short = _make_entry(entry_id="t1", summary="page p1 reference")
+        ingester.ingest(entry_short)  # no raise
+        # p12345 (5 digits) — should be allowed
+        entry_long = _make_entry(entry_id="t2", summary="route p12345 reference")
+        ingester.ingest(entry_long)  # no raise
+
+
+class TestRagHardeningIdentityLeak:
+    """rag-hardening-3: catch-all identity-leak patterns in
+    ``_validate_not_rule_truth``. Reject generic
+    ``pNN is <role>`` / ``pNN 查杀`` / ``pNN 金水`` assertions
+    even when the player-ID filter doesn't fire (e.g. the
+    wording uses "p03 是狼" without surrounding boundary
+    that the PII regex still catches — defense in depth).
+    """
+
+    def test_rejects_pnn_is_werewolf_chinese(self) -> None:
+        ingester = CaseIngester()
+        # p\d{2} should be caught by PII filter; but also the
+        # identity-leak patterns fire for phrasing like
+        # "5号位是狼" (no p\d{2} token) — currently the
+        # catch-all only covers pNN; non-pNN identity leaks
+        # are out of scope.
+        entry = _make_entry(summary="p05 是狼,查杀后好人崩盘")
+        with pytest.raises(IngestionError, match="player-ID"):
+            ingester.ingest(entry)
+
+    def test_rejects_pnn_wolf_check_phrase(self) -> None:
+        ingester = CaseIngester()
+        entry = _make_entry(summary="p03 查杀 p05,预言家获胜")
+        with pytest.raises(IngestionError, match="player-ID"):
+            ingester.ingest(entry)
+
+
+# ---------------------------------------------------------------------------
+# rag-hardening-1 (seeds): peace_night must be split into
+# any/public + werewolf-only entries
+# ---------------------------------------------------------------------------
+
+
+class TestSeedPeaceNightSplit:
+    """rag-hardening-1: ``seed_foundation_peace_night`` (role_perspective=any)
+    must NOT contain wolf-internal tactical framing; the wolf
+    tactical content must live in a separate werewolf-only seed
+    (``seed_foundation_peace_night_wolf``).
+    """
+
+    def test_public_peace_night_seed_is_any(self) -> None:
+        """The public peace_night seed keeps role_perspective=any
+        so good-side and wolf-side both retrieve it for the
+        'peaceful night' situation, but the content must be
+        framed from a good-side observation perspective — no
+        explicit wolf tactical goals like '把解药骗掉'.
+        """
+        entry = _seed("seed_foundation_peace_night")
+        meta = entry.metadata
+        assert meta.role_perspective == "any", (
+            f"public peace_night seed should stay role_perspective=any; "
+            f"got {meta.role_perspective!r}"
+        )
+
+    def test_public_peace_night_seed_no_wolf_internal_framing(self) -> None:
+        """The public seed must not contain wolf-internal tactical
+        framing like '把解药骗掉' (trick the antidote) — those
+        details belong in the werewolf-only companion seed.
+        """
+        entry = _seed("seed_foundation_peace_night")
+        text = _seed_text(entry)
+        # Wolf-internal tactical goals (NOT public-observable):
+        forbidden_phrases = (
+            "把解药骗掉",  # trick the antidote
+            "拉长好人内讧",  # drag out good-side infighting
+            "为毒药收割铺路",  # set up poison harvest
+            "解药骗掉后再用毒药",  # older phrasing
+            "狼队的合法策略",  # direct tactical framing
+        )
+        for phrase in forbidden_phrases:
+            assert phrase not in text, (
+                f"public peace_night seed contains wolf-internal "
+                f"framing {phrase!r}; this leaks to villager LLM "
+                f"agents and breaks role-perspective isolation. "
+                f"Move wolf-internal content to seed_foundation_peace_night_wolf."
+            )
+
+    def test_wolf_peace_night_seed_exists_with_werewolf_perspective(self) -> None:
+        """The wolf-only companion seed must exist with
+        role_perspective=werewolf so villager LLM agents don't
+        retrieve it (their retriever filter rejects werewolf
+        perspective unless they ARE a wolf).
+        """
+        entry = _seed("seed_foundation_peace_night_wolf")
+        meta = entry.metadata
+        assert meta.role_perspective == "werewolf", (
+            f"wolf peace_night seed should be werewolf-only; "
+            f"got {meta.role_perspective!r}"
+        )
+        # Must mention the wolf tactical content we moved here
+        text = _seed_text(entry)
+        assert "骗" in text or "解药" in text, (
+            "wolf peace_night seed should retain the wolf tactical content"
+        )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

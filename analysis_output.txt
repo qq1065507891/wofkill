@@ -1,0 +1,259 @@
+======================================================================
+狼人杀 V1 最近 4 局综合分析
+======================================================================
+
+======================================================================
+game_g_1324779695.json
+======================================================================
+Winner: werewolf | Day5 Night5
+Elapsed: 7204s | Steps: 141 | Events: 493
+Deaths: 9
+Roles: {'p01': 'werewolf', 'p02': 'werewolf', 'p03': 'villager', 'p04': 'witch', 'p05': 'hybrid', 'p06': 'hunter', 'p07': 'villager', 'p08': 'werewolf', 'p09': 'villager', 'p10': 'idiot', 'p11': 'seer', 'p12': 'werewolf'}
+  hybrid master: p06 (role=hunter)
+  sheriff: p02 (role=werewolf)
+  victory: reason=slaughter_villagers, hybrid_master_id=p06, hybrid_result=lose
+  Death reasons:
+    None: 9
+  Self-destruct events: 0
+
+======================================================================
+game_g_3457280709.json
+======================================================================
+Winner: good | Day5 Night5
+Elapsed: 6974s | Steps: 137 | Events: 465
+Deaths: 10
+Roles: {'p01': 'werewolf', 'p02': 'villager', 'p03': 'werewolf', 'p04': 'villager', 'p05': 'idiot', 'p06': 'hybrid', 'p07': 'werewolf', 'p08': 'hunter', 'p09': 'witch', 'p10': 'werewolf', 'p11': 'seer', 'p12': 'villager'}
+  hybrid master: p01 (role=werewolf)
+  sheriff: p01 (role=werewolf)
+  victory: reason=all_werewolves_out, hybrid_master_id=p01, hybrid_result=lose
+  Death reasons:
+    None: 10
+  Self-destruct events: 0
+
+======================================================================
+game_g_3828404435.json
+======================================================================
+Winner: werewolf | Day3 Night4
+Elapsed: 6600s | Steps: 102 | Events: 366
+Deaths: 7
+Roles: {'p01': 'werewolf', 'p02': 'werewolf', 'p03': 'villager', 'p04': 'villager', 'p05': 'seer', 'p06': 'idiot', 'p07': 'hybrid', 'p08': 'werewolf', 'p09': 'hunter', 'p10': 'villager', 'p11': 'werewolf', 'p12': 'witch'}
+  hybrid master: p06 (role=idiot)
+  sheriff: p03 (role=villager)
+  victory: reason=slaughter_villagers, hybrid_master_id=p06, hybrid_result=lose
+  Death reasons:
+    None: 7
+  Self-destruct events: 0
+
+======================================================================
+game_g_4058590270.json
+======================================================================
+Winner: werewolf | Day3 Night3
+Elapsed: 6155s | Steps: 89 | Events: 345
+Deaths: 7
+Roles: {'p01': 'hybrid', 'p02': 'witch', 'p03': 'werewolf', 'p04': 'seer', 'p05': 'hunter', 'p06': 'werewolf', 'p07': 'idiot', 'p08': 'villager', 'p09': 'werewolf', 'p10': 'villager', 'p11': 'villager', 'p12': 'werewolf'}
+  hybrid master: p02 (role=witch)
+  sheriff: p03 (role=werewolf)
+  victory: reason=slaughter_gods, hybrid_master_id=p02, hybrid_result=lose
+  Death reasons:
+    None: 7
+  Self-destruct events: 0
+
+======================================================================
+汇总统计 (4 局)
+======================================================================
+Wolf 胜率: 3/4 = 75%
+Good 胜率: 1/4 = 25%
+狼胜局平均天数: 3.7 天
+好人胜局平均天数: 5.0 天
+
+预言家查验 (9 次):
+  准确率: 9/9 = 100%
+  查验结果: Counter({'good': 5, 'werewolf': 4})
+  实际角色: Counter({'werewolf': 4, 'villager': 2, 'hybrid': 2, 'idiot': 1})
+
+混血儿主人阵营:
+  good_master: 3
+  wolf_master: 1
+
+胜利原因:
+  winner=werewolf | reason=slaughter_villagers | hybrid_result=lose
+  winner=good | reason=all_werewolves_out | hybrid_result=lose
+  winner=werewolf | reason=slaughter_villagers | hybrid_result=lose
+  winner=werewolf | reason=slaughter_gods | hybrid_result=lose
+
+狼队击杀目标 (17 次):
+  villager: 8
+  seer: 3
+  witch: 2
+  hybrid: 2
+  idiot: 2
+
+警长身份 vs 阵营胜负:
+  警长是werewolf: 3次
+  警长是villager: 1次
+
+女巫动作汇总:
+  antidote: 4
+  poison: 4
+  使用详情: [('antidote', 'p03'), ('poison', 'p11'), ('antidote', 'p02'), ('poison', 'p11'), ('antidote', 'p03'), ('poison', 'p03'), ('antidote', 'p04'), ('poison', 'p04')]
+
+=== game_g_1324779695.json death details ===
+[
+  {
+    "player_id": "p01",
+    "reason": "exile",
+    "timing": "day_vote",
+    "resolution_batch": "day_1_vote",
+    "source_player_id": null,
+    "can_leave_last_words": true,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p11",
+    "reason": "wolf_kill",
+    "timing": "night",
+    "resolution_batch": "night_2",
+    "source_player_id": null,
+    "can_leave_last_words": false,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p07",
+    "reason": "exile",
+    "timing": "day_vote",
+    "resolution_batch": "day_2_vote",
+    "source_player_id": null,
+    "can_leave_last_words": true,
+    "triggered_skills": []
+  }
+]
+...
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p01', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_1_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p11', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_2', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p07', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_2_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p09', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_3', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p02', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_3_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p04', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_4', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p08', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_4_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p03', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_5', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p05', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_5_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+
+=== game_g_3457280709.json death details ===
+[
+  {
+    "player_id": "p01",
+    "reason": "exile",
+    "timing": "day_vote",
+    "resolution_batch": "day_1_vote",
+    "source_player_id": null,
+    "can_leave_last_words": true,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p06",
+    "reason": "wolf_kill",
+    "timing": "night",
+    "resolution_batch": "night_2",
+    "source_player_id": null,
+    "can_leave_last_words": false,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p11",
+    "reason": "witch_poison",
+    "timing": "night",
+    "resolution_batch": "night_2",
+    "source_player_id": null,
+    "can_leave_last_words": false,
+    "triggered_skills": []
+  }
+]
+...
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p01', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_1_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p06', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_2', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p11', 'reason': 'witch_poison', 'timing': 'night', 'resolution_batch': 'night_2', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p03', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_2_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p02', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_3', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p04', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_3_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p05', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_4', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p07', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_4_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p09', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_5', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p10', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_5_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+
+=== game_g_3828404435.json death details ===
+[
+  {
+    "player_id": "p01",
+    "reason": "exile",
+    "timing": "day_vote",
+    "resolution_batch": "day_1_vote",
+    "source_player_id": null,
+    "can_leave_last_words": true,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p10",
+    "reason": "wolf_kill",
+    "timing": "night",
+    "resolution_batch": "night_2",
+    "source_player_id": null,
+    "can_leave_last_words": false,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p03",
+    "reason": "witch_poison",
+    "timing": "night",
+    "resolution_batch": "night_2",
+    "source_player_id": null,
+    "can_leave_last_words": false,
+    "triggered_skills": []
+  }
+]
+...
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p01', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_1_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p10', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_2', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p03', 'reason': 'witch_poison', 'timing': 'night', 'resolution_batch': 'night_2', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p04', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_2_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p05', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_3', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p02', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_3_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p07', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_4', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+
+=== game_g_4058590270.json death details ===
+[
+  {
+    "player_id": "p01",
+    "reason": "exile",
+    "timing": "day_vote",
+    "resolution_batch": "day_1_vote",
+    "source_player_id": null,
+    "can_leave_last_words": true,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p07",
+    "reason": "wolf_kill",
+    "timing": "night",
+    "resolution_batch": "night_2",
+    "source_player_id": null,
+    "can_leave_last_words": false,
+    "triggered_skills": []
+  },
+  {
+    "player_id": "p04",
+    "reason": "witch_poison",
+    "timing": "night",
+    "resolution_batch": "night_2",
+    "source_player_id": null,
+    "can_leave_last_words": false,
+    "triggered_skills": []
+  }
+]
+...
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p01', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_1_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p07', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_2', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p04', 'reason': 'witch_poison', 'timing': 'night', 'resolution_batch': 'night_2', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p05', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_2_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': ['hunter_shot']}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p03', 'reason': 'hunter_shot', 'timing': 'day_vote', 'resolution_batch': 'day_2_vote', 'source_player_id': 'p05', 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p08', 'reason': 'wolf_kill', 'timing': 'night', 'resolution_batch': 'night_3', 'source_player_id': None, 'can_leave_last_words': False, 'triggered_skills': []}
+  keys=['player_id', 'reason', 'timing', 'resolution_batch', 'source_player_id', 'can_leave_last_words', 'triggered_skills']: {'player_id': 'p02', 'reason': 'exile', 'timing': 'day_vote', 'resolution_batch': 'day_3_vote', 'source_player_id': None, 'can_leave_last_words': True, 'triggered_skills': []}

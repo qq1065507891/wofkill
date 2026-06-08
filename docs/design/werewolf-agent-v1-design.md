@@ -430,6 +430,26 @@ Persona Router 与 LLM Router 的分工：
 - LLM Router Gateway 决定“这次请求用哪个 provider 和 model 生成”。
 - 二者都属于实验配置，不属于规则真相，不能修改可用动作和结算结果。
 
+### 4.2 战术覆盖 (LLM Prompt Layer, 2026-06-08)
+
+LLM 决策层在 action_type 已有但 prompt 缺引导时,会忽略合法战术 (4 局真实游戏审计发现)。本节列出 V1 显式注入 LLM prompt 的战术 directive,RuleEngine 仍只暴露合法 action,不强制 LLM 必须使用。
+
+**狼队战术覆盖** (`agent_adapter.py:_single_wolf_vote` + `directives/wolf.py:build_wolf_directive`):
+
+- `wolf_no_kill_conditions` — 显式列出 4 条空刀触发条件 (无高威胁目标 / 制造平安夜 / PK 前夜不出刀 / 自爆后续局),并提示"连续 2 夜空刀会强制出刀"上限。`_LEGACY_WOLF_CONSENSUS` 已有 `wolf_no_kill_declared` 事件类型但 LLM 不会主动选。
+- `wolf_self_destruct_condition` — 狼处于被推/警徽流失危险位置时 (判定: 当前 day `vote_resolved` top tally == 本狼 OR 本狼持警徽) 才注入,4 条触发条件 (即将被放逐 / 持警徽被票 / 保护关键信息 / 屠边胜利在即)。`day.py:280` 已有自爆短路逻辑但 LLM 不会主动选。
+
+**女巫毒药覆盖** (`agent_adapter.py:agent_night_witch` + `strategy/poison.py`):
+
+- `witch_poison_candidates` — 按证据强度排序的 top 候选目标,来源: 公开查杀声明 (priority+10) + 多人(≥2)明确指控 (priority+6~8) + 死前投票异常。无证据时按存活人数给提示 (>9: 默认 no_action; ≤7: 紧急但证据不足)。`_collect_witch_poison_candidates` 纯 regex 实现,不调 LLM。
+
+**核心约束**:
+
+- 三个 directive 都是 **REFERENCE tier** (辅助信号),不是 HARD CONSTRAINT — LLM 仍可基于其他推理覆盖
+- 注入位置: `strategy_directive` dict 的并列 key,prompt_builder 渲染到 strategy_directive 段内
+- 单元测试覆盖: 10 个新测试断言 directive 在 AgentContext.strategy_directive 中存在
+- 真实游戏效果需 5+ 局验证 (见 `PROGRESS.md` `balance-fix-tactic-coverage` phase)
+
 ## 5. 系统分层架构
 
 ### 5.1 总体分层
@@ -962,6 +982,26 @@ RAG 的重要原则：
 - 外部高端案例和项目内复盘必须分开展示来源，避免 Agent 把自身低质量自举经验误认为高端打法。
 - 检索注入必须经过 Visibility Policy；外部案例中的上帝视角复盘只能在复盘阶段使用，不能在对局中泄露给玩家 Agent。
 
+### 9.2.1 RAG 防御层 (rag-hardening, 2026-06-09)
+
+4 道防线的现状 (从 ingestion 到 live prompt):
+
+| 层 | 职责 | 实现 |
+|---|---|---|
+| 1. Schema 封闭 | RAGEntry 字段封闭 (无 `private_intent` / `wolf_team` / `seer_result` 等) | `rag/schemas.py:115` |
+| 2. Ingestion 校验 | 4 层验证: 禁止内容 (4 个英文 keyword) / 来源元数据 / 质量等级 / 基础规则正则 (16 模式) + PII 过滤 (`\bp\d{2}\b` 拒绝 p01-p12) + catch-all 模式 (`pNN is <role>` / `pNN 查杀` 等泛指身份断言) | `rag/ingestion.py:64-183` |
+| 3. Visibility 过滤 | retriever `_filter_candidates` 过滤 GOD_VIEW/MODERATOR_ONLY | `rag/retriever.py:407-450` |
+| 4. Renderer | `_FORBIDDEN_LIVE_FIELDS` 14 字段 + 3 字段白名单 + `hits_to_prompt_lines` 二次过滤 `allowed_in_live_context=False` (defense-in-depth) | `rag/prompt_renderer.py:32-48, 223-289` |
+
+**4 道防线的关键约束** (避免 LLM prompt 层被穿透):
+
+- **`role_perspective` 过滤的精细度**: `any` / `general` 是"通用视角"标签,**不等同于"内容无角色专享"**。任何带狼内部战术的 seed 必须用 `werewolf` 而非 `any`,否则村民 LLM 也会看到。例如 `seed_foundation_peace_night` (公共观察视角) 与 `seed_foundation_peace_night_wolf` (狼队内部战术) 拆分。
+- **PII 拒绝**: RAG 是策略库/公共知识,**禁止命名具体 player slot**。`\bp\d{2}\b` 过滤 p01-p12 引用,因为跨局 player ID 匹配会泄漏身份。
+- **catch-all 模式**: 即使 PII 过滤漏过,`_validate_not_rule_truth` 还会拒绝 "X 是狼" / "X 查杀" / "X 金水" 等泛指身份断言 (双层防御)。
+- **renderer 不只是字段白名单**: `hits_to_prompt_lines` 还做 `allowed_in_live_context` 二次过滤,即使 retriever 失效,GOD_VIEW 内容也不会到达 live prompt。
+
+**反思记忆的同步防御** (`memory/reflection.py` + `agent_adapter.py:_GOOD_REFLECTION_TEMPLATE / _WOLF_REFLECTION_TEMPLATE`): 反思模板末尾有【PII 守卫】段,强制 LLM 用模糊指代 ("某玩家", "被查杀的目标"),禁止写入其他玩家真实身份。理由:反思文本会跨局注入到下一局 player 的 prompt,如果对方玩家 ID 在下局匹配到会造成跨局信息泄漏。
+
 ### 9.3 冷启动方案
 
 RAG 不应只依赖人工大规模编写案例库，也不能只靠纯 LLM 自举。V1 采用四阶段冷启动：
@@ -994,6 +1034,7 @@ RAG 不应只依赖人工大规模编写案例库，也不能只靠纯 LLM 自�
 - 被欺骗案例
 - 常见玩家风格
 - 自己的成长记录
+- **跨局错误模式聚合** (2026-06-09): 反思文本含【投票错误】/【悍跳分析】等 section header,纯 regex 解析为 category,跨局统计 top 错误类别 + 保留优点段计数,作为强信号注入下一局 LLM prompt
 
 玩家画像：
 
@@ -1046,6 +1087,36 @@ RAG 不应只依赖人工大规模编写案例库，也不能只靠纯 LLM 自�
 - 被谁欺骗或误导
 - 下局改进建议
 - 能力参数变化
+
+**复盘模板必须按角色族分支** (2026-06-09 反馈,详见 `PROGRESS.md` `reflection-role-specific` phase):
+
+- **好人阵营** (villager / seer / witch / hunter / idiot / hybrid-master-good): 反思方向
+  - 投票错误 / 站错边 / 信息缺失 / 神职执行(预言家/女巫/猎人/白痴专项)
+- **狼人阵营** (werewolf / hybrid-master-wolf): 反思方向
+  - 悍跳分析(为什么没人信) / 暴露原因(发言/票型留痕) / 角色分工(深水/冲锋/倒钩)
+- **混血儿** (master 未知时): 通用模板
+- **共同强制项**: 末尾必须含"【保留的优点】"段,要求列出 1-2 个本局做对的具体策略下局复用
+
+不分角色的通用 prompt 会让反思质量下降,因为不同角色的"错误"维度完全不同(好人不会悍跳失败,狼人不会站错边)。
+
+**跨局检索与排序** (`context.py:_reflection_memory_hints`, 2026-06-09 增强):
+
+- 排序 key: `(-priority, -faction_won, neg_game_id, entry_id)`
+  - priority: 同角色=2, 同阵营=1, 异阵营=0
+  - faction_won=True 在同 priority 内排前(成功模式可复用,优先级高于失败教训)
+- hint 预算 5 → 8 (覆盖 4 个角色族 × 2 hint/族)
+- 同 player 反反思按 (player_id, role) 自然累积;跨 player 同角色 (priority=2) 和同阵营 (priority=1) 是主要学习通路
+- V1 板子每局角色随机分配,同 player+同角色罕见 (~1/12),所以"跨 player 同角色"是更现实的学习路径
+
+**错误模式聚合提示** (新 `error_pattern_hint` 字段, 2026-06-09):
+
+- `_compute_error_pattern(reflections, current_role)` 统计 top 2 错误类别 + 保留优点段数 + 同角色反思数 + dominant 错误占比
+- 渲染为 LLM prompt 顶部独立段: "【跨局错误模式】你最常犯的 2 类错误: vote_mistake(3次)、role_execution(2次)。"
+- 不调 LLM,纯 section header regex 提取 — 0 额外成本
+
+**Schema 边界**: `ReflectionEntry` (memory/schemas.py:254) 字段不动 (entry_id / game_id / player_id / role / faction_won / text / tags / situation);只改 `text` 字段的内容质量。新功能不引入新列。
+
+**Storage 边界**: PostgreSQL `reflections` 表 (entry_id, game_id, player_id, entry_json) 不动;LLM 改进的反思文本作为 `entry_json.text` 字段值序列化,旧数据无影响。
 
 复盘中的经验段落进入长期向量记忆，并在后续对局中被检索。结构化事实进入关系表，不写成向量后再反查。
 

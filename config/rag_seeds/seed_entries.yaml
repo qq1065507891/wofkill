@@ -676,9 +676,9 @@
 - entry_id: seed_foundation_peace_night
   title: "基础常识：平安夜的两种可能——狼人空刀或女巫用解药救人"
   summary: >
-    平安夜（无人死亡）有且仅有两种可能的解释：
-    1) 狼人选择空刀（不刀人）——这是狼队的合法策略，比如想让首夜不暴露刀口、
-    拉长好人内讧时间、或把解药骗掉后再用毒药收割；
+    平安夜（无人死亡）有两种可能的解释：
+    1) 狼人可能空刀（不刀人）——首夜空刀是社区讨论过的可能性，但在 12 人标准局
+    中不常见，公开层面只能作为候选解释之一；
     2) 女巫使用解药救下了被刀的目标——这是平安夜最常见的原因，
     在预女猎白混板子中女巫首夜大概率救人，所以 D1 平安夜很常见。
     公开层面无法区分这两种情况（除非女巫主动公开银水信息）；
@@ -688,6 +688,7 @@
     - "平安夜有两种可能：狼人空刀，或女巫用解药救人"
     - "公开信息无法区分这两种情况，不能用平安夜倒推女巫是否说谎"
     - "质疑女巫应从发言矛盾和用药逻辑出发，不要用'没人死'质疑"
+    - "不要假设空刀有具体战术目的——除非你是狼，否则无法从公开信息判断"
   short_quotes: []
   metadata:
     case_type: role_strategy
@@ -709,6 +710,46 @@
       - peace_night
       - silver_water
       - logic
+
+- entry_id: seed_foundation_peace_night_wolf
+  title: "狼队空刀战术：拉长好人内讧+骗解药+为毒药收割铺路"
+  summary: >
+    狼队选择空刀（不刀人）是合法战术，常见目的：
+    1) 拉长好人内讧时间——首夜不出刀让好人围绕"为什么没人死"展开站边和撕逼，
+    暴露好人的内部立场分歧，方便后续精准打击。
+    2) 骗掉女巫解药——如果 N1 假装出刀但实际空刀，可能诱导女巫以为
+    "狼没动我不用解药"，N2 狼真出刀时女巫没解药可用。
+    3) 为毒药收割铺路——首夜空刀不消耗女巫解药资源，等女巫把解药
+    浪费在后续误判上后，再用毒药收割关键神职。
+    4) 制造平安夜信息差——让悍跳狼在白天发言时占据"为什么没死人"的解释权。
+    注意：连续 2 夜空刀会触发系统强制出刀限制（max_consecutive_no_kill=2），
+    战术上 N1 空刀 N2 必出刀。
+  key_decisions:
+    - "狼队空刀的 4 个常见战术目的：拉好人内讧/骗解药/为毒药铺路/占解释权"
+    - "空刀战术必须配合白天悍跳狼的解释才能生效"
+    - "连续 2 夜空刀会强制出刀，N1 空刀 N2 必出刀"
+    - "女巫首夜大概率救人，所以单纯 N1 空刀不太能骗到解药"
+  short_quotes: []
+  metadata:
+    case_type: role_strategy
+    quality_grade: expert_review
+    review_status: approved
+    reviewer: seed_validator
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: night_discussion
+    role_perspective: werewolf
+    visibility_boundary: player_perspective
+    source:
+      source_type: expert_commentary
+      source_title: "狼队空刀战术深度解析"
+      source_author: community_guide
+    tags:
+      - werewolf
+      - foundation
+      - peace_night
+      - empty_knife
+      - tactics
 
 - entry_id: seed_foundation_vote_record_hardest_info
   title: "基础常识：投票记录是最硬的公开信息，发言可以造假投票不能"

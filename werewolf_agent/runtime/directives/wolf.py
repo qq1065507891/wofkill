@@ -228,7 +228,66 @@ def build_wolf_directive(
             "应对策略：质疑该预言家的身份和验人逻辑，或直接对跳。"
         )
 
+    # D-8 (2026-06-08 balance audit): 自爆是合法战术。注入条件提示,仅在狼处于被
+    # 推/警徽即将流失的危险位置时,避免噪音。
+    danger = _wolf_endangered_status(gs, wolf_id)
+    if danger["in_danger"]:
+        badge_clause = (
+            "2) 【持警徽】你持警徽且即将被票/撕 → 自爆撕徽,警徽流失对狼队是利好。\n"
+            if danger["is_sheriff"] else
+            "2) 你即将被放逐(票数明显劣势,警长归票指向你)→ 自爆避免被票死后遗言暴露身份。\n"
+        )
+        parts["wolf_self_destruct_condition"] = (
+            "【自爆战术条件】SELF_DESTRUCT 是合法战术。action_type='self_destruct'。\n"
+            "你当前处于被放逐/警徽即将流失的危险位置,可考虑自爆:\n"
+            f"{badge_clause}"
+            "3) 关键信息要保护(队友刚被预言家查杀)→ 自爆断预言家信息链,但前提是自爆能直接带走预言家。\n"
+            "4) 屠边胜利在即(1-2 狼存活,屠民/屠神已近完成)→ 自爆无意义,保留票权/警徽。\n"
+            "**注意**:自爆立即出局,无遗言,跳过放逐投票,直接进入夜晚。\n"
+            "**重要**:自爆不改变胜负状态,先检查胜负再进入夜晚。"
+        )
+
     return parts
+
+
+def _wolf_endangered_status(gs: GameState, wolf_id: str) -> dict[str, Any]:
+    """判定本狼是否在当前 vote_resolved 的归票方向上(即将被放逐)。
+
+    返回 dict:
+      - in_danger: bool  (top tally 是本狼 OR exiled 是本狼)
+      - is_sheriff: bool  (本狼持警徽)
+      - top_tally_target: str | None  (归票目标,本狼的话 in_danger=True)
+
+    判定策略:取最近一个 day_number 等于当前 gs.day_number 的 vote_resolved 事件,
+    比较其 weighted_tally 排序后的 top。
+    """
+    current_day = gs.day_number
+    is_sheriff = gs.sheriff_id == wolf_id and gs.sheriff_badge_state == "active"
+    top_tally_target: str | None = None
+    in_danger = False
+
+    for e in reversed(gs.events):
+        if e.type != "vote_resolved":
+            continue
+        ev_day = e.payload.get("day_number", 0)
+        if ev_day != current_day:
+            continue
+        tally = e.payload.get("weighted_tally") or {}
+        if not tally:
+            break
+        sorted_tally = sorted(tally.items(), key=lambda x: -x[1])
+        if sorted_tally:
+            top_tally_target = sorted_tally[0][0]
+        exiled = e.payload.get("exiled")
+        # 判定: 归票目标是本狼 OR 已被放逐(测试场景) OR 即将被放逐
+        in_danger = (top_tally_target == wolf_id) or (exiled == wolf_id)
+        break
+
+    return {
+        "in_danger": in_danger,
+        "is_sheriff": is_sheriff,
+        "top_tally_target": top_tally_target,
+    }
 
 
 def build_wolf_vote_directive(

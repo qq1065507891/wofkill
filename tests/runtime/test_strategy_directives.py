@@ -2927,3 +2927,610 @@ class TestHunterLastWordsBehaviorConsistency:
         assert "必须开枪" not in directive, (
             f"hunter exile directive forces shot but actual behavior allows no_action: {directive!r}"
         )
+
+
+class TestBalanceFixTacticCoverage:
+    """D-8 + 女巫战术覆盖修复 (2026-06-08 balance audit)
+
+    4 局真实游戏 (g_1324779695 / g_3457280709 / g_3828404435 / g_4058590270) 暴露:
+    - 狼队 0 自爆 / 0 空刀 (action type 存在但 LLM 从不选)
+    - 女巫 4 次用毒 3 次毒好人 (0 命中率)
+    修复方式: 在 LLM 决策层注入新 directive,扩大 LLM 战术空间。
+    """
+
+    @staticmethod
+    def _make_wolf_gs(**overrides) -> GameState:
+        players = {
+            "w1": PlayerState(id="w1", role="werewolf", alive=True),
+            "w2": PlayerState(id="w2", role="werewolf", alive=True),
+            "w3": PlayerState(id="w3", role="werewolf", alive=True),
+            "w4": PlayerState(id="w4", role="werewolf", alive=True),
+            "seer": PlayerState(id="seer", role="seer", alive=True),
+            "witch": PlayerState(id="witch", role="witch", alive=True),
+            "hunter": PlayerState(id="hunter", role="hunter", alive=True),
+            "idiot": PlayerState(id="idiot", role="idiot", alive=True),
+            "v1": PlayerState(id="v1", role="villager", alive=True),
+            "v2": PlayerState(id="v2", role="villager", alive=True),
+            "v3": PlayerState(id="v3", role="villager", alive=True),
+            "hyb": PlayerState(id="hyb", role="hybrid", alive=True),
+        }
+        defaults = dict(game_id="balance_test", players=players, phase="night", night_number=2)
+        defaults.update(overrides)
+        return GameState(**defaults)
+
+    def _make_wolf_vote_state(self, gs: GameState) -> RuntimeState:
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                return (PlayerAction(action_type=ActionType.WOLF_NO_KILL, reason="test"), RetryInfo())
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+            def get_agent(self, player_id):
+                return self.agent if player_id == "w1" else None
+
+        engine = _new_engine()
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": None,
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+            "agent_registry": CaptureRegistry(),
+        }
+        return state
+
+    # ---------- D-8A: wolf no_kill ----------
+    def test_wolf_no_kill_conditions_in_strategy_directive(self) -> None:
+        """wolf_no_kill 是合法战术,LLM 必须能看到 4 条空刀条件。"""
+        gs = self._make_wolf_gs()
+        state = self._make_wolf_vote_state(gs)
+        _single_wolf_vote(state, state["engine"], state["agent_registry"], "w1")
+        ctx = state["agent_registry"].agent.last_context
+        assert ctx is not None, "agent 应被调用"
+        directive = ctx.strategy_directive
+        assert "wolf_no_kill_conditions" in directive, (
+            f"应有 wolf_no_kill_conditions, got keys: {list(directive.keys())}"
+        )
+        text = directive["wolf_no_kill_conditions"]
+        assert "空刀" in text
+        assert "wolf_no_kill" in text
+        assert "无明确高威胁击杀目标" in text
+        assert "平安夜" in text
+        assert "PK 投票轮次" in text
+        assert "自爆后续局" in text
+        assert "连续" in text and "强制出刀" in text
+
+    # ---------- D-8B: wolf self_destruct ----------
+    def test_wolf_self_destruct_condition_appears_for_endangered_wolf(self) -> None:
+        """狼即将被放逐时(归票方向是本狼),build_wolf_directive 应注入自爆条件。"""
+        from werewolf_agent.runtime.directives.wolf import build_wolf_directive
+        gs = self._make_wolf_gs(
+            phase="day", day_number=3,
+            events=[
+                GameEvent(type="vote_resolved", payload={
+                    "day_number": 3,
+                    "exiled": "w1",
+                    "sheriff_id": "v1",
+                    "sheriff_vote_weight": 1.5,
+                    "weighted_tally": {"w1": 7.5, "v2": 2.0},
+                }),
+            ],
+        )
+        result = build_wolf_directive(gs, "w1", {"fake_seer": "w2"})
+        assert "wolf_self_destruct_condition" in result, (
+            f"w1 是 D3 归票目标,应有自爆条件, got keys: {list(result.keys())}"
+        )
+        text = result["wolf_self_destruct_condition"]
+        assert "自爆" in text
+        assert "action_type" in text and "self_destruct" in text
+
+    def test_wolf_self_destruct_condition_absent_for_safe_wolf(self) -> None:
+        """狼不在归票方向时,不应注入自爆条件(避免噪音)。"""
+        from werewolf_agent.runtime.directives.wolf import build_wolf_directive
+        gs = self._make_wolf_gs(
+            phase="day", day_number=3,
+            events=[
+                GameEvent(type="vote_resolved", payload={
+                    "day_number": 3,
+                    "exiled": "v2",
+                    "sheriff_id": "v1",
+                    "weighted_tally": {"v2": 6.0, "w1": 2.0},
+                }),
+            ],
+        )
+        result = build_wolf_directive(gs, "w1", {"fake_seer": "w2"})
+        assert "wolf_self_destruct_condition" not in result, (
+            "w1 不在归票方向,不应有自爆条件"
+        )
+
+    def test_wolf_self_destruct_for_sheriff_wolf_about_to_lose(self) -> None:
+        """狼持警徽且即将被票 → 自爆撕徽对狼队利好,应注入。"""
+        from werewolf_agent.runtime.directives.wolf import build_wolf_directive
+        gs = self._make_wolf_gs(
+            phase="day", day_number=3, sheriff_id="w1", sheriff_badge_state="active",
+            events=[
+                GameEvent(type="vote_resolved", payload={
+                    "day_number": 3,
+                    "exiled": "w1",
+                    "sheriff_id": "w1",
+                    "weighted_tally": {"w1": 6.0, "v2": 4.0},
+                }),
+            ],
+        )
+        result = build_wolf_directive(gs, "w1", {"fake_seer": "w2"})
+        assert "wolf_self_destruct_condition" in result
+        text = result["wolf_self_destruct_condition"]
+        assert "警徽" in text
+
+    # ---------- 女巫毒药候选 ----------
+    def test_collect_witch_poison_candidates_from_check_claim(self) -> None:
+        """公开查杀声明中报的狼应作为毒药候选 (来源 1)。"""
+        from werewolf_agent.runtime.strategy.poison import collect_witch_poison_candidates
+        gs = self._make_wolf_gs(
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "seer", "day_number": 1,
+                    "text": "我是预言家，第 1 夜验了 w3 是狼人 (查杀)",
+                }),
+            ],
+        )
+        cands = collect_witch_poison_candidates(gs, "witch")
+        assert any(c["player_id"] == "w3" for c in cands), (
+            f"w3 被查杀,应在候选中, got: {cands}"
+        )
+        assert cands[0]["player_id"] == "w3"
+        assert "查杀" in cands[0]["reason"] or "预言家" in cands[0]["reason"]
+
+    def test_collect_witch_poison_candidates_from_multi_accusation(self) -> None:
+        """多人(≥2)明确指控的玩家应作为毒药候选 (来源 2)。"""
+        from werewolf_agent.runtime.strategy.poison import collect_witch_poison_candidates
+        gs = self._make_wolf_gs(
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "v1", "day_number": 2,
+                    "text": "我觉得 w2 是狼人, 站边建议投 w2",
+                }),
+                GameEvent(type="speech", payload={
+                    "speaker": "v3", "day_number": 2,
+                    "text": "我同意,w2 发言逻辑矛盾, w2 是狼人",
+                }),
+            ],
+        )
+        cands = collect_witch_poison_candidates(gs, "witch")
+        assert any(c["player_id"] == "w2" for c in cands), (
+            f"w2 被 2 人指控,应在候选中, got: {cands}"
+        )
+
+    def test_collect_witch_poison_candidates_excludes_dead(self) -> None:
+        """已死玩家不入选 (即使被指控/查杀)。"""
+        from werewolf_agent.runtime.strategy.poison import collect_witch_poison_candidates
+        # 4 狼都活;预言家报 w3 查杀(活), 报 v1(已死)作废。
+        gs = self._make_wolf_gs(
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "seer", "text": "v1 是狼, w3 是狼, 都查杀", "day_number": 1,
+                }),
+            ],
+            players={
+                **{pid: PlayerState(id=pid, role="werewolf", alive=True)
+                   for pid in ("w1", "w2", "w3", "w4")},
+                "seer": PlayerState(id="seer", role="seer", alive=True),
+                "witch": PlayerState(id="witch", role="witch", alive=True),
+                "v1": PlayerState(id="v1", role="villager", alive=False),  # 已死
+                "v2": PlayerState(id="v2", role="villager", alive=True),
+                "v3": PlayerState(id="v3", role="villager", alive=True),
+                "hunter": PlayerState(id="hunter", role="hunter", alive=True),
+                "idiot": PlayerState(id="idiot", role="idiot", alive=True),
+                "hyb": PlayerState(id="hyb", role="hybrid", alive=True),
+            },
+        )
+        cands = collect_witch_poison_candidates(gs, "witch")
+        cand_ids = [c["player_id"] for c in cands]
+        assert "v1" not in cand_ids, "已死玩家不应入选"
+        assert "w3" in cand_ids, "活着的 w3 应入选"
+
+    def test_collect_witch_poison_candidates_empty_when_no_evidence(self) -> None:
+        """无任何查杀/指控时,返回空列表。"""
+        from werewolf_agent.runtime.strategy.poison import collect_witch_poison_candidates
+        gs = self._make_wolf_gs()
+        cands = collect_witch_poison_candidates(gs, "witch")
+        assert cands == []
+
+    def test_witch_poison_candidates_directive_populated(self) -> None:
+        """agent_night_witch 的 strategy_directive 应包含 witch_poison_candidates。"""
+        from werewolf_agent.runtime.agent_adapter import agent_night_witch
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        gs = self._make_wolf_gs(
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "seer", "day_number": 1,
+                    "text": "我是预言家，w3 查杀",
+                }),
+            ],
+        )
+        engine = _new_engine()
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                return (PlayerAction(action_type=ActionType.NO_ACTION, reason="test"), RetryInfo())
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+            def get_agent(self, player_id):
+                return self.agent if player_id == "witch" else None
+
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": "v1",
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+            "agent_registry": CaptureRegistry(),
+        }
+        agent_night_witch(state, engine, state["agent_registry"])
+        ctx = state["agent_registry"].agent.last_context
+        assert "witch_poison_candidates" in ctx.strategy_directive
+        text = ctx.strategy_directive["witch_poison_candidates"]
+        assert "w3" in text, f"w3 被查杀,应在候选列表, got: {text}"
+        assert "证据强度" in text or "排序" in text
+
+    def test_witch_poison_candidates_empty_triggers_no_action_hint(self) -> None:
+        """无证据时,witch_poison_candidates 应给出 no_action 提示。"""
+        from werewolf_agent.runtime.agent_adapter import agent_night_witch
+        from werewolf_agent.agents.schemas import AgentContext, ActionType
+        from werewolf_agent.agents.player import PlayerAction, RetryInfo
+
+        gs = self._make_wolf_gs()
+        engine = _new_engine()
+
+        class CaptureAgent:
+            last_context: AgentContext | None = None
+            def act(self, context):
+                self.last_context = context
+                return (PlayerAction(action_type=ActionType.NO_ACTION, reason="test"), RetryInfo())
+
+        class CaptureRegistry:
+            def __init__(self):
+                self.agent = CaptureAgent()
+            def get_agent(self, player_id):
+                return self.agent if player_id == "witch" else None
+
+        state: RuntimeState = {
+            "game_state": gs,
+            "engine": engine,
+            "wolf_kill_target_id": "v1",
+            "use_antidote": False,
+            "poison_target_id": None,
+            "seer_target_id": None,
+            "hybrid_master_target_id": None,
+            "self_destruct_wolf_id": None,
+            "exile_votes": {},
+            "revote": False,
+            "sheriff_candidates": [],
+            "sheriff_votes": {},
+            "sheriff_withdrawing": [],
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "hunter_shot_target_id": None,
+            "agent_registry": CaptureRegistry(),
+        }
+        agent_night_witch(state, engine, state["agent_registry"])
+        ctx = state["agent_registry"].agent.last_context
+        text = ctx.strategy_directive["witch_poison_candidates"]
+        assert "no_action" in text or "默认" in text or "不推荐" in text
+
+
+class TestReflectionRoleSpecific:
+    """[[feedback-reflection-role-specific]] 反思 prompt 必须按角色族分模板。
+
+    - 好人 (villager/seer/witch/hunter/idiot/hybrid-good): 投票/站边/信息缺失
+    - 狼人 (werewolf/hybrid-wolf): 悍跳/暴露/角色分工
+    - 共同:末尾必须含"保留的优点"段,避免只记错误
+    """
+
+    @staticmethod
+    def _make_state_with_role(role: str, hybrid_master_faction: str | None = None, winner: str = "good"):
+        from werewolf_agent.runtime.agent_adapter import _build_reflection_prompt
+        from werewolf_agent.core.models import PlayerState
+        player = PlayerState(id="p01", role=role, alive=True)
+        return _build_reflection_prompt(
+            player=player,
+            winner=winner,
+            hybrid_master_faction=hybrid_master_faction,
+        )
+
+    def test_good_role_reflection_focuses_on_voting(self) -> None:
+        """好人阵营反思必须聚焦"投票/站边/信息缺失",不能与狼人模板重叠。"""
+        text = self._make_state_with_role("seer", winner="good")
+        assert "【投票错误】" in text, "好人体模板应含'投票错误'段"
+        assert "站错边" in text, "好人体模板应含'站错边'反思"
+        assert "【信息缺失】" in text, "好人体模板应含'信息缺失'段"
+        assert "【神职执行】" in text, "好人体模板应含'神职执行'段(神职专项)"
+        # 不应含狼人模板的关键词
+        assert "【悍跳分析】" not in text, "好人不应出现悍跳反思"
+        assert "【角色分工】" not in text, "好人不应出现深水/冲锋分工反思"
+
+    def test_good_role_reflection_includes_preserve_strengths(self) -> None:
+        """好人反思必须含"保留的优点"段(且必须强调下局复用)。"""
+        text = self._make_state_with_role("witch", winner="good")
+        assert "【保留的优点】" in text
+        assert "下局复用" in text, "反思必须强调下局复用,避免只记错误"
+
+    def test_wolf_role_reflection_focuses_on_fake_seer_exposure(self) -> None:
+        """狼人阵营反思必须聚焦"悍跳/暴露/角色分工"。"""
+        text = self._make_state_with_role("werewolf", winner="werewolf")
+        assert "【悍跳分析】" in text, "狼体模板应含'悍跳分析'段"
+        assert "【暴露原因】" in text, "狼体模板应含'暴露原因'段"
+        assert "【角色分工】" in text, "狼体模板应含'角色分工'段(深水/冲锋/倒钩)"
+        assert "深水" in text
+        assert "冲锋" in text
+        assert "倒钩" in text
+        # 不应含好人模板的关键词
+        assert "【投票错误】" not in text, "狼人不应出现'投票错误'反思"
+        assert "【神职执行】" not in text, "狼人不应出现'神职执行'"
+
+    def test_wolf_role_reflection_includes_preserve_strengths(self) -> None:
+        """狼人反思也必须含"保留的优点"段。"""
+        text = self._make_state_with_role("werewolf", winner="werewolf")
+        assert "【保留的优点】" in text
+        assert "下局复用" in text
+
+    def test_hybrid_with_good_master_uses_good_template(self) -> None:
+        """混血儿的主人属于好人 → 用好人体模板。"""
+        text = self._make_state_with_role("hybrid", hybrid_master_faction="good", winner="good")
+        assert "【投票错误】" in text, "hybrid(跟好人) 应走好人体模板"
+        assert "【悍跳分析】" not in text
+
+    def test_hybrid_with_wolf_master_uses_wolf_template(self) -> None:
+        """混血儿的主人属于狼 → 用狼体模板。"""
+        text = self._make_state_with_role("hybrid", hybrid_master_faction="werewolf", winner="werewolf")
+        assert "【悍跳分析】" in text, "hybrid(跟狼) 应走狼体模板"
+        assert "【投票错误】" not in text
+
+    def test_hybrid_unknown_master_falls_back_to_generic(self) -> None:
+        """混血儿主人未确定 → 通用模板(应仍含"保留的优点"段)。"""
+        text = self._make_state_with_role("hybrid", hybrid_master_faction=None, winner="good")
+        assert "【保留的优点】" in text
+        # 通用模板应含通用问题
+        assert "关键判断" in text or "欺骗" in text
+
+    def test_good_and_wolf_templates_are_distinct(self) -> None:
+        """好人体和狼体模板内容必须显著不同(避免一刀切)。"""
+        good_text = self._make_state_with_role("seer", winner="good")
+        wolf_text = self._make_state_with_role("werewolf", winner="werewolf")
+        # 关键词不重叠
+        assert set(["【投票错误】", "【悍跳分析】"]).issubset(
+            {kw for kw in ["【投票错误】"] if kw in good_text}
+            | {kw for kw in ["【悍跳分析】"] if kw in wolf_text}
+        )
+        # 两边都强调保留优点(交叉项)
+        assert "【保留的优点】" in good_text
+        assert "【保留的优点】" in wolf_text
+
+    def test_good_reflection_template_has_pii_guard(self) -> None:
+        """rag-hardening-4: 好人反思模板必须含 PII 守卫段,禁止写入其他玩家真实身份。"""
+        from werewolf_agent.runtime.agent_adapter import _GOOD_REFLECTION_TEMPLATE
+        assert "PII 守卫" in _GOOD_REFLECTION_TEMPLATE
+        assert "不要写" in _GOOD_REFLECTION_TEMPLATE
+        assert "p\\d{2}" in _GOOD_REFLECTION_TEMPLATE or "p03 是预言家" in _GOOD_REFLECTION_TEMPLATE
+        assert "模糊指代" in _GOOD_REFLECTION_TEMPLATE
+        assert "跨局" in _GOOD_REFLECTION_TEMPLATE
+
+    def test_wolf_reflection_template_has_pii_guard(self) -> None:
+        """rag-hardening-4: 狼体反思模板必须含 PII 守卫段。"""
+        from werewolf_agent.runtime.agent_adapter import _WOLF_REFLECTION_TEMPLATE
+        assert "PII 守卫" in _WOLF_REFLECTION_TEMPLATE
+        assert "不要写" in _WOLF_REFLECTION_TEMPLATE
+        assert "模糊指代" in _WOLF_REFLECTION_TEMPLATE
+
+
+class TestReflectionCrossGameLearning:
+    """reflect-cross-1/2/3: 跨局错误模式聚合 + hint 排序优化 + 预算扩展。
+
+    4 局真实游戏分析显示:
+    - 反思按 player_id 累积但每局角色随机,同 player+同角色罕见 (~1/12)
+    - 跨 player 同角色 + 跨 player 同阵营 是主要学习通路
+    - 当前 hint 预算 5 + 同 priority 内只看 recency 限制了学习效果
+    """
+
+    def test_categorize_reflection_text_parses_section_headers(self) -> None:
+        """_categorize_reflection_text 应解析所有 7 个 section header。"""
+        from werewolf_agent.runtime.context import _categorize_reflection_text
+        text = "【投票错误】xxx【信息缺失】yyy【保留的优点】zzz"
+        cats = _categorize_reflection_text(text)
+        assert set(cats) == {"vote_mistake", "info_miss", "preserved_strength"}
+
+    def test_categorize_reflection_text_dedupes_repeats(self) -> None:
+        """同 category 多次出现应只计 1 次,避免权重放大。"""
+        from werewolf_agent.runtime.context import _categorize_reflection_text
+        text = "【投票错误】1【投票错误】2【投票错误】3"
+        cats = _categorize_reflection_text(text)
+        assert cats.count("vote_mistake") == 1
+        assert len(cats) == 1
+
+    def test_categorize_reflection_text_empty_or_no_header(self) -> None:
+        """空文本或无 section header 应返回空列表。"""
+        from werewolf_agent.runtime.context import _categorize_reflection_text
+        assert _categorize_reflection_text("") == []
+        assert _categorize_reflection_text("随机一段话,没有 section header") == []
+
+    def test_compute_error_pattern_aggregates_top_mistakes(self) -> None:
+        """_compute_error_pattern 应统计 top 2 错误类别。"""
+        from werewolf_agent.runtime.context import _compute_error_pattern
+        from werewolf_agent.memory.schemas import ReflectionEntry
+        # 5 局,3 局 role=seer (同角色),2 局 role=werewolf (异角色)
+        data = [
+            ("seer",    "【投票错误】A【信息缺失】B"),
+            ("seer",    "【投票错误】C【神职执行】D"),
+            ("seer",    "【投票错误】E【神职执行】F"),
+            ("werewolf","【悍跳分析】G【保留的优点】H"),
+            ("werewolf","【保留的优点】I"),
+        ]
+        reflections = [
+            ReflectionEntry(
+                entry_id=f"e{i}", game_id=f"g_{2020 + i}_01_01",
+                player_id="p01", role=role, faction_won=False,
+                text=text, tags=[],
+            )
+            for i, (role, text) in enumerate(data)
+        ]
+        result = _compute_error_pattern(reflections, current_role="seer")
+        assert result["total_reflections"] == 5
+        # 3 局含 vote_mistake, 2 局含 role_execution → top 是 vote_mistake
+        assert result["top_mistakes"][0] == ("vote_mistake", 3)
+        # preserved_strength: 后 2 局 (werewolf) 都有 → 2
+        assert result["preserved_strength_count"] == 2
+        # same_role_reflections: 前 3 局 role=seer → 3
+        assert result["same_role_reflections"] == 3
+        # 总错误数: 3 vote_mistake + 1 info_miss + 2 role_execution + 1 claim_failed = 7
+        # 最高频 vote_mistake=3 → 3/7 ≈ 0.43
+        assert 0.40 <= result["dominant_mistake_ratio"] <= 0.45
+
+    def test_compute_error_pattern_empty_reflections(self) -> None:
+        """无反思时返回空 dict,不应崩。"""
+        from werewolf_agent.runtime.context import _compute_error_pattern
+        result = _compute_error_pattern([], current_role="witch")
+        assert result["top_mistakes"] == []
+        assert result["preserved_strength_count"] == 0
+        assert result["total_reflections"] == 0
+        assert result["dominant_mistake_ratio"] == 0.0
+        assert result["current_role"] == "witch"
+
+    def test_reflection_hints_budget_is_8(self) -> None:
+        """_reflection_memory_hints 预算应从 5 扩到 8。"""
+        from werewolf_agent.runtime.context import _reflection_memory_hints
+        from werewolf_agent.memory.schemas import ReflectionEntry
+        # 12 局反思,3 个 role,每个 4 局
+        reflections = [
+            ReflectionEntry(
+                entry_id=f"e{i}", game_id=f"g_{2020 + i // 4:04d}_01_01",
+                player_id="p01",
+                role=("seer" if i < 4 else "witch" if i < 8 else "villager"),
+                faction_won=False, text=f"reflection {i}", tags=[],
+            )
+            for i in range(12)
+        ]
+        hints = _reflection_memory_hints(reflections, current_role="seer", current_faction="good")
+        # 3 roles × 2 per role = 6 应被采纳;不是 5
+        # 但 MAX_PER_ROLE=2 cap → 3 roles * 2 = 6
+        assert len(hints) == 6, f"应返回 6 条 hints (3 角色 × 2 cap), got {len(hints)}"
+        # 再加 4 个 villager 反思 + 4 个 hunter → 应能填到 8
+        more_reflections = reflections + [
+            ReflectionEntry(
+                entry_id=f"f{i}", game_id=f"g_{2020}_01_{i + 10:02d}",
+                player_id="p01", role="hunter", faction_won=False,
+                text=f"hunter reflection {i}", tags=[],
+            )
+            for i in range(4)
+        ]
+        hints2 = _reflection_memory_hints(more_reflections, current_role="seer", current_faction="good")
+        assert len(hints2) == 8, f"应返回 8 条 hints (4 角色 × 2 cap), got {len(hints2)}"
+
+    def test_reflection_hints_winning_rank_first_within_priority(self) -> None:
+        """同 priority 内,faction_won=True 排前。"""
+        from werewolf_agent.runtime.context import _reflection_memory_hints
+        from werewolf_agent.memory.schemas import ReflectionEntry
+        # 2 个 seer 反思,一个败一个胜,同一 game_id
+        reflections = [
+            ReflectionEntry(
+                entry_id="lose", game_id="g_2020_01_01",
+                player_id="p01", role="seer", faction_won=False,
+                text="失败反思", tags=[],
+            ),
+            ReflectionEntry(
+                entry_id="win", game_id="g_2020_01_01",
+                player_id="p01", role="seer", faction_won=True,
+                text="成功反思", tags=[],
+            ),
+        ]
+        hints = _reflection_memory_hints(reflections, current_role="seer", current_faction="good")
+        # 第一个 hint 应该是 "win" (胜局排前)
+        assert hints[0]["entry_id"] == "win" if "entry_id" in hints[0] else True
+        # result 字段应区分
+        assert hints[0]["result"] == "胜"
+        assert hints[1]["result"] == "负"
+
+    def test_error_pattern_hint_in_agent_context(self) -> None:
+        """AgentContext 应含 error_pattern_hint 字段(默认空 dict)。"""
+        from werewolf_agent.agents.schemas import AgentContext
+        ctx = AgentContext(
+            agent_id="p01", task_type="night_action",
+            phase="night", day_number=1, night_number=1,
+            own_role="seer",
+        )
+        assert ctx.error_pattern_hint == {}
+        ctx.error_pattern_hint = {"top_mistakes": [("vote_mistake", 3)], "preserved_strength_count": 1}
+        assert ctx.error_pattern_hint["top_mistakes"] == [("vote_mistake", 3)]
+
+    def test_prompt_builder_renders_error_pattern_section(self) -> None:
+        """prompt_builder 应把 error_pattern_hint 渲染为独立段落。"""
+        from werewolf_agent.agents.schemas import AgentContext, TaskType
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        ctx = AgentContext(
+            agent_id="p01", task_type=TaskType.NIGHT_ACTION,
+            phase="night", day_number=1, night_number=1,
+            own_role="seer",
+            error_pattern_hint={
+                "top_mistakes": [("vote_mistake", 3), ("role_execution", 2)],
+                "preserved_strength_count": 2,
+                "total_reflections": 5,
+                "same_role_reflections": 3,
+                "dominant_mistake_ratio": 0.6,
+                "current_role": "seer",
+            },
+        )
+        builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
+        builder.context = ctx
+        text = builder._build_error_pattern_hint()
+        assert "【跨局错误模式" in text
+        assert "vote_mistake" in text
+        assert "3次" in text
+        assert "保留" in text or "复用" in text
+        assert "seer" in text  # same_role_reflections 应被提到
+
+    def test_prompt_builder_empty_pattern_returns_empty(self) -> None:
+        """无反思时,_build_error_pattern_hint 返回空字符串(不渲染空段)。"""
+        from werewolf_agent.agents.schemas import AgentContext, TaskType
+        from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+        ctx = AgentContext(
+            agent_id="p01", task_type=TaskType.NIGHT_ACTION,
+            phase="night", day_number=1, night_number=1,
+            own_role="seer",
+        )
+        builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
+        builder.context = ctx
+        assert builder._build_error_pattern_hint() == ""
+

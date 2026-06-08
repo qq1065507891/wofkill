@@ -240,6 +240,16 @@ def hits_to_prompt_lines(
     1, that wins. ``max_items=3`` (default) is the live-prompt
     default but the live runtime already passes it through unchanged.
 
+    rag-hardening-1: defense-in-depth filter for ``allowed_in_live_context``.
+    The retriever in ``rag/retriever.py:_filter_candidates`` already
+    drops ``GOD_VIEW`` / ``MODERATOR_ONLY`` entries; this renderer
+    re-checks the per-hit ``allowed_in_live_context`` flag and drops
+    any hit that fails it. If the retriever ever regresses or is
+    bypassed (e.g. an internal caller feeding hits directly), the
+    slim renderer refuses to surface disallowed content to a live
+    player. Drops are logged at WARNING so operators can spot the
+    mismatch instead of silently leaking.
+
     Parameters
     ----------
     hits:
@@ -255,7 +265,21 @@ def hits_to_prompt_lines(
         A list with at most ``max_items`` slim dicts. Each dict
         contains only ``title``, ``summary``, and ``key_decisions``.
     """
-    deduped = dedup_hits_by_similarity(hits, max_items=max_items)
+    # rag-hardening-1: defense-in-depth — drop hits that the
+    # visibility layer already rejected, so a retriever regression
+    # never reaches the live prompt.
+    safe_hits: list[RAGHit] = []
+    for hit in hits:
+        if not getattr(hit, "allowed_in_live_context", True):
+            import logging
+            logging.getLogger(__name__).warning(
+                "rag-hardening-1: dropping hit %s from live prompt — "
+                "allowed_in_live_context=False (retriever may have regressed)",
+                getattr(hit, "entry_id", "?"),
+            )
+            continue
+        safe_hits.append(hit)
+    deduped = dedup_hits_by_similarity(safe_hits, max_items=max_items)
     return [render_hit_for_prompt(h) for h in deduped]
 
 

@@ -52,6 +52,20 @@ External links, RAG content, examples, and model output are strategy references 
 - Player agents must never see `moderator_full`, other players' private state, other players' `private_intent`, hidden identities, or forbidden night information.
 - All state mutations must be represented as auditable events and reduced deterministically into `GameState`.
 
+## Reflection Memory (LLM Prompt Layer)
+
+Reflection / cross-game memory is owned by the LLM prompt layer, NOT the `RuleEngine`. The RuleEngine never reads or writes reflection entries.
+
+- `ReflectionMemory` (`memory/reflection.py`) stores per-`(game_id, player_id, role, faction_won)` entries with a free-form `text` field.
+- `_agent_reflection` (`agent_adapter.py`) calls LLM at game end with a **role-family-specific template** (good-side / wolf-side / hybrid) — not a generic prompt. The template emits section headers like `【投票错误】` / `【悍跳分析】` / `【保留的优点】` that downstream aggregation relies on.
+- `build_agent_context` (`runtime/context.py`) injects three cross-game hint fields:
+  - `reflection_memory_hints` (top 8 per-role entries, winning-first within priority tier);
+  - `error_pattern_hint` (top-2 mistake categories + preserved-strength count aggregated from section headers, no extra LLM call);
+  - `profile_memory_hint` (long-term ability stats, current-role win-rate).
+- V1 board assigns roles randomly per game, so cross-game learning is primarily **cross-player same-role** (priority=2) and **cross-player same-faction** (priority=1), not same-player same-role. Hint ranking reflects this.
+
+**Schema boundary**: the `reflections` PostgreSQL table (`entry_id, game_id, player_id, entry_json`) is NOT modified by LLM-prompt-layer changes. All reflection quality improvements go into `entry_json.text`; the column layout is stable. See `docs/design/werewolf-agent-v1-design.md` §10.
+
 ## Critical V1 Rules
 
 - 12 players plus 1 judge.

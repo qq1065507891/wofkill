@@ -616,5 +616,64 @@ class TestNearDuplicateHitsMerged:
         assert [h.entry_id for h in deduped] == ["x0", "x1", "x2"]
 
 
+# ===================================================================
+# rag-hardening-1: renderer defense-in-depth
+# ===================================================================
+
+
+class TestPromptRenderHardening1:
+    """rag-hardening-1: hits with ``allowed_in_live_context=False``
+    must NEVER reach the live prompt, even if the retriever
+    regresses and forgets to filter them out upstream. The slim
+    renderer is the second line of defense and is responsible for
+    dropping disallowed hits before rendering.
+    """
+
+    def test_hits_to_prompt_lines_drops_disallowed_hits(self) -> None:
+        hit_allowed = _make_hit(entry_id="allowed_1", title="允许的")
+        # ``RAGHit.allowed_in_live_context`` is auto-set by the
+        # ``model_validator`` based on ``visibility`` — no need to
+        # pass it explicitly.
+        hit_disallowed = _make_hit(
+            entry_id="forbidden_1",
+            title="GOD_VIEW 内容",
+            visibility=VisibilityBoundary.GOD_VIEW,
+        )
+        lines = hits_to_prompt_lines([hit_allowed, hit_disallowed])
+        ids = [line["title"] for line in lines]
+        assert "允许的" in ids
+        assert "GOD_VIEW 内容" not in ids
+
+    def test_render_hit_for_prompt_does_not_filter_itself(self) -> None:
+        """The single-hit ``render_hit_for_prompt`` keeps its pure
+        field-stripping contract — defense-in-depth lives in
+        ``hits_to_prompt_lines`` (the live-prompt entry point), not
+        in the per-hit pure function. A direct caller using
+        ``render_hit_for_prompt`` with a disallowed hit would
+        surface the hit; this is intentional so audit / moderator
+        paths can still render individual hits for review.
+        """
+        hit = _make_hit(
+            entry_id="forbidden",
+            visibility=VisibilityBoundary.GOD_VIEW,
+        )
+        line = render_hit_for_prompt(hit)
+        # No filter at this layer — pure field stripper.
+        assert line["title"] == hit.title
+
+    def test_hits_to_prompt_lines_allows_when_explicitly_allowed(self) -> None:
+        """Hits with ``PLAYER_PERSPECTIVE`` (or any non-GOD/MOD
+        visibility) auto-set ``allowed_in_live_context=True`` via
+        the model validator and pass the renderer.
+        """
+        hit = _make_hit(
+            entry_id="ok",
+            visibility=VisibilityBoundary.PLAYER_PERSPECTIVE,
+        )
+        lines = hits_to_prompt_lines([hit])
+        assert len(lines) == 1
+        assert lines[0]["title"] == hit.title
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

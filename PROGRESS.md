@@ -4,11 +4,237 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **D1-flow-rewire** — 2026-06-08
-- Active task: D1 流程重构（V1 设计修正：警长竞选前置）
+- Current phase: **rag-hardening** — 2026-06-09
+- Active task: RAG 注入审计 5 个泄漏路径全部修复
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-08
+- Last updated: 2026-06-09
 - **58+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
+- **本次新增**: 10 个 rag-hardening 测试, 4 道 LLM/RAG 防御层加固, 0 engine 改动
+
+---
+
+## rag-hardening — 2026-06-09
+
+**背景**: user 问"其他人对局的 RAG 注入有什么问题吗?",做完整审计。发现 5 个潜在泄漏路径 (按严重度排序):
+1. `seed_foundation_peace_night` (`role_perspective: any`) 含狼队空刀内部战术 ("把解药骗掉后再用毒药收割") — 任何角色都能检索
+2. `hits_to_prompt_lines` 不二次检查 `allowed_in_live_context` — 单点防御 (retriever 过滤失效即泄漏)
+3. 4 道 ingestion 校验都不过滤 `p\d{2}` 玩家 ID — 跨局 ID 匹配风险
+4. 反思 prompt 无 PII 约束 — LLM 可能写出 "p03 是预言家" 跨局泄漏
+5. ingestion `_validate_not_rule_truth` 16 模式不覆盖 "X 是狼" 等泛指身份断言
+
+**改动**:
+
+| # | 改动 | 文件 |
+|---|------|------|
+| RH-1 | `seed_foundation_peace_night` 改写 — 移除 "狼队的合法策略 + 把解药骗掉" 句,改为模糊外部视角 ("狼人可能空刀...首夜空刀不常见");新增 `seed_foundation_peace_night_wolf` (`role_perspective: werewolf`) 容纳原狼队内部战术 | `config/rag_seeds/seed_entries.yaml` |
+| RH-2 | `hits_to_prompt_lines` 加 defense-in-depth — 过滤 `allowed_in_live_context=False` 的 hit (不只靠 retriever 过滤) | `werewolf_agent/rag/prompt_renderer.py:223-289` |
+| RH-3 | `_validate_forbidden_content` 加 PII regex `\bp\d{2}\b` — 拒绝 `summary` / `key_decisions` / `tags` / `short_quotes` 中含 p01-p12 的条目 | `werewolf_agent/rag/ingestion.py:64-103` |
+| RH-4 | `_validate_not_rule_truth` 加 catch-all 模式: `pNN is <role>` / `pNN 查杀` / `pNN 金水` 等 — 拒绝泛指身份断言 | `werewolf_agent/rag/ingestion.py:170-183` |
+| RH-5 | `_GOOD_REFLECTION_TEMPLATE` / `_WOLF_REFLECTION_TEMPLATE` 末尾加【PII 守卫】段 — 强制 LLM 用模糊指代,禁止写其他玩家真实身份 | `werewolf_agent/runtime/agent_adapter.py:_GOOD_REFLECTION_TEMPLATE / _WOLF_REFLECTION_TEMPLATE` |
+
+**4 道防线现状** (rag-hardening 后):
+
+| 层 | 已有 | 强化后 |
+|---|---|---|
+| 1. Schema | RAGEntry 字段封闭 | 同 |
+| 2. Ingestion | 4 层校验 (forbidden content / source / quality / rule truth) | + PII 过滤 + catch-all 模式 |
+| 3. Visibility | retriever `_filter_candidates` 过滤 GOD_VIEW | + renderer `allowed_in_live_context` 二次过滤 (defense-in-depth) |
+| 4. Renderer | `_FORBIDDEN_LIVE_FIELDS` 14 字段 + 3 字段白名单 | 同 + 二次过滤 |
+
+**Schema 边界**: PII 过滤在 `entry_json` 文本内容层 (不引入新列),老数据无影响。
+
+**测试** (10 个新测试,全 pass):
+
+`TestPromptRenderHardening1` (3):
+- `test_hits_to_prompt_lines_drops_disallowed_hits`
+- `test_render_hit_for_prompt_does_not_filter_itself` (audit 路径不受影响)
+- `test_hits_to_prompt_lines_allows_when_explicitly_allowed`
+
+`TestRagHardeningPII` (5):
+- `test_rejects_pnn_in_summary` / `key_decisions` / `tags`
+- `test_accepts_generic_descriptions_without_pnn`
+- `test_pnn_regex_precise_to_two_digits` (p1/p12345 不误判)
+
+`TestRagHardeningIdentityLeak` (2):
+- `test_rejects_pnn_is_werewolf_chinese`
+- `test_rejects_pnn_wolf_check_phrase`
+
+`TestSeedPeaceNightSplit` (3):
+- `test_public_peace_night_seed_is_any`
+- `test_public_peace_night_seed_no_wolf_internal_framing` (5 个狼内部短语断言)
+- `test_wolf_peace_night_seed_exists_with_werewolf_perspective`
+
+`TestReflectionRoleSpecific::test_*_pii_guard` (2, in test_strategy_directives.py):
+- `test_good_reflection_template_has_pii_guard`
+- `test_wolf_reflection_template_has_pii_guard`
+
+**验证**:
+- `pytest tests/rag/ tests/runtime/ tests/cognition/ tests/rules/ -p no:cacheprovider -q` → 全 pass
+- 既有测试 `test_seed_peace_night_includes_no_kill_option` 仍 pass (peace_night 公共条目保留 "空刀" 关键词,狼内部内容搬到新条目)
+
+**未跑端到端**: RAG ingestion 是 1 次性冷启动 (启动时 upsert seeds),seed 改动需重启游戏进程。下一局真实游戏跑完查 `game_stdout.log` 中 RAG retrieval 是否正常返回。
+
+**风险**:
+- `_make_entry` 测试 helper 修复 (`tags=tags or ["test"]` 改放 `metadata.tags`) — 暴露了原 helper 静默丢弃 top-level `tags` 的潜在 bug。**可能影响其他未跑测试**,但实际 `create_seed_entries` 也只设 `metadata.tags`,所以是测试 helper 本身的问题
+- PII regex `\bp\d{2}\b` 用 word boundary,中文文本里 `p03 是狼` 会被识别;但 `p3 是狼` 不会被识别(单数字)。当前 V1 玩家 ID 格式是 `pNN` 严格两位数字,所以这个 regex 精确匹配
+
+---
+
+## reflection-cross-game-learning — 2026-06-09 (已合并)
+
+**背景**: 上一 phase (reflection-role-specific) 解决了"反思模板按角色族分支"和"保留优点",但 user 接着问"现在玩家会不会越玩越聪明?"。
+1. **错误信号被稀释**: 同 player+同角色罕见 (~1/12),跨局学习速度被 board 限制
+2. **hint 预算 5 太紧**: 4 局真实游戏分析显示 top-5 经常被同角色填满,跨角色学习受限
+3. **胜局/败局排序无差异**: 成功模式("做对了什么")和失败教训("做错了什么")同等权重,LLM 应优先看"成功模式"更可复用
+
+**改动**:
+
+| # | 改动 | 文件 |
+|---|------|------|
+| RC-1 | 新 helper `_categorize_reflection_text(text)` — 用 section header regex 解析反思文本,返回 category 列表 (vote_mistake / info_miss / role_execution / claim_failed / exposure / preserved_strength) | `werewolf_agent/runtime/context.py:541-575` |
+| RC-2 | 新 helper `_compute_error_pattern(reflections, current_role)` — 聚合 top 2 错误 + 保留优点段计数 + 同角色反思数 + dominant 错误占比 | `werewolf_agent/runtime/context.py:578-635` |
+| RC-3 | `_reflection_memory_hints` 预算 5 → 8 (line 469) | `werewolf_agent/runtime/context.py:469` |
+| RC-4 | `_ref_score` 加 `faction_won` 排序权重 — 同 priority 内 胜局反思排前 (line 481, 491) | `werewolf_agent/runtime/context.py:478-498` |
+| RC-5 | AgentContext 加 `error_pattern_hint` 字段 (line 677-680) | `werewolf_agent/agents/schemas.py:676-680` |
+| RC-6 | `build_agent_context` 在 reflection_memory_hints 块后调用 `_compute_error_pattern` 并注入 | `werewolf_agent/runtime/context.py:1416-1422, 1438` |
+| RC-7 | `prompt_builder` 新 section `_build_error_pattern_hint` + 注册到 sections map | `werewolf_agent/agents/prompt_builder.py:957-988, 472, 543` |
+| RC-8 | `collections.Counter` import 加入 context.py | `werewolf_agent/runtime/context.py:18` |
+
+**核心设计**:
+- **错误模式提取** = 纯 regex (不调 LLM),section header `【投票错误】` / `【悍跳分析】` 等映射到 category,跨局统计 top 2
+- **胜局优先** = 排序 key 改 `(-priority, -won, neg_game_id, entry_id)`,同 priority 同 recency 内 胜局排前
+- **预算扩展** = 5 → 8,允许覆盖 4 个角色族(每族 2 hint),更适合好人 5 角色 + 狼 1 角色场景
+- **错误模式提示** = 注入到 LLM prompt 顶部,作为"你历史最常犯的错误"强信号,而不只是单条反思
+
+**测试** (10 个新测试,全 pass):
+- `TestReflectionCrossGameLearning::test_categorize_reflection_text_parses_section_headers`
+- `TestReflectionCrossGameLearning::test_categorize_reflection_text_dedupes_repeats`
+- `TestReflectionCrossGameLearning::test_categorize_reflection_text_empty_or_no_header`
+- `TestReflectionCrossGameLearning::test_compute_error_pattern_aggregates_top_mistakes`
+- `TestReflectionCrossGameLearning::test_compute_error_pattern_empty_reflections`
+- `TestReflectionCrossGameLearning::test_reflection_hints_budget_is_8`
+- `TestReflectionCrossGameLearning::test_reflection_hints_winning_rank_first_within_priority`
+- `TestReflectionCrossGameLearning::test_error_pattern_hint_in_agent_context`
+- `TestReflectionCrossGameLearning::test_prompt_builder_renders_error_pattern_section`
+- `TestReflectionCrossGameLearning::test_prompt_builder_empty_pattern_returns_empty`
+
+**验证**:
+- `pytest tests/runtime/test_strategy_directives.py -p no:cacheprovider -q` → 28/28 pass (10 新 + 8 reflection-role + 10 balance-fix)
+- `pytest tests/runtime/ tests/cognition/ tests/rules/ -p no:cacheprovider -q` → 全 pass
+
+**端到端效果** (理论分析,需真实游戏验证):
+- 跑 N 局后,某 player 拿某角色时,LLM prompt 顶部会看到:
+  - "【跨局错误模式】你最常犯的 2 类错误: vote_mistake(3次)、role_execution(2次)。"
+  - "过去 4 局反思中你保留了具体优点,本局也请复用。"
+  - "其中 2 局你拿过当前角色(seer),历史经验对当前角色特别相关。"
+- 加上 8 条 hints (含胜局反思) → LLM 有了具体的"过往错误模式" + 8 条具体反思支撑
+
+**风险**:
+- 错误模式提取依赖反思文本含 section header,旧反思 (无 section header) 不被识别 → 0 错误模式 (无影响,不渲染)
+- 胜局排序只在"同 priority + 同 recency"内有效,如果所有反思都同 priority 且同 game_id 才有差异 → 罕见
+- 8 hints 增加了 prompt token,~5 × 80 字 × 8 = 3200 字符;但 LLM 上下文预算应够
+
+**未跑端到端**: 真实游戏 1 局 ~120min,跨局效果需 5+ 局累积。下一轮真实游戏跑完应能在 `game_stdout.log` 中看到 LLM 决策时引用 reflection 内容的频率变化。
+
+**文档同步 (2026-06-09 user 提醒)**:
+- `docs/design/werewolf-agent-v1-design.md` §10.1 加错误模式聚合描述;§10.2 重写: 角色族分支模板 + 跨局检索排序 key + error_pattern_hint 聚合 + schema/storage 边界
+- `docs/design/werewolf-agent-v1-design.md` §4.2 新增: 战术覆盖 (狼队自爆/空刀 + 女巫毒药 3 个 LLM directive)
+- `CLAUDE.md` 加 "Reflection Memory (LLM Prompt Layer)" 段: RuleEngine 不参与,3 个 hint 字段职责,V1 跨局学习以 cross-player 同角色/同阵营为主
+- `harness/context/architecture-boundaries.md` "RAG And Memory" 段扩写: 反射生成/注入/边界三个子节,明确 schema-stable 约束
+- `harness/context/rule-authority.md` 不动 (无 RuleEngine 规则变化)
+
+---
+
+## reflection-role-specific — 2026-06-09 (已合并)
+
+**背景**: 跑完 4 局真实游戏后,user 问"反思记忆到底有没有用?反的错误下局还会犯吗?"。调查发现:
+- 代码层完全接通 (Restored + Saved, PostgreSQL 工作)
+- 运行时: 4 局都有跨局记忆恢复
+- 但 `_agent_reflection` 用**通用 prompt**("你做了哪些关键判断?哪些对?哪些错?"),所有 12 角色无差别
+
+User 反馈: 反思必须按角色族分模板,且保留优点不只改缺点。详见 [[feedback-reflection-role-specific]]。
+
+**改动**:
+
+| # | 改动 | 文件 |
+|---|------|------|
+| RS-1 | 新 helper `_build_reflection_prompt(player, winner, hybrid_master_faction)` 按角色族分支 | `werewolf_agent/runtime/agent_adapter.py:2114-2170` |
+| RS-2 | `_GOOD_REFLECTION_TEMPLATE` 好人专用模板:【投票错误】【信息缺失】【神职执行】【保留的优点】 | 同上:2184-2203 |
+| RS-3 | `_WOLF_REFLECTION_TEMPLATE` 狼人专用模板:【悍跳分析】【暴露原因】【角色分工(深水/冲锋/倒钩)】【保留的优点】 | 同上:2206-2222 |
+| RS-4 | `_GENERIC_REFLECTION_TEMPLATE` 兜底(混血儿主人未确定时) | 同上:2225-2228 |
+| RS-5 | `_agent_reflection` 调新 helper,`reflection_task` directive 由通用改为角色族定制 | `werewolf_agent/runtime/agent_adapter.py:2114-2156` |
+| RS-6 | `game_outcome` 段加 "你的身份是 {role}" 提示,LLM 知道自己在为谁复盘 | `werewolf_agent/runtime/agent_adapter.py:2147-2153` |
+
+**模板设计原则**:
+- **好人**: 投票错误 / 站错边 / 信息缺失 / 神职执行(预言家/女巫/猎人/白痴专项) / 保留优点
+- **狼人**: 悍跳分析(为什么没人信) / 暴露原因(哪些发言/票型留痕) / 角色分工(深水/冲锋/倒钩执行) / 保留优点
+- **混血儿**: master 是 good → 好人体;master 是 werewolf → 狼体;master 未知 → 通用
+- **共同**: 末尾强制"【保留的优点】"段,要求列出 1-2 个具体策略下局复用,避免只记错误
+
+**测试** (8 个新测试,全 pass):
+- `TestReflectionRoleSpecific::test_good_role_reflection_focuses_on_voting` (好人模板)
+- `TestReflectionRoleSpecific::test_good_role_reflection_includes_preserve_strengths` (好人保留优点)
+- `TestReflectionRoleSpecific::test_wolf_role_reflection_focuses_on_fake_seer_exposure` (狼人模板)
+- `TestReflectionRoleSpecific::test_wolf_role_reflection_includes_preserve_strengths` (狼人保留优点)
+- `TestReflectionRoleSpecific::test_hybrid_with_good_master_uses_good_template` (混血-好)
+- `TestReflectionRoleSpecific::test_hybrid_with_wolf_master_uses_wolf_template` (混血-狼)
+- `TestReflectionRoleSpecific::test_hybrid_unknown_master_falls_back_to_generic` (混血兜底)
+- `TestReflectionRoleSpecific::test_good_and_wolf_templates_are_distinct` (两类模板内容不重叠)
+
+**验证**:
+- `pytest tests/runtime/test_strategy_directives.py -p no:cacheprovider -q` → 18/18 pass (8 新 + 10 旧)
+- `pytest tests/runtime/ tests/cognition/ tests/rules/ -p no:cacheprovider -q` → 全 pass
+
+**未跑端到端**: 反思 LLM 行为变化需 1+ 局真实游戏。下一局真实游戏跑完会产出 role-specific 反思文本,可用 `game_stdout.log` 中的 "Saved memory snapshot" + PostgreSQL 验证。
+
+**风险**:
+- 模板文字偏长(每族 ~400-500 字),可能让 LLM 输出更长的反思 → ReflectionEntry.text 字段存储,跨局注入时也增加 prompt token。`_reflection_memory_hints` 仍 cap 5 hints,影响可控
+- 混血儿分母(3 种 master 情况)目前 4 局样本中只触发 2 种(good master + wolf master),未触发"master 未知"兜底 → 测试已覆盖但运行时未验证
+
+---
+
+## balance-fix-tactic-coverage — 2026-06-08 (已合并)
+
+**背景**: 跑完 4 局真实游戏 (`g_1324779695 / g_3457280709 / g_3828404435 / g_4058590270`) 后做 balance audit,出 12 条结论。User 圈定 2 条可修:
+- **D-8**: 4 局 0 自爆 / 0 空刀 (action type 存在但 LLM 看不到)
+- **女巫毒药**: 4 局 4 次用毒,3 次毒好人 (0 命中率)
+
+其他 10 条 (警徽 1.5x / 屠民 hybrid 必死 / 猎人 25% 激活 / 白痴 0% 翻牌 / 预言家首查必被归 / 警长撕徽 / 警长 endorse / hybrid master 选神职 / tie PK / 混血儿屠边) User 确认 = **真实狼人杀规则,非 V1 bug,不改**。详见 [[feedback-balance-audit-design-scope]]。
+
+**修复策略**: LLM 决策层缺引导,RuleEngine 不动。
+
+| # | 改动 | 文件 |
+|---|------|------|
+| BF-1 | 新建纯函数 `collect_witch_poison_candidates(gs, witch_id)`,从 world_state `seer_check_claim` fact + speech 扫描双路径提取查杀/多人指控目标,按 score 排序,过滤已死/女巫自己 | `werewolf_agent/runtime/strategy/poison.py` (新文件) |
+| BF-2 | `_single_wolf_vote` strategy_directive 加 `wolf_no_kill_conditions` key,4 条空刀触发条件 + 连续 2 夜强制出刀上限提示 | `werewolf_agent/runtime/agent_adapter.py:556-568` |
+| BF-3 | `build_wolf_directive` 末尾加 `wolf_self_destruct_condition` 注入,仅在 `in_danger=True` 时输出 (本狼是当前 vote_resolved top tally / 持警徽即将被票);4 条触发条件,持警徽时强调撕徽利好 | `werewolf_agent/runtime/directives/wolf.py:230-260` |
+| BF-4 | 新 helper `_wolf_endangered_status(gs, wolf_id)` 判定本狼是否在归票方向,按 `vote_resolved` weighted_tally 排序 + sheriff badge 检查 | `werewolf_agent/runtime/directives/wolf.py:262-298` |
+| BF-5 | `agent_night_witch` 加 `witch_poison_candidates` directive,候选非空时给排序列表,空时按 alive>9 提示 no_action / alive≤7 提示紧急但证据不足 | `werewolf_agent/runtime/agent_adapter.py:301-340` |
+| BF-6 | `runtime/strategy/__init__.py` 导出 `collect_witch_poison_candidates` | `werewolf_agent/runtime/strategy/__init__.py` |
+
+**测试** (10 个新测试,全 pass):
+- `TestBalanceFixTacticCoverage::test_wolf_no_kill_conditions_in_strategy_directive` (D-8A)
+- `TestBalanceFixTacticCoverage::test_wolf_self_destruct_condition_appears_for_endangered_wolf` (D-8B)
+- `TestBalanceFixTacticCoverage::test_wolf_self_destruct_condition_absent_for_safe_wolf` (D-8B 负向)
+- `TestBalanceFixTacticCoverage::test_wolf_self_destruct_for_sheriff_wolf_about_to_lose` (D-8B 警徽)
+- `TestBalanceFixTacticCoverage::test_collect_witch_poison_candidates_from_check_claim` (女巫)
+- `TestBalanceFixTacticCoverage::test_collect_witch_poison_candidates_from_multi_accusation` (女巫)
+- `TestBalanceFixTacticCoverage::test_collect_witch_poison_candidates_excludes_dead` (女巫)
+- `TestBalanceFixTacticCoverage::test_collect_witch_poison_candidates_empty_when_no_evidence` (女巫)
+- `TestBalanceFixTacticCoverage::test_witch_poison_candidates_directive_populated` (女巫 集成)
+- `TestBalanceFixTacticCoverage::test_witch_poison_candidates_empty_triggers_no_action_hint` (女巫 集成)
+
+**验证**:
+- `pytest tests/runtime/test_strategy_directives.py -p no:cacheprovider -q` → 10/10 pass
+- `pytest tests/runtime/ -p no:cacheprovider -q` → 全 pass
+- `pytest tests/cognition/ tests/rules/ -p no:cacheprovider -q` → 全 pass
+
+**风险**:
+- `witch_poison_candidates` 早期 game(无 seer_check_claim) 返回空 → LLM 收到 no_action 提示,行为从"凭印象用毒"变为"无证据不用毒"。短期可能降低女巫用毒率,长期应使 0 命中率 → 命中率提升
+- 自爆条件判定简单(top tally == wolf_id),可能在不该自爆的边缘局触发 → 4 局日志 trace 验证 (待真实游戏跑)
+- `wolf_no_kill_conditions` 是 REFERENCE tier (非 hard constraint),LLM 可能仍偏好击杀 → 跑 3 局真实游戏看是否实际触发
+
+**未跑端到端**: 真实游戏 1 局 ~120min,本修复仅 LLM prompt 层 (无 RuleEngine / graph / node 改动),单元测试覆盖足够。下一轮真实游戏跑 3-5 局验证 (BF-2/BF-3/BF-5 是否实际影响 LLM 行为)。
 
 ---
 

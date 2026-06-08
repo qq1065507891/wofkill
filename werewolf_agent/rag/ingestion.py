@@ -62,7 +62,19 @@ class CaseIngester:
         return len(self._entries)
 
     def _validate_forbidden_content(self, entry: RAGEntry) -> None:
-        """Check entry content for forbidden patterns."""
+        """Check entry content for forbidden patterns.
+
+        rag-hardening-2: also scan for ``pNN`` player-ID references.
+        RAG entries are strategy cases / public community knowledge —
+        they MUST NOT name a specific player slot. A seed that says
+        "p05 查杀是真预言家" leaks past-game role information that
+        could match a real player in the current game; the LLM would
+        then ground its decisions on stale cross-game identity. The
+        12-player V1 board uses ``pNN`` exclusively, so
+        ``\\bp\\d{2}\\b`` is a precise match — no false positives
+        against words like "pre" or "step" (those don't have a digit
+        after the ``p``).
+        """
         # R16: also scan ``metadata.tags``. The audit contract is
         # "no RAG entry may carry a forbidden keyword anywhere" —
         # tags are user-supplied free text and used to be silently
@@ -81,6 +93,16 @@ class CaseIngester:
                     f"Forbidden keyword '{kw}' found in entry '{entry.entry_id}'. "
                     f"RAG must not contain ground truth or rule adjudication."
                 )
+        # rag-hardening-2: PII / player-ID filter.
+        pii_matches = re.findall(r"\bp\d{2}\b", text_lower)
+        if pii_matches:
+            raise IngestionError(
+                f"RAG entry '{entry.entry_id}' contains player-ID "
+                f"reference(s) {sorted(set(pii_matches))}. RAG is for "
+                f"strategy / community knowledge and must not name "
+                f"specific player slots — past-game identity may match "
+                f"current-game players and leak cross-game information."
+            )
 
     def _validate_source_metadata(self, entry: RAGEntry) -> None:
         """Ensure source metadata is present for external cases."""
@@ -119,7 +141,23 @@ class CaseIngester:
                 )
 
     def _validate_not_rule_truth(self, entry: RAGEntry) -> None:
-        """Ensure entry does not contain base rule truth."""
+        """Ensure entry does not contain base rule truth.
+
+        rag-hardening-3: extended catch-all patterns block generic
+        identity assertions of the form ``pNN 是 <role>`` /
+        ``pNN 查杀`` / ``pNN 金水``. The 16 base patterns above
+        cover the specific V1 rule statements (女巫不能自救 etc.)
+        but did NOT cover generic "X is wolf" / "X is seer" — a
+        future seed that wrote "p05 是狼" would pass the rule
+        scan yet still leak role truth to the LLM. The catch-all
+        block closes that gap by rejecting any direct identity
+        statement bound to a player slot.
+
+        Note: PII / player-ID filter (``\\bp\\d{2}\\b``) lives in
+        ``_validate_forbidden_content`` rather than here, so the
+        ingestion contract stays: "any forbidden token anywhere in
+        the user-visible text triggers ``IngestionError``".
+        """
         rule_truth_patterns = [
             r"witch\s+cannot\s+self[\s-]save",
             r"seer\s+checks?\s+hybrid\s+as\s+good",
@@ -144,6 +182,18 @@ class CaseIngester:
             r"\u5973\u5deb.{0,8}(\u4e0d\u5141\u8bb8|\u4e0d\u80fd|\u4e0d\u53ef|\u7981\u6b62).{0,4}\u81ea\u6551",
             r"\u72fc.{0,8}(\u6ca1\u5b9a|\u672a\u5b9a|\u6ca1\u6709\u51b3\u5b9a).{0,8}\u5200\u53e3.{0,8}\u9ed8\u8ba4.{0,4}\u7a7a\u5200",
             r"\u72fc\u961f.{0,8}(\u53ef\u4ee5|\u80fd).{0,8}(\u9009\u62e9\u4e0d\u5200\u4eba|\u4e0d\u5200\u4eba|\u7a7a\u5200)",
+        ])
+        # rag-hardening-3: catch-all identity-leak patterns. The base
+        # rules above reject canonical V1 rule statements; these
+        # below reject generic role assertions that aren't covered
+        # by the rule set but still leak role truth to the LLM.
+        rule_truth_patterns.extend([
+            # English
+            r"\bp\d{2}\s+is\s+(a\s+)?(werewolf|wolf|villager|seer|witch|hunter|idiot|hybrid|good|bad)\b",
+            r"\bp\d{2}\s+(wolf[\s-]?checked|checked[\s-]?wolf|\u67e5\u6740|\u91d1\u6c34|\u9a8c\u4e86|\u67e5\u9a8c)\b",
+            # Chinese
+            r"\bp\d{2}\s*(\u662f|\u4e3a|\u5f53)\s*(\u72fc|\u72fc\u4eba|\u9884\u8a00\u5bb6|\u5973\u5deb|\u730e\u4eba|\u767d\u75f4|\u6df7\u8840\u513f|\u5e73\u6c11|\u6751\u6c11)\b",
+            r"\bp\d{2}\s*(\u67e5\u6740|\u91d1\u6c34|\u94f6\u6c34|\u9a8c\u51fa|\u67e5\u9a8c|\u9a8c\u4e86)\b",
         ])
         # N4: include ``metadata.tags`` in the scanned text. R16 added
         # tags to the parallel ``_validate_forbidden_content`` scan,

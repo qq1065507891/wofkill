@@ -20,9 +20,11 @@ from werewolf_agent.runtime.strategy.wolf import (
     get_wolf_role_assignment,
     has_publicly_claimed_seer,
 )
+from werewolf_agent.runtime.strategy.poison import collect_witch_poison_candidates
 
 __all__ = [
     "build_witch_pressure_targets",
+    "collect_witch_poison_candidates",
     "evaluate_death_cause_claims",
     "evaluate_hunter_shot_target",
     "evaluate_hybrid_master_candidates",

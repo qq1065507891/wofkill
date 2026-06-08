@@ -280,6 +280,40 @@ def agent_night_witch(
             "text": text,
         }
 
+    # D-8 (2026-06-08 balance audit): 注入毒药候选目标排序列表。
+    # 4 局真实游戏中女巫 4 次用毒 3 次毒好人(0 命中率),根因是 LLM 看不到结构化候选。
+    # 给出按证据强度排序的 top 候选;无证据时给 no_action 提示,避免凭印象用毒。
+    if not gs.poison_used:
+        try:
+            from werewolf_agent.runtime.strategy.poison import collect_witch_poison_candidates
+            cands = collect_witch_poison_candidates(gs, witch_id)
+        except Exception:
+            cands = []
+        alive = sum(1 for p in gs.players.values() if p.alive)
+        if cands:
+            cand_desc = "; ".join(
+                f"{c['player_id']}({c['reason']})" for c in cands[:5]
+            )
+            witch_directive["witch_poison_candidates"] = (
+                f"【毒药候选目标(按证据强度排序)】: {cand_desc}。"
+                f"如果你要用毒,请优先从以上候选中选(排在前面的证据更强)。"
+                f"如果你认为以上都不够硬,可选择 no_action 并在 reason 中说明理由。"
+            )
+        else:
+            if alive > 9:
+                no_action_hint = "【默认 no_action】当前公开信息不足,无明确高证据度狼目标。不要凭印象用毒。"
+            elif alive <= 7:
+                no_action_hint = (
+                    f"【紧急但证据不足】存活 ≤ 7 但无结构化候选。"
+                    f"从你的怀疑中选最高度目标(可在 reason 中写'基于 X 的发言'说明依据)。"
+                )
+            else:
+                no_action_hint = (
+                    "【证据不足】当前公开信息不足以构成用毒依据。"
+                    "如果没有强烈怀疑,默认 no_action。"
+                )
+            witch_directive["witch_poison_candidates"] = no_action_hint
+
     witch_directive["witch_night_action"] += "speech字段留空（夜间行动不需要发言）。"
 
     # Special directive: witch is first-night wolf kill target
@@ -552,6 +586,18 @@ def _single_wolf_vote(
             "speech字段留空（夜间行动不需要发言）。"
         ),
     }
+    # D-8 (2026-06-08 balance audit): 暴露 wolf_no_kill 作为合法战术。
+    # 4 局真实游戏中狼队 0 自爆/0 空刀,因 LLM 看不到空刀选项。注入 4 条空刀触发条件。
+    strategy_directive["wolf_no_kill_conditions"] = (
+        "【空刀战术条件】wolf_no_kill 是合法战术,action_type='wolf_no_kill', target_id=null。\n"
+        "当以下条件满足时,优先选空刀:\n"
+        "1) 当晚无明确高威胁击杀目标(评估的威胁分都很低,无跳预言家/无查杀/无明显嫌疑人)\n"
+        "2) 需要制造平安夜混淆好人视野(让白天讨论集中在'无人死亡'上,放大悍跳狼的话语权)\n"
+        "3) 关键 PK 投票轮次前夜不出刀,避免暴露狼队击杀方向\n"
+        "4) 自爆后续局的调整(若 N-1 夜有狼自爆,本夜不出刀混淆)\n"
+        "**重要限制**:已连续 2 夜空刀会强制出刀(系统层 max_consecutive_no_kill=2),"
+        "不要尝试连续 2 夜空刀。"
+    )
     # Task 3 (Issue 4): explicitly name the claimed Seer as the top kill target
     # so all wolves converge on the same high-priority player.
     strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
@@ -2033,6 +2079,12 @@ def _agent_reflection(
 
     Design doc §10.2: generates key judgments, mistakes, successful
     strategies, deception experienced, and improvement suggestions.
+
+    Per [[feedback-reflection-role-specific]]: the reflection prompt must
+    branch on role family (good / wolf / hybrid-defer) instead of a
+    single generic prompt. Each branch asks role-specific questions and
+    mandates a "保留的优点" section so cross-game learning preserves
+    what worked, not just what failed.
     """
     agent = registry.get_agent(player_id)
     if agent is None:
@@ -2047,15 +2099,17 @@ def _agent_reflection(
             engine, gs, player_id, TaskType.SPEECH,
             legal_actions=[ActionType.SPEECH],
         )
+        reflection_task = _build_reflection_prompt(
+            player=player,
+            winner=winner,
+            hybrid_master_faction=gs.hybrid_master_faction,
+        )
         reflection_directive = {
-            "reflection_task": (
-                "你已完成一局狼人杀，请复盘："
-                "你做了哪些关键判断？哪些是对的？哪些是错的？"
-                "有没有被谁欺骗或误导？下局如何改进？"
-            ),
+            "reflection_task": reflection_task,
             "game_outcome": (
                 f"胜利方是{'好人' if winner == 'good' else '狼人'}阵营。"
                 f"你{'存活到' if (player and player.alive) else '在'}游戏结束。"
+                f"你的身份是 {player.role if player else '?'}。"
             ),
         }
         context = _merge_strategy_directive(context, reflection_directive)
@@ -2065,3 +2119,110 @@ def _agent_reflection(
     except Exception:
         logger.warning("Reflection failed for %s", player_id, exc_info=True)
         return {"reflection_text": ""}
+
+
+_GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
+_WOLF_ROLES = {"werewolf"}
+
+
+def _build_reflection_prompt(
+    player: Any,
+    winner: str,
+    hybrid_master_faction: str | None,
+) -> str:
+    """Build a role-family-specific reflection prompt.
+
+    三族:
+    - 好人 (villager / seer / witch / hunter / idiot / hybrid-master-good):
+      反思投票/站边/信息缺失/神职执行
+    - 狼人 (werewolf / hybrid-master-wolf):
+      反思悍跳/暴露/角色分工
+    - 混血儿 (master 未知 / 其他): 通用模板
+
+    共同:末尾强制要求列出"本局保留的 1-2 个优点",避免只记错误。
+    """
+    role = (player.role if player else "") or ""
+    faction_result = "胜" if (
+        (role in _GOOD_ROLES and winner == "good")
+        or (role == "werewolf" and winner == "werewolf")
+        or (role == "hybrid" and (
+            (hybrid_master_faction == "good" and winner == "good")
+            or (hybrid_master_faction == "werewolf" and winner == "werewolf")
+        ))
+    ) else "负"
+
+    if role in _GOOD_ROLES:
+        return _GOOD_REFLECTION_TEMPLATE.format(faction_result=faction_result, role=role)
+    if role == "werewolf":
+        return _WOLF_REFLECTION_TEMPLATE.format(faction_result=faction_result)
+    if role == "hybrid":
+        if hybrid_master_faction == "good":
+            return _GOOD_REFLECTION_TEMPLATE.format(faction_result=faction_result, role="hybrid(跟好人)")
+        if hybrid_master_faction == "werewolf":
+            return _WOLF_REFLECTION_TEMPLATE.format(faction_result=faction_result)
+    return _GENERIC_REFLECTION_TEMPLATE.format(faction_result=faction_result, role=role)
+
+
+_GOOD_REFLECTION_TEMPLATE = """你是{role},本局好人阵营{faction_result}。请按以下结构复盘:
+
+【投票错误】本局你投过谁?有没有推错人?为什么站错边?
+- 具体指出哪一天的投票决策有误,错投了谁,该投谁
+- 分析站错边的根因(信息不足/被悍跳狼误导/被情绪带动)
+
+【信息缺失】哪些关键信号被你忽略了?
+- 预言家的查杀声明 / 悍跳狼的逻辑漏洞 / 票型异常(分票/跟票)
+- 女巫的解药用错 / 毒药空过 / 白痴翻牌时机
+
+【神职执行】(仅神职需要回答)
+- 预言家:警徽流是否清晰?是否被首推?
+- 女巫:解药救了谁?是否值得?毒药目标对了吗?
+- 猎人:被放逐/夜杀时是否开枪?目标对了吗?
+- 白痴:翻牌时机是否合适?
+
+【保留的优点】本局你做对了什么?必须列出 1-2 个具体策略,下局复用:
+- 例如:"N2 我用解药救了警长,后续警长归票带我们翻盘"
+- 例如:"我在 D3 提前质疑悍跳狼的警徽流时间线,被采信了"
+
+【PII 守卫 rag-hardening-4】反思文本中**不要写其他玩家的真实身份**(即使你已经推断出)。规则:
+- 不要写"p03 是预言家因为查杀"或"p05 是狼因为他悍跳"这类具体身份断言
+- 改用模糊指代:"某玩家", "被查杀的目标", "悍跳的狼"
+- 原因:反思会跨局注入其他玩家的 LLM prompt,如果对方玩家 ID 在下局匹配到,会造成跨局信息泄漏
+- 例外:可以写自己的身份/自己推断的逻辑,但**必须用模糊指代**
+
+"""
+
+
+_WOLF_REFLECTION_TEMPLATE = """你是狼人,本局狼队{faction_result}。请按以下结构复盘:
+
+【悍跳分析】(如果有狼跳预言家)
+- 悍跳发言为什么没人信?逻辑漏洞在哪?
+- 验人口径是否前后矛盾?警徽流是否清晰?
+- 真预言家对跳后,悍跳狼是否被迅速识别?
+
+【暴露原因】狼队为什么被识破?
+- 哪些发言/票型留下了痕迹(白天跟票太齐/发言风格雷同/悍跳失误)?
+- 哪一局开始局势不可逆?转折点是什么?
+
+【角色分工】深水/冲锋/倒钩的执行:
+- 深水狼:是否成功藏到最后?有没有过早暴露?
+- 冲锋狼:为悍跳狼站台是否有效?是否用力过猛?
+- 倒钩狼:踩队友获取信任是否成功?
+
+【保留的优点】本局你做对了什么?必须列出 1-2 个具体策略,下局复用:
+- 例如:"我们 N1 空刀让好人视野混乱,第二天悍跳狼拿到警徽"
+- 例如:"倒钩狼 D3 故意踩悍跳队友,后期反水一击致命"
+
+【PII 守卫 rag-hardening-4】反思文本中**不要写本局好人的真实身份**。规则:
+- 不要写"p03 是预言家被我查杀"或"p05 是女巫被我们毒了"这类具体身份断言
+- 改用角色名/模糊指代:"预言家", "女巫", "被查杀的神职"
+- 原因:反思会跨局注入其他玩家的 LLM prompt,即使本局你是狼,反思文本不应含具体身份(其他玩家跨局时可能匹配)
+- 例外:可以写"我作为狼做了什么"这类自身视角
+
+"""
+
+
+_GENERIC_REFLECTION_TEMPLATE = """你是{role},本局{faction_result}。请复盘:
+- 本局你做了哪些关键判断?哪些对?哪些错?
+- 有没有被谁欺骗或误导?下局如何改进?
+- 【保留的优点】本局你做对了什么?必须列出 1-2 个具体策略,下局复用。
+"""

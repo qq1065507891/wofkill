@@ -469,6 +469,7 @@ class PlayerPromptBuilder:
         "_build_reflection_memory_hints": "【辅助】",
         "_build_profile_memory_hint": "【辅助】",
         "_build_cognition_matrix_hint": "【辅助】",
+        "_build_error_pattern_hint": "【辅助】",
         # P1-6: strategy_directive outer label is NEUTRAL. The
         # function internally splits keys into 【硬约束】/【建议】/【参考】
         # sub-headers (P0-S5) that carry the priority signal. The
@@ -540,6 +541,7 @@ class PlayerPromptBuilder:
         parts.append(("_build_reflection_memory_hints", self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints())))
         parts.append(("_build_profile_memory_hint", self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint())))
         parts.append(("_build_cognition_matrix_hint", self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint())))
+        parts.append(("_build_error_pattern_hint", self._label_section("_build_error_pattern_hint", self._build_error_pattern_hint())))
         parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
         # NEW-S04-A: skill_analysis_hints render path dropped. The
         # structured skill_tactical_advice is the single source of
@@ -953,6 +955,35 @@ class PlayerPromptBuilder:
             "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
             + self._compact_json(ctx.reflection_memory_hints[:5])
         )
+
+    def _build_error_pattern_hint(self) -> str:
+        """reflect-cross-1: 跨局错误模式聚合,顶部强提示 LLM 自我修正。
+
+        当 LLM 拿到"你历史最常犯的错误是 X"这种聚合信号,比单条反思更
+        容易驱动行为改变。同时"保留优点 N 次"提醒 LLM 不要只学错误。
+        """
+        ctx = self.context
+        ep = ctx.error_pattern_hint
+        if not ep or ep.get("total_reflections", 0) == 0:
+            return ""
+        parts: list[str] = ["【跨局错误模式(基于你过往反思)】"]
+        top = ep.get("top_mistakes") or []
+        if top:
+            mistake_strs = [
+                f"{cat}({count}次)"
+                for cat, count in top
+            ]
+            parts.append(f"你最常犯的 2 类错误: {'、'.join(mistake_strs)}。")
+        preserved = ep.get("preserved_strength_count", 0)
+        if preserved:
+            parts.append(f"过去 {preserved} 局反思中你保留了具体优点,本局也请复用。")
+        same = ep.get("same_role_reflections", 0)
+        if same:
+            parts.append(
+                f"其中 {same} 局你拿过当前角色({ep.get('current_role', '?')}),"
+                f"历史经验对当前角色特别相关。"
+            )
+        return "\n".join(parts)
 
     def _build_profile_memory_hint(self) -> str:
         ctx = self.context

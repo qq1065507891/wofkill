@@ -673,6 +673,10 @@ class AgentContext(BaseModel):
     reflection_memory_hints: list[dict[str, Any]] = Field(default_factory=list)
     profile_memory_hint: dict[str, Any] = Field(default_factory=dict)
     cognition_matrix_hint: dict[str, Any] = Field(default_factory=dict)
+    # reflect-cross-1: aggregated error pattern across past reflections
+    # (e.g. "你最常犯的 2 类错误: vote_mistake(3 次), claim_failed(2 次)")。
+    # 不依赖 LLM 解析,纯 section header regex 提取 + 频率统计。
+    error_pattern_hint: dict[str, Any] = Field(default_factory=dict)
     belief_state: dict[str, Any] = Field(default_factory=dict)
     contradiction_alerts: list[dict[str, Any]] = Field(default_factory=list)
     strategy_directive: dict[str, Any] = Field(default_factory=dict)
