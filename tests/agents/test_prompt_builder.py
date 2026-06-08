@@ -3422,9 +3422,20 @@ def test_belief_top3_cap():
 
 
 def test_role_guide_documents_vote_basis():
-    """P2-9: the role guide for non-seer roles must mention which
-    vote_basis enum values to use (and that seer_check is not for
-    non-seer roles).
+    """M2-2: vote_basis *guidance* (the "选用 speech_logic / vote_pattern
+    / seer_siding, 不要用 seer_check" sentence) is no longer in
+    role_guide (system prompt). It is now injected per-turn via
+    strategy_directive from the agent_adapter for VOTE/SPEECH task
+    types.
+
+    Background: pre-fix (P2-9) the guidance was appended to every
+    role's role_guide in the stable system prompt, so wolf NIGHT
+    actions saw "投票时 vote_basis 选用 speech_logic" — irrelevant
+    for a kill target decision. M2-2 moved the guidance out.
+
+    Note: the field name ``vote_basis`` still appears in the
+    output_contract section (VOTE field list) — that's the schema,
+    not the guidance, and it stays in the system prompt.
     """
     # Spot-check villager (a non-seer good-side role).
     ctx = AgentContext(
@@ -3434,19 +3445,44 @@ def test_role_guide_documents_vote_basis():
         day_number=1,
         own_role="villager",
     )
-    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
-    # The role guide lives in the system prompt (stable section).
-    # Check that vote_basis guidance is present.
-    assert "vote_basis" in system_prompt, (
-        "P2-9: non-seer role guide must mention vote_basis enum "
-        f"guidance. system_prompt: {system_prompt!r}"
+    role_guide = PlayerPromptBuilder(ctx)._build_role_guide()
+    # M2-2: the role guide no longer contains the VOTE_BASIS_GUIDANCE
+    # text. The field name "vote_basis" is OK to remain (output
+    # contract section uses it for schema listing).
+    guidance_phrase = "选用 speech_logic"
+    assert guidance_phrase not in role_guide, (
+        "M2-2: vote_basis *guidance* should be removed from role_guide "
+        f"(stable system section). role_guide: {role_guide!r}"
     )
-    # And explicitly call out that seer_check is NOT to be used by
-    # non-seer roles.
-    assert "seer_check" in system_prompt, (
-        "P2-9: non-seer role guide must explicitly call out that "
-        "seer_check is not for non-seer roles. "
-        f"system_prompt: {system_prompt!r}"
+
+
+def test_vote_basis_guidance_appears_in_per_turn_user_prompt():
+    """M2-2: vote_basis guidance must be in the per-turn strategy_directive
+    output (rendered into the user prompt by _build_strategy_directive),
+    not the stable system prompt.
+    """
+    from werewolf_agent.runtime.agent_adapter import VOTE_BASIS_GUIDANCE
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        strategy_directive={"vote_basis_hint": VOTE_BASIS_GUIDANCE},
+    )
+    builder = PlayerPromptBuilder(ctx)
+    # System prompt must NOT contain the VOTE_BASIS_GUIDANCE text.
+    system_text = builder.build_system_prompt()
+    assert VOTE_BASIS_GUIDANCE not in system_text, (
+        "M2-2: VOTE_BASIS_GUIDANCE leaked into stable system prompt. "
+        f"system_text: {system_text!r}"
+    )
+    # _build_strategy_directive (per-turn user prompt section) must
+    # contain the VOTE_BASIS_GUIDANCE text.
+    user_section = builder._build_strategy_directive()
+    assert VOTE_BASIS_GUIDANCE in user_section, (
+        "M2-2: VOTE_BASIS_GUIDANCE missing from _build_strategy_directive. "
+        f"section: {user_section!r}"
     )
 
 

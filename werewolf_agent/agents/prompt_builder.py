@@ -392,24 +392,16 @@ class PlayerPromptBuilder:
                 "猎人死后开枪按公开顺序处理，村民不替猎人做决定。"
             ),
         }
-        # P2-9: non-wolf roles need a one-line note on which vote_basis
-        # enum value to use. The 7-value enum (seer_check / seer_siding
-        # / speech_logic / vote_pattern / pressure_test / anti_herd /
-        # fallback) is too wide to guess without guidance. Only the
-        # seer legitimately uses ``seer_check`` (their own check);
-        # every other role uses speech_logic / vote_pattern /
-        # seer_siding.
-        _VOTE_BASIS_GUIDANCE = (
-            "【投票时 vote_basis 选用 speech_logic / vote_pattern / "
-            "seer_siding，不要用 seer_check。】"
-        )
+        # P2-9: VOTE_BASIS_GUIDANCE was originally appended here for
+        # non-seer roles. M2-2: the role_guide is part of the stable
+        # system prompt and doesn't know task_type, so a wolf NIGHT
+        # action was seeing "投票时 vote_basis 选用 speech_logic" —
+        # irrelevant. Moved to per-turn strategy_directive injection
+        # in agent_adapter.py for VOTE/SPEECH task types only. The
+        # seer exemption also lives there (it still applies — seer
+        # legitimately uses seer_check for their own checks).
         if role in role_rules:
             lines.append(role_rules[role])
-            # Seer stands with their OWN check (own ID is implicit),
-            # so the "don't use seer_check" guidance doesn't apply
-            # to them — they should use seer_check.
-            if role != "seer":
-                lines.append(_VOTE_BASIS_GUIDANCE)
         return "\n".join(lines) if lines else ""
 
     def _build_output_contract(self) -> str:

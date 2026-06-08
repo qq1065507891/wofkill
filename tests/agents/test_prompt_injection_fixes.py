@@ -75,3 +75,43 @@ def test_vote_audit_fields_derived_from_constant():
     )
     # 必须 non-empty (VOTE 9 fields - 3 = 6 期望)
     assert len(audit) >= 3, f"_VOTE_AUDIT_FIELDS 必须 >= 3 fields, got {len(audit)}"
+
+
+def test_vote_basis_guidance_only_in_vote_or_speech_prompts():
+    """M2-2: _VOTE_BASIS_GUIDANCE must NOT appear in night_action prompts."""
+    from werewolf_agent.agents.schemas import AgentContext, TaskType
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+
+    # Night task (wolf kill = NIGHT_ACTION): vote_basis guidance
+    # should NOT be in role_guide (stable system section).
+    ctx_night = AgentContext(
+        agent_id="p01", task_type=TaskType.NIGHT_ACTION,
+        phase="night", day_number=1, night_number=1,
+        own_role="werewolf",
+    )
+    builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
+    builder.context = ctx_night
+    role_guide = builder._build_role_guide()
+    assert "vote_basis" not in role_guide.lower(), (
+        f"M2-2: vote_basis guidance leaked into role_guide (stable system "
+        f"section). Got: {role_guide!r}"
+    )
+
+
+def test_vote_basis_guidance_present_in_speech_via_strategy_directive():
+    """M2-2: vote_basis guidance must be injected per-turn via
+    strategy_directive (the adapter does it, role_guide doesn't)."""
+    from werewolf_agent.agents.schemas import AgentContext, TaskType
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.runtime.agent_adapter import VOTE_BASIS_GUIDANCE
+
+    ctx = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH,
+        phase="day", day_number=2, night_number=2,
+        own_role="villager",
+        strategy_directive={"vote_basis_hint": VOTE_BASIS_GUIDANCE},
+    )
+    builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
+    builder.context = ctx
+    text = builder._build_strategy_directive()
+    assert "vote_basis" in text.lower()
