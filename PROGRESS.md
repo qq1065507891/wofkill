@@ -4,12 +4,12 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **rag-hardening** — 2026-06-09
-- Active task: RAG 注入审计 5 个泄漏路径全部修复
+- Current phase: **prompt-injection-audit-fixes** — 2026-06-09
+- Active task: T1 M4-1 reflection budget sync (DONE)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
 - **58+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
-- **本次新增**: 10 个 rag-hardening 测试, 4 道 LLM/RAG 防御层加固, 0 engine 改动
+- **本次新增**: T1 M4-1 单点修复 + 1 个回归测试, prompt_builder 与 context.py budget 单一源点化
 
 ---
 
@@ -77,6 +77,38 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 **风险**:
 - `_make_entry` 测试 helper 修复 (`tags=tags or ["test"]` 改放 `metadata.tags`) — 暴露了原 helper 静默丢弃 top-level `tags` 的潜在 bug。**可能影响其他未跑测试**,但实际 `create_seed_entries` 也只设 `metadata.tags`,所以是测试 helper 本身的问题
 - PII regex `\bp\d{2}\b` 用 word boundary,中文文本里 `p03 是狼` 会被识别;但 `p3 是狼` 不会被识别(单数字)。当前 V1 玩家 ID 格式是 `pNN` 严格两位数字,所以这个 regex 精确匹配
+
+---
+
+## prompt-injection-audit-fixes — 2026-06-09
+
+**背景**: user 提"跨局反思记忆这块有没有问题?"。`docs/superpowers/plans/2026-06-09-prompt-injection-audit-fixes.md` 列出 9 个 prompt 注入审计 issue (M2/M3/M4/M5),本 phase 逐 task 修复。
+
+**T1 (M4-1) DONE — reflection budget sync**:
+- **问题**: `werewolf_agent/agents/prompt_builder.py:956` 用 `[:5]` 切片反思 hint,但 `werewolf_agent/runtime/context.py:474` 已把 `HINT_BUDGET` 升级到 8 (reflect-cross-2 phase 改的)。prompt_builder 仍是闭包内常量,无法 import → 静默漏 3 条 hint
+- **修复**: 把 `HINT_BUDGET` 从 `_reflection_memory_hints` 函数体提到 module level (`HINT_BUDGET = 8` 注释保留 reflect-cross-2 出处);`prompt_builder.py` 加 `from werewolf_agent.runtime.context import HINT_BUDGET` 并把 `[:5]` 改成 `[:HINT_BUDGET]`。`MAX_PER_ROLE = 2` 保留在函数内 (它只在该函数使用)
+- **新文件**: `tests/agents/test_prompt_injection_fixes.py` (Tasks 2/3/4/7/8 会复用)
+- **测试**: 1 个新测试 (`test_reflection_hints_slice_uses_budget_8`),故意用 `text.count('"text":"反思 ')` 计数 (header 自身含 "反思" 一次,plain count 会 off-by-one)
+
+**改动**:
+
+| # | 改动 | 文件 |
+|---|------|------|
+| M4-1 | `HINT_BUDGET = 8` 从闭包提升到 module level | `werewolf_agent/runtime/context.py:464-475` |
+| M4-1 | `prompt_builder._build_reflection_memory_hints` 改用 `[:HINT_BUDGET]` + 加 import | `werewolf_agent/agents/prompt_builder.py:32-37, 959` |
+| M4-1 | 新增回归测试 | `tests/agents/test_prompt_injection_fixes.py` |
+
+**验证**:
+- `pytest tests/agents/test_prompt_injection_fixes.py::test_reflection_hints_slice_uses_budget_8 -v` → 1 passed
+- `pytest tests/agents/ -p no:cacheprovider` → 590 passed (1 new + 589 pre-existing)
+- `pytest tests/runtime/ tests/rules/ tests/cognition/ -p no:cacheprovider` → 1047 passed (含新测试)
+- 既有 `tests/integration/test_directive_role_gating.py::test_witch_directive_isolated` 和 `test_final_delivery.py::TestAPIStartup::*` 在 baseline 也 fail (无关本次改动,API 403 缺 auth、witch directive 是另一 task 范围)
+
+**未跑端到端**: 没新游戏跑通;hint 数量变更要等下局真实游戏观察 LLM 是否仍遵守 6.25k char user budget (8 hints × ~150 char ≈ 1200 char,远低于 6250)。下局跑完查 `game_stdout.log` 中 LLM 行为是否仍合理。
+
+**风险**:
+- 模块级 `HINT_BUDGET` 现在是 public-ish 名字 (无下划线) — 故意为之,跨模块引用需要它 public。如果嫌太暴露可改回 `HINT_BUDGET_FOR_PROMPT_BUILDER` 之类,但当前命名简短且语义清晰
+- 把 constant 从闭包提到 module 触发了 `runtime.context` 启动期 import `HINT_BUDGET` — 该 module 已被 `agent_adapter` 等大量模块 import,确认无循环 import 风险 (smoke import 验证通过)
 
 ---
 

@@ -461,17 +461,24 @@ def _profile_memory_hint(
     }
 
 
+# M4-1 (2026-06-09): moved to module level so the prompt builder can
+# import it as a single source of truth.  Previously this was a
+# closure constant inside ``_reflection_memory_hints``; the prompt
+# builder sliced with the hard-coded literal ``[:5]`` and silently
+# dropped 3 hints from every LLM call.
+#
+# reflect-cross-2: budget 5 → 8. 4 局真实游戏分析显示 top-5 经常被
+# 同一角色填满 (max 2 per role × 2~3 roles),跨角色学习受限。
+# 8 hints × 2 per role = 覆盖 4 角色族,适合好人阵营 5 角色 + 狼 1 角色场景。
+HINT_BUDGET = 8
+
+
 def _reflection_memory_hints(reflections: list[Any], current_role: str, current_faction: str) -> list[dict[str, Any]]:
     # P1-M12: cap at 2 hints per role so the top hints surface reflections
     # from multiple perspectives rather than 5 from the same role /
     # scenario. The hint output budget is preserved; we only restrict
     # how many may come from a single role.
-    #
-    # reflect-cross-2: budget 5 → 8. 4 局真实游戏分析显示 top-5 经常被
-    # 同一角色填满 (max 2 per role × 2~3 roles),跨角色学习受限。
-    # 8 hints × 2 per role = 覆盖 4 角色族,适合好人阵营 5 角色 + 狼 1 角色场景。
     MAX_PER_ROLE = 2
-    HINT_BUDGET = 8
 
     def _ref_score(r: Any) -> tuple[int, int, str, str]:
         priority = 0

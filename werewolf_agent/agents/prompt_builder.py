@@ -29,6 +29,13 @@ from werewolf_agent.agents.schemas import (
 # from private_memory; the duplicate here is deleted.
 from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES  # noqa: E402
 
+# M4-1 (2026-06-09): single source of truth for the reflection-hint
+# budget.  Imported from ``runtime.context`` so the prompt builder and
+# the hint-generation helper cannot drift.  Previously this was a
+# closure constant inside ``_reflection_memory_hints`` while the
+# prompt builder hard-coded ``[:5]``, silently dropping 3 hints.
+from werewolf_agent.runtime.context import HINT_BUDGET  # noqa: E402
+
 # P0-K1: skill catalog removed (tool path is dead code). Skill analyses
 # are pre-injected via skill_analysis_hints — no separate tool catalog.
 
@@ -953,7 +960,7 @@ class PlayerPromptBuilder:
             return ""
         return (
             "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
-            + self._compact_json(ctx.reflection_memory_hints[:5])
+            + self._compact_json(ctx.reflection_memory_hints[:HINT_BUDGET])
         )
 
     def _build_error_pattern_hint(self) -> str:
