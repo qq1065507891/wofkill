@@ -2136,8 +2136,14 @@ def _agent_reflection(
     winner = gs.winning_faction or "?"
 
     try:
+        # P0-RF1: pass TaskType.REFLECTION so speech_quality_phase
+        # returns None and skips the public-speech 4-field check.
+        # Reflection text is post-game review and has no stance /
+        # suspicion_target / vote_leaning / evidence fields. Using
+        # TaskType.SPEECH here triggered a retry loop that surfaced
+        # as 8/12 reflection failures in the post-merge game trace.
         context = build_agent_context(
-            engine, gs, player_id, TaskType.SPEECH,
+            engine, gs, player_id, TaskType.REFLECTION,
             legal_actions=[ActionType.SPEECH],
         )
         reflection_task = _build_reflection_prompt(
@@ -2156,7 +2162,13 @@ def _agent_reflection(
         context = _merge_strategy_directive(context, reflection_directive)
 
         action, _retry_info = agent.act(context)
-        return {"reflection_text": getattr(action, "speech", "") or ""}
+        # P0-RF2: scrub raw p\d+ tokens from the LLM-written reflection
+        # before it lands in graph state and gets persisted to
+        # ReflectionMemory. The template's 1-line PII hint is a
+        # best-effort prompt; this post-processing is the authoritative
+        # guard against cross-game ID leakage.
+        from werewolf_agent.memory.store import _scrub_player_ids
+        return {"reflection_text": _scrub_player_ids(getattr(action, "speech", "") or "")}
     except Exception:
         logger.warning("Reflection failed for %s", player_id, exc_info=True)
         return {"reflection_text": ""}
@@ -2224,11 +2236,7 @@ _GOOD_REFLECTION_TEMPLATE = """你是{role},本局好人阵营{faction_result}�
 - 例如:"N2 我用解药救了警长,后续警长归票带我们翻盘"
 - 例如:"我在 D3 提前质疑悍跳狼的警徽流时间线,被采信了"
 
-【PII 守卫 rag-hardening-4】反思文本中**不要写其他玩家的真实身份**(即使你已经推断出)。规则:
-- 不要写"p03 是预言家因为查杀"或"p05 是狼因为他悍跳"这类具体身份断言
-- 改用模糊指代:"某玩家", "被查杀的目标", "悍跳的狼"
-- 原因:反思会跨局注入其他玩家的 LLM prompt,如果对方玩家 ID 在下局匹配到,会造成跨局信息泄漏
-- 例外:可以写自己的身份/自己推断的逻辑,但**必须用模糊指代**
+【PII】不要写具体玩家 ID,用"某玩家"代替(后处理会进一步脱敏)。
 
 """
 
@@ -2253,11 +2261,7 @@ _WOLF_REFLECTION_TEMPLATE = """你是狼人,本局狼队{faction_result}。请�
 - 例如:"我们 N1 空刀让好人视野混乱,第二天悍跳狼拿到警徽"
 - 例如:"倒钩狼 D3 故意踩悍跳队友,后期反水一击致命"
 
-【PII 守卫 rag-hardening-4】反思文本中**不要写本局好人的真实身份**。规则:
-- 不要写"p03 是预言家被我查杀"或"p05 是女巫被我们毒了"这类具体身份断言
-- 改用角色名/模糊指代:"预言家", "女巫", "被查杀的神职"
-- 原因:反思会跨局注入其他玩家的 LLM prompt,即使本局你是狼,反思文本不应含具体身份(其他玩家跨局时可能匹配)
-- 例外:可以写"我作为狼做了什么"这类自身视角
+【PII】不要写本局具体玩家 ID(好人的真实身份),用"预言家"/"女巫"/"被查杀的神职"代替(后处理会进一步脱敏)。
 
 """
 

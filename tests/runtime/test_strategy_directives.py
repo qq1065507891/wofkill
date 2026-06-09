@@ -3340,21 +3340,151 @@ class TestReflectionRoleSpecific:
         assert "【保留的优点】" in good_text
         assert "【保留的优点】" in wolf_text
 
-    def test_good_reflection_template_has_pii_guard(self) -> None:
-        """rag-hardening-4: 好人反思模板必须含 PII 守卫段,禁止写入其他玩家真实身份。"""
-        from werewolf_agent.runtime.agent_adapter import _GOOD_REFLECTION_TEMPLATE
-        assert "PII 守卫" in _GOOD_REFLECTION_TEMPLATE
-        assert "不要写" in _GOOD_REFLECTION_TEMPLATE
-        assert "p\\d{2}" in _GOOD_REFLECTION_TEMPLATE or "p03 是预言家" in _GOOD_REFLECTION_TEMPLATE
-        assert "模糊指代" in _GOOD_REFLECTION_TEMPLATE
-        assert "跨局" in _GOOD_REFLECTION_TEMPLATE
+    def test_good_reflection_template_has_pii_hint(self) -> None:
+        r"""P0-RF2: 好人反思模板含简洁的 PII 提示(PII + 后处理脱敏兜底)。
 
-    def test_wolf_reflection_template_has_pii_guard(self) -> None:
-        """rag-hardening-4: 狼体反思模板必须含 PII 守卫段。"""
+        8 行铺陈版(模糊指代/跨局/p\d+ 例子)被精简成 1 行 + 后处理
+        兜底:模板里只提一句,ReflectionMemory 写入前用
+        ``_scrub_player_ids`` 正则替换 p\d+ → 模糊词。完整提示在
+        模板里对 LLM 行为影响极小,反而吃 context 预算。
+        """
+        from werewolf_agent.runtime.agent_adapter import _GOOD_REFLECTION_TEMPLATE
+        assert "【PII】" in _GOOD_REFLECTION_TEMPLATE
+        assert "后处理" in _GOOD_REFLECTION_TEMPLATE or "脱敏" in _GOOD_REFLECTION_TEMPLATE
+        assert "不要写" in _GOOD_REFLECTION_TEMPLATE
+        # 8 行铺陈段的特征关键词不应再出现
+        assert "PII 守卫" not in _GOOD_REFLECTION_TEMPLATE
+        assert "跨局" not in _GOOD_REFLECTION_TEMPLATE
+
+    def test_wolf_reflection_template_has_pii_hint(self) -> None:
+        """P0-RF2: 狼体反思模板含简洁的 PII 提示。"""
         from werewolf_agent.runtime.agent_adapter import _WOLF_REFLECTION_TEMPLATE
-        assert "PII 守卫" in _WOLF_REFLECTION_TEMPLATE
+        assert "【PII】" in _WOLF_REFLECTION_TEMPLATE
+        assert "后处理" in _WOLF_REFLECTION_TEMPLATE or "脱敏" in _WOLF_REFLECTION_TEMPLATE
         assert "不要写" in _WOLF_REFLECTION_TEMPLATE
-        assert "模糊指代" in _WOLF_REFLECTION_TEMPLATE
+        # 8 行铺陈段不应再出现
+        assert "PII 守卫" not in _WOLF_REFLECTION_TEMPLATE
+        assert "跨局" not in _WOLF_REFLECTION_TEMPLATE
+        assert "模糊指代" not in _WOLF_REFLECTION_TEMPLATE
+
+    def test_agent_reflection_uses_REFLECTION_task_type(self, monkeypatch) -> None:
+        """P0-RF1: _agent_reflection 必须用 TaskType.REFLECTION,而不是 SPEECH。
+
+        修复前的 bug:传 TaskType.SPEECH → speech_quality_phase 返回
+        'day_discussion' → validate_public_speech 跑 4 字段检查 → 反思
+        文本没有 stance/suspicion_target/vote_leaning/evidence → 8/12
+        reflection 失败。修复后 TaskType.REFLECTION 在映射表里没有 →
+        返回 None → 短路退出。
+        """
+        from werewolf_agent.agents.schemas import TaskType
+        from werewolf_agent.runtime import agent_adapter as aa
+
+        captured: dict[str, Any] = {}
+
+        # Capture the task_type that build_agent_context receives inside
+        # _agent_reflection.
+        def fake_build_agent_context(engine, gs, player_id, task_type, **kwargs):
+            captured["task_type"] = task_type
+            captured["player_id"] = player_id
+            return AgentContext(
+                agent_id=player_id,
+                task_type=task_type,
+            )
+
+        monkeypatch.setattr(aa, "build_agent_context", fake_build_agent_context)
+
+        # Fake agent that returns a valid PlayerAction with reflection text.
+        class FakeAgent:
+            def act(self, context):
+                from werewolf_agent.agents.schemas import PlayerAction
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH,
+                        target_id=None,
+                        speech="本局我投错了 p03,他其实不是狼",
+                        reason="",
+                    ),
+                    None,
+                )
+
+        class FakeRegistry:
+            def get_agent(self, player_id):
+                return FakeAgent()
+
+        gs = GameState(
+            game_id="g_test",
+            players={"p01": PlayerState(id="p01", role="villager", alive=True)},
+            phase="end",
+            day_number=2,
+            winning_faction="werewolf",
+        )
+        state = {"game_state": gs}
+        result = aa._agent_reflection(state, engine=None, registry=FakeRegistry(), player_id="p01")
+
+        assert captured["task_type"] == TaskType.REFLECTION, (
+            f"_agent_reflection should use TaskType.REFLECTION to bypass "
+            f"public-speech 4-field check, got {captured['task_type']!r}"
+        )
+        # P0-RF2: returned text is post-processed (raw p\d+ replaced)
+        assert "p03" not in result["reflection_text"], (
+            f"reflection_text should be scrubbed of p\\d+ ids, got: "
+            f"{result['reflection_text']!r}"
+        )
+        assert "[玩家ID已省略]" in result["reflection_text"]
+
+    def test_agent_reflection_scrubs_player_ids(self, monkeypatch) -> None:
+        """P0-RF2: _agent_reflection 返回的 reflection_text 走 _scrub_player_ids。"""
+        from werewolf_agent.runtime import agent_adapter as aa
+
+        def fake_build_agent_context(engine, gs, player_id, task_type, **kwargs):
+            return AgentContext(
+                agent_id=player_id,
+                task_type=task_type,
+            )
+
+        monkeypatch.setattr(aa, "build_agent_context", fake_build_agent_context)
+
+        class FakeAgent:
+            def __init__(self, text):
+                self._text = text
+            def act(self, context):
+                from werewolf_agent.agents.schemas import PlayerAction
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH,
+                        target_id=None,
+                        speech=self._text,
+                        reason="",
+                    ),
+                    None,
+                )
+
+        class FakeRegistry:
+            def __init__(self, text):
+                self._text = text
+            def get_agent(self, player_id):
+                return FakeAgent(self._text)
+
+        gs = GameState(
+            game_id="g_test",
+            players={"p01": PlayerState(id="p01", role="seer", alive=True)},
+            phase="end",
+            day_number=2,
+            winning_faction="good",
+        )
+        state = {"game_state": gs}
+
+        # Multiple p\d+ ids should all be replaced.
+        result = aa._agent_reflection(
+            state, engine=None,
+            registry=FakeRegistry("我查杀了 p03,后来 p05 也查杀了 p07,他们都死了"),
+            player_id="p01",
+        )
+        text = result["reflection_text"]
+        assert "p03" not in text
+        assert "p05" not in text
+        assert "p07" not in text
+        assert text.count("[玩家ID已省略]") == 3
 
 
 class TestReflectionCrossGameLearning:

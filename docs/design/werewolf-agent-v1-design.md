@@ -1000,7 +1000,7 @@ RAG 的重要原则：
 - **catch-all 模式**: 即使 PII 过滤漏过,`_validate_not_rule_truth` 还会拒绝 "X 是狼" / "X 查杀" / "X 金水" 等泛指身份断言 (双层防御)。
 - **renderer 不只是字段白名单**: `hits_to_prompt_lines` 还做 `allowed_in_live_context` 二次过滤,即使 retriever 失效,GOD_VIEW 内容也不会到达 live prompt。
 
-**反思记忆的同步防御** (`memory/reflection.py` + `agent_adapter.py:_GOOD_REFLECTION_TEMPLATE / _WOLF_REFLECTION_TEMPLATE`): 反思模板末尾有【PII 守卫】段,强制 LLM 用模糊指代 ("某玩家", "被查杀的目标"),禁止写入其他玩家真实身份。理由:反思文本会跨局注入到下一局 player 的 prompt,如果对方玩家 ID 在下局匹配到会造成跨局信息泄漏。
+**反思记忆的同步防御** (`memory/reflection.py` + `agent_adapter.py:_GOOD_REFLECTION_TEMPLATE / _WOLF_REFLECTION_TEMPLATE`): 反思模板末尾有【PII】段(2026-06-10 起从 8 行精简为 1 行,理由:模板里 8 行铺陈对 LLM 行为影响极小,反而吃 context 预算),LLM 收到"不要写具体玩家 ID"提示;**后处理兜底** 由 `agent_adapter._agent_reflection` 返回 `reflection_text` 前调 `memory/store._scrub_player_ids` 正则替换 `p\d+ → [玩家ID已省略]`,ReflectionMemory 写入前再过一遍(`memory/store._store_review_reflection`)。理由:反思文本会跨局注入到下一局 player 的 prompt,如果对方玩家 ID 在下局匹配到会造成跨局信息泄漏。两层防御:模板 1 行提示(LLM 自律) + 后处理正则(强制生效)。
 
 ### 9.3 冷启动方案
 
@@ -1087,6 +1087,13 @@ RAG 不应只依赖人工大规模编写案例库，也不能只靠纯 LLM 自�
 - 被谁欺骗或误导
 - 下局改进建议
 - 能力参数变化
+
+**反思 LLM 调用的 task_type** (2026-06-10 修复,`P0-RF1`):
+`_agent_reflection` 用 `TaskType.REFLECTION` (而非 `SPEECH`),
+避免 `speech_quality_phase` 跑 4 字段公开发言质量检查
+(反思文本没有 `stance` / `suspicion_target` / `vote_leaning` /
+`evidence`)。`TaskType.REFLECTION` 在 `schemas.py:64` 存在,
+`speech_quality_phase` 映射表里没它 → 返回 None → 短路退出。
 
 **复盘模板必须按角色族分支** (2026-06-09 反馈,详见 `PROGRESS.md` `reflection-role-specific` phase):
 

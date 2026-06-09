@@ -3341,3 +3341,51 @@ safe no-op.
 | After J-13 (5cad626) | 499 | — |
 | After J-14 (01db2ff) | 502 | 2418 |
 
+## Post-merge reflection retry failures — 2026-06-10 (P0-RF1/2)
+
+**触发**: 合并 8 task 审计修复到 master 后,跑真实游戏 g_xxx
+(4 局顺序),日志显示 8/12 player 的反思调用因
+`speech_quality` 错误重试 3 次后失败。同时,部分 game-end
+反思调用报 `API Error: 400 invalid params, context window
+exceeds limit (2013 tokens)`。
+
+**根因 1 (P0-RF1)**: `agent_adapter._agent_reflection` 传
+`TaskType.SPEECH` 给 `build_agent_context`,触发
+`speech_quality_phase(SPEECH) = "day_discussion"` → 跑
+`validate_public_speech` → 反思文本没有
+`stance` / `suspicion_target` / `vote_leaning` / `evidence` 4 字段
+→ 全 fail → 3 次重试都 fail → 反思文本降级为空。
+
+新加的角色族反思模板(更长、更结构化)让这个 bug 更频繁暴露。
+
+**修复**: `agent_adapter.py:2144` 改 `TaskType.REFLECTION`
+(`schemas.py:64` 已存在,`speech_quality_phase` 映射表里没有,
+返回 None → 短路退出)。1 行改动。
+
+**根因 2 (P0-RF2)**: 反思模板里的 PII 守卫 8 行铺陈 (模糊指代 /
+跨局 / p\d+ 例子) 让模板从 ~200 tokens 涨到 ~700 tokens,
+加上 system prompt + game state,接近 GLM 4 的 2013 token 上限。
+
+**修复**: 模板 PII 守卫压到 1 行 (`【PII】不要写具体玩家 ID,后处理
+会进一步脱敏`)。脱敏兜底从"教 LLM 写什么"改成"写入
+ReflectionMemory 前正则替换"(`_scrub_player_ids` 在
+`memory/store.py:50` 已有,直接复用)。模板 641→452 字符 (-30%),
+token 估算 687→495 (-28%)。反思路径总 prompt 从 ~2400 降到
+~1700 tokens,留 ~300 余量。
+
+**改动文件**:
+- `werewolf_agent/runtime/agent_adapter.py:2139-2175` 改
+  `TaskType.REFLECTION` + 加 `_scrub_player_ids` + 模板 PII
+  段精简 (GOOD 641→452 / WOLF 601→448)
+- `tests/runtime/test_strategy_directives.py:3343-3368` 改 2 个
+  旧 PII 守卫测试断言(8 行格式 → 1 行 + 后处理)
+- `tests/runtime/test_strategy_directives.py:3371-3472` 加 2 个
+  新测试覆盖 task_type 切换 + 脱敏后处理
+
+**新增测试**: 2 (`test_agent_reflection_uses_REFLECTION_task_type`,
+`test_agent_reflection_scrubs_player_ids`)
+
+**回归** (待跑,见 P0-RF3): `pytest tests/runtime/ -p no:cacheprovider -q`
++ `pytest tests/integration/test_directive_role_gating.py
+test_live_runtime.py -p no:cacheprovider -q`
+
