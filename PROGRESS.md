@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T5 M3-2 add current_day filter to public history helpers (DONE)
+- Active task: T6 M3-3 split wolf.py into day/night (DONE)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
 - **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
@@ -180,6 +180,30 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - 当前 villager 是唯一调用者。若未来其他 directive (例如 seer / hunter) 也调用这两个 helper 并需要 late-game focus,需要同步传 `current_day=gs.day_number` — 不传就退化到 pre-fix 行为 (全历史),不一定 regression,但失去 M3-2 价值
 - 边缘情况 `current_day=0` 会过滤掉 day 1+ 全部事件 (V1 实际不会发生,因为 game 从 D1 开始,day_number 至少为 1),helper 行为正确但语义上是 "无投票历史可看"
 - Death 顺序逻辑: malformed `resolution_batch` (e.g. `day_BAD`) 选择保留而非丢弃,与 plan 一致 ("never silently drop"),但若未来真实游戏中产生 malformed batch,可能让 LLM 看到"尚未发生的死亡"产生混淆 — 当前无错路径产生 malformed batch,故低风险
+
+**T6 (M3-3) DONE — split wolf.py into day/night directive builders**:
+- **问题**: `build_wolf_directive` 历史地同时构建 day-only 键 (wolf_day_push_target, role assignments, fake_seer execution, teammate_exposed, self_destruct_condition) 和 night-only 键 (wolf_no_kill_conditions, wolf_kill_instruction)。Day wolf 看到 no_kill (off-phase 噪音),night wolf 看到 day_push_target (off-phase 噪音),稀释 LLM 关注点
+- **修复**: 拆成 `build_wolf_day_directive` (day-only) 和 `build_wolf_night_directive` (night-only)。`build_wolf_directive` 保留为 back-compat shim,返回 merged dict
+- **Key 分类** (基于实际代码读取):
+  - **Day** (build_wolf_day_directive): `wolf_live_seer_claimants`, `wolf_speech_directive`, `wolf_universal_rules`, `wolf_day_push_target`, `wolf_fake_seer_execution`, `wolf_fake_seer_teammate`, `wolf_teammate_exposed`, `wolf_self_destruct_condition`
+  - **Night** (build_wolf_night_directive): `wolf_kill_instruction`, `wolf_no_kill_conditions`
+  - 留在 agent_adapter._single_wolf_vote (避免 circular import): `wolf_high_priority_target`, `kill_value_assessment`, `wolf_plan_target` (依赖 `_build_wolf_kill_directive` / `_evaluate_wolf_kill_target`, 这两个 helper 本身定义在 agent_adapter)
+- **审计 vs 实现差异**: M3-3 audit 声称 `wolf_self_destruct_condition` 是 night-only,但实际实现中该 key 在 `build_wolf_directive` (被 day_speech 调用),所以是 **day-only** (自爆是 day 决策,prompt 在 day 阶段发问)。**wolf_no_kill_conditions** audit 声称是 `build_wolf_directive` 产物,但实际在 `_single_wolf_vote` (night) — 抽取到 `build_wolf_night_directive` 后,两个 key 现在按"决策时机"分类
+- **call site 调查** (grep 全树):
+  - 2 个 production call site: `agent_adapter.py:909` (agent_day_speech), `agent_adapter.py:2054` (sheriff 警上发言) — 都用 `_build_wolf_day_speech_directive` alias,自动指向新 day builder
+  - 1 个 night call site: `agent_adapter.py:_single_wolf_vote` (line ~612) — 改用 `_build_wolf_night_directive`
+  - 1 个 context.py:45 alias re-export — 改指向 day builder
+  - 多处 test files 直接调 `build_wolf_directive` (back-compat shim 兼容)
+- **Circular import 规避**: 不在 `build_wolf_night_directive` 内 import `_build_wolf_kill_directive` / `_evaluate_wolf_kill_target` (它们在 agent_adapter.py,而 agent_adapter 反向 import `directives.wolf`)。改为:`build_wolf_night_directive` 只 emit `wolf_kill_instruction` + `wolf_no_kill_conditions`,night adapter 后续 merge 自己的 high_priority / kill_assessment / plan_target
+- **commit**: `896957e refactor(directive): M3-3 split wolf.py into day/night builders`
+- **测试**: 3 个新测试 (`tests/runtime/test_wolf_directive_split.py`) 覆盖 (a) day directive 包含 push target,无 no_kill (b) night directive 包含 no_kill,无 push (c) back-compat shim 合并两边
+- **验证**:
+  - `pytest tests/runtime/test_wolf_directive_split.py -v` → 3 passed
+  - `pytest tests/runtime tests/agents` → 1198 passed, 0 failed (M3-2 / M2-1 / M2-2 / T3-fix 历史测试无 regression)
+
+**风险**:
+- `wolf_self_destruct_condition` 留在 day builder (因为 day 决策),但 day prompt 注入条件提示的语义 (4 条触发条件,持警徽时强调撕徽) 是 self-destruct 的合法化宣传 — 留在 day 是符合设计的 (V1 D-8 audit 决定)。若未来 audit 想把 self-destruct 的"条件列表"放到 night,需要重新看 day vs night 决策分离
+- Back-compat shim (`build_wolf_directive`) 调 day + night 各一次,效率上是 2x 调用 (虽然 prompt cache 大概率命中)。这是为 test/back-compat 牺牲的效率,生产路径已不经过 shim
 
 ---
 
