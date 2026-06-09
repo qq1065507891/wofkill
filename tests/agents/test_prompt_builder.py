@@ -1761,7 +1761,10 @@ def test_sections_have_priority_labels():
     Sections grouped:
     - 【硬约束】 strategy_directive, retry hint, output contract
     - 【辅助】   phase, belief, summary, visible state, private memory,
-      salience, rag hints, reflection, profile, cognition, skill hints
+      salience, rag hints, profile, cognition, skill hints
+    - 【参考】   reflection  # Note: reflection was demoted from 辅助 to
+                              # 参考 in M4-2 (commit 0022d25) — per-player
+                              # history outranks generic RAG under budget.
     - 【可选】   transcript
 
     The test verifies the label appears in the user prompt and the
@@ -3576,20 +3579,27 @@ def test_sheriff_example_includes_withdraw():
 
 
 # ---------------------------------------------------------------------------
-# G-R4-15: RAG hints must survive budget pressure.
+# G-R4-15 → M4-2 reversal: RAG hints are NO LONGER guaranteed to survive
+# budget pressure.
 #
-# Pre-fix: _build_rag_hints was tagged 【辅助】 and got dropped
-# alongside persona, profile, and other 辅助-tier sections when
-# the joined prompt exceeded the 6250-char budget. The whole
-# point of the 知识库提示 section is to bring strategy hints into
-# the LLM's reasoning; losing it under budget pressure defeats
-# the retrieval investment.
+# Pre-M4-2 (G-R4-15): RAG hints were tagged 【参考】, so they survived
+# budget cuts ahead of 辅助 sections. The rationale was that RAG
+# retrieval is expensive, so losing the hints would defeat the
+# retrieval investment.
 #
-# Post-fix: RAG hints move to the new 【参考】 tier, which sits
-# between 辅助 (dropped second) and 硬约束 (never dropped). The
-# trimmer drops 辅助 first, then 【参考】, then 硬约束. RAG
-# hints survive whenever the budget allows the lower-priority
-# 辅助 sections to be dropped.
+# Post-M4-2 (commit 0022d25): RAG hints are now a 【辅助】 section
+# (same tier as persona, profile, etc.). The M4-2 view is
+# "prompt value ≠ retrieval cost" — per-player reflection
+# (now in 【参考】) outranks generic RAG for current LLM reasoning,
+# so RAG is no longer privileged over other 辅助 sections.
+#
+# This test still passes, but only because persona is the largest
+# 辅助 section in the fixture, so it gets dropped first and the
+# budget is satisfied before RAG is reached. RAG's actual eviction
+# priority is now determined by the generic 辅助-tier drop order,
+# not by a survival guarantee. If a future fixture makes RAG the
+# largest 辅助 section, this test will start to fail — that would
+# be correct M4-2 behavior, not a regression.
 # ---------------------------------------------------------------------------
 
 
@@ -3673,9 +3683,12 @@ def _make_budget_pressure_context() -> AgentContext:
 
 
 def test_rag_hints_survive_budget_pressure() -> None:
-    """G-R4-15: when the prompt exceeds the user-prompt budget, the
-    RAG hints section must survive — at the cost of lower-priority
-    【辅助】 sections (persona, profile memory hint, etc.)."""
+    """Per M4-2, RAG hints are now a 【辅助】 section (not 【参考】).
+    This test still passes because persona (the largest 辅助 section
+    in the fixture) gets dropped first, satisfying the budget before
+    RAG is reached. RAG's actual eviction priority is now determined
+    by the generic 辅助-tier drop order, not by a survival guarantee.
+    See commit 0022d25 for the M4-2 rationale."""
     ctx = _make_budget_pressure_context()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     # Sanity: the budget trimmer must have actually run. With
