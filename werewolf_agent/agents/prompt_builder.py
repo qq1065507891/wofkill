@@ -670,10 +670,12 @@ class PlayerPromptBuilder:
             label = priority.get(name, "")
             if label == "【硬约束】":
                 continue
-            # G-R4-15: tier ordering is now 可选 (0) → 辅助 (1) →
-            # 【参考】 (2) → never drop 硬约束. RAG hints (now 【参考】)
-            # survive whenever 辅助 sections can be dropped to fit
-            # the budget.
+            # Tier ordering: 可选 (0) → 辅助 (1) → 【参考】 (2)
+            # → never drop 硬约束. M4-2: RAG hints reverted to 辅助
+            # tier, reflection promoted to 【参考】. The trimmer
+            # drops 辅助 sections first (which now includes RAG
+            # hints), then 参考 sections (reflection), and never
+            # 硬约束. See M4-2 commit 0022d25 for the rationale.
             if label == "【可选】":
                 tier = 0
             elif label == "【参考】":
