@@ -115,3 +115,91 @@ def test_vote_basis_guidance_present_in_speech_via_strategy_directive():
     builder.context = ctx
     text = builder._build_strategy_directive()
     assert "vote_basis" in text.lower()
+
+
+def test_vote_basis_hint_registers_in_hard_or_suggestion_tier():
+    """M2-2 follow-up: vote_basis_hint must not silently fall to
+    【参考】 tier — the guidance contains '不要用 seer_check' which
+    is a command, not a suggestion. Budget trimmer must preserve it.
+    """
+    from werewolf_agent.agents import prompt_builder
+    hard = prompt_builder.HARD_CONSTRAINT_KEYS
+    sugg = prompt_builder.SUGGESTION_KEYS
+    ref = prompt_builder.REFERENCE_KEYS
+    in_hard = "vote_basis_hint" in hard
+    in_sugg = "vote_basis_hint" in sugg
+    in_ref = "vote_basis_hint" in ref
+    assert in_hard or in_sugg, (
+        f"M2-2 follow-up: vote_basis_hint must register in HARD or "
+        f"SUGGESTION tier (command-language: '不要用 seer_check'). "
+        f"Currently in_hard={in_hard} in_sugg={in_sugg} in_ref={in_ref}. "
+        f"Falling through to 【参考】 allows budget trimmer to drop the "
+        f"seer_check prohibition under tight token budgets."
+    )
+    assert not in_ref, "vote_basis_hint should NOT be in REFERENCE tier"
+
+
+def test_vote_basis_hint_renders_in_hard_section():
+    """M2-2 follow-up: when strategy_directive contains vote_basis_hint,
+    the rendered output must place it under the 【硬约束】 header, not
+    【参考】. Verifies the actual render path, not just the registry."""
+    from werewolf_agent.agents.schemas import AgentContext, TaskType
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.runtime.agent_adapter import VOTE_BASIS_GUIDANCE
+
+    ctx = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH,
+        phase="day", day_number=2, night_number=2,
+        own_role="villager",
+        strategy_directive={"vote_basis_hint": VOTE_BASIS_GUIDANCE},
+    )
+    builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
+    builder.context = ctx
+    text = builder._build_strategy_directive()
+    # The hard-constraint section header is 【硬约束】 (defined in
+    # _STRATEGY_GROUP_ORDER). The reference header is 【参考】.
+    hard_pos = text.find("【硬约束】")
+    ref_pos = text.find("【参考】")
+    vote_basis_pos = text.find("vote_basis")
+    assert vote_basis_pos != -1, "vote_basis should appear in the rendered text"
+    # If both headers exist, the vote_basis text must come after the
+    # hard header and (if reference exists) before the reference header.
+    if hard_pos != -1 and ref_pos != -1:
+        assert hard_pos < vote_basis_pos < ref_pos, (
+            f"vote_basis must be rendered under 【硬约束】, not 【参考】. "
+            f"hard_pos={hard_pos} vote_basis_pos={vote_basis_pos} ref_pos={ref_pos}"
+        )
+    elif ref_pos != -1:
+        # Hard section didn't render (no hard keys other than this) — but
+        # vote_basis IS a hard key, so this branch shouldn't be reached.
+        # If it is, the registry still has it under REFERENCE — fail loudly.
+        assert False, (
+            f"vote_basis_hint rendered under 【参考】 at pos {ref_pos}, "
+            f"but it should be in 【硬约束】. Text: {text!r}"
+        )
+
+
+def test_inject_vote_basis_helper_centralized():
+    """M2-2 follow-up: 6 injection sites consolidated to a helper."""
+    from werewolf_agent.runtime import agent_adapter
+    from werewolf_agent.core.models import GameState, PlayerState
+    assert hasattr(agent_adapter, "_inject_vote_basis_hint")
+    gs = GameState(
+        game_id="t", phase="day", day_number=2, night_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+        },
+    )
+    sd: dict = {}
+    # Seer: no injection
+    agent_adapter._inject_vote_basis_hint(sd, gs, "p01")
+    assert "vote_basis_hint" not in sd, (
+        "Seer should be exempt from vote_basis_hint injection"
+    )
+    # Villager: injected
+    agent_adapter._inject_vote_basis_hint(sd, gs, "p02")
+    assert "vote_basis_hint" in sd, (
+        "Non-seer should get vote_basis_hint injection"
+    )
+    assert "speech_logic" in sd["vote_basis_hint"] or "vote_basis" in sd["vote_basis_hint"].lower()

@@ -103,6 +103,27 @@ VOTE_BASIS_GUIDANCE = (
 )
 
 
+def _inject_vote_basis_hint(
+    strategy_directive: dict[str, Any],
+    gs: GameState,
+    player_id: str,
+) -> None:
+    """M2-2: per-turn VOTE_BASIS_GUIDANCE injection (seer exempt).
+
+    Seer legitimately uses seer_check (its own checks); the
+    guidance "vote_basis 选用 speech_logic / vote_pattern /
+    seer_siding, 不要用 seer_check" doesn't apply to it.
+    Hybrid also gets the guidance — it has no own-check ability.
+
+    Mutates ``strategy_directive`` in place. Centralized so the
+    seer-exempt rule is defined once and the prompt-tier
+    registry (HARD_CONSTRAINT_KEYS) only needs to know the key.
+    """
+    role = gs.players[player_id].role if player_id in gs.players else ""
+    if role != "seer":
+        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
+
+
 def _action_result_to_dict(
     action: PlayerAction | FallbackAction,
 ) -> dict[str, Any]:
@@ -825,11 +846,7 @@ def agent_defense_speech(
     )
     # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
     # of the stable system prompt so night actions don't see it.
-    defense_player_role = (
-        gs.players[speaker_id].role if speaker_id in gs.players else ""
-    )
-    if defense_player_role != "seer":
-        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
+    _inject_vote_basis_hint(strategy_directive, gs, speaker_id)
 
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -893,13 +910,12 @@ def agent_day_speech(
     )
 
     # Role-specific speech constraints
-    player_role = gs.players[speaker_id].role if speaker_id in gs.players else ""
     # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
     # of the stable system prompt so night actions don't see it.
     # Speech adapters also need it because the LLM often frames its
     # current speech in terms of who it intends to vote for.
-    if player_role != "seer":
-        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
+    _inject_vote_basis_hint(strategy_directive, gs, speaker_id)
+    player_role = gs.players[speaker_id].role if speaker_id in gs.players else ""
     if player_role == "werewolf":
         wolf_parts = _build_wolf_day_speech_directive(
             gs, speaker_id, state.get("wolf_team_plan"),
@@ -1256,8 +1272,7 @@ def agent_pk_speech(
             )
     # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
     # of the stable system prompt so night actions don't see it.
-    if player_role != "seer":
-        pk_strategy["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
+    _inject_vote_basis_hint(pk_strategy, gs, speaker_id)
 
     context = _merge_strategy_directive(context, pk_strategy)
 
@@ -1332,8 +1347,7 @@ def agent_day_vote(
         )
     # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
     # of the stable system prompt so night actions don't see it.
-    if voter_role != "seer":
-        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
+    _inject_vote_basis_hint(strategy_directive, gs, voter_id)
     if not allow_abstain:
         parts = ["必须投票选出一名玩家放逐，不能弃票。"]
         if consecutive_no_exile > 0:
@@ -1760,8 +1774,7 @@ def agent_sheriff_vote(
     voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
     # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
     # of the stable system prompt so night actions don't see it.
-    if voter_role != "seer":
-        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
+    _inject_vote_basis_hint(strategy_directive, gs, voter_id)
     if voter_role == "werewolf":
         wolf_teammates = [
             pid for pid, p in gs.players.items()
@@ -2006,8 +2019,7 @@ def agent_sheriff_election_speech(
     }
     # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
     # of the stable system prompt so night actions don't see it.
-    if player_role != "seer":
-        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
+    _inject_vote_basis_hint(strategy_directive, gs, candidate_id)
 
     # Role-specific speech differentiation
     if player_role == "idiot":

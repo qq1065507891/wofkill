@@ -5,11 +5,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T3 M2-2 vote_basis 移出 system (DONE) — per-turn strategy_directive injection
+- Active task: T3-fix M2-2 vote_basis HARD tier + 抽出 helper (DONE) — C-1 + I-1 review fixes
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
 - **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
-- **本次新增**: T3 M2-2 _VOTE_BASIS_GUIDANCE 从 system prompt role_guide 移到 6 个 per-turn adapter (agent_day_speech, agent_day_vote, agent_sheriff_vote, agent_sheriff_election_speech, agent_pk_speech, agent_defense_speech) 的 strategy_directive["vote_basis_hint"] 注入;seer 豁免,夜间动作不再看到投票字段指南;3 个新回归测试 (test_prompt_injection_fixes.py:2 + test_prompt_builder.py:1)
+- **本次新增 (T3-fix)**: 修复 T3 M2-2 code review 的两个问题 — (C-1) `vote_basis_hint` 之前没在 `HARD_CONSTRAINT_KEYS` 注册,fallthrough 到 【参考】 tier,budget trimmer 可能裁掉 "不要用 seer_check" 禁制;已在 HARD tier 注册,LLM 必见。(I-1) 6 个 adapter 都有 2-3 行重复的 seer-exempt 注入代码 (defense_speech / day_speech / pk_speech / day_vote / sheriff_vote / sheriff_election_speech),抽到 `agent_adapter._inject_vote_basis_hint(strategy_directive, gs, player_id)` helper,6 个 sites 全部替换为单行调用。3 个新回归测试 (test_vote_basis_hint_registers_in_hard_or_suggestion_tier + test_vote_basis_hint_renders_in_hard_section + test_inject_vote_basis_helper_centralized) — 8/8 prompt_injection_fixes 测试 pass,agents+runtime 1451 测试全 pass。
 
 ---
 

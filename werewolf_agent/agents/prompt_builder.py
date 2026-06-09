@@ -185,6 +185,12 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "witch_poison_deterrent",           # context.py:883 — 不要明报身份
     # Generic evaluation requirement
     "required_evaluation",              # agent_adapter.py:302 — 必须在 reason 中解释
+    # M2-2 follow-up: vote_basis guidance contains "不要用 seer_check" — a
+    # command, not a suggestion. Previously fell through to 【参考】
+    # where the budget trimmer would drop it under tight token budgets,
+    # removing the seer_check prohibition. Promote to HARD so the
+    # prohibition is preserved.
+    "vote_basis_hint",
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({
