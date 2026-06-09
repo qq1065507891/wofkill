@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from werewolf_agent.core.models import GameState
+
+logger = logging.getLogger(__name__)
+
+# M3-2: strict regex for resolution_batch "day_N" form.  ``fullmatch``
+# means the entire string must be exactly ``day_<digits>`` -- this
+# rejects "day_", "day_BAD", "day_1_extra", "night_4", and "" without
+# any try/except plumbing.  See review I-3.
+_DAY_BATCH_RE = re.compile(r"day_(\d+)")
 
 
 def collect_public_vote_history(
@@ -71,15 +81,26 @@ def collect_death_order(
     for d in gs.deaths:
         if current_day is not None:
             batch = d.resolution_batch or ""
-            # resolution_batch format: "day_N" or "night_N"
-            try:
-                if batch.startswith("day_"):
-                    day_num = int(batch.split("_", 1)[1])
-                    if day_num > current_day:
-                        continue
-            except (ValueError, IndexError):
-                # Malformed batch: keep the death; never silently drop.
-                pass
+            # resolution_batch format: "day_N" or "night_N".
+            # ``_DAY_BATCH_RE.fullmatch`` only matches the strict
+            # ``day_<digits>`` form; anything else (empty string,
+            # ``night_4``, ``day_BAD``, ``day_1_extra``) is treated
+            # as malformed and the death is kept defensively.
+            m = _DAY_BATCH_RE.fullmatch(batch)
+            if m and int(m.group(1)) > current_day:
+                continue
+            if not m and batch.startswith("day_"):
+                # Batch LOOKS like a day batch but didn't match the
+                # strict ``day_<digits>`` form -- this is a real
+                # engine regression signal (e.g. ``day_BAD``,
+                # ``day_1_extra``).  ``night_4`` and ``""`` are
+                # structurally valid and are not logged.  See review
+                # I-1.
+                logger.warning(
+                    "collect_death_order: malformed resolution_batch %r, keeping death %s",
+                    d.resolution_batch,
+                    d.player_id,
+                )
         label = _public_reasons.get(d.reason)
         if label:
             lines.append(f"{d.player_id}({label})")

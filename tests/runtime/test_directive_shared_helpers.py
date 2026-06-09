@@ -117,3 +117,91 @@ def test_collect_death_order_filters_to_current_day() -> None:
     assert "p01" in full and "p02" in full and "p03" in full, (
         f"unfiltered should include all deaths; got: {full!r}"
     )
+
+
+def test_collect_death_order_keeps_malformed_batch() -> None:
+    """M3-2: malformed resolution_batch is retained, not dropped.
+
+    A logger.warning is emitted (engine regression signal).  See
+    review I-1: silently dropping would mask engine bugs.
+    """
+    import logging
+    from unittest.mock import patch
+
+    gs = GameState(
+        game_id="t",
+        phase="day",
+        day_number=5,
+        players={
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager")
+            for i in range(1, 5)
+        },
+        deaths=[
+            Death(
+                player_id="p01",
+                reason="exile",
+                timing="day_vote",
+                resolution_batch="day_BAD",
+                source_player_id=None,
+                can_leave_last_words=True,
+                triggered_skills=[],
+            ),
+        ],
+    )
+    # Capture warnings from the _shared module's logger
+    with patch.object(
+        logging.getLogger("werewolf_agent.runtime.directives._shared"),
+        "warning",
+    ) as mock_warn:
+        out = collect_death_order(gs, current_day=5)
+    assert "p01" in out, (
+        f"Malformed batch should be kept (per never-silently-drop rule); got: {out!r}"
+    )
+    assert mock_warn.called, (
+        "engine regression signal: malformed resolution_batch should emit a warning"
+    )
+    # Even with current_day=1, malformed day_BAD batch should be kept defensively.
+    out2 = collect_death_order(gs, current_day=1)
+    assert "p01" in out2, (
+        f"Even with current_day=1, malformed day_BAD batch should be kept; got: {out2!r}"
+    )
+
+
+def test_collect_death_order_night_batch_does_not_warn() -> None:
+    """M3-2: ``night_N`` is structurally valid -- the warning is
+    reserved for true engine regressions (e.g. ``day_BAD``).  See
+    review I-1 refinement: avoid noisy logs for the normal
+    night-batch case.
+    """
+    import logging
+    from unittest.mock import patch
+
+    gs = GameState(
+        game_id="t",
+        phase="day",
+        day_number=5,
+        players={
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager")
+            for i in range(1, 5)
+        },
+        deaths=[
+            Death(
+                player_id="p03",
+                reason="wolf_kill",
+                timing="night",
+                resolution_batch="night_4",
+                source_player_id=None,
+                can_leave_last_words=False,
+                triggered_skills=[],
+            ),
+        ],
+    )
+    with patch.object(
+        logging.getLogger("werewolf_agent.runtime.directives._shared"),
+        "warning",
+    ) as mock_warn:
+        collect_death_order(gs, current_day=2)
+    assert not mock_warn.called, (
+        "night_N is a structurally valid batch; the warning is "
+        "reserved for true engine regressions (day_BAD, day_1_extra)"
+    )
