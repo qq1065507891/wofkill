@@ -49,7 +49,9 @@ from werewolf_agent.runtime.directives import (
     build_seer_directive as _build_seer_day_speech_directive,
     build_villager_directive as _build_villager_day_speech_directive,
     build_witch_directive as _build_witch_day_speech_directive,
-    build_wolf_directive as _build_wolf_day_speech_directive,
+    build_wolf_day_directive as _build_wolf_day_speech_directive,
+    build_wolf_directive,  # back-compat shim (M3-3)
+    build_wolf_night_directive as _build_wolf_night_directive,
     build_wolf_vote_directive as _build_wolf_vote_strategy,
 )
 from werewolf_agent.runtime.directives._shared import (
@@ -90,6 +92,38 @@ from werewolf_agent.runtime.strategy import (
     has_publicly_claimed_seer as _has_publicly_claimed_seer,
 )
 from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants  # noqa: F401
+
+
+# M2-2: single-source guidance for vote/speech actions. Moved out
+# of system prompt's role_guide (which is stable across turns and
+# doesn't know task_type) to per-turn strategy_directive injection.
+# Same wording as before (preserves LLM behavior for vote/speech).
+# Seer is exempt (uses seer_check for own checks).
+VOTE_BASIS_GUIDANCE = (
+    "【投票时 vote_basis 选用 speech_logic / vote_pattern / "
+    "seer_siding，不要用 seer_check。】"
+)
+
+
+def _inject_vote_basis_hint(
+    strategy_directive: dict[str, Any],
+    gs: GameState,
+    player_id: str,
+) -> None:
+    """M2-2: per-turn VOTE_BASIS_GUIDANCE injection (seer exempt).
+
+    Seer legitimately uses seer_check (its own checks); the
+    guidance "vote_basis 选用 speech_logic / vote_pattern /
+    seer_siding, 不要用 seer_check" doesn't apply to it.
+    Hybrid also gets the guidance — it has no own-check ability.
+
+    Mutates ``strategy_directive`` in place. Centralized so the
+    seer-exempt rule is defined once and the prompt-tier
+    registry (HARD_CONSTRAINT_KEYS) only needs to know the key.
+    """
+    role = gs.players[player_id].role if player_id in gs.players else ""
+    if role != "seer":
+        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
 
 
 def _action_result_to_dict(
@@ -578,28 +612,15 @@ def _single_wolf_vote(
     # Kill target value assessment
     kill_assessment = _evaluate_wolf_kill_target(gs, wolf_id, legal_targets)
     wolf_plan = state.get("wolf_team_plan")
-    strategy_directive: dict[str, Any] = {
-        "wolf_kill_instruction": (
-            "你是狼人，现在是夜间击杀阶段。选择今晚要击杀的目标。\n"
-            "击杀策略：优先击杀对狼队威胁最大的玩家（已跳预言家、持警徽、分析能力强的）。\n"
-            "如果狼队讨论已确定目标，按讨论共识执行。\n"
-            "speech字段留空（夜间行动不需要发言）。"
-        ),
-    }
-    # D-8 (2026-06-08 balance audit): 暴露 wolf_no_kill 作为合法战术。
-    # 4 局真实游戏中狼队 0 自爆/0 空刀,因 LLM 看不到空刀选项。注入 4 条空刀触发条件。
-    strategy_directive["wolf_no_kill_conditions"] = (
-        "【空刀战术条件】wolf_no_kill 是合法战术,action_type='wolf_no_kill', target_id=null。\n"
-        "当以下条件满足时,优先选空刀:\n"
-        "1) 当晚无明确高威胁击杀目标(评估的威胁分都很低,无跳预言家/无查杀/无明显嫌疑人)\n"
-        "2) 需要制造平安夜混淆好人视野(让白天讨论集中在'无人死亡'上,放大悍跳狼的话语权)\n"
-        "3) 关键 PK 投票轮次前夜不出刀,避免暴露狼队击杀方向\n"
-        "4) 自爆后续局的调整(若 N-1 夜有狼自爆,本夜不出刀混淆)\n"
-        "**重要限制**:已连续 2 夜空刀会强制出刀(系统层 max_consecutive_no_kill=2),"
-        "不要尝试连续 2 夜空刀。"
+    # M3-3: build the night directive (kill/no_kill prompt) from the
+    # shared module so day and night directives don't drift apart.
+    strategy_directive: dict[str, Any] = _build_wolf_night_directive(
+        gs, wolf_id, wolf_plan,
     )
     # Task 3 (Issue 4): explicitly name the claimed Seer as the top kill target
-    # so all wolves converge on the same high-priority player.
+    # so all wolves converge on the same high-priority player.  Lives
+    # here (not in directives/wolf.py) to avoid a circular import —
+    # ``_build_wolf_kill_directive`` itself is defined in this module.
     strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
         gs, wolf_id=wolf_id, plan=wolf_plan,
     )
@@ -812,6 +833,9 @@ def agent_defense_speech(
         "5) 反问指控者的逻辑漏洞（'你为什么认为我有狼面？'）\n"
         "6) 收尾时给出你希望被如何对待的建议（'请听我解释后再投票'）"
     )
+    # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
+    # of the stable system prompt so night actions don't see it.
+    _inject_vote_basis_hint(strategy_directive, gs, speaker_id)
 
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -875,6 +899,11 @@ def agent_day_speech(
     )
 
     # Role-specific speech constraints
+    # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
+    # of the stable system prompt so night actions don't see it.
+    # Speech adapters also need it because the LLM often frames its
+    # current speech in terms of who it intends to vote for.
+    _inject_vote_basis_hint(strategy_directive, gs, speaker_id)
     player_role = gs.players[speaker_id].role if speaker_id in gs.players else ""
     if player_role == "werewolf":
         wolf_parts = _build_wolf_day_speech_directive(
@@ -1230,6 +1259,9 @@ def agent_pk_speech(
                 "如果主人在场，分析与主人站边一致；"
                 "但不要每轮都跟主人保持完全一致，那会暴露关系。"
             )
+    # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
+    # of the stable system prompt so night actions don't see it.
+    _inject_vote_basis_hint(pk_strategy, gs, speaker_id)
 
     context = _merge_strategy_directive(context, pk_strategy)
 
@@ -1302,6 +1334,9 @@ def agent_day_vote(
             "今天出错会不会直接导致屠神/屠民；若只有发言风格可疑而没有查验或强票型，"
             "不要轻易推出疑似神职或高价值好人。"
         )
+    # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
+    # of the stable system prompt so night actions don't see it.
+    _inject_vote_basis_hint(strategy_directive, gs, voter_id)
     if not allow_abstain:
         parts = ["必须投票选出一名玩家放逐，不能弃票。"]
         if consecutive_no_exile > 0:
@@ -1726,6 +1761,9 @@ def agent_sheriff_vote(
     # Wolf strategy for sheriff voting
     strategy_directive = context.strategy_directive or {}
     voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
+    # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
+    # of the stable system prompt so night actions don't see it.
+    _inject_vote_basis_hint(strategy_directive, gs, voter_id)
     if voter_role == "werewolf":
         wolf_teammates = [
             pid for pid, p in gs.players.items()
@@ -1968,6 +2006,9 @@ def agent_sheriff_election_speech(
             "你必须有自己独立的角度和分析逻辑。"
         ),
     }
+    # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
+    # of the stable system prompt so night actions don't see it.
+    _inject_vote_basis_hint(strategy_directive, gs, candidate_id)
 
     # Role-specific speech differentiation
     if player_role == "idiot":

@@ -1761,7 +1761,10 @@ def test_sections_have_priority_labels():
     Sections grouped:
     - 【硬约束】 strategy_directive, retry hint, output contract
     - 【辅助】   phase, belief, summary, visible state, private memory,
-      salience, rag hints, reflection, profile, cognition, skill hints
+      salience, rag hints, profile, cognition, skill hints
+    - 【参考】   reflection  # Note: reflection was demoted from 辅助 to
+                              # 参考 in M4-2 (commit 0022d25) — per-player
+                              # history outranks generic RAG under budget.
     - 【可选】   transcript
 
     The test verifies the label appears in the user prompt and the
@@ -1788,10 +1791,18 @@ def test_sections_have_priority_labels():
     )
 
     # The 辅助 sections must collectively produce multiple 【辅助】 labels.
+    # M4-2: reflection moved from 辅助 to 参考 (per-player history
+    # outranks generic RAG under budget pressure). The remaining
+    # 辅助 sections are persona, phase, belief, visible state,
+    # private memory, salience, rag hints, profile, cognition,
+    # error pattern — 7 sections whose literal label is 【辅助】
+    # (public_summary uses the distinctive 【场上记录】 label,
+    # so it doesn't count here).
     auxiliary_label_count = prompt.count("【辅助】")
-    assert auxiliary_label_count >= 8, (
-        f"Expected at least 8 【辅助】 labels (one per 辅助 section), "
-        f"got {auxiliary_label_count}."
+    assert auxiliary_label_count >= 7, (
+        f"Expected at least 7 【辅助】 labels (M4-2: reflection is "
+        f"now 【参考】, so 辅助 count dropped from 8 to 7). "
+        f"Got {auxiliary_label_count}."
     )
 
     # The transcript is the only 可选 section in build_user_prompt.
@@ -1866,6 +1877,13 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
     Phase-1 audit (P1-12): ``_build_public_summary`` was promoted from
     辅助 to 参考.  Removed from the auxiliary_header list and added
     a parallel assertion that it now bears the 参考 label.
+
+    M4-2 (Task 7): ``_build_reflection_memory_hints`` swapped from
+    辅助 to 参考. Removed from auxiliary_header and added to a
+    parallel reference_header assertion. RAG hints (knowledge
+    base) took reflection's old 辅助 slot — added back to
+    auxiliary_header since they are now 辅助 tier again (M4-2
+    reverts G-R4-15's RAG promotion to 【参考】).
     """
     ctx = _make_ctx_for_priority_label_test()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
@@ -1876,8 +1894,7 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         "可见状态",          # visible state
         "本局·",            # private memory
         "关键事件",          # salience
-        "知识库提示",        # rag hints
-        "跨局反思记忆",       # reflection
+        "知识库提示",        # rag hints (M4-2: back to 辅助)
         "长期能力画像",       # profile
         "我的认知矩阵",       # cognition
         "技能分析结果",       # skill analysis
@@ -1892,6 +1909,17 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         assert "【辅助】" in preceding, (
             f"Section with header {header!r} must be preceded by 【辅助】 label, "
             f"got: {preceding!r}"
+        )
+    # M4-2: reflection moved from 辅助 to 【参考】 (per-player
+    # history outranks generic RAG). Verify it bears the 【参考】
+    # label so the LLM sees the elevated priority.
+    reflection_idx = prompt.find("跨局反思记忆")
+    if reflection_idx >= 0:
+        preceding = prompt[max(0, reflection_idx - 60):reflection_idx]
+        assert "【参考】" in preceding, (
+            f"M4-2: 跨局反思记忆 (reflection) must be preceded by "
+            f"【参考】 label (per-player history outranks generic "
+            f"RAG). Got: {preceding!r}"
         )
     # P1-6 / P1-12: public_summary now has a distinctive
     # ``【场上记录】`` label (Phase 1 self-audit P1-4 rename) so the
@@ -3422,9 +3450,20 @@ def test_belief_top3_cap():
 
 
 def test_role_guide_documents_vote_basis():
-    """P2-9: the role guide for non-seer roles must mention which
-    vote_basis enum values to use (and that seer_check is not for
-    non-seer roles).
+    """M2-2: vote_basis *guidance* (the "选用 speech_logic / vote_pattern
+    / seer_siding, 不要用 seer_check" sentence) is no longer in
+    role_guide (system prompt). It is now injected per-turn via
+    strategy_directive from the agent_adapter for VOTE/SPEECH task
+    types.
+
+    Background: pre-fix (P2-9) the guidance was appended to every
+    role's role_guide in the stable system prompt, so wolf NIGHT
+    actions saw "投票时 vote_basis 选用 speech_logic" — irrelevant
+    for a kill target decision. M2-2 moved the guidance out.
+
+    Note: the field name ``vote_basis`` still appears in the
+    output_contract section (VOTE field list) — that's the schema,
+    not the guidance, and it stays in the system prompt.
     """
     # Spot-check villager (a non-seer good-side role).
     ctx = AgentContext(
@@ -3434,19 +3473,44 @@ def test_role_guide_documents_vote_basis():
         day_number=1,
         own_role="villager",
     )
-    system_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
-    # The role guide lives in the system prompt (stable section).
-    # Check that vote_basis guidance is present.
-    assert "vote_basis" in system_prompt, (
-        "P2-9: non-seer role guide must mention vote_basis enum "
-        f"guidance. system_prompt: {system_prompt!r}"
+    role_guide = PlayerPromptBuilder(ctx)._build_role_guide()
+    # M2-2: the role guide no longer contains the VOTE_BASIS_GUIDANCE
+    # text. The field name "vote_basis" is OK to remain (output
+    # contract section uses it for schema listing).
+    guidance_phrase = "选用 speech_logic"
+    assert guidance_phrase not in role_guide, (
+        "M2-2: vote_basis *guidance* should be removed from role_guide "
+        f"(stable system section). role_guide: {role_guide!r}"
     )
-    # And explicitly call out that seer_check is NOT to be used by
-    # non-seer roles.
-    assert "seer_check" in system_prompt, (
-        "P2-9: non-seer role guide must explicitly call out that "
-        "seer_check is not for non-seer roles. "
-        f"system_prompt: {system_prompt!r}"
+
+
+def test_vote_basis_guidance_appears_in_per_turn_user_prompt():
+    """M2-2: vote_basis guidance must be in the per-turn strategy_directive
+    output (rendered into the user prompt by _build_strategy_directive),
+    not the stable system prompt.
+    """
+    from werewolf_agent.runtime.agent_adapter import VOTE_BASIS_GUIDANCE
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        strategy_directive={"vote_basis_hint": VOTE_BASIS_GUIDANCE},
+    )
+    builder = PlayerPromptBuilder(ctx)
+    # System prompt must NOT contain the VOTE_BASIS_GUIDANCE text.
+    system_text = builder.build_system_prompt()
+    assert VOTE_BASIS_GUIDANCE not in system_text, (
+        "M2-2: VOTE_BASIS_GUIDANCE leaked into stable system prompt. "
+        f"system_text: {system_text!r}"
+    )
+    # _build_strategy_directive (per-turn user prompt section) must
+    # contain the VOTE_BASIS_GUIDANCE text.
+    user_section = builder._build_strategy_directive()
+    assert VOTE_BASIS_GUIDANCE in user_section, (
+        "M2-2: VOTE_BASIS_GUIDANCE missing from _build_strategy_directive. "
+        f"section: {user_section!r}"
     )
 
 
@@ -3515,20 +3579,27 @@ def test_sheriff_example_includes_withdraw():
 
 
 # ---------------------------------------------------------------------------
-# G-R4-15: RAG hints must survive budget pressure.
+# G-R4-15 → M4-2 reversal: RAG hints are NO LONGER guaranteed to survive
+# budget pressure.
 #
-# Pre-fix: _build_rag_hints was tagged 【辅助】 and got dropped
-# alongside persona, profile, and other 辅助-tier sections when
-# the joined prompt exceeded the 6250-char budget. The whole
-# point of the 知识库提示 section is to bring strategy hints into
-# the LLM's reasoning; losing it under budget pressure defeats
-# the retrieval investment.
+# Pre-M4-2 (G-R4-15): RAG hints were tagged 【参考】, so they survived
+# budget cuts ahead of 辅助 sections. The rationale was that RAG
+# retrieval is expensive, so losing the hints would defeat the
+# retrieval investment.
 #
-# Post-fix: RAG hints move to the new 【参考】 tier, which sits
-# between 辅助 (dropped second) and 硬约束 (never dropped). The
-# trimmer drops 辅助 first, then 【参考】, then 硬约束. RAG
-# hints survive whenever the budget allows the lower-priority
-# 辅助 sections to be dropped.
+# Post-M4-2 (commit 0022d25): RAG hints are now a 【辅助】 section
+# (same tier as persona, profile, etc.). The M4-2 view is
+# "prompt value ≠ retrieval cost" — per-player reflection
+# (now in 【参考】) outranks generic RAG for current LLM reasoning,
+# so RAG is no longer privileged over other 辅助 sections.
+#
+# This test still passes, but only because persona is the largest
+# 辅助 section in the fixture, so it gets dropped first and the
+# budget is satisfied before RAG is reached. RAG's actual eviction
+# priority is now determined by the generic 辅助-tier drop order,
+# not by a survival guarantee. If a future fixture makes RAG the
+# largest 辅助 section, this test will start to fail — that would
+# be correct M4-2 behavior, not a regression.
 # ---------------------------------------------------------------------------
 
 
@@ -3612,9 +3683,12 @@ def _make_budget_pressure_context() -> AgentContext:
 
 
 def test_rag_hints_survive_budget_pressure() -> None:
-    """G-R4-15: when the prompt exceeds the user-prompt budget, the
-    RAG hints section must survive — at the cost of lower-priority
-    【辅助】 sections (persona, profile memory hint, etc.)."""
+    """Per M4-2, RAG hints are now a 【辅助】 section (not 【参考】).
+    This test still passes because persona (the largest 辅助 section
+    in the fixture) gets dropped first, satisfying the budget before
+    RAG is reached. RAG's actual eviction priority is now determined
+    by the generic 辅助-tier drop order, not by a survival guarantee.
+    See commit 0022d25 for the M4-2 rationale."""
     ctx = _make_budget_pressure_context()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     # Sanity: the budget trimmer must have actually run. With
@@ -3722,12 +3796,19 @@ def test_private_memory_caveat_wrapped_in_separator_markers():
 
 
 def test_villager_guide_includes_night_fallback():
-    """Phase-1 P1-26: villager role guide must include night-time
-    fallback behavior (idiot reveals, hunter shot) — villagers are
-    3 of 12 players in V1.
+    """Phase-1 P1-26 (superseded by M2-1): the original P1-26 test
+    required explicit night-time fallback rules in the villager
+    role guide (idiot reveals, hunter shot). M2-1 audit found this
+    was over-guidance — villagers are 3 of 12, and the system
+    prompt was 4× longer than other roles' guides (400+ chars).
+    The fix compresses the guide to ~50 chars and moves the
+    night-fallback knowledge to per-turn context (when the
+    villager's NIGHT action is dispatched, the task is a no-op
+    by definition; the engine handles night transitions).
 
-    Note: role guide lives in the SYSTEM prompt (stable rule), so
-    we assert against ``build_system_prompt()``.
+    This test now asserts the compression: villager guide is
+    concise (no night-fallback detail) while still keeping the
+    2 key day-time cues (N1 解药 + 证据/票型) per M2-1.
     """
     ctx = AgentContext(
         agent_id="p05",
@@ -3740,12 +3821,26 @@ def test_villager_guide_includes_night_fallback():
         public_summary="",
     )
     sys_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
-    assert "夜间阶段" in sys_prompt, (
-        f"villager guide must include night-time fallback behavior; "
-        f"got sys_prompt={sys_prompt[-500:]!r}"
+    # M2-1 compression: the night-fallback detail is no longer in
+    # the system prompt (token waste + over-guidance). The guide
+    # should be concise like other roles' guides (~50-150 chars).
+    assert "夜间阶段" not in sys_prompt, (
+        f"M2-1: villager guide should NOT include '夜间阶段' detail "
+        f"(compressed for token efficiency). got sys_prompt="
+        f"{sys_prompt[sys_prompt.find('村民规则'):sys_prompt.find('村民规则') + 300]!r}"
     )
-    assert "无投票权" in sys_prompt, (
-        "villager guide must mention idiot losing vote after reveal"
+    assert "无投票权" not in sys_prompt, (
+        "M2-1: villager guide should NOT include idiot-vote detail "
+        "(that knowledge belongs to per-turn context, not the "
+        "stable system prompt). "
+        f"got sys_prompt={sys_prompt[-300:]!r}"
+    )
+    # M2-1 regression: the 2 key day-time cues MUST still be present
+    assert "解药" in sys_prompt, (
+        "M2-1: villager guide must keep '解药' cue (N1 antidote support)"
+    )
+    assert "票型" in sys_prompt or "证据" in sys_prompt, (
+        "M2-1: villager guide must keep 票型/证据 cue (evidence-based voting)"
     )
 
 

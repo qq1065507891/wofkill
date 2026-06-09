@@ -2,21 +2,50 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from werewolf_agent.core.models import GameState
 
+logger = logging.getLogger(__name__)
 
-def collect_public_vote_history(gs: GameState) -> str:
-    """Collect public vote history for villager analysis."""
+# M3-2: strict regex for resolution_batch "day_N" form.  ``fullmatch``
+# means the entire string must be exactly ``day_<digits>`` -- this
+# rejects "day_", "day_BAD", "day_1_extra", "night_4", and "" without
+# any try/except plumbing.  See review I-3.
+_DAY_BATCH_RE = re.compile(r"day_(\d+)")
+
+
+def collect_public_vote_history(
+    gs: GameState,
+    current_day: int | None = None,
+) -> str:
+    """Collect public vote history for villager analysis.
+
+    M3-2: optional ``current_day`` filter.  When supplied, only
+    events with ``payload.day_number <= current_day`` are
+    included.  Default ``None`` (no filter) preserves the
+    pre-fix behavior for back-compat callers.  By day 5 the
+    LLM was reading all 5 days of vote history and losing
+    focus on the current game state; this filter lets
+    directives cap the helper to "up to current day" without
+    changing the helper signature.
+    """
     lines: list[str] = []
     for e in gs.events:
         if e.type != "vote_resolved":
             continue
+        day = e.payload.get("day_number", "?")
+        if (
+            current_day is not None
+            and isinstance(day, int)
+            and day > current_day
+        ):
+            continue
         exiled = e.payload.get("exiled")
         tied = e.payload.get("tied", [])
         votes = e.payload.get("votes", [])
-        day = e.payload.get("day_number", "?")
         if exiled:
             # votes is a list of {"voter": ..., "target": ..., "reason": ...}
             supporters = [
@@ -31,15 +60,47 @@ def collect_public_vote_history(gs: GameState) -> str:
     return "\n".join(lines)
 
 
-def collect_death_order(gs: GameState) -> str:
+def collect_death_order(
+    gs: GameState,
+    current_day: int | None = None,
+) -> str:
     """Collect public death order for villager analysis.
 
     Only exile and hunter_shot reasons are public knowledge.
     wolf_kill and witch_poison are indistinguishable to players -- both are night deaths.
+
+    M3-2: optional ``current_day`` filter.  When supplied, only
+    deaths whose ``resolution_batch`` parses to ``day_N`` with
+    ``N <= current_day`` are included.  Night deaths are never
+    public (the ``_public_reasons`` map excludes them) and are
+    therefore unaffected by the filter; the filter is purely a
+    "show only the day deaths up through this day" cap.
     """
     _public_reasons = {"exile": "放逐", "hunter_shot": "枪杀"}
     lines: list[str] = []
     for d in gs.deaths:
+        if current_day is not None:
+            batch = d.resolution_batch or ""
+            # resolution_batch format: "day_N" or "night_N".
+            # ``_DAY_BATCH_RE.fullmatch`` only matches the strict
+            # ``day_<digits>`` form; anything else (empty string,
+            # ``night_4``, ``day_BAD``, ``day_1_extra``) is treated
+            # as malformed and the death is kept defensively.
+            m = _DAY_BATCH_RE.fullmatch(batch)
+            if m and int(m.group(1)) > current_day:
+                continue
+            if not m and batch.startswith("day_"):
+                # Batch LOOKS like a day batch but didn't match the
+                # strict ``day_<digits>`` form -- this is a real
+                # engine regression signal (e.g. ``day_BAD``,
+                # ``day_1_extra``).  ``night_4`` and ``""`` are
+                # structurally valid and are not logged.  See review
+                # I-1.
+                logger.warning(
+                    "collect_death_order: malformed resolution_batch %r, keeping death %s",
+                    d.resolution_batch,
+                    d.player_id,
+                )
         label = _public_reasons.get(d.reason)
         if label:
             lines.append(f"{d.player_id}({label})")

@@ -29,6 +29,46 @@ from werewolf_agent.agents.schemas import (
 # from private_memory; the duplicate here is deleted.
 from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES  # noqa: E402
 
+# M4-1 (2026-06-09): single source of truth for the reflection-hint
+# budget.  Imported from ``runtime.context`` so the prompt builder and
+# the hint-generation helper cannot drift.  Previously this was a
+# closure constant inside ``_reflection_memory_hints`` while the
+# prompt builder hard-coded ``[:5]``, silently dropping 3 hints.
+from werewolf_agent.runtime.context import HINT_BUDGET  # noqa: E402
+
+# M2-3 (2026-06-09): single source of truth for the output schema
+# field set.  Both ``_build_output_contract`` (system prompt) and
+# ``_build_strict_output_contract`` (per-turn strict) must reference
+# these constants.  P2-3 attempted to sync them but two literal
+# string lists still drift on future edits.  The constants are the
+# MAX-set the stable contract advertises to the LLM; per-turn
+# strict subsets (e.g. non-vote TARGET_CHOICE, SPEECH_INTENT) remain
+# as literals because they are different schemas, not the same
+# schema with fewer fields.
+_OUTPUT_SCHEMA_VOTE_FIELDS: tuple[str, ...] = (
+    "choice", "reason", "seer_stance", "vote_basis",
+    "standing_with_seer", "suspect_reason", "not_voting_reason",
+    "private_reason", "confidence",
+)
+_OUTPUT_SCHEMA_SPEECH_FIELDS: tuple[str, ...] = (
+    "action_type", "target_id", "speech", "reason", "confidence",
+)
+_OUTPUT_SCHEMA_SKILL_FIELDS: tuple[str, ...] = (
+    "action_type", "target_id", "speech", "reason", "confidence",
+)
+
+# M2-3 (2026-06-09): derived list of vote fields BEYOND choice/reason/confidence.
+# Subtracted from _OUTPUT_SCHEMA_VOTE_FIELDS so future additions to
+# the VOTE constant automatically propagate to the strict-contract
+# audit check. The strict prompt advertises these as "additional
+# required fields" on top of the stable choice/reason/confidence
+# trio, so any field added to VOTE that's not in the subtracted set
+# becomes a required audit field for free.
+_VOTE_AUDIT_FIELDS: tuple[str, ...] = tuple(
+    f for f in _OUTPUT_SCHEMA_VOTE_FIELDS
+    if f not in ("choice", "reason", "confidence")
+)
+
 # P0-K1: skill catalog removed (tool path is dead code). Skill analyses
 # are pre-injected via skill_analysis_hints — no separate tool catalog.
 
@@ -145,6 +185,12 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "witch_poison_deterrent",           # context.py:883 — 不要明报身份
     # Generic evaluation requirement
     "required_evaluation",              # agent_adapter.py:302 — 必须在 reason 中解释
+    # M2-2 follow-up: vote_basis guidance contains "不要用 seer_check" — a
+    # command, not a suggestion. Previously fell through to 【参考】
+    # where the budget trimmer would drop it under tight token budgets,
+    # removing the seer_check prohibition. Promote to HARD so the
+    # prohibition is preserved.
+    "vote_basis_hint",
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({
@@ -314,9 +360,19 @@ class PlayerPromptBuilder:
         )
 
     def _build_skill_policy(self) -> str:
+        """Skill policy: 边界 with identity rules.
+
+        M5-1: explicitly state that the role's identity rules
+        (rendered above in role_guide) outrank skill advice on
+        conflict. Without this, LLM may conflate 'skill said
+        vote X' with 'role said vote X' — leading to the LLM
+        prioritizing skill output over the deterministic role
+        rules it was given in the system prompt.
+        """
         return (
             "【技能与建议】系统会在你的回合前注入已计算的技能分析结果，"
             "请基于这些分析与当前局可见事实形成自己的判断，不要机械复述。"
+            "【优先级边界】身份规则(role_guide)优先于技能建议，冲突时以身份规则为准。"
             "技能分析不是裁判真相；如果与公开事实冲突，以公开事实为准。"
         )
 
@@ -343,33 +399,22 @@ class PlayerPromptBuilder:
                 "如果主人是好人，狼队需消灭3村民+混血儿才算屠边。"
             ),
             "villager": (
-                "村民规则：身份公开时积极表明好人立场；"
-                "分析发言矛盾/票型关系；"
-                "N1 公开讨论中支持解药救人（如有女巫报银水线索）；"
-                "归票基于公开证据链而非情绪。"
-                "夜间阶段：村民无夜间行动，听从公开死亡公告；"
-                "如果白痴被放逐后翻牌，村民继续听其发言但不计入投票（其已无投票权）；"
-                "猎人死后开枪按公开顺序处理，村民不替猎人做决定。"
+                "村民规则：身份公开时表明好人立场；"
+                "分析发言矛盾/票型；"
+                "N1 公开讨论中支持解药救人；"
+                "归票基于证据链,不跟风。"
             ),
         }
-        # P2-9: non-wolf roles need a one-line note on which vote_basis
-        # enum value to use. The 7-value enum (seer_check / seer_siding
-        # / speech_logic / vote_pattern / pressure_test / anti_herd /
-        # fallback) is too wide to guess without guidance. Only the
-        # seer legitimately uses ``seer_check`` (their own check);
-        # every other role uses speech_logic / vote_pattern /
-        # seer_siding.
-        _VOTE_BASIS_GUIDANCE = (
-            "【投票时 vote_basis 选用 speech_logic / vote_pattern / "
-            "seer_siding，不要用 seer_check。】"
-        )
+        # P2-9: VOTE_BASIS_GUIDANCE was originally appended here for
+        # non-seer roles. M2-2: the role_guide is part of the stable
+        # system prompt and doesn't know task_type, so a wolf NIGHT
+        # action was seeing "投票时 vote_basis 选用 speech_logic" —
+        # irrelevant. Moved to per-turn strategy_directive injection
+        # in agent_adapter.py for VOTE/SPEECH task types only. The
+        # seer exemption also lives there (it still applies — seer
+        # legitimately uses seer_check for their own checks).
         if role in role_rules:
             lines.append(role_rules[role])
-            # Seer stands with their OWN check (own ID is implicit),
-            # so the "don't use seer_check" guidance doesn't apply
-            # to them — they should use seer_check.
-            if role != "seer":
-                lines.append(_VOTE_BASIS_GUIDANCE)
         return "\n".join(lines) if lines else ""
 
     def _build_output_contract(self) -> str:
@@ -385,15 +430,34 @@ class PlayerPromptBuilder:
         kill) may use a strict subset, but the system prompt should
         advertise the max so the LLM is never surprised by a field
         the per-turn contract adds.
+
+        M2-3: field lists are now sourced from the module-level
+        ``_OUTPUT_SCHEMA_*_FIELDS`` constants so the system prompt
+        and the per-turn strict contract cannot drift on future
+        edits.  The constants encode the *max* set; the per-turn
+        ``_build_strict_output_contract`` may emit strict subsets
+        (non-vote TARGET_CHOICE drops to 3 fields, SPEECH_INTENT
+        uses ``intent`` instead of ``action_type``) but those are
+        different schemas, not the same schema with fewer fields.
         """
+        vote_fields = "、".join(_OUTPUT_SCHEMA_VOTE_FIELDS)
+        speech_fields = "、".join(_OUTPUT_SCHEMA_SPEECH_FIELDS)
+        # The skill field list includes a "（空）" hint on the
+        # ``speech`` field so the LLM knows skill actions carry an
+        # empty speech payload.  The constant holds the field name;
+        # the hint is appended here to preserve the original P0
+        # framing.
+        skill_fields = "、".join(
+            f"{f}（空）" if f == "speech" else f
+            for f in _OUTPUT_SCHEMA_SKILL_FIELDS
+        )
         return (
             "请优先通过 submit_player_action 工具提交结构化行动。"
             "如果当前模型无法调用工具，则只输出一个JSON对象，不要解释、不要Markdown。"
-            "投票回合字段最多9个：choice、reason、seer_stance、vote_basis、"
-            "standing_with_seer、suspect_reason、not_voting_reason、private_reason、confidence。"
-            "发言回合最多5个：action_type、target_id、speech、reason、confidence。"
+            f"投票回合字段最多{len(_OUTPUT_SCHEMA_VOTE_FIELDS)}个：{vote_fields}。"
+            f"发言回合最多{len(_OUTPUT_SCHEMA_SPEECH_FIELDS)}个：{speech_fields}。"
             "技能行动（kill/check/poison/shoot/choose_master/badge 等）"
-            "最少5个：action_type、target_id、speech（空）、reason、confidence。"
+            f"最少{len(_OUTPUT_SCHEMA_SKILL_FIELDS)}个：{skill_fields}。"
             "重要：speech字段必须使用中文，这是你在游戏中的公开发言。"
         )
 
@@ -455,18 +519,34 @@ class PlayerPromptBuilder:
         "_build_visible_state": "【辅助】",
         "_build_private_memory_hints": "【辅助】",
         "_build_salience_events": "【辅助】",
-        # G-R4-15: RAG hints were 【辅助】 but got dropped alongside
-        # persona, profile, and other 辅助-tier sections under tight
-        # budgets. The whole point of the 知识库提示 section is to
-        # bring strategy hints into the LLM's reasoning; losing it
-        # defeats the retrieval investment. Promote to 【参考】 so
-        # the trimmer drops 辅助 first, then 【参考】, then 硬约束.
-        # The inner P0-S5 strategy_directive 【参考】 sub-group and
-        # this outer RAG-hint 【参考】 label are conceptually aligned
-        # (both are "reference" material the LLM should consult but
-        # is not strictly bound to).
-        "_build_rag_hints": "【参考】",
-        "_build_reflection_memory_hints": "【辅助】",
+        # M4-2: reflection/RAG priority swap. Per-player reflection
+        # history is strictly more relevant to THIS player than
+        # generic RAG community knowledge, so under tight token
+        # budget the budget trimmer should drop RAG first and
+        # keep reflection. RAG is community-wide, generic, replacable
+        # from the corpus; reflection is this-player + this-role
+        # accumulated gameplay lessons — losing it means repeating
+        # the same mistakes across games.
+        #
+        # This INVERTS the G-R4-15 judgment ("RAG must survive
+        # budget cuts"). That rationale conflated retrieval cost
+        # (RAG is expensive to fetch) with prompt value (what the
+        # LLM should attend to). They are different questions.
+        # Reflection is more valuable per-token to this player.
+        #
+        # Drop order under budget pressure:
+        #   1) 辅助 (lowest) — persona, phase_context, belief,
+        #      public_summary, visible_state, private_memory,
+        #      salience, rag_hints, profile, cognition, error_pattern
+        #   2) 参考 (middle) — reflection_memory_hints
+        #   3) 硬约束 (highest, never dropped) — strategy_directive,
+        #      retry_hint, strict_output_contract
+        # Note: 【场上记录】 (public_summary) and 【策略指令】
+        # (strategy_directive) use distinctive section labels
+        # for LLM-skim clarity but map to the same 3-tier drop
+        # semantics.
+        "_build_rag_hints": "【辅助】",
+        "_build_reflection_memory_hints": "【参考】",
         "_build_profile_memory_hint": "【辅助】",
         "_build_cognition_matrix_hint": "【辅助】",
         "_build_error_pattern_hint": "【辅助】",
@@ -600,10 +680,12 @@ class PlayerPromptBuilder:
             label = priority.get(name, "")
             if label == "【硬约束】":
                 continue
-            # G-R4-15: tier ordering is now 可选 (0) → 辅助 (1) →
-            # 【参考】 (2) → never drop 硬约束. RAG hints (now 【参考】)
-            # survive whenever 辅助 sections can be dropped to fit
-            # the budget.
+            # Tier ordering: 可选 (0) → 辅助 (1) → 【参考】 (2)
+            # → never drop 硬约束. M4-2: RAG hints reverted to 辅助
+            # tier, reflection promoted to 【参考】. The trimmer
+            # drops 辅助 sections first (which now includes RAG
+            # hints), then 参考 sections (reflection), and never
+            # 硬约束. See M4-2 commit 0022d25 for the rationale.
             if label == "【可选】":
                 tier = 0
             elif label == "【参考】":
@@ -953,7 +1035,7 @@ class PlayerPromptBuilder:
             return ""
         return (
             "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
-            + self._compact_json(ctx.reflection_memory_hints[:5])
+            + self._compact_json(ctx.reflection_memory_hints[:HINT_BUDGET])
         )
 
     def _build_error_pattern_hint(self) -> str:
@@ -1398,7 +1480,24 @@ class PlayerPromptBuilder:
         return "\n".join(parts)
 
     def _build_strict_output_contract(self) -> str:
-        """Per-turn output contract — adapts to task type."""
+        """Per-turn output contract — adapts to task type.
+
+        M2-3: the VOTE branch sources its 9-field list from the
+        module-level ``_OUTPUT_SCHEMA_VOTE_FIELDS`` constant so the
+        per-turn contract cannot drift from
+        ``_build_output_contract`` (the system prompt's stable
+        advertisement).  The non-vote TARGET_CHOICE branch (3
+        fields: ``choice``, ``reason``, ``confidence``) and the
+        SPEECH_INTENT branch (uses ``intent`` instead of
+        ``action_type``) keep literal field lists because they are
+        *different schemas*, not subsets of the VOTE/SKILL/SPEECH
+        constants.  The full-action (SKILL) branch inherits its
+        schema from the same constant the system prompt uses
+        (``_OUTPUT_SCHEMA_SKILL_FIELDS``) — the per-turn branch
+        only adds the *per-turn* rules (legal_actions,
+        legal_targets, vote audit fields) per P1-4, but those
+        per-turn rules reference the same underlying schema.
+        """
         ctx = self.context
         output_mode = self._select_output_mode()
         legal_actions = [a.value for a in ctx.legal_actions]
@@ -1407,10 +1506,7 @@ class PlayerPromptBuilder:
         if output_mode == OutputMode.TARGET_CHOICE:
             output_fields = "choice、reason、confidence"
             if ctx.legal_actions == [ActionType.VOTE]:
-                output_fields = (
-                    "choice、reason、seer_stance、vote_basis、standing_with_seer、suspect_reason、"
-                    "not_voting_reason、private_reason、confidence"
-                )
+                output_fields = "、".join(_OUTPUT_SCHEMA_VOTE_FIELDS)
             lines = [
                 "",
                 "最终输出协议（必须遵守）：",
@@ -1421,8 +1517,7 @@ class PlayerPromptBuilder:
             ]
             if ctx.legal_actions == [ActionType.VOTE]:
                 lines.append(
-                    "5. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
-                    "suspect_reason、not_voting_reason、private_reason，理由字段不能写「未说明」。"
+                    f"5. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
                 )
             lines.append("现在提交行动。")
             return "\n".join(lines)
@@ -1441,6 +1536,13 @@ class PlayerPromptBuilder:
             lines.append("现在提交行动。")
             return "\n".join(lines)
 
+        # Full-action (SKILL) branch.  P1-4 deliberately removed the
+        # field-list duplication here — the system prompt's stable
+        # ``_build_output_contract`` (which sources its field list
+        # from ``_OUTPUT_SCHEMA_SKILL_FIELDS`` per M2-3) already
+        # advertises the SKILL schema, so this per-turn branch only
+        # adds the *per-turn* rules (legal_actions, legal_targets,
+        # vote audit fields).
         lines = [
             "",
             "最终输出协议（必须遵守）：",
@@ -1449,20 +1551,13 @@ class PlayerPromptBuilder:
             "3. JSON必须以{开头、以}结尾，且只能有一个对象。",
             "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
         ]
-        # P1-4: the field list (action_type、target_id、speech、reason、
-        # confidence) was duplicated from the system prompt. The system
-        # prompt's ``_build_output_contract`` already advertises it as a
-        # stable rule; the user prompt should keep ONLY the per-turn
-        # phase-specific rules (legal_actions, legal_targets, vote
-        # audit fields).
         if legal_actions:
             lines.append(f"5. action_type只能取：{legal_actions}。")
         if legal_targets:
             lines.append(f"6. target_id只能取这些玩家之一或null：{legal_targets}。")
         if ActionType.VOTE in ctx.legal_actions:
             lines.append(
-                "7. 投票还必须包含seer_stance、vote_basis、standing_with_seer、"
-                "suspect_reason、not_voting_reason、private_reason，理由字段不能写「未说明」。"
+                f"7. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
             )
         lines.append("现在提交行动。")
         return "\n".join(lines)
