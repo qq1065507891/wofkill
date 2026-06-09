@@ -3758,12 +3758,19 @@ def test_private_memory_caveat_wrapped_in_separator_markers():
 
 
 def test_villager_guide_includes_night_fallback():
-    """Phase-1 P1-26: villager role guide must include night-time
-    fallback behavior (idiot reveals, hunter shot) — villagers are
-    3 of 12 players in V1.
+    """Phase-1 P1-26 (superseded by M2-1): the original P1-26 test
+    required explicit night-time fallback rules in the villager
+    role guide (idiot reveals, hunter shot). M2-1 audit found this
+    was over-guidance — villagers are 3 of 12, and the system
+    prompt was 4× longer than other roles' guides (400+ chars).
+    The fix compresses the guide to ~50 chars and moves the
+    night-fallback knowledge to per-turn context (when the
+    villager's NIGHT action is dispatched, the task is a no-op
+    by definition; the engine handles night transitions).
 
-    Note: role guide lives in the SYSTEM prompt (stable rule), so
-    we assert against ``build_system_prompt()``.
+    This test now asserts the compression: villager guide is
+    concise (no night-fallback detail) while still keeping the
+    2 key day-time cues (N1 解药 + 证据/票型) per M2-1.
     """
     ctx = AgentContext(
         agent_id="p05",
@@ -3776,12 +3783,26 @@ def test_villager_guide_includes_night_fallback():
         public_summary="",
     )
     sys_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
-    assert "夜间阶段" in sys_prompt, (
-        f"villager guide must include night-time fallback behavior; "
-        f"got sys_prompt={sys_prompt[-500:]!r}"
+    # M2-1 compression: the night-fallback detail is no longer in
+    # the system prompt (token waste + over-guidance). The guide
+    # should be concise like other roles' guides (~50-150 chars).
+    assert "夜间阶段" not in sys_prompt, (
+        f"M2-1: villager guide should NOT include '夜间阶段' detail "
+        f"(compressed for token efficiency). got sys_prompt="
+        f"{sys_prompt[sys_prompt.find('村民规则'):sys_prompt.find('村民规则') + 300]!r}"
     )
-    assert "无投票权" in sys_prompt, (
-        "villager guide must mention idiot losing vote after reveal"
+    assert "无投票权" not in sys_prompt, (
+        "M2-1: villager guide should NOT include idiot-vote detail "
+        "(that knowledge belongs to per-turn context, not the "
+        "stable system prompt). "
+        f"got sys_prompt={sys_prompt[-300:]!r}"
+    )
+    # M2-1 regression: the 2 key day-time cues MUST still be present
+    assert "解药" in sys_prompt, (
+        "M2-1: villager guide must keep '解药' cue (N1 antidote support)"
+    )
+    assert "票型" in sys_prompt or "证据" in sys_prompt, (
+        "M2-1: villager guide must keep 票型/证据 cue (evidence-based voting)"
     )
 
 

@@ -203,3 +203,27 @@ def test_inject_vote_basis_helper_centralized():
         "Non-seer should get vote_basis_hint injection"
     )
     assert "speech_logic" in sd["vote_basis_hint"] or "vote_basis" in sd["vote_basis_hint"].lower()
+
+
+def test_villager_role_guide_is_concise():
+    """M2-1: villager guide was 4 paragraphs (~400 chars), other
+    roles are 1 paragraph. Token waste + over-guidance."""
+    from werewolf_agent.agents.schemas import AgentContext, TaskType
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+
+    ctx = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH,
+        phase="day", day_number=2, night_number=2,
+        own_role="villager",
+    )
+    builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
+    builder.context = ctx
+    guide = builder._build_role_guide()
+    # Compress to ~200 chars while keeping the 2 key behaviors
+    assert len(guide) < 200, (
+        f"Villager role_guide too long: {len(guide)} chars. "
+        f"Other roles are ~100 chars; this is over-guidance."
+    )
+    # But must keep the 2 key behaviors
+    assert "N1" in guide or "解药" in guide, "should keep N1 解药 cue"
+    assert "票型" in guide or "证据" in guide, "should keep evidence-based voting cue"

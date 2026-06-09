@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T3-fix M2-2 vote_basis HARD tier + 抽出 helper (DONE) — C-1 + I-1 review fixes
+- Active task: T4 M2-1 compress villager role_guide (DONE)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
 - **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
@@ -132,6 +132,37 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 **风险**:
 - 派生 `tuple(f for f in VOTE if f not in (...))` 是基于字符串字面比较的派生,若未来有人把 `choice/reason/confidence` 在 VOTE 常量里重命名或换大小写,字面"减去"集合可能 silent miss。考虑可以改成基于位置的切片 (VOTE[:1]+VOTE[2:3]+VOTE[3:]... 太脆弱),当前按字面减去是 simple-and-good-enough,新测试用 `expected = tuple(f for f in vote if f not in (...))` 同步断言,等 VOTE 改名时一处改、两处都改
 - VOTE 未来若加非 audit 字段 (例如 `vote_id` 这种纯标识符而非理由字段),需要决定是否在 subtracted set 中加它,新测试目前只校验 derived == 减去,不会自动 catch"非 audit 字段被混入"的语义错误。这是设计上的取舍:严格定义"audit = 除 choice/reason/confidence 之外的全部"在当前 9 字段 schema 下是合理的 (VOTE 里其他 6 字段确实是 audit 类:seer 立场、投票依据、与预言家站队、怀疑理由、不投票理由、私下理由),但若 VOTE 加纯 ID 字段,需要在减去集合加
+
+**T4 (M2-1) DONE — compress villager role_guide**:
+- **问题**: plan 说 villager guide 是 4 段 (~400 chars),其他角色 ~100 chars。实测当前 (P1-8 commit `13e9509` 后) 是 151 chars (1 day-time block + 1 night-fallback block),但仍明显长于其他 6 角色 (~50-100 chars) — token 浪费 + 过度指引,且 night-fallback 块 (白痴翻牌/猎人开枪) 属于"听公开公告"已覆盖的常识
+- **plan 的 proposed replacement 内嵌冲突**: 提议的 49-char 文本丢了 "N1 解药救人" cue,会让新 M2-1 test + 既有 P1-S9 test (`test_villager_role_guide_specific_rules`) 同时 fail
+- **修复**: 不用 plan 的 verbatim 替换,改成 54 chars 版本保留 4 个关键 cue (好人立场 / 矛盾 / 解药 / 公开):
+  ```
+  村民规则：身份公开时表明好人立场；
+  分析发言矛盾/票型；
+  N1 公开讨论中支持解药救人；
+  归票基于证据链,不跟风。
+  ```
+  砍掉的 night-fallback 块 (3 行 ~50 chars) 是"村民无夜间行动"等公开流程已覆盖的常识,LLM 通过 phase 上下文即可知道
+- **冲突解决**: 既有的 `test_villager_guide_includes_night_fallback` (P1-26, `13e9509` 加) 断言 villager guide 必须含 "夜间阶段" + "无投票权"。M2-1 与 P1-26 直接冲突 — 同一文件同一字段,一个说"必须有 night 块",一个说"必须无 night 块"。把 P1-26 test 改写为 M2-1 方向: 断言 "夜间阶段" / "无投票权" 不在 sys_prompt,且 "解药" / "票型"/"证据" 仍在
+- **文件**:
+  - `werewolf_agent/agents/prompt_builder.py:391-396` (villager role_rules 从 8 行 → 4 行, 151 chars → 54 chars)
+  - `tests/agents/test_prompt_injection_fixes.py:209-244` (新 M2-1 test `test_villager_role_guide_is_concise`)
+  - `tests/agents/test_prompt_builder.py:3760-3810` (改写 P1-26 test 为 M2-1 方向,加 docstring 说明 superseded)
+- **测试**: 1 个新测试 (M2-1 length+cues) + 1 个改写测试 (P1-26 → M2-1 方向)。 既有 7 个 villager-related tests (`test_prompt_builder.py -k villager`) 全 pass
+- **byte-identical 验证**:
+  - 新文本 54 chars (vs plan 目标 ~80 chars, 计划是 ~150 char 目标)
+  - 4 个 key cue 全部保留 (P1-S9 test 全 pass)
+  - 2 个 M2-1 cue 全部保留 (N1/解药 + 票型/证据)
+- **验证**:
+  - `pytest tests/agents/test_prompt_injection_fixes.py -p no:cacheprovider` → 9 passed
+  - `pytest tests/agents/test_prompt_builder.py -k villager -p no:cacheprovider` → 7 passed
+  - `pytest tests/ -p no:cacheprovider --ignore=tests/api --ignore=tests/agents --ignore=tests/storage --ignore=tests/rag --ignore=tests/tools` → 5 pre-existing baseline failures (TestAPIStartup::* 3 + TestRealRunConfiguration::* 1 + test_witch_directive_isolated 1),1824 passed,本次改动无新 regression
+
+**风险**:
+- P1-26 → M2-1 改写是"测试反转" — 必须 commit message 明确说明 supersession,避免 reviewer 误判 regression。已在新 docstring 写明 "Phase-1 P1-26 (superseded by M2-1)"
+- villager role guide 砍掉 night-fallback 后,LLM 在 NIGHT phase 看 role guide 不会看到 "村民无夜间行动" 提醒。fallback 通过 `phase="night"` 上下文 + NIGHT_ACTION task_type (villager NIGHT 是 no-op) 兜底,但若未来 villager 引入"夜间能听公开信息"等特殊能力需要再补
+- "无投票权" 知识从 villager guide 移到 design doc / game-rule docs 而非 system prompt。LLM 在白痴翻牌后投票行为仍要正确 — 当前依赖 per-turn directive (白痴翻牌后会注入 `vote_silent` 等),如果未来白痴翻牌不注入 vote_silent 需要补
 
 ---
 
