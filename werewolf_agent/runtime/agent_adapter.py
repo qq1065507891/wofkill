@@ -49,7 +49,9 @@ from werewolf_agent.runtime.directives import (
     build_seer_directive as _build_seer_day_speech_directive,
     build_villager_directive as _build_villager_day_speech_directive,
     build_witch_directive as _build_witch_day_speech_directive,
-    build_wolf_directive as _build_wolf_day_speech_directive,
+    build_wolf_day_directive as _build_wolf_day_speech_directive,
+    build_wolf_directive,  # back-compat shim (M3-3)
+    build_wolf_night_directive as _build_wolf_night_directive,
     build_wolf_vote_directive as _build_wolf_vote_strategy,
 )
 from werewolf_agent.runtime.directives._shared import (
@@ -610,28 +612,15 @@ def _single_wolf_vote(
     # Kill target value assessment
     kill_assessment = _evaluate_wolf_kill_target(gs, wolf_id, legal_targets)
     wolf_plan = state.get("wolf_team_plan")
-    strategy_directive: dict[str, Any] = {
-        "wolf_kill_instruction": (
-            "你是狼人，现在是夜间击杀阶段。选择今晚要击杀的目标。\n"
-            "击杀策略：优先击杀对狼队威胁最大的玩家（已跳预言家、持警徽、分析能力强的）。\n"
-            "如果狼队讨论已确定目标，按讨论共识执行。\n"
-            "speech字段留空（夜间行动不需要发言）。"
-        ),
-    }
-    # D-8 (2026-06-08 balance audit): 暴露 wolf_no_kill 作为合法战术。
-    # 4 局真实游戏中狼队 0 自爆/0 空刀,因 LLM 看不到空刀选项。注入 4 条空刀触发条件。
-    strategy_directive["wolf_no_kill_conditions"] = (
-        "【空刀战术条件】wolf_no_kill 是合法战术,action_type='wolf_no_kill', target_id=null。\n"
-        "当以下条件满足时,优先选空刀:\n"
-        "1) 当晚无明确高威胁击杀目标(评估的威胁分都很低,无跳预言家/无查杀/无明显嫌疑人)\n"
-        "2) 需要制造平安夜混淆好人视野(让白天讨论集中在'无人死亡'上,放大悍跳狼的话语权)\n"
-        "3) 关键 PK 投票轮次前夜不出刀,避免暴露狼队击杀方向\n"
-        "4) 自爆后续局的调整(若 N-1 夜有狼自爆,本夜不出刀混淆)\n"
-        "**重要限制**:已连续 2 夜空刀会强制出刀(系统层 max_consecutive_no_kill=2),"
-        "不要尝试连续 2 夜空刀。"
+    # M3-3: build the night directive (kill/no_kill prompt) from the
+    # shared module so day and night directives don't drift apart.
+    strategy_directive: dict[str, Any] = _build_wolf_night_directive(
+        gs, wolf_id, wolf_plan,
     )
     # Task 3 (Issue 4): explicitly name the claimed Seer as the top kill target
-    # so all wolves converge on the same high-priority player.
+    # so all wolves converge on the same high-priority player.  Lives
+    # here (not in directives/wolf.py) to avoid a circular import —
+    # ``_build_wolf_kill_directive`` itself is defined in this module.
     strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
         gs, wolf_id=wolf_id, plan=wolf_plan,
     )

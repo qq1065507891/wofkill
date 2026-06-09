@@ -67,12 +67,47 @@ _WOLF_ROLE_STRATEGY = {
 }
 
 
-def build_wolf_directive(
+_WOLF_NO_KILL_CONDITIONS = (
+    "【空刀战术条件】wolf_no_kill 是合法战术,action_type='wolf_no_kill', target_id=null。\n"
+    "当以下条件满足时,优先选空刀:\n"
+    "1) 当晚无明确高威胁击杀目标(评估的威胁分都很低,无跳预言家/无查杀/无明显嫌疑人)\n"
+    "2) 需要制造平安夜混淆好人视野(让白天讨论集中在'无人死亡'上,放大悍跳狼的话语权)\n"
+    "3) 关键 PK 投票轮次前夜不出刀,避免暴露狼队击杀方向\n"
+    "4) 自爆后续局的调整(若 N-1 夜有狼自爆,本夜不出刀混淆)\n"
+    "**重要限制**:已连续 2 夜空刀会强制出刀(系统层 max_consecutive_no_kill=2),"
+    "不要尝试连续 2 夜空刀。"
+)
+
+_WOLF_KILL_INSTRUCTION = (
+    "你是狼人，现在是夜间击杀阶段。选择今晚要击杀的目标。\n"
+    "击杀策略：优先击杀对狼队威胁最大的玩家（已跳预言家、持警徽、分析能力强的）。\n"
+    "如果狼队讨论已确定目标，按讨论共识执行。\n"
+    "speech字段留空（夜间行动不需要发言）。"
+)
+
+
+def build_wolf_day_directive(
     gs: GameState,
     wolf_id: str,
     wolf_team_plan: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Build day speech directive for a werewolf with role-aware strategy."""
+    """Wolf day-speech / day-vote directive (M3-3: day-only keys).
+
+    Day-only keys produced here:
+      - ``wolf_live_seer_claimants``  (real-time public seer claims)
+      - ``wolf_speech_directive``     (role assignment strategy block)
+      - ``wolf_universal_rules``      (universal day-speech constraints)
+      - ``wolf_day_push_target``      (team's daytime push target)
+      - ``wolf_fake_seer_execution``  (force fake-seer to claim)
+      - ``wolf_fake_seer_teammate``   (coordination hints about teammate)
+      - ``wolf_teammate_exposed``     (seer publicly checked a wolf teammate)
+      - ``wolf_self_destruct_condition`` (decided during day, prompt asked now)
+
+    Night-only keys (wolf_no_kill_conditions, wolf_kill_instruction) are
+    NOT emitted here — they belong to
+    :func:`build_wolf_night_directive` and would dilute the day
+    prompt with off-phase tactical options.
+    """
     from werewolf_agent.runtime.strategy import (
         get_wolf_role_assignment as _get_wolf_role_assignment,
         has_publicly_claimed_seer as _has_publicly_claimed_seer,
@@ -230,6 +265,7 @@ def build_wolf_directive(
 
     # D-8 (2026-06-08 balance audit): 自爆是合法战术。注入条件提示,仅在狼处于被
     # 推/警徽即将流失的危险位置时,避免噪音。
+    # M3-3: self-destruct is decided during day, so the prompt belongs here.
     danger = _wolf_endangered_status(gs, wolf_id)
     if danger["in_danger"]:
         badge_clause = (
@@ -248,6 +284,54 @@ def build_wolf_directive(
         )
 
     return parts
+
+
+def build_wolf_night_directive(
+    gs: GameState,
+    wolf_id: str,
+    wolf_team_plan: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Wolf night-action directive (M3-3: night-only keys).
+
+    Night-only keys produced here:
+      - ``wolf_kill_instruction``     (base kill prompt)
+      - ``wolf_no_kill_conditions``    (empty-knife as legal tactic)
+
+    Day-only keys (push target, role assignments, fake_seer execution,
+    teammate_exposed, self_destruct_condition) are NOT emitted here.
+
+    Note: ``_build_wolf_kill_directive`` (high-priority target) and
+    ``kill_value_assessment`` remain in ``_single_wolf_vote`` because
+    they depend on helpers in ``agent_adapter``.  The night-action
+    adapter merges this directive with its own night-only additions
+    to avoid circular imports.
+    """
+    parts: dict[str, Any] = {
+        "wolf_kill_instruction": _WOLF_KILL_INSTRUCTION,
+        # D-8 (2026-06-08 balance audit): 暴露 wolf_no_kill 作为合法战术。
+        # 4 局真实游戏中狼队 0 自爆/0 空刀,因 LLM 看不到空刀选项。注入 4 条空刀触发条件。
+        "wolf_no_kill_conditions": _WOLF_NO_KILL_CONDITIONS,
+    }
+    return parts
+
+
+def build_wolf_directive(
+    gs: GameState,
+    wolf_id: str,
+    wolf_team_plan: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Back-compat shim — returns merged day+night dict (M3-3).
+
+    Preferred callers should use :func:`build_wolf_day_directive` /
+    :func:`build_wolf_night_directive` based on ``task_type``.  This
+    shim is kept so older callers and tests that pass
+    ``wolf_team_plan`` without a ``task_type`` keep working — they
+    receive the union of day+night keys, which is the legacy
+    behaviour.
+    """
+    day = build_wolf_day_directive(gs, wolf_id, wolf_team_plan)
+    night = build_wolf_night_directive(gs, wolf_id, wolf_team_plan)
+    return {**day, **night}
 
 
 def _wolf_endangered_status(gs: GameState, wolf_id: str) -> dict[str, Any]:

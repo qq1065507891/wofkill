@@ -42,7 +42,7 @@ from werewolf_agent.runtime.directives import (
     build_idiot_directive as _build_idiot_day_speech_directive,
     build_seer_directive as _build_seer_day_speech_directive,
     build_villager_directive as _build_villager_day_speech_directive,
-    build_wolf_directive as _build_wolf_day_speech_directive,
+    build_wolf_day_directive as _build_wolf_day_speech_directive,
 )
 # Backward-compatible re-exports from runtime.strategy (Task 2 extraction).
 from werewolf_agent.runtime.strategy import (
