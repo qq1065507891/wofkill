@@ -24,8 +24,10 @@ def build_villager_directive(
 
     # Collect public information for analysis
     seer_claimants = _public_seer_claimants(gs)
-    vote_history = collect_public_vote_history(gs)
-    death_order = collect_death_order(gs)
+    # M3-2: cap public history to current day so day-5 LLM
+    # does not dilute focus with day-1 patterns.
+    vote_history = collect_public_vote_history(gs, current_day=gs.day_number)
+    death_order = collect_death_order(gs, current_day=gs.day_number)
 
     # Build seer claim analysis if there are competing claims
     seer_analysis = ""
