@@ -5,7 +5,7 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T4 M2-1 compress villager role_guide (DONE)
+- Active task: T5 M3-2 add current_day filter to public history helpers (DONE)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
 - **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
@@ -163,6 +163,23 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - P1-26 → M2-1 改写是"测试反转" — 必须 commit message 明确说明 supersession,避免 reviewer 误判 regression。已在新 docstring 写明 "Phase-1 P1-26 (superseded by M2-1)"
 - villager role guide 砍掉 night-fallback 后,LLM 在 NIGHT phase 看 role guide 不会看到 "村民无夜间行动" 提醒。fallback 通过 `phase="night"` 上下文 + NIGHT_ACTION task_type (villager NIGHT 是 no-op) 兜底,但若未来 villager 引入"夜间能听公开信息"等特殊能力需要再补
 - "无投票权" 知识从 villager guide 移到 design doc / game-rule docs 而非 system prompt。LLM 在白痴翻牌后投票行为仍要正确 — 当前依赖 per-turn directive (白痴翻牌后会注入 `vote_silent` 等),如果未来白痴翻牌不注入 vote_silent 需要补
+
+**T5 (M3-2) DONE — add day filter to public history helpers**:
+- **问题**: `collect_public_vote_history(gs)` 和 `collect_death_order(gs)` 返回完整游戏历史。Day 5 LLM 看 day 1 vote pattern,稀释当前游戏 focus
+- **修复**: 两个 helper 加 `current_day: int | None = None` 形参,`None` 默认 (back-compat)。Villager directive 调 callee 时传 `current_day=gs.day_number`
+- **vote_history 过滤逻辑**: 跳过 `payload.day_number > current_day` 的 `vote_resolved` 事件 (`?` 占位 / 非 int 的 payload 保留,避免误吞)
+- **death_order 过滤逻辑**: 解析 `resolution_batch` (`day_N` / `night_N`)。仅 day_N 跳过 (night death 本就不公开,filter 不影响可见性)。Malformed batch (`day_BAD` / `None`) 不静默丢弃,保留以避免 silent drop 风险
+- **调用点调查**: grep `werewolf_agent/runtime/directives/` 全树,实际 call site 只有 `villager.py:29-30`。`agent_adapter.py:57-58` 只是 alias import (无 call site),未触及
+- **commit**: `27d8a12 fix(directive): M3-2 add current_day filter to public history helpers`
+- **测试**: 3 个新测试 (`test_directive_shared_helpers.py`) 覆盖 (a) vote history 过滤到 current_day (b) default None 保留全部 (c) death order 过滤到 current_day + 不公开的 wolf_kill 不受影响
+- **验证**:
+  - `pytest tests/runtime/test_directive_shared_helpers.py -v` → 3 passed
+  - `pytest tests/runtime tests/rules tests/cognition` → 1049 passed,0 failed
+
+**风险**:
+- 当前 villager 是唯一调用者。若未来其他 directive (例如 seer / hunter) 也调用这两个 helper 并需要 late-game focus,需要同步传 `current_day=gs.day_number` — 不传就退化到 pre-fix 行为 (全历史),不一定 regression,但失去 M3-2 价值
+- 边缘情况 `current_day=0` 会过滤掉 day 1+ 全部事件 (V1 实际不会发生,因为 game 从 D1 开始,day_number 至少为 1),helper 行为正确但语义上是 "无投票历史可看"
+- Death 顺序逻辑: malformed `resolution_batch` (e.g. `day_BAD`) 选择保留而非丢弃,与 plan 一致 ("never silently drop"),但若未来真实游戏中产生 malformed batch,可能让 LLM 看到"尚未发生的死亡"产生混淆 — 当前无错路径产生 malformed batch,故低风险
 
 ---
 
