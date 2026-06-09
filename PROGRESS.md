@@ -5,11 +5,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T6 M3-3 split wolf.py into day/night (DONE)
+- Active task: T7 M4-2 swap RAG/reflection priority labels (DONE)
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
 - **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
-- **本次新增 (T3-fix)**: 修复 T3 M2-2 code review 的两个问题 — (C-1) `vote_basis_hint` 之前没在 `HARD_CONSTRAINT_KEYS` 注册,fallthrough 到 【参考】 tier,budget trimmer 可能裁掉 "不要用 seer_check" 禁制;已在 HARD tier 注册,LLM 必见。(I-1) 6 个 adapter 都有 2-3 行重复的 seer-exempt 注入代码 (defense_speech / day_speech / pk_speech / day_vote / sheriff_vote / sheriff_election_speech),抽到 `agent_adapter._inject_vote_basis_hint(strategy_directive, gs, player_id)` helper,6 个 sites 全部替换为单行调用。3 个新回归测试 (test_vote_basis_hint_registers_in_hard_or_suggestion_tier + test_vote_basis_hint_renders_in_hard_section + test_inject_vote_basis_helper_centralized) — 8/8 prompt_injection_fixes 测试 pass,agents+runtime 1451 测试全 pass。
+- **本次新增 (T7 M4-2 — opinionated judgment reversal)**: 互换 RAG / reflection 的 `_SECTION_PRIORITIES` 标签 — `_build_rag_hints` 从 【参考】 改回 【辅助】,`_build_reflection_memory_hints` 从 【辅助】 提升到 【参考】。**这是 G-R4-15 的反向决议**:G-R4-15 当时认为 "RAG 必须活过 budget 裁剪" (检索成本高),M4-2 的视角是 "prompt value ≠ 检索成本" — per-player 反思 (本玩家本角色累积经验) 比通用 RAG (社区知识) 对当前 LLM 推理更有价值,token 紧时应该保留反思、裁掉 RAG。同步更新两个 旧 G-R4 关联测试的硬编码断言: `test_sections_have_priority_labels` 的 辅助 label count 下限从 8 降到 7 (reflection 移走);`test_priority_labels_for_auxiliary_sections_are_consistent` 把 "跨局反思记忆" 从 auxiliary_headers 列表移到独立的 【参考】 断言。新增 1 个测试 (`test_reflection_priority_above_rag`),共 11/11 prompt_injection_fixes 测试 pass,agents 600 测试全 pass。`test_rag_hints_survive_budget_pressure` (G-R4-15) 仍 pass — 因为 persona 是 辅助 tier 中体积最大的 section,先被裁掉就够了,RAG 不会真的被裁 (但语义已经弱化:RAG 现在和其他 辅助 section 同级,而不是"必须活")。**风险**: G-R4-15 的原作者可能不同意 (RAG 价值 vs 反思价值的判断本来就有分歧),这本质是一个权衡,有不同意见可在 T9 文档更新阶段再讨论。
 
 ---
 

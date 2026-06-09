@@ -509,18 +509,34 @@ class PlayerPromptBuilder:
         "_build_visible_state": "【辅助】",
         "_build_private_memory_hints": "【辅助】",
         "_build_salience_events": "【辅助】",
-        # G-R4-15: RAG hints were 【辅助】 but got dropped alongside
-        # persona, profile, and other 辅助-tier sections under tight
-        # budgets. The whole point of the 知识库提示 section is to
-        # bring strategy hints into the LLM's reasoning; losing it
-        # defeats the retrieval investment. Promote to 【参考】 so
-        # the trimmer drops 辅助 first, then 【参考】, then 硬约束.
-        # The inner P0-S5 strategy_directive 【参考】 sub-group and
-        # this outer RAG-hint 【参考】 label are conceptually aligned
-        # (both are "reference" material the LLM should consult but
-        # is not strictly bound to).
-        "_build_rag_hints": "【参考】",
-        "_build_reflection_memory_hints": "【辅助】",
+        # M4-2: reflection/RAG priority swap. Per-player reflection
+        # history is strictly more relevant to THIS player than
+        # generic RAG community knowledge, so under tight token
+        # budget the budget trimmer should drop RAG first and
+        # keep reflection. RAG is community-wide, generic, replacable
+        # from the corpus; reflection is this-player + this-role
+        # accumulated gameplay lessons — losing it means repeating
+        # the same mistakes across games.
+        #
+        # This INVERTS the G-R4-15 judgment ("RAG must survive
+        # budget cuts"). That rationale conflated retrieval cost
+        # (RAG is expensive to fetch) with prompt value (what the
+        # LLM should attend to). They are different questions.
+        # Reflection is more valuable per-token to this player.
+        #
+        # Drop order under budget pressure:
+        #   1) 辅助 (lowest) — persona, phase_context, belief,
+        #      public_summary, visible_state, private_memory,
+        #      salience, rag_hints, profile, cognition, error_pattern
+        #   2) 参考 (middle) — reflection_memory_hints
+        #   3) 硬约束 (highest, never dropped) — strategy_directive,
+        #      retry_hint, strict_output_contract
+        # Note: 【场上记录】 (public_summary) and 【策略指令】
+        # (strategy_directive) use distinctive section labels
+        # for LLM-skim clarity but map to the same 3-tier drop
+        # semantics.
+        "_build_rag_hints": "【辅助】",
+        "_build_reflection_memory_hints": "【参考】",
         "_build_profile_memory_hint": "【辅助】",
         "_build_cognition_matrix_hint": "【辅助】",
         "_build_error_pattern_hint": "【辅助】",

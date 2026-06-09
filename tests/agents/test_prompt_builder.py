@@ -1788,10 +1788,18 @@ def test_sections_have_priority_labels():
     )
 
     # The 辅助 sections must collectively produce multiple 【辅助】 labels.
+    # M4-2: reflection moved from 辅助 to 参考 (per-player history
+    # outranks generic RAG under budget pressure). The remaining
+    # 辅助 sections are persona, phase, belief, visible state,
+    # private memory, salience, rag hints, profile, cognition,
+    # error pattern — 7 sections whose literal label is 【辅助】
+    # (public_summary uses the distinctive 【场上记录】 label,
+    # so it doesn't count here).
     auxiliary_label_count = prompt.count("【辅助】")
-    assert auxiliary_label_count >= 8, (
-        f"Expected at least 8 【辅助】 labels (one per 辅助 section), "
-        f"got {auxiliary_label_count}."
+    assert auxiliary_label_count >= 7, (
+        f"Expected at least 7 【辅助】 labels (M4-2: reflection is "
+        f"now 【参考】, so 辅助 count dropped from 8 to 7). "
+        f"Got {auxiliary_label_count}."
     )
 
     # The transcript is the only 可选 section in build_user_prompt.
@@ -1866,6 +1874,13 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
     Phase-1 audit (P1-12): ``_build_public_summary`` was promoted from
     辅助 to 参考.  Removed from the auxiliary_header list and added
     a parallel assertion that it now bears the 参考 label.
+
+    M4-2 (Task 7): ``_build_reflection_memory_hints`` swapped from
+    辅助 to 参考. Removed from auxiliary_header and added to a
+    parallel reference_header assertion. RAG hints (knowledge
+    base) took reflection's old 辅助 slot — added back to
+    auxiliary_header since they are now 辅助 tier again (M4-2
+    reverts G-R4-15's RAG promotion to 【参考】).
     """
     ctx = _make_ctx_for_priority_label_test()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
@@ -1876,8 +1891,7 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         "可见状态",          # visible state
         "本局·",            # private memory
         "关键事件",          # salience
-        "知识库提示",        # rag hints
-        "跨局反思记忆",       # reflection
+        "知识库提示",        # rag hints (M4-2: back to 辅助)
         "长期能力画像",       # profile
         "我的认知矩阵",       # cognition
         "技能分析结果",       # skill analysis
@@ -1892,6 +1906,17 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         assert "【辅助】" in preceding, (
             f"Section with header {header!r} must be preceded by 【辅助】 label, "
             f"got: {preceding!r}"
+        )
+    # M4-2: reflection moved from 辅助 to 【参考】 (per-player
+    # history outranks generic RAG). Verify it bears the 【参考】
+    # label so the LLM sees the elevated priority.
+    reflection_idx = prompt.find("跨局反思记忆")
+    if reflection_idx >= 0:
+        preceding = prompt[max(0, reflection_idx - 60):reflection_idx]
+        assert "【参考】" in preceding, (
+            f"M4-2: 跨局反思记忆 (reflection) must be preceded by "
+            f"【参考】 label (per-player history outranks generic "
+            f"RAG). Got: {preceding!r}"
         )
     # P1-6 / P1-12: public_summary now has a distinctive
     # ``【场上记录】`` label (Phase 1 self-audit P1-4 rename) so the
