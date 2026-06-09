@@ -250,3 +250,43 @@ def test_reflection_priority_above_rag():
         f"M4-2: RAG should be 【辅助】 (lower than reflection). "
         f"Got: {prios['_build_rag_hints']!r}"
     )
+
+
+def test_skill_policy_distinguishes_from_identity_rules():
+    """M5-1: _build_skill_policy should clearly state that identity
+    rules (above in role_guide) outrank skill advice on conflict.
+
+    Without this boundary, LLM may conflate 'skill said vote X' with
+    'role said vote X'.
+    """
+    from werewolf_agent.agents.schemas import AgentContext, TaskType
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+
+    ctx = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH,
+        phase="day", day_number=2, night_number=2,
+        own_role="villager",
+    )
+    builder = PlayerPromptBuilder.__new__(PlayerPromptBuilder)
+    builder.context = ctx
+    policy = builder._build_skill_policy()
+    # Must explicitly state the precedence: identity > skill
+    assert "身份" in policy and "技能" in policy, (
+        f"Skill policy must mention both '身份' and '技能' "
+        f"to establish the precedence boundary. Got: {policy!r}"
+    )
+    # And should use a phrase like "身份优先" or "技能不凌驾于身份"
+    boundary_keywords = ["身份优先", "技能不凌驾", "outrank", "身份规则优先",
+                        "身份规则", "role_guide"]
+    assert any(kw in policy for kw in boundary_keywords), (
+        f"Skill policy must include boundary phrasing; got: {policy!r}"
+    )
+    # And the precedence direction (身份 before 技能) should be explicit
+    idx_identity = policy.find("身份")
+    idx_skill = policy.find("技能")
+    # find the second occurrence of each (after the leading 【技能与建议】 header)
+    # The boundary line should put 身份 before 技能
+    assert policy.find("身份规则") < policy.find("优先于技能建议"), (
+        f"Skill policy should put '身份规则' before '优先于技能建议' "
+        f"to establish precedence; got: {policy!r}"
+    )

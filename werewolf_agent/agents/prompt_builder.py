@@ -360,10 +360,20 @@ class PlayerPromptBuilder:
         )
 
     def _build_skill_policy(self) -> str:
+        """Skill policy: 边界 with identity rules.
+
+        M5-1: explicitly state that the role's identity rules
+        (rendered above in role_guide) outrank skill advice on
+        conflict. Without this, LLM may conflate 'skill said
+        vote X' with 'role said vote X' — leading to the LLM
+        prioritizing skill output over the deterministic role
+        rules it was given in the system prompt.
+        """
         return (
             "【技能与建议】系统会在你的回合前注入已计算的技能分析结果，"
             "请基于这些分析与当前局可见事实形成自己的判断，不要机械复述。"
-            "技能分析不是裁判真相；如果与公开事实冲突，以公开事实为准。"
+            "【优先级边界】身份规则(role_guide)优先于技能建议,冲突时以身份规则为准。"
+            "技能分析不是裁判真相;如果与公开事实冲突,以公开事实为准。"
         )
 
     def _build_role_guide(self) -> str:
