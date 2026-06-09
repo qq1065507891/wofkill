@@ -1114,6 +1114,13 @@ RAG 不应只依赖人工大规模编写案例库，也不能只靠纯 LLM 自�
 - 渲染为 LLM prompt 顶部独立段: "【跨局错误模式】你最常犯的 2 类错误: vote_mistake(3次)、role_execution(2次)。"
 - 不调 LLM,纯 section header regex 提取 — 0 额外成本
 
+**反思记忆的提示优先级** (`prompt_builder.py:_SECTION_PRIORITIES`, M4-2, 2026-06-09):
+
+- `_build_reflection_memory_hints` 标记为 `【参考】` (参考 tier, 中优先级)
+- `_build_rag_hints` 标记为 `【辅助】` (辅助 tier, 低优先级,budget 紧张时先被裁掉)
+- 排序依据: **per-player 同角色累积反思 (本玩家本角色经验) 价值 > 通用 RAG 知识 (社区语料)**。M4-2 是 G-R4-15 的反向决议 — G-R4-15 当时以"检索成本高"为由把 RAG 升到参考 tier,M4-2 视角是"检索成本 ≠ prompt 价值":RAG 替换自语料库,丢了不重复犯同样错;反思是本玩家本角色私有积累,丢了会在多局重复同一个错误。
+- 预算裁剪顺序 (新): 辅助 (persona / phase / belief / public_summary / visible_state / private_memory / salience / **rag_hints** / profile / cognition / error_pattern) → 参考 (**reflection_memory_hints**) → 硬约束 (strategy_directive / retry_hint / output_contract, 永不被裁)
+
 **Schema 边界**: `ReflectionEntry` (memory/schemas.py:254) 字段不动 (entry_id / game_id / player_id / role / faction_won / text / tags / situation);只改 `text` 字段的内容质量。新功能不引入新列。
 
 **Storage 边界**: PostgreSQL `reflections` 表 (entry_id, game_id, player_id, entry_json) 不动;LLM 改进的反思文本作为 `entry_json.text` 字段值序列化,旧数据无影响。

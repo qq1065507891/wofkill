@@ -1195,6 +1195,40 @@ End-to-end verification: run a 1-game real game (`scripts/run_real_game.py --del
 
 ---
 
+## Post-Execution Addendum (T9 docs phase, 2026-06-09)
+
+This plan was executed in the `prompt-injection-fixes-2026-06-09` worktree. All 9 tasks are complete. Below is the deviation log between the plan as written and the actual implementation, recorded so future re-runs (or audits) don't try to apply the plan's original (broken) text.
+
+**Deviation log (by task):**
+
+- **T4 (M2-1) Step 3 — villager text is 54 chars, not 80 chars as the plan proposed.** The plan's verbatim replacement ("村民规则：身份公开时表明好人立场；归票基于票型/发言证据链,不跟风；夜间无行动,听从公开死亡公告。") is internally inconsistent with the plan's own Step 1 test, which asserts `"N1" in guide or "解药" in guide`. The plan text drops the "N1 解药救人" cue that the existing `test_villager_role_guide_specific_rules` (P1-S9) requires. The actual implementation used a 54-char version that retains the 4 key cues: `村民规则：身份公开时表明好人立场；分析发言矛盾/票型；N1 公开讨论中支持解药救人；归票基于证据链,不跟风。`. Test `test_villager_role_guide_is_concise` (M2-1) passes with the 54-char text and the 4 cues; P1-S9 test continues to pass. The plan's "Phase-1 P1-26 (`test_villager_guide_includes_night_fallback`)" test was rewritten to M2-1 direction (asserting "夜间阶段" / "无投票权" NOT in sys_prompt).
+
+- **T6 (M3-3) audit / plan mis-classified two keys.** The audit claimed `wolf_self_destruct_condition` is night-only and `wolf_no_kill_conditions` is `build_wolf_directive` (day). Actual code reading shows: self_destruct is in `build_wolf_directive` (called from day_speech), so it is day-only — the prompt is emitted during day decisions. `wolf_no_kill_conditions` is in `_single_wolf_vote` (night), so it is night-only. The split re-classified both keys by "decision timing" rather than the audit's misnaming. The back-compat shim `build_wolf_directive` returns merged dict for tests.
+
+- **T8 (M5-1) Step 3 — punctuation and structure were corrected in T8-fix (`a5bb633`).** The plan's proposed `_build_skill_policy` text used half-width `,` and `;` inconsistent with the surrounding full-width `，` and `；`. The plan also omitted the "公开事实" sub-clause. Actual implementation normalized punctuation to full-width and added the 4th line "技能分析不是裁判真相；如果与公开事实冲突，以公开事实为准。". T8-fix also strengthened the precedence test to use regex `r"身份规则.*优先"` instead of positional string ordering.
+
+- **T9 (docs) — the plan over-scoped.** The plan's Steps 2/3/4/5 assumed §7.3, §10.2, CLAUDE.md, and `harness/context/architecture-boundaries.md` all need updates. Actual: only §10.2 needed a new "反思记忆的提示优先级" sub-section (recording the M4-2 reversal). §7.3 (Agent output contract) describes output structure, not schema constants — M2-3 extracting constants is implementation-level. CLAUDE.md lists authority order and key boundaries, not prompt-builder helpers — M3-3's new public API is documented in directive module docstrings, not at CLAUDE.md level. `harness/context/architecture-boundaries.md` is for RuleEngine / Agent / cross-module boundaries — M4-2 priority swap is purely internal to `prompt_builder._SECTION_PRIORITIES`.
+
+**Test count deviation:**
+
+- Plan estimated 8 (later 10) new tests. Actual: **19 new tests** across 3 files (`tests/agents/test_prompt_injection_fixes.py`: 11, `tests/runtime/test_directive_shared_helpers.py`: 5, `tests/runtime/test_wolf_directive_split.py`: 3).
+- M3-2 (T5) added 2 more tests in the T5-fix (`1ac31f1`) for malformed `resolution_batch` warning and night-batch non-warning cases.
+- M2-2 (T3) added 1 more test in the T3-fix (`62a2c9a`) for the centralized `_inject_vote_basis_hint` helper.
+
+**Commit log (12 commits, by task):**
+
+| T | Fix commit | Docs / test-fix commit | Followup |
+|---|---|---|---|
+| T1 (M4-1) | `d36eb27` | — | — |
+| T2 (M2-3) | `9bbe2bd` (unify), `48699cb` (drift fix) | `cd1eb19` | — |
+| T3 (M2-2) | `88fd0e9` (per-turn), `62a2c9a` (HARD tier + helper) | `6bd3edd` | — |
+| T4 (M2-1) | `85660e4` | — | — |
+| T5 (M3-2) | `27d8a12`, `1ac31f1` (log + regex) | `8d3ba8d` | — |
+| T6 (M3-3) | `896957e` | `6a18ad6` | — |
+| T7 (M4-2) | `0022d25` | `f22dc20` | `9c1ff09` (comment), `a4b9964` (test docstrings) |
+| T8 (M5-1) | `5b94341` | — | `a5bb633` (punctuation + regex) |
+| T9 (docs) | (this commit) | — | — |
+
 **Plan complete and saved to `docs/superpowers/plans/2026-06-09-prompt-injection-audit-fixes.md`.**
 
 Two execution options:

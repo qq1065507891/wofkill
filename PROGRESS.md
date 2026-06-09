@@ -5,11 +5,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 ## Current Status
 
 - Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T7 M4-2 swap RAG/reflection priority labels (DONE)
+- Active task: T9 文档更新 (DONE) — PROGRESS.md 增补 T3/T7/T8/T9 子段,设计文档 §10.2 增补 M4-2 优先级段落
 - Task owner: Claude/GLM development session
 - Last updated: 2026-06-09
 - **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
-- **本次新增 (T7 M4-2 — opinionated judgment reversal)**: 互换 RAG / reflection 的 `_SECTION_PRIORITIES` 标签 — `_build_rag_hints` 从 【参考】 改回 【辅助】,`_build_reflection_memory_hints` 从 【辅助】 提升到 【参考】。**这是 G-R4-15 的反向决议**:G-R4-15 当时认为 "RAG 必须活过 budget 裁剪" (检索成本高),M4-2 的视角是 "prompt value ≠ 检索成本" — per-player 反思 (本玩家本角色累积经验) 比通用 RAG (社区知识) 对当前 LLM 推理更有价值,token 紧时应该保留反思、裁掉 RAG。同步更新两个 旧 G-R4 关联测试的硬编码断言: `test_sections_have_priority_labels` 的 辅助 label count 下限从 8 降到 7 (reflection 移走);`test_priority_labels_for_auxiliary_sections_are_consistent` 把 "跨局反思记忆" 从 auxiliary_headers 列表移到独立的 【参考】 断言。新增 1 个测试 (`test_reflection_priority_above_rag`),共 10/10 prompt_injection_fixes 测试 pass,agents 600 测试全 pass。`test_rag_hints_survive_budget_pressure` (G-R4-15) 仍 pass — 因为 persona 是 辅助 tier 中体积最大的 section,先被裁掉就够了,RAG 不会真的被裁 (但语义已经弱化:RAG 现在和其他 辅助 section 同级,而不是"必须活")。**Followup commit 9c1ff09**: 修 budget trimmer 注释 — line 673-676 的旧注释 "RAG hints (now 【参考】) survive" 已经过时,改为 M4-2 准确的描述 + 指向 0022d25。**风险**: G-R4-15 的原作者可能不同意 (RAG 价值 vs 反思价值的判断本来就有分歧),这本质是一个权衡,有不同意见可在 T9 文档更新阶段再讨论。
+- **本次新增 (T9 文档更新)**: (1) PROGRESS.md 增补 T3 / T7 / T8 / T9 完整子段(原 8-fix batch 只在 "Current Status" 一行 + 旧 docs(progress) 提交里有 T3/T7 摘要,T8 全无文档)。(2) 设计文档 §10.2 增补 "反思记忆的提示优先级" 段落:把 M4-2 决议 (reflection 【参考】, RAG 【辅助】) 从隐式 prompt builder 代码提到设计契约层,理由是 "per-player 同角色累积经验 价值 > 通用 RAG 知识"。
 
 ---
 
@@ -204,6 +204,157 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 **风险**:
 - `wolf_self_destruct_condition` 留在 day builder (因为 day 决策),但 day prompt 注入条件提示的语义 (4 条触发条件,持警徽时强调撕徽) 是 self-destruct 的合法化宣传 — 留在 day 是符合设计的 (V1 D-8 audit 决定)。若未来 audit 想把 self-destruct 的"条件列表"放到 night,需要重新看 day vs night 决策分离
 - Back-compat shim (`build_wolf_directive`) 调 day + night 各一次,效率上是 2x 调用 (虽然 prompt cache 大概率命中)。这是为 test/back-compat 牺牲的效率,生产路径已不经过 shim
+
+**T3 (M2-2) DONE — move vote_basis guidance to per-turn**:
+- **问题**: `_VOTE_BASIS_GUIDANCE` 在 `_build_role_guide` (stable system section) 出现,所有 task_type (含 night_action) 都看到 "不要用 seer_check" 等投票字段指南 — 夜间动作玩家收到与自己动作无关的提示,稀释信号
+- **修复**: 把 `_VOTE_BASIS_GUIDANCE` 从 system prompt role_guide 移出,作为单源常量 `VOTE_BASIS_GUIDANCE` 定义在 `agent_adapter.py`。6 个 day-time / vote-time adapter (agent_day_speech, agent_day_vote, agent_sheriff_vote, agent_sheriff_election_speech, agent_pk_speech, agent_defense_speech) 在 strategy_directive 注入 `vote_basis_hint`。Seer 豁免(legitimately 使用 seer_check 报自己的查杀)
+- **call site 调查**: 6 个 production adapter 全部在 `agent_adapter.py`,grep 全树确认 night_action 类 adapter 不需要该 hint
+- **commit (主)**: `88fd0e9 fix(prompt): M2-2 move vote_basis guidance from system to per-turn`
+- **T3-fix commit**: `62a2c9a fix(prompt): M2-2 register vote_basis_hint as HARD + extract helper`
+  - **T3-fix 问题 (code review C-1)**: `vote_basis_hint` 没注册到任何 tier map (HARD_CONSTRAINT_KEYS / SUGGESTION_KEYS / REFERENCE_KEYS),默认 fall through 到 【参考】 tier — budget 紧张时最先被裁掉,丢掉 "不要用 seer_check" 这条硬命令
+  - **T3-fix 修复**: `vote_basis_hint` 注册到 HARD_CONSTRAINT_KEYS,提取公共 helper `_inject_vote_basis_hint`
+  - **T3-fix 其他**: I-1 (helper 集中后 test 改调 helper)
+- **测试**: 4 个新测试 (M2-2 per-turn injection: 2 个 in test_prompt_injection_fixes.py + 1 个 in test_prompt_builder.py;M2-2 fix HARD tier: 1 个 in test_prompt_injection_fixes.py)
+- **验证**:
+  - `pytest tests/agents/test_prompt_injection_fixes.py -p no:cacheprovider -v` → 7 passed (含 1 个 M2-2 主修复 + 1 个 M2-2 HARD tier + 1 个 helper 集中 + 4 个 M2-2 注入测试)
+  - 回归 591 passed,0 failed (M2-3 + M4-1 + 新 M2-2 测试)
+  - 既有 `test_villager_role_guide_specific_rules` (P1-S9) 仍 pass — guide 删了 vote_basis 段,但保留 4 个关键 cue
+
+**风险**:
+- T3-fix C-1 是个 silent bug — vote_basis_hint 没注册 tier 时,默认 【参考】 tier,budget 紧时被裁掉后 LLM 失去 "不要用 seer_check" 命令,非预言家玩家可能编造 seer_check 字段。新测试 `test_vote_basis_hint_registers_in_hard_or_suggestion_tier` + `test_vote_basis_hint_renders_in_hard_section` 双断言保证不静默回归
+- Vote_basis 提示从 system 移到 per-turn 后,single-turn LLM (例如 O1-mini 这种对位置敏感的小模型) 在 vote 任务首屏看不到,需要适应 — 当前 V1 默认用 GLM-5.1 (deep_reflection profile),无回归信号
+- 6 个 adapter 都需要注入,如果未来加新 SPEECH task_type (例如 last_words 涉及投票归票) 会忘记加 — 防御方法:helper `_inject_vote_basis_hint` 集中调用,新加 task_type 一处加,测试 helper 数量 + 1
+
+**T7 (M4-2) DONE — swap RAG/reflection priority labels (opinionated judgment reversal)**:
+- **问题 (M4-2 audit)**: `_build_rag_hints` 是 【参考】 tier (中优先级,budget 紧张时不裁),`_build_reflection_memory_hints` 是 【辅助】 tier (低优先级,budget 紧张时先被裁)。G-R4-15 当时以 "RAG 检索成本高" 为由把 RAG 升到 【参考】,但混淆了"检索成本"和"prompt 价值"两个不同问题
+- **修复**: 互换两个 section 的 priority label — `_build_rag_hints` 从 【参考】 降回 【辅助】,`_build_reflection_memory_hints` 从 【辅助】 升到 【参考】
+- **新预算裁剪顺序** (按层):
+  1. 辅助 (最先被裁): persona, phase_context, belief_state, public_summary, visible_state, private_memory_hints, salience_events, **rag_hints**, profile_memory_hint, cognition, error_pattern_hint
+  2. 参考 (中间): **reflection_memory_hints**
+  3. 硬约束 (永不裁): strategy_directive, retry_hint, output_contract
+- **测试改动**:
+  - 新增 1 个测试 `test_reflection_priority_above_rag` 显式断言 reflection 是 【参考】,RAG 是 【辅助】
+  - 改写 `test_sections_have_priority_labels` 的 辅助 label count 下限 (8 → 7,reflection 移走)
+  - 改写 `test_priority_labels_for_auxiliary_sections_are_consistent` — reflection 从 auxiliary_headers 列表移到独立 【参考】 断言
+  - 既有 `test_rag_hints_survive_budget_pressure` (G-R4-15) 仍 pass — budget-pressure 测试 scenario 实际是 persona 先被裁 (辅助 tier 中体积最大),RAG 不会被真的裁。但语义已弱化: 该 test 现在断言的是 "persona 裁完 RAG 才可能被裁" (M4-2 后是 normal 行为),而不是 G-R4-15 的"RAG 必须活过任何辅助 section"
+- **Followup commit `9c1ff09`**: 修 budget trimmer line 673-676 旧注释 "RAG hints (now 【参考】) survive" — 该注释描述的是 G-R4-15 旧安排,M4-2 后 RAG 是 【辅助】,reflection 是 【参考】。注释改为 M4-2 准确描述 + 指向 commit `0022d25`
+- **commit (主)**: `0022d25 fix(prompt): M4-2 swap reflection/RAG priority labels (reflection outranks RAG)`
+- **commit (followup)**: `9c1ff09 docs(prompt): fix stale G-R4-15 comment in budget trimmer after M4-2 swap`
+- **commit (T7-fix A1+A2+A3)**: `a4b9964 docs(test): refresh M4-2-affected test docstrings + correct T7 test count 11/11 → 10/10`
+  - T7-fix A1: `test_sections_have_priority_labels` docstring 改为 M4-2 方向 (辅助 count = 7 包含 RAG)
+  - T7-fix A2: `test_priority_labels_for_auxiliary_sections_are_consistent` docstring 同上
+  - T7-fix A3: prompt_injection_fixes.py 模块 docstring 修正 test count (写 11 实际 10)
+- **验证**:
+  - `pytest tests/agents/test_prompt_injection_fixes.py -v` → 10 passed (M4-1 + M2-3 + M2-3 fix + M2-2 × 3 + M2-1 + M4-2)
+  - `pytest tests/agents/ -p no:cacheprovider` → 600 passed
+  - 既有 `test_rag_hints_survive_budget_pressure` (G-R4-15) 仍 pass,语义保留
+- **G-R4-15 历史**: G-R4-15 是 2026-05-29 一次 prompt 注入审计的 issue (RAG 必须活过 budget 裁剪)。M4-2 是反向决议,理由: **per-player 反思 = 本玩家本角色私有经验,丢了会在多局重复同一错误;RAG = 通用社区语料,丢了不重复犯同样错,价值低于反思**。该判断本质是权衡,见"风险"
+
+**风险**:
+- G-R4-15 的原作者可能不同意 (RAG 价值 vs 反思价值本来就有分歧)。M4-2 是"opiniated judgment reversal",如果未来重新评估需要看真实多局数据 — reflection 是不是真的比 RAG 有价值 per-token,要等 10+ 局真实游戏跑完查 `game_stdout.log` 中 LLM 决策
+- budget-pressure test (`test_rag_hints_survive_budget_pressure`) 现在测的是 "persona 先被裁",不是 "RAG 必须活"。如果未来 persona 体积减小,该 test 可能 fail — 需要重写为"辅助 tier 任何 section 被裁时,RAG 可被裁"的方向
+- T7-fix 改写的是"旧 G-R4 测试的 docstring",不是测试逻辑本身 — 旧 test 仍 pass 但语义已反转。这是 dual-purpose 测试 (旧 G-R4 方向 + M4-2 方向都成立)的典型样例,需要 test docstring 明确说 supersession
+
+**T8 (M5-1) DONE — add identity/skill boundary text to skill policy**:
+- **问题**: `_build_skill_policy` 只有 "技能分析仅供参考" 段,没明确 "身份规则 优先于 技能建议" 的 precedence 边界。LLM 看到 skill_policy 说 "可以投票给 X"(来自技能分析)与 role_guide 说 "村民要 投票给 Y"(身份规则)冲突时,可能优先信技能分析 — 因为技能分析是结构化输出,身份规则是自然语言段,前者视觉权重更高
+- **修复**: 在 `_build_skill_policy` 加【优先级边界】段: "身份规则(role_guide)优先于技能建议,冲突时以身份规则为准。技能分析不是裁判真相;如果与公开事实冲突,以公开事实为准。"
+- **测试**:
+  - 新增 `test_skill_policy_distinguishes_from_identity_rules` 断言:
+    - 含 "身份" 和 "技能" 两个概念
+    - 用 regex `r"身份规则.*优先"` 断言 precedence 方向
+- **commit (主)**: `5b94341 fix(prompt): M5-1 add identity/skill boundary text to skill policy`
+- **commit (T8-fix I-1+I-2+I-3)**: `a5bb633 fix(prompt): M5-1 normalize punctuation + strengthen precedence test`
+  - T8-fix I-1: 原 precedence test 用 positional string ordering (断言 "身份规则" 出现在 "技能建议" 之前),脆弱 — 改用 regex `r"身份规则.*优先"` 断言"身份规则" 后跟 "优先"
+  - T8-fix I-2: 实际代码改动只 1 行 (新增 1 行到 `_build_skill_policy`),fix commit 多加 1 行 (统一标点 + 强化 docstring)
+  - T8-fix I-3: 新 skill policy 段使用半角 `,` 和 `;` 与 surrounding 全角 `，` `；` 不一致,统一全角
+- **验证**:
+  - `pytest tests/agents/test_prompt_injection_fixes.py::test_skill_policy_distinguishes_from_identity_rules -v` → 1 passed
+  - 600/600 agents tests pass
+  - 1020/1020 runtime+cognition+rules tests pass
+
+**风险**:
+- 【优先级边界】段是 "文字声明" 而非代码层 enforce — LLM 仍可能忽略。如果未来发现 LLM 实际仍优先信技能,需要把身份规则挪到 HARD_CONSTRAINT section 而不是 skill_policy 的 软约束 段
+- 当前测试用 regex `r"身份规则.*优先"` 断言 precedence,但同一段后还有"如果与公开事实冲突,以公开事实为准" — 边界优先级是 **身份规则 > 技能建议 > 公开事实**,三段式。如果未来加新 precedence 层 (例如 "裁判真相" 与 "公开事实" 区分),regex 需扩展为三段断言
+- M5-1 只覆盖 LLM 视觉权重差异,没有覆盖 LLM 在 token 紧张时省略 skill_policy 段(因为 skill_policy 是 辅助 tier)的情况 — 即使省略,身份规则仍在 system prompt 顶部,LLM 仍有 access
+
+**T9 (docs) DONE — phase summary + design doc update**:
+- **范围**: 把 8-fix batch 的所有 task 在 PROGRESS.md 留下完整子段,设计文档 §10.2 增补 M4-2 优先级段落
+- **PROGRESS.md 改动**:
+  - "Current Status" 一行从"T7 DONE" 改为 "T9 DONE"
+  - 新增 T3 / T7 / T8 / T9 完整子段(原只有 T1 / T2 / T4 / T5 / T6 有 sub-section; T3 / T7 / T8 仅在 "Current Status" 一行 + 旧 docs(progress) 提交里有 T3/T7 摘要, T8 全无文档)
+- **设计文档 §10.2 改动**:
+  - 在"复盘机制" 段下增补 "反思记忆的提示优先级" 子段,记录 M4-2 决议 (reflection 【参考】, RAG 【辅助】) 的依据和裁剪顺序,让设计契约与 prompt builder 代码 (line 548-549) 对齐
+  - 不动 §4.2 (战术覆盖): M2-3 / M2-1 / M5-1 都在 prompt builder 实现层,§4.2 描述的是"REFERENCE tier 辅助信号" 通用契约,不需逐 directive 改
+  - 不动 §7.3 (Agent 输出): M2-3 抽常量是实现细节,§7.3 描述输出 contract 不变
+- **不动 CLAUDE.md**: M3-3 split (build_wolf_day_directive / build_wolf_night_directive) 是新 public API,但已写在 directive 模块 docstring,不需要在 CLAUDE.md 重复 (CLAUDE.md 强调 1) 设计文档 2) ruleset 3) RuleEngine tests 的权威顺序,不列具体 helper)
+- **不动 harness/context/architecture-boundaries.md**: M4-2 priority swap 是 prompt builder 实现细节,不涉及 RuleEngine / Agent / 跨模块 boundary
+- **不动 §9 (RAG 设计)**: M4-2 改变的是 prompt 内部 label,不是 RAG ingestion / retrieval / visibility 流程。rag-hardening 那层防线 (schema / ingestion / visibility / renderer 4 道) 不动
+
+---
+
+## prompt-injection-audit-fixes — 跨任务关注点 (cross-cutting)
+
+**8 个 fix 的整体设计目标**: 把"跨局 / 跨模块信息泄漏" 和 "信号过载" 两类 prompt 注入风险降到 V1 范围可接受水平。不动 RuleEngine / visibility policy / identity semantics — 全部在 LLM Prompt Layer 修。
+
+**spec / plan 与实际实现的偏差 (按 T 顺序)**:
+
+| T | plan 文本偏差 | 实际处理 | 风险等级 |
+|---|---|---|---|
+| T4 (M2-1) | plan 的 "proposed replacement" 提议 49 chars villager 文本,丢 "N1 解药救人" cue,会让新 M2-1 test + 既有 P1-S9 test (`test_villager_role_guide_specific_rules`) 同时 fail | 不用 verbatim 替换,改 54 chars 保留 4 个关键 cue (好人立场 / 矛盾 / 解药 / 公开) | 低 — 改后 byte-identical 比 plan 更稳 |
+| T6 (M3-3) | plan / audit 文档说 `wolf_self_destruct_condition` 是 night-only, `wolf_no_kill_conditions` 是 `build_wolf_directive` (day) | 实际代码读出来 self_destruct 是 day 决策 (被 day_speech 调用), no_kill 是 night 决策 (在 _single_wolf_vote)。M3-3 split 时按"决策时机"重新分类 | 中 — audit 文档与实现错位,plan 应先 grep 再分类 |
+| T8 (M5-1) | plan 的 Step 3 提议文本用半角 `,` `;` 标点 + 仅 1 段 (没有把"裁判真相"明示出来) | T8-fix `a5bb633` 改为全角 `,` `;` 标点 + 完整 4 段 (技能与建议 / 优先级边界 / 公开事实 / 裁判真相) | 低 — 标点统一是 polish,无功能差异 |
+| T9 (docs) | plan 假设 §7.3 / §10.2 / CLAUDE.md 都需要改;实际 §7.3 / CLAUDE.md 不动 (§10.2 改,§4.2 / §9 / architecture-boundaries 不动) | T9 按"实现层 vs 契约层"严格区分:实现层 (helper / constant) 改不动,契约层 (设计文档) 改 1 处 | 低 — 但 plan 的 Step 2/4 应是 no-op |
+
+**关键 call site 调查 (5 个调用点验证)**:
+
+| 改动 | call sites 数量 | 漏改风险 | 验证方法 |
+|---|---|---|---|
+| M2-2 vote_basis per-turn | 6 (day_speech, day_vote, sheriff_vote, sheriff_election_speech, pk_speech, defense_speech) | 加新 SPEECH task_type 漏掉 | `grep -E "agent_(day|sheriff|defense|pk)_(speech|vote)" agent_adapter.py` + helper 集中 `_inject_vote_basis_hint` |
+| M2-3 output schema | 2 (CHOICE renderer, SKILL renderer) — 都用 `_OUTPUT_SCHEMA_VOTE_FIELDS` 常量 | 加新 task_type 用 literal | `_VOTE_AUDIT_FIELDS` 派生 (T2 fix) + test `test_vote_audit_fields_derived_from_constant` 双重保险 |
+| M2-1 villager guide | 1 (PromptBuilder._build_role_guide) | 改 villager 角色 | 单点 + byte-identical 验证 |
+| M3-2 day filter | 1 (villager.py directive) | 加新 directive 用 helper | `grep -E "collect_(public_vote_history|death_order)\(" runtime/directives/` |
+| M3-3 wolf day/night split | 2 (agent_day_speech, agent_sheriff 警上) + 1 night (_single_wolf_vote) | 加新 wolf call site 漏掉 | `grep -E "build_wolf_(day|night)_directive\|build_wolf_directive" agent_adapter.py` |
+| M4-2 priority swap | 1 (_SECTION_PRIORITIES dict) | 加新 section label 错 | `test_reflection_priority_above_rag` + dict 单点 |
+| M5-1 skill boundary | 1 (_build_skill_policy method) | 改 method 漏段 | `test_skill_policy_distinguishes_from_identity_rules` regex |
+
+**Skill policy 边界 范围 (M5-1 关注点)**:
+
+- **这条 boundary 是 LLM 视觉权重问题的 patch**: skill_policy 是 辅助 tier section,role_guide 是 system prompt 顶部 — LLM 在 token 紧张时可能"跳读" skill_policy,把"技能分析"段当主信号。**M5-1 实际治的是 LLM 阅读顺序,不是规则冲突**。真要治规则冲突,应该把身份规则提到 HARD_CONSTRAINT section,而不是在 skill_policy 里加优先级声明
+- **未来扩展**: 如果 V2 加"规则层 vs 策略层" 双层 system prompt,身份规则应在 HARD_CONSTRAINT tier,skill_policy 在 辅助 tier,优先级靠 tier 而非文字声明。当前 V1 M5-1 是过渡方案
+
+**prompt_injection_fixes 测试覆盖统计 (T9 终态)**:
+
+| 文件 | 测试数 | 内容 |
+|---|---|---|
+| `tests/agents/test_prompt_injection_fixes.py` | 11 | M4-1 ×1, M2-3 ×2 (含 1 fix), M2-2 ×4 (含 1 fix), M2-1 ×1, M4-2 ×1, M5-1 ×1 |
+| `tests/runtime/test_directive_shared_helpers.py` | 5 | M3-2 主修复 ×3, M3-2 fix (malformed / night batch) ×2 |
+| `tests/runtime/test_wolf_directive_split.py` | 3 | M3-3 (day/night 分离 + shim 合并) ×3 |
+| **合计** | **19** | (原 plan 估 17,实际 19 — T5 fix 多 2 个 malformed-batch 测试,T3 fix 多 1 个 helper 测试) |
+
+19/19 新测试 pass;`pytest tests/agents/test_prompt_injection_fixes.py tests/runtime/test_directive_shared_helpers.py tests/runtime/test_wolf_directive_split.py -p no:cacheprovider` → 19 passed in 5.76s
+
+**回归 baseline (T9 终态)**:
+
+- 5 个 pre-existing failures 跨整个 fix batch 不变:
+  - `TestAPIStartup::*` (3) — API auth 环境问题,与本次无关
+  - `TestRealRunConfiguration::test_provider_dotenv_loading_does_not_enable_postgres_app_storage` (1) — 缺 env var
+  - `TestDirectiveRoleGating::test_witch_directive_isolated` (1) — witch directive 范围外
+- 全部已在 `9bbe2bd` (M2-3 主) 复现 baseline,确认与本次 8 fix 无关
+
+**未跑端到端 (与 T1 / T2 / T4 同)**:
+
+- 没新游戏跑通;以下 3 类改动需等下局真实游戏观察 LLM 行为:
+  - M2-1 villager guide 砍 night-fallback (54 chars): 看 villager NIGHT phase 是否仍正确 no-op
+  - M3-2 day filter: 看 day 5 LLM 是否仍能 recall day 1-2 关键信息 (filter 不会裁)
+  - M4-2 priority swap: 看 token 紧时 (12 player 局 + 长 reflection) reflection 是否被保留,RAG 是否被裁,LLM 决策质量
+- 下局跑完查 `game_stdout.log` + RAG retrieval metrics
+
+**风险 (跨任务整体)**:
+
+- 8 fix 全在 LLM Prompt Layer,没动 RuleEngine / visibility policy — 跨游戏回归风险低,但 LLM 行为改变需真实游戏验证
+- M3-3 split 引入新 public API (build_wolf_day_directive / build_wolf_night_directive) — 未来加新 wolf call site 应直接调 day/night 之一,避免 back-compat shim 效率损耗
+- M4-2 是 opiniated reversal,需要真实多局数据确认 per-player reflection 价值 per-token > RAG
+- prompt_injection_fixes 测试覆盖集中在 injection mechanics (label / tier / hard-vs-soft),不覆盖 LLM 真实推理行为 — 这是 LLM 测试的本质限制,真实游戏跑通仍是 ground truth
 
 ---
 
