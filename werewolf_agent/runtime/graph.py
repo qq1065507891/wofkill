@@ -61,6 +61,7 @@ from werewolf_agent.runtime.nodes.night import (  # noqa: F401
     resolve_night,
     wolf_consensus,
     wolf_discussion,
+    wolf_team_plan_node,
 )
 
 from werewolf_agent.runtime.nodes.day import (  # noqa: F401
@@ -391,6 +392,7 @@ def _add_all_nodes(graph: StateGraph) -> None:
     graph.add_node("assign_roles", assign_roles)
     graph.add_node("enter_night", enter_night)
     graph.add_node("wolf_discussion", wolf_discussion)
+    graph.add_node("wolf_team_plan", wolf_team_plan_node)
     graph.add_node("wolf_consensus", wolf_consensus)
     graph.add_node("night_witch", night_witch)
     graph.add_node("night_seer", night_seer)
@@ -430,7 +432,8 @@ def _add_all_edges(graph: StateGraph) -> None:
     graph.add_edge("setup_game", "assign_roles")
     graph.add_edge("assign_roles", "enter_night")
     graph.add_edge("enter_night", "wolf_discussion")
-    graph.add_edge("wolf_discussion", "wolf_consensus")
+    graph.add_edge("wolf_discussion", "wolf_team_plan")
+    graph.add_edge("wolf_team_plan", "wolf_consensus")
     graph.add_edge("wolf_consensus", "night_witch")
     graph.add_edge("night_witch", "night_seer")
     graph.add_edge("night_seer", "night_hunter_idiot_status")

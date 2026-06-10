@@ -368,23 +368,31 @@ def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monk
 
     class Registry:
         def get_agent(self, player_id):
-            return object()
+            return None  # force wolf_team_plan_node to use fallback path
 
     monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = night_mod.wolf_discussion({
+    state = {
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
-    })
+    }
+    result = night_mod.wolf_discussion(state)
 
-    events = result["game_state"].events
-    round_events = [event for event in events if event.type == "wolf_discussion"]
-    plan_events = [event for event in events if event.type == "wolf_team_plan"]
-    plan = result["wolf_team_plan"]
+    # wolf_discussion no longer produces wolf_team_plan; only discussion events.
+    discussion_events = [event for event in result["game_state"].events if event.type == "wolf_discussion"]
+    assert len(discussion_events) == 12
+    assert {event.payload["round"] for event in discussion_events} == {1, 2, 3}
+    assert "wolf_team_plan" not in result, (
+        "wolf_discussion must not emit wolf_team_plan — that moved to wolf_team_plan_node"
+    )
 
-    assert len(round_events) == 12
-    assert {event.payload["round"] for event in round_events} == {1, 2, 3}
+    # Now run wolf_team_plan_node — fallback path (registry returns no agent)
+    state2 = {**state, "game_state": result["game_state"]}
+    plan_result = night_mod.wolf_team_plan_node(state2)
+    plan = plan_result["wolf_team_plan"]
+    plan_events = [event for event in plan_result["game_state"].events if event.type == "wolf_team_plan"]
+
     assert len(plan_events) == 1
     assert plan_events[0].payload["visibility"] == "werewolf_team_only"
     for key in (
@@ -399,8 +407,10 @@ def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monk
     assert plan["night_kill_backup"] is None
     assert plan["day_push_target"] is None
     assert plan["evidence_quality"] == "none"
+    assert plan["consensus_method"] == "fallback"
 
     assignments = [plan["fake_seer"], plan["pusher"], plan["hooker"], plan["deep_cover"]]
+    assert len(set(assignments)) == len(assignments), "fallback plan must not duplicate role assignments"
 
 def test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan(monkeypatch) -> None:
     from werewolf_agent.runtime.nodes import night as night_mod
@@ -418,21 +428,26 @@ def test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan(monkeypatc
 
     class Registry:
         def get_agent(self, player_id):
-            return object()
+            return None  # force fallback path
 
     monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = night_mod.wolf_discussion({
+    state = {
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
         "wolf_team_plan": {"fake_seer": "w1", "pusher": "w2"},
-    })
+    }
+    result = night_mod.wolf_discussion(state)
 
     round_events = [event for event in result["game_state"].events if event.type == "wolf_discussion"]
     assert len(round_events) == 4
     assert {event.payload["round"] for event in round_events} == {1, 2}
-    assert result["wolf_team_plan"]["night_number"] == 2
+
+    # wolf_team_plan_node produces the plan with current night_number
+    state2 = {**state, "game_state": result["game_state"]}
+    plan_result = night_mod.wolf_team_plan_node(state2)
+    assert plan_result["wolf_team_plan"]["night_number"] == 2
 
 def test_wolf_discussion_drops_stale_targets_without_current_discussion_evidence(monkeypatch) -> None:
     from werewolf_agent.runtime.nodes import night as night_mod
@@ -450,26 +465,30 @@ def test_wolf_discussion_drops_stale_targets_without_current_discussion_evidence
 
     class Registry:
         def get_agent(self, player_id):
-            return object()
+            return None  # fallback path
 
     monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
 
-    result = night_mod.wolf_discussion({
+    prior_plan = {
+        "night_kill_primary": "v1",
+        "night_kill_backup": "v2",
+        "day_push_target": "v1",
+        "evidence_quality": "strong",
+        "evidence_from_discussion": [{"target": "v1", "reason": "old night"}],
+        "fake_seer": "w1",
+        "pusher": "w2",
+    }
+    state = {
         "game_state": gs,
         "engine": _new_engine(),
         "agent_registry": Registry(),
-        "wolf_team_plan": {
-            "night_kill_primary": "v1",
-            "night_kill_backup": "v2",
-            "day_push_target": "v1",
-            "evidence_quality": "strong",
-            "evidence_from_discussion": [{"target": "v1", "reason": "old night"}],
-            "fake_seer": "w1",
-            "pusher": "w2",
-        },
-    })
+        "wolf_team_plan": prior_plan,
+    }
+    result = night_mod.wolf_discussion(state)
 
-    plan = result["wolf_team_plan"]
+    state2 = {**state, "game_state": result["game_state"]}
+    plan_result = night_mod.wolf_team_plan_node(state2)
+    plan = plan_result["wolf_team_plan"]
     assert plan["night_kill_primary"] is None
     assert plan["night_kill_backup"] is None
     assert plan["day_push_target"] is None
