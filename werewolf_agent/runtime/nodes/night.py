@@ -573,20 +573,59 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
 
     # Aggregate discussion into consensus plan, fallback to static plan
     # (events already merged incrementally into gs)
+    #
+    # NOTE: as of wolf-team-plan-llm-structured (2026-06-10), final
+    # wolf_team_plan generation moved to the dedicated
+    # `wolf_team_plan_node` (called after this node by the graph).
+    # That node tries LLM captain decision first and falls back to
+    # the legacy regex+static path implemented in
+    # `_build_fallback_wolf_team_plan` below. This node no longer
+    # emits `wolf_team_plan` events or returns the plan in state.
+    gs, _ = _judge_broadcast(
+        phase="wolf_discussion_end",
+        message="狼人讨论完毕",
+        gs=gs, night_number=gs.night_number,
+        visibility="moderator_only",
+    )
+    return {"game_state": gs}
+
+
+def _build_fallback_wolf_team_plan(
+    state: RuntimeState,
+    wolves: list[str],
+) -> dict[str, Any]:
+    """Legacy regex-extraction + static dedup fallback for wolf_team_plan.
+
+    Called by `wolf_team_plan_node` when the LLM captain path fails
+    (agent unavailable, retry exhausted, schema rejection). Keeps the
+    pre-LLM behavior available so the game can continue even if the
+    captain's provider is down or returns malformed plans.
+
+    The legacy path's known weakness — regex extractor's keyword set
+    misses LLM synonyms like '悍跳位' — is partially mitigated by the
+    keyword-补丁 in wolf_strategy.py (T6) but is fundamentally why the
+    LLM path exists as the primary route.
+    """
     from werewolf_agent.runtime.wolf_strategy import (
         build_wolf_team_plan_from_discussion,
         summarize_wolf_consensus,
     )
-    consensus = summarize_wolf_consensus(gs.events, wolves, night_number=gs.night_number)
+    gs: GameState = state["game_state"]
+    consensus = summarize_wolf_consensus(
+        gs.events, wolves, night_number=gs.night_number
+    )
     plan = build_wolf_team_plan_from_discussion(
         gs,
         previous_plan=state.get("wolf_team_plan"),
         consensus=consensus,
     )
-
-    # Fallback to static plan when consensus lacks critical fields (dedup)
-    static_plan = _build_wolf_team_plan(gs, previous_plan=state.get("wolf_team_plan"))
-    used_wolves = {plan[r] for r in ("fake_seer", "pusher", "hooker", "deep_cover") if plan.get(r)}
+    static_plan = _build_wolf_team_plan(
+        gs, previous_plan=state.get("wolf_team_plan")
+    )
+    used_wolves = {
+        plan[r] for r in ("fake_seer", "pusher", "hooker", "deep_cover")
+        if plan.get(r)
+    }
     for key in ("fake_seer", "pusher", "hooker", "deep_cover", "public_story"):
         if not plan.get(key) and static_plan.get(key):
             if key != "public_story" and static_plan[key] in used_wolves:
@@ -594,29 +633,71 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
             plan[key] = static_plan[key]
             if key != "public_story":
                 used_wolves.add(static_plan[key])
+    return plan
 
-    # Log consensus summary
-    primary = plan.get("night_kill_primary")
-    backup = plan.get("night_kill_backup")
-    agreement = consensus.get("agreement_count", 0)
-    total = consensus.get("total_wolves", len(wolves))
-    if primary:
-        logger.debug(f"  [狼队共识] 主目标: {_player_display(state, primary)}, 备选: {_player_display(state, backup) if backup else '无'}, "
-              f"共识度: {agreement}/{total}")
+
+def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
+    """Produce structured WolfTeamPlan via LLM captain, fallback to legacy.
+
+    Replaces the legacy regex-extraction path inside wolf_discussion as
+    the primary plan source. Graph wires this node between
+    `wolf_discussion` and `wolf_consensus`.
+
+    On success: emits `wolf_team_plan` event with consensus_method="llm".
+    On fallback: emits `wolf_team_plan_fallback` audit event with reason,
+    then emits `wolf_team_plan` with consensus_method="fallback".
+    """
+    from werewolf_agent.runtime.agent_adapter import agent_wolf_team_plan
+
+    gs: GameState = state["game_state"]
+    wolves = _alive_wolves(gs)
+    if not wolves:
+        # No wolves alive — nothing to plan.
+        return {"game_state": gs}
+
+    registry = state.get("agent_registry")
+    plan: dict[str, Any] | None = None
+    fallback_reason: str | None = None
+
+    if registry is None:
+        fallback_reason = "no_registry"
     else:
-        logger.debug(f"  [狼队共识] 未达成击杀共识 ({agreement}/{total} 同意)")
+        try:
+            plan = agent_wolf_team_plan(
+                state, engine=state.get("engine"), registry=registry,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "[wolf_team_plan_node] agent_wolf_team_plan raised: %s", e
+            )
+            plan = None
+            fallback_reason = f"agent_exception: {e}"
+
+    events: list[GameEvent] = []
+    if plan is None:
+        # Fallback to legacy regex + static path
+        if fallback_reason is None:
+            fallback_reason = "llm_failed_or_unavailable"
+        plan = _build_fallback_wolf_team_plan(state, wolves)
+        plan["consensus_method"] = "fallback"
+        plan.setdefault("captain_id", wolves[0] if wolves else None)
+        events.append(GameEvent(
+            type="wolf_team_plan_fallback",
+            payload={
+                "night_number": gs.night_number,
+                "reason": fallback_reason,
+                "visibility": "werewolf_team_only",
+            },
+        ))
+        logger.debug(
+            "[wolf_team_plan_node] fallback path used, reason=%s", fallback_reason,
+        )
 
     events.append(GameEvent(
         type="wolf_team_plan",
         payload={**plan, "visibility": "werewolf_team_only"},
     ))
-    gs = replace(gs, events=gs.events + events[-1:])  # Add plan event
-    gs, _ = _judge_broadcast(
-        phase="wolf_discussion_end",
-        message="狼人讨论完毕",
-        gs=gs, night_number=gs.night_number,
-        visibility="moderator_only",
-    )
+    gs = replace(gs, events=gs.events + events)
     return {"game_state": gs, "wolf_team_plan": plan}
 
 
