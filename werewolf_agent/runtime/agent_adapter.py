@@ -486,6 +486,260 @@ def agent_night_seer(
     }
 
 
+def agent_wolf_team_plan(
+    state: dict[str, Any],
+    engine: RuleEngine,
+    registry: AgentRegistry,
+) -> dict[str, Any] | None:
+    """LLM wolf-team captain produces structured WolfTeamPlan once per night.
+
+    Captain = sorted(alive_wolves)[0] (deterministic, reproducible across runs).
+    Replaces the legacy regex-based extraction
+    (wolf_strategy.summarize_wolf_consensus + build_wolf_team_plan_from_discussion)
+    which silently dropped role assignments when LLM dialogue used synonyms
+    not covered by the extractor's keyword set (e.g. "悍跳位" ≠ "假预言家").
+
+    Returns None on any failure (captain agent unavailable, LLM error,
+    schema validation failure, retry exhausted) — caller is expected to
+    fall back to the legacy regex + static plan path and emit a
+    `wolf_team_plan_fallback` audit event with the failure reason.
+
+    On success, returns plan dict with all WolfTeamPlan fields plus
+    `consensus_method="llm"` and `captain_id` for audit/replay.
+    """
+    import json
+
+    from werewolf_agent.agents.schemas import WolfTeamPlan
+    from werewolf_agent.agents.tool_schema import wolf_team_plan_tool
+    from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
+
+    gs: GameState = state["game_state"]
+    alive_wolves = sorted(
+        pid for pid, p in gs.players.items()
+        if p.role == "werewolf" and p.alive
+    )
+    if not alive_wolves:
+        return None
+
+    captain_id = alive_wolves[0]
+    captain_agent = registry.get_agent(captain_id)
+    if captain_agent is None:
+        logger.debug(
+            "[wolf_team_plan] captain %s agent unavailable, fallback", captain_id
+        )
+        return None
+
+    alive_non_wolves = sorted(
+        pid for pid, p in gs.players.items()
+        if p.role != "werewolf" and p.alive
+    )
+
+    # Collect this night's wolf_discussion text
+    night_num = gs.night_number
+    discussion_lines: list[str] = []
+    for ev in gs.events:
+        if (
+            ev.type == "wolf_discussion"
+            and ev.payload.get("night_number") == night_num
+            and (ev.payload.get("text") or "").strip()
+        ):
+            wid = ev.payload.get("wolf_id", "?")
+            rnd = ev.payload.get("round", "?")
+            discussion_lines.append(
+                f"[第{rnd}轮 {wid}]: {ev.payload.get('text', '').strip()}"
+            )
+    discussion_text = "\n".join(discussion_lines) or "(本夜无夜聊文本)"
+
+    # Carry-over from previous night plan
+    prior_plan = state.get("wolf_team_plan") or {}
+    prior_summary = (
+        f"上夜计划: fake_seer={prior_plan.get('fake_seer')}, "
+        f"pusher={prior_plan.get('pusher')}, hooker={prior_plan.get('hooker')}, "
+        f"deep_cover={prior_plan.get('deep_cover')}, "
+        f"primary={prior_plan.get('night_kill_primary')}"
+        if prior_plan else "无上局计划 (首夜)"
+    )
+
+    role_defs = "\n".join(
+        f"- {k}: {v.split(chr(10))[0]}"  # first line only
+        for k, v in _WOLF_ROLE_STRATEGY.items()
+    )
+
+    system_prompt = (
+        f"你是狼队队长 {captain_id}。本夜是 N{night_num}。"
+        f"队友夜聊已完成,现在由你一次性产出团队作战计划。\n\n"
+        f"【4 角色定义 (字段名 ↔ 中文)】\n{role_defs}\n\n"
+        f"【硬约束】\n"
+        f"- 4 角色字段 (fake_seer/pusher/hooker/deep_cover) 互不相同, 都从 "
+        f"alive_wolves={alive_wolves} 中选; 任一字段可填 null (本夜不分配该位置)\n"
+        f"- 击杀目标 (night_kill_primary/backup) 必须从 alive_non_wolves 中选 "
+        f"或填 null (空刀); 不能是狼队成员\n"
+        f"- public_story 1~120 字 (白天对外口径, 例: '昨夜平安, 我跟刀口去推 p01')\n"
+        f"- reasoning 1~200 字 (审计用, 仅狼队可见, 不要泄露身份给好人)\n\n"
+        f"【输出协议】必须通过 submit_wolf_team_plan 工具一次性提交完整 JSON, "
+        f"不要在 reasoning / public_story 之外输出额外文字。"
+    )
+
+    user_prompt = (
+        f"## 本夜 (N{night_num}) 狼队夜聊全文\n{discussion_text}\n\n"
+        f"## 上局延续\n{prior_summary}\n\n"
+        f"## alive_wolves 候选\n{alive_wolves}\n\n"
+        f"## alive_non_wolves 候选 (击杀目标)\n{alive_non_wolves}\n\n"
+        f"请基于夜聊共识和上局经验,合理分配 4 角色并确定击杀目标。"
+        f"若夜聊未达成明确共识,根据队友能力倾向 (谁善辩 → fake_seer, "
+        f"谁低调 → deep_cover) 自行决断。"
+    )
+
+    tool = wolf_team_plan_tool(alive_wolves, alive_non_wolves)
+    max_retries = 3
+    last_err: str | None = None
+
+    for attempt in range(1, max_retries + 1):
+        retry_suffix = f"\n\n[重试 {attempt}/{max_retries}] 上次错误: {last_err}" if last_err else ""
+        try:
+            result = captain_agent.model_router.generate(
+                agent_id=captain_id,
+                task_type=TaskType.WOLF_TEAM_PLAN.value,
+                prompt=user_prompt + retry_suffix,
+                system_prompt=system_prompt,
+                tools=[tool],
+                tool_choice={"type": "tool", "name": "submit_wolf_team_plan"},
+            )
+        except NotImplementedError:
+            logger.debug(
+                "[wolf_team_plan] provider does not support tool_choice, fallback"
+            )
+            return None
+        except Exception as e:  # noqa: BLE001
+            last_err = f"generate_error: {e}"
+            logger.debug(
+                "[wolf_team_plan] LLM generate failed attempt %d: %s", attempt, e
+            )
+            continue
+
+        raw = (result.text or "").strip()
+        if not raw:
+            last_err = "empty_response"
+            continue
+
+        # Parse JSON: try direct, then output_parser repair, then balanced scan
+        data: Any = None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                from werewolf_agent.agents.output_parser import repair_json_text
+                data = json.loads(repair_json_text(raw))
+            except Exception:
+                data = _extract_first_balanced_json_object(raw)
+        if not isinstance(data, dict):
+            last_err = f"json_parse_failed: raw[:80]={raw[:80]!r}"
+            continue
+
+        # Schema validation
+        try:
+            plan = WolfTeamPlan.model_validate(data)
+        except Exception as e:  # noqa: BLE001
+            last_err = f"schema_validation: {str(e)[:200]}"
+            continue
+
+        # Game-state validation (alive membership)
+        valid_wolves = set(alive_wolves)
+        valid_targets = set(alive_non_wolves)
+        membership_err: str | None = None
+        for role in ("fake_seer", "pusher", "hooker", "deep_cover"):
+            v = getattr(plan, role)
+            if v is not None and v not in valid_wolves:
+                membership_err = (
+                    f"{role}={v} not in alive_wolves={alive_wolves}"
+                )
+                break
+        if membership_err is None:
+            for k in ("night_kill_primary", "night_kill_backup"):
+                v = getattr(plan, k)
+                if v is not None and v not in valid_targets:
+                    membership_err = (
+                        f"{k}={v} not in alive_non_wolves={alive_non_wolves}"
+                    )
+                    break
+        if membership_err is not None:
+            last_err = membership_err
+            continue
+
+        plan_dict: dict[str, Any] = plan.model_dump()
+        plan_dict["consensus_method"] = "llm"
+        plan_dict["captain_id"] = captain_id
+        # Synthesize evidence_from_discussion so downstream _planned_wolf_kill
+        # (nodes/_shared.py) accepts the LLM-chosen targets without falling
+        # through the per-target evidence audit (which is meant for the
+        # legacy regex path's noisy multi-wolf voting signal).
+        # The captain's reasoning is the evidence; we just need to surface
+        # one synthetic row per chosen target so the audit pattern matches.
+        synthetic_evidence: list[dict[str, Any]] = []
+        if plan_dict.get("night_kill_primary"):
+            synthetic_evidence.append({
+                "target": plan_dict["night_kill_primary"],
+                "wolf_id": captain_id,
+                "reason": "llm_captain_decision",
+            })
+        if plan_dict.get("night_kill_backup"):
+            synthetic_evidence.append({
+                "target": plan_dict["night_kill_backup"],
+                "wolf_id": captain_id,
+                "reason": "llm_captain_backup",
+            })
+        plan_dict["evidence_from_discussion"] = synthetic_evidence
+        logger.debug(
+            "[wolf_team_plan] captain %s produced plan in %d attempt(s)",
+            captain_id, attempt,
+        )
+        return plan_dict
+
+    logger.debug(
+        "[wolf_team_plan] retry exhausted (%d), last_err=%s, fallback",
+        max_retries, last_err,
+    )
+    return None
+
+
+def _extract_first_balanced_json_object(text: str) -> Any:
+    """Scan for first balanced { ... } and json.loads it. Returns None on failure.
+
+    Used as fallback after json.loads(raw) and repair_json_text(raw) both fail.
+    Lighter than output_parser.extract_json_object_candidates which requires
+    action_type discriminator (PlayerAction-specific).
+    """
+    import json
+
+    start: int | None = None
+    depth = 0
+    in_str = False
+    escape = False
+    for idx, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    return json.loads(text[start:idx + 1])
+                except json.JSONDecodeError:
+                    start = None
+    return None
+
+
 def agent_wolf_consensus(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -731,13 +985,15 @@ def agent_wolf_discussion(
     # N1: suggest role division among wolves
     if gs.night_number == 1 and not prev_speeches:
         discussion_instruction += (
-            "\n\n【首夜角色分工建议】狼队可以分工配合：\n"
-            "1) 悍跳位——白天假装预言家争夺警徽（建议由能言善辩的队友担任）\n"
-            "2) 冲锋位——为悍跳队友强力站边，质疑真预言家\n"
-            "3) 倒钩位——表面上站边真预言家，暗中破坏好人节奏\n"
-            "4) 深水位——保持低调，活到最后为团队收尾\n"
+            "\n\n【首夜角色分工建议】狼队可以分工配合 (字段名 ↔ 中文):\n"
+            "1) fake_seer (悍跳位)——白天假装预言家争夺警徽（建议由能言善辩的队友担任）\n"
+            "2) pusher (冲锋位)——为悍跳队友强力站边，质疑真预言家\n"
+            "3) hooker (倒钩位)——表面上站边真预言家，暗中破坏好人节奏\n"
+            "4) deep_cover (深水位)——保持低调，活到最后为团队收尾\n"
             "讨论谁适合什么角色，但不一定每局都需要悍跳。"
             "如果真预言家查验理由薄弱，悍跳是很好的选择。"
+            "建议在发言里明确写出角色名 (例如 '我做悍跳' / 'p04 做倒钩'), "
+            "队长会基于这些表态做最终结构化分工。"
         )
 
     strategy_directive = {

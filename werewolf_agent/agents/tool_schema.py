@@ -192,6 +192,101 @@ def player_action_tool(
     }
 
 
+def wolf_team_plan_tool(
+    alive_wolves: list[str],
+    alive_non_wolves: list[str],
+) -> dict[str, Any]:
+    """OpenAI tool schema for the wolf team captain's nightly plan output.
+
+    Mirrors `WolfTeamPlan` (agents/schemas.py): 4 role-slot fields are
+    constrained to alive werewolves (or null); kill targets to alive
+    non-wolves (or null). Schema-level structural rules (no duplicate
+    roles, kills not overlapping roles) are re-checked by Pydantic on
+    parse — the enum constraints here help the LLM choose well-formed
+    values up-front, reducing retry cost.
+    """
+    wolf_enum: list[str | None] = [*alive_wolves, None]
+    target_enum: list[str | None] = [*alive_non_wolves, None]
+    return {
+        "name": "submit_wolf_team_plan",
+        "description": (
+            "由狼队队长一次性提交本夜完整战术计划：4 角色分工(悍跳/冲票/倒钩/深水)、"
+            "击杀目标(主+备)、白天对外口径、决策依据。所有 player_id 字段必须从合法 enum 中选择，"
+            "未分配位置填 null。不要把同一位狼塞进两个角色;不要把击杀目标设为狼队成员。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "night_number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "本夜编号 (gs.night_number)",
+                },
+                "night_kill_primary": {
+                    "type": ["string", "null"],
+                    "enum": target_enum,
+                    "description": "首选击杀目标 player_id; null 表示主动空刀",
+                },
+                "night_kill_backup": {
+                    "type": ["string", "null"],
+                    "enum": target_enum,
+                    "description": "备选击杀目标; null 表示无备选",
+                },
+                "fake_seer": {
+                    "type": ["string", "null"],
+                    "enum": wolf_enum,
+                    "description": "悍跳预言家位 (alive werewolf 或 null)",
+                },
+                "pusher": {
+                    "type": ["string", "null"],
+                    "enum": wolf_enum,
+                    "description": "冲票位",
+                },
+                "hooker": {
+                    "type": ["string", "null"],
+                    "enum": wolf_enum,
+                    "description": "倒钩位",
+                },
+                "deep_cover": {
+                    "type": ["string", "null"],
+                    "enum": wolf_enum,
+                    "description": "深水位",
+                },
+                "public_story": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "白天对外统一口径 / 抗推叙事 (1~120 字)",
+                },
+                "evidence_quality": {
+                    "type": "string",
+                    "enum": ["strong", "weak", "none"],
+                    "description": "对夜聊共识度的评估",
+                },
+                "reasoning": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "队长决策依据 (1~200 字, werewolf_team_only)",
+                },
+            },
+            "required": [
+                "night_number",
+                "night_kill_primary",
+                "night_kill_backup",
+                "fake_seer",
+                "pusher",
+                "hooker",
+                "deep_cover",
+                "public_story",
+                "evidence_quality",
+                "reasoning",
+            ],
+        },
+    }
+
+
 def speech_quality_phase(task_type: TaskType) -> str | None:
     phase_by_task = {
         TaskType.SPEECH: "day_discussion",
