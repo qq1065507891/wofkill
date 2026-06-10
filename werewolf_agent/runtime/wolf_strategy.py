@@ -74,16 +74,22 @@ def extract_wolf_proposal(text: str) -> dict[str, Any]:
     role_map: dict[str, str] = {}
     # Patterns with explicit player ID: pXX followed by verb/pronoun + role keyword
     # Use negated character class [^，。！？、,\n] instead of .*? to prevent cross-clause matching
+    #
+    # wolf-team-plan-llm-structured (2026-06-10): keyword 集扩充以匹配 LLM 实际
+    # 口语。原 patterns 只识别"假预言家"/"冲锋"/"倒钩"/"深水",但 prompt 引导词
+    # 用的是"悍跳位"/"冲锋位"等。LLM 实际输出"我做悍跳"/"p04 做悍跳位"等,
+    # 完全不命中。补 同义词 后,fallback 路径命中率显著上升;mid-loop
+    # should_end_discussion_early 判断也更准确。
     role_patterns = [
-        (r"(p\d{2})\s*[做当你去][^，。！？、,\n]*?假预言家", "fake_seer"),
-        (r"(p\d{2})\s*[做当你去][^，。！？、,\n]*?冲锋", "pusher"),
-        (r"(p\d{2})\s*[做当你去][^，。！？、,\n]*?倒钩", "hooker"),
-        (r"(p\d{2})\s*[做当你去][^，。！？、,\n]*?深水", "deep_cover"),
+        (r"(p\d{2})\s*[做当你去]?[^，。！？、,\n]*?(?:担任\s*)?(?:假预言家|悍跳位?|跳预言家)", "fake_seer"),
+        (r"(p\d{2})\s*[做当你去]?[^，。！？、,\n]*?(?:担任\s*)?(?:冲锋位?|冲票位?)", "pusher"),
+        (r"(p\d{2})\s*[做当你去]?[^，。！？、,\n]*?(?:担任\s*)?(?:倒钩位?)", "hooker"),
+        (r"(p\d{2})\s*[做当你去]?[^，。！？、,\n]*?(?:担任\s*)?(?:深水位?)", "deep_cover"),
         # Shorter: pXX directly followed by role keyword (no verb)
-        (r"(p\d{2})\s*(?:做|当|去|是|负责)?\s*假预言家", "fake_seer"),
-        (r"(p\d{2})\s*(?:做|当|去|是|负责)?\s*冲锋", "pusher"),
-        (r"(p\d{2})\s*(?:做|当|去|是|负责)?\s*倒钩", "hooker"),
-        (r"(p\d{2})\s*(?:做|当|去|是|负责)?\s*深水", "deep_cover"),
+        (r"(p\d{2})\s*(?:做|当|去|是|负责|担任)?\s*(?:假预言家|悍跳位?|跳预言家)", "fake_seer"),
+        (r"(p\d{2})\s*(?:做|当|去|是|负责|担任)?\s*(?:冲锋位?|冲票位?)", "pusher"),
+        (r"(p\d{2})\s*(?:做|当|去|是|负责|担任)?\s*(?:倒钩位?)", "hooker"),
+        (r"(p\d{2})\s*(?:做|当|去|是|负责|担任)?\s*(?:深水位?)", "deep_cover"),
     ]
     for pattern, role_name in role_patterns:
         m = re.search(pattern, text)
@@ -93,15 +99,15 @@ def extract_wolf_proposal(text: str) -> dict[str, Any]:
     # Self-assignment: "我做假预言家", "我来做假预言家", "我冲锋" etc.
     self_role_patterns = [
         # Full patterns with optional verb chain — limit to same clause
-        (r"我\s*(?:来\s*)?[做当去负责][^，。！？、,\n]*?假预言家", "fake_seer"),
-        (r"我\s*(?:来\s*)?[做当去负责][^，。！？、,\n]*?冲锋", "pusher"),
-        (r"我\s*(?:来\s*)?[做当去负责][^，。！？、,\n]*?倒钩", "hooker"),
-        (r"我\s*(?:来\s*)?[做当去负责][^，。！？、,\n]*?深水", "deep_cover"),
+        (r"我\s*(?:可以\s*|来\s*)?(?:[做当去负责]|担任)[^，。！？、,\n]*?(?:假预言家|悍跳位?|跳预言家)", "fake_seer"),
+        (r"我\s*(?:可以\s*|来\s*)?(?:[做当去负责]|担任)[^，。！？、,\n]*?(?:冲锋位?|冲票位?)", "pusher"),
+        (r"我\s*(?:可以\s*|来\s*)?(?:[做当去负责]|担任)[^，。！？、,\n]*?(?:倒钩位?)", "hooker"),
+        (r"我\s*(?:可以\s*|来\s*)?(?:[做当去负责]|担任)[^，。！？、,\n]*?(?:深水位?)", "deep_cover"),
         # Shorter forms: "假预言家" directly after "我"
-        (r"我\s*(?:来\s*)?(?:做|当|去|负责)?\s*假预言家", "fake_seer"),
-        (r"我\s*(?:来\s*)?(?:做|当|去|负责)?\s*冲锋", "pusher"),
-        (r"我\s*(?:来\s*)?(?:做|当|去|负责)?\s*倒钩", "hooker"),
-        (r"我\s*(?:来\s*)?(?:做|当|去|负责)?\s*深水", "deep_cover"),
+        (r"我\s*(?:来\s*)?(?:做|当|去|负责|担任)?\s*(?:假预言家|悍跳位?|跳预言家)", "fake_seer"),
+        (r"我\s*(?:来\s*)?(?:做|当|去|负责|担任)?\s*(?:冲锋位?|冲票位?)", "pusher"),
+        (r"我\s*(?:来\s*)?(?:做|当|去|负责|担任)?\s*(?:倒钩位?)", "hooker"),
+        (r"我\s*(?:来\s*)?(?:做|当|去|负责|担任)?\s*(?:深水位?)", "deep_cover"),
     ]
     for pattern, role_name in self_role_patterns:
         m = re.search(pattern, text)
@@ -168,10 +174,20 @@ def summarize_wolf_consensus(
                 "text_snippet": text[:80],
             })
 
-        # Track role assignments (last proposal wins per role, dedup by wolf)
+        # Track role assignments (priority-ordered, dedup by wolf).
+        #
+        # wolf-team-plan-llm-structured (2026-06-10): walk roles in
+        # priority order (fake_seer > pusher > hooker > deep_cover) so
+        # when the same wolf is mentioned for two roles in one speech
+        # (e.g. "我做悍跳，p01 也做倒钩") we keep the higher-priority
+        # role (悍跳) and reject the lower one (倒钩). Previously we
+        # iterated dict items, which depended on regex match order
+        # (third-person before self-assignment) and would pick the
+        # wrong role.
         if proposal.get("role_assignment"):
-            for role, assignee in proposal["role_assignment"].items():
-                if assignee != "self" and assignee not in assigned_wolves:
+            for role in ("fake_seer", "pusher", "hooker", "deep_cover"):
+                assignee = proposal["role_assignment"].get(role)
+                if assignee and assignee != "self" and assignee not in assigned_wolves:
                     role_assignments[role] = assignee
                     assigned_wolves.add(assignee)
 
