@@ -656,31 +656,32 @@ llm_profiles:
 1. `setup_game`
 2. `assign_roles`
 3. `wolf_discussion`
-4. `wolf_consensus`
-5. `night_witch`
-6. `night_seer`
-7. `night_hunter_idiot_status`
-8. `first_night_hybrid_master`
-9. `resolve_night`
-10. `announce_deaths`
-11. `night_death_last_words`
-12. `sheriff_registration`
-13. `sheriff_speech`
-14. `sheriff_withdraw`
-15. `sheriff_vote`
-16. `free_discussion`
-17. `summarize_positions`
-18. `sheriff_endorse`
-19. `day_vote`
-20. `tie_pk_speech`
-21. `tie_revote`
-22. `resolve_exile`
-23. `post_exile_skills`
-24. `check_victory`
-25. `sheriff_badge_transfer`
-26. `summarize_context`
-27. `reflection`
-28. `finish_game`
+4. `wolf_team_plan`
+5. `wolf_consensus`
+6. `night_witch`
+7. `night_seer`
+8. `night_hunter_idiot_status`
+9. `first_night_hybrid_master`
+10. `resolve_night`
+11. `announce_deaths`
+12. `night_death_last_words`
+13. `sheriff_registration`
+14. `sheriff_speech`
+15. `sheriff_withdraw`
+16. `sheriff_vote`
+17. `free_discussion`
+18. `summarize_positions`
+19. `sheriff_endorse`
+20. `day_vote`
+21. `tie_pk_speech`
+22. `tie_revote`
+23. `resolve_exile`
+24. `post_exile_skills`
+25. `check_victory`
+26. `sheriff_badge_transfer`
+27. `summarize_context`
+28. `reflection`
+29. `finish_game`
 
 `sheriff_badge_transfer` 不是只属于放逐后的节点；任何结算批次中只要当前警长因夜刀、女巫毒、猎枪带走、白天放逐或狼人自爆出局，都必须先进入 `check_victory`。若 `check_victory` 判定对局尚未结束，再进入 `sheriff_badge_transfer` 让警长选择传徽或撕徽；若警徽已被撕掉或本局尚未产生警长，则跳过该节点。
 
@@ -688,6 +689,7 @@ llm_profiles:
 
 - 狼人夜晚不应只提交单点刀人动作，而应先进入 `wolf_discussion`。
 - `wolf_discussion` 支持狼人内部多轮讨论，讨论内容只进入狼人私有视角，并受 `wolf_discussion_seconds` 限制。
+- `wolf_team_plan` 节点紧接 `wolf_discussion`：由 alive werewolves 排序首位作为队长调用一次 LLM，产出 Pydantic `WolfTeamPlan`（含 4 角色分工 `fake_seer`/`pusher`/`hooker`/`deep_cover` + 击杀目标 `night_kill_primary`/`backup` + `public_story` + `reasoning`）。LLM 失败时回退到正则抽取 + 静态分配（`werewolf_agent/runtime/wolf_strategy.py` + `_build_wolf_team_plan`），并 emit `wolf_team_plan_fallback` 审计事件标记 `reason`。`reasoning` 字段含队长决策依据，仅 `werewolf_team_only` 可见，绝不进入公开视角。
 - `wolf_consensus` 负责达成最终夜间行动，合法输出只有 `kill(target_id)` 或 `no_kill(reason)`。`kill` 必须给出合法存活目标；`no_kill` 表示狼队主动空刀。
 - 如果 `wolf_discussion_seconds` 到期时仍未形成合法最终行动，V1 默认本夜空刀并记录 `wolf_no_kill_timeout`，不再随机兜底刀人。该策略保留狼人通过空刀制造信息差的玩法，同时避免运行时无限等待。
 - 女巫节点必须在狼人夜间行动结算之后执行；只有当晚存在 `wolf_kill_selected` 时，女巫才能得知刀口并选择是否使用解药。若当晚是主动空刀或超时空刀，女巫没有可救刀口，但仍可按规则选择是否使用毒药；预言家查验在女巫行动之后执行。
@@ -810,6 +812,12 @@ llm_profiles:
 ```
 
 `private_intent` 是对外不可见的私有策略快照，只进入调试追踪和观战台的私有审计视图，不写入公开发言时间线，不进入其他玩家上下文。
+
+**专用决议性 Schema**：除上述通用 `PlayerAction` 外，少数高复杂度的"团队决议"输出有独立 Pydantic schema：
+
+- `WolfTeamPlan`（`werewolf_agent/agents/schemas.py`）：狼队队长在 `wolf_team_plan` 节点一次性产出本夜完整战术计划，字段包括 4 个角色分工（`fake_seer` / `pusher` / `hooker` / `deep_cover`，必须 alive werewolf 且互不相同）、击杀目标主备（必须 alive 非狼或 null）、`public_story`（白天对外口径，1~120 字）、`evidence_quality` 枚举、`reasoning`（队长决策依据，1~200 字，**仅 werewolf_team_only 可见**）。schema validator 在解析时拒绝重复角色分配和"击杀目标 = 狼队成员"，game-state validator 在调用方再做 alive 集合校验。LLM 失败时调用方回退到正则抽取 + 静态分配（fallback path），保证流程不中断。
+
+这种"专用决议 schema"模式适用于：(a) 输出字段强相关、(b) schema 校验能在结构层就拒绝大量非法输出、(c) 失败时存在 deterministic fallback 路径的场景。一般的玩家逐动作输出仍走 `PlayerAction` Union。
 
 欺骗能力原则：
 

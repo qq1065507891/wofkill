@@ -4,12 +4,61 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **prompt-injection-audit-fixes** — 2026-06-09
-- Active task: T9 文档更新 (DONE) — PROGRESS.md 增补 T3/T7/T8/T9 子段,设计文档 §10.2 增补 M4-2 优先级段落
+- Current phase: **wolf-team-plan-llm-structured** — 2026-06-10
+- Active task: T8/T9 全量回归 + 真实游戏验证 (IN PROGRESS) — T1~T7/T10 done
 - Task owner: Claude/GLM development session
-- Last updated: 2026-06-09
-- **60+ commits across 6+1 worktree branches, 0 unresolved conflicts, full regression 2700+ tests pass**
-- **本次新增 (T9 文档更新)**: (1) PROGRESS.md 增补 T3 / T7 / T8 / T9 完整子段(原 8-fix batch 只在 "Current Status" 一行 + 旧 docs(progress) 提交里有 T3/T7 摘要,T8 全无文档)。(2) 设计文档 §10.2 增补 "反思记忆的提示优先级" 段落:把 M4-2 决议 (reflection 【参考】, RAG 【辅助】) 从隐式 prompt builder 代码提到设计契约层,理由是 "per-player 同角色累积经验 价值 > 通用 RAG 知识"。
+- Last updated: 2026-06-10
+- **本次新增 (wolf-team-plan-llm-structured)**: `wolf_team_plan` 字段不再依赖正则抽取自然语言。新增独立 LangGraph 节点 `wolf_team_plan_node`,由 alive werewolves 排序首位作为队长调一次 LLM,产出 Pydantic `WolfTeamPlan` schema (含 4 角色分工 + 击杀目标 + public_story + reasoning)。LLM 失败时 fallback 到正则 + 静态分配,emit `wolf_team_plan_fallback` 审计事件。
+
+## wolf-team-plan-llm-structured — 2026-06-10
+
+**背景**: `game_g_454575195.json` N1 暴露:p04 夜聊明确说"我可以担任**悍跳位**或倒钩位",但 `wolf_team_plan.fake_seer=null`,警上无人悍跳。根因 (双重 bug):
+1. **正则关键词不全** (`wolf_strategy.py:78-104`):只识别 `假预言家`,完全不识别 LLM 实际口语 `悍跳`/`悍跳位` (prompt 引导词 `agent_adapter.py:733-741` 用的就是"悍跳位")。
+2. **fallback dedup 死锁** (`nodes/night.py:589-596`):`static.fake_seer=p04` 被 `used_wolves={p04}` (已被 consensus 错配为 pusher) 阻断,fake_seer 永远落空。
+
+**治本方案**: 让 LLM 在夜聊后直接产出 Pydantic schema 化的 `WolfTeamPlan`,正则路径降级为 fallback。贴合设计文档 §7.2 "所有 LLM 输出必须结构化校验"。
+
+**改动**:
+
+| # | 任务 | 文件 |
+|---|------|------|
+| T1 | `WolfTeamPlan` Pydantic schema (10 字段 + 2 model_validator: 4 角色去重 / 击杀不能是狼) + `TaskType.WOLF_TEAM_PLAN` 枚举 | `werewolf_agent/agents/schemas.py` + `tests/agents/test_wolf_team_plan_schema.py` (21 测试) |
+| T2 | `wolf_team_plan_tool()` OpenAI tool calling schema (4 角色 enum 约束 alive_wolves; 击杀 enum 约束 alive_non_wolves; null 允许) | `werewolf_agent/agents/tool_schema.py` |
+| T3 | `agent_wolf_team_plan(state, engine, registry)` LLM 队长决议: captain=sorted(alive_wolves)[0]; 注入夜聊全文 + alive_wolves + 上局 plan + 4 角色定义; 复用 captain agent 的 model_router; schema 失败 / membership 失败 / retry 耗尽 → None; 成功 → plan dict + consensus_method="llm" + captain_id | `werewolf_agent/runtime/agent_adapter.py` + `tests/runtime/test_agent_wolf_team_plan.py` (22 测试) |
+| T4 | 新增 `wolf_team_plan_node` 节点; 砍 `wolf_discussion` 节点尾部 plan 生成块 (L574-616) 抽成 `_build_fallback_wolf_team_plan` helper; 节点优先调 LLM,失败 fallback 并 emit `wolf_team_plan_fallback` audit event | `werewolf_agent/runtime/nodes/night.py` + `tests/runtime/test_wolf_team_plan_node.py` (9 测试) |
+| T5 | `graph.py` 接入新节点: `add_node("wolf_team_plan", wolf_team_plan_node)`; 边改 `enter_night → wolf_discussion → wolf_team_plan → wolf_consensus → night_witch` | `werewolf_agent/runtime/graph.py` |
+| T6 | (a) `agent_wolf_discussion` prompt L733-741 角色名加 schema 字段名注释 (`fake_seer (悍跳位)` 等); (b) `wolf_strategy.py:78-112` 正则补丁: 加 `悍跳`/`悍跳位`/`担任` 同义词覆盖 LLM 实际口语; (c) `summarize_wolf_consensus` dedup 改为按角色优先级遍历 (fake_seer > pusher > hooker > deep_cover), 解决"同一狼被两个角色抢"时丢失高优先级角色的问题 | `werewolf_agent/runtime/agent_adapter.py:969-977`, `werewolf_agent/runtime/wolf_strategy.py` |
+| T7 | `tests/runtime/test_wolf_flow.py` 3 个测试拆改: `test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan` / `test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan` / `test_wolf_discussion_drops_stale_targets` — wolf_discussion 不再返回 plan, plan 改由后续 wolf_team_plan_node 产出 | `tests/runtime/test_wolf_flow.py:350-485` |
+| T10 | 设计文档 §6.2 节点列表加 `wolf_team_plan`; §6.2 夜晚沟通原则段加 wolf_team_plan 节点说明; §7.2 加 "专用决议性 Schema" 段落 (引入 WolfTeamPlan); PROGRESS.md 新 phase | `docs/design/werewolf-agent-v1-design.md`, `PROGRESS.md` |
+
+**Schema 边界**: `WolfTeamPlan.reasoning` 含队长决策思考,event payload 强制 `visibility="werewolf_team_only"`,绝不进入公开视角。下游消费者 (`directives/wolf.py` / `skills/werewolf_skills.py` / `runtime/strategy/wolf.py`) 用 `dict.get()` 读 plan,新增 `reasoning` 字段不会被这些下游消费 (grep 验证)。
+
+**LLM 路径 vs Fallback 路径**:
+
+| 触发条件 | 路径 | consensus_method | 事件 |
+|---|---|---|---|
+| LLM 成功 + schema 通过 + alive 校验通过 | LLM | "llm" | `wolf_team_plan` |
+| no_registry / captain agent unavailable | fallback | "fallback" | `wolf_team_plan_fallback` (reason=no_registry/llm_failed_or_unavailable) + `wolf_team_plan` |
+| LLM 抛异常 | fallback | "fallback" | `wolf_team_plan_fallback` (reason=agent_exception: ...) + `wolf_team_plan` |
+| LLM retry 耗尽 (json/schema/membership 失败 3 次) | fallback | "fallback" | `wolf_team_plan_fallback` (reason=llm_failed_or_unavailable) + `wolf_team_plan` |
+| provider NotImplementedError | fallback | "fallback" | 同上 |
+
+**测试** (89 个新增 + 修改全 pass):
+- 新增 `test_wolf_team_plan_schema.py` (21): happy path / 角色去重 / 击杀-角色 overlap / 字段长度边界 / evidence_quality 枚举 / extra=forbid / TaskType 枚举
+- 新增 `test_agent_wolf_team_plan.py` (22): captain 选择 / 上下文注入 / retry / schema 失败 / membership 失败 / NotImplementedError / 空响应 / JSON 解析 helper
+- 新增 `test_wolf_team_plan_node.py` (9): no_registry fallback / 无 alive wolves / LLM 成功路径 / 各 fallback 触发条件 / event visibility
+- 更新 `test_wolf_flow.py` (3 测试): 拆 wolf_discussion 端到端为 wolf_discussion + wolf_team_plan_node 串联
+- 全量 wolf 域 (89 测试) pass
+
+**已知风险**:
+1. **LLM 成本**: 每夜多 1 次队长 LLM 调用 (4 夜局 = +4 次)。可后续在 `config/llm_routing.yaml` 给 `wolf_team_plan` 任务路由到轻量模型。
+2. **`should_end_discussion_early` mid-loop 判断**: 仍用正则; 正则补丁后 (T6) 命中率显著提升,但仍可能误判. 不影响最终 plan 字段。
+3. **fallback dedup 仍有 edge case**: 第一个被 consensus 抽到角色的狼会占住对应 used_wolves。LLM 路径正常时不触发; 仅 fallback 路径偶现。
+
+**验证**:
+- 89 个 wolf 域测试 pass
+- T8 全量回归 (~2700 测试) 进行中
+- T9 真实游戏 N1 验证待跑
 
 ---
 
