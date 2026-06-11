@@ -4,11 +4,106 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **wolf-team-plan-llm-structured** — 2026-06-10
-- Active task: T8/T9 全量回归 + 真实游戏验证 (IN PROGRESS) — T1~T7/T10 done
-- Task owner: Claude/GLM development session
-- Last updated: 2026-06-10
-- **本次新增 (wolf-team-plan-llm-structured)**: `wolf_team_plan` 字段不再依赖正则抽取自然语言。新增独立 LangGraph 节点 `wolf_team_plan_node`,由 alive werewolves 排序首位作为队长调一次 LLM,产出 Pydantic `WolfTeamPlan` schema (含 4 角色分工 + 击杀目标 + public_story + reasoning)。LLM 失败时 fallback 到正则 + 静态分配,emit `wolf_team_plan_fallback` 审计事件。
+- Current phase: **structured-model-output** — 2026-06-11 (COMPLETE)
+- Active task: 代码实现和全量回归已完成；真实对局指标验证与批量实验暂缓
+- Task owner: Codex development session
+- Last updated: 2026-06-11
+- **本次新增 (structured-model-output)**: 玩家行动输出由统一 `ActionContract` 生成 prompt 字段和 provider schema；模型网关显式支持 `native_tool` / `json_schema` / `json_object` / `text_json` 四种协议。协议或 schema 失败可降级输出协议，语义失败保持当前协议；不切换模型，不新增 GLM 熔断或备用模型。
+
+## structured-model-output — 2026-06-11 (已完成)
+
+**背景**:
+
+1. `allow_text_tool_fallback` 同时承担“是否强制工具调用”和“是否接受文本 JSON”两个职责，日志无法判断实际运行协议。
+2. 单目标任务的 prompt 要求 `choice`，但工具 schema 仍要求 `action_type + target_id`，模型同时收到冲突合同。
+3. provider、协议、schema 和游戏语义失败混在相近重试路径中，fallback 原因不够可诊断。
+4. OpenAI JSON Schema 清洗会删除 nullable enum 中的 `null`，可能误拒绝合法的 `target_id=null`。
+
+**改动**:
+
+| # | 改动 | 文件 |
+|---|------|------|
+| SO-1 | 新增统一 `ActionContract`，按 `FULL_ACTION` / `TARGET_CHOICE` / `SPEECH_INTENT` 生成 schema、required 字段和工具定义 | `werewolf_agent/agents/action_contract.py` |
+| SO-2 | `PlayerAgent` 工具 schema 和 `PlayerPromptBuilder` 严格输出合同共用 `ActionContract`，修复 `choice` 与 `action_type/target_id` 冲突 | `werewolf_agent/agents/player.py`, `prompt_builder.py`, `tool_schema.py` |
+| SO-3 | 新增 `StructuredOutputMode`、`StructuredOutputPolicy` 和失败阶段分类：`provider` / `protocol` / `schema` / `semantic` | `werewolf_agent/model_gateway/structured_output.py` |
+| SO-4 | `ModelConfig` 和 YAML 支持显式协议及降级顺序；保留 `allow_text_tool_fallback` 旧配置兼容 | `werewolf_agent/model_gateway/router.py`, `config/models.yaml` |
+| SO-5 | OpenAI-compatible provider 支持四种协议 payload；Anthropic/MiniMax 按显式模式决定是否发送 tools | `werewolf_agent/model_gateway/providers/openai.py`, `anthropic.py`, `minimax.py` |
+| SO-6 | 协议/schema 失败切换到下一个输出协议；非法动作、发言质量和投票质量等语义失败不换协议，只注入纠错提示 | `werewolf_agent/agents/player.py` |
+| SO-7 | 重复错误提前退出签名加入协议模式，避免 `json_schema` 与 `json_object` 返回相同坏文本时跳过尚未尝试的 `text_json` | `werewolf_agent/agents/player.py` |
+| SO-8 | `GenerateResult`、`UsageRecord`、`ActionTrace` 新增实际协议和失败阶段字段 | `werewolf_agent/model_gateway/router.py`, `werewolf_agent/agents/schemas.py`, `trace_builder.py` |
+| SO-9 | nullable schema 转成 `anyOf(value, null)`，保留 `target_id=null` 合法性 | `werewolf_agent/model_gateway/providers/openai.py` |
+| SO-10 | 新增设计说明、实施计划和结构化输出回归测试 | `docs/superpowers/specs/2026-06-11-structured-model-output-design.md`, `docs/superpowers/plans/2026-06-11-structured-model-output.md`, `tests/agents/test_action_contract.py`, `tests/model_gateway/test_structured_output.py` |
+
+**当前协议配置**:
+
+| 模型类型 | 首选协议 | 协议降级 |
+|---|---|---|
+| Baidu OpenAI-compatible 模型 | `json_schema` | `json_object` → `text_json` |
+| MiniMax Anthropic-compatible 模型 | `text_json` | 无 |
+| 旧配置且 `allow_text_tool_fallback=false` | `native_tool` | 无 |
+
+**边界说明**:
+
+- 协议降级只改变同一模型的输出约束，不属于模型路由、模型熔断或备用模型切换。
+- provider 异常仍沿用现有 provider retry / fallback 行为，本 phase 未扩展 GLM 熔断。
+- `ActionContract` 只统一玩家行动输出；`WolfTeamPlan` 等独立决议 schema 保持自己的专用合同。
+
+**验证**:
+
+- `tests/agents` 全量通过
+- `tests/model_gateway` 全量通过
+- runtime + integration 全量分片通过，1 个既有 skip
+- 其余 api/storage/tools/ui/evaluation/scripts 分片通过
+- `git diff --check` 通过
+
+**明确暂缓**:
+
+1. GLM 熔断或新增备用模型
+2. 模型、人格、座位轮换
+3. 冻结规则后使用相同种子做 50～100 局成对实验
+4. 解析器、上下文、警长提示和模型路由消融
+5. 真实对局中按模型/协议统计 parse、schema、semantic 和 fallback 比率
+
+---
+
+## agent-balance-context-persona-corrections — 2026-06-10/11 (已完成)
+
+**目标**: 根据已保存游戏日志修复实现层偏差、上下文泄漏和同质化来源，不修改狼人杀规则，不做模型/座位轮换。
+
+**平衡与上下文修正**:
+
+| # | 改动 | 结果 |
+|---|------|------|
+| BC-1 | 发言解析不再自动补造怀疑对象或投票倾向；choice 与公开理由指向不一致时改为目标一致的中性理由 | 保留模型原意，减少后处理制造的集体站边 |
+| BC-2 | 身份声明冲突按规则配置的角色容量判断 | 两个合法村民声明不再被误判；唯一角色多人声明仍触发冲突 |
+| BC-3 | 警长提示只使用公开声明、退水事件和狼队已分配的悍跳位 | 不再通过候选人的隐藏真实身份决定是否继续竞选 |
+| BC-4 | 混血儿 prompt 只暴露主人 id，不暴露主人隐藏阵营；主人死亡后同样不泄漏 | 保持信息边界 |
+| BC-5 | player-private 总结不再作为 public 事件发布 | 公开记录只包含公开 transcript 可推导信息 |
+| BC-6 | 发言质量校验按 intent 选择必填项 | 站边、追问、防御、信息汇总不再被统一强迫加入无关怀疑/归票句 |
+| BC-7 | balance audit 和 metrics 对齐 runtime 真实事件名及 payload | fallback、schema failure、投票与角色表现指标可正确读取 |
+
+**人格与同质化修正**:
+
+| # | 改动 | 结果 |
+|---|------|------|
+| PC-1 | `GameRunner` 复用共享 `PersonaRouter` 并加载默认京城人格配置 | 玩家行动使用统一人格来源 |
+| PC-2 | `PlayerAgent.act()` 在每回合生成 prompt 前解析并附加 `persona_snapshot` | 人格随当前任务和局面形成可审计快照 |
+| PC-3 | `PersonaSnapshot` 补充 `personality`、`speech_style`，并覆盖默认 12 种发言风格映射 | 人格不再只停留在静态 profile id |
+| PC-4 | prompt 只注入紧凑 `【人格】` 段 | 保留风格差异，同时控制上下文体积 |
+| PC-5 | persona、反跟风提示、意图化发言和语义保真共同降低模板化站边 | 代码层已降低同质化来源；真实模型输出仍需多局日志验证 |
+
+**验证**:
+
+- parser、cognition、context、sheriff、speech quality、evaluation、persona 定向测试通过
+- 完整测试分片通过
+- 未修改 RuleEngine、角色数量、警徽权重或胜负规则
+
+**仍需真实游戏观察**:
+
+- 同一局多人发言的目标、证据类型和句式重复率
+- `persona_snapshot` 各 speech style 的实际可辨识度
+- 警长竞选和退水是否仍出现隐性同质化
+- parser 语义保真后，fallback 与低质量占位理由是否下降
 
 ## wolf-team-plan-llm-structured — 2026-06-10
 

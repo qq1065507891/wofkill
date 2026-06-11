@@ -179,16 +179,13 @@ class RoleStateMonitor:
         if alive_count > 8:
             return []
 
-        master_faction = gs.hybrid_master_faction or "unknown"
         return [RoleAlert(
             alert_type="HYBRID_MASTER_DEAD",
             severity="info",
             message=(
                 f"你的主人 {master_id} 已经死亡。"
-                f"你以{'好人' if master_faction == 'good' else '狼人'}阵营身份继续游戏。"
-                f"你现在等同于村民——没有特殊技能，但你的分析和投票至关重要。"
-                f"回顾主人的行为：他是{master.role if master else '?'}，"
-                f"他的发言和投票是否与这个身份一致？从他的遗言中寻找线索。"
+                "你的胜利绑定仍按主人的原始阵营结算，但你仍不知道主人的阵营。"
+                "继续回顾主人的公开发言、投票和遗言，从公开行为中判断方向。"
             ),
             evidence=[f"master {master_id} is dead, alive={alive_count}"],
         )]

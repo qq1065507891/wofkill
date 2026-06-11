@@ -26,6 +26,7 @@ from werewolf_agent.agents.judge import JudgeAgent
 from werewolf_agent.agents.judge_hitl import JudgeHITLInterface
 from werewolf_agent.model_gateway.router import ModelRouter
 from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
+from werewolf_agent.persona_runtime.router import PersonaRouter
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ class GameRunner:
         self._restored_memory: Any = None
         self._restored_rag: list[Any] | None = None
         self._model_router: ModelRouter | None = None
+        self._persona_router: PersonaRouter | None = None
         self._rag_service: Any = config.rag_service
         if self._rag_service is None and config.enable_default_rag_service:
             self._rag_service = self._build_default_rag_service()
@@ -270,6 +272,14 @@ class GameRunner:
                 raise RuntimeError(f"tool call probe failed: {probe}")
         # Load persona config for player names
         persona_map = self._load_persona_names()
+        persona_path = self._player_persona_path()
+        if persona_path is not None and persona_map:
+            self._persona_router = PersonaRouter.from_yaml(persona_path)
+            self._persona_router.load_assignments({
+                player_id: persona_key
+                for player_id, (_, persona_key) in persona_map.items()
+                if persona_key
+            })
         registry = SimpleAgentRegistry()
         for i in range(1, self._config.player_count + 1):
             player_id = f"p{i:02d}"
@@ -277,17 +287,22 @@ class GameRunner:
             registry.register(player_id, PlayerAgent(
                 agent_id=player_id, model_router=router,
                 player_name=name, persona_key=pkey,
+                persona_router=self._persona_router,
             ))
         return registry
 
+    def _player_persona_path(self) -> Path | None:
+        configured = self._config.persona_config_path
+        path = Path(configured) if configured else (
+            Path(__file__).resolve().parent.parent.parent
+            / "config" / "personas" / "jingcheng_style_prototypes.yaml"
+        )
+        return path if path.exists() else None
+
     def _load_persona_names(self) -> dict[str, tuple[str, str | None]]:
         """Load player_name from persona config, round-robin assignment."""
-        persona_path = self._config.persona_config_path
-        if not persona_path:
-            return {}
-        from pathlib import Path
-        p = Path(persona_path)
-        if not p.exists():
+        p = self._player_persona_path()
+        if p is None:
             return {}
         import yaml
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}

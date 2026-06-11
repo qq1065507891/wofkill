@@ -11,6 +11,16 @@ from typing import Any
 
 from werewolf_agent.cognition.world_state import StructuredFact
 
+DEFAULT_ROLE_CAPACITIES = {
+    "werewolf": 4,
+    "villager": 3,
+    "seer": 1,
+    "witch": 1,
+    "hunter": 1,
+    "idiot": 1,
+    "hybrid": 1,
+}
+
 
 # ---------------------------------------------------------------------------
 # Contradiction data models
@@ -38,8 +48,13 @@ class ContradictionEngine:
     They represent behavioral inconsistencies, not rule violations.
     """
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, role_capacities: dict[str, int] | None = None) -> None:
+        source = role_capacities or DEFAULT_ROLE_CAPACITIES
+        self.role_capacities = {
+            str(role).lower(): int(capacity)
+            for role, capacity in source.items()
+            if int(capacity) > 0
+        }
 
     def detect(
         self,
@@ -188,17 +203,23 @@ class ContradictionEngine:
                 role_claims.setdefault(role, []).append(f.source_player)
 
         for role, claimers in role_claims.items():
-            if len(set(claimers)) > 1:
+            unique_claimers = sorted(set(claimers))
+            capacity = self.role_capacities.get(role, 1)
+            if len(unique_claimers) > capacity:
                 alerts.append(ContradictionAlert(
-                    player_id=",".join(set(claimers)),
+                    player_id=",".join(unique_claimers),
                     alert_type="claim_conflict",
                     priority="high",
                     description=(
-                        f"Multiple players claimed {role}: "
-                        f"{', '.join(set(claimers))}"
+                        f"Role claims exceed {role} capacity {capacity}: "
+                        f"{', '.join(unique_claimers)}"
                     ),
                     evidence=(
-                        {"role": role, "claimers": list(set(claimers))},
+                        {
+                            "role": role,
+                            "capacity": capacity,
+                            "claimers": unique_claimers,
+                        },
                     ),
                 ))
 

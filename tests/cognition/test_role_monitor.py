@@ -152,3 +152,6 @@ class TestHybridMasterDead:
         alerts = monitor.assess(gs, "p10", "hybrid", "day")
         hybrid_alerts = [a for a in alerts if a.alert_type == "HYBRID_MASTER_DEAD"]
         assert len(hybrid_alerts) == 1
+        assert "好人阵营" not in hybrid_alerts[0].message
+        assert "狼人阵营" not in hybrid_alerts[0].message
+        assert "身份" not in hybrid_alerts[0].message

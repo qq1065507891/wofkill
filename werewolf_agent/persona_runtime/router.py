@@ -20,6 +20,8 @@ class PersonaSnapshot:
     agent_id: str
     profile_id: str
     display_name: str
+    personality: str
+    speech_style: str
     base_params: dict[str, float]
     task_style: str
     dynamic_adjustments: dict[str, float]
@@ -76,6 +78,8 @@ class PersonaRouter:
                 agent_id=agent_id,
                 profile_id="default",
                 display_name="default",
+                personality="",
+                speech_style="",
                 base_params={},
                 task_style="default",
                 dynamic_adjustments={},
@@ -103,6 +107,8 @@ class PersonaRouter:
             agent_id=agent_id,
             profile_id=profile_id,
             display_name=profile.get("display_name", profile_id),
+            personality=str(base.get("personality", "")),
+            speech_style=str(base.get("speech_style", "")),
             base_params=base_params,
             task_style=task_style,
             dynamic_adjustments=dynamic_adj,

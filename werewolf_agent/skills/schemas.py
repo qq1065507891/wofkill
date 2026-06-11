@@ -34,6 +34,7 @@ class SkillName(str, Enum):
 class SkillFaction(str, Enum):
     WOLF = "wolf"
     GOOD = "good"
+    NEUTRAL = "neutral"
     COMMON = "common"
     UNIVERSAL = "universal"
 

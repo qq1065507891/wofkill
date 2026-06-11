@@ -1760,6 +1760,7 @@ def test_sections_have_priority_labels():
 
     Sections grouped:
     - 【硬约束】 strategy_directive, retry hint, output contract
+    - 【人格】   persona snapshot
     - 【辅助】   phase, belief, summary, visible state, private memory,
       salience, rag hints, profile, cognition, skill hints
     - 【参考】   reflection  # Note: reflection was demoted from 辅助 to
@@ -1793,17 +1794,18 @@ def test_sections_have_priority_labels():
     # The 辅助 sections must collectively produce multiple 【辅助】 labels.
     # M4-2: reflection moved from 辅助 to 参考 (per-player history
     # outranks generic RAG under budget pressure). The remaining
-    # 辅助 sections are persona, phase, belief, visible state,
+    # 辅助 sections are phase, belief, visible state,
     # private memory, salience, rag hints, profile, cognition,
-    # error pattern — 7 sections whose literal label is 【辅助】
+    # error pattern — 6 sections whose literal label is 【辅助】
     # (public_summary uses the distinctive 【场上记录】 label,
     # so it doesn't count here).
     auxiliary_label_count = prompt.count("【辅助】")
-    assert auxiliary_label_count >= 7, (
-        f"Expected at least 7 【辅助】 labels (M4-2: reflection is "
-        f"now 【参考】, so 辅助 count dropped from 8 to 7). "
+    assert auxiliary_label_count >= 6, (
+        f"Expected at least 6 【辅助】 labels (persona now uses "
+        f"its own 【人格】 label and reflection uses 【参考】). "
         f"Got {auxiliary_label_count}."
     )
+    assert "【人格】 人格设定:" in prompt
 
     # The transcript is the only 可选 section in build_user_prompt.
     assert "【可选】" in prompt, (
@@ -3606,11 +3608,11 @@ def test_sheriff_example_includes_withdraw():
 def _make_budget_pressure_context() -> AgentContext:
     """Context that genuinely exceeds the 6_250-char user-prompt budget.
 
-    Used by G-R4-15 to verify RAG hints survive while 辅助 sections
-    (persona, profile, salience, etc.) are dropped.
+    Used by G-R4-15 to verify persona and RAG hints survive while lower-value
+    auxiliary sections (profile, salience, etc.) are dropped.
 
-    The strategy_directive and output contract are 硬约束 and must NOT
-    be dropped. The 辅助 sections (persona, phase_context, belief,
+    The persona, strategy_directive and output contract must NOT be dropped.
+    The 辅助 sections (phase_context, belief,
     public_summary, visible_state, private_memory, salience,
     reflection, profile, cognition) are each ~1.8k chars — together
     they push the joined prompt well past 6_250. RAG hints (also
@@ -3683,12 +3685,7 @@ def _make_budget_pressure_context() -> AgentContext:
 
 
 def test_rag_hints_survive_budget_pressure() -> None:
-    """Per M4-2, RAG hints are now a 【辅助】 section (not 【参考】).
-    This test still passes because persona (the largest 辅助 section
-    in the fixture) gets dropped first, satisfying the budget before
-    RAG is reached. RAG's actual eviction priority is now determined
-    by the generic 辅助-tier drop order, not by a survival guarantee.
-    See commit 0022d25 for the M4-2 rationale."""
+    """Persona and RAG both survive after persona fields are compacted."""
     ctx = _make_budget_pressure_context()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     # Sanity: the budget trimmer must have actually run. With
@@ -3711,16 +3708,13 @@ def test_rag_hints_survive_budget_pressure() -> None:
         f"pressure. RAG hints must be in a higher-priority tier "
         f"(【参考】) than the other 辅助 sections that get dropped."
     )
-    # The trimmer must have actually run (proven by a 辅助 section
-    # being dropped). Persona is the first 辅助 section in the
-    # drop order; the long persona_snapshot should be dropped while
-    # the 硬约束-equivalent strategy_directive stays.
-    assert "人格设定" not in prompt, (
-        f"G-R4-15: budget pressure should have dropped at least one "
-        f"【辅助】 section (persona), but '人格设定' is still in the "
-        f"prompt. If it survived, the test setup isn't tight enough "
-        f"to exercise the budget. prompt[:400]={prompt[:400]!r}"
+    # Persona drives per-player differentiation and must survive the
+    # same budget pressure as the strategy/output contracts.
+    assert "人格设定" in prompt, (
+        f"persona_snapshot must survive budget trimming so players do not "
+        f"collapse to the same generic style. prompt[:400]={prompt[:400]!r}"
     )
+    assert "X" * 100 not in prompt
 
 
 # ---------------------------------------------------------------------------

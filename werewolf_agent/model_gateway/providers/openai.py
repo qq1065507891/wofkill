@@ -8,6 +8,10 @@ from typing import Any
 from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
+from werewolf_agent.model_gateway.structured_output import (
+    StructuredOutputMode,
+    resolve_structured_output_mode,
+)
 
 
 class OpenAIProvider(_BaseHttpProvider):
@@ -75,8 +79,17 @@ def _generate_openai_compatible(
         "max_tokens": config.max_tokens,
         "top_p": config.top_p,
     }
-    forcing_tool = bool(tool_choice and tool_choice.get("name"))
-    if tools and config.allow_text_tool_fallback and not forcing_tool:
+    mode = resolve_structured_output_mode(
+        provider=config.provider,
+        configured_mode=config.structured_output_mode,
+        allow_text_tool_fallback=config.allow_text_tool_fallback,
+    )
+    forcing_tool = bool(
+        mode == StructuredOutputMode.NATIVE_TOOL
+        and tool_choice
+        and tool_choice.get("name")
+    )
+    if mode == StructuredOutputMode.JSON_SCHEMA and tools:
         payload["response_format"] = {
             "type": "json_schema",
             "json_schema": {
@@ -86,7 +99,9 @@ def _generate_openai_compatible(
                 ),
             },
         }
-    elif tools:
+    elif mode == StructuredOutputMode.JSON_OBJECT:
+        payload["response_format"] = {"type": "json_object"}
+    elif mode == StructuredOutputMode.NATIVE_TOOL and tools:
         payload["tools"] = [
             {
                 "type": "function",
@@ -103,8 +118,6 @@ def _generate_openai_compatible(
                 "type": "function",
                 "function": {"name": tool_choice["name"]},
             }
-    elif config.allow_text_tool_fallback:
-        payload["response_format"] = {"type": "json_object"}
     start = time.monotonic()
     response = http_client.post(
         _openai_chat_completions_url(base_url),
@@ -126,14 +139,22 @@ def _generate_openai_compatible(
         text=text,
         provider=provider.name,
         model=config.model,
-        tool_call_required=bool(tool_choice),
+        tool_call_required=forcing_tool,
         tool_call_received=tool_call_received,
-        tool_call_name=_openai_tool_name(message) or (tool_choice or {}).get("name", ""),
-        text_fallback_used=bool(tools and tool_choice and not tool_call_received and text)
-            or (config.allow_text_tool_fallback and not forcing_tool and bool(text)),
-        structured_failure_reason=(
-            "missing_tool_call" if tools and tool_choice and not tool_call_received else None
+        tool_call_name=(
+            _openai_tool_name(message)
+            or ((tool_choice or {}).get("name", "") if forcing_tool else "")
         ),
+        text_fallback_used=(
+            bool(tools and forcing_tool and not tool_call_received and text)
+            or (mode != StructuredOutputMode.NATIVE_TOOL and bool(text))
+        ),
+        structured_failure_reason=(
+            "missing_tool_call"
+            if tools and forcing_tool and not tool_call_received
+            else None
+        ),
+        structured_output_mode=mode.value,
         usage=provider._usage(
             model=config.model,
             latency_ms=latency_ms,
@@ -204,9 +225,28 @@ def _sanitize_for_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
         t = node.get("type")
         if isinstance(t, list) and "null" in t:
             non_null = [x for x in t if x != "null"]
-            node["type"] = non_null[0] if len(non_null) == 1 else non_null
-        if "enum" in node:
-            node["enum"] = [v for v in node["enum"] if v is not None]
+            value_schema = {
+                key: value
+                for key, value in node.items()
+                if key not in {"type", "description", "title"}
+            }
+            value_schema["type"] = (
+                non_null[0] if len(non_null) == 1 else non_null
+            )
+            if "enum" in value_schema:
+                value_schema["enum"] = [
+                    value for value in value_schema["enum"]
+                    if value is not None
+                ]
+            metadata = {
+                key: node[key]
+                for key in ("description", "title")
+                if key in node
+            }
+            node.clear()
+            node.update(metadata)
+            node["anyOf"] = [_walk(value_schema), {"type": "null"}]
+            return node
         for _k, v in node.items():
             if isinstance(v, dict):
                 _walk(v)

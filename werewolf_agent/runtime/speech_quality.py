@@ -56,6 +56,7 @@ _VOTE_PATTERNS = [
 _EVIDENCE_PATTERNS = [
     (r"矛盾", "contradiction"),
     (r"前后不一", "contradiction"),
+    (r"(?:前后|昨天.*?今天|站边.*?投票).{0,12}(?:没|没有|未)(?:有)?对上", "contradiction"),
     (r"不合理", "unreasonable"),
     (r"查杀", "seer_check"),
     (r"查验", "seer_check"),
@@ -76,7 +77,7 @@ _EVIDENCE_PATTERNS = [
 # Stance indicators
 _STANCE_PATTERNS = [
     r"好人", r"我是.*?(?:好人|村民|预言家|女巫|猎人)",
-    r"狼人阵营", r"我是p\d{2}视角", r"我站.*?边",
+    r"狼人阵营", r"我是p\d{2}视角", r"我站.*?边", r"站边\s*p\d{2}",
 ]
 
 _PEACE_NIGHT_WITCH_FALLACY_PATTERNS = [
@@ -201,14 +202,18 @@ def validate_public_speech(
     - hint: retry hint when invalid
     """
     context = context or {}
+    intent = str(context.get("intent") or "")
+    required = _required_components(intent)
+    if phase == "pk_speech":
+        required.discard("stance")
 
     # Check filler patterns
     if not text or not text.strip():
         return {
             "valid": False,
-            "missing_fields": ["stance", "suspicion_target", "vote_leaning", "evidence"],
+            "missing_fields": sorted(required),
             "quality": {},
-            "hint": "发言不能为空。必须包含立场、怀疑对象、投票倾向和依据。",
+            "hint": "发言不能为空。请按当前发言意图给出具体内容。",
         }
 
     for pattern in _FILLER_PATTERNS:
@@ -216,9 +221,9 @@ def validate_public_speech(
             quality = extract_speech_quality(text, phase)
             return {
                 "valid": False,
-                "missing_fields": ["stance", "suspicion_target", "vote_leaning", "evidence"],
+                "missing_fields": sorted(required),
                 "quality": quality,
-                "hint": "发言过于空洞。必须包含立场、怀疑对象、投票倾向和具体依据。",
+                "hint": "发言过于空洞。请按当前发言意图给出具体依据。",
             }
 
     quality = extract_speech_quality(text, phase)
@@ -229,21 +234,27 @@ def validate_public_speech(
     if _has_unsupported_public_record_claim(text, context):
         missing.append("public_record_grounding")
 
-    # Check stance (relaxed for some phases)
-    if not quality["has_stance"] and phase not in ("pk_speech",):
+    if "stance" in required and not quality["has_stance"]:
         missing.append("stance")
 
-    # Check suspicion targets
-    if not quality["suspicion_targets"]:
+    if "suspicion_target" in required and not quality["suspicion_targets"]:
         missing.append("suspicion_target")
 
-    # Check vote leaning
-    if not quality["vote_leaning"]:
+    if "vote_leaning" in required and not quality["vote_leaning"]:
         missing.append("vote_leaning")
 
-    # Check evidence
-    if not quality["evidence_bases"]:
+    if "evidence" in required and not quality["evidence_bases"]:
         missing.append("evidence")
+
+    mentioned_players = set(re.findall(r"p\d{2}", text))
+    target_id = str(context.get("target_id") or "")
+    if "target_reference" in required:
+        if target_id and target_id not in mentioned_players:
+            missing.append("target_reference")
+        elif not target_id and not mentioned_players:
+            missing.append("target_reference")
+    if "multi_entity" in required and len(mentioned_players) < 2:
+        missing.append("multi_entity")
 
     # High-pressure phases have additional requirements
     is_high_pressure = phase in ("sheriff_speech", "pk_speech") or context.get("is_claiming_role")
@@ -295,6 +306,22 @@ def validate_public_speech(
     }
 
 
+def _required_components(intent: str) -> set[str]:
+    by_intent = {
+        "stand_with_seer": {"stance", "evidence"},
+        "question_target": {"target_reference", "evidence"},
+        "push_vote": {"suspicion_target", "vote_leaning", "evidence"},
+        "info_synthesis": {"multi_entity", "evidence"},
+        "anti_herd_call": {"evidence"},
+        "respond_pressure": {"stance", "evidence"},
+        "self_clear": {"stance", "evidence"},
+    }
+    return set(by_intent.get(
+        intent,
+        {"stance", "suspicion_target", "vote_leaning", "evidence"},
+    ))
+
+
 def build_speech_retry_hint(missing_fields: list[str]) -> str:
     """Build a retry hint based on missing speech components."""
     field_hints = {
@@ -303,6 +330,8 @@ def build_speech_retry_hint(missing_fields: list[str]) -> str:
         "protection_target": "需要表明信任的玩家",
         "vote_leaning": "需要表达投票倾向（如'我倾向投pXX'）",
         "evidence": "需要给出具体依据（如矛盾点、查杀、发言引用等）",
+        "target_reference": "需要围绕当前追问目标展开，而不是转向无关玩家",
+        "multi_entity": "信息整理需要对照至少两名玩家或两条公开信息",
         "claim_logic": "在警上/PK阶段需要包含角色声明、对跳分析或攻击/防守论点",
         "peace_night_witch_reasoning": (
             "平安夜不等于无人被刀；可能是狼人空刀，也可能是女巫用解药救人。"

@@ -67,3 +67,45 @@ def test_load_game_logs_reads_json_files(tmp_path):
     path.write_text(json.dumps({"winning_faction": "good"}), encoding="utf-8")
 
     assert load_game_logs([path]) == [{"winning_faction": "good"}]
+
+
+def test_balance_audit_reads_runtime_vote_list_shape():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [{
+        "winning_faction": "good",
+        "events": [{
+            "type": "vote_resolved",
+            "payload": {
+                "votes": [
+                    {"voter": "p01", "target": "p05"},
+                    {"voter": "p02", "target": "p05"},
+                    {"voter": "p03", "target": "p06"},
+                ],
+            },
+        }],
+    }]
+
+    audit = compute_balance_audit(games)
+
+    assert audit["mean_vote_concentration"] == 2 / 3
+
+
+def test_balance_audit_counts_any_parse_failure():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [{
+        "winning_faction": "good",
+        "events": [{
+            "type": "action_trace_audit",
+            "payload": {
+                "action_trace": {
+                    "parse_error": "Could not parse JSON object",
+                },
+            },
+        }],
+    }]
+
+    audit = compute_balance_audit(games)
+
+    assert audit["schema_failure_rate"] == 1.0

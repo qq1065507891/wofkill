@@ -21,6 +21,8 @@ class TestPersonaRouter:
         snap = router.resolve("p01", "speech")
         assert snap.profile_id == "logic_leader"
         assert snap.display_name == "强逻辑归票型"
+        assert snap.personality == "analytical_leader"
+        assert snap.speech_style == "structured_logical"
         assert snap.task_style == "structured_reasoning"
         assert snap.base_params.get("logic_skill", 0) > 0.8
 

@@ -231,22 +231,10 @@ class TestPushVoteHandlerBranchesOnTaskType:
 
 
 # ---------------------------------------------------------------------------
-# S-02: hybrid faction dispatches wolf-only skills when master is wolf.
+# Hybrid skill dispatch must not reveal the master's hidden faction.
 # ---------------------------------------------------------------------------
 
-def test_hybrid_with_wolf_master_dispatches_wolf_skills():
-    """S-02: when hybrid's master is a werewolf, the hybrid must be able
-    to dispatch WOLF-faction skills (e.g. bold_claim, deep_hook, swing_vote).
-
-    Pre-fix: `faction_for_role("hybrid")` unconditionally returns GOOD,
-    so a hybrid-with-wolf-master can't see wolf-only advice and ends up
-    with the GOOD skills (wolf_pit, protect_power) — wrong for a
-    wolf-aligned hybrid.
-
-    Post-fix: `faction_for_role("hybrid", gs=gs)` checks
-    `gs.hybrid_master_faction` and returns WOLF when master is werewolf.
-    Callers must thread `gs` through to the faction lookup.
-    """
+def test_hybrid_with_wolf_master_does_not_dispatch_hidden_faction_skills():
     from werewolf_agent.core.models import GameState, PlayerState
     from werewolf_agent.skills.registry import (
         SkillRegistry, faction_for_role,
@@ -273,14 +261,8 @@ def test_hybrid_with_wolf_master_dispatches_wolf_skills():
         hybrid_master_faction="werewolf",
     )
 
-    # The faction lookup itself must surface WOLF for hybrid-with-wolf-master.
-    assert faction_for_role("hybrid", gs=gs) == SkillFaction.WOLF, (
-        "S-02: hybrid with wolf master must map to WOLF faction; got "
-        f"{faction_for_role('hybrid', gs=gs)!r}"
-    )
+    assert faction_for_role("hybrid", gs=gs) == SkillFaction.NEUTRAL
 
-    # The dispatch path: dispatch_for_role must include bold_claim
-    # (a WOLF-faction skill) for a hybrid-with-wolf-master in a speech phase.
     reg = SkillRegistry()
     skill_input = SkillInput(
         role="hybrid", phase="speech", day=1,
@@ -288,10 +270,11 @@ def test_hybrid_with_wolf_master_dispatches_wolf_skills():
     )
     outputs = reg.dispatch_for_role("hybrid", "speech", skill_input, gs=gs)
     skill_names = {o.skill_name for o in outputs}
-    assert "bold_claim" in skill_names, (
-        f"S-02: hybrid-with-wolf-master should dispatch bold_claim in speech; "
-        f"got {skill_names!r}"
-    )
+    assert "bold_claim" not in skill_names
+    assert "deep_hook" not in skill_names
+    assert "swing_vote" not in skill_names
+    assert "protect_power" not in skill_names
+    assert "wolf_pit" not in skill_names
 
 
 # ---------------------------------------------------------------------------
@@ -998,24 +981,7 @@ def test_review_correction_handler_wolf_receives_wolf_advice():
 # ---------------------------------------------------------------------------
 
 
-def test_counter_claim_hybrid_wolf_master_receives_悍跳_advice() -> None:
-    """NEW-R4-P2-1: when a HYBRID with `hybrid_master_faction='werewolf'`
-    is faking-seer (counter_claiming a real seer), the counter_claim
-    handler must give 悍跳-specific advice (wolf team plan), NOT the
-    neutral "对跳建议" villagers receive.
-
-    Pre-fix: `is_wolf = inp.role == 'werewolf'` is False for a hybrid,
-    so the static-fallback and dynamic branches both fell through to
-    the neutral `else` branch. A hybrid-wolf-master faking-seer then
-    got "指出对方漏洞" (villager-style) advice instead of "假验人
-    时间线" (wolf-style). That defeats the entire purpose of the
-    hybrid-wolf-master mechanic.
-
-    Post-fix: compute `effective_faction = WOLF` when
-    `(role == 'werewolf') or (role == 'hybrid' and
-    gs.hybrid_master_faction == 'werewolf')`; the handler branches
-    on effective_faction so the hybrid gets 悍跳 framing.
-    """
+def test_counter_claim_hybrid_does_not_receive_hidden_faction_advice() -> None:
     from werewolf_agent.core.models import GameState, PlayerState
     from werewolf_agent.skills.schemas import SkillInput, SkillName
     from werewolf_agent.skills.werewolf_skills import apply_skill
@@ -1067,8 +1033,6 @@ def test_counter_claim_hybrid_wolf_master_receives_悍跳_advice() -> None:
         f"got: {villager_text!r}"
     )
 
-    # Hybrid with wolf master counter-claiming real seer MUST get
-    # 悍跳-specific advice (same as werewolf would).
     hybrid_inp = SkillInput(
         role="hybrid", phase="speech", day=1,
         game_state=gs, world_state=ws, belief_state=None,
@@ -1077,17 +1041,8 @@ def test_counter_claim_hybrid_wolf_master_receives_悍跳_advice() -> None:
     )
     hybrid_out = apply_skill(SkillName.COUNTER_CLAIM, hybrid_inp)
     hybrid_text = hybrid_out.prompt_injectable
-    assert any(k in hybrid_text for k in ("悍跳", "假", "时间线", "排坑")), (
-        f"NEW-R4-P2-1: hybrid-with-wolf-master counter_claim must use "
-        f"悍跳 framing; got: {hybrid_text!r}"
-    )
-
-    # The hybrid advice must DIFFER from the villager advice (proves
-    # the role branch fired).
-    assert hybrid_text != villager_text, (
-        f"NEW-R4-P2-1: hybrid and villager should get different "
-        f"counter_claim advice; both got: {hybrid_text!r}"
-    )
+    assert "悍跳" not in hybrid_text
+    assert hybrid_text == villager_text
 
     # A hybrid-with-GOOD-master must NOT get the 悍跳 framing.
     gs_good_master = GameState(
@@ -1108,10 +1063,8 @@ def test_counter_claim_hybrid_wolf_master_receives_悍跳_advice() -> None:
     )
     good_out = apply_skill(SkillName.COUNTER_CLAIM, good_inp)
     good_text = good_out.prompt_injectable
-    assert "悍跳" not in good_text, (
-        f"NEW-R4-P2-1: hybrid-with-GOOD-master counter_claim must NOT "
-        f"use 悍跳 framing; got: {good_text!r}"
-    )
+    assert "悍跳" not in good_text
+    assert good_text == hybrid_text
 
 
 # ---------------------------------------------------------------------------

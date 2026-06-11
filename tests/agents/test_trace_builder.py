@@ -139,6 +139,20 @@ class TestBuildActionTrace:
         assert trace.parse_success is False
         assert trace.parse_error == "missing required tool call"
 
+    def test_structured_output_mode_and_failure_stage_propagate(self):
+        trace = build_action_trace(
+            _context(),
+            raw_text="not json",
+            parsed_action=None,
+            final_action_type=ActionType.NO_ACTION,
+            retry=RetryInfo(),
+            structured_output_mode="json_schema",
+            structured_failure_stage="protocol",
+        )
+
+        assert trace.structured_output_mode == "json_schema"
+        assert trace.structured_failure_stage == "protocol"
+
     def test_dict_parsed_action_passes_through(self):
         # When parsed_action is a plain dict (e.g. choice_data from
         # parse_choice_action), the builder should accept it directly

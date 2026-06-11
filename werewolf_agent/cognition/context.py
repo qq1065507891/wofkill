@@ -167,14 +167,9 @@ class LocalContextBuilder:
                         teammate_exiled = True
                         break
 
-        # --- Hybrid's faction_goal: help master's faction (any master) ---
-        faction_goal = ""
-        if viewer_role == "hybrid" and game_state.hybrid_master_faction:
-            faction_goal = "help_master_faction"
-
         strategy = self._strategy.select(
             role=viewer_role,
-            faction_goal=faction_goal,
+            faction_goal="",
             persona_style=persona_style,
             is_suspected=is_suspected,
             teammate_just_exiled=teammate_exiled,

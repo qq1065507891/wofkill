@@ -31,18 +31,13 @@ def faction_for_role(role: str, gs: Any | None = None) -> SkillFaction:
     """Return the faction a role belongs to.
 
     Most roles are statically mapped (villager→GOOD, werewolf→WOLF).
-    Hybrid's faction is dynamic — it depends on its master's faction
-    (S-02): if `gs.hybrid_master_faction` is "werewolf", hybrid is
-    WOLF-aligned; otherwise it falls back to GOOD. If `gs` is None
-    (test seam), we conservatively return GOOD.
+    Hybrid is neutral for agent-facing skill selection because the role does
+    not know its master's hidden faction.
     """
     if role in _WOLF_ROLES:
         return SkillFaction.WOLF
     if role == "hybrid":
-        # S-02: dispatch on master's faction when known.
-        if gs is not None and getattr(gs, "hybrid_master_faction", None) == "werewolf":
-            return SkillFaction.WOLF
-        return SkillFaction.GOOD
+        return SkillFaction.NEUTRAL
     return SkillFaction.GOOD
 
 
@@ -109,13 +104,12 @@ class SkillRegistry:
         - WOLF roles get: WOLF + COMMON + UNIVERSAL
         - GOOD roles get: GOOD + COMMON + UNIVERSAL
 
-        For hybrid, the resolved faction depends on its master's faction
-        (see S-02). Pass `gs` to enable that branch; without `gs`,
-        hybrid falls back to GOOD.
+        Hybrid receives only COMMON and UNIVERSAL skills.
         """
         role_faction = faction_for_role(role, gs=gs)
         allowed = {SkillFaction.COMMON, SkillFaction.UNIVERSAL}
-        allowed.add(role_faction)
+        if role_faction != SkillFaction.NEUTRAL:
+            allowed.add(role_faction)
         return [
             s for s in self._skills.values()
             if s.faction in allowed
@@ -136,22 +130,14 @@ class SkillRegistry:
         `SkillDefinition.applies_to_task_types` (in addition to the
         existing `applicable_phases` / `applicable_roles` checks).
 
-        S-02: when `gs` is provided, hybrid's faction is resolved from
-        `gs.hybrid_master_faction` (default: GOOD). When hybrid's master
-        is a werewolf, hybrid is treated as `werewolf` for the role
-        filter on WOLF-faction skills — the manifest role list still
-        gates the dispatch, but the gate is opened for the wolf-aligned
-        hybrid.
+        Hybrid receives only faction-neutral skills because its master's
+        faction is hidden from the player.
         """
         role_faction = faction_for_role(role, gs=gs)
-        # S-02: when hybrid is wolf-aligned, treat it as `werewolf` for
-        # the role filter so WOLF-faction skills (e.g. bold_claim,
-        # swing_vote) are reachable.
         effective_role = role
-        if role == "hybrid" and role_faction == SkillFaction.WOLF:
-            effective_role = "werewolf"
         allowed = {SkillFaction.COMMON, SkillFaction.UNIVERSAL}
-        allowed.add(role_faction)
+        if role_faction != SkillFaction.NEUTRAL:
+            allowed.add(role_faction)
         skills = [
             s for s in self._skills.values()
             if s.faction in allowed

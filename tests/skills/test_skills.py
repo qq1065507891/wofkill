@@ -338,7 +338,7 @@ class TestSkillFaction:
         assert faction_for_role("witch") == SkillFaction.GOOD
         assert faction_for_role("hunter") == SkillFaction.GOOD
         assert faction_for_role("idiot") == SkillFaction.GOOD
-        assert faction_for_role("hybrid") == SkillFaction.GOOD
+        assert faction_for_role("hybrid") == SkillFaction.NEUTRAL
 
 
 class TestSkillsForRole:
@@ -366,7 +366,7 @@ class TestSkillsForRole:
 
     def test_good_role_gets_good_plus_common_plus_universal(self):
         reg = SkillRegistry()
-        for role in ["villager", "seer", "witch", "hunter", "idiot", "hybrid"]:
+        for role in ["villager", "seer", "witch", "hunter", "idiot"]:
             skills = reg.skills_for_role(role)
             names = {s.name for s in skills}
             # Good-only
@@ -381,6 +381,18 @@ class TestSkillsForRole:
             assert SkillName.BOLD_CLAIM not in names
             assert SkillName.SWING_VOTE not in names
             assert SkillName.DEEP_HOOK not in names
+
+    def test_hybrid_gets_only_neutral_common_and_universal_skills(self):
+        reg = SkillRegistry()
+        names = {s.name for s in reg.skills_for_role("hybrid")}
+
+        assert SkillName.FIND_POWER in names
+        assert SkillName.REVIEW_CORRECTION in names
+        assert SkillName.WOLF_PIT_ANALYSIS not in names
+        assert SkillName.PROTECT_POWER not in names
+        assert SkillName.BOLD_CLAIM not in names
+        assert SkillName.SWING_VOTE not in names
+        assert SkillName.DEEP_HOOK not in names
 
     def test_seer_has_counter_claim_but_villager_does_not(self):
         reg = SkillRegistry()

@@ -714,6 +714,30 @@ class TestContradictionEngine:
         assert len(claim_conflicts) == 1
         assert "seer" in claim_conflicts[0].description.lower()
 
+    def test_two_villager_claims_fit_role_capacity(self):
+        facts = [
+            StructuredFact(fact_type="claimed_role", source_player="p09", value="villager", day=1),
+            StructuredFact(fact_type="claimed_role", source_player="p12", value="villager", day=1),
+        ]
+
+        alerts = ContradictionEngine().detect(facts, current_day=1)
+
+        assert not [a for a in alerts if a.alert_type == "claim_conflict"]
+
+    def test_villager_claims_over_configured_capacity_conflict(self):
+        facts = [
+            StructuredFact(fact_type="claimed_role", source_player=f"p0{i}", value="villager", day=1)
+            for i in range(1, 4)
+        ]
+
+        alerts = ContradictionEngine(
+            role_capacities={"villager": 2, "seer": 1},
+        ).detect(facts, current_day=1)
+
+        claim_conflicts = [a for a in alerts if a.alert_type == "claim_conflict"]
+        assert len(claim_conflicts) == 1
+        assert claim_conflicts[0].evidence[0]["capacity"] == 2
+
     def test_speech_claims_are_extracted_into_structured_facts(self):
         from werewolf_agent.core.models import GameEvent, GameState
         from werewolf_agent.cognition.world_state import extract_facts
@@ -901,13 +925,7 @@ class TestLocalContextBuilder:
         )
         assert ctx.visible_world_state.get("master_id") == "p05"
 
-    def test_hybrid_wolf_master_receives_deep_hook(self):
-        """Hybrid whose master is a werewolf must default to deep_hook strategy.
-
-        Without wiring `faction_goal` from context.py to strategy.select,
-        the hybrid's base role default (survive_lay_low) wins regardless of
-        the master's faction. This is the COG-3-02 bug.
-        """
+    def test_hybrid_wolf_master_keeps_faction_neutral_strategy(self):
         builder = self._make_builder()
         state = GameState(
             players={
@@ -926,8 +944,7 @@ class TestLocalContextBuilder:
             legal_actions=[ActionType.SPEECH],
             legal_targets=[],
         )
-        # Hybrid with wolf master must use deep_hook, not survive_lay_low
-        assert ctx.strategy_directive["package"] == "deep_hook"
+        assert ctx.strategy_directive["package"] == "survive_lay_low"
 
     def test_seer_sees_check_results(self):
         builder = self._make_builder()

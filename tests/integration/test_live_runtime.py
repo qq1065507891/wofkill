@@ -159,9 +159,17 @@ class _DeterministicMockProvider:
         }
 
 
+class _NoJitterModelRouter(ModelRouter):
+    """Keep deterministic integration games fast and reproducible."""
+
+    def generate(self, *args, **kwargs) -> GenerateResult:
+        kwargs["jitter_seconds"] = (0.0, 0.0)
+        return super().generate(*args, **kwargs)
+
+
 def _build_registry(engine: RuleEngine) -> SimpleAgentRegistry:
     provider = _DeterministicMockProvider()
-    router = ModelRouter(
+    router = _NoJitterModelRouter(
         model_profiles={}, llm_profiles={}, player_assignments={},
         providers={"mock": provider},
     )

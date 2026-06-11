@@ -26,6 +26,7 @@ from werewolf_agent.model_gateway.router import (
     ModelRouter,
     UsageRecord,
 )
+from werewolf_agent.persona_runtime.router import PersonaRouter
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +259,57 @@ class TextJsonProvider:
         )
 
 
+class ProtocolSequenceProvider:
+    def __init__(self) -> None:
+        self.modes: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return "protocol_sequence"
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        self.modes.append(config.structured_output_mode)
+        if len(self.modes) == 1:
+            text = "not json"
+        else:
+            text = (
+                '{"intent":"question_target","target_id":"p02",'
+                '"speech":"我是好人阵营。p02上一轮站边没有说明依据，'
+                '我质疑他的逻辑。今天我倾向投p02，请他回应票型变化。",'
+                '"reason":"质疑p02站边和票型","confidence":0.7}'
+            )
+        return GenerateResult(
+            text=text,
+            provider=self.name,
+            model=config.model,
+            structured_output_mode=config.structured_output_mode,
+            text_fallback_used=config.structured_output_mode != "native_tool",
+            usage=UsageRecord(
+                agent_id="", task_type="", provider=self.name, model=config.model,
+                structured_output_mode=config.structured_output_mode,
+            ),
+        )
+
+
+class AlwaysInvalidProtocolProvider:
+    def __init__(self) -> None:
+        self.modes: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return "always_invalid_protocol"
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        self.modes.append(config.structured_output_mode)
+        return GenerateResult(
+            text="not json",
+            provider=self.name,
+            model=config.model,
+            structured_output_mode=config.structured_output_mode,
+            text_fallback_used=config.structured_output_mode != "native_tool",
+        )
+
+
 class NoToolProvider:
     """Provider that doesn't support tool calls."""
     @property
@@ -347,7 +399,7 @@ class TestPlayerAgentRetryFallback:
             "null",
         ]
 
-    def test_tool_call_schema_disallows_null_target_when_all_actions_require_target(self) -> None:
+    def test_single_target_action_tool_uses_choice_contract(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
             agent_id="p01",
@@ -361,8 +413,10 @@ class TestPlayerAgentRetryFallback:
 
         tool = agent._player_action_tool(ctx)
 
-        assert tool["input_schema"]["properties"]["action_type"]["enum"] == ["vote"]
-        assert tool["input_schema"]["properties"]["target_id"]["enum"] == ["p07", "p08"]
+        properties = tool["input_schema"]["properties"]
+        assert properties["choice"]["enum"] == ["A", "B"]
+        assert "action_type" not in properties
+        assert "target_id" not in properties
 
     def test_tool_call_schema_uses_plain_nullable_target_when_no_targets_are_legal(self) -> None:
         agent = self._make_agent("unused")
@@ -654,6 +708,92 @@ class TestPlayerAgentRetryFallback:
         assert action.trace.parsed_action["intent"] == "question_target"
         assert retry.error_code is None
 
+    def test_persona_snapshot_is_resolved_into_each_agent_prompt(self) -> None:
+        provider = _SequenceJsonProvider([
+            '{"intent":"question_target","target_id":"p07",'
+            '"speech":"我追问p07：你昨天和今天的判断前后矛盾，公开票型也没有对上。",'
+            '"reason":"核对p07前后判断","confidence":0.73}'
+        ])
+        model_router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={},
+            providers={"mock": provider},
+        )
+        persona_router = PersonaRouter.from_yaml(
+            "config/personas/jingcheng_style_prototypes.yaml"
+        )
+        persona_router.load_assignments({"p02": "aggressive_bluffer"})
+        agent = PlayerAgent(
+            agent_id="p02",
+            model_router=model_router,
+            persona_key="aggressive_bluffer",
+            persona_router=persona_router,
+        )
+        context = AgentContext(
+            agent_id="p02",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p07"],
+        )
+
+        action, retry = agent.act(context)
+
+        assert isinstance(action, PlayerAction)
+        assert retry.error_code is None
+        assert provider.prompts
+        prompt = provider.prompts[0]
+        assert "人格设定" in prompt
+        assert '"profile_id":"aggressive_bluffer"' in prompt
+        assert '"personality":"dominant_pressurer"' in prompt
+        assert '"speech_style":"aggressive_short"' in prompt
+        assert '"task_style":"pressure_attack"' in prompt
+
+    def test_persona_suspicion_adjustment_requires_nearby_self_reference(self) -> None:
+        model_router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={},
+            providers={"mock": _JsonProvider("unused")},
+        )
+        persona_router = PersonaRouter.from_yaml(
+            "config/personas/jingcheng_style_prototypes.yaml"
+        )
+        persona_router.load_assignments({"p02": "aggressive_bluffer"})
+        agent = PlayerAgent(
+            agent_id="p02",
+            model_router=model_router,
+            persona_key="aggressive_bluffer",
+            persona_router=persona_router,
+        )
+        base_context = AgentContext(
+            agent_id="p02",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            recent_transcript=[{
+                "speaker": "p03",
+                "text": "p02这段发言可以保留，但我怀疑p07。",
+            }],
+        )
+
+        neutral = agent._attach_persona_snapshot(base_context)
+        suspected = agent._attach_persona_snapshot(
+            base_context.model_copy(update={
+                "recent_transcript": [{
+                    "speaker": "p03",
+                    "text": "我明确怀疑p02，他需要回应当前压力。",
+                }],
+            })
+        )
+
+        assert "aggression" not in neutral.persona_snapshot["dynamic_adjustments"]
+        assert suspected.persona_snapshot["dynamic_adjustments"]["aggression"] == 0.2
+
     def test_speech_intent_pipeline_repairs_mixed_text_json(self) -> None:
         json_resp = (
             "我先组织一下发言。"
@@ -722,7 +862,7 @@ class TestPlayerAgentRetryFallback:
 
         assert isinstance(action, PlayerAction)
         assert "我是好人视角" not in action.speech
-        assert "我是p04视角" in action.speech
+        assert action.speech == "我想追问p05，你昨天的站边和今天的投票目标没有对上。"
         assert retry.error_code is None
 
     def test_speech_tool_schema_omits_private_audit_fields(self) -> None:
@@ -742,7 +882,7 @@ class TestPlayerAgentRetryFallback:
         assert "not_voting_reason" not in props
         assert "private_reason" not in props
 
-    def test_night_action_tool_schema_omits_private_intent(self) -> None:
+    def test_single_target_night_action_uses_choice_schema(self) -> None:
         agent = self._make_agent("unused")
         ctx = AgentContext(
             agent_id="p05",
@@ -754,8 +894,9 @@ class TestPlayerAgentRetryFallback:
         props = agent._player_action_tool(ctx)["input_schema"]["properties"]
 
         assert "private_intent" not in props
-        assert "action_type" in props
-        assert "target_id" in props
+        assert "choice" in props
+        assert "action_type" not in props
+        assert "target_id" not in props
         assert "reason" in props
 
     def test_vote_audit_fields_are_preserved_in_trace(self) -> None:
@@ -1921,6 +2062,90 @@ class TestStructuredOutputMetadata:
         assert trace.retry_count == 0
         assert trace.structured_failure_reason is None
 
+    def test_protocol_failure_advances_mode_and_records_recovery_mode(self):
+        provider = ProtocolSequenceProvider()
+        router = ModelRouter(
+            model_profiles={
+                "model": {
+                    "provider": provider.name,
+                    "model": "test",
+                    "allow_text_tool_fallback": True,
+                    "structured_output": {
+                        "mode": "json_schema",
+                        "fallback_modes": ["json_object", "text_json"],
+                    },
+                },
+            },
+            llm_profiles={
+                "profile": {
+                    "default": {
+                        "provider": provider.name,
+                        "model_profile": "model",
+                    },
+                },
+            },
+            player_assignments={"p01": "profile"},
+            providers={provider.name: provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02"],
+        )
+
+        action, retry_info = agent.act(context)
+
+        assert isinstance(action, PlayerAction)
+        assert provider.modes == ["json_schema", "json_object"]
+        assert retry_info.attempt == 2
+        assert action.trace is not None
+        assert action.trace.structured_output_mode == "json_object"
+        assert action.trace.structured_failure_stage is None
+
+    def test_repeat_error_does_not_skip_untried_protocol_modes(self):
+        provider = AlwaysInvalidProtocolProvider()
+        router = ModelRouter(
+            model_profiles={
+                "model": {
+                    "provider": provider.name,
+                    "model": "test",
+                    "allow_text_tool_fallback": True,
+                    "structured_output": {
+                        "mode": "json_schema",
+                        "fallback_modes": ["json_object", "text_json"],
+                    },
+                },
+            },
+            llm_profiles={
+                "profile": {
+                    "default": {
+                        "provider": provider.name,
+                        "model_profile": "model",
+                    },
+                },
+            },
+            player_assignments={"p01": "profile"},
+            providers={provider.name: provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02"],
+        )
+
+        action, retry_info = agent.act(context)
+
+        assert isinstance(action, FallbackAction)
+        assert provider.modes == ["json_schema", "json_object", "text_json"]
+        assert retry_info.early_exit_reason is None
+
     def test_successful_action_has_complete_trace(self):
         """A successful action path populates all structured output fields."""
         router = ModelRouter(
@@ -2868,17 +3093,8 @@ class TestEmptyResponseHintValidatesNoAction:
 class TestMissingToolCallHintAdaptsToTextFallback:
     """D4-4: missing_tool_call hint must respect allow_text_tool_fallback."""
 
-    def test_missing_tool_call_hint_adapts_to_text_fallback(self):
-        """D4-4: model with text fallback gets the adapted hint, not the strict one.
-
-        Pre-fix: when ``_model_text_fallback=True`` and the model
-        returned a result with no tool call (text_fallback_used=False),
-        the agent skipped the branch entirely. When the branch was
-        entered, the hint always said "must use tool call" — which
-        contradicts the model's own configuration. The fix: the hint
-        must mention that plain-text JSON is allowed for fallback
-        models.
-        """
+    def test_text_json_mode_treats_non_json_as_parse_error(self):
+        """Text-JSON models parse text directly instead of inventing a tool failure."""
         from werewolf_agent.model_gateway.router import (
             GenerateResult,
             ModelRouter,
@@ -2949,26 +3165,11 @@ class TestMissingToolCallHintAdaptsToTextFallback:
 
         action, retry = agent.act(ctx)
 
-        # Sanity: the missing_tool_call path was taken.
-        assert retry.error_code == "missing_tool_call", (
-            f"D4-4: expected missing_tool_call retry, got {retry.error_code!r}"
-        )
-        # The hint must NOT use the strict "必须通过... 工具调用" wording
-        # for a model that is allowed to use text fallback. It should
-        # mention that text JSON is acceptable.
-        # The strict version starts with "必须通过 submit_player_action".
+        assert retry.error_code == "parse_error"
         assert "必须通过 submit_player_action 工具调用" not in retry.correction_hint, (
-            "D4-4: missing_tool_call hint for text-fallback-allowed model "
-            "must not use the strict 'must use tool call' wording — the "
-            "model is configured to allow text JSON. "
-            f"Got hint: {retry.correction_hint!r}"
+            "text_json mode must not ask the model to use a tool call"
         )
-        # The hint should mention text JSON / 文本 JSON as acceptable.
-        assert "文本" in retry.correction_hint or "text" in retry.correction_hint.lower(), (
-            "D4-4: missing_tool_call hint for text-fallback-allowed model "
-            "should mention that text JSON is acceptable. "
-            f"Got hint: {retry.correction_hint!r}"
-        )
+        assert "只输出JSON" in retry.correction_hint
 
     def test_missing_tool_call_hint_strict_for_tool_only_models(self):
         """D4-4 regression: tool-only models still get the strict hint.

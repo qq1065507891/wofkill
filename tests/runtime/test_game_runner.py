@@ -117,6 +117,24 @@ class TestGameRunnerConstructor:
         assert registry.get_agent("p01") is not None
         assert registry.get_agent("judge") is None
 
+    def test_agent_registry_wires_shared_persona_router(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        runner = GameRunner(GameRunnerConfig(
+            seed=99,
+            use_agent_registry=True,
+            model_config_path="config/models.yaml",
+            persona_config_path="config/personas/jingcheng_style_prototypes.yaml",
+        ))
+
+        registry = runner._build_runtime_state()["agent_registry"]
+        p01 = registry.get_agent("p01")
+        p02 = registry.get_agent("p02")
+
+        assert p01.persona_key == "logic_leader"
+        assert p02.persona_key == "aggressive_bluffer"
+        assert p01.persona_router is not None
+        assert p01.persona_router is p02.persona_router
+
     def test_probe_tool_call_support_rejects_text_fallback_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from werewolf_agent.model_gateway.router import GenerateResult
 

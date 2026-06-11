@@ -2101,19 +2101,7 @@ def test_wolf_skip_in_handler_only():
 # ---------------------------------------------------------------------------
 
 
-def test_cross_game_hint_uses_player_faction_helper() -> None:
-    """MEM-NEW-3: a hybrid (master=werewolf) whose cross-game
-    reflections include both a werewolf entry and a seer entry
-    must rank the werewolf entry higher (same-faction priority
-    beats other-faction priority). The current_faction passed to
-    _reflection_memory_hints must therefore be 'werewolf', not
-    'good'.
-
-    We exercise the end-to-end path through build_agent_context
-    (not _reflection_memory_hints directly) so the test catches
-    regressions in the inline ternary at context.py:1032-1037
-    that this fix replaces.
-    """
+def test_cross_game_hint_does_not_use_hybrid_master_faction() -> None:
     from werewolf_agent.agents.schemas import TaskType
     from werewolf_agent.core.models import GameState, PlayerState
     from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
@@ -2136,20 +2124,18 @@ def test_cross_game_hint_uses_player_faction_helper() -> None:
         hybrid_master_faction="werewolf",
     )
 
-    # Fake restored_memory with profile (required to enter the
-    # reflection block) and two reflections: one from a werewolf,
-    # one from a seer. Both have the same game_id (priority tie),
-    # so the priority sort decides which appears first.
+    # Same-date losing reflections tie on every public criterion. The
+    # deterministic entry id order must win; hidden master faction must not.
     werewolf_ref = ReflectionEntry(
-        entry_id="r_wolf",
+        entry_id="z_wolf",
         game_id="2025-01-01",
         player_id="p10",
         role="werewolf",
-        faction_won=True,
+        faction_won=False,
         text="wolf-perspective-reflection",
     )
     seer_ref = ReflectionEntry(
-        entry_id="r_seer",
+        entry_id="a_seer",
         game_id="2025-01-01",
         player_id="p11",
         role="seer",
@@ -2186,22 +2172,63 @@ def test_cross_game_hint_uses_player_faction_helper() -> None:
 
     hints = ctx.reflection_memory_hints
     assert hints, "MEM-NEW-3: cross-game hint should be populated for hybrid with past games"
-    # With current_faction == "werewolf" (correct), the werewolf
-    # reflection is same-faction (priority 1) and the seer reflection
-    # is other-faction (priority 0). The werewolf reflection should
-    # appear before the seer reflection in the hint list.
     texts = [h["text"] for h in hints]
     wolf_idx = texts.index("wolf-perspective-reflection") if "wolf-perspective-reflection" in texts else -1
     seer_idx = texts.index("seer-perspective-reflection") if "seer-perspective-reflection" in texts else -1
     assert wolf_idx != -1, f"MEM-NEW-3: werewolf reflection missing from hints: {texts!r}"
     assert seer_idx != -1, f"MEM-NEW-3: seer reflection missing from hints: {texts!r}"
-    assert wolf_idx < seer_idx, (
-        f"MEM-NEW-3: hybrid (master=werewolf) should rank the werewolf "
-        f"reflection higher (same faction) than the seer reflection; "
-        f"got werewolf at {wolf_idx}, seer at {seer_idx}. "
-        f"current_faction must be 'werewolf' (post-fix), not 'good' "
-        f"(pre-fix inline ternary landed on 'good' for hybrid)."
+    assert seer_idx < wolf_idx
+
+
+def test_dead_hybrid_master_context_does_not_reveal_master_faction() -> None:
+    from werewolf_agent.agents.schemas import ActionType, TaskType
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import build_agent_context
+    from werewolf_agent.runtime.graph import _new_engine
+
+    gs = GameState(
+        game_id="hybrid_dead_master_visibility",
+        phase="day",
+        day_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="hybrid", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=False),
+            "p03": PlayerState(id="p03", role="villager", alive=True),
+        },
+        hybrid_master_id="p02",
+        hybrid_master_faction="werewolf",
     )
+
+    context = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+
+    directive = str(context.strategy_directive)
+    assert "狼人阵营" not in directive
+    assert "主人p02已死亡" in directive
+    assert "仍不知道主人的阵营" in directive
+
+
+def test_all_configured_persona_speech_styles_have_runtime_hints() -> None:
+    import yaml
+
+    from werewolf_agent.runtime.context import _SPEECH_STYLE_HINTS
+
+    profiles = yaml.safe_load(
+        Path("config/personas/jingcheng_style_prototypes.yaml").read_text(
+            encoding="utf-8"
+        )
+    )["persona_profiles"]
+    configured_styles = {
+        profile.get("base", {}).get("speech_style", "")
+        for profile in profiles.values()
+    }
+
+    assert configured_styles <= set(_SPEECH_STYLE_HINTS)
 
 # NEW-S02-A: dispatch_for_role receives gs so hybrid wolf-master dispatch works.
 # ---------------------------------------------------------------------------

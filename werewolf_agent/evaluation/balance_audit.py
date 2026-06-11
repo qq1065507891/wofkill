@@ -29,7 +29,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     fallback_count = sum(1 for trace in action_traces if trace.get("fallback_reason"))
     schema_failures = sum(
         1 for trace in action_traces
-        if "Schema validation error" in str(trace.get("parse_error") or "")
+        if trace.get("parse_error") or trace.get("structured_failure_reason")
     )
 
     weak_wolf_plan_kill_count = sum(_weak_wolf_plan_kills(game) for game in games)
@@ -107,12 +107,23 @@ def _weak_wolf_plan_kills(game: dict[str, Any]) -> int:
 def _vote_concentration(event: dict[str, Any]) -> float:
     payload = event.get("payload") or {}
     voters = payload.get("voters")
-    if not isinstance(voters, dict) or not voters:
+    if isinstance(voters, dict) and voters:
+        targets = list(voters.values())
+    else:
+        votes = payload.get("votes")
+        if not isinstance(votes, list) or not votes:
+            return 0.0
+        targets = [
+            vote.get("target")
+            for vote in votes
+            if isinstance(vote, dict) and vote.get("target")
+        ]
+    if not targets:
         return 0.0
     counts: dict[str, int] = {}
-    for target in voters.values():
+    for target in targets:
         counts[target] = counts.get(target, 0) + 1
-    return max(counts.values()) / len(voters)
+    return max(counts.values()) / len(targets)
 
 
 def _seer_day1_exile_rate(games: list[dict[str, Any]]) -> float:

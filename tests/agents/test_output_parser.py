@@ -26,11 +26,75 @@ import pytest
 
 from werewolf_agent.agents.output_parser import (
     clean_reason,
+    ensure_speech_quality_components,
     extract_json_object_candidates,
     parse_action,
+    repair_vote_decision,
     repair_json_text,
 )
 from werewolf_agent.agents.schemas import ActionType
+
+
+def test_speech_postprocessing_does_not_invent_suspicion_or_vote() -> None:
+    speech = (
+        "我是预言家，首夜验了p01，结果是好人。"
+        "今晚计划验p09，如果我死亡警徽给p01。"
+    )
+
+    result = ensure_speech_quality_components(
+        speech=speech,
+        intent="stand_with_seer",
+        target_id="p01",
+        context_own_role="seer",
+        context_agent_id="p06",
+        context_legal_targets=["p01", "p02", "p03"],
+    )
+
+    assert result == speech
+    assert "怀疑p01" not in result
+    assert "投p01" not in result
+
+
+def test_vote_repair_replaces_reason_that_attacks_a_different_target() -> None:
+    repaired = repair_vote_decision(
+        {
+            "choice": "B",
+            "reason": "p12只破不立，我认为今天应该投p12。",
+            "suspect_reason": "p12持续扰乱好人判断。",
+            "private_reason": "投p12符合当前阵营收益。",
+            "confidence": 0.75,
+        },
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p02", "p04", "p05", "p11"],
+        salience_items=[],
+    )
+
+    assert repaired is not None
+    assert repaired["target_id"] == "p04"
+    assert "p04" in repaired["reason"]
+    assert "p12" not in repaired["reason"]
+    assert "p04" in repaired["suspect_reason"]
+    assert "p12" not in repaired["private_reason"]
+
+
+def test_speech_intent_is_preserved_on_player_action() -> None:
+    from werewolf_agent.agents.output_parser import parse_speech_intent_action
+
+    action, error, repaired = parse_speech_intent_action(
+        '{"intent":"stand_with_seer","target_id":"p06",'
+        '"speech":"我站边p06，因为查验和警徽流一致。","reason":"公开站边","confidence":0.8}',
+        context_agent_id="p01",
+        context_own_role="villager",
+        context_legal_targets=["p06"],
+        context_salience_items=[],
+        context_visible_world_state={},
+        context_recent_transcript=[],
+    )
+
+    assert error is None
+    assert action is not None
+    assert action.intent == "stand_with_seer"
+    assert repaired["intent"] == "stand_with_seer"
 
 
 # ---------------------------------------------------------------------------

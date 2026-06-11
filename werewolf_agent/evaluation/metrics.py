@@ -11,6 +11,7 @@ Metrics categories:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from werewolf_agent.evaluation.schemas import (
@@ -34,6 +35,45 @@ from werewolf_agent.evaluation.schemas import (
     RoleMetrics,
     SafetyMetrics,
 )
+
+_CLAIM_ROLE_MAP = {
+    "预言家": "seer",
+    "女巫": "witch",
+    "猎人": "hunter",
+    "白痴": "idiot",
+    "村民": "villager",
+    "平民": "villager",
+    "混血儿": "hybrid",
+    "狼人": "werewolf",
+}
+
+
+def _extract_claim_events(event_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    claims: list[dict[str, Any]] = []
+    for event in event_log:
+        event_type = event.get("type")
+        payload = event.get("payload") or {}
+        if event_type == "claim_role":
+            claims.append(event)
+            continue
+        if event_type not in ("speech", "sheriff_speech", "pk_speech", "tie_pk_speech"):
+            continue
+        text = str(payload.get("text") or event.get("text") or "")
+        speaker = str(payload.get("speaker") or event.get("player_id") or "")
+        match = re.search(
+            r"(?:我是|我跳|我认)\s*(预言家|女巫|猎人|白痴|村民|平民|混血儿|狼人)",
+            text,
+        )
+        if not match or not speaker:
+            continue
+        claims.append({
+            "type": "claim_role",
+            "payload": {
+                "player_id": speaker,
+                "claimed_role": _CLAIM_ROLE_MAP[match.group(1)],
+            },
+        })
+    return claims
 
 
 class MetricsAggregator:
@@ -201,22 +241,31 @@ class MetricsAggregator:
             exiled_ids = {
                 d.get("player_id") for d in result.deaths if d.get("reason") == "exile"
             }
-            claim_events = [
-                e for e in result.event_log if e.get("type") == "claim_role"
-            ]
+            claim_events = _extract_claim_events(result.event_log)
             seer_check_events = [
                 e for e in result.event_log if e.get("type") == "seer_check"
             ]
             potion_events = [
                 e for e in result.event_log
-                if e.get("type") in ("antidote_used", "poison_used")
+                if e.get("type") in (
+                    "antidote_used",
+                    "poison_used",
+                    "witch_antidote_used",
+                    "witch_poison_used",
+                )
             ]
             wolf_kill_events = [
-                e for e in result.event_log if e.get("type") == "wolf_kill"
+                e for e in result.event_log
+                if e.get("type") in ("wolf_kill", "wolf_kill_selected")
             ]
             badge_events = [
                 e for e in result.event_log
-                if e.get("type") in ("badge_transfer", "badge_tear")
+                if e.get("type") in (
+                    "badge_transfer",
+                    "badge_tear",
+                    "badge_transferred",
+                    "badge_torn",
+                )
             ]
 
             # --- Anti-push ---
@@ -307,9 +356,9 @@ class MetricsAggregator:
                 target_faction = result.player_factions.get(target_id, "")
                 potion_type = pe.get("type")
                 potion_total += 1
-                if potion_type == "antidote_used" and target_faction == "good":
+                if potion_type in ("antidote_used", "witch_antidote_used") and target_faction == "good":
                     potion_beneficial += 1
-                elif potion_type == "poison_used" and target_faction == "werewolf":
+                elif potion_type in ("poison_used", "witch_poison_used") and target_faction == "werewolf":
                     potion_beneficial += 1
 
             # --- Seer badge-flow quality ---
@@ -317,7 +366,7 @@ class MetricsAggregator:
                 target_id = se.get("payload", {}).get("target_id", "")
                 alignment = se.get("payload", {}).get("alignment", "")
                 seer_checks_total += 1
-                if alignment == "wolf" and target_id in exiled_ids:
+                if alignment in ("wolf", "werewolf") and target_id in exiled_ids:
                     seer_checks_correct += 1
 
             # --- Wolf consensus quality ---
@@ -332,13 +381,12 @@ class MetricsAggregator:
             # --- Badge decision quality ---
             for be in badge_events:
                 badge_decisions_recorded += 1
-                to_id = be.get("payload", {}).get("to_id", "")
+                payload = be.get("payload", {})
+                to_id = payload.get("to_id") or payload.get("new_sheriff_id", "")
                 if to_id:
                     to_faction = result.player_factions.get(to_id, "")
                     if to_faction == result.winning_faction:
                         badge_beneficial += 1
-                elif be.get("type") == "badge_tear":
-                    badge_beneficial += 1
 
             # --- Speech influence rate ---
             speech_events = [

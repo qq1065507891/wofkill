@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from werewolf_agent.agents.action_contract import ActionContract
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
@@ -491,6 +492,9 @@ class PlayerPromptBuilder:
     #      to learn two priority systems in the same prompt.
     _NEVER_DROP: frozenset[str] = frozenset({
         "_build_strategy_directive",
+        # Persona is compact, per-player state. Dropping it under pressure
+        # collapses distinct agents back toward the same generic prompt.
+        "_build_persona",
         # AUDIT-2-04: retry hint is the LLM's only feedback on the
         # previous turn's failure (error_message snippet +
         # correction_hint). Without it the LLM repeats the same
@@ -503,7 +507,7 @@ class PlayerPromptBuilder:
         "_build_retry_hint",
     })
     _SECTION_PRIORITIES: dict[str, str] = {
-        "_build_persona": "【辅助】",
+        "_build_persona": "【人格】",
         "_build_phase_context": "【辅助】",
         "_build_belief_state": "【辅助】",
         # Phase 1 self-audit (P1-6 label rename): use a distinctive
@@ -535,7 +539,7 @@ class PlayerPromptBuilder:
         # Reflection is more valuable per-token to this player.
         #
         # Drop order under budget pressure:
-        #   1) 辅助 (lowest) — persona, phase_context, belief,
+        #   1) 辅助 (lowest) — phase_context, belief,
         #      public_summary, visible_state, private_memory,
         #      salience, rag_hints, profile, cognition, error_pattern
         #   2) 参考 (middle) — reflection_memory_hints
@@ -593,7 +597,8 @@ class PlayerPromptBuilder:
         # P1-5: build the full prompt first, then enforce the global
         # token budget by dropping lowest-priority sections until the
         # prompt fits. Sections are dropped in priority order:
-        #   可选 (transcript) → 辅助 (persona, profile, ...).
+        #   可选 (transcript) → 辅助 (profile, belief, ...).
+        # Persona is compact and never dropped because it differentiates players.
         # 硬约束 (strategy_directive, retry hint, output contract) is
         # never dropped.
         parts: list[tuple[str, str]] = []
@@ -696,7 +701,7 @@ class PlayerPromptBuilder:
             droppable.append((tier, idx))
         # Sort by tier first, then keep original order within a tier
         # (stable sort). Note: this means within a tier, sections
-        # earlier in the parts list (e.g. persona, phase_context)
+        # earlier in the parts list (e.g. phase_context, belief_state)
         # are dropped before later ones (e.g. retry_hint, output
         # contract). That's the opposite of "drop from the end"
         # but it's deterministic and predictable.
@@ -808,13 +813,10 @@ class PlayerPromptBuilder:
             _GOOD_SIDE = {"villager", "seer", "witch", "hunter", "idiot"}
             _WOLF_SIDE = {"werewolf"}
             role = ctx.own_role or ""
-            # P1-2: hybrid's bucket depends on master_faction. ~50% of
-            # hybrids choose a good-side master and should see the
-            # good-side anti-herd text, not the wolf-side coordination
-            # message. Default to good-side when unset (safe default —
-            # over-warn > silent team-coordination cue leak).
+            # Hybrid never receives hidden-faction coordination advice because
+            # the role does not know its master's faction.
             if role == "hybrid":
-                is_wolf_side = ctx.hybrid_master_faction == "werewolf"
+                is_wolf_side = False
             else:
                 is_wolf_side = role in _WOLF_SIDE
             if is_wolf_side:
@@ -1194,7 +1196,27 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.persona_snapshot:
             return ""
-        return "人格设定: " + self._compact_json(ctx.persona_snapshot)
+        allowed_fields = (
+            "profile_id",
+            "display_name",
+            "personality",
+            "speech_style",
+            "task_style",
+            "effective_params",
+            "dynamic_adjustments",
+            # Backward-compatible fields used by custom persona callers.
+            "tone",
+            "style",
+            "phrase_style",
+        )
+        compact_snapshot = {
+            key: ctx.persona_snapshot[key]
+            for key in allowed_fields
+            if key in ctx.persona_snapshot
+        }
+        if not compact_snapshot:
+            return ""
+        return "人格设定: " + self._compact_json(compact_snapshot)
 
     def _build_recent_transcript(self) -> str:
         ctx = self.context
@@ -1502,11 +1524,15 @@ class PlayerPromptBuilder:
         output_mode = self._select_output_mode()
         legal_actions = [a.value for a in ctx.legal_actions]
         legal_targets = list(ctx.legal_targets)
+        contract = ActionContract.build(
+            output_mode=output_mode,
+            task_type=ctx.task_type,
+            legal_actions=ctx.legal_actions,
+            legal_targets=ctx.legal_targets,
+        )
 
         if output_mode == OutputMode.TARGET_CHOICE:
-            output_fields = "choice、reason、confidence"
-            if ctx.legal_actions == [ActionType.VOTE]:
-                output_fields = "、".join(_OUTPUT_SCHEMA_VOTE_FIELDS)
+            output_fields = "、".join(contract.required_fields)
             lines = [
                 "",
                 "最终输出协议（必须遵守）：",
@@ -1523,12 +1549,13 @@ class PlayerPromptBuilder:
             return "\n".join(lines)
 
         if output_mode == OutputMode.SPEECH_INTENT:
+            output_fields = "、".join(contract.required_fields)
             lines = [
                 "",
                 "最终输出协议（必须遵守）：",
                 "1. 只输出一个发言意图JSON对象；不要输出分析过程、解释、Markdown或多余文本。",
                 "2. JSON必须以{开头、以}结尾，且只能有一个对象。",
-                "3. 最终输出字段：intent、target_id、speech、reason、confidence。",
+                f"3. 最终输出字段：{output_fields}。",
                 "4. target_id没有目标时必须是null，不要写字符串\"null\"。",
             ]
             if legal_targets:

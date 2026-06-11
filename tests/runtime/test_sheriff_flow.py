@@ -316,6 +316,118 @@ class TestSheriffElectionSpeechFallback:
         assert "警徽流" not in speech
         assert "预言家" not in speech
 
+    def test_non_fake_seer_wolf_does_not_receive_badge_flow_instruction(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import agent_sheriff_election_speech
+
+        players = {
+            "p01": PlayerState(id="p01", role="werewolf"),
+            "p02": PlayerState(id="p02", role="seer"),
+            "p03": PlayerState(id="p03", role="werewolf"),
+        }
+        gs = GameState(
+            game_id="sheriff_non_fake_wolf",
+            players=players,
+            phase="sheriff_speech",
+            day_number=1,
+        )
+
+        class CaptureAgent:
+            context = None
+
+            def act(self, context):
+                self.context = context
+                return (
+                    PlayerAction(
+                        action_type=ActionType.SPEECH,
+                        speech="我上警是为了分析当前公开发言和候选人的站边逻辑。",
+                        reason="share public analysis",
+                    ),
+                    RetryInfo(),
+                )
+
+        agent = CaptureAgent()
+
+        class Registry:
+            def get_agent(self, player_id):
+                return agent
+
+        result = agent_sheriff_election_speech(
+            {
+                "game_state": gs,
+                "wolf_team_plan": {"fake_seer": "p03"},
+            },
+            _new_engine(),
+            Registry(),
+            "p01",
+            ["p01", "p02", "p03"],
+        )
+
+        assert result is not None
+        directive_text = str(agent.context.strategy_directive)
+        assert "必须留两个晚上的验人对象" not in directive_text
+        assert "场上有多人跳预言家" not in directive_text
+
+
+class TestSheriffWithdrawalPolicy:
+    def test_true_seer_cannot_withdraw(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import agent_sheriff_withdraw
+
+        gs = GameState(
+            game_id="seer_stays",
+            players={"p01": PlayerState(id="p01", role="seer")},
+            phase="sheriff_speech",
+            day_number=1,
+        )
+
+        class WithdrawAgent:
+            called = False
+
+            def act(self, context):
+                self.called = True
+                return PlayerAction(action_type=ActionType.SHERIFF_WITHDRAW), RetryInfo()
+
+        agent = WithdrawAgent()
+
+        class Registry:
+            def get_agent(self, player_id):
+                return agent
+
+        result = agent_sheriff_withdraw(
+            {"game_state": gs},
+            _new_engine(),
+            Registry(),
+            "p01",
+        )
+
+        assert result == {"withdrew": False, "self_destruct": False}
+        assert agent.called is False
+
+    def test_assigned_fake_seer_cannot_withdraw(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import agent_sheriff_withdraw
+
+        gs = GameState(
+            game_id="fake_seer_stays",
+            players={"p04": PlayerState(id="p04", role="werewolf")},
+            phase="sheriff_speech",
+            day_number=1,
+        )
+
+        class Registry:
+            def get_agent(self, player_id):
+                raise AssertionError("fake seer withdrawal should be blocked before agent call")
+
+        result = agent_sheriff_withdraw(
+            {
+                "game_state": gs,
+                "wolf_team_plan": {"fake_seer": "p04"},
+            },
+            _new_engine(),
+            Registry(),
+            "p04",
+        )
+
+        assert result == {"withdrew": False, "self_destruct": False}
+
 
 
 

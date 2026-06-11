@@ -62,6 +62,56 @@ class TestRequiredSpeechComponents:
         assert result["valid"] is False or "evidence" in str(result.get("missing_fields", []))
 
 
+class TestIntentAwareSpeechRequirements:
+    def test_stand_with_seer_does_not_require_suspicion_or_vote(self):
+        speech = "我明确站边p06，因为他的查验结果和警徽流能够互相印证。"
+
+        result = validate_public_speech(
+            speech,
+            phase="day_discussion",
+            context={"intent": "stand_with_seer", "target_id": "p06"},
+        )
+
+        assert result["valid"] is True
+        assert "suspicion_target" not in result["missing_fields"]
+        assert "vote_leaning" not in result["missing_fields"]
+
+    def test_question_target_requires_target_and_evidence_not_vote(self):
+        speech = "p12，你刚才说信息完整就可信，这个判断的具体依据是什么？"
+
+        result = validate_public_speech(
+            speech,
+            phase="day_discussion",
+            context={"intent": "question_target", "target_id": "p12"},
+        )
+
+        assert result["valid"] is True
+        assert "vote_leaning" not in result["missing_fields"]
+
+    def test_info_synthesis_accepts_multi_player_analysis_without_vote(self):
+        speech = "p03站边p06，p04反对p06；两人的票型和警徽流需要一起核对。"
+
+        result = validate_public_speech(
+            speech,
+            phase="day_discussion",
+            context={"intent": "info_synthesis"},
+        )
+
+        assert result["valid"] is True
+
+    def test_push_vote_still_requires_vote_leaning(self):
+        speech = "p03的发言前后矛盾，我会继续关注。"
+
+        result = validate_public_speech(
+            speech,
+            phase="day_discussion",
+            context={"intent": "push_vote", "target_id": "p03"},
+        )
+
+        assert result["valid"] is False
+        assert "vote_leaning" in result["missing_fields"]
+
+
 class TestHighPressureSpeech:
     """Sheriff, PK, seer speeches have stronger requirements."""
 

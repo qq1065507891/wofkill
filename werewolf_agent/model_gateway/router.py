@@ -12,11 +12,17 @@ import inspect
 import random
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
+
+from werewolf_agent.model_gateway.structured_output import (
+    StructuredOutputMode,
+    StructuredOutputPolicy,
+    resolve_structured_output_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +42,8 @@ class ModelConfig:
     timeout: int = 30
     allow_text_tool_fallback: bool = False
     retry_count: int = 2
+    structured_output_mode: str = "auto"
+    structured_output_fallback_modes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,6 +59,7 @@ class UsageRecord:
     estimated_cost: float = 0.0
     fallback_reason: str | None = None
     success: bool = True
+    structured_output_mode: str = ""
 
 
 @dataclass
@@ -66,6 +75,7 @@ class GenerateResult:
     text_fallback_used: bool = False
     structured_failure_reason: str | None = None
     allow_text_tool_fallback: bool = False
+    structured_output_mode: str = ""
     # R3-MG-2: surface raw HTTP status / error string from the provider so
     # the failure categorizer can attribute 4xx/5xx to ``provider_error``
     # instead of falling through to ``unknown``. Defaults preserve the
@@ -296,6 +306,10 @@ class ModelRouter:
     def probe_tool_call_support(self, agent_id: str, task_type: str) -> dict[str, Any]:
         """Probe whether the resolved provider returns an actual tool call."""
         config, _fallback_provider = self.resolve_config(agent_id, task_type)
+        config = replace(
+            config,
+            structured_output_mode=StructuredOutputMode.NATIVE_TOOL.value,
+        )
         provider = self._providers.get(config.provider)
         if provider is None:
             raise RuntimeError(f"Provider '{config.provider}' not found. Available: {list(self._providers.keys())}")
@@ -364,6 +378,10 @@ class ModelRouter:
         provider_name = source.get("provider", "mock")
         model_profile_id = source.get("model_profile", "")
         model_profile = self._model_profiles.get(model_profile_id, {})
+        structured_policy = StructuredOutputPolicy.from_model_profile(
+            provider=provider_name,
+            model_profile=model_profile,
+        )
 
         config = ModelConfig(
             provider=provider_name,
@@ -374,6 +392,10 @@ class ModelRouter:
             timeout=model_profile.get("timeout", 30),
             allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
             retry_count=int(model_profile.get("retry_count", 2)),
+            structured_output_mode=structured_policy.primary_mode.value,
+            structured_output_fallback_modes=tuple(
+                mode.value for mode in structured_policy.fallback_modes
+            ),
         )
 
         # Fallback config
@@ -384,6 +406,14 @@ class ModelRouter:
 
         return config, fallback_provider
 
+    def resolve_structured_output_policy(
+        self,
+        agent_id: str,
+        task_type: str,
+    ) -> StructuredOutputPolicy:
+        config, _ = self.resolve_config(agent_id, task_type)
+        return StructuredOutputPolicy.from_config(config)
+
     def generate(
         self,
         agent_id: str,
@@ -392,6 +422,7 @@ class ModelRouter:
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        structured_output_mode: str | None = None,
         jitter_seconds: tuple[float, float] = (0.0, 0.8),
     ) -> GenerateResult:
         """Generate via routed provider with fallback.
@@ -402,6 +433,12 @@ class ModelRouter:
         tests to avoid 5-15s of cumulative wait across 12 players.
         """
         config, fallback_provider = self.resolve_config(agent_id, task_type)
+        active_mode = resolve_structured_output_mode(
+            provider=config.provider,
+            configured_mode=structured_output_mode or config.structured_output_mode,
+            allow_text_tool_fallback=config.allow_text_tool_fallback,
+        )
+        config = replace(config, structured_output_mode=active_mode.value)
 
         provider = self._providers.get(config.provider)
         if provider is None:
@@ -418,12 +455,11 @@ class ModelRouter:
             if attempt == 0 and jitter_seconds != (0.0, 0.0):
                 time.sleep(random.uniform(jitter_seconds[0], jitter_seconds[1]))
             try:
-                # For text-fallback models, skip tool_choice on first attempt.
-                # These models rarely return tool_calls reliably; forcing it
-                # wastes retries. Let them respond with free-form text/JSON.
-                effective_tool_choice = tool_choice
-                if config.allow_text_tool_fallback and tool_choice and attempt == 0:
-                    effective_tool_choice = None
+                effective_tool_choice = (
+                    tool_choice
+                    if active_mode == StructuredOutputMode.NATIVE_TOOL
+                    else None
+                )
                 result = _call_provider_generate(
                     provider,
                     prompt,
@@ -433,7 +469,8 @@ class ModelRouter:
                     tool_choice=effective_tool_choice,
                 )
                 result.allow_text_tool_fallback = config.allow_text_tool_fallback
-                _normalize_tool_metadata(result, tool_choice)
+                result.structured_output_mode = active_mode.value
+                _normalize_tool_metadata(result, effective_tool_choice)
                 if result.usage:
                     usage = UsageRecord(
                         agent_id=agent_id,
@@ -444,6 +481,7 @@ class ModelRouter:
                         completion_tokens=result.usage.completion_tokens,
                         latency_ms=result.usage.latency_ms,
                         success=True,
+                        structured_output_mode=active_mode.value,
                     )
                     with self._usage_lock:
                         self._usage_log.append(usage)
@@ -479,12 +517,23 @@ class ModelRouter:
             fb_config = fallback_model_profile or ModelConfig(
                 provider=fallback_provider, model="fallback"
             )
+            fb_mode = resolve_structured_output_mode(
+                provider=fb_config.provider,
+                configured_mode=fb_config.structured_output_mode,
+                allow_text_tool_fallback=fb_config.allow_text_tool_fallback,
+            )
+            fb_config = replace(
+                fb_config,
+                structured_output_mode=fb_mode.value,
+            )
             fb_max_retries = getattr(fb_config, "retry_count", 1) or 0
             for fb_attempt in range(fb_max_retries + 1):
                 try:
-                    fb_effective_tool_choice = tool_choice
-                    if fb_config.allow_text_tool_fallback and tool_choice and fb_attempt == 0:
-                        fb_effective_tool_choice = None
+                    fb_effective_tool_choice = (
+                        tool_choice
+                        if fb_mode == StructuredOutputMode.NATIVE_TOOL
+                        else None
+                    )
                     result = _call_provider_generate(
                         fb_provider,
                         prompt,
@@ -494,7 +543,8 @@ class ModelRouter:
                         tool_choice=fb_effective_tool_choice,
                     )
                     result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
-                    _normalize_tool_metadata(result, tool_choice)
+                    result.structured_output_mode = fb_mode.value
+                    _normalize_tool_metadata(result, fb_effective_tool_choice)
                     if result.usage:
                         usage = UsageRecord(
                             agent_id=agent_id,
@@ -506,6 +556,7 @@ class ModelRouter:
                             latency_ms=result.usage.latency_ms,
                             fallback_reason=f"primary_failed:{_format_exception(primary_error)}",
                             success=True,
+                            structured_output_mode=fb_mode.value,
                         )
                         with self._usage_lock:
                             self._usage_log.append(usage)
@@ -545,6 +596,7 @@ class ModelRouter:
                 model=config.model,
                 fallback_reason=failure_reason,
                 success=False,
+                structured_output_mode=active_mode.value,
             ))
             if len(self._usage_log) > 10000:
                 self._usage_log = self._usage_log[-5000:]
@@ -559,6 +611,7 @@ class ModelRouter:
             or _http_status_from_exception(fallback_error),
             raw_error=_raw_error_from_exception(primary_error)
             or _raw_error_from_exception(fallback_error),
+            structured_output_mode=active_mode.value,
         )
 
     def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:
@@ -587,6 +640,10 @@ class ModelRouter:
                 f"unknown model_profile {model_profile_id!r}"
             )
         model_profile = self._model_profiles.get(model_profile_id, {})
+        structured_policy = StructuredOutputPolicy.from_model_profile(
+            provider=fallback_cfg.get("provider", "mock"),
+            model_profile=model_profile,
+        )
         return ModelConfig(
             provider=fallback_cfg.get("provider", "mock"),
             model=model_profile.get("model", model_profile_id),
@@ -596,6 +653,10 @@ class ModelRouter:
             timeout=model_profile.get("timeout", 10),
             allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
             retry_count=int(model_profile.get("retry_count", 1)),
+            structured_output_mode=structured_policy.primary_mode.value,
+            structured_output_fallback_modes=tuple(
+                mode.value for mode in structured_policy.fallback_modes
+            ),
         )
 
     def _configured_provider_names(self) -> set[str]:

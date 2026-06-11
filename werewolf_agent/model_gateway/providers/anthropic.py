@@ -9,6 +9,10 @@ from typing import Any
 from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
+from werewolf_agent.model_gateway.structured_output import (
+    StructuredOutputMode,
+    resolve_structured_output_mode,
+)
 
 
 class AnthropicProvider(_BaseHttpProvider):
@@ -40,7 +44,16 @@ class AnthropicProvider(_BaseHttpProvider):
         tool_choice: dict[str, Any] | None = None,
     ) -> GenerateResult:
         messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
-        forcing_tool = bool(tool_choice and tool_choice.get("name"))
+        mode = resolve_structured_output_mode(
+            provider=config.provider,
+            configured_mode=config.structured_output_mode,
+            allow_text_tool_fallback=config.allow_text_tool_fallback,
+        )
+        forcing_tool = bool(
+            mode == StructuredOutputMode.NATIVE_TOOL
+            and tool_choice
+            and tool_choice.get("name")
+        )
         # P-N3 (post-review-v2): the legacy text-fallback path injected
         # a literal ``{"`` assistant message to "prime" the model into
         # starting its reply with ``{``. The mechanism was brittle:
@@ -61,9 +74,9 @@ class AnthropicProvider(_BaseHttpProvider):
         }
         if system_prompt:
             payload["system"] = system_prompt
-        if tools and not (config.allow_text_tool_fallback and not forcing_tool):
+        if tools and mode == StructuredOutputMode.NATIVE_TOOL:
             payload["tools"] = tools
-        if tool_choice and not (config.allow_text_tool_fallback and not forcing_tool):
+        if tool_choice and mode == StructuredOutputMode.NATIVE_TOOL:
             payload["tool_choice"] = tool_choice
 
         start = time.monotonic()
@@ -93,14 +106,22 @@ class AnthropicProvider(_BaseHttpProvider):
             text=text,
             provider=self.name,
             model=config.model,
-            tool_call_required=bool(tool_choice),
+            tool_call_required=forcing_tool,
             tool_call_received=tool_call_received,
-            tool_call_name=_anthropic_tool_name(data) or (tool_choice or {}).get("name", ""),
-            text_fallback_used=bool(tools and tool_choice and not tool_call_received and text)
-                or (config.allow_text_tool_fallback and not forcing_tool and bool(text)),
-            structured_failure_reason=(
-                "missing_tool_call" if tools and tool_choice and not tool_call_received else None
+            tool_call_name=(
+                _anthropic_tool_name(data)
+                or ((tool_choice or {}).get("name", "") if forcing_tool else "")
             ),
+            text_fallback_used=(
+                bool(tools and forcing_tool and not tool_call_received and text)
+                or (mode != StructuredOutputMode.NATIVE_TOOL and bool(text))
+            ),
+            structured_failure_reason=(
+                "missing_tool_call"
+                if tools and forcing_tool and not tool_call_received
+                else None
+            ),
+            structured_output_mode=mode.value,
             usage=self._usage(
                 model=config.model,
                 latency_ms=latency_ms,

@@ -860,8 +860,8 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="good",
             event_log=[
-                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
-                {"type": "claim_role", "payload": {"player_id": "player_03", "claimed_role": "witch"}},
+                {"type": "speech", "payload": {"speaker": "player_01", "text": "我是预言家。"}},
+                {"type": "speech", "payload": {"speaker": "player_03", "text": "我是女巫。"}},
             ],
             cognition_snapshots={
                 "player_05": {
@@ -883,8 +883,8 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="good",
             event_log=[
-                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
-                {"type": "claim_role", "payload": {"player_id": "player_03", "claimed_role": "witch"}},
+                {"type": "speech", "payload": {"speaker": "player_01", "text": "我是预言家。"}},
+                {"type": "speech", "payload": {"speaker": "player_03", "text": "我是女巫。"}},
             ],
             cognition_snapshots={
                 "player_05": {
@@ -922,8 +922,8 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="werewolf",
             event_log=[
-                {"type": "claim_role", "payload": {"player_id": "player_01", "claimed_role": "seer"}},
-                {"type": "claim_role", "payload": {"player_id": "player_02", "claimed_role": "seer"}},
+                {"type": "sheriff_speech", "payload": {"speaker": "player_01", "text": "我是预言家。"}},
+                {"type": "sheriff_speech", "payload": {"speaker": "player_02", "text": "我是预言家。"}},
             ],
             deaths=[
                 {"player_id": "player_01", "reason": "exile", "timing": "day_vote", "resolution_batch": "day_1"},
@@ -953,8 +953,8 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="good",
             event_log=[
-                {"type": "antidote_used", "payload": {"witch_id": "player_09", "target_id": "player_05"}},
-                {"type": "poison_used", "payload": {"witch_id": "player_09", "target_id": "player_01"}},
+                {"type": "witch_antidote_used", "payload": {"target_id": "player_05"}},
+                {"type": "witch_poison_used", "payload": {"target_id": "player_01"}},
             ],
         )
         agg.add_result(result)
@@ -968,8 +968,8 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="good",
             event_log=[
-                {"type": "antidote_used", "payload": {"witch_id": "player_09", "target_id": "player_01"}},  # saved wolf
-                {"type": "poison_used", "payload": {"witch_id": "player_09", "target_id": "player_05"}},  # killed good
+                {"type": "witch_antidote_used", "payload": {"target_id": "player_01"}},  # saved wolf
+                {"type": "witch_poison_used", "payload": {"target_id": "player_05"}},  # killed good
             ],
         )
         agg.add_result(result)
@@ -983,7 +983,7 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="good",
             event_log=[
-                {"type": "seer_check", "payload": {"target_id": "player_01", "alignment": "wolf"}},
+                {"type": "seer_check", "payload": {"target_id": "player_01", "alignment": "werewolf"}},
             ],
             deaths=[
                 {"player_id": "player_01", "reason": "exile", "timing": "day_vote", "resolution_batch": "day_1"},
@@ -1000,7 +1000,7 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="werewolf",
             event_log=[
-                {"type": "wolf_kill", "payload": {"target_id": "player_08"}},
+                {"type": "wolf_kill_selected", "payload": {"target_id": "player_08"}},
             ],
             deaths=[
                 {"player_id": "player_08", "reason": "wolf_kill", "timing": "night", "resolution_batch": "night_1"},
@@ -1039,7 +1039,7 @@ class TestAdvancedQualityMetrics:
         result = _make_game_result(
             winning_faction="good",
             event_log=[
-                {"type": "badge_transfer", "payload": {"from_id": "player_08", "to_id": "player_05"}},
+                {"type": "badge_transferred", "payload": {"new_sheriff_id": "player_05"}},
             ],
         )
         agg.add_result(result)

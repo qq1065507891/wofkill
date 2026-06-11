@@ -144,6 +144,12 @@ class TestCompleteLocalGame:
 class TestAPIStartup:
     """Verify API app can be created and basic endpoints respond."""
 
+    @staticmethod
+    def _moderator_session(client) -> str:
+        response = client.post("/auth/login?caller_id=mod1&role=moderator")
+        assert response.status_code == 200
+        return response.json()["token"]
+
     def test_create_app_returns_fastapi_instance(self) -> None:
         from fastapi import FastAPI
         from werewolf_agent.api.app import create_app
@@ -157,9 +163,10 @@ class TestAPIStartup:
 
         app = create_app()
         client = TestClient(app)
+        token = self._moderator_session(client)
 
         # List games endpoint should work
-        response = client.get("/games")
+        response = client.get(f"/games?session_token={token}")
         assert response.status_code == 200
         assert isinstance(response.json(), dict) and "game_ids" in response.json()
 
@@ -169,16 +176,24 @@ class TestAPIStartup:
 
         app = create_app()
         client = TestClient(app)
+        token = self._moderator_session(client)
 
         # Create a game
-        response = client.post("/games", json={})
+        response = client.post(
+            "/games",
+            json={
+                "caller_id": "mod1",
+                "caller_role": "moderator",
+                "session_token": token,
+            },
+        )
         assert response.status_code == 200
         body = response.json()
         game_id = body["game"]["game_id"]
         assert body["game"]["player_count"] == 12
 
         # List games should include the new game
-        response = client.get("/games")
+        response = client.get(f"/games?session_token={token}")
         game_ids = response.json()["game_ids"]
         assert game_id in game_ids
 
@@ -194,9 +209,17 @@ class TestAPIStartup:
         try:
             app = create_app(repository=repo)
             client = TestClient(app)
+            token = self._moderator_session(client)
 
             # Create game — should persist
-            response = client.post("/games", json={})
+            response = client.post(
+                "/games",
+                json={
+                    "caller_id": "mod1",
+                    "caller_role": "moderator",
+                    "session_token": token,
+                },
+            )
             assert response.status_code == 200
             game_id = response.json()["game"]["game_id"]
 

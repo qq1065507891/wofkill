@@ -783,21 +783,9 @@ def ensure_speech_quality_components(
     context_agent_id: str,
     context_legal_targets: list[str],
 ) -> str:
-    target = speech_pressure_target(intent, target_id, context_legal_targets)
-    additions: list[str] = []
-    if not re.search(r"好人|我是.*?(?:村民|预言家|女巫|猎人|p\d{2})", speech):
-        if context_own_role in {"werewolf", "hybrid"}:
-            additions.append(f"我是{context_agent_id}视角。")
-        else:
-            additions.append("我是好人视角。")
-    if target and not re.search(r"(?:怀疑\s*p\d{2}|p\d{2}\s*有问题|投\s*p\d{2})", speech):
-        additions.append(f"我怀疑{target}有问题。")
-    if target and not re.search(r"(?:投|投票|归票|倾向).*?p\d{2}", speech):
-        additions.append(f"我倾向投{target}。")
-    if not re.search(r"矛盾|前后不一|不合理|查杀|查验|警徽流|对跳|票数|之前说|刚才说", speech):
-        additions.append("依据是查验、票型和前后发言矛盾需要继续对上。")
-    if additions:
-        return speech.rstrip("。") + "。" + "".join(additions)
+    # Public speech is semantic output, not a partially filled template.
+    # Structural repair must never invent a stance, suspicion, or vote that
+    # the model did not express.
     return speech
 
 
@@ -864,6 +852,13 @@ def default_not_voting_reason(legal_targets: list[str], target_id: str) -> str:
     return f"暂不投{', '.join(others[:4])}，因为当前可见线索优先指向{target_id}。"
 
 
+def target_consistent_reason(text: str, target_id: str, fallback: str) -> str:
+    mentioned = set(re.findall(r"p\d{2}", text))
+    if mentioned and target_id not in mentioned:
+        return fallback
+    return text
+
+
 def repair_vote_decision(
     data: dict[str, Any],
     legal_actions: list[ActionType],
@@ -876,15 +871,26 @@ def repair_vote_decision(
         return None
 
     summary = vote_candidate_summary(salience_items, target_id)
-    reason = clean_reason(data.get("reason")) or summary
-    suspect_reason = clean_reason(data.get("suspect_reason")) or summary
+    reason = target_consistent_reason(
+        clean_reason(data.get("reason")) or summary,
+        target_id,
+        summary,
+    )
+    suspect_reason = target_consistent_reason(
+        clean_reason(data.get("suspect_reason")) or summary,
+        target_id,
+        summary,
+    )
     standing = clean_reason(data.get("standing_with_seer")) or infer_standing_with_seer(salience_items)
     not_voting = clean_reason(data.get("not_voting_reason")) or default_not_voting_reason(
         legal_targets,
         target_id,
     )
-    private_reason = clean_reason(data.get("private_reason")) or (
-        f"结构化投票修复：在合法候选中选择{target_id}。依据：{reason}"
+    private_fallback = f"结构化投票修复：在合法候选中选择{target_id}。依据：{reason}"
+    private_reason = target_consistent_reason(
+        clean_reason(data.get("private_reason")) or private_fallback,
+        target_id,
+        private_fallback,
     )
     vote_basis = clean_enum_value(
         data.get("vote_basis"),
@@ -1070,6 +1076,7 @@ def parse_speech_intent_action(
         speech=repaired["speech"],
         reason=repaired["reason"],
         confidence=repaired["confidence"],
+        intent=repaired["intent"],
     )
     return action, None, repaired
 

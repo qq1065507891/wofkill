@@ -2128,6 +2128,16 @@ def agent_sheriff_withdraw(
     Returns dict with withdrawal result and self_destruct flag.
     """
     gs: GameState = state["game_state"]
+    player_role = gs.players[candidate_id].role if candidate_id in gs.players else ""
+    wolf_plan = state.get("wolf_team_plan")
+    wolf_assignment = (
+        _get_wolf_role_assignment(wolf_plan, candidate_id)
+        if player_role == "werewolf"
+        else ""
+    )
+    if player_role == "seer" or wolf_assignment == "fake_seer":
+        return {"withdrew": False, "self_destruct": False}
+
     agent = registry.get_agent(candidate_id)
     if agent is None:
         return None
@@ -2168,12 +2178,19 @@ def agent_sheriff_election_speech(
 
     other_candidates = [c for c in all_candidates if c != candidate_id]
 
-    # Badge flow is seer-exclusive. Only seer (or wolf claiming seer) should mention it.
+    # Badge flow is seer-exclusive. Only the true seer or the wolf explicitly
+    # assigned to fake-seer duty should receive this private instruction.
     player_role = gs.players[candidate_id].role if candidate_id in gs.players else ""
-    is_seer_or_claiming = player_role == "seer" or player_role == "werewolf"
+    wolf_plan = state.get("wolf_team_plan")
+    wolf_assignment = (
+        _get_wolf_role_assignment(wolf_plan, candidate_id)
+        if player_role == "werewolf"
+        else ""
+    )
+    uses_seer_protocol = player_role == "seer" or wolf_assignment == "fake_seer"
 
     badge_flow_instruction = ""
-    if is_seer_or_claiming:
+    if uses_seer_protocol:
         badge_flow_instruction = (
             "2) 你的警徽流：必须留两个晚上的验人对象！"
             "格式如'先验X，后验Y'。如果你验到好人，死后警徽给该好人；"
@@ -2181,18 +2198,25 @@ def agent_sheriff_election_speech(
             "警徽流是预言家传递信息的核心机制，必须明确留出两夜验人计划。"
         )
 
-    # Single-sided vs multi-seer context
-    seer_count = sum(1 for c in all_candidates
-                     if gs.players.get(c) and gs.players[c].role in ("seer", "werewolf"))
+    # Single-sided vs multi-seer context is derived only from public speeches.
+    # The current candidate's own private assignment may be included because
+    # this instruction is shown only to that candidate.
+    public_seer_claimers = {
+        candidate
+        for candidate in all_candidates
+        if _has_publicly_claimed_seer(gs, candidate)
+    }
+    if uses_seer_protocol:
+        public_seer_claimers.add(candidate_id)
     seer_context = ""
-    if seer_count >= 2:
+    if len(public_seer_claimers) >= 2:
         seer_context = (
             "场上有多人跳预言家，这是典型的悍跳局面。"
             "真预言家必须坚定立场，用逻辑和验人信息证明自己；"
             "悍跳预言家需要制造合理怀疑，攻击对方的逻辑漏洞。"
         )
     else:
-        if player_role in ("seer", "werewolf"):
+        if uses_seer_protocol:
             seer_context = (
                 "目前警上只有你跳预言家（单边预言家），你的可信度很高。"
                 "要充分利用这一点，留下完整的警徽流，让好人信任你。"
@@ -2306,12 +2330,10 @@ def agent_sheriff_election_speech(
 
     # Wolf: inject role-specific strategy from wolf_team_plan
     if player_role == "werewolf":
-        wolf_plan = state.get("wolf_team_plan")
         wolf_day_directive = _build_wolf_day_speech_directive(gs, candidate_id, wolf_plan)
         # Merge wolf day directive into strategy_directive
         strategy_directive.update(wolf_day_directive)
 
-        wolf_assignment = _get_wolf_role_assignment(wolf_plan, candidate_id)
         if wolf_assignment == "fake_seer":
             strategy_directive["wolf_sheriff_must_claim_seer"] = (
                 "【强制执行】你是团队安排的悍跳预言家！你现在在警上竞选。"
@@ -2350,7 +2372,7 @@ def agent_sheriff_election_speech(
 
     # Reject empty sheriff election speeches
     if not speech_text.strip() or len(speech_text.strip()) < 10:
-        if is_seer_or_claiming:
+        if uses_seer_protocol:
             speech_text = (
                 f"我上警是因为我需要通过警徽流传递关键信息。"
                 f"我的警徽流暂定先看{other_candidates[0] if other_candidates else '待定'}。"

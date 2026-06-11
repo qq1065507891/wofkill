@@ -29,6 +29,8 @@ def build_action_trace(
     parse_error: str | None = None,
     retry_count: int = 0,
     structured_failure_reason: str | None = None,
+    structured_output_mode: str = "",
+    structured_failure_stage: str | None = None,
 ) -> ActionTrace:
     """Build an ActionTrace from the current attempt's state.
 
@@ -62,4 +64,6 @@ def build_action_trace(
         parse_error=parse_error,
         retry_count=retry_count,
         structured_failure_reason=structured_failure_reason,
+        structured_output_mode=structured_output_mode,
+        structured_failure_stage=structured_failure_stage,
     )

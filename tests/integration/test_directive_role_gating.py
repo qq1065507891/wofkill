@@ -163,7 +163,7 @@ PRESENCE: dict[str, set[str]] = {
     "witch": {
         "anti_following_and_peace_night_rule",
         "speech_originality",
-        "witch_speech_constraint",
+        "witch_speech_directive",
     },
     "hunter": {
         "anti_following_and_peace_night_rule",
@@ -203,7 +203,7 @@ ABSENCE: dict[str, set[str]] = {
         "wolf_vote_role_hint", "wolf_vote_target",
         "wolf_team_discussion", "round_focus",
         # other role day-speech
-        "seer_speech_directive", "witch_speech_constraint",
+        "seer_speech_directive", "witch_speech_directive",
         "hunter_speech_directive", "idiot_speech_directive",
         "hybrid_speech_directive", "master_behavior_summary",
         # night-action keys for other roles
@@ -224,7 +224,7 @@ ABSENCE: dict[str, set[str]] = {
         "wolf_kill_instruction", "wolf_vote_strategy",
         "wolf_vote_role_hint", "wolf_vote_target",
         "wolf_team_discussion", "round_focus",
-        "witch_speech_constraint", "hunter_speech_directive",
+        "witch_speech_directive", "hunter_speech_directive",
         "idiot_speech_directive", "hybrid_speech_directive",
         "villager_speech_directive", "master_behavior_summary",
         "witch_night_action", "witch_strategy_hint",
@@ -258,7 +258,7 @@ ABSENCE: dict[str, set[str]] = {
         "wolf_kill_instruction", "wolf_vote_strategy",
         "wolf_vote_role_hint", "wolf_vote_target",
         "wolf_team_discussion", "round_focus",
-        "seer_speech_directive", "witch_speech_constraint",
+        "seer_speech_directive", "witch_speech_directive",
         "idiot_speech_directive", "hybrid_speech_directive",
         "villager_speech_directive", "master_behavior_summary",
         "witch_night_action", "witch_strategy_hint",
@@ -278,7 +278,7 @@ ABSENCE: dict[str, set[str]] = {
         "wolf_kill_instruction", "wolf_vote_strategy",
         "wolf_vote_role_hint", "wolf_vote_target",
         "wolf_team_discussion", "round_focus",
-        "seer_speech_directive", "witch_speech_constraint",
+        "seer_speech_directive", "witch_speech_directive",
         "hunter_speech_directive", "hybrid_speech_directive",
         "villager_speech_directive", "master_behavior_summary",
         "witch_night_action", "witch_strategy_hint",
@@ -298,7 +298,7 @@ ABSENCE: dict[str, set[str]] = {
         "wolf_kill_instruction", "wolf_vote_strategy",
         "wolf_vote_role_hint", "wolf_vote_target",
         "wolf_team_discussion", "round_focus",
-        "seer_speech_directive", "witch_speech_constraint",
+        "seer_speech_directive", "witch_speech_directive",
         "hunter_speech_directive", "idiot_speech_directive",
         "villager_speech_directive",
         "witch_night_action", "witch_strategy_hint",
@@ -309,7 +309,7 @@ ABSENCE: dict[str, set[str]] = {
         "badge_flow_plan", "excluded_counterclaiming_seers",
     },
     "werewolf": {
-        "seer_speech_directive", "witch_speech_constraint",
+        "seer_speech_directive", "witch_speech_directive",
         "hunter_speech_directive", "idiot_speech_directive",
         "hybrid_speech_directive", "villager_speech_directive",
         "master_behavior_summary",

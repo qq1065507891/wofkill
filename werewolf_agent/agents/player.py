@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import asdict
 from enum import Enum
 from html import unescape
 from typing import Any, Protocol
@@ -81,6 +82,13 @@ from werewolf_agent.agents.trace_builder import (
     build_action_trace as _build_action_trace,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
+from werewolf_agent.model_gateway.structured_output import (
+    StructuredFailureStage,
+    StructuredOutputMode,
+    StructuredOutputPolicy,
+    classify_structured_failure,
+)
+from werewolf_agent.persona_runtime.router import GameContext, PersonaRouter
 
 logger = logging.getLogger(__name__)
 
@@ -218,10 +226,12 @@ class PlayerAgent:
         max_retries: int = 3,
         player_name: str | None = None,
         persona_key: str | None = None,
+        persona_router: PersonaRouter | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.player_name = player_name or agent_id
         self.persona_key = persona_key
+        self.persona_router = persona_router
         self.model_router = model_router
         self.validator = validator or DefaultActionValidator()
         self.max_retries = max_retries
@@ -232,6 +242,7 @@ class PlayerAgent:
 
     def act(self, context: AgentContext) -> tuple[PlayerAction | FallbackAction, RetryInfo]:
         """Generate a constrained player action with retry/fallback."""
+        context = self._attach_persona_snapshot(context)
         retry = RetryInfo(max_retries=self.max_retries)
         raw_text = ""
         parsed_action: PlayerAction | None = None
@@ -241,20 +252,22 @@ class PlayerAgent:
         parse_success = False
         parse_error_str: str | None = None
         structured_failure_reason: str | None = None
+        structured_failure_stage: str | None = None
+        structured_output_mode = ""
 
         attempt = 0
         # Pipeline-optimization Task 1: track previous attempt's error signature
-        # ``(error_code, raw_text[:50])`` to short-circuit if the next attempt
-        # produces an identical failure.
-        last_error_signature: tuple[str, str] | None = None
-        # Resolve model config once to check text-fallback support.
-        # Models that reliably return plain-text JSON don't need forced
-        # tool_choice — we let them respond in their native format and
-        # parse the text directly, skipping wasted retries.
+        # ``(error_code, protocol_mode, raw_text[:50])`` to short-circuit only
+        # when the same protocol repeats an identical failure.
+        last_error_signature: tuple[str, str, str] | None = None
+        # Resolve the protocol order once; semantic retries stay on the same
+        # mode while protocol/schema failures may advance through the policy.
         _fb_config, _fb = self.model_router.resolve_config(
             self.agent_id, context.task_type.value,
         )
-        _model_text_fallback = _fb_config.allow_text_tool_fallback
+        structured_policy = StructuredOutputPolicy.from_config(_fb_config)
+        active_structured_mode = structured_policy.primary_mode
+        structured_output_mode = active_structured_mode.value
 
         while attempt < self.max_retries:
             attempt += 1
@@ -268,12 +281,11 @@ class PlayerAgent:
 
             # Build tool list: always include submit_player_action.
             tools = [self._player_action_tool(context)]
-            if _model_text_fallback:
-                # This model returns plain-text JSON natively — no need
-                # to force tool_choice. Let the provider decide format.
-                tool_choice_val = None
-            else:
+            if active_structured_mode == StructuredOutputMode.NATIVE_TOOL:
                 tool_choice_val = {"type": "tool", "name": "submit_player_action"}
+            else:
+                tool_choice_val = None
+            tool_call_required = tool_choice_val is not None
 
             # Generate LLM output
             prompt = self._build_prompt(context, retry)
@@ -285,10 +297,12 @@ class PlayerAgent:
                     system_prompt=self._build_system_prompt(context),
                     tools=tools,
                     tool_choice=tool_choice_val,
+                    structured_output_mode=active_structured_mode.value,
                 )
             except NotImplementedError:
                 # Provider does not support tool_choice
                 structured_failure_reason = "structured_output_unsupported"
+                structured_failure_stage = StructuredFailureStage.PROTOCOL.value
                 fallback = self._fallback_action(context)
                 trace = _build_action_trace(
                     context,
@@ -303,6 +317,8 @@ class PlayerAgent:
                     parse_error="provider does not support tool_choice",
                     retry_count=attempt,
                     structured_failure_reason=structured_failure_reason,
+                    structured_output_mode=structured_output_mode,
+                    structured_failure_stage=structured_failure_stage,
                 )
                 fallback = fallback.model_copy(update={"trace": trace})
                 self.metrics_collector.record(
@@ -316,6 +332,13 @@ class PlayerAgent:
 
             raw_text = result.text or ""
 
+            structured_output_mode = (
+                getattr(result, "structured_output_mode", "")
+                or active_structured_mode.value
+            )
+            tool_call_required = (
+                active_structured_mode == StructuredOutputMode.NATIVE_TOOL
+            )
             tool_call_received = bool(getattr(result, "tool_call_received", False))
 
             if not result.text:
@@ -323,8 +346,10 @@ class PlayerAgent:
                 if failure_reason:
                     if "NotImplementedError" in failure_reason:
                         structured_failure_reason = "structured_output_unsupported"
+                        structured_failure_stage = StructuredFailureStage.PROTOCOL.value
                     else:
                         structured_failure_reason = "model_generation_failed"
+                        structured_failure_stage = StructuredFailureStage.PROVIDER.value
                     failure_category = _categorize_failure_category(
                         latency_ms=_latency_from_result(result),
                         raw_error=failure_reason,
@@ -355,6 +380,8 @@ class PlayerAgent:
                         parse_error=failure_reason,
                         retry_count=attempt,
                         structured_failure_reason=structured_failure_reason,
+                        structured_output_mode=structured_output_mode,
+                        structured_failure_stage=structured_failure_stage,
                     )
                     fallback = fallback.model_copy(update={"trace": trace})
                     self.metrics_collector.record(
@@ -418,16 +445,22 @@ class PlayerAgent:
                         f"{timeout_hint}"
                     ),
                 )
+                structured_failure_reason = "empty_response"
+                structured_failure_stage = StructuredFailureStage.PROTOCOL.value
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
+                    structured_output_mode=structured_output_mode,
                 )
                 if should_short_circuit:
                     break
                 continue
 
             allow_text_tool_fallback = bool(
-                getattr(result, "allow_text_tool_fallback", False)
-                and getattr(result, "text_fallback_used", False)
+                active_structured_mode != StructuredOutputMode.NATIVE_TOOL
+                or (
+                    getattr(result, "allow_text_tool_fallback", False)
+                    and getattr(result, "text_fallback_used", False)
+                )
             )
             if (
                 tool_call_required
@@ -438,26 +471,12 @@ class PlayerAgent:
                     getattr(result, "structured_failure_reason", None)
                     or "missing_tool_call"
                 )
+                structured_failure_stage = StructuredFailureStage.PROTOCOL.value
                 parse_error_str = "missing required tool call: submit_player_action"
-                # D4-4: branch the hint on `_model_text_fallback`. For
-                # text-fallback-allowed models, the strict "must use
-                # tool call" wording contradicts the model's own
-                # configuration — the model is allowed to emit plain-text
-                # JSON when no tool schema is available. The adapted
-                # hint mentions that text JSON is acceptable as a
-                # fallback, while still preferring a tool call.
-                if _model_text_fallback:
-                    correction_hint = (
-                        "优先通过 submit_player_action 工具调用提交结构化参数；"
-                        "如果模型没有 tool schema 或工具调用不可用，允许"
-                        "提交纯文本 JSON（action_type、target_id、speech、"
-                        "reason、confidence 等字段）。"
-                    )
-                else:
-                    correction_hint = (
-                        "必须通过 submit_player_action 工具调用提交结构化参数；"
-                        "不要把JSON写在普通文本内容里。"
-                    )
+                correction_hint = (
+                    "必须通过 submit_player_action 工具调用提交结构化参数；"
+                    "不要把JSON写在普通文本内容里。"
+                )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
@@ -465,8 +484,13 @@ class PlayerAgent:
                     error_message=parse_error_str,
                     correction_hint=correction_hint,
                 )
+                active_structured_mode = structured_policy.next_mode(
+                    active_structured_mode,
+                    structured_failure_reason,
+                )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
+                    structured_output_mode=structured_output_mode,
                 )
                 if should_short_circuit:
                     break
@@ -500,18 +524,34 @@ class PlayerAgent:
             parsed_action = action
             if parse_error:
                 parse_error_str = parse_error
+                structured_failure_reason = (
+                    "schema_validation"
+                    if parse_error.startswith("Schema validation error:")
+                    else "parse_error"
+                )
+                failure_stage = classify_structured_failure(
+                    structured_failure_reason
+                )
+                structured_failure_stage = (
+                    failure_stage.value if failure_stage else None
+                )
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
-                    error_code="parse_error",
+                    error_code=structured_failure_reason,
                     error_message=parse_error,
                     correction_hint=(
                         "只输出JSON，不要解释、不要Markdown代码块。必须包含action_type、target_id、speech、"
                         "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
                     ),
                 )
+                active_structured_mode = structured_policy.next_mode(
+                    active_structured_mode,
+                    structured_failure_reason,
+                )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
+                    structured_output_mode=structured_output_mode,
                 )
                 if should_short_circuit:
                     break
@@ -525,6 +565,8 @@ class PlayerAgent:
                 context.legal_actions, context.legal_targets,
             )
             if not valid:
+                structured_failure_reason = "illegal_action"
+                structured_failure_stage = StructuredFailureStage.SEMANTIC.value
                 # P3-7: indirect the hint — don't expose the full enum
                 # list (LLM was copying the hint verbatim into the
                 # action_type field, then the validator rejected it
@@ -544,12 +586,15 @@ class PlayerAgent:
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
+                    structured_output_mode=structured_output_mode,
                 )
                 if should_short_circuit:
                     break
                 continue
             speech_quality_err = self._speech_quality_error(context, action)
             if speech_quality_err:
+                structured_failure_reason = "speech_quality"
+                structured_failure_stage = StructuredFailureStage.SEMANTIC.value
                 # P1-S6 (residual): error_message keeps the full field-missing
                 # enumeration (for the audit log + prompt snippet via
                 # _build_retry_hint), but correction_hint is a short
@@ -576,12 +621,15 @@ class PlayerAgent:
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
+                    structured_output_mode=structured_output_mode,
                 )
                 if should_short_circuit:
                     break
                 continue
             vote_quality_err = self._vote_quality_error(context, action)
             if vote_quality_err:
+                structured_failure_reason = "vote_quality"
+                structured_failure_stage = StructuredFailureStage.SEMANTIC.value
                 # P3-3: executable hint — g_3528592081 trace showed the
                 # LLM was copying the meta-description into the vote
                 # reason field.  The new hint names SPECIFIC public
@@ -604,6 +652,7 @@ class PlayerAgent:
                 )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
+                    structured_output_mode=structured_output_mode,
                 )
                 if should_short_circuit:
                     break
@@ -620,6 +669,7 @@ class PlayerAgent:
                 tool_call_received=tool_call_received,
                 parse_success=parse_success,
                 retry_count=attempt,
+                structured_output_mode=structured_output_mode,
             )
             # P3-G3223805846-1: 记录达到成功一共重试了几次。attempt 是 1-indexed
             # （首次尝试 attempt=1，无重试），所以 retries = attempt - 1。
@@ -659,6 +709,8 @@ class PlayerAgent:
             parse_error=parse_error_str,
             retry_count=attempt,
             structured_failure_reason=structured_failure_reason,
+            structured_output_mode=structured_output_mode,
+            structured_failure_stage=structured_failure_stage,
         )
         fallback = fallback.model_copy(update={"trace": trace})
         self.metrics_collector.record(
@@ -669,6 +721,53 @@ class PlayerAgent:
             retry_count=attempt,
         )
         return fallback, retry
+
+    def _attach_persona_snapshot(self, context: AgentContext) -> AgentContext:
+        """Resolve the per-turn persona before any prompt is rendered."""
+        if context.persona_snapshot or not self.persona_key or self.persona_router is None:
+            return context
+
+        visible = context.visible_world_state or {}
+        alive_players = set(visible.get("alive_players") or [])
+        wolf_teammates = set(visible.get("wolf_teammates") or [])
+        public_fragments = [
+            str(item.get("text") or "")
+            for item in context.recent_transcript
+            if isinstance(item, dict)
+        ]
+        public_fragments.append(json.dumps(context.strategy_directive, ensure_ascii=False))
+        player_id = re.escape(context.agent_id)
+        suspicion_pattern = re.compile(
+            rf"(?:(?:怀疑|质疑|施压).{{0,8}}{player_id}|"
+            rf"{player_id}.{{0,8}}(?:可疑|狼面|有问题|矛盾|需要回应|承受压力))"
+        )
+        player_is_suspected = any(
+            suspicion_pattern.search(fragment)
+            for fragment in public_fragments
+        )
+        teammate_exiled = bool(
+            context.own_role == "werewolf"
+            and alive_players
+            and any(teammate not in alive_players for teammate in wolf_teammates)
+        )
+        snapshot = self.persona_router.resolve(
+            self.agent_id,
+            context.task_type.value,
+            GameContext(
+                phase=context.phase,
+                day_number=context.day_number,
+                night_number=context.night_number,
+                player_is_suspected=player_is_suspected,
+                teammate_exiled=teammate_exiled,
+                has_badge=visible.get("sheriff_id") == context.agent_id,
+                own_role=context.own_role or "",
+                alive=not alive_players or context.agent_id in alive_players,
+            ),
+        )
+        data = asdict(snapshot)
+        data.pop("agent_id", None)
+        data.pop("base_params", None)
+        return context.model_copy(update={"persona_snapshot": data})
 
     def _latest_generation_failure_reason(self) -> str | None:
         get_usage_log = getattr(self.model_router, "get_usage_log", None)
@@ -687,14 +786,16 @@ class PlayerAgent:
         retry: RetryInfo,
         raw_text: str,
         attempt: int,
-        last_signature: tuple[str, str] | None,
-    ) -> tuple[bool, tuple[str, str] | None]:
+        last_signature: tuple[str, str, str] | None,
+        *,
+        structured_output_mode: str = "",
+    ) -> tuple[bool, tuple[str, str, str] | None]:
         """Pipeline-optimization Task 1: detect repeated retry failures.
 
-        When two consecutive attempts produce the same ``(error_code,
-        raw_text[:50])`` signature the LLM is almost certainly stuck — further
-        retries waste tokens. This helper mutates ``retry.early_exit_reason``
-        in place on a match and returns ``(should_break, updated_signature)``.
+        When two consecutive attempts in the same structured-output mode
+        produce the same ``(error_code, mode, raw_text[:50])`` signature,
+        the LLM is almost certainly stuck. A protocol change gets its own
+        attempt even when the returned text is identical.
 
         Skill-tool nudges (where ``retry.error_code`` is ``None``) bypass the
         check so the existing skill-skip retry budget is preserved.
@@ -702,7 +803,11 @@ class PlayerAgent:
         if retry.error_code is None:
             return False, last_signature
         raw_text_snippet = (raw_text or "")[:50]
-        current_sig: tuple[str, str] = (retry.error_code, raw_text_snippet)
+        current_sig = (
+            retry.error_code,
+            structured_output_mode,
+            raw_text_snippet,
+        )
         if last_signature is not None and last_signature == current_sig:
             retry.early_exit_reason = (
                 f"repeat_error_signature: {retry.error_code} on attempts "
@@ -857,7 +962,18 @@ class PlayerAgent:
     # ── Delegated to tool_schema.py ──
 
     def _player_action_tool(self, context: AgentContext) -> dict[str, Any]:
-        return _tool_impl(context.legal_actions, context.legal_targets, context.task_type)
+        output_mode = _select_output_mode(
+            legal_actions=context.legal_actions,
+            legal_targets=context.legal_targets,
+            task_type=context.task_type,
+            speech_intent_tasks=self._SPEECH_INTENT_TASKS,
+        )
+        return _tool_impl(
+            context.legal_actions,
+            context.legal_targets,
+            context.task_type,
+            output_mode,
+        )
 
     def _vote_audit_tool_properties(self) -> dict[str, Any]:
         return _vote_audit_impl()

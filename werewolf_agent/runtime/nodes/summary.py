@@ -28,6 +28,15 @@ from werewolf_agent.runtime.nodes._shared import (
 logger = logging.getLogger(__name__)
 
 
+def _sleep_between_agent_calls(state: RuntimeState, *, default_ms: int) -> None:
+    """Apply the shared runtime delay convention between sequential calls."""
+    delay_ms = state.get("agent_call_delay_ms", -1)
+    if delay_ms == 0:
+        delay_ms = default_ms
+    if delay_ms > 0:
+        time.sleep(delay_ms / 1000.0)
+
+
 def _route_after_summarize(state: RuntimeState) -> str:
     """Route to sheriff_endorse if sheriff exists, otherwise day_vote."""
     gs: GameState = state["game_state"]
@@ -75,9 +84,8 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
     positions: dict[str, str] = {}
     summarizers: list[str] = [pid for pid, p in gs.players.items() if p.alive]
     for i, pid in enumerate(summarizers):
-        # 10s gap between LLM calls (serial, no concurrency)
         if i > 0:
-            time.sleep(10)
+            _sleep_between_agent_calls(state, default_ms=10000)
         summary_text = ""
         try:
             registry = state.get("agent_registry")
@@ -232,11 +240,6 @@ def summarize_context(state: RuntimeState) -> dict[str, Any]:
         "badge_state": gs.sheriff_badge_state,
     }
 
-    # Per-player position summaries
-    discussion = state.get("discussion_positions") or {}
-    if discussion:
-        summary_parts["position_summary"] = discussion
-
     event = GameEvent(
         type="context_summary",
         payload={"visibility": "public", **summary_parts},
@@ -267,9 +270,8 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
     # Build per-player reflection via agent calls when registry is available
     reflection_entries: list[dict[str, Any]] = []
     for i, (pid, player) in enumerate(gs.players.items()):
-        # 20s between reflection LLM calls to avoid overwhelming the API at game end
         if i > 0:
-            time.sleep(20)
+            _sleep_between_agent_calls(state, default_ms=20000)
         reflection_text = ""
         try:
             result = _dispatch_agent(state, _agent_reflection, pid)

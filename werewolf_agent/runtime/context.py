@@ -61,6 +61,15 @@ _SPEECH_STYLE_HINTS = {
     "structured_logical": "用严谨的逻辑推理链分析场上信息，像法官一样条理清晰地展示判断依据。",
     "aggressive_short": "用简短犀利、一针见血的质疑制造压力，不需要长篇大论。",
     "moderate_calm": "用平和沉稳的语气，像旁观者一样冷静梳理场上各方的观点。",
+    "confident_fake_claim": "表达坚定、自信、带有权威感，即使受到质疑也维持完整叙事并主动反压。",
+    "subtle_helpful": "表面温和协作，先补充细节和可验证信息，再含蓄地引导讨论方向。",
+    "emotional_vivid": "允许鲜明情绪和生活化表达，但最终要落回一个可以核对的判断依据。",
+    "humorous_distracting": "用轻松、机敏和适量反问制造记忆点，同时避免让玩笑取代有效分析。",
+    "evidence_based": "优先引用公开事件、原话和票型，用复盘式表达区分事实、推测与结论。",
+    "brief_pointed": "少说套话，只抓一个关键细节，短句表达明确判断和后续观察点。",
+    "mostly_quiet_then_explosive": "平时克制简短，发现关键矛盾时集中输出完整证据链并给出强判断。",
+    "structured_slotting": "按玩家位置或信息链分组盘点，比较各组关系后再给出嫌疑排序。",
+    "adaptive_varied": "根据局势切换长短、强弱和分析角度，避免连续使用同一种句式。",
     "emotional_intuitive": "用感性直觉的方式判断人，从'感觉不对'出发再找逻辑支撑。",
     "dramatic_theatrical": "用夸张、戏剧化的表达吸引注意力，善用比喻和反问。",
     "quiet_analytical": "不声不响地默默分析，发言内容重质不重量，专注关键细节。",
@@ -1239,15 +1248,14 @@ def build_agent_context(
     belief_state = None
     alerts: list[Any] = []
 
-    # Hybrid: when master is dead, provide faction-guidance
+    # Hybrid knows the master id, but never the master's hidden faction.
     if player.role == "hybrid" and gs.hybrid_master_id:
         master = gs.players.get(gs.hybrid_master_id)
         if master and not master.alive:
-            faction_label = "好人" if gs.hybrid_master_faction == "good" else "狼人"
             strategy_directive["hybrid_master_dead"] = (
                 f"你的主人{gs.hybrid_master_id}已死亡。"
-                f"你现在以{faction_label}阵营身份继续。"
-                f"你现在等同于村民——用分析而非技能帮助阵营。"
+                "你的胜利绑定仍按主人的原始阵营结算，但你仍不知道主人的阵营。"
+                "继续根据主人的公开行为和场上信息独立判断。"
             )
 
     try:
@@ -1294,7 +1302,9 @@ def build_agent_context(
         }
 
         # -- Contradiction detection --
-        contradiction_engine = ContradictionEngine()
+        contradiction_engine = ContradictionEngine(
+            role_capacities=engine.ruleset.raw.get("role_distribution"),
+        )
         alerts = contradiction_engine.detect(world_state.facts, gs.day_number)
 
         for alert in alerts:
@@ -1416,7 +1426,7 @@ def build_agent_context(
                     from werewolf_agent.memory.store import MemoryStore
                     current_faction = MemoryStore._player_faction(
                         current_role,
-                        master_faction=gs.hybrid_master_faction,
+                        master_faction=None,
                     )
                     reflection_memory_hints = _reflection_memory_hints(
                         all_refs, current_role, current_faction

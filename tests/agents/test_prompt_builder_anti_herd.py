@@ -206,22 +206,11 @@ class TestHybridMasterFaction:
             f"herd text. Prompt: {prompt!r}"
         )
 
-    def test_hybrid_wolf_master_receives_wolf_side_text(self):
-        """P1-2: hybrid with wolf-side master still sees wolf text.
-
-        Regression — the P1-K6 wolf-side hybrid behavior must
-        continue to apply when the master is actually a wolf.
-        """
+    def test_hybrid_wolf_master_does_not_receive_hidden_wolf_side_text(self):
         ctx = _make_hybrid_vote_ctx(master_faction="werewolf")
         prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-        assert "狼队抱团是正常策略" in prompt, (
-            "hybrid with wolf master should receive the wolf-side "
-            f"text. Prompt: {prompt!r}"
-        )
-        assert "反跟票" not in prompt, (
-            "hybrid with wolf master must NOT receive the good-side "
-            f"anti-herd text. Prompt: {prompt!r}"
-        )
+        assert "狼队抱团是正常策略" not in prompt
+        assert "反跟票" in prompt
 
     def test_hybrid_master_faction_unset_defaults_to_good_side(self):
         """P1-2: when master_faction is unset, default to good-side.
