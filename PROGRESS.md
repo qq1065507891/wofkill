@@ -4,14 +4,49 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **rag-live-prompt-card-rendering** — 2026-06-14 (COMPLETE)
-- Active task: RAG live prompt 已从 compact JSON 摘要改为中文案例卡片；检索、审计字段和安全白名单保持不变
+- Current phase: **rag-v2-transferable-knowledge** — 2026-06-15 (COMPLETE)
+- Active task: RAG 已迁移到 V2 可迁移战术知识 schema；检索、向量索引、去重、live prompt 和 bundled seeds 均走 tactical frame
 - Task owner: Codex development session
-- Last updated: 2026-06-14
+- Last updated: 2026-06-15
+- **本次新增 (rag-v2-transferable-knowledge)**: 新增 `RAGTacticalFrame` / `schema_version` / `tactical_frame`，旧持久化数据缺失 `schema_version` 时按 legacy V1 加载；新增共享 tactical text helper，并让 reranker、vector indexing、dedup、prompt renderer、`PlayerPromptBuilder` 使用同一套 prompt-safe V2 字段；27 条 bundled RAG seed 已全部迁移为显式 V2 tactical frame。
 - **本次新增 (rag-live-prompt-card-rendering)**: `知识库提示` 不再把 `title/summary/key_decisions` 作为 JSON 数组直接注入，而是渲染为“案例摘要 / 可借鉴原则 / 使用前检查 / 禁止套用”的中文案例卡片；仍保留 RAG 玩家 ID/战术不可直接套用的前置警告与尾部参考提醒。
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## rag-v2-transferable-knowledge — 2026-06-15 (已完成)
+
+**背景**:
+
+1. 旧 RAG 以 `summary/key_decisions` 为核心，适合审计但不适合长期给玩家注入“可迁移战术知识”。
+2. 只改 live prompt 呈现不够；检索、向量索引、去重和 prompt 渲染必须使用同一套语义字段，否则会出现“检索按摘要命中、提示按战术卡使用”的漂移。
+3. bundled seed 需要一次性迁移到显式 V2，legacy fallback 只服务旧持久化数据，不能成为新数据的默认形态。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| RAG schema | `RAGEntry` 缺少可迁移战术框架，V2/legacy 边界不明确 | 新增 `RAGTacticalFrame`、`schema_version`、`tactical_frame`；V2 必须有完整 frame，缺失 schema 的持久化 dict 按 V1 加载 |
+| 共享文本 | 检索、prompt、去重各自拼接 `title/summary/key_decisions` | 新增 `werewolf_agent.rag.tactical_text`，统一生成 prompt-safe frame、检索文本和 V2 prompt dict |
+| 安全校验 | V2 新字段可能绕过玩家 ID、禁用 token、规则真相过滤 | `CaseIngester` 与 `load_rag_entries()` 对 tactical frame 全字段执行同一套 prompt-visible 安全校验 |
+| 检索/向量 | reranker/vector/dedup 仍依赖 legacy 摘要，且 vector hit 可能绕过 live metadata 过滤 | reranker、vector indexing、dedup 改用 tactical retrieval text；vector candidates 进入 live hints 前应用 role/phase/ruleset/visibility 过滤 |
+| live prompt | RAG live prompt 不能继续输出 `summary/key_decisions` JSON 摘要 | `prompt_renderer` 与 `PlayerPromptBuilder` 只渲染 V2 prompt-safe 字段：适用局面、可迁移原则、适用条件、不适用信号、本局参考方式、误用风险 |
+| seed 数据 | 27 条 bundled seed 仍是隐式 legacy | `config/rag_seeds/seed_entries.yaml` 全部显式 `schema_version: 2` 并补齐 `tactical_frame`，保留 legacy `summary/key_decisions/metadata` |
+
+**提交**:
+
+- `be14088 feat: add rag v2 tactical frame schema`
+- `a77ef6f feat: load and validate rag v2 entries`
+- `a304fb0 feat: route rag retrieval through tactical text`
+- `4df6cdd feat: render rag v2 tactical cards`
+- `ff0e74c data: migrate rag seeds to v2 tactical frames`
+
+**验证**:
+
+- 已通过 `python -m pytest tests/rag/test_schemas.py tests/rag/test_ingestion.py tests/rag/test_prompt_renderer.py tests/rag/test_rag.py tests/rag/test_rag_hardening.py tests/rag/test_knowledge_service.py tests/agents/test_prompt_builder.py tests/runtime/test_context.py tests/storage/test_storage.py tests/integration/test_e2e_info_leak.py tests/integration/test_final_delivery.py -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp E:\NLP\agent\wofkill\.pytest_tmp` — **605 passed**。
+- 已通过 `python -m compileall -q werewolf_agent tests`。
+- 已通过 `git diff --check`。
+- 两阶段子代理审查已完成：规格符合度 APPROVED，代码/数据质量 APPROVED。
 
 ## rag-live-prompt-card-rendering — 2026-06-14 (已完成)
 
