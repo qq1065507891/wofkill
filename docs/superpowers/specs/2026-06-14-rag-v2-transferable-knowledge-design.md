@@ -38,8 +38,15 @@ compatibility to load old persisted entries.
 
 ## V2 Entry Schema
 
-`RAGEntry` remains the stored top-level object, but gains a required V2 tactical
-frame for new entries:
+`RAGEntry` remains the stored top-level object, but gains a V2 tactical frame.
+The frame is optional at the type level only to support legacy persisted data.
+The invariant is explicit:
+
+- `schema_version == 2` requires a complete `tactical_frame`.
+- missing `schema_version` is treated as legacy `schema_version == 1`.
+- `schema_version == 1` may have `tactical_frame is None`, but every live or
+  retrieval path must call the shared fallback helper before using prompt-visible
+  content.
 
 ```python
 class RAGTacticalFrame(BaseModel):
@@ -55,7 +62,7 @@ class RAGTacticalFrame(BaseModel):
 
 - `entry_id`
 - `title`
-- `tactical_frame: RAGTacticalFrame`
+- `tactical_frame: RAGTacticalFrame | None`
 - `summary: str = ""`
 - `key_decisions: list[str] = []`
 - `short_quotes: list[str] = []`
@@ -65,7 +72,12 @@ class RAGTacticalFrame(BaseModel):
 
 `summary` and `key_decisions` are retained only for compatibility, audit, and
 legacy storage loading. New seed entries must set `schema_version: 2` and a
-complete `tactical_frame`.
+complete `tactical_frame`. A `RAGEntry` model validator should reject any V2
+entry whose frame is missing or incomplete.
+
+`persistence.load_rag_entries()` should normalize incoming dicts before
+constructing `RAGEntry`: if `schema_version` is absent, inject
+`schema_version=1`. It must not auto-upgrade stored legacy data to V2 in-place.
 
 ## Hit And Prompt Shape
 
@@ -89,8 +101,8 @@ The live prompt slim renderer should return only prompt-safe fields:
 }
 ```
 
-For migrated legacy entries without an authored frame, the renderer may create
-a conservative frame from legacy fields:
+For migrated legacy entries without an authored frame, a shared helper should
+create a conservative prompt-safe frame from legacy fields:
 
 - `situation_signature`: role, phase, and tags from metadata
 - `transferable_lesson`: legacy summary
@@ -100,11 +112,20 @@ a conservative frame from legacy fields:
 - `misuse_risk`: `误把历史案例当成本局事实或直接套用案例动作。`
 
 This fallback exists for persisted data only. Bundled seed data should not rely
-on it.
+on it. The fallback must live in one shared helper, not in `PlayerPromptBuilder`
+alone:
+
+- `get_prompt_tactical_frame(entry_or_hit) -> RAGTacticalFrame | None`
+- `build_rag_retrieval_text(entry_or_hit) -> str`
+
+The retriever, reranker document construction, vector indexing, prompt renderer,
+and deduplication should use these helpers so retrieval scores on the same
+concepts that the live prompt displays.
 
 ## Retrieval Text
 
-Retriever and reranker input should score on the tactical frame:
+Retriever and reranker input should score on the tactical frame through
+`build_rag_retrieval_text()`:
 
 ```text
 title
@@ -116,11 +137,16 @@ recommended_use
 metadata tags
 ```
 
-Legacy `summary` and `key_decisions` are appended only when no tactical frame is
-available. This keeps new retrieval aligned with what the live prompt will show.
+Legacy `summary` and `key_decisions` are used only inside the shared fallback
+when no tactical frame is available. This keeps new retrieval aligned with what
+the live prompt will show.
 
 Vector indexing in `RAGKnowledgeService` should use the same tactical text
 helper, not a separate hand-built string.
+
+Near-duplicate filtering in `dedup_hits_by_similarity()` should also tokenize
+the shared tactical text, not `title + summary`, because V2 summaries may be
+empty or purely legacy audit text.
 
 ## Live Prompt Rendering
 
@@ -152,6 +178,12 @@ If a V2 field is missing in a legacy fallback, render the fallback text rather
 than dropping the whole RAG hint. If no prompt-safe tactical content remains,
 drop that hint.
 
+`prompt_renderer.hits_to_prompt_lines()` must emit V2 prompt-safe fields.
+`PlayerPromptBuilder._slim_rag_hint_items()` must whitelist the same V2 fields;
+otherwise the builder will strip the fields before `_render_rag_hint_cards()`
+can use them. Tests must cover V2-only `ctx.rag_hints` with no legacy
+`summary/key_decisions`.
+
 ## Seed Data Migration
 
 `config/rag_seeds/seed_entries.yaml` currently has 27 entries. All bundled seeds
@@ -167,6 +199,10 @@ Migration rules:
    misuse risk.
 4. Do not put specific player IDs (`p01` style), hidden role truth, or rule
    adjudication claims in any V2 field.
+
+`seed_data._build_entry()` must parse and pass through `content_type`,
+`schema_version`, and `tactical_frame`. Tests should assert loaded
+`RAGEntry` objects preserve these values, not only that raw YAML contains them.
 
 ## Validation
 
@@ -192,6 +228,13 @@ The validation should inspect:
 - tactical_frame.recommended_use
 - tactical_frame.misuse_risk
 - metadata tags
+
+Repository-loaded data needs the same safety boundary. Since
+`RAGKnowledgeService._load_entries()` currently calls `load_rag_entries()` and
+then may retrieve entries without `CaseIngester.ingest()`, `load_rag_entries()`
+or a service-load validation step must reject persisted entries whose
+prompt-visible fields contain forbidden player IDs, rule-truth phrases, or
+forbidden keywords. Add a regression test with a malicious persisted V2 frame.
 
 ## Persistence And Migration
 
@@ -219,6 +262,12 @@ Add or update tests covering:
    `title/summary/key_decisions` JSON.
 8. Live prompt still strips audit-only metadata.
 9. Legacy fallback renders safe cards when tactical frame is absent.
+10. `PlayerPromptBuilder._slim_rag_hint_items()` preserves V2-only prompt fields.
+11. `seed_data.create_seed_entries()` preserves `content_type`,
+    `schema_version`, and `tactical_frame` from YAML.
+12. Repository-loaded malicious V2 entries are rejected before live retrieval.
+13. Dedup uses tactical text, so two V2 hits with different legacy summaries but
+    the same tactical frame collapse as duplicates.
 
 ## Rollout
 
