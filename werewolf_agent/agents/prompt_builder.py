@@ -746,7 +746,7 @@ class PlayerPromptBuilder:
         # the 3 retriever / slim-renderer / prompt-builder caps).
         from werewolf_agent.rag.prompt_renderer import RAG_LIVE_PROMPT_CAP
         slim_items = self._slim_rag_hint_items(rag_only[:RAG_LIVE_PROMPT_CAP])
-        # P0-G3: hard-constraint prefix MUST come before the JSON
+        # P0-G3: hard-constraint prefix MUST come before the case
         # payload. Without this the LLM has been observed to parrot
         # case-specific player IDs (e.g., p04 / p09 in seed cases) as
         # if they were this game's player IDs, which is information
@@ -762,35 +762,21 @@ class PlayerPromptBuilder:
             "本局的玩家 ID、票型、遗言均与案例无关；"
             "不得直接套用案例中具体玩家的动作、票型或决策链。\n"
         )
-        json_payload = self._compact_json(slim_items)
-        # R19: a tail reminder after the JSON re-anchors the model at
-        # the end of the section. The head warning only sets the
+        case_cards = self._render_rag_hint_cards(slim_items)
+        # R19: a tail reminder after the case cards re-anchors the
+        # model at the end of the section. The head warning only sets the
         # "do not parrot" frame at the start; without a tail the
-        # LLM can still walk the section and treat the JSON as a
+        # LLM can still walk the section and treat the cards as a
         # hard assertion rather than reference material. Tail text
         # matches the head framing so the LLM sees a consistent
         # "this is reference only" message before it generates.
         tail = "（以上案例仅供参考，不得作为本局事实或硬性指令。）"
-        # G-R4-12: when the JSON payload is compacted into the
-        # truncation envelope, the LLM would otherwise see shortened
-        # JSON with no tail acknowledgement. Add a clear truncation
-        # note to the tail so the model sees "this was truncated" at
-        # the end of the RAG section, not only inside the JSON body.
-        json_was_truncated = False
-        try:
-            payload_obj = json.loads(json_payload)
-            json_was_truncated = (
-                isinstance(payload_obj, dict)
-                and payload_obj.get("truncated") is True
-            )
-        except json.JSONDecodeError:
-            json_was_truncated = json_payload.endswith("...<已截断>")
-        if json_was_truncated:
-            tail = tail + "（JSON 已截断，案例未完整呈现。）"
+        if "…已截断" in case_cards:
+            tail = tail + "（部分字段已截断，案例未完整呈现。）"
         return (
             "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
             + warning
-            + json_payload
+            + case_cards
             + "\n"
             + tail
         )
@@ -877,6 +863,32 @@ class PlayerPromptBuilder:
             })
         return slim
 
+    @staticmethod
+    def _render_rag_hint_cards(items: list[dict[str, Any]]) -> str:
+        """Render prompt-safe RAG items as readable low-priority cards."""
+        cards: list[str] = []
+        for idx, item in enumerate(items, start=1):
+            title = str(item.get("title") or "未命名案例")
+            summary = str(item.get("summary") or "无摘要")
+            decisions = item.get("key_decisions") or []
+            if not isinstance(decisions, list):
+                decisions = []
+            principles = "；".join(
+                str(decision).strip()
+                for decision in decisions
+                if str(decision).strip()
+            )
+            if not principles:
+                principles = "仅参考案例摘要，不形成硬性动作。"
+            cards.append(
+                f"案例 {idx}：{title}\n"
+                f"- 案例摘要：{summary}\n"
+                f"- 可借鉴原则：{principles}\n"
+                "- 使用前检查：仅当本局公开事实与该案例局面相似时才参考。\n"
+                "- 禁止套用：不得复用案例玩家 ID、票型、遗言、具体动作或决策链。"
+            )
+
+        return "\n\n".join(cards)
 
     def _build_reflection_memory_hints(self) -> str:
         ctx = self.context

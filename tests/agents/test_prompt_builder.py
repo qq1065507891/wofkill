@@ -1228,12 +1228,12 @@ def test_rag_hints_include_player_id_warning():
     )
 
 
-def test_rag_hints_player_id_warning_appears_before_json_payload():
-    """P0-G3: the warning must be the FIRST line of the 知识库提示
-    section, before the JSON payload. Otherwise an LLM that reads
-    the section top-to-bottom might process the JSON before seeing
-    the warning, and the whole point of the prefix is to set the
-    "do not parrot" frame BEFORE the model sees the case data.
+def test_rag_hints_player_id_warning_appears_before_case_cards():
+    """P0-G3 + P1-RAG-DENSITY: the warning must be the FIRST line of
+    the 知识库提示 section, before the case cards. Otherwise an LLM that
+    reads the section top-to-bottom might process case data before
+    seeing the warning, and the whole point of the prefix is to set the
+    "do not parrot" frame BEFORE the model sees the cases.
     """
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
@@ -1247,15 +1247,51 @@ def test_rag_hints_player_id_warning_appears_before_json_payload():
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     rag_start = prompt.find("知识库提示")
     after_header = prompt[rag_start:]
-    # The warning must precede the first JSON key in the section.
-    json_start = after_header.find('"title"')
+    # The warning must precede the first case card in the section.
+    card_start = after_header.find("案例 1：案例标题")
     warning_start = after_header.find("⚠️")
     assert warning_start != -1, "P0-G3: warning prefix must be present"
-    assert json_start != -1, "P0-G3: JSON payload must still be present"
-    assert warning_start < json_start, (
-        "P0-G3: the warning must come BEFORE the JSON payload in the "
+    assert card_start != -1, "P1-RAG-DENSITY: case card must be present"
+    assert warning_start < card_start, (
+        "P0-G3: the warning must come BEFORE the case card in the "
         "知识库提示 section."
     )
+
+
+def test_rag_hints_render_case_cards_instead_of_json_payload():
+    """P1-RAG-DENSITY: live RAG should be rendered as readable case
+    cards, not a compact title/summary/key_decisions JSON array.
+
+    JSON is convenient for code but weak for LLM decision grounding:
+    the model can treat it as fact rows and copy tactics directly. The
+    live prompt should surface the same safe fields as a low-priority
+    reference card with explicit applicability and non-copy guards.
+    """
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [{
+            "type": "rag_hit",
+            "title": "案例标题",
+            "summary": "案例摘要。",
+            "key_decisions": ["决策1", "决策2"],
+        }],
+    })
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    rag_start = prompt.find("知识库提示")
+    assert rag_start != -1, "RAG hints section must be present"
+    rag_section = prompt[rag_start:]
+
+    assert "案例 1：案例标题" in rag_section
+    assert "- 案例摘要：案例摘要。" in rag_section
+    assert "- 可借鉴原则：决策1；决策2" in rag_section
+    assert "- 使用前检查：" in rag_section
+    assert "- 禁止套用：" in rag_section
+    for json_key in ('"title"', '"summary"', '"key_decisions"'):
+        assert json_key not in rag_section, (
+            f"P1-RAG-DENSITY: live RAG prompt should not expose "
+            f"compact JSON key {json_key}"
+        )
 
 
 def test_rag_hints_no_warning_when_no_hints():
@@ -1271,12 +1307,12 @@ def test_rag_hints_no_warning_when_no_hints():
 
 def test_rag_hints_have_tail_reminder():
     """R19: the 知识库提示 section has a "以上案例仅供参考" tail
-    reminder that lands AFTER the JSON payload. The head warning
+    reminder that lands AFTER the case cards. The head warning
     (player-id leak guard) only sets the frame at the start; a
     tail reminder re-anchors the model at the end so the LLM does
     not carry case-derived claims into its final answer.
 
-    Without the tail, the JSON sits at the end of the section and
+    Without the tail, the case cards sit at the end of the section and
     the model is free to treat it as a hard assertion rather than
     reference material.
     """
@@ -1293,19 +1329,19 @@ def test_rag_hints_have_tail_reminder():
     rag_start = prompt.find("知识库提示")
     assert rag_start != -1, "RAG hints section must be present"
     after_header = prompt[rag_start:]
-    # The tail reminder text must appear after the JSON payload's
-    # closing brace so it acts as an "after you read this" anchor.
+    # The tail reminder text must appear after the case card so it
+    # acts as an "after you read this" anchor.
     tail = "以上案例仅供参考"
-    json_start = after_header.find('"title"')
+    card_start = after_header.find("案例 1：案例标题")
     tail_start = after_header.find(tail)
-    assert json_start != -1, "R19: JSON payload must still be present"
+    assert card_start != -1, "R19: case card must still be present"
     assert tail_start != -1, (
         f"R19: tail reminder {tail!r} must appear in the 知识库提示 "
-        f"section after the JSON payload. Got section excerpt:\n"
+        f"section after the case cards. Got section excerpt:\n"
         + after_header[:400]
     )
-    assert tail_start > json_start, (
-        "R19: the tail reminder must come AFTER the JSON payload so "
+    assert tail_start > card_start, (
+        "R19: the tail reminder must come AFTER the case cards so "
         "the LLM encounters it after reading the case data, not before."
     )
 
@@ -1371,7 +1407,7 @@ def test_rag_hints_filtered_by_type():
 
 
 def test_rag_truncation_note_in_tail():
-    """Long RAG fields are truncated before the whole JSON envelope.
+    """Long RAG fields are truncated before the whole RAG card.
 
     The live prompt should keep the RAG reference framing while avoiding
     a generic content_prefix/content_suffix envelope for one oversized

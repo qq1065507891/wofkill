@@ -4,13 +4,41 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **prompt-budget-and-internal-caps** — 2026-06-14 (COMPLETE)
-- Active task: 玩家 prompt 预算上限已调至 20k；学习上下文内部裁剪、策略建议限长、示例合法目标修复已完成
+- Current phase: **rag-live-prompt-card-rendering** — 2026-06-14 (COMPLETE)
+- Active task: RAG live prompt 已从 compact JSON 摘要改为中文案例卡片；检索、审计字段和安全白名单保持不变
 - Task owner: Codex development session
 - Last updated: 2026-06-14
+- **本次新增 (rag-live-prompt-card-rendering)**: `知识库提示` 不再把 `title/summary/key_decisions` 作为 JSON 数组直接注入，而是渲染为“案例摘要 / 可借鉴原则 / 使用前检查 / 禁止套用”的中文案例卡片；仍保留 RAG 玩家 ID/战术不可直接套用的前置警告与尾部参考提醒。
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## rag-live-prompt-card-rendering — 2026-06-14 (已完成)
+
+**背景**:
+
+1. 当前 RAG live prompt 以 compact JSON 数组注入 `title/summary/key_decisions`，字段安全但模型可读性偏弱，容易被当成事实表或被直接复制战术链。
+2. RAG 在 `跨局学习参考` 内部已经是低优先级历史经验，不应通过结构化 JSON 形态强化“硬事实”感。
+3. 上游检索与审计仍需要保留完整字段；本次只调整玩家 live prompt 的呈现方式。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| RAG live prompt | `title/summary/key_decisions` 以 JSON 数组注入，信息密度低且容易被模型机械套用 | 改为中文案例卡片：`案例摘要`、`可借鉴原则`、`使用前检查`、`禁止套用` |
+| 信息边界 | 仅靠 JSON 前后的警告约束模型，案例正文自身没有“只可迁移原则”的提示 | 每个案例卡片内加入使用前检查与禁止套用，前置警告和尾部参考提醒继续保留 |
+| 安全白名单 | live prompt 仍必须隐藏 relevance/source/quality/visibility/short_quotes 等审计字段 | 继续复用 `_slim_rag_hint_items()` 白名单；只改变白名单字段的文本渲染 |
+| 长字段 | 旧逻辑只在 JSON envelope 截断时提示 | 字段级截断标记 `…已截断` 出现时，尾部补充“部分字段已截断，案例未完整呈现” |
+
+**新增/更新测试**:
+
+- `tests/agents/test_prompt_builder.py`: RAG 卡片化渲染、禁止回退 compact JSON、警告必须位于案例卡片之前、尾部提醒必须位于案例卡片之后、审计字段仍不泄露。
+
+**验证**:
+
+- 已通过 `pytest tests/agents/test_prompt_builder.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
+- 已通过 `python -m compileall -q werewolf_agent tests`。
+- 已通过 `git diff --check`。
 
 ## prompt-budget-and-internal-caps — 2026-06-14 (已完成)
 
