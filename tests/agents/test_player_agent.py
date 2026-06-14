@@ -748,7 +748,7 @@ class TestPlayerAgentRetryFallback:
         prompt = provider.prompts[0]
         assert "人格设定" in prompt
         assert '"profile_id":"aggressive_bluffer"' not in prompt
-        assert '"personality":"dominant_pressurer"' not in prompt
+        assert '"personality":"dominant_pressurer"' in prompt
         assert '"speech_style":"aggressive_short"' in prompt
         assert '"task_style":"pressure_attack"' in prompt
 

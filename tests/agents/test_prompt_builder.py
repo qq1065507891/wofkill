@@ -3508,6 +3508,30 @@ def test_compact_json_truncation_stays_valid_json():
     assert len(out) <= 1800
 
 
+def test_compact_json_preserves_tail_context_when_truncated():
+    """Long dict compaction must not be prefix-only."""
+    import json
+
+    builder = PlayerPromptBuilder(
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+        )
+    )
+    big = {
+        "early_noise": "x" * 5000,
+        "late_critical_fact": "TAIL_CRITICAL_MARKER",
+    }
+    out = builder._compact_json(big)
+    parsed = json.loads(out)
+
+    assert parsed["truncated"] is True
+    assert "TAIL_CRITICAL_MARKER" in out
+
+
 
 # ---------------------------------------------------------------------------
 # P2-8: belief rendering is capped at top 3
@@ -3755,8 +3779,15 @@ def _make_budget_pressure_context() -> AgentContext:
         legal_actions=[ActionType.SPEECH, ActionType.VOTE],
         legal_targets=["p05", "p07"],
         # 辅助: each of these can render up to ~1.8k chars.
-        persona_snapshot={"tone": "aggressive", "style": "logical",
-                          "phrase_style": "blame_p05", "extra": "X" * 1500},
+        persona_snapshot={
+            "profile_id": "logic_anchor",
+            "display_name": "逻辑锚点",
+            "personality": "budget-pressure-persona",
+            "speech_style": "structured_logical",
+            "task_style": "evidence_based_expression",
+            "tone": "aggressive",
+            "extra": "X" * 1500,
+        },
         belief_state={
             "my_suspects": [
                 {"player": f"p{i:02d}", "faction_lean": "wolf_lean",
@@ -3844,7 +3875,8 @@ def test_current_game_grounding_survives_before_style_and_history() -> None:
             f"current-game grounding marker {marker!r} was dropped before "
             f"style/history context. prompt[:500]={prompt[:500]!r}"
         )
-    assert "人格设定" not in prompt
+    assert "人格设定" in prompt
+    assert "budget-pressure-persona" in prompt
     assert "budget-pressure-rag" not in prompt
     assert "长期能力画像" not in prompt
     assert "我的认知矩阵" not in prompt
@@ -3884,10 +3916,16 @@ def test_phase_and_legal_context_survives_extreme_budget_pressure() -> None:
     assert "本轮投票必须选择一名玩家放逐" in prompt
 
 
-def test_persona_is_droppable_under_budget_pressure() -> None:
+def test_persona_core_survives_under_budget_pressure() -> None:
     from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
 
-    assert "_build_persona" not in PlayerPromptBuilder._NEVER_DROP
+    assert "_build_persona" in PlayerPromptBuilder._NEVER_DROP
+
+    ctx = _make_budget_pressure_context()
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    assert "人格设定" in prompt
+    assert "budget-pressure-persona" in prompt
 
 
 # ---------------------------------------------------------------------------

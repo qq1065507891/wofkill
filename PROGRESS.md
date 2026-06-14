@@ -4,11 +4,39 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **prompt-module-audit-hardening** — 2026-06-14 (COMPLETE)
-- Active task: 玩家 system/user prompt 逐模块审计与修复已完成；真实对局指标验证与批量实验暂缓
+- Current phase: **prompt-context-budget-hardening** — 2026-06-14 (COMPLETE)
+- Active task: 玩家 persona 核心保留与 JSON 上下文压缩优化已完成；真实对局指标验证与批量实验暂缓
 - Task owner: Codex development session
 - Last updated: 2026-06-14
-- **本次新增 (prompt-module-audit-hardening)**: 逐段审查 `PlayerPromptBuilder` 的 system prompt 与 user prompt，修复动态段名漂移、speech/vote 模式污染、投票审计字段与 `ActionContract` 漂移、timeout retry 非法 `no_action` 提示、system 输出契约无条件工具优先提示、技能建议旧称、狼人稳定规则缺口和推理边界措辞。
+- **本次新增 (prompt-context-budget-hardening)**: 在 prompt 模块审计后继续加固上下文工程：persona 核心性格不再被预算裁剪，长 JSON 压缩不再只保留前缀，避免丢失尾部关键线索。
+
+## prompt-context-budget-hardening — 2026-06-14 (已完成)
+
+**背景**:
+
+1. `persona_snapshot` 是每个玩家固定 persona profile 结合当前任务解析出的表达风格，不应被预算裁剪整段丢弃。
+2. `_compact_json()` 对超长 JSON 只保留 `content_prefix`，长结构尾部的关键事实可能完全消失。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| persona 预算策略 | `_build_persona` 在低价值可丢弃段中，预算压力下会整段丢失玩家性格锚点 | 将 `_build_persona` 加入 never-drop；从低价值裁剪集合移除 |
+| persona 渲染字段 | 旧渲染缺少 `personality`，但原始 `profile_id/display_name` 又可能携带不兼容身份标签 | 渲染安全清洗后的 `personality/speech_style/task_style/effective_params/dynamic_adjustments/tone`，继续不暴露 `profile_id/display_name` |
+| JSON 压缩 | 超长 JSON 只保留前缀，尾部关键字段丢失 | 压缩 envelope 同时保留 `content_prefix` 与 `content_suffix`，并维持合法 JSON 与长度上限 |
+
+**新增/更新测试**:
+
+- `tests/agents/test_prompt_builder.py`: persona 核心在预算压力下保留；长 JSON 压缩保留尾部关键标记。
+- `tests/agents/test_player_agent.py`: persona prompt 允许安全后的 `personality`，仍禁止原始 `profile_id` 暴露。
+
+**验证**:
+
+- 已通过 `tests/agents/test_prompt_builder.py`。
+- 已通过 persona 相关 `tests/agents/test_player_agent.py` 定向测试。
+- 已通过 `pytest -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
+
+---
 
 ## prompt-module-audit-hardening — 2026-06-14 (已完成)
 

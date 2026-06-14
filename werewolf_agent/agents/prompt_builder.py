@@ -362,6 +362,7 @@ class PlayerPromptBuilder:
     #      sub-grouping (硬约束/建议/参考), so the LLM does not have
     #      to learn two priority systems in the same prompt.
     _NEVER_DROP: frozenset[str] = frozenset({
+        "_build_persona",
         "_build_strategy_directive",
         "_build_phase_context",
         "_build_public_summary",
@@ -387,7 +388,6 @@ class PlayerPromptBuilder:
         "_build_recent_transcript",
     })
     _LOW_VALUE_SECTIONS: frozenset[str] = frozenset({
-        "_build_persona",
         "_build_belief_state",
         "_build_rag_hints",
         "_build_reflection_memory_hints",
@@ -1135,6 +1135,7 @@ class PlayerPromptBuilder:
             task_type=ctx.task_type.value,
         )
         allowed_fields = (
+            "personality",
             "speech_style",
             "task_style",
             "effective_params",
@@ -1682,21 +1683,26 @@ class PlayerPromptBuilder:
         if len(text) <= _MAX_JSON_CONTEXT_CHARS:
             return text
 
-        prefix = text[: _MAX_JSON_CONTEXT_CHARS // 2]
+        prefix = text[: _MAX_JSON_CONTEXT_CHARS // 3]
+        suffix = text[-(_MAX_JSON_CONTEXT_CHARS // 3):]
         while True:
             rendered = json.dumps(
                 {
                     "truncated": True,
                     "original_type": type(value).__name__,
                     "content_prefix": prefix,
+                    "content_suffix": suffix,
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-            if len(rendered) <= _MAX_JSON_CONTEXT_CHARS or not prefix:
+            if len(rendered) <= _MAX_JSON_CONTEXT_CHARS or (not prefix and not suffix):
                 return rendered
             overflow = len(rendered) - _MAX_JSON_CONTEXT_CHARS
-            prefix = prefix[: max(0, len(prefix) - overflow - 8)]
+            trim_prefix = min(len(prefix), overflow // 2 + 8)
+            trim_suffix = min(len(suffix), overflow - trim_prefix + 8)
+            prefix = prefix[: max(0, len(prefix) - trim_prefix)]
+            suffix = suffix[min(len(suffix), trim_suffix):]
 
     @staticmethod
     def _truncate_text(
