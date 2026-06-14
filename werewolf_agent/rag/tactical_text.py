@@ -45,6 +45,20 @@ def _legacy_summary(item: Any) -> str:
     return str(summary).strip()[:800]
 
 
+def _legacy_key_decisions(item: Any) -> list[str]:
+    decisions = _read_value(item, "key_decisions", [])
+    if decisions is None:
+        return []
+    if isinstance(decisions, list):
+        return [
+            str(decision).strip()
+            for decision in decisions
+            if str(decision).strip()
+        ]
+    text = str(decisions).strip()
+    return [text] if text else []
+
+
 def _legacy_fallback_frame(item: Any) -> dict[str, str | list[str]]:
     summary = _legacy_summary(item)
     lesson = summary or "旧版RAG条目缺少V2战术框架。"
@@ -103,12 +117,20 @@ def _text_values(value: str | list[str]) -> list[str]:
 
 
 def build_rag_retrieval_text(item: Any, *, max_chars: int = 1500) -> str:
-    """Build compact retrieval text from tactical frame values."""
-    frame = get_prompt_tactical_frame(item)
+    """Build compact retrieval text from V2 frames or legacy fields."""
     parts: list[str] = []
     title = str(_read_value(item, "title", "")).strip()
     if title:
         parts.append(title)
+    if _candidate_frame(item) is None:
+        summary = _legacy_summary(item)
+        if summary:
+            parts.append(summary)
+        parts.extend(_legacy_key_decisions(item))
+        text = "\n".join(parts)
+        return text[:max(0, int(max_chars))]
+
+    frame = get_prompt_tactical_frame(item)
     for field in TACTICAL_FRAME_FIELDS:
         parts.extend(_text_values(frame[field]))
     text = "\n".join(parts)

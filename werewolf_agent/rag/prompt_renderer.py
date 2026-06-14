@@ -25,6 +25,7 @@ import re
 from typing import Any
 
 from werewolf_agent.rag.schemas import RAGHit
+from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
 
 # Fields that must NEVER appear in a live-player prompt. Anything in this
@@ -75,7 +76,7 @@ RAG_LIVE_PROMPT_CAP = 3
 
 # P1-G5: Jaccard threshold for "near-duplicate" RAG hits. 0.6 is a
 # reasonable middle ground for tokenized Chinese: two cases covering
-# the same tactic typically share >60% of their title+summary tokens.
+# the same tactic typically share >60% of their retrieval-text tokens.
 _DEDUP_DEFAULT_SIMILARITY_THRESHOLD = 0.6
 
 # P1-G5: cap on the live-prompt hit list. Lower than the retriever's
@@ -124,9 +125,11 @@ def dedup_hits_by_similarity(
 
     P1-G5: when 3 hits cover the same tactic (different framing), 2 of
     them are wasted context window. Two hits are "near duplicates" when
-    their title+summary token Jaccard similarity exceeds
-    ``similarity_threshold`` (default 0.6). When a duplicate pair is
-    found, the higher-relevance hit wins.
+    their retrieval-text token Jaccard similarity exceeds
+    ``similarity_threshold`` (default 0.6). Legacy no-frame hits also
+    need title+summary overlap so shared fallback/key-decision text does
+    not collapse unrelated old entries. When a duplicate pair is found,
+    the higher-relevance hit wins.
 
     G-R4-09: the cap is now caller-controlled. The previous behavior
     silently capped the returned list at the module default
@@ -164,24 +167,41 @@ def dedup_hits_by_similarity(
     # via the function's default value, not as an implicit ceiling.
     effective_cap = max(int(max_items), 0)
     token_cache: list[set[str]] = [
-        _tokenize(f"{h.title} {h.summary}") for h in hits
+        _tokenize(build_rag_retrieval_text(h, max_chars=1500)) for h in hits
+    ]
+    legacy_token_cache: list[set[str] | None] = [
+        _tokenize(f"{h.title} {h.summary}") if h.tactical_frame is None else None
+        for h in hits
     ]
     kept: list[RAGHit] = []
     kept_tokens: list[set[str]] = []
-    for hit, tokens in zip(hits, token_cache):
+    kept_legacy_tokens: list[set[str] | None] = []
+    for hit, tokens, legacy_tokens in zip(hits, token_cache, legacy_token_cache):
         # Walk the kept list, drop the first near-duplicate we find.
         merged = False
         for i, k_tokens in enumerate(kept_tokens):
-            if _jaccard(tokens, k_tokens) > similarity_threshold:
+            is_duplicate = _jaccard(tokens, k_tokens) > similarity_threshold
+            if (
+                is_duplicate
+                and legacy_tokens is not None
+                and kept_legacy_tokens[i] is not None
+            ):
+                is_duplicate = (
+                    _jaccard(legacy_tokens, kept_legacy_tokens[i])
+                    > similarity_threshold
+                )
+            if is_duplicate:
                 # Near-duplicate. Keep the higher-relevance one.
                 if hit.relevance_score > kept[i].relevance_score:
                     kept[i] = hit
                     kept_tokens[i] = tokens
+                    kept_legacy_tokens[i] = legacy_tokens
                 merged = True
                 break
         if not merged:
             kept.append(hit)
             kept_tokens.append(tokens)
+            kept_legacy_tokens.append(legacy_tokens)
     return kept[:effective_cap]
 
 
@@ -233,7 +253,7 @@ def hits_to_prompt_lines(
     log or moderator/review view.
 
     P1-G5: Before rendering, dedup near-duplicate hits via
-    ``dedup_hits_by_similarity`` (Jaccard on title+summary tokens,
+    ``dedup_hits_by_similarity`` (Jaccard on retrieval-text tokens,
     default threshold 0.6, cap 2 hits). The caller-supplied
     ``max_items`` is preserved as an upper bound — if the caller asks
     for 3 and the dedup cap is 2, dedup wins; if the caller asks for

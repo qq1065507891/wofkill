@@ -33,6 +33,7 @@ from werewolf_agent.rag.schemas import (
     CaseType,
     QualityGrade,
     RAGHit,
+    RAGTacticalFrame,
     SourceType,
     VisibilityBoundary,
 )
@@ -53,6 +54,7 @@ def _make_hit(
     source: SourceType = SourceType.PUBLIC_TOURNAMENT,
     visibility: VisibilityBoundary = VisibilityBoundary.PLAYER_PERSPECTIVE,
     key_decisions: list[str] | None = None,
+    tactical_frame: RAGTacticalFrame | None = None,
     annotation: str = "[public_tournament|high_rank_game]",
 ) -> RAGHit:
     """Build a realistic RAGHit for renderer unit tests."""
@@ -60,6 +62,7 @@ def _make_hit(
         entry_id=entry_id,
         title=title,
         summary=summary,
+        tactical_frame=tactical_frame,
         relevance_score=relevance,
         quality_grade=quality,
         source_type=source,
@@ -496,6 +499,39 @@ class TestNearDuplicateHitsMerged:
         assert "case_a" not in ids
         assert "case_c" in ids
         assert len(deduped) == 2
+
+    def test_dedup_uses_tactical_retrieval_text(self) -> None:
+        """V2 hits with different legacy summaries but the same tactic dedup."""
+        frame = RAGTacticalFrame(
+            situation_signature="shared pressure lane day speech vote focus",
+            transferable_lesson="shared lesson delay claim and redirect heat",
+            applicability=["shared applicability villager speech"],
+            counter_signals=["shared counter signal hard role claim"],
+            recommended_use="shared use pivot after vote pile forms",
+            misuse_risk="shared risk overusing the same pressure pivot",
+        )
+        hit_a = _make_hit(
+            entry_id="legacy_a",
+            title="alpha title",
+            summary="orchid stone velvet",
+            tactical_frame=frame,
+            relevance=0.7,
+        )
+        hit_b = _make_hit(
+            entry_id="legacy_b",
+            title="bravo title",
+            summary="copper river lantern",
+            tactical_frame=frame,
+            relevance=0.9,
+        )
+
+        deduped = dedup_hits_by_similarity(
+            [hit_a, hit_b],
+            max_items=2,
+            similarity_threshold=0.6,
+        )
+
+        assert [hit.entry_id for hit in deduped] == ["legacy_b"]
 
     def test_distinct_hits_preserved(self) -> None:
         """When no two hits exceed the similarity threshold, all are kept

@@ -15,7 +15,8 @@ from werewolf_agent.rag.ingestion import create_seed_entries
 from werewolf_agent.rag.injector import InjectionContext, RAGInjector
 from werewolf_agent.rag.persistence import load_rag_entries, save_rag_entries
 from werewolf_agent.rag.retriever import StrategyRetriever
-from werewolf_agent.rag.schemas import RAGEntry, RAGHit, RAGQuery
+from werewolf_agent.rag.schemas import RAGEntry, RAGHit, RAGQuery, VisibilityBoundary
+from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,26 @@ class RAGKnowledgeService:
         self._entries_cache = {entry.entry_id: entry for entry in entries}
         return list(self._entries_cache.values())
 
+    def _passes_live_metadata_filter(self, query: RAGQuery, entry: RAGEntry) -> bool:
+        """Hard metadata gate shared by vector hits and metadata fallback."""
+        meta = entry.metadata
+        if meta.visibility_boundary not in (
+            VisibilityBoundary.PUBLIC_ONLY,
+            VisibilityBoundary.PLAYER_PERSPECTIVE,
+        ):
+            return False
+        if query.ruleset_id and meta.ruleset_id and meta.ruleset_id != query.ruleset_id:
+            return False
+        role_ok = (
+            not query.role
+            or meta.role_perspective in (query.role, "general", "any", "")
+        )
+        phase_ok = (
+            not query.phase
+            or meta.phase in (query.phase, "general", "")
+        )
+        return role_ok and phase_ok
+
     def _vector_candidates(
         self,
         query: RAGQuery,
@@ -275,24 +296,31 @@ class RAGKnowledgeService:
             # The threshold gives the retriever a documented
             # "no real signal" floor that keeps the rule path in
             # charge when the vector recall is empty / noisy.
-            raw_scores = [float(r.get("score", 0.0)) for r in vector_results]
-            score_max = max((s for s in raw_scores if s > 0.0), default=1.0)
-            for result, raw in zip(vector_results, raw_scores):
+            eligible_results: list[tuple[dict[str, Any], float, RAGEntry]] = []
+            for result in vector_results:
                 entry = by_id.get(result.get("doc_id"))
                 if entry is None:
                     continue
+                if not self._passes_live_metadata_filter(query, entry):
+                    continue
+                raw = float(result.get("score", 0.0))
                 if raw < _WEAK_VECTOR_THRESHOLD:
                     # Below the absolute floor: the vector store had
                     # nothing meaningful to say about this doc, so
                     # don't let a 1.0-normalized value compete with
                     # a clean rule-only path.
                     continue
+                eligible_results.append((result, raw, entry))
+            score_max = max((raw for _, raw, _ in eligible_results if raw > 0.0), default=1.0)
+            for _result, raw, entry in eligible_results:
                 normalized = max(0.0, min(1.0, raw / score_max)) if score_max > 0 else 0.0
                 selected[entry.entry_id] = (normalized, entry)
         except Exception:
             logger.warning("Vector RAG query failed; using metadata candidates", exc_info=True)
 
         for entry in entries:
+            if not self._passes_live_metadata_filter(query, entry):
+                continue
             meta = entry.metadata
             if query.ruleset_id and meta.ruleset_id and meta.ruleset_id != query.ruleset_id:
                 continue
@@ -324,18 +352,17 @@ class RAGKnowledgeService:
 
         if selected:
             return list(selected.values())
-        # Final fallback: no vector hit and no metadata match. Return all
-        # entries with score 0.0 so the retriever's rule-based path can
-        # still produce ordering.
-        return [(0.0, entry) for entry in entries]
+        # Final fallback: no vector hit and no metadata match. Preserve
+        # the hard metadata boundary even when returning score-0 entries
+        # for the retriever's rule-based ordering.
+        return [
+            (0.0, entry)
+            for entry in entries
+            if self._passes_live_metadata_filter(query, entry)
+        ]
 
     def _index_entry(self, entry: RAGEntry) -> None:
-        text = "\n".join([
-            entry.title,
-            entry.summary,
-            "\n".join(entry.key_decisions),
-            " ".join(entry.metadata.tags),
-        ])
+        text = build_rag_retrieval_text(entry, max_chars=1500)
         metadata = {
             "entry_id": entry.entry_id,
             "ruleset_id": entry.metadata.ruleset_id,

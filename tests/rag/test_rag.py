@@ -2569,6 +2569,58 @@ class TestRerankerNegativeScore:
                 f"truncated summary; got text={text[:200]!r}..."
             )
 
+    def test_rerank_input_uses_v2_tactical_retrieval_text(self) -> None:
+        """RAG V2 reranker text must come from the tactical frame.
+
+        This catches regressions where the reranker input is hand-built
+        from legacy summary/key_decisions and silently drops V2-only
+        tactical fields.
+        """
+        entry = _make_v2_tactical_entry(
+            frame_overrides={
+                "situation_signature": "SENTINEL situation pressure map",
+                "transferable_lesson": "SENTINEL transfer lesson",
+                "applicability": ["SENTINEL applies to day speech"],
+                "counter_signals": ["SENTINEL counter signal"],
+                "recommended_use": "SENTINEL recommended use",
+                "misuse_risk": "SENTINEL misuse risk",
+            },
+        )
+        entry = entry.model_copy(
+            update={
+                "summary": "LEGACY_SUMMARY_SHOULD_NOT_REACH_RERANKER",
+                "key_decisions": ["LEGACY_DECISION_SHOULD_NOT_REACH_RERANKER"],
+            },
+        )
+        captured: list[list[dict]] = []
+
+        class _SpyReranker:
+            def rerank_hits(self, *, query, documents, text_key="text", top_n=None):
+                captured.append([dict(d) for d in documents])
+                return [
+                    {**d, "rerank_score": 0.5}
+                    for d in documents[: top_n or len(documents)]
+                ]
+
+        retriever = StrategyRetriever([entry], reranker=_SpyReranker())
+        retriever.retrieve(
+            RAGQuery(role="werewolf", phase="speech", max_results=1),
+        )
+
+        assert captured, "reranker must be called"
+        text = captured[0][0]["text"]
+        assert len(text) <= 1500
+        assert "SENTINEL situation pressure map" in text
+        assert "SENTINEL transfer lesson" in text
+        assert "SENTINEL applies to day speech" in text
+        assert "SENTINEL counter signal" in text
+        assert "SENTINEL recommended use" in text
+        assert "SENTINEL misuse risk" in text
+        assert "situation_signature" not in text
+        assert "transferable_lesson" not in text
+        assert "LEGACY_SUMMARY_SHOULD_NOT_REACH_RERANKER" not in text
+        assert "LEGACY_DECISION_SHOULD_NOT_REACH_RERANKER" not in text
+
 
 # ---------------------------------------------------------------------------
 # G-R4-05 (P1): vector-best vs rule-only merge formula asymmetric

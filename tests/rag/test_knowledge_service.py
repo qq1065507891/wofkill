@@ -274,6 +274,7 @@ def _make_rag_entry(
     role_perspective: str,
     phase: str,
     ruleset_id: str = "pre_witch_hunter_idiot_mixed",
+    visibility_boundary: object | None = None,
 ) -> "RAGEntry":
     """Build a minimal RAGEntry with the given role/phase for R9 tests."""
     from werewolf_agent.rag.schemas import (
@@ -286,6 +287,8 @@ def _make_rag_entry(
         SourceType,
         VisibilityBoundary,
     )
+
+    boundary = visibility_boundary or VisibilityBoundary.PLAYER_PERSPECTIVE
 
     return RAGEntry(
         schema_version=1,
@@ -301,7 +304,7 @@ def _make_rag_entry(
             player_count=12,
             phase=phase,
             role_perspective=role_perspective,
-            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            visibility_boundary=boundary,
             source=SourceMetadata(source_type=SourceType.MANUAL_ENTRY),
             tags=[role_perspective, phase],
         ),
@@ -631,6 +634,218 @@ def test_weak_vector_matches_filtered_below_threshold() -> None:
         f"by the absolute threshold; the per-call max normalization "
         f"is still promoting noise to 1.0; selected={selected_ids!r}"
     )
+
+
+def test_index_entry_uses_v2_tactical_retrieval_text() -> None:
+    """Vector indexing must index V2 tactical text, not legacy fields."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+    from werewolf_agent.rag.schemas import (
+        CaseMetadata,
+        CaseType,
+        QualityGrade,
+        RAGEntry,
+        RAGTacticalFrame,
+        ReviewStatus,
+        SourceMetadata,
+        SourceType,
+        VisibilityBoundary,
+    )
+
+    vector_store = _FixedScoreVectorStore([])
+    service = RAGKnowledgeService(vector_store=vector_store)
+    entry = RAGEntry(
+        schema_version=2,
+        entry_id="v2_index_text",
+        title="V2 index tactical title",
+        summary="LEGACY_SUMMARY_SHOULD_NOT_BE_INDEXED",
+        key_decisions=["LEGACY_DECISION_SHOULD_NOT_BE_INDEXED"],
+        tactical_frame=RAGTacticalFrame(
+            situation_signature="INDEX_SENTINEL situation",
+            transferable_lesson="INDEX_SENTINEL lesson",
+            applicability=["INDEX_SENTINEL applicability"],
+            counter_signals=["INDEX_SENTINEL counter"],
+            recommended_use="INDEX_SENTINEL use",
+            misuse_risk="INDEX_SENTINEL risk",
+        ),
+        metadata=CaseMetadata(
+            case_type=CaseType.EXTERNAL_TACTICS,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="villager",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+            tags=["villager", "speech"],
+        ),
+    )
+
+    service._index_entry(entry)
+
+    assert len(vector_store.added) == 1
+    _, text, _ = vector_store.added[0]
+    assert len(text) <= 1500
+    assert "INDEX_SENTINEL situation" in text
+    assert "INDEX_SENTINEL lesson" in text
+    assert "INDEX_SENTINEL applicability" in text
+    assert "INDEX_SENTINEL counter" in text
+    assert "INDEX_SENTINEL use" in text
+    assert "INDEX_SENTINEL risk" in text
+    assert "LEGACY_SUMMARY_SHOULD_NOT_BE_INDEXED" not in text
+    assert "LEGACY_DECISION_SHOULD_NOT_BE_INDEXED" not in text
+    assert "situation_signature" not in text
+
+
+def test_vector_hits_apply_live_metadata_filter() -> None:
+    """Vector doc_ids must obey the same hard filter as live retrieval."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+    from werewolf_agent.rag.schemas import VisibilityBoundary
+
+    entries = [
+        _make_rag_entry(
+            entry_id="allowed_villager_speech",
+            role_perspective="villager",
+            phase="speech",
+            ruleset_id="rules_a",
+        ),
+        _make_rag_entry(
+            entry_id="blocked_werewolf_role",
+            role_perspective="werewolf",
+            phase="speech",
+            ruleset_id="rules_a",
+        ),
+        _make_rag_entry(
+            entry_id="blocked_phase",
+            role_perspective="villager",
+            phase="night",
+            ruleset_id="rules_a",
+        ),
+        _make_rag_entry(
+            entry_id="blocked_ruleset",
+            role_perspective="villager",
+            phase="speech",
+            ruleset_id="rules_b",
+        ),
+        _make_rag_entry(
+            entry_id="blocked_god_view",
+            role_perspective="villager",
+            phase="speech",
+            ruleset_id="rules_a",
+            visibility_boundary=VisibilityBoundary.GOD_VIEW,
+        ),
+        _make_rag_entry(
+            entry_id="blocked_moderator_only",
+            role_perspective="villager",
+            phase="speech",
+            ruleset_id="rules_a",
+            visibility_boundary=VisibilityBoundary.MODERATOR_ONLY,
+        ),
+    ]
+    vector_store = _FixedScoreVectorStore([
+        {"doc_id": entry.entry_id, "score": 1.0}
+        for entry in entries
+    ])
+    service = RAGKnowledgeService(
+        seed_provider=lambda: entries,
+        vector_store=vector_store,
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(
+            role="villager",
+            phase="speech",
+            ruleset_id="rules_a",
+            max_results=10,
+        ),
+        entries,
+    )
+    selected_ids = {entry.entry_id for _, entry in out}
+
+    assert selected_ids == {"allowed_villager_speech"}
+
+
+def test_vector_score_normalization_ignores_filtered_hits() -> None:
+    """Unsafe high-score vector hits must not depress live-safe scores."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    allowed = _make_rag_entry(
+        entry_id="allowed_villager_speech",
+        role_perspective="villager",
+        phase="speech",
+        ruleset_id="rules_a",
+    )
+    blocked = _make_rag_entry(
+        entry_id="blocked_werewolf_role",
+        role_perspective="werewolf",
+        phase="speech",
+        ruleset_id="rules_a",
+    )
+    vector_store = _FixedScoreVectorStore([
+        {"doc_id": blocked.entry_id, "score": 100.0},
+        {"doc_id": allowed.entry_id, "score": 5.0},
+    ])
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [allowed, blocked],
+        vector_store=vector_store,
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(
+            role="villager",
+            phase="speech",
+            ruleset_id="rules_a",
+            max_results=10,
+        ),
+        [allowed, blocked],
+    )
+
+    assert out == [(1.0, allowed)]
+
+
+def test_vector_final_fallback_preserves_live_metadata_filter() -> None:
+    """The score-0 fallback must not re-admit live-unsafe candidates."""
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+    from werewolf_agent.rag.schemas import VisibilityBoundary
+
+    entries = [
+        _make_rag_entry(
+            entry_id="blocked_werewolf_role",
+            role_perspective="werewolf",
+            phase="speech",
+            ruleset_id="rules_a",
+        ),
+        _make_rag_entry(
+            entry_id="blocked_phase",
+            role_perspective="villager",
+            phase="night",
+            ruleset_id="rules_a",
+        ),
+        _make_rag_entry(
+            entry_id="blocked_god_view",
+            role_perspective="villager",
+            phase="speech",
+            ruleset_id="rules_a",
+            visibility_boundary=VisibilityBoundary.GOD_VIEW,
+        ),
+    ]
+    service = RAGKnowledgeService(
+        seed_provider=lambda: entries,
+        vector_store=_FixedScoreVectorStore([]),
+    )
+
+    out = service._vector_candidates(
+        RAGQuery(
+            role="villager",
+            phase="speech",
+            ruleset_id="rules_a",
+            max_results=10,
+        ),
+        entries,
+    )
+
+    assert out == []
 
 
 # ---------------------------------------------------------------------------
