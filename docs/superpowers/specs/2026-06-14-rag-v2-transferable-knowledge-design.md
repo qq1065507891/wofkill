@@ -144,9 +144,26 @@ the live prompt will show.
 Vector indexing in `RAGKnowledgeService` should use the same tactical text
 helper, not a separate hand-built string.
 
+Vector retrieval must still respect live-safety metadata boundaries. Vector hits
+must pass the same role, phase, ruleset, and visibility predicate used by the
+non-vector candidate path before they enter the selected candidate set. In
+particular, a semantically similar `role_perspective=werewolf` V2 frame must not
+surface for a villager live query, and god-view or moderator-only entries must
+not reach live-player context through vector search.
+
 Near-duplicate filtering in `dedup_hits_by_similarity()` should also tokenize
 the shared tactical text, not `title + summary`, because V2 summaries may be
 empty or purely legacy audit text.
+
+`build_rag_retrieval_text()` should support use-specific caps:
+
+- reranker document text: `max_chars=1500`
+- legacy summary included in fallback retrieval text: keep the existing
+  800-character cap
+- vector indexing may use a larger but bounded cap chosen in implementation
+
+This preserves existing reranker tests and avoids moving token pressure from the
+prompt into the rerank path.
 
 ## Live Prompt Rendering
 
@@ -268,6 +285,10 @@ Add or update tests covering:
 12. Repository-loaded malicious V2 entries are rejected before live retrieval.
 13. Dedup uses tactical text, so two V2 hits with different legacy summaries but
     the same tactical frame collapse as duplicates.
+14. Vector semantic hits still obey role, phase, ruleset, and visibility filters;
+    a villager query cannot receive a werewolf-only V2 frame via vector search.
+15. Reranker text built from V2 frames remains capped at 1500 chars, and legacy
+    fallback summaries still respect the existing 800-char cap.
 
 ## Rollout
 
