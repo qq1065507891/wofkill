@@ -720,9 +720,10 @@ class PlayerPromptBuilder:
             return ""
         # P0-G2 defense in depth: even if a non-production code path
         # leaks full audit items into ``ctx.rag_hints``, the live prompt
-        # must only see title / summary / key_decisions. Audit data
-        # (relevance, quality, source, visibility, display annotation)
-        # belongs in the audit log, not the LLM context window.
+        # must only see title plus prompt-safe V2 tactical frame fields.
+        # Audit data (summary, key_decisions, relevance, quality, source,
+        # visibility, display annotation) belongs in the audit log, not
+        # the LLM context window.
         #
         # G-R4-10: explicit ``type == "rag_hit"`` filter so a future
         # code path (or a test, or a manual debug call) that injects
@@ -828,64 +829,77 @@ class PlayerPromptBuilder:
         ``ctx.rag_hints`` was populated by a test or a non-default
         code path that bypassed :class:`RAGKnowledgeService`).
 
-        The renderer treats a dict as a "slim line" if it already only
-        has the three prompt-safe keys; otherwise it picks out those
-        three keys, falling back to ``""`` / ``""`` / ``[]`` if absent.
+        RAG V2 prompt shape is title plus prompt-safe tactical frame
+        fields. Legacy dicts are routed through the shared tactical
+        helper, which supplies a conservative fallback frame without
+        exposing raw ``summary`` / ``key_decisions`` fields here.
         """
-        from werewolf_agent.rag.prompt_renderer import _MAX_KEY_DECISIONS_IN_PROMPT
+        from werewolf_agent.rag.tactical_text import prompt_safe_tactical_frame_dict
+
         slim: list[dict[str, Any]] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
-            key_decisions = item.get("key_decisions") or []
-            if isinstance(key_decisions, str):
-                key_decisions = [key_decisions]
-            if not isinstance(key_decisions, list):
-                key_decisions = []
+            frame = prompt_safe_tactical_frame_dict(item)
             slim.append({
                 "title": PlayerPromptBuilder._clean_prompt_text(
                     item.get("title", ""),
                     max_chars=_MAX_LEARNING_TEXT_CHARS,
                 ),
-                "summary": PlayerPromptBuilder._clean_prompt_text(
-                    item.get("summary", ""),
+                "situation_signature": PlayerPromptBuilder._clean_prompt_text(
+                    frame["situation_signature"],
                     max_chars=_MAX_RAG_TEXT_CHARS,
                 ),
-                # P2-6: cap uses the shared renderer constant.
-                "key_decisions": [
+                "transferable_lesson": PlayerPromptBuilder._clean_prompt_text(
+                    frame["transferable_lesson"],
+                    max_chars=_MAX_RAG_TEXT_CHARS,
+                ),
+                "applicability": [
                     PlayerPromptBuilder._clean_prompt_text(
-                        decision,
-                        max_chars=_MAX_LEARNING_TEXT_CHARS,
+                        value,
+                        max_chars=_MAX_RAG_TEXT_CHARS,
                     )
-                    for decision in key_decisions
-                    if isinstance(decision, str)
-                ][:_MAX_KEY_DECISIONS_IN_PROMPT],
+                    for value in frame["applicability"]
+                ],
+                "counter_signals": [
+                    PlayerPromptBuilder._clean_prompt_text(
+                        value,
+                        max_chars=_MAX_RAG_TEXT_CHARS,
+                    )
+                    for value in frame["counter_signals"]
+                ],
+                "recommended_use": PlayerPromptBuilder._clean_prompt_text(
+                    frame["recommended_use"],
+                    max_chars=_MAX_RAG_TEXT_CHARS,
+                ),
+                "misuse_risk": PlayerPromptBuilder._clean_prompt_text(
+                    frame["misuse_risk"],
+                    max_chars=_MAX_RAG_TEXT_CHARS,
+                ),
             })
         return slim
 
     @staticmethod
     def _render_rag_hint_cards(items: list[dict[str, Any]]) -> str:
         """Render prompt-safe RAG items as readable low-priority cards."""
+        def join_values(value: Any, *, fallback: str) -> str:
+            if isinstance(value, list):
+                text = "；".join(str(part).strip() for part in value if str(part).strip())
+                return text or fallback
+            text = str(value or "").strip()
+            return text or fallback
+
         cards: list[str] = []
         for idx, item in enumerate(items, start=1):
             title = str(item.get("title") or "未命名案例")
-            summary = str(item.get("summary") or "无摘要")
-            decisions = item.get("key_decisions") or []
-            if not isinstance(decisions, list):
-                decisions = []
-            principles = "；".join(
-                str(decision).strip()
-                for decision in decisions
-                if str(decision).strip()
-            )
-            if not principles:
-                principles = "仅参考案例摘要，不形成硬性动作。"
             cards.append(
                 f"案例 {idx}：{title}\n"
-                f"- 案例摘要：{summary}\n"
-                f"- 可借鉴原则：{principles}\n"
-                "- 使用前检查：仅当本局公开事实与该案例局面相似时才参考。\n"
-                "- 禁止套用：不得复用案例玩家 ID、票型、遗言、具体动作或决策链。"
+                f"- 适用局面：{join_values(item.get('situation_signature'), fallback='缺少局面描述。')}\n"
+                f"- 可迁移原则：{join_values(item.get('transferable_lesson'), fallback='仅作为谨慎参考。')}\n"
+                f"- 适用条件：{join_values(item.get('applicability'), fallback='仅当本局公开事实与案例局面相似时参考。')}\n"
+                f"- 不适用信号：{join_values(item.get('counter_signals'), fallback='若当前局面不匹配则不要套用。')}\n"
+                f"- 本局参考方式：{join_values(item.get('recommended_use'), fallback='作为参考，不作为直接指令。')}\n"
+                f"- 误用风险：{join_values(item.get('misuse_risk'), fallback='过度套用可能误导判断。')}"
             )
 
         return "\n\n".join(cards)

@@ -86,20 +86,8 @@ def to_prompt_safe_tactical_frame(item: Any) -> dict[str, str | list[str]]:
 
     if isinstance(candidate, RAGTacticalFrame):
         frame = candidate
-    elif isinstance(candidate, Mapping):
-        frame = RAGTacticalFrame(
-            **{field: candidate.get(field) for field in TACTICAL_FRAME_FIELDS}
-        )
-    elif hasattr(candidate, "model_dump"):
-        dumped = candidate.model_dump()
-        frame = RAGTacticalFrame(
-            **{field: dumped.get(field) for field in TACTICAL_FRAME_FIELDS}
-        )
     else:
-        frame = RAGTacticalFrame(**{
-            field: getattr(candidate, field)
-            for field in TACTICAL_FRAME_FIELDS
-        })
+        frame = RAGTacticalFrame(**_coerce_frame_data(candidate))
 
     return frame.model_dump()
 
@@ -114,6 +102,24 @@ def _text_values(value: str | list[str]) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
     text = str(value).strip()
     return [text] if text else []
+
+
+def _coerce_frame_data(candidate: Any) -> dict[str, Any]:
+    if isinstance(candidate, Mapping):
+        data = {field: candidate.get(field) for field in TACTICAL_FRAME_FIELDS}
+    elif hasattr(candidate, "model_dump"):
+        dumped = candidate.model_dump()
+        data = {field: dumped.get(field) for field in TACTICAL_FRAME_FIELDS}
+    else:
+        data = {
+            field: getattr(candidate, field)
+            for field in TACTICAL_FRAME_FIELDS
+        }
+    for field in ("applicability", "counter_signals"):
+        value = data.get(field)
+        if isinstance(value, str):
+            data[field] = [value]
+    return data
 
 
 def build_rag_retrieval_text(item: Any, *, max_chars: int = 1500) -> str:

@@ -195,7 +195,8 @@ class RAGKnowledgeService:
     ) -> list[dict[str, Any]]:
         """Convert RAG hits to slim prompt lines for the live player.
 
-        P0-G1: only title, summary, and 2-3 key_decisions are surfaced.
+        P0-G1/RAG V2: only title plus prompt-safe tactical-frame fields
+        are surfaced.
         See :func:`werewolf_agent.rag.prompt_renderer.hits_to_prompt_lines`
         for the full exclusion list.
         """

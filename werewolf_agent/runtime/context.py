@@ -313,10 +313,11 @@ def _inject_seed_rag_hints(
             game_id=game_id,
             player_id=context.agent_id,
         )
-        # P0-G1: the live prompt must only see title/summary/key_decisions,
-        # never the audit-only fields (relevance, quality, source type,
-        # visibility, display annotation). Audit data stays on the
-        # ``RAGInjector.audit_log()`` side.
+        # P0-G1/RAG V2: the live prompt must only see title plus
+        # prompt-safe tactical-frame fields, never legacy summary/
+        # key_decisions or audit-only fields (relevance, quality,
+        # source type, visibility, display annotation). Audit data
+        # stays on the ``RAGInjector.audit_log()`` side.
         # P2-6: use the shared live-prompt cap constant.
         items = rag_service.hits_to_prompt_lines(hits, max_items=RAG_LIVE_PROMPT_CAP)
         if not items:

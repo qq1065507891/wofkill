@@ -6,10 +6,11 @@ where the moderator needs to know *why* a hit surfaced, NOT in the live
 LLM prompt where it only burns context window.
 
 P0-G2: Slim rendering strips the audit-only metadata from the live prompt
-so the LLM sees only what a player can reason about: the case's title,
-summary, and 2-3 key decisions. Relevance score, quality grade, source
-type, visibility boundary, and display annotation stay in the audit log
-on ``RAGInjector.audit_log()`` and ``RAGHit`` itself.
+so the LLM sees only what a player can reason about: the case's title
+and prompt-safe V2 tactical frame. Legacy summary/key_decisions,
+relevance score, quality grade, source type, visibility boundary, and
+display annotation stay in the audit log on ``RAGInjector.audit_log()``
+and ``RAGHit`` itself.
 
 P1-G5: 3 RAG hits may be near-duplicates (same tactic, different
 framing). The slim path now runs ``dedup_hits_by_similarity`` before
@@ -25,7 +26,10 @@ import re
 from typing import Any
 
 from werewolf_agent.rag.schemas import RAGHit
-from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
+from werewolf_agent.rag.tactical_text import (
+    build_rag_retrieval_text,
+    prompt_safe_tactical_frame_dict,
+)
 
 
 # Fields that must NEVER appear in a live-player prompt. Anything in this
@@ -46,18 +50,14 @@ _FORBIDDEN_LIVE_FIELDS: frozenset[str] = frozenset({
     "role_perspective",
     "tags",
     "short_quotes",
+    "summary",
+    "key_decisions",
 })
 
 
-# Maximum number of key_decisions surfaced in the live prompt. The slim
-# renderer's whole point is to give the LLM actionable takeaways without
-# dumping the full entry; cap is intentionally small.
-#
-# R4: this 3-cap is intentional and distinct from the retriever's 5-cap
-# in ``_entry_to_hit`` (``retriever.py:key_decisions=entry.key_decisions[:5]``).
-# The retriever keeps 5 for the audit JSON / review tooling; the prompt
-# renderer further trims to 3 so the LLM only sees the top 3 decisions.
-# Do not unify the two — they serve different audiences (audit vs. LLM).
+# Legacy compatibility constant. RAG V2 live prompts no longer render
+# ``key_decisions`` directly; the cap remains only so older imports do
+# not break while legacy fields continue to exist on RAGHit/audit data.
 _MAX_KEY_DECISIONS_IN_PROMPT = 3
 
 
@@ -206,11 +206,12 @@ def dedup_hits_by_similarity(
 
 
 def render_hit_for_prompt(hit: RAGHit) -> dict[str, Any]:
-    """Render a single RAGHit as a slim dict for the live-player prompt.
+    """Render a single RAGHit as a V2 prompt-safe live-player dict.
 
-    The returned dict has at most three keys: ``title``, ``summary``,
-    and ``key_decisions``. All audit metadata (relevance, quality,
-    source, visibility, display_annotation) is dropped here — see
+    The returned dict contains ``type``, ``title``, and prompt-safe V2
+    tactical-frame fields. Legacy ``summary`` / ``key_decisions`` and
+    audit metadata (relevance, quality, source, visibility,
+    display_annotation, quotes) are dropped here — see
     :data:`_FORBIDDEN_LIVE_FIELDS` for the full exclusion list.
 
     Parameters
@@ -222,9 +223,8 @@ def render_hit_for_prompt(hit: RAGHit) -> dict[str, Any]:
     Returns
     -------
     dict
-        A new dict with keys ``title``, ``summary``, and
-        ``key_decisions`` (truncated to
-        :data:`_MAX_KEY_DECISIONS_IN_PROMPT`).
+        A new dict with ``type``, ``title``, and prompt-safe tactical
+        frame fields.
     """
     return {
         # R3: the ``type`` discriminator is what
@@ -234,9 +234,7 @@ def render_hit_for_prompt(hit: RAGHit) -> dict[str, Any]:
         # != "rag_hit"]`` is a no-op and old slim items accumulate.
         "type": "rag_hit",
         "title": hit.title,
-        "summary": hit.summary,
-        # [:3] is the prompt cap; full 5 (audit) is kept in retriever.
-        "key_decisions": list(hit.key_decisions)[:_MAX_KEY_DECISIONS_IN_PROMPT],
+        **prompt_safe_tactical_frame_dict(hit),
     }
 
 
@@ -283,7 +281,8 @@ def hits_to_prompt_lines(
     -------
     list[dict]
         A list with at most ``max_items`` slim dicts. Each dict
-        contains only ``title``, ``summary``, and ``key_decisions``.
+        contains only ``type``, ``title``, and prompt-safe V2 tactical
+        frame fields.
     """
     # rag-hardening-1: defense-in-depth — drop hits that the
     # visibility layer already rejected, so a retriever regression

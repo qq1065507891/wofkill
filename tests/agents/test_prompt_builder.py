@@ -1095,6 +1095,32 @@ def _make_villager_context() -> AgentContext:
     )
 
 
+def _v2_rag_hint(
+    *,
+    title: str = "案例标题",
+    situation_signature: str = "D2 白天发言阶段，预言家对跳后票型开始集中。",
+    transferable_lesson: str = "先拆投票动机，再决定是否跟随归票。",
+    applicability: list[str] | None = None,
+    counter_signals: list[str] | None = None,
+    recommended_use: str = "用作发言前的检核清单，不替代当前局证据。",
+    misuse_risk: str = "照搬案例票型会把历史玩家当成本局事实。",
+) -> dict:
+    return {
+        "type": "rag_hit",
+        "title": title,
+        "situation_signature": situation_signature,
+        "transferable_lesson": transferable_lesson,
+        "applicability": applicability
+        if applicability is not None
+        else ["本局已有公开票型", "发言顺序能解释站边变化"],
+        "counter_signals": counter_signals
+        if counter_signals is not None
+        else ["当前局没有预言家对跳", "票型仍未形成压力"],
+        "recommended_use": recommended_use,
+        "misuse_risk": misuse_risk,
+    }
+
+
 def test_rag_hints_strip_audit_metadata_in_live_prompt():
     """P0-G2 defense in depth: even if a non-production code path
     populates ``ctx.rag_hints`` with the full audit payload
@@ -1111,9 +1137,14 @@ def test_rag_hints_strip_audit_metadata_in_live_prompt():
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
-            "type": "rag_hit",
+            **_v2_rag_hint(
+                title="京城大师赛 250415 抗推预言家",
+                situation_signature="D2 白天发言，预言家被集中质疑。",
+                transferable_lesson="先拆质疑来源，再判断是否需要跟票。",
+                recommended_use="只作为发言结构参考。",
+                misuse_risk="照搬历史票型会误导当前局判断。",
+            ),
             "entry_id": "leaked_audit_item",
-            "title": "京城大师赛 250415 抗推预言家",
             "summary": "狼队在白天通过抗推预言家获得票数优势。",
             "key_decisions": [
                 "白天全力归票预言家",
@@ -1156,6 +1187,8 @@ def test_rag_hints_strip_audit_metadata_in_live_prompt():
         "tags",
         "short_quotes",
         "entry_id",
+        "summary",
+        "key_decisions",
     ):
         assert forbidden_name not in prompt, (
             f"Audit-only field name {forbidden_name!r} leaked into live prompt"
@@ -1166,12 +1199,12 @@ def test_rag_hints_strip_audit_metadata_in_live_prompt():
     assert "public_tournament" not in prompt
     assert "player_perspective" not in prompt
     assert "leaked_audit_item" not in prompt
-    # The slim payload fields ARE present.
+    assert "狼队在白天通过抗推预言家获得票数优势。" not in prompt
+    assert "白天全力归票预言家" not in prompt
+    # The V2 slim payload fields ARE present.
     assert "京城大师赛 250415 抗推预言家" in prompt
-    assert "狼队在白天通过抗推预言家获得票数优势。" in prompt
-    assert "白天全力归票预言家" in prompt
-    # key_decisions truncated to 3.
-    assert "不应当出现" not in prompt
+    assert "D2 白天发言，预言家被集中质疑。" in prompt
+    assert "先拆质疑来源，再判断是否需要跟票。" in prompt
 
 
 def test_rag_hints_empty_when_no_hints():
@@ -1195,12 +1228,7 @@ def test_rag_hints_include_player_id_warning():
     """
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
-        "rag_hints": [{
-            "type": "rag_hit",  # G-R4-10: explicit type discriminator
-            "title": "京城大师赛 250415 抗推预言家",
-            "summary": "狼队在白天通过抗推预言家获得票数优势。",
-            "key_decisions": ["白天全力归票预言家"],
-        }],
+        "rag_hints": [_v2_rag_hint(title="京城大师赛 250415 抗推预言家")],
     })
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     # The exact prefix — Phase 2 P2-11 extended it to cover
@@ -1237,12 +1265,7 @@ def test_rag_hints_player_id_warning_appears_before_case_cards():
     """
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
-        "rag_hints": [{
-            "type": "rag_hit",  # G-R4-10: explicit type discriminator
-            "title": "案例标题",
-            "summary": "案例摘要。",
-            "key_decisions": ["决策1"],
-        }],
+        "rag_hints": [_v2_rag_hint(title="案例标题")],
     })
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     rag_start = prompt.find("知识库提示")
@@ -1258,23 +1281,26 @@ def test_rag_hints_player_id_warning_appears_before_case_cards():
     )
 
 
-def test_rag_hints_render_case_cards_instead_of_json_payload():
-    """P1-RAG-DENSITY: live RAG should be rendered as readable case
-    cards, not a compact title/summary/key_decisions JSON array.
+def test_rag_hints_render_v2_case_cards_instead_of_json_payload():
+    """RAG V2: live RAG should be rendered as readable tactical cards.
 
     JSON is convenient for code but weak for LLM decision grounding:
     the model can treat it as fact rows and copy tactics directly. The
-    live prompt should surface the same safe fields as a low-priority
-    reference card with explicit applicability and non-copy guards.
+    live prompt should surface the V2 safe tactical frame as a
+    low-priority reference card with explicit applicability and
+    misuse-risk guards.
     """
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
-        "rag_hints": [{
-            "type": "rag_hit",
-            "title": "案例标题",
-            "summary": "案例摘要。",
-            "key_decisions": ["决策1", "决策2"],
-        }],
+        "rag_hints": [_v2_rag_hint(
+            title="案例标题",
+            situation_signature="局面签名",
+            transferable_lesson="可迁移原则文本",
+            applicability=["条件1", "条件2"],
+            counter_signals=["反信号1", "反信号2"],
+            recommended_use="本局参考方式文本",
+            misuse_risk="误用风险文本",
+        )],
     })
 
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
@@ -1283,15 +1309,85 @@ def test_rag_hints_render_case_cards_instead_of_json_payload():
     rag_section = prompt[rag_start:]
 
     assert "案例 1：案例标题" in rag_section
-    assert "- 案例摘要：案例摘要。" in rag_section
-    assert "- 可借鉴原则：决策1；决策2" in rag_section
-    assert "- 使用前检查：" in rag_section
-    assert "- 禁止套用：" in rag_section
-    for json_key in ('"title"', '"summary"', '"key_decisions"'):
+    assert "- 适用局面：局面签名" in rag_section
+    assert "- 可迁移原则：可迁移原则文本" in rag_section
+    assert "- 适用条件：条件1；条件2" in rag_section
+    assert "- 不适用信号：反信号1；反信号2" in rag_section
+    assert "- 本局参考方式：本局参考方式文本" in rag_section
+    assert "- 误用风险：误用风险文本" in rag_section
+    for json_key in (
+        '"title"',
+        '"summary"',
+        '"key_decisions"',
+        '"situation_signature"',
+        '"transferable_lesson"',
+        '"applicability"',
+        '"counter_signals"',
+        '"recommended_use"',
+        '"misuse_risk"',
+    ):
         assert json_key not in rag_section, (
             f"P1-RAG-DENSITY: live RAG prompt should not expose "
             f"compact JSON key {json_key}"
         )
+    assert "案例摘要：" not in rag_section
+    assert "可借鉴原则：" not in rag_section
+    assert "使用前检查：" not in rag_section
+    assert "禁止套用：" not in rag_section
+
+
+def test_rag_hints_legacy_items_use_fallback_frame_without_raw_keys():
+    """RAG V2 compat: legacy ctx.rag_hints still render via shared fallback.
+
+    The live prompt should not show raw JSON keys ``summary`` /
+    ``key_decisions`` and should not render those legacy keys as card
+    labels. The shared tactical helper supplies conservative fallback
+    frame text instead.
+    """
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [{
+            "type": "rag_hit",
+            "title": "旧版案例",
+            "summary": "旧版摘要可作为谨慎参考。",
+            "key_decisions": ["旧版决策不应作为卡片字段"],
+        }],
+    })
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    rag_start = prompt.find("知识库提示")
+    assert rag_start != -1, "RAG hints section must be present"
+    rag_section = prompt[rag_start:]
+
+    assert "案例 1：旧版案例" in rag_section
+    assert "- 适用局面：旧版RAG条目缺少V2战术框架。" in rag_section
+    assert "- 可迁移原则：旧版摘要可作为谨慎参考。" in rag_section
+    assert "- 适用条件：仅在当前局面与旧摘要明确匹配时参考。" in rag_section
+    assert "- 不适用信号：当前局面与旧摘要描述不一致。" in rag_section
+    assert "summary" not in rag_section
+    assert "key_decisions" not in rag_section
+    assert "案例摘要：" not in rag_section
+    assert "旧版决策不应作为卡片字段" not in rag_section
+
+
+def test_rag_hints_accept_string_v2_list_fields_from_non_default_paths():
+    """Defensive renderer: string list fields should not crash prompt build."""
+    ctx = _make_villager_context()
+    ctx = ctx.model_copy(update={
+        "rag_hints": [_v2_rag_hint(
+            title="字符串字段案例",
+            applicability="单个适用条件",  # type: ignore[arg-type]
+            counter_signals="单个反信号",  # type: ignore[arg-type]
+        )],
+    })
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    rag_start = prompt.find("知识库提示")
+    assert rag_start != -1, "RAG hints section must be present"
+    rag_section = prompt[rag_start:]
+
+    assert "- 适用条件：单个适用条件" in rag_section
+    assert "- 不适用信号：单个反信号" in rag_section
 
 
 def test_rag_hints_no_warning_when_no_hints():
@@ -1318,12 +1414,7 @@ def test_rag_hints_have_tail_reminder():
     """
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
-        "rag_hints": [{
-            "type": "rag_hit",  # G-R4-10: explicit type discriminator
-            "title": "案例标题",
-            "summary": "案例摘要。",
-            "key_decisions": ["决策1"],
-        }],
+        "rag_hints": [_v2_rag_hint(title="案例标题")],
     })
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     rag_start = prompt.find("知识库提示")
@@ -1378,16 +1469,16 @@ def test_rag_hints_filtered_by_type():
                 "key_decisions": ["SALIENCE-DECISION"],
             },
             {
-                "type": "rag_hit",
-                "title": "RAG-1-TITLE",
-                "summary": "RAG-1-SUMMARY",
-                "key_decisions": ["RAG-1-DECISION"],
+                **_v2_rag_hint(
+                    title="RAG-1-TITLE",
+                    situation_signature="RAG-1-SITUATION",
+                ),
             },
             {
-                "type": "rag_hit",
-                "title": "RAG-2-TITLE",
-                "summary": "RAG-2-SUMMARY",
-                "key_decisions": ["RAG-2-DECISION"],
+                **_v2_rag_hint(
+                    title="RAG-2-TITLE",
+                    situation_signature="RAG-2-SITUATION",
+                ),
             },
         ],
     })
@@ -1413,14 +1504,14 @@ def test_rag_truncation_note_in_tail():
     a generic content_prefix/content_suffix envelope for one oversized
     field.
     """
-    long_summary = "狼" * 5000
+    long_lesson = "狼" * 5000
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
-            "type": "rag_hit",
-            "title": "超长案例",
-            "summary": long_summary,
-            "key_decisions": ["决策1", "决策2", "决策3"],
+            **_v2_rag_hint(
+                title="超长案例",
+                transferable_lesson=long_lesson,
+            ),
         }],
     })
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
@@ -1428,7 +1519,7 @@ def test_rag_truncation_note_in_tail():
     assert rag_start != -1, "RAG hints section must be present"
     rag_section = prompt[rag_start:]
     assert "…已截断" in rag_section, (
-        f"Long RAG summary should be truncated at field level. Got: {rag_section!r}"
+        f"Long RAG V2 field should be truncated at field level. Got: {rag_section!r}"
     )
     assert "以上案例仅供参考" in rag_section, (
         "The existing '以上案例仅供参考' tail reminder must remain."
@@ -2047,8 +2138,12 @@ def test_learning_context_drops_rag_before_player_reflection_when_too_large() ->
             {
                 "type": "rag_hit",
                 "title": f"RAG_LOW_PRIORITY_MARKER_{idx}",
-                "summary": "低优先级案例" * 600,
-                "key_decisions": ["低优先级决策" * 300],
+                "situation_signature": "低优先级局面" * 600,
+                "transferable_lesson": "低优先级原则" * 600,
+                "applicability": ["低优先级条件" * 300],
+                "counter_signals": ["低优先级反信号" * 300],
+                "recommended_use": "低优先级参考方式" * 600,
+                "misuse_risk": "低优先级误用风险" * 600,
             }
             for idx in range(6)
         ],
@@ -3304,7 +3399,9 @@ def test_learning_context_renderers_whitelist_prompt_safe_fields() -> None:
     assert "logic_rank" not in prompt
     assert "RAG_DEBUG_SHOULD_NOT_RENDER" not in prompt
     assert "历史玩家" in prompt
-    assert "不要被拆成字符列表" in prompt
+    assert "案例中 历史玩家 冲票成功" in prompt
+    assert "不要被拆成字符列表" not in prompt
+    assert "key_decisions" not in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -150,7 +150,8 @@ class RAGInjector:
 
         For the live-player prompt, prefer :func:`hits_to_prompt_lines`
         (or :meth:`RAGInjector.hits_to_prompt_lines`) which strips the
-        audit-only fields and keeps only title/summary/key_decisions.
+        audit-only fields and keeps only title plus prompt-safe
+        tactical-frame fields.
         """
         items: list[dict[str, Any]] = []
         for hit in hits[:max_items]:
@@ -176,8 +177,8 @@ class RAGInjector:
     ) -> list[dict[str, Any]]:
         """Convert RAG hits to slim prompt lines for the live player.
 
-        P0-G1: only title, summary, and a truncated ``key_decisions``
-        list are returned. All audit-only fields (relevance, quality,
+        P0-G1/RAG V2: only title plus prompt-safe tactical-frame fields
+        are returned. All audit-only fields (relevance, quality,
         source, visibility, display annotation) stay on the
         :class:`RAGHit` and in :attr:`audit_log` — they are dropped
         here to keep the live prompt focused on actionable takeaways.

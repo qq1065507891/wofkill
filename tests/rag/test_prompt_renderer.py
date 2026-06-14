@@ -1,8 +1,9 @@
-"""Tests for the slim RAG prompt renderer (P0-G1 + P0-G2).
+"""Tests for the slim RAG prompt renderer (P0-G1 + P0-G2 + RAG V2).
 
-P0-G1: The slim renderer must only include ``title``, ``summary``, and
-``key_decisions`` (capped at 3) — never the audit-only metadata that
-``RAGInjector.hits_to_context_items()`` exposes.
+P0-G1/RAG V2: The slim renderer must only include prompt-safe tactical
+frame fields: title plus the six V2 tactical-frame fields. Legacy
+``summary`` / ``key_decisions`` are retrieval/audit compatibility fields
+and must not appear in the live-player prompt.
 
 P0-G2: Specifically, the live prompt must NOT contain
 ``relevance_score``, ``quality_grade.value``, ``source_type.value``,
@@ -23,7 +24,6 @@ import pytest
 
 from werewolf_agent.rag.prompt_renderer import (
     _FORBIDDEN_LIVE_FIELDS,
-    _MAX_KEY_DECISIONS_IN_PROMPT,
     dedup_hits_by_similarity,
     hits_to_prompt_lines,
     hits_to_prompt_lines_json,
@@ -42,6 +42,40 @@ from werewolf_agent.rag.schemas import (
 # ---------------------------------------------------------------------------
 # Test fixtures
 # ---------------------------------------------------------------------------
+
+_V2_PROMPT_KEYS = {
+    "type",
+    "title",
+    "situation_signature",
+    "transferable_lesson",
+    "applicability",
+    "counter_signals",
+    "recommended_use",
+    "misuse_risk",
+}
+
+
+def _make_frame(
+    *,
+    situation_signature: str = "D2 白天发言阶段，预言家对跳后票型开始集中。",
+    transferable_lesson: str = "先拆投票动机，再决定是否跟随归票。",
+    applicability: list[str] | None = None,
+    counter_signals: list[str] | None = None,
+    recommended_use: str = "用作发言前的检核清单，不替代当前局证据。",
+    misuse_risk: str = "照搬案例票型会把历史玩家当成本局事实。",
+) -> RAGTacticalFrame:
+    return RAGTacticalFrame(
+        situation_signature=situation_signature,
+        transferable_lesson=transferable_lesson,
+        applicability=applicability
+        if applicability is not None
+        else ["本局已有公开票型", "发言顺序能解释站边变化"],
+        counter_signals=counter_signals
+        if counter_signals is not None
+        else ["当前局没有预言家对跳", "票型仍未形成压力"],
+        recommended_use=recommended_use,
+        misuse_risk=misuse_risk,
+    )
 
 
 def _make_hit(
@@ -90,16 +124,12 @@ def _make_hit(
 
 
 class TestPromptRenderDropsMetadata:
-    """P0-G1: The slim renderer must only expose title/summary/key_decisions."""
+    """P0-G1/RAG V2: The slim renderer exposes only tactical prompt fields."""
 
-    def test_render_hit_for_prompt_has_only_three_keys(self) -> None:
-        hit = _make_hit()
+    def test_render_hit_for_prompt_has_only_v2_prompt_safe_keys(self) -> None:
+        hit = _make_hit(tactical_frame=_make_frame())
         line = render_hit_for_prompt(hit)
-        # R3: the slim renderer adds a ``type`` discriminator so the
-        # context layer can identify and clear previous rag_hit items
-        # between turns. The four keys are: type, title, summary,
-        # key_decisions.
-        assert set(line.keys()) == {"type", "title", "summary", "key_decisions"}
+        assert set(line.keys()) == _V2_PROMPT_KEYS
 
     def test_render_hit_for_prompt_includes_type_field(self) -> None:
         """R3: every slim prompt line must carry ``type == "rag_hit"`` so
@@ -108,43 +138,52 @@ class TestPromptRenderDropsMetadata:
         actually drops previous rag hits. Without the discriminator
         the filter is a no-op and old slim items pile up across turns.
         """
-        hit = _make_hit()
+        hit = _make_hit(tactical_frame=_make_frame())
         line = render_hit_for_prompt(hit)
         assert line.get("type") == "rag_hit", (
             f"R3: slim line must carry type='rag_hit'; got {line!r}"
         )
 
-    def test_render_hit_preserves_title_summary(self) -> None:
+    def test_render_hit_preserves_title_and_tactical_frame(self) -> None:
+        frame = _make_frame()
         hit = _make_hit(
             title="京城大师赛 250415 抗推预言家",
             summary="狼队在白天通过抗推预言家获得票数优势。",
+            tactical_frame=frame,
         )
         line = render_hit_for_prompt(hit)
         assert line["title"] == "京城大师赛 250415 抗推预言家"
-        assert line["summary"] == "狼队在白天通过抗推预言家获得票数优势。"
+        assert line["situation_signature"] == frame.situation_signature
+        assert line["transferable_lesson"] == frame.transferable_lesson
+        assert line["applicability"] == frame.applicability
+        assert line["counter_signals"] == frame.counter_signals
+        assert line["recommended_use"] == frame.recommended_use
+        assert line["misuse_risk"] == frame.misuse_risk
 
-    def test_render_hit_truncates_key_decisions_to_three(self) -> None:
+    def test_render_hit_omits_legacy_summary_and_key_decisions(self) -> None:
         hit = _make_hit(
-            key_decisions=[
-                "决策1: 白天全力归票预言家",
-                "决策2: 预言家抗推后改换身份打深钩",
-                "决策3: 夜里优先解神牌",
-                "决策4: 不再深钩（不应当出现）",
-                "决策5: 跳预言家时自曝（不应当出现）",
-            ],
+            summary="LEGACY-SUMMARY-MUST-NOT-BE-A-LIVE-FIELD",
+            key_decisions=["LEGACY-DECISION-MUST-NOT-BE-A-LIVE-FIELD"],
+            tactical_frame=_make_frame(),
         )
         line = render_hit_for_prompt(hit)
-        assert len(line["key_decisions"]) == _MAX_KEY_DECISIONS_IN_PROMPT
-        assert line["key_decisions"] == [
-            "决策1: 白天全力归票预言家",
-            "决策2: 预言家抗推后改换身份打深钩",
-            "决策3: 夜里优先解神牌",
-        ]
+        assert "summary" not in line
+        assert "key_decisions" not in line
+        rendered_values = json.dumps(line, ensure_ascii=False)
+        assert "LEGACY-SUMMARY-MUST-NOT-BE-A-LIVE-FIELD" not in rendered_values
+        assert "LEGACY-DECISION-MUST-NOT-BE-A-LIVE-FIELD" not in rendered_values
 
-    def test_render_hit_with_zero_key_decisions(self) -> None:
-        hit = _make_hit(key_decisions=[])
+    def test_render_hit_without_v2_frame_uses_legacy_fallback_frame(self) -> None:
+        hit = _make_hit(
+            summary="旧版摘要只能作为谨慎参考。",
+            tactical_frame=None,
+        )
         line = render_hit_for_prompt(hit)
-        assert line["key_decisions"] == []
+        assert set(line.keys()) == _V2_PROMPT_KEYS
+        assert line["situation_signature"] == "旧版RAG条目缺少V2战术框架。"
+        assert line["transferable_lesson"] == "旧版摘要只能作为谨慎参考。"
+        assert line["applicability"] == ["仅在当前局面与旧摘要明确匹配时参考。"]
+        assert line["counter_signals"] == ["当前局面与旧摘要描述不一致。"]
 
     def test_hits_to_prompt_lines_respects_max_items(self) -> None:
         # P1-G5: distinct titles + distinct summaries with zero token
@@ -152,15 +191,24 @@ class TestPromptRenderDropsMetadata:
         hits = [
             _make_hit(
                 entry_id=f"ext_{i:03d}",
-                title=f"甲{i}",
-                summary=f"乙{i}",
+                title=f"case_{i}",
+                summary=f"legacy_{i}",
+                tactical_frame=_make_frame(
+                    situation_signature=f"situation_alpha_{i}",
+                    transferable_lesson=f"lesson_beta_{i}",
+                    applicability=[f"applicability_gamma_{i}"],
+                    counter_signals=[f"counter_delta_{i}"],
+                    recommended_use=f"use_epsilon_{i}",
+                    misuse_risk=f"risk_zeta_{i}",
+                ),
             )
             for i in range(5)
         ]
         lines = hits_to_prompt_lines(hits, max_items=2)
         assert len(lines) == 2
-        assert lines[0]["title"] == "甲0"
-        assert lines[1]["title"] == "甲1"
+        assert set(lines[0].keys()) == _V2_PROMPT_KEYS
+        assert lines[0]["title"] == "case_0"
+        assert lines[1]["title"] == "case_1"
 
     def test_hits_to_prompt_lines_default_max_is_three(self) -> None:
         # G-R4-09: the dedup cap is now caller-controlled. The
@@ -171,8 +219,16 @@ class TestPromptRenderDropsMetadata:
         hits = [
             _make_hit(
                 entry_id=f"ext_{i:03d}",
-                title=f"甲{i}",
-                summary=f"乙{i}",
+                title=f"case_{i}",
+                summary=f"legacy_{i}",
+                tactical_frame=_make_frame(
+                    situation_signature=f"situation_alpha_{i}",
+                    transferable_lesson=f"lesson_beta_{i}",
+                    applicability=[f"applicability_gamma_{i}"],
+                    counter_signals=[f"counter_delta_{i}"],
+                    recommended_use=f"use_epsilon_{i}",
+                    misuse_risk=f"risk_zeta_{i}",
+                ),
             )
             for i in range(5)
         ]
@@ -269,6 +325,7 @@ class TestNoMetadataInLivePrompt:
             quality=QualityGrade.HIGH_RANK_GAME,
             source=SourceType.PUBLIC_TOURNAMENT,
             visibility=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            tactical_frame=_make_frame(),
             annotation="[public_tournament|high_rank_game]",
         )
         encoded = hits_to_prompt_lines_json([hit], max_items=1)
@@ -278,8 +335,12 @@ class TestNoMetadataInLivePrompt:
         assert decoded == [{
             "type": "rag_hit",
             "title": hit.title,
-            "summary": hit.summary,
-            "key_decisions": hit.key_decisions,
+            "situation_signature": hit.tactical_frame.situation_signature,
+            "transferable_lesson": hit.tactical_frame.transferable_lesson,
+            "applicability": hit.tactical_frame.applicability,
+            "counter_signals": hit.tactical_frame.counter_signals,
+            "recommended_use": hit.tactical_frame.recommended_use,
+            "misuse_risk": hit.tactical_frame.misuse_risk,
         }]
         # None of the audit field names should appear in the JSON string.
         for forbidden_name in (
@@ -291,6 +352,9 @@ class TestNoMetadataInLivePrompt:
             "allowed_in_live",
             "case_type",
             "role_perspective",
+            "summary",
+            "key_decisions",
+            "short_quotes",
         ):
             assert forbidden_name not in encoded, (
                 f"JSON-serialized live prompt leaks field name {forbidden_name!r}"
@@ -313,17 +377,13 @@ class TestSlimRendererIndependence:
     audiences (LLM live prompt vs. audit log)."""
 
     def test_render_hit_is_pure_and_idempotent(self) -> None:
-        hit = _make_hit()
+        hit = _make_hit(tactical_frame=_make_frame())
         a = render_hit_for_prompt(hit)
         b = render_hit_for_prompt(hit)
         assert a == b
         # Mutating one must not affect the other (list returned, not aliased).
-        a["key_decisions"].append("extra")
-        assert b["key_decisions"] == [
-            "白天全力归票预言家",
-            "预言家抗推后改换身份打深钩",
-            "夜里优先解神牌",
-        ]
+        a["applicability"].append("extra")
+        assert b["applicability"] == ["本局已有公开票型", "发言顺序能解释站边变化"]
 
 
 # ===================================================================
@@ -352,6 +412,7 @@ class TestSlimAndAuditCoexist:
             quality=QualityGrade.HIGH_RANK_GAME,
             source=SourceType.PUBLIC_TOURNAMENT,
             visibility=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            tactical_frame=_make_frame(),
         )
         # Use a StrategyRetriever built directly from one hit so the
         # test is hermetic (no ingestion / seed dependency).
@@ -368,6 +429,7 @@ class TestSlimAndAuditCoexist:
             entry_id="audit_check_001",
             title=hit.title,
             summary=hit.summary,
+            tactical_frame=hit.tactical_frame,
             key_decisions=hit.key_decisions,
             metadata=CaseMetadata(
                 case_type=CaseType.EXTERNAL_HIGH_END_CASE,
@@ -396,8 +458,11 @@ class TestSlimAndAuditCoexist:
         assert slim_lines, "slim path must still return the hit"
         # R3: type=rag_hit is the discriminator the context layer uses
         # to clear previous slim items between turns.
-        assert set(slim_lines[0].keys()) == {"type", "title", "summary", "key_decisions"}
+        assert set(slim_lines[0].keys()) == _V2_PROMPT_KEYS
         assert slim_lines[0]["type"] == "rag_hit"
+        assert slim_lines[0]["transferable_lesson"] == (
+            hit.tactical_frame.transferable_lesson
+        )
 
         # Audit path: full data preserved.
         audit = injector.last_audit()
@@ -428,29 +493,21 @@ class TestSlimAndAuditCoexist:
 
 
 # ===================================================================
-# P1-G4: summary truncation relaxed (300 → 800 chars)
+# RAG V2: legacy fields are not live prompt fields
 # ===================================================================
 
 
-class TestSummaryTruncation800Chars:
-    """P1-G4: The retriever caps summary at 800 chars (was 300). The slim
-    renderer must preserve whatever the retriever returned — slim
-    rendering does not re-truncate."""
+class TestLegacyFieldsNotLivePromptFields:
+    """RAG V2 live prompts expose tactical frames, not legacy summaries."""
 
-    def test_summary_truncation_800_chars(self) -> None:
-        """Build a RAGHit with the new 800-char summary and confirm the
-        slim renderer passes it through unchanged."""
-        long_summary = "狼" * 800  # exactly 800 chars
-        hit = _make_hit(summary=long_summary)
-        # Sanity: the test fixture's summary is the 800-char one.
-        assert len(hit.summary) == 800
+    def test_long_summary_is_not_rendered_even_when_present(self) -> None:
+        long_summary = "狼" * 800
+        hit = _make_hit(summary=long_summary, tactical_frame=_make_frame())
 
         line = render_hit_for_prompt(hit)
-        # Slim renderer does not re-truncate — it trusts the cap at the
-        # retriever layer (P1-G4 contract: 800 chars at retriever, not
-        # renderer).
-        assert line["summary"] == long_summary
-        assert len(line["summary"]) == 800
+
+        assert "summary" not in line
+        assert long_summary not in json.dumps(line, ensure_ascii=False)
 
 
 # ===================================================================
