@@ -23,6 +23,7 @@
 - Modify `werewolf_agent/agents/prompt_builder.py`: preserve V2 fields in `_slim_rag_hint_items()` and render V2 cards.
 - Modify `config/rag_seeds/seed_entries.yaml`: add `schema_version: 2` and complete `tactical_frame` to all 27 entries.
 - Modify tests in `tests/rag/test_schemas.py`, `tests/rag/test_ingestion.py`, `tests/rag/test_prompt_renderer.py`, `tests/rag/test_rag.py`, `tests/rag/test_knowledge_service.py`, and `tests/agents/test_prompt_builder.py`.
+- Update intentional legacy `RAGEntry(...)` fixtures in `tests/rag/test_rag_hardening.py`, `tests/storage/test_storage.py`, `tests/integration/test_e2e_info_leak.py`, and `tests/integration/test_final_delivery.py` to pass `schema_version=1` unless they are converted to complete V2 entries.
 - Modify `PROGRESS.md`: record RAG V2 schema/data migration and verification results.
 
 ## Task 1: Schema And Tactical Text Helpers
@@ -34,6 +35,10 @@
 - Test: `tests/rag/test_schemas.py`
 - Compatibility Test: `tests/rag/test_rag.py`
 - Compatibility Test: `tests/rag/test_prompt_renderer.py`
+- Compatibility Test: `tests/rag/test_rag_hardening.py`
+- Compatibility Test: `tests/storage/test_storage.py`
+- Compatibility Test: `tests/integration/test_e2e_info_leak.py`
+- Compatibility Test: `tests/integration/test_final_delivery.py`
 
 - [ ] **Step 1: Write failing schema tests**
 
@@ -182,6 +187,13 @@ Important compatibility step: after changing the default `schema_version` to
 intentionally legacy to pass `schema_version=1`. Do not paper over failures by
 making incomplete V2 frames valid.
 
+At minimum, update direct legacy constructors in:
+
+- `tests/rag/test_rag_hardening.py`
+- `tests/storage/test_storage.py`
+- `tests/integration/test_e2e_info_leak.py`
+- `tests/integration/test_final_delivery.py`
+
 Also update `seed_data._build_entry()` in this task so current unmigrated YAML
 seeds remain loadable during intermediate commits:
 
@@ -233,7 +245,7 @@ Expected: schema/helper tests pass.
 Then run compatibility tests before committing:
 
 ```powershell
-pytest tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp
+pytest tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py tests/rag/test_rag_hardening.py tests/storage/test_storage.py tests/integration/test_e2e_info_leak.py tests/integration/test_final_delivery.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 ```
 
 Expected: existing legacy fixtures still pass because intentional legacy
@@ -242,7 +254,7 @@ fixtures now set `schema_version=1`.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add werewolf_agent/rag/schemas.py werewolf_agent/rag/seed_data.py werewolf_agent/rag/tactical_text.py tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py
+git add werewolf_agent/rag/schemas.py werewolf_agent/rag/seed_data.py werewolf_agent/rag/tactical_text.py tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py tests/rag/test_rag_hardening.py tests/storage/test_storage.py tests/integration/test_e2e_info_leak.py tests/integration/test_final_delivery.py
 git commit -m "feat: add rag v2 tactical frame schema"
 ```
 
@@ -727,7 +739,7 @@ git commit -m "data: migrate rag seeds to v2 tactical frames"
 Run:
 
 ```powershell
-pytest tests/rag/test_schemas.py tests/rag/test_ingestion.py tests/rag/test_prompt_renderer.py tests/rag/test_rag.py tests/rag/test_knowledge_service.py tests/agents/test_prompt_builder.py tests/runtime/test_context.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp
+pytest tests/rag/test_schemas.py tests/rag/test_ingestion.py tests/rag/test_prompt_renderer.py tests/rag/test_rag.py tests/rag/test_rag_hardening.py tests/rag/test_knowledge_service.py tests/agents/test_prompt_builder.py tests/runtime/test_context.py tests/storage/test_storage.py tests/integration/test_e2e_info_leak.py tests/integration/test_final_delivery.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 ```
 
 Expected: all selected tests pass.
