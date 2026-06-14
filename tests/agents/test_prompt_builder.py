@@ -960,7 +960,7 @@ def test_speech_example_in_prompt_validates_against_strict_schema():
     """
     ctx = AgentContext(
         agent_id="p01",
-        task_type=TaskType.SPEECH,  # → FULL_ACTION (multi-action not 1)
+        task_type=TaskType.REFLECTION,  # → FULL_ACTION
         phase="day",
         day_number=1,
         own_role="villager",
@@ -1508,14 +1508,26 @@ def test_skill_analysis_hints_not_in_user_prompt_for_villager():
 
 
 def test_retry_hint_suggests_no_action_when_failure_category_is_timeout():
-    """P0-R2: timeout empty_response → hint must suggest no_action.
+    """P0-R2: timeout empty_response → hint must suggest no_action when emit-able.
 
     Game trace g_3528592081: seer p03 vote (Action 57) hit 3 empty
     retries and fell back to a default target. If the hint had said
     "if you can't decide, return no_action", the model would have
     taken the safe no-op rather than burning 3 attempts.
     """
-    ctx = _make_villager_context()
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SHERIFF_REGISTRATION,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[
+            ActionType.SHERIFF_REGISTER,
+            ActionType.SHERIFF_WITHDRAW,
+            ActionType.NO_ACTION,
+        ],
+        public_summary="D1 sheriff election",
+    )
     retry = RetryInfo(
         attempt=2,
         max_retries=3,
@@ -1530,9 +1542,62 @@ def test_retry_hint_suggests_no_action_when_failure_category_is_timeout():
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
     # The hint should explicitly mention no_action as a safe fallback.
     assert "no_action" in prompt, (
-        "When failure_category is 'timeout', retry hint must mention "
+        "When failure_category is 'timeout' and FULL_ACTION can emit it, retry hint must mention "
         "'no_action' so the LLM knows the safe no-op is permitted."
     )
+
+
+def test_retry_hint_omits_no_action_when_no_action_is_illegal():
+    """Timeout retry guidance must not suggest an illegal no_action."""
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        public_summary="D2 vote",
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="empty_response",
+        error_message="Model returned empty text",
+        failure_category="timeout",
+        correction_hint=(
+            "Please provide a valid JSON action (cause: timeout). "
+            "If the model timed out, choose a legal target."
+        ),
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    assert "action_type='no_action'" not in prompt
+    assert "选择一个合法目标" in prompt
+
+
+def test_retry_hint_omits_no_action_for_speech_intent_legacy_vote_mode():
+    """Speech-intent retries must not suggest action_type=no_action."""
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p05"],
+        public_summary="D2 speech",
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="empty_response",
+        error_message="Model returned empty text",
+        failure_category="timeout",
+        correction_hint="Please provide a valid JSON action (cause: timeout).",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+    assert "发言意图JSON对象" in prompt
+    assert "action_type='no_action'" not in prompt
 
 
 def test_retry_hint_does_not_force_no_action_for_non_timeout_categories():
@@ -1992,13 +2057,13 @@ def test_output_contract_vote_rule_still_in_user_prompt():
     """
     ctx = AgentContext(
         agent_id="p05",
-        task_type=TaskType.SPEECH,
+        task_type=TaskType.VOTE,
         phase="day",
         day_number=2,
         own_role="villager",
-        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_actions=[ActionType.VOTE],
         legal_targets=["p05", "p07"],
-        public_summary="D2 speech",
+        public_summary="D2 vote",
     )
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     # The phase-specific rule for VOTE must still be in the user prompt.
@@ -2531,19 +2596,22 @@ def test_retry_hint_timeout_permission_line_still_present():
     """P1-9 regression: the timeout-no-op permission line must still
     appear in the retry hint even after relabeling the section.
 
-    The line is a useful advisory signal that the LLM should take
-    a safe no-op on timeout. The runtime FallbackAction enforces
-    safety; the prompt signal is the soft guidance.
+    The line is a useful advisory signal when no_action is legal.
+    The runtime FallbackAction enforces safety; the prompt signal is
+    the soft guidance.
     """
     ctx = AgentContext(
         agent_id="p05",
-        task_type=TaskType.SPEECH,
+        task_type=TaskType.SHERIFF_REGISTRATION,
         phase="day",
-        day_number=2,
+        day_number=1,
         own_role="villager",
-        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
-        legal_targets=["p05", "p07"],
-        public_summary="D2 speech",
+        legal_actions=[
+            ActionType.SHERIFF_REGISTER,
+            ActionType.SHERIFF_WITHDRAW,
+            ActionType.NO_ACTION,
+        ],
+        public_summary="D1 sheriff election",
     )
     retry = RetryInfo(
         attempt=2,
@@ -2594,29 +2662,32 @@ def _extract_json_examples(prompt: str) -> list[dict]:
     return examples
 
 
-def test_format_examples_no_intent_field_in_speech_path():
-    """P1-S4: speech-path example must not include `intent` field.
+def test_format_examples_no_intent_field_in_full_action_sheriff_example():
+    """P1-S4: FULL_ACTION sheriff examples must not include `intent` field.
 
     `intent` is a SPEECH_INTENT-mode field (the enum-style value the
-    LLM picks from a small set). FULL_ACTION mode renders speech
-    directly with action_type=speech, speech=text, reason=..., and
+    LLM picks from a small set). FULL_ACTION mode renders sheriff
+    actions directly with action_type=..., speech=..., reason=..., and
     never uses `intent`. If the example mentions it, the LLM will
-    defensively fill it for SPEECH actions and the strict schema
-    (extra=forbid, P0-S8) will reject them.
+    defensively fill it for non-speech-intent actions and the strict
+    schema (extra=forbid, P0-S8) will reject them.
     """
     ctx = AgentContext(
         agent_id="p05",
-        task_type=TaskType.SPEECH,
+        task_type=TaskType.SHERIFF_REGISTRATION,
         phase="day",
-        day_number=2,
+        day_number=1,
         own_role="villager",
-        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
-        legal_targets=["p05"],
-        public_summary="D2 vote",
+        legal_actions=[
+            ActionType.SHERIFF_REGISTER,
+            ActionType.SHERIFF_WITHDRAW,
+            ActionType.NO_ACTION,
+        ],
+        public_summary="D1 sheriff election",
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     examples = _extract_json_examples(prompt)
-    assert examples, "Expected at least one example in the speech path"
+    assert examples, "Expected at least one example in the full action path"
     for ex in examples:
         assert "intent" not in ex, (
             f"FULL_ACTION example must not include 'intent' field "
@@ -2624,24 +2695,27 @@ def test_format_examples_no_intent_field_in_speech_path():
         )
 
 
-def test_format_examples_no_choice_field_in_speech_path():
-    """P1-S4: speech-path example must not include `choice` field.
+def test_format_examples_no_choice_field_in_full_action_sheriff_example():
+    """P1-S4: FULL_ACTION sheriff examples must not include `choice` field.
 
     `choice` is a TARGET_CHOICE-mode field (an enum letter A/B/C/...
     the LLM picks from a small set). FULL_ACTION mode renders the
-    action with action_type=..., target_id=player_id, never with
+    action with action_type=..., target_id=player_id/null, never with
     `choice`. If the example mentions it, the LLM will defensively
-    fill it for SPEECH/VOTE/WOLF_KILL actions.
+    fill it for non-choice actions.
     """
     ctx = AgentContext(
         agent_id="p05",
-        task_type=TaskType.SPEECH,
+        task_type=TaskType.SHERIFF_REGISTRATION,
         phase="day",
-        day_number=2,
+        day_number=1,
         own_role="villager",
-        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
-        legal_targets=["p05"],
-        public_summary="D2 vote",
+        legal_actions=[
+            ActionType.SHERIFF_REGISTER,
+            ActionType.SHERIFF_WITHDRAW,
+            ActionType.NO_ACTION,
+        ],
+        public_summary="D1 sheriff election",
     )
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     examples = _extract_json_examples(prompt)
@@ -4018,6 +4092,21 @@ def test_system_output_contract_defers_vote_fields_to_action_contract():
         assert field in user_prompt
 
 
+def test_system_output_contract_does_not_unconditionally_prefer_tool_call():
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.REFLECTION,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+    )
+    stable_contract = PlayerPromptBuilder(ctx)._build_output_contract()
+    assert "优先通过当前回合提供的工具提交" not in stable_contract
+    assert "最终输出协议" in stable_contract
+    assert "ActionContract" in stable_contract
+
+
 def test_information_boundaries_do_not_hardcode_wrong_section_count():
     ctx = AgentContext(
         agent_id="p01",
@@ -4028,6 +4117,64 @@ def test_information_boundaries_do_not_hardcode_wrong_section_count():
     boundaries = PlayerPromptBuilder(ctx)._build_information_boundaries()
     assert "11 类" not in boundaries
     assert "user-prompt" in boundaries
+
+
+def test_information_boundaries_use_current_dynamic_section_names():
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+    )
+    boundaries = PlayerPromptBuilder(ctx)._build_information_boundaries()
+    for current_name in (
+        "历史角色经验",
+        "认知校准摘要",
+        "跨局错误模式",
+        "本轮任务",
+        "纠正提示",
+        "最终输出协议",
+    ):
+        assert current_name in boundaries
+    assert "长期能力画像" not in boundaries
+    assert "我的认知矩阵" not in boundaries
+
+
+def test_reasoning_method_keeps_private_info_as_decision_input_not_public_fact():
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="seer",
+    )
+    reasoning = PlayerPromptBuilder(ctx)._build_reasoning_method()
+    assert "私有信息可用于私有决策" in reasoning
+    assert "不能伪装成公开事实" in reasoning
+
+
+def test_skill_policy_points_to_strategy_directive_advice_not_legacy_section():
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+    )
+    policy = PlayerPromptBuilder(ctx)._build_skill_policy()
+    assert "策略指令" in policy
+    assert "技能战术建议" in policy
+    assert "技能分析结果" not in policy
+
+
+def test_werewolf_role_guide_names_stable_wolf_options():
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="werewolf",
+    )
+    role_guide = PlayerPromptBuilder(ctx)._build_role_guide()
+    assert "空刀" in role_guide
+    assert "自爆" in role_guide
 
 
 # ---------------------------------------------------------------------------

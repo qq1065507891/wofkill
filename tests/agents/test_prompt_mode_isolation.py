@@ -159,6 +159,46 @@ def test_output_mode_selection_distinguishes_three_modes():
     assert target_choice_mode == OutputMode.TARGET_CHOICE
 
 
+def test_prompt_builder_and_parse_dispatch_select_same_output_modes():
+    """Prompt text and parser dispatch must share the same mode decision."""
+    from werewolf_agent.agents.parse_dispatch import select_output_mode
+    from werewolf_agent.agents.prompt_builder import _SPEECH_INTENT_TASKS
+
+    task_types = [
+        TaskType.SPEECH,
+        TaskType.SHERIFF_SPEECH,
+        TaskType.VOTE,
+        TaskType.NIGHT_ACTION,
+    ]
+    action_sets = [
+        [ActionType.SPEECH],
+        [ActionType.SPEECH, ActionType.VOTE],
+        [ActionType.VOTE],
+        [ActionType.WOLF_KILL],
+        [ActionType.USE_POISON, ActionType.NO_ACTION],
+    ]
+
+    for task_type in task_types:
+        for legal_actions in action_sets:
+            legal_targets = ["p07"] if ActionType.SPEECH not in legal_actions else ["p07", "p08"]
+            ctx = AgentContext(
+                agent_id="p01",
+                task_type=task_type,
+                phase="day",
+                own_role="villager",
+                legal_actions=legal_actions,
+                legal_targets=legal_targets,
+            )
+            prompt_mode = PlayerPromptBuilder(ctx)._select_output_mode()
+            dispatch_mode = select_output_mode(
+                legal_actions=legal_actions,
+                legal_targets=legal_targets,
+                task_type=task_type,
+                speech_intent_tasks=_SPEECH_INTENT_TASKS,
+            )
+            assert prompt_mode == dispatch_mode
+
+
 def test_full_action_speech_prompt_omits_vote_audit_fields():
     """P0-S8 / P0-S1: speech prompt must not mention vote_basis or seer_stance anywhere.
 
@@ -189,3 +229,94 @@ def test_full_action_speech_prompt_omits_vote_audit_fields():
     assert "standing_with_seer" not in prompt, (
         "Speech prompt must not mention standing_with_seer"
     )
+
+
+def test_speech_task_with_legacy_vote_action_uses_speech_intent_contract():
+    """A speech task must not inherit vote-output requirements from stale legal_actions."""
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07", "p08"],
+        public_summary="Day 1 discussion",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    contract_idx = prompt.find("最终输出协议")
+    assert contract_idx >= 0
+    contract = prompt[contract_idx:]
+    assert "发言意图JSON对象" in contract
+    assert "intent" in contract
+    assert "action_type" not in contract
+    for vote_field in (
+        "vote_basis",
+        "seer_stance",
+        "standing_with_seer",
+        "suspect_reason",
+        "not_voting_reason",
+        "private_reason",
+    ):
+        assert vote_field not in prompt
+
+
+def test_full_action_non_vote_task_with_vote_action_omits_vote_audit_contract():
+    """FULL_ACTION prompt must not require fields absent from ActionContract."""
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.REFLECTION,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+        legal_targets=["p07", "p08"],
+        public_summary="Reflection with stale legal vote option",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    contract_idx = prompt.find("最终输出协议")
+    assert contract_idx >= 0
+    contract = prompt[contract_idx:]
+    assert "action_type" in contract
+    assert "投票还必须包含" not in contract
+    for vote_field in (
+        "vote_basis",
+        "seer_stance",
+        "standing_with_seer",
+        "suspect_reason",
+        "not_voting_reason",
+        "private_reason",
+    ):
+        assert vote_field not in contract
+
+
+def test_target_choice_non_vote_task_omits_vote_audit_contract():
+    """TARGET_CHOICE prompt follows the task_type-specific ActionContract."""
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.REFLECTION,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p07", "p08"],
+        public_summary="Reflection with stale vote-only action",
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    contract_idx = prompt.find("最终输出协议")
+    assert contract_idx >= 0
+    contract = prompt[contract_idx:]
+    assert "choice" in contract
+    assert "投票还必须包含" not in contract
+    for vote_field in (
+        "vote_basis",
+        "seer_stance",
+        "standing_with_seer",
+        "suspect_reason",
+        "not_voting_reason",
+        "private_reason",
+    ):
+        assert vote_field not in contract

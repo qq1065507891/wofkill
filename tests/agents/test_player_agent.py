@@ -1347,7 +1347,7 @@ class TestPlayerAgentRetryFallback:
         )
         # P0-K1: tool-skill policy replaced with pre-injection policy
         assert "【技能与建议】" in prompt
-        assert "技能分析不是裁判真相" in prompt
+        assert "技能战术建议不是裁判真相" in prompt
 
     def test_user_prompt_renders_dynamic_sources_as_separate_sections(self) -> None:
         agent = self._make_agent("unused")
@@ -3097,6 +3097,34 @@ class TestEmptyResponseHintValidatesNoAction:
             "must still mention it (P0-R2). "
             f"Got hint: {retry.correction_hint!r}"
         )
+
+    def test_empty_response_hint_omits_no_action_when_output_mode_cannot_emit_it(self):
+        """D4-3: SPEECH_INTENT mode cannot emit action_type=no_action."""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = self._build_timeout_provider(latency_ms=31_000)
+        router = ModelRouter(
+            model_profiles={},
+            llm_profiles={},
+            player_assignments={"p05": "default"},
+            providers={"mock": provider},
+        )
+        agent = PlayerAgent(agent_id="p05", model_router=router, max_retries=1)
+        ctx = AgentContext(
+            agent_id="p05",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=2,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+            legal_targets=["p07"],
+            public_summary="D2 speech",
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert retry.error_code == "empty_response"
+        assert "no_action" not in retry.correction_hint
 
 
 # ---------------------------------------------------------------------------

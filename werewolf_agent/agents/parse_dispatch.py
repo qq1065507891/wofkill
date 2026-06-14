@@ -35,7 +35,7 @@ def select_output_mode(
     """Pick the simplest output mode that captures what the task needs.
 
     - TARGET_CHOICE: only one target-requiring action is legal and has targets
-    - SPEECH_INTENT: task is in ``speech_intent_tasks`` and only SPEECH is legal
+    - SPEECH_INTENT: speech task with pure SPEECH or legacy SPEECH+VOTE
     - FULL_ACTION: default (full PlayerAction schema)
     """
     if _uses_choice_impl(legal_actions, legal_targets):

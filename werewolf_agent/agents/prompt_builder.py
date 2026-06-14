@@ -19,6 +19,7 @@ from werewolf_agent.agents.directive_priority import (
     REFERENCE_KEYS,
     SUGGESTION_KEYS,
 )
+from werewolf_agent.agents.parse_dispatch import select_output_mode
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
@@ -79,14 +80,7 @@ _VOTE_AUDIT_FIELDS: tuple[str, ...] = tuple(
 # P0-K1: skill catalog removed (tool path is dead code). Skill analyses
 # are pre-injected via skill_analysis_hints — no separate tool catalog.
 
-# Choice pipeline constants
-_CHOICE_TARGET_ACTIONS = {
-    ActionType.VOTE, ActionType.WOLF_KILL, ActionType.USE_POISON,
-    ActionType.CHECK_ALIGNMENT, ActionType.CHOOSE_MASTER,
-    ActionType.HUNTER_SHOT, ActionType.BADGE_TRANSFER,
-    ActionType.SHERIFF_VOTE,
-}
-
+# Speech intent task set shared with parse dispatch.
 _SPEECH_INTENT_TASKS = {
     TaskType.SPEECH, TaskType.SHERIFF_SPEECH,
     TaskType.DEFENSE_SPEECH, TaskType.PK_SPEECH,
@@ -229,14 +223,16 @@ class PlayerPromptBuilder:
             "【信息边界】你会收到以下 user-prompt 段（每段前有【硬约束/辅助/参考/可选】"
             "或【场上记录/策略指令】标签）："
             "人格设定、阶段上下文、我的判断、当前局公开事实、可见世界状态、"
-            "本局·私有记忆、关键事件、知识库提示、跨局反思记忆、长期能力画像、我的认知矩阵、"
-            "策略指令（含技能战术建议）、近期发言、阶段输出契约。"
+            "本局·私有记忆、关键事件、知识库提示、跨局反思记忆、历史角色经验、认知校准摘要、"
+            "跨局错误模式、策略指令（含技能战术建议）、近期发言、本轮任务/候选枚举或示例、"
+            "纠正提示、最终输出协议。"
             "公开发言时，只有『当前局公开事实』『可见世界状态』『近期发言』『关键事件』"
             "可以称为「场上已知」或「公开记录」。"
             "私信可以用于决策，但不能伪装成公开事实。"
             "知识库提示只是玩法经验，不是当前局发生的事。"
             "跨局记忆只是历史经验，不代表本局任何玩家真实身份。"
-            "认知矩阵只是你自己的判断倾向，不是事实。"
+            "历史角色经验、认知校准摘要、跨局错误模式只是自我校准，不是本局事实。"
+            "本轮任务、纠正提示和最终输出协议只约束输出格式，不是公开记录。"
             "技能战术建议只是辅助推理，不改变规则、身份或公开记录。"
             "不确定内容必须表达为推测。"
         )
@@ -252,7 +248,8 @@ class PlayerPromptBuilder:
         return (
             "【推理方法-3 步】\n"
             "1) 分层：把每条信息标记为「事实 / 推测 / 立场 / 情绪」；"
-            "私有信息、跨局记忆、认知矩阵、技能建议均不能转成「事实」。\n"
+            "私有信息可用于私有决策，但不能伪装成公开事实；"
+            "跨局记忆、认知校准和技能建议均不能转成公开事实。\n"
             "2) 盘狼坑：按发言矛盾 > 票型关系 > 站边链条 > 收益动机 > 关键轮次行为 顺序排查；"
             "每条结论必须附公开记录出处或显式标注「推测」。\n"
             "3) 决策：投票前比较证据链完整度与误投成本；行动必须给出当前最优理由，不盲从多数归票。"
@@ -269,10 +266,10 @@ class PlayerPromptBuilder:
         rules it was given in the system prompt.
         """
         return (
-            "【技能与建议】系统会在你的回合前注入已计算的技能分析结果，"
-            "请基于这些分析与当前局可见事实形成自己的判断，不要机械复述。"
+            "【技能与建议】策略指令中可能包含已计算的技能战术建议，"
+            "请基于这些建议与当前局可见事实形成自己的判断，不要机械复述。"
             "【优先级边界】身份规则(role_guide)优先于技能建议，冲突时以身份规则为准。"
-            "技能分析不是裁判真相；如果与公开事实冲突，以公开事实为准。"
+            "技能战术建议不是裁判真相；如果与公开事实冲突，以公开事实为准。"
         )
 
     def _build_role_guide(self) -> str:
@@ -296,7 +293,11 @@ class PlayerPromptBuilder:
                 "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。"
                 "竞选警长或公开身份时，只能准确报告真实验人，并给出与当前局势相符的警徽流。"
             ),
-            "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
+            "werewolf": (
+                "狼人规则：夜间与队友讨论击杀目标，可按合法行动选择击杀、自刀或空刀。"
+                "白天可在规则允许时自爆；自爆后立即出局、无遗言，并中断当前白天。"
+                "可以悍跳预言家上警对抗真预言家。"
+            ),
             "hybrid": (
                 "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。"
                 "主人死亡后阵营不再改变，且不能再选新主人；"
@@ -327,7 +328,7 @@ class PlayerPromptBuilder:
         return (
             "【结构化输出】当前回合 user prompt 中的 ActionContract 与"
             "「最终输出协议」是字段、枚举和必填项的唯一依据。"
-            "优先通过当前回合提供的工具提交；无法调用工具时，只输出一个"
+            "若最终输出协议要求工具且工具可用，则使用工具提交；否则只输出一个"
             "符合当前 ActionContract 的 JSON 对象。不要解释、不要 Markdown、"
             "不要添加合同之外的字段。公开发言正文必须使用中文。"
         )
@@ -486,8 +487,8 @@ class PlayerPromptBuilder:
         # token budget by dropping lowest-priority sections until the
         # prompt fits. Sections are dropped in priority order:
         #   可选 (transcript) → 辅助 (profile, belief, ...).
-        # Persona is compact and never dropped because it differentiates players.
-        # 硬约束 (strategy_directive, retry hint, output contract) is
+        # Persona is compact but droppable; current-game grounding and
+        # 硬约束 (strategy_directive, retry hint, output contract) are
         # never dropped.
         parts: list[tuple[str, str]] = []
         # Boundary marker per s10: above = stable, below = dynamic.
@@ -679,13 +680,20 @@ class PlayerPromptBuilder:
         if ctx.legal_targets:
             lines.append(f"可选目标: {ctx.legal_targets}")
         # Mandatory vote hints
-        if ctx.legal_actions and ActionType.VOTE in ctx.legal_actions:
+        output_mode = self._select_output_mode()
+        is_vote_context = ctx.task_type == TaskType.VOTE
+        if ctx.legal_actions and is_vote_context:
             if ActionType.NO_ACTION not in ctx.legal_actions:
                 lines.append("重要：本轮投票必须选择一名玩家放逐，不能弃票！")
             if ctx.legal_actions == [ActionType.VOTE] and ctx.legal_targets:
                 lines.append("你必须投出选票，从可选目标中选择一人。")
+            json_label = (
+                "choice 决策JSON"
+                if output_mode == OutputMode.TARGET_CHOICE
+                else "JSON"
+            )
             lines.append(
-                "投票时必须先在心里完成判断，并在JSON中额外给出这些私有字段："
+                f"投票时必须先在心里完成判断，并在{json_label}中额外给出这些私有字段："
                 "seer_stance（枚举：trust/distrust/undecided/no_claim）、"
                 "vote_basis（枚举：seer_check/seer_siding/speech_logic/vote_pattern/pressure_test/anti_herd/fallback）、"
                 "standing_with_seer（你站边哪个预言家/逻辑线，没有则写空字符串）、"
@@ -1211,12 +1219,24 @@ class PlayerPromptBuilder:
             retry.error_code == "empty_response"
             and retry.failure_category == "timeout"
         ):
-            lines.append(
-                "重要：如果你已经超时，请直接返回 no_action"
-                "（action_type='no_action', target_id=null, "
-                "reason='timeout - safe no-op'），"
-                "不要再尝试长推理或构造JSON。"
+            output_mode = self._select_output_mode()
+            can_emit_no_action = (
+                ActionType.NO_ACTION in self.context.legal_actions
+                and output_mode == OutputMode.FULL_ACTION
             )
+            if can_emit_no_action:
+                lines.append(
+                    "重要：如果你已经超时，请直接返回 no_action"
+                    "（action_type='no_action', target_id=null, "
+                    "reason='timeout - safe no-op'），"
+                    "不要再尝试长推理或构造JSON。"
+                )
+            elif self.context.legal_targets:
+                first_target = self.context.legal_targets[0]
+                lines.append(
+                    f"重要：如果你已经超时，请选择一个合法目标（例如 {first_target}）"
+                    "并提交结构化JSON，不要再尝试长推理。"
+                )
         return "\n".join(lines)
 
     def _build_task_prompt(self) -> str:
@@ -1245,7 +1265,7 @@ class PlayerPromptBuilder:
         # NO_ACTION) 时路由到 FULL_ACTION 走 ``_format_examples``，
         # 隐私 guard 缺失，LLM 在 reason 字段会写入私视角表述
         # (g_3223805846 复现)。 与 _format_choice_prompt 路径对齐。
-        if ActionType.VOTE in (ctx.legal_actions or []):
+        if ctx.task_type == TaskType.VOTE:
             parts.append(_VOTE_REASON_PRIVACY_GUARD)
         # P0-S7: claimed_view is documented as an identity-perspective
         # identifier (PrivateIntent schema), not a free-form Chinese
@@ -1465,7 +1485,7 @@ class PlayerPromptBuilder:
                 f"3. 最终输出字段：{output_fields}。",
                 "4. choice只能取上方候选枚举中的字母，不要直接编写target_id。",
             ]
-            if ctx.legal_actions == [ActionType.VOTE]:
+            if ctx.task_type == TaskType.VOTE:
                 lines.append(
                     f"5. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
                 )
@@ -1506,7 +1526,7 @@ class PlayerPromptBuilder:
             lines.append(f"5. action_type只能取：{legal_actions}。")
         if legal_targets:
             lines.append(f"6. target_id只能取这些玩家之一或null：{legal_targets}。")
-        if ActionType.VOTE in ctx.legal_actions:
+        if ctx.task_type == TaskType.VOTE:
             lines.append(
                 f"7. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
             )
@@ -1517,7 +1537,7 @@ class PlayerPromptBuilder:
 
     def _format_choice_prompt(self) -> str:
         ctx = self.context
-        is_vote = ctx.legal_actions == [ActionType.VOTE]
+        is_vote = ctx.task_type == TaskType.VOTE
         header = "投票候选枚举" if is_vote else "目标候选枚举"
         choice_map = self._vote_choice_map()
         lines = [f"{header}（必须从中选择一个choice，不要直接编写target_id）："]
@@ -1587,26 +1607,18 @@ class PlayerPromptBuilder:
 
     def _select_output_mode(self) -> OutputMode:
         ctx = self.context
-        if self._uses_choice_pipeline():
-            return OutputMode.TARGET_CHOICE
-        if self._uses_speech_intent_pipeline():
-            return OutputMode.SPEECH_INTENT
-        return OutputMode.FULL_ACTION
+        return select_output_mode(
+            legal_actions=ctx.legal_actions,
+            legal_targets=ctx.legal_targets,
+            task_type=ctx.task_type,
+            speech_intent_tasks=_SPEECH_INTENT_TASKS,
+        )
 
     def _uses_choice_pipeline(self) -> bool:
-        ctx = self.context
-        return (
-            len(ctx.legal_actions) == 1
-            and ctx.legal_actions[0] in _CHOICE_TARGET_ACTIONS
-            and bool(ctx.legal_targets)
-        )
+        return self._select_output_mode() == OutputMode.TARGET_CHOICE
 
     def _uses_speech_intent_pipeline(self) -> bool:
-        ctx = self.context
-        return (
-            ctx.task_type in _SPEECH_INTENT_TASKS
-            and ctx.legal_actions == [ActionType.SPEECH]
-        )
+        return self._select_output_mode() == OutputMode.SPEECH_INTENT
 
     # ── Choice/target helpers ──
 

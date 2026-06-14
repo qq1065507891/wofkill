@@ -4,11 +4,61 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **structured-model-output** — 2026-06-11 (COMPLETE)
-- Active task: 代码实现和全量回归已完成；真实对局指标验证与批量实验暂缓
+- Current phase: **prompt-module-audit-hardening** — 2026-06-14 (COMPLETE)
+- Active task: 玩家 system/user prompt 逐模块审计与修复已完成；真实对局指标验证与批量实验暂缓
 - Task owner: Codex development session
-- Last updated: 2026-06-11
-- **本次新增 (structured-model-output)**: 玩家行动输出由统一 `ActionContract` 生成 prompt 字段和 provider schema；模型网关显式支持 `native_tool` / `json_schema` / `json_object` / `text_json` 四种协议。协议或 schema 失败可降级输出协议，语义失败保持当前协议；不切换模型，不新增 GLM 熔断或备用模型。
+- Last updated: 2026-06-14
+- **本次新增 (prompt-module-audit-hardening)**: 逐段审查 `PlayerPromptBuilder` 的 system prompt 与 user prompt，修复动态段名漂移、speech/vote 模式污染、投票审计字段与 `ActionContract` 漂移、timeout retry 非法 `no_action` 提示、system 输出契约无条件工具优先提示、技能建议旧称、狼人稳定规则缺口和推理边界措辞。
+
+## prompt-module-audit-hardening — 2026-06-14 (已完成)
+
+**范围**: 只审查玩家侧 `PlayerPromptBuilder` 实际产出的 system prompt 与 user prompt；不改狼队队长计划 prompt、不改法官 prompt、不改规则引擎。
+
+**system prompt 模块审计**:
+
+| 模块 | 审计结论 | 修复 |
+|---|---|---|
+| `_build_core_identity` | 玩家 ID、名字、真实角色边界清晰，未发现需改问题 | 无代码变更 |
+| `_build_information_boundaries` | 段名仍写旧的“长期能力画像/我的认知矩阵”，且漏列错误模式、任务、纠错和最终协议 | 同步为“历史角色经验/认知校准摘要/跨局错误模式/本轮任务/纠正提示/最终输出协议”，并声明这些不是公开记录 |
+| `_build_game_rules` | 现有规则防幻觉 guard 可保留；完整规则仍由设计文档和 RuleEngine 约束 | 无规则语义变更 |
+| `_build_role_guide` | 狼人稳定指南缺少空刀、自刀、自爆等已实现合法战术入口 | 补充“按合法行动击杀/自刀/空刀；白天可在规则允许时自爆，无遗言并中断白天” |
+| `_build_reasoning_method` | “私有信息不能转成事实”措辞过绝对，容易压制预言家查验/狼人夜刀等私有决策依据 | 改为“私有信息可用于私有决策，但不能伪装成公开事实” |
+| `_build_skill_policy` | 仍指向旧“技能分析结果”段，与当前 `strategy_directive.skill_tactical_advice` 单一路径漂移 | 改为“策略指令中可能包含技能战术建议”，并保留身份规则和公开事实优先级 |
+| `_build_output_contract` | system 层无条件说“优先通过工具提交”，会与 `TARGET_CHOICE` / `SPEECH_INTENT` 的 JSON-only 动态协议抢优先级 | 改成“若最终输出协议要求工具且工具可用，则使用工具；否则输出当前 ActionContract JSON” |
+
+**user prompt / 输出协议模块审计**:
+
+| 模块/路径 | 审计结论 | 修复 |
+|---|---|---|
+| `build_user_prompt` / 裁剪注释 | 注释仍称 persona never-drop，但 persona 已可裁剪 | 更新注释，保留当前局 grounding 和硬约束永不丢 |
+| `_build_phase_context` | 只要 `legal_actions` 含 `VOTE` 就注入投票强提示；`TaskType.SPEECH + [SPEECH,VOTE]` 会污染发言协议 | 只在 `TaskType.VOTE` 真实投票上下文注入投票审计字段；单投票 choice 模式明确写“choice 决策JSON” |
+| `_build_belief_state` / `public_summary` / `visible_state` / `private_memory` / `salience` / `rag` / `reflection` / `profile` / `cognition` / `error_pattern` | 信息分层大体正确；主要风险是 system 边界文案未同步实际段名 | 通过 system 边界修复覆盖段名和公开记录归因 |
+| `_build_strategy_directive` | 硬约束/建议/参考分组保持当前策略；未发现本轮需改问题 | 无代码变更 |
+| `_build_recent_transcript` | 近期发言仍是公开 grounding；未发现需改问题 | 无代码变更 |
+| `_build_task_prompt` / `_select_output_mode` | prompt builder 与 parser 各维护一套输出模式判断，且发言任务混入历史 `VOTE` 时退回 FULL_ACTION | `PlayerPromptBuilder` 改为调用 `parse_dispatch.select_output_mode()`；`SPEECH_INTENT` 仅覆盖纯 `[SPEECH]` 和已知 legacy `[SPEECH,VOTE]`，未知混合动作回到 FULL_ACTION |
+| `_build_retry_hint` / `PlayerAgent.act` | timeout 时会提示 `action_type='no_action'`，但投票强制动作或 `SPEECH_INTENT` 协议无法合法表达该输出 | 只有 `NO_ACTION` 合法且当前输出模式是 `FULL_ACTION` 时才提示 no_action；否则给合法目标简短提示或只保留普通纠错 |
+| `_format_examples` | FULL_ACTION 示例本身仍有效；旧测试用 speech+vote 触发示例已不符合新分流 | 测试改用真实警长报名/退警多动作场景覆盖 FULL_ACTION 示例；发言任务改验 `SPEECH_INTENT` 合同 |
+| `_format_choice_prompt` / `_format_speech_intent_prompt` / `_build_strict_output_contract` | strict contract 仍可能按 `legal_actions` 要求 `ActionContract` 不允许的投票审计字段 | 投票审计字段、投票隐私 guard 和投票示例统一按 `TaskType.VOTE` 判定；新增非投票 stale `VOTE` 回归测试 |
+
+**新增/更新测试**:
+
+- `tests/agents/test_parse_dispatch.py`: speech task + legacy `[SPEECH, VOTE]` 仍选择 `SPEECH_INTENT`；未知混合动作回到 `FULL_ACTION`。
+- `tests/agents/test_prompt_mode_isolation.py`: prompt builder 与 parse dispatch 模式矩阵一致；speech task 和非投票 stale `VOTE` 任务不继承 vote audit 字段。
+- `tests/agents/test_prompt_builder.py`: system 边界段名、推理边界、技能建议命名、狼人规则、retry hint、输出契约 guard。
+- `tests/agents/test_player_agent.py`: empty response retry hint 不在 `SPEECH_INTENT` 下提示无法解析的 `action_type=no_action`。
+
+**验证**:
+
+- `pytest tests/agents tests/runtime/test_context.py tests/runtime/test_agent_adapter.py tests/runtime/test_strategy_directives.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`
+- `pytest tests/runtime tests/skills tests/rag tests/persona_runtime -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`
+
+**未改变**:
+
+- 不改 RuleEngine、角色数量、警徽权重、胜负规则。
+- 不改模型路由、fallback 模型、GLM 熔断或真实对局实验配置。
+- 不改 `agent_wolf_team_plan`、judge persona 或其他非玩家 prompt 系统。
+
+---
 
 ## structured-model-output — 2026-06-11 (已完成)
 

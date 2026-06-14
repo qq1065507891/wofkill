@@ -1094,7 +1094,9 @@ def uses_speech_intent_pipeline(
     task_type: Any,
     speech_intent_tasks: set,
 ) -> bool:
+    speech_only = legal_actions == [ActionType.SPEECH]
+    legacy_speech_vote = set(legal_actions) == {ActionType.SPEECH, ActionType.VOTE}
     return (
         task_type in speech_intent_tasks
-        and legal_actions == [ActionType.SPEECH]
+        and (speech_only or legacy_speech_vote)
     )

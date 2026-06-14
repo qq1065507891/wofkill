@@ -344,6 +344,12 @@ class PlayerAgent:
                 active_structured_mode == StructuredOutputMode.NATIVE_TOOL
             )
             tool_call_received = bool(getattr(result, "tool_call_received", False))
+            output_mode = _select_output_mode(
+                legal_actions=context.legal_actions,
+                legal_targets=context.legal_targets,
+                task_type=context.task_type,
+                speech_intent_tasks=self._SPEECH_INTENT_TASKS,
+            )
 
             if not result.text:
                 failure_reason = self._latest_generation_failure_reason()
@@ -425,7 +431,11 @@ class PlayerAgent:
                 # those cases.
                 timeout_hint = ""
                 if failure_category == "timeout":
-                    if ActionType.NO_ACTION in context.legal_actions:
+                    can_emit_no_action = (
+                        ActionType.NO_ACTION in context.legal_actions
+                        and output_mode == OutputMode.FULL_ACTION
+                    )
+                    if can_emit_no_action:
                         timeout_hint = (
                             " 如果超时，请直接返回 no_action 而非空响应"
                             "（action_type='no_action', target_id=null,"
@@ -503,12 +513,6 @@ class PlayerAgent:
             # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
             # the program maps that choice back into a legal PlayerAction.
             choice_data: dict[str, Any] | None = None
-            output_mode = _select_output_mode(
-                legal_actions=context.legal_actions,
-                legal_targets=context.legal_targets,
-                task_type=context.task_type,
-                speech_intent_tasks=self._SPEECH_INTENT_TASKS,
-            )
             if output_mode == OutputMode.TARGET_CHOICE:
                 action, parse_error, choice_data = _parse_choice_action(
                     result.text,

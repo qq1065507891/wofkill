@@ -38,6 +38,24 @@ class TestSelectOutputMode:
         )
         assert mode == OutputMode.SPEECH_INTENT
 
+    def test_speech_task_with_legacy_vote_action_still_returns_speech_intent(self):
+        mode = select_output_mode(
+            legal_actions=[ActionType.SPEECH, ActionType.VOTE],
+            legal_targets=["p07"],
+            task_type=TaskType.SPEECH,
+            speech_intent_tasks={TaskType.SPEECH, TaskType.PK_SPEECH},
+        )
+        assert mode == OutputMode.SPEECH_INTENT
+
+    def test_speech_task_with_unknown_mixed_actions_returns_full_action(self):
+        mode = select_output_mode(
+            legal_actions=[ActionType.SPEECH, ActionType.SHERIFF_REGISTER],
+            legal_targets=[],
+            task_type=TaskType.SPEECH,
+            speech_intent_tasks={TaskType.SPEECH, TaskType.PK_SPEECH},
+        )
+        assert mode == OutputMode.FULL_ACTION
+
     def test_mixed_actions_returns_full_action(self):
         mode = select_output_mode(
             legal_actions=[ActionType.VOTE, ActionType.SPEECH],
