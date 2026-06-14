@@ -1330,8 +1330,8 @@ class TestPlayerAgentRetryFallback:
         prompt = agent._build_system_prompt(ctx)
 
         assert "【信息边界】" in prompt
-        assert "知识库提示只是玩法经验，不是当前局发生的事" in prompt
-        assert "跨局记忆只是历史经验" in prompt
+        assert "跨局学习参考包含知识库提示" in prompt
+        assert "不是当前局事实" in prompt
         # Phase-1 audit (P1-29): reasoning method was restructured
         # from 4 abstract lines to a numbered 3-step actionable flow.
         # Update the assertions to match the new label and a key
@@ -1377,6 +1377,7 @@ class TestPlayerAgentRetryFallback:
         assert "可见状态:" in prompt
         # P0-M1: private_memory section uses "【本局·第N轮·私有记忆】" label.
         assert "【本局·第2轮·私有记忆】" in prompt
+        assert "跨局学习参考:" in prompt
         assert "知识库提示:" in prompt
         assert "知识库提示不是当前局事实" in prompt
         assert "跨局反思记忆:" in prompt
@@ -1387,6 +1388,7 @@ class TestPlayerAgentRetryFallback:
         # The structured skill_tactical_advice in strategy_directive
         # is the single source of truth.
         assert "技能分析结果:" not in prompt
+        assert prompt.index("跨局学习参考:") < prompt.index("知识库提示:")
         assert prompt.index("知识库提示:") < prompt.index("跨局反思记忆:")
         assert prompt.index("跨局反思记忆:") < prompt.index("本轮策略指令:")
         assert "策略建议:" not in prompt

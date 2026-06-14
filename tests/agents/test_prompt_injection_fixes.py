@@ -229,27 +229,13 @@ def test_villager_role_guide_is_concise():
     assert "票型" in guide or "证据" in guide, "should keep evidence-based voting cue"
 
 
-def test_reflection_priority_above_rag():
-    """M4-2: reflection_memory_hints should be 【参考】 (not 【辅助】)
-    because per-player history is more valuable than generic RAG.
-
-    Judgment-call reversal of G-R4-15: G-R4-15 had RAG at 【参考】
-    with rationale "RAG hints must survive budget cuts". M4-2
-    inverts that judgment — per-player reflection history is
-    strictly more relevant than generic community RAG, so under
-    tight token budget reflection should survive and RAG should
-    be dropped first.
-    """
+def test_learning_context_priority_wraps_rag_and_reflection():
+    """Merged cross-game learning renders as one 【参考】 section."""
     from werewolf_agent.agents import prompt_builder
     prios = prompt_builder.PlayerPromptBuilder._SECTION_PRIORITIES
-    assert prios["_build_reflection_memory_hints"] == "【参考】", (
-        f"M4-2: reflection hints should be 【参考】 (outranks RAG's "
-        f"generic content). Got: {prios['_build_reflection_memory_hints']!r}"
-    )
-    assert prios["_build_rag_hints"] == "【辅助】", (
-        f"M4-2: RAG should be 【辅助】 (lower than reflection). "
-        f"Got: {prios['_build_rag_hints']!r}"
-    )
+    assert prios["_build_learning_context"] == "【参考】"
+    assert "_build_reflection_memory_hints" not in prios
+    assert "_build_rag_hints" not in prios
 
 
 def test_skill_policy_distinguishes_from_identity_rules():

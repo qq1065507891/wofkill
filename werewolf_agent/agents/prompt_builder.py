@@ -243,10 +243,10 @@ class PlayerPromptBuilder:
             "公开发言时，只有『当前局公开事实』『可见世界状态』『近期发言』『关键事件』"
             "可以称为「场上已知」或「公开记录」。"
             "私信可以用于决策，但不能伪装成公开事实。"
-            "知识库提示只是玩法经验，不是当前局发生的事。"
-            "跨局记忆只是历史经验，不代表本局任何玩家真实身份。"
-            "历史角色经验、认知校准摘要、跨局错误模式只是自我校准，不是本局事实。"
-            "本轮任务、纠正提示和最终输出协议只约束输出格式，不是公开记录。"
+            "跨局学习参考包含知识库提示、跨局反思记忆、历史角色经验、认知校准摘要和跨局错误模式；"
+            "它们只是历史经验或自我校准，不代表本局任何玩家真实身份，也不是当前局事实。"
+            "本轮任务和最终输出约束只约束输出格式，不是公开记录；"
+            "最终输出约束包含纠正提示和最终输出协议。"
             "技能战术建议只是辅助推理，不改变规则、身份或公开记录。"
             "不确定内容必须表达为推测。"
         )
@@ -263,7 +263,7 @@ class PlayerPromptBuilder:
             "【推理方法-3 步】\n"
             "1) 分层：把每条信息标记为「事实 / 推测 / 立场 / 情绪」；"
             "私有信息可用于私有决策，但不能伪装成公开事实；"
-            "跨局记忆、认知校准和技能建议均不能转成公开事实。\n"
+            "跨局学习参考和技能建议均不能转成公开事实。\n"
             "2) 盘狼坑：按发言矛盾 > 票型关系 > 站边链条 > 收益动机 > 关键轮次行为 顺序排查；"
             "每条结论必须附公开记录出处或显式标注「推测」。\n"
             "3) 决策：投票前比较证据链完整度与误投成本；行动必须给出当前最优理由，不盲从多数归票。"
@@ -364,15 +364,10 @@ class PlayerPromptBuilder:
         _SectionSpec("_build_visible_state", "【辅助】", "可见世界状态", "public_record", _NEVER_DROP_TIER, True),
         _SectionSpec("_build_private_memory_hints", "【辅助】", "本局·私有记忆", "private_memory", 1),
         _SectionSpec("_build_salience_events", "【辅助】", "关键事件", "public_record", _NEVER_DROP_TIER, True),
-        _SectionSpec("_build_rag_hints", "【辅助】", "知识库提示", "cross_game_reference", 0),
-        _SectionSpec("_build_reflection_memory_hints", "【参考】", "跨局反思记忆", "cross_game_reference", 2),
-        _SectionSpec("_build_profile_memory_hint", "【辅助】", "历史角色经验", "cross_game_reference", 0),
-        _SectionSpec("_build_cognition_matrix_hint", "【辅助】", "认知校准摘要", "cross_game_reference", 0),
-        _SectionSpec("_build_error_pattern_hint", "【辅助】", "跨局错误模式", "cross_game_reference", 0),
+        _SectionSpec("_build_learning_context", "【参考】", "跨局学习参考", "cross_game_reference", 2),
         _SectionSpec("_build_strategy_directive", "【策略指令】", "策略指令", "directive", _NEVER_DROP_TIER),
         _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
-        _SectionSpec("_build_retry_hint", "【硬约束】", "纠正提示", "output_constraint", _NEVER_DROP_TIER),
-        _SectionSpec("_build_strict_output_contract", "【硬约束】", "最终输出协议", "output_constraint", _NEVER_DROP_TIER),
+        _SectionSpec("_build_final_output_guard", "【硬约束】", "最终输出约束", "output_constraint", _NEVER_DROP_TIER),
     )
     _SECTION_SPEC_BY_NAME: dict[str, _SectionSpec] = {
         spec.builder_name: spec for spec in _USER_SECTION_SPECS
@@ -414,8 +409,8 @@ class PlayerPromptBuilder:
     def build_user_prompt(self, retry: RetryInfo) -> str:
         # P1-5: build the full prompt first, then enforce the global
         # token budget by dropping sections with the lowest ``drop_tier``.
-        # Current-game grounding, persona, strategy, retry, and output
-        # contract sections are marked never-drop in _USER_SECTION_SPECS.
+        # Current-game grounding, persona, strategy, and the final
+        # output guard are marked never-drop in _USER_SECTION_SPECS.
         parts: list[tuple[str, str]] = []
         # Boundary marker per s10: above = stable, below = dynamic.
         # Boundary marker + task prompt are always kept (they are not
@@ -437,11 +432,7 @@ class PlayerPromptBuilder:
         parts.append(("_build_visible_state", self._label_section("_build_visible_state", self._build_visible_state())))
         parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
         parts.append(("_build_salience_events", self._label_section("_build_salience_events", self._build_salience_events())))
-        parts.append(("_build_rag_hints", self._label_section("_build_rag_hints", self._build_rag_hints())))
-        parts.append(("_build_reflection_memory_hints", self._label_section("_build_reflection_memory_hints", self._build_reflection_memory_hints())))
-        parts.append(("_build_profile_memory_hint", self._label_section("_build_profile_memory_hint", self._build_profile_memory_hint())))
-        parts.append(("_build_cognition_matrix_hint", self._label_section("_build_cognition_matrix_hint", self._build_cognition_matrix_hint())))
-        parts.append(("_build_error_pattern_hint", self._label_section("_build_error_pattern_hint", self._build_error_pattern_hint())))
+        parts.append(("_build_learning_context", self._label_section("_build_learning_context", self._build_learning_context())))
         parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
         # NEW-S04-A: skill_analysis_hints render path dropped. The
         # structured skill_tactical_advice is the single source of
@@ -457,8 +448,7 @@ class PlayerPromptBuilder:
         # last thing the LLM sees before the output contract.
         # task prompt has no priority label — it's the action spec.
         parts.append(("", self._build_task_prompt()))
-        parts.append(("_build_retry_hint", self._label_section("_build_retry_hint", self._build_retry_hint(retry))))
-        parts.append(("_build_strict_output_contract", self._label_section("_build_strict_output_contract", self._build_strict_output_contract())))
+        parts.append(("_build_final_output_guard", self._label_section("_build_final_output_guard", self._build_final_output_guard(retry))))
         return self._enforce_budget(parts)
 
     def _enforce_budget(
@@ -803,6 +793,31 @@ class PlayerPromptBuilder:
             + json_payload
             + "\n"
             + tail
+        )
+
+    def _build_learning_context(self) -> str:
+        parts: list[str] = []
+        rag = self._build_rag_hints()
+        if rag:
+            parts.append(rag)
+        reflection = self._build_reflection_memory_hints()
+        if reflection:
+            parts.append(reflection)
+        profile = self._build_profile_memory_hint()
+        if profile:
+            parts.append(profile)
+        cognition = self._build_cognition_matrix_hint()
+        if cognition:
+            parts.append(cognition)
+        error_pattern = self._build_error_pattern_hint()
+        if error_pattern:
+            parts.append(error_pattern)
+        if not parts:
+            return ""
+        return (
+            "跨局学习参考: 以下内容只是历史经验与自我校准，不代表本局任何玩家真实身份。"
+            "\n\n"
+            + "\n\n".join(parts)
         )
 
     @staticmethod
@@ -1202,6 +1217,18 @@ class PlayerPromptBuilder:
                     "并提交结构化JSON，不要再尝试长推理。"
                 )
         return "\n".join(lines)
+
+    def _build_final_output_guard(self, retry: RetryInfo) -> str:
+        parts: list[str] = []
+        retry_hint = self._build_retry_hint(retry).strip()
+        if retry_hint:
+            parts.append(retry_hint)
+        contract = self._build_strict_output_contract().strip()
+        if contract:
+            parts.append(contract)
+        if not parts:
+            return ""
+        return "最终输出约束（必须遵守）：\n" + "\n\n".join(parts)
 
     def _build_task_prompt(self) -> str:
         """Task-specific prompt: choice enum, speech intent, or examples."""

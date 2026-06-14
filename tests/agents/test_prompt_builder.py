@@ -1791,7 +1791,7 @@ def _make_ctx_for_priority_label_test(
         visible_world_state={"alive": ["p05", "p07"], "day_number": 2},
         private_memory_hints={"logic_flaws": [{"day": 2, "point": "vote flip"}]},
         salience_items=[{"id": "sal-1", "summary": "p07 changed vote"}],
-        rag_hints=[{"title": "Case 1", "summary": "wolf switch", "key_decisions": ["vote flip"]}],
+        rag_hints=[{"type": "rag_hit", "title": "Case 1", "summary": "wolf switch", "key_decisions": ["vote flip"]}],
         reflection_memory_hints=[{"theme": "anti-herd", "summary": "independent judgement"}],
         profile_memory_hint={"games_played": 5, "summary": "前 30%"},
         cognition_matrix_hint={"p07": {"trust": 0.3, "faction_lean": "werewolf"}},
@@ -1806,18 +1806,18 @@ def _make_ctx_for_priority_label_test(
 
 
 def test_sections_have_priority_labels():
-    """P1-S3: each of the 16 user-prompt sections is prefixed with a
+    """P1-S3: each merged user-prompt section is prefixed with a
     typed priority/context label so the LLM can rank which sections to
     attend to under tight token budget.
 
     Sections grouped:
-    - 【硬约束】 strategy_directive, retry hint, output contract
+    - 【硬约束】 final output guard (retry hint + output contract)
     - 【人格】   persona snapshot
     - 【辅助】   phase, belief, summary, visible state, private memory,
-      salience, rag hints, profile, cognition, skill hints
-    - 【参考】   reflection  # Note: reflection was demoted from 辅助 to
-                              # 参考 in M4-2 (commit 0022d25) — per-player
-                              # history outranks generic RAG under budget.
+      salience
+    - 【参考】   learning context (RAG + reflection + profile + cognition
+      + error pattern)
+    - 【策略指令】 strategy_directive
     - 【场上记录】 transcript
 
     The test verifies the label appears in the user prompt and the
@@ -1843,21 +1843,16 @@ def test_sections_have_priority_labels():
         f"(retry hint, output contract), got {hard_label_count}."
     )
 
-    # The 辅助 sections must collectively produce multiple 【辅助】 labels.
-    # M4-2: reflection moved from 辅助 to 参考 (per-player history
-    # outranks generic RAG under budget pressure). The remaining
-    # 辅助 sections are phase, belief, visible state,
-    # private memory, salience, rag hints, profile, cognition,
-    # error pattern — 6 sections whose literal label is 【辅助】
-    # (public_summary uses the distinctive 【场上记录】 label,
-    # so it doesn't count here).
+    # The remaining 辅助 sections are current-turn support sections.
+    # Cross-game learning now renders under one 【参考】 wrapper.
     auxiliary_label_count = prompt.count("【辅助】")
-    assert auxiliary_label_count >= 6, (
-        f"Expected at least 6 【辅助】 labels (persona now uses "
-        f"its own 【人格】 label and reflection uses 【参考】). "
+    assert auxiliary_label_count >= 4, (
+        f"Expected at least 4 【辅助】 labels for current-turn support "
+        f"sections. "
         f"Got {auxiliary_label_count}."
     )
     assert "【人格】 人格设定:" in prompt
+    assert "【参考】 跨局学习参考:" in prompt
 
     assert "【可选】" not in prompt, (
         "No live section should be labeled 【可选】 while also being "
@@ -1912,10 +1907,63 @@ def test_section_metadata_is_single_source_for_labels_and_budget() -> None:
     assert PlayerPromptBuilder._LOW_VALUE_SECTIONS == {
         spec.builder_name for spec in specs if spec.drop_tier == 0
     }
-    assert "_build_reflection_memory_hints" not in PlayerPromptBuilder._LOW_VALUE_SECTIONS
-    assert by_name["_build_reflection_memory_hints"].drop_tier == 2
+    assert "_build_learning_context" not in PlayerPromptBuilder._LOW_VALUE_SECTIONS
+    assert by_name["_build_learning_context"].drop_tier == 2
+    assert "_build_rag_hints" not in by_name
+    assert "_build_reflection_memory_hints" not in by_name
+    assert "_build_profile_memory_hint" not in by_name
+    assert "_build_cognition_matrix_hint" not in by_name
+    assert "_build_error_pattern_hint" not in by_name
     assert by_name["_build_recent_transcript"].label == "【场上记录】"
     assert by_name["_build_recent_transcript"].drop_tier is None
+    assert by_name["_build_final_output_guard"].label == "【硬约束】"
+    assert by_name["_build_final_output_guard"].drop_tier is None
+
+
+def test_user_prompt_uses_merged_learning_and_output_sections() -> None:
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        rag_hints=[{
+            "type": "rag_hit",
+            "summary": "票型抱团识别",
+        }],
+        reflection_memory_hints=[{
+            "role": "villager",
+            "result": "负",
+            "text": "不要盲目跟票。",
+        }],
+        profile_memory_hint={"games_played": 3},
+        cognition_matrix_hint={"suspects": [{"player": "p02", "trust": 0.2}]},
+        error_pattern_hint={
+            "total_reflections": 2,
+            "top_mistakes": [("vote_mistake", 2)],
+        },
+    )
+    retry = RetryInfo(
+        attempt=2,
+        max_retries=3,
+        error_code="parse_error",
+        error_message="missing field speech",
+        correction_hint="只输出JSON。",
+    )
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(retry)
+
+    assert prompt.count("【参考】 跨局学习参考") == 1
+    assert "知识库提示:" in prompt
+    assert "跨局反思记忆:" in prompt
+    assert "历史角色经验:" in prompt
+    assert "认知校准摘要:" in prompt
+    assert "跨局错误模式" in prompt
+    assert prompt.count("【硬约束】 最终输出约束") == 1
+    assert "纠正提示" in prompt
+    assert "最终输出协议" in prompt
+    assert prompt.index("纠正提示") < prompt.index("最终输出协议")
 
 
 def test_information_boundaries_are_generated_from_section_metadata() -> None:
@@ -1983,9 +2031,6 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         "可见状态",          # visible state
         "本局·",            # private memory
         "关键事件",          # salience
-        "知识库提示",        # rag hints (M4-2: back to 辅助)
-        "历史角色经验",       # profile
-        "认知校准摘要",       # cognition
     ]
     for header in auxiliary_headers:
         idx = prompt.find(header)
@@ -1998,16 +2043,14 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
             f"Section with header {header!r} must be preceded by 【辅助】 label, "
             f"got: {preceding!r}"
         )
-    # M4-2: reflection moved from 辅助 to 【参考】 (per-player
-    # history outranks generic RAG). Verify it bears the 【参考】
-    # label so the LLM sees the elevated priority.
-    reflection_idx = prompt.find("跨局反思记忆")
-    if reflection_idx >= 0:
-        preceding = prompt[max(0, reflection_idx - 60):reflection_idx]
+    # Merged learning context is one reference section with internal
+    # anchors for RAG/reflection/profile/cognition/error-pattern hints.
+    learning_idx = prompt.find("跨局学习参考")
+    if learning_idx >= 0:
+        preceding = prompt[max(0, learning_idx - 60):learning_idx]
         assert "【参考】" in preceding, (
-            f"M4-2: 跨局反思记忆 (reflection) must be preceded by "
-            f"【参考】 label (per-player history outranks generic "
-            f"RAG). Got: {preceding!r}"
+            f"Learning context must be preceded by 【参考】 label. "
+            f"Got: {preceding!r}"
         )
     # P1-6 / P1-12: public_summary now has a distinctive
     # ``【场上记录】`` label (Phase 1 self-audit P1-4 rename) so the
@@ -2236,6 +2279,9 @@ def test_hard_sections_never_dropped_under_budget():
     # Output contract is 【硬约束】 and must never be dropped.
     assert "最终输出协议" in user_prompt, (
         "P1-5: output contract is a 硬约束 section and must never be dropped."
+    )
+    assert "最终输出约束" in user_prompt, (
+        "P1-5: retry hint and output contract share one never-drop output guard."
     )
 
 

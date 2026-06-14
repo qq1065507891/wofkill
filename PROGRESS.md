@@ -4,11 +4,40 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **prompt-section-registry-hardening** — 2026-06-14 (COMPLETE)
-- Active task: 玩家 prompt 模块注册、预算语义、persona 渲染与学习上下文瘦身已完成；真实对局指标验证与批量实验暂缓
+- Current phase: **prompt-module-merge-hardening** — 2026-06-14 (COMPLETE)
+- Active task: 玩家 prompt 学习上下文与输出约束模块合并已完成；当前局 grounding、persona、strategy_directive 继续保持独立
 - Task owner: Codex development session
 - Last updated: 2026-06-14
+- **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## prompt-module-merge-hardening — 2026-06-14 (已完成)
+
+**背景**:
+
+1. user prompt 中跨局学习相关内容被拆成多个顶层 section：`rag_hints`、`reflection_memory_hints`、`profile_memory_hint`、`cognition_matrix_hint`、`error_pattern_hint`。这些内容的信息边界一致，都是历史经验/自我校准，不应作为当前局事实。
+2. `retry_hint` 与 `strict_output_contract` 都是输出前的最终约束，分成两个顶层 `【硬约束】` section 会增加结构噪音。
+3. `persona`、`strategy_directive`、`private_memory`、当前局公开 grounding 的语义边界不同，本次不合并，避免预算裁剪和信息隔离语义变模糊。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| 跨局学习模块 | RAG、反思、画像、认知、错误模式分散成多个顶层 section，边界说明重复 | 新增 `_build_learning_context` 顶层 section，外层标签为 `【参考】 跨局学习参考`，内部保留原有小节与白名单/脱敏渲染 |
+| 输出约束模块 | retry hint 与 strict output contract 分成两个顶层硬约束 | 新增 `_build_final_output_guard` 顶层 section，外层标签为 `【硬约束】 最终输出约束`，内部顺序保持“纠正提示 → 最终输出协议” |
+| section registry | 注册表仍暴露多个同边界学习 section 和两个输出约束 section | `_USER_SECTION_SPECS` 改为注册 `_build_learning_context` 与 `_build_final_output_guard`，预算层级由 registry 统一派生 |
+| 信息边界 | system prompt 仍逐个描述旧学习/输出子模块 | 改为描述 `跨局学习参考` 包含哪些内部小节，并声明 `最终输出约束` 包含纠正提示与最终输出协议 |
+
+**新增/更新测试**:
+
+- `tests/agents/test_prompt_builder.py`: 合并后 registry、学习上下文、最终输出约束、优先级标签与预算 never-drop 断言。
+- `tests/agents/test_prompt_injection_fixes.py`: 学习上下文优先级从旧 RAG/reflection 顶层 key 改为 `_build_learning_context`。
+- `tests/agents/test_player_agent.py`: 动态上下文顺序改验 `跨局学习参考` 顶层 section 与内部小节顺序。
+
+**验证**:
+
+- 已通过 `pytest tests/agents/test_prompt_builder.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
+- 已通过 `pytest tests/agents/test_prompt_injection_fixes.py tests/agents/test_player_agent.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
 
 ## prompt-section-registry-hardening — 2026-06-14 (已完成)
 
