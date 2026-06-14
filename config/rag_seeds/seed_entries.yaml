@@ -31,6 +31,18 @@
       - claim
       - badge_flow
       - sheriff_speech
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=seer phase=sheriff_speech tags=seer,claim,badge_flow,sheriff_speech"
+    transferable_lesson: "Open high-claim speeches by separating hard information, future plan, and alignment reasoning so listeners can audit each part."
+    applicability:
+      - "When a role claim must create public trust early"
+      - "When a later vote or badge plan needs a clear audit trail"
+    counter_signals:
+      - "Public agenda already has a higher-priority contradiction"
+      - "The claim would expose information without adding decision value"
+    recommended_use: "Use as a speech structure for presenting claim logic and next-step intent in a way other players can compare."
+    misuse_risk: "Repeating the template without fresh reasons makes the speech sound rehearsed and easy to counter."
 
 - entry_id: seed_ext_wolf_deep_hook_01
   title: "狼人倒钩打法：隐蔽保护队友"
@@ -60,6 +72,18 @@
       - werewolf
       - deep_hook
       - deception
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=werewolf phase=speech tags=werewolf,deep_hook,deception"
+    transferable_lesson: "A cover role gains value by showing selective independence while keeping team support indirect and publicly explainable."
+    applicability:
+      - "When pressure is diffuse and long-term credibility matters"
+      - "When teammate defense would be too visible in the vote record"
+    counter_signals:
+      - "Your public attacks would create an irreversible team conflict"
+      - "The table already reads indirect help as coordination"
+    recommended_use: "Use to balance credibility building with low-visibility agenda support."
+    misuse_risk: "Overplaying distance can damage team coordination or create a record that cannot be reconciled later."
 
 - entry_id: seed_rule_seer_badge_flow_01
   title: "预言家警徽流声明模板"
@@ -89,6 +113,18 @@
       - seer
       - badge_flow
       - template
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=seer phase=sheriff_speech tags=seer,badge_flow,template"
+    transferable_lesson: "A structured claim should make current information, planned next check, and contingency transfer distinct."
+    applicability:
+      - "When listeners need a compact format to compare competing claims"
+      - "When time pressure rewards concise public instructions"
+    counter_signals:
+      - "The situation needs explanation of motive before any template"
+      - "Your planned target changes depend on unresolved debate"
+    recommended_use: "Use as a checklist for organizing claim speech, then add context-specific reasons."
+    misuse_risk: "Treating the template as proof of credibility substitutes format for reasoning."
 
 - entry_id: seed_seer_counterclaim_vote_push_01
   title: "预言家对跳局归票悍跳位是高概率主线"
@@ -126,6 +162,18 @@
       - day_vote
       - speech
       - high_probability_event
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=seer phase=speech tags=seer,counterclaim,vote_push,day_vote"
+    transferable_lesson: "In a counterclaim, push the vote toward the focal contradiction while explaining why that target resolves more information than side suspicions."
+    applicability:
+      - "When two claim narratives compete for public trust"
+      - "When the vote needs to consolidate around an accountable axis"
+    counter_signals:
+      - "A separate public contradiction is more urgent"
+      - "Vote records or speech evidence point elsewhere with stronger immediacy"
+    recommended_use: "Use to frame a vote push as information resolution rather than identity assertion."
+    misuse_risk: "Forcing every counterclaim into one target can ignore better evidence and look agenda-driven."
 
 - entry_id: seed_tutorial_yumindao_seer_beginner_450
   title: "新手预言家：报验人、讲心路、留警徽流"
@@ -162,6 +210,18 @@
       - sheriff_speech
       - badge_flow
       - counterclaim
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=seer phase=sheriff_speech tags=beginner_tutorial,seer,badge_flow,counterclaim"
+    transferable_lesson: "Beginner claim speeches work best when they turn private perspective into public audit steps: result, motive, plan, and vote direction."
+    applicability:
+      - "When a new player needs a reliable speech order"
+      - "When a counterclaim requires patient decomposition"
+    counter_signals:
+      - "The table already understands the claim and needs fresh contradiction analysis"
+      - "A rigid order would omit urgent vote context"
+    recommended_use: "Use as a teaching frame for complete information handoff."
+    misuse_risk: "Copying the sequence without real motives can make a legitimate claim appear mechanical."
 
 - entry_id: seed_tutorial_yumindao_witch_beginner_450
   title: "新手女巫：隐藏到能带队，药水发言要有理由"
@@ -198,6 +258,18 @@
       - speech
       - poison_pressure
       - leadership
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=witch phase=speech tags=beginner_tutorial,witch,poison_pressure,leadership"
+    transferable_lesson: "Power-role pressure is persuasive only when tied to public reasons, not merely to the claimed authority of the role."
+    applicability:
+      - "When deciding whether to reveal, lead, or threaten action"
+      - "When public suspicion needs disciplined evidence"
+    counter_signals:
+      - "Revealing would narrow the team information too early"
+      - "The target case rests on emotion rather than checkable behavior"
+    recommended_use: "Use to keep leadership speech grounded in observable votes, stance shifts, and stated priorities."
+    misuse_risk: "Using role pressure as a shortcut can polarize the table and reduce later flexibility."
 
 - entry_id: seed_tutorial_yumindao_hunter_idiot_civilian_488
   title: "新手猎白民：先表水，再找狼，别抢神职节奏"
@@ -235,6 +307,18 @@
       - idiot
       - speech
       - self_clear
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=villager phase=speech tags=beginner_tutorial,villager,hunter,idiot,self_clear"
+    transferable_lesson: "Low-information public roles should earn trust through clean reasoning before trying to steer the entire table."
+    applicability:
+      - "When you need to self-clear without privileged information"
+      - "When pressure tempts an early hard stance"
+    counter_signals:
+      - "A public emergency requires immediate leadership from a trusted source"
+      - "Your stated case lacks concrete speech or vote evidence"
+    recommended_use: "Use to build a steady speech: explain your view, name evidence, and avoid needless role-driven escalation."
+    misuse_risk: "Passive self-clearing can become empty survival talk if it never produces a vote preference."
 
 - entry_id: seed_tutorial_yumindao_wolf_roles_883
   title: "新手狼人：悍跳、冲锋、倒钩、深水要分工"
@@ -272,6 +356,18 @@
       - pusher
       - deep_hook
       - deep_cover
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=werewolf phase=night_discussion tags=beginner_tutorial,werewolf,fake_seer,pusher"
+    transferable_lesson: "Team coordination improves when each public role has a distinct job and all speeches serve one shared story."
+    applicability:
+      - "When night planning must assign speech responsibilities"
+      - "When the team needs backup plans after a claim contest"
+    counter_signals:
+      - "The planned roles conflict with existing public records"
+      - "Multiple teammates would have to reverse stance at once"
+    recommended_use: "Use to align next-day narratives, support roles, and fallback covers before public discussion resumes."
+    misuse_risk: "Over-scripted division of labor can sound coordinated if players repeat the same framing."
 
 - entry_id: seed_tutorial_yumindao_hybrid_beginner_488
   title: "新手混血儿：隐藏榜样信息，先按低视角发言"
@@ -307,6 +403,18 @@
       - speech
       - self_clear
       - survival
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=hybrid phase=speech tags=beginner_tutorial,hybrid,self_clear,survival"
+    transferable_lesson: "Extra perspective should be converted into normal public reasoning before it is allowed to shape visible stance."
+    applicability:
+      - "When survival depends on not exposing private incentives"
+      - "When observing an anchor player's public behavior"
+    counter_signals:
+      - "A delayed stance would look evasive"
+      - "The public evidence already demands a clear independent vote"
+    recommended_use: "Use to keep speech compatible with public information while gradually adapting stance."
+    misuse_risk: "Hiding too much behind low perspective can make the player look noncommittal or opportunistic."
 
 - entry_id: seed_speech_wolf_defense_01
   title: "狼人被怀疑时的防守发言模板"
@@ -335,6 +443,18 @@
       - werewolf
       - defense
       - speech_template
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=werewolf phase=defense_speech tags=werewolf,defense,speech_template"
+    transferable_lesson: "A defense speech lands better when it acknowledges plausible suspicion, answers the strongest point, then offers a constructive next vote."
+    applicability:
+      - "When suspicion is already public and denial alone will not work"
+      - "When you need to redirect without attacking every accuser"
+    counter_signals:
+      - "The table needs a direct answer to a factual inconsistency first"
+      - "A soft tone would be read as avoiding accountability"
+    recommended_use: "Use as a response order for pressure speeches."
+    misuse_risk: "Over-polished empathy can look performative if the core accusation remains unanswered."
 
 - entry_id: seed_ext_witch_poison_timing_01
   title: "女巫毒药使用时机参考"
@@ -364,6 +484,18 @@
       - witch
       - poison
       - night_action
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=witch phase=night_action tags=witch,poison,night_action"
+    transferable_lesson: "High-impact night action should be evaluated by confidence, public explainability, and future information value."
+    applicability:
+      - "When action now competes with preserving options"
+      - "When a target has multiple public signals against them"
+    counter_signals:
+      - "The case depends on a single volatile read"
+      - "Waiting would likely lose the ability to resolve the threat"
+    recommended_use: "Use as a decision rubric for weighing immediate action against holding resources."
+    misuse_risk: "Treating caution as default can waste a decisive timing window; treating urgency as certainty can waste the action."
 
 - entry_id: seed_godview_review_01
   title: "复盘案例：狼队配合失误导致屠边失败"
@@ -394,6 +526,18 @@
       - review
       - god_view
       - wolf_mistake
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=god_view phase=review tags=review,god_view,wolf_mistake"
+    transferable_lesson: "Review vote plans by asking whether the chosen pressure path exposes coordination faster than it advances the agenda."
+    applicability:
+      - "During post-game review of team pressure choices"
+      - "When a bloc vote or coordinated push needs risk analysis"
+    counter_signals:
+      - "The review lacks enough public vote context to infer coordination risk"
+      - "The case is being used in live play rather than retrospective training"
+    recommended_use: "Use only as a review lens for communication and vote-risk discipline."
+    misuse_risk: "Using review-only hindsight in live context can leak certainty that players did not publicly have."
 
 - entry_id: seed_hybrid_survive_01
   title: "混血儿生存策略：低调跟随主人阵营"
@@ -422,6 +566,18 @@
       - hybrid
       - survival
       - strategy
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=hybrid phase=speech tags=hybrid,survival,strategy"
+    transferable_lesson: "A dependent survival role should track an anchor without making the alignment source obvious or inflexible."
+    applicability:
+      - "When private incentives are uncertain and public cover matters"
+      - "When following another player's stance can be justified by speech evidence"
+    counter_signals:
+      - "The anchor's public logic collapses"
+      - "Continuing to follow would contradict your previous public reasoning"
+    recommended_use: "Use to balance survival, observation, and public plausibility."
+    misuse_risk: "Mechanical following creates an exploitable connection and weakens independent credibility."
 
 - entry_id: seed_jingcheng_villager_fake_seer_250709
   title: "京城大师赛250709：平民代跳预言家扰乱狼队视角"
@@ -460,6 +616,18 @@
       - pressure_speech
       - good_side_deception
       - review_only
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=god_view phase=speech tags=jingcheng_master,villager,fake_seer,pressure_speech"
+    transferable_lesson: "A review of disruptive public claim pressure should focus on whether the speech creates testable reactions while preserving reversibility."
+    applicability:
+      - "When studying bluff pressure from a public-information perspective"
+      - "When a team wants to evaluate whether disruption produced useful reactions"
+    counter_signals:
+      - "The bluff would permanently overwrite a stronger public lead"
+      - "The table cannot distinguish pressure from final commitment"
+    recommended_use: "Use in review or training to assess pressure-speech design and exit options."
+    misuse_risk: "Importing hindsight about hidden roles turns a pressure lesson into identity leakage."
 
 - entry_id: seed_jingcheng_wolf_antiprophet_push_250415
   title: "京城大师赛250415：狼队抗推预言家后继续推进好人混"
@@ -497,6 +665,18 @@
       - anti_prophet_push
       - vote_chain
       - team_coordination
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=werewolf phase=speech tags=jingcheng_master,werewolf,anti_prophet_push,vote_chain"
+    transferable_lesson: "After a successful pressure result, convert the gain into a continuous public narrative instead of resetting the agenda."
+    applicability:
+      - "When the team has won a day agenda and must plan the next target"
+      - "When vote records need to be explained as one coherent line"
+    counter_signals:
+      - "The next target cannot be connected to earlier public reasons"
+      - "A teammate's prior stance makes the continuation implausible"
+    recommended_use: "Use to chain speech, vote explanation, and next-day pressure into one story."
+    misuse_risk: "Momentum without evidence becomes overreach and can expose coordinated intent."
 
 - entry_id: seed_jingcheng_review_double_bomb_badge_loss_241218
   title: "京城大师赛241218：双自爆导致警徽流失后的好人复盘"
@@ -534,6 +714,18 @@
       - badge_loss
       - wolf_bomb
       - good_side_rebuild
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=general phase=review tags=jingcheng_master,review,badge_loss,good_side_rebuild"
+    transferable_lesson: "When a trusted information path breaks, rebuild from sequence, speech residue, and vote behavior instead of freezing."
+    applicability:
+      - "During review of disrupted public information structures"
+      - "When the table loses an expected organizing signal"
+    counter_signals:
+      - "There is still a cleaner public lead to resolve first"
+      - "Players are substituting speculation for observable sequence"
+    recommended_use: "Use as a public-perspective recovery frame for post-disruption analysis."
+    misuse_risk: "Review hindsight can make uncertain public clues look stronger than they were."
 
 - entry_id: seed_jingcheng_wolf_god_hunt_260227
   title: "京城大师赛260227：抗推预言家后的狼队神牌信息交换"
@@ -571,6 +763,18 @@
       - night_discussion
       - god_hunt
       - team_coordination
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=werewolf phase=night_discussion tags=jingcheng_master,werewolf,god_hunt,team_coordination"
+    transferable_lesson: "Night coordination should translate public clues into next-day cover, vote story, and target priorities together."
+    applicability:
+      - "When a team has gained tempo and must synchronize tomorrow's speech"
+      - "When public role clues need to be handled without creating contradictions"
+    counter_signals:
+      - "Public records do not support the planned covers"
+      - "The plan depends on teammates making identical unexplained shifts"
+    recommended_use: "Use to structure night discussion around information sharing plus speech assignments."
+    misuse_risk: "Turning clue discussion into overconfident targeting can create brittle stories and visible coordination."
 
 - entry_id: seed_foundation_seer_night1_blind
   title: "基础常识：首夜验人是盲选，被验者无需有特殊表现"
@@ -606,6 +810,18 @@
       - blind_check
       - gold_water
       - logic
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=any phase=sheriff_speech tags=seer,foundation,night1,blind_check"
+    transferable_lesson: "Public analysis should challenge the claimant's reasoning path, not demand impossible proof from the selected target."
+    applicability:
+      - "When evaluating early claim logic from public information"
+      - "When a target is blamed for being selected before public speech exists"
+    counter_signals:
+      - "There is later public behavior from the target that deserves separate analysis"
+      - "The claimant's own timeline is already resolved by other evidence"
+    recommended_use: "Use as a public-view reminder to focus questions on process, timing, and consistency."
+    misuse_risk: "Overusing the frame can dismiss legitimate later suspicion on the same player."
 
 - entry_id: seed_foundation_gold_water_strategy
   title: "基础常识：金水的战略意义——拉票而非证明被验者价值"
@@ -639,6 +855,18 @@
       - strategy
       - sheriff_vote
       - logic
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=any phase=sheriff_speech tags=gold_water,foundation,strategy,sheriff_vote"
+    transferable_lesson: "A favorable claim result should be treated as a strategic relationship signal, not as a full substitute for motive analysis."
+    applicability:
+      - "When evaluating why a claimant chose a low-pressure or neutral target"
+      - "When a recipient must decide how much trust to return"
+    counter_signals:
+      - "The claim result is only one small part of a stronger public contradiction"
+      - "The timing gives no real leverage over votes or trust"
+    recommended_use: "Use to separate persuasion value from actual speech quality."
+    misuse_risk: "Treating every favorable result as manipulation can make analysis cynical and unfalsifiable."
 
 - entry_id: seed_foundation_speech_originality
   title: "基础常识：警上发言要独立分析，禁止复读前人观点"
@@ -673,6 +901,18 @@
       - originality
       - sheriff_speech
       - quality
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=any phase=sheriff_speech tags=speech,foundation,originality,quality"
+    transferable_lesson: "Each speech should add a new observation, comparison, or vote implication instead of replaying earlier takes."
+    applicability:
+      - "When preparing a speech after several players have already spoken"
+      - "When judging whether a player is contributing independent analysis"
+    counter_signals:
+      - "A prior point is misunderstood and needs concise reinforcement"
+      - "The table needs consolidation more than novelty"
+    recommended_use: "Use to improve speech quality by naming the fresh angle before speaking."
+    misuse_risk: "Chasing novelty can produce thin contrarian reads or unnecessary target switching."
 
 - entry_id: seed_foundation_peace_night
   title: "基础常识：平安夜的两种可能——狼人空刀或女巫用解药救人"
@@ -711,6 +951,18 @@
       - peace_night
       - silver_water
       - logic
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=any phase=speech tags=witch,foundation,peace_night,silver_water"
+    transferable_lesson: "Public no-death information supports multiple explanations, so evaluate later speech consistency rather than treating the event as certainty."
+    applicability:
+      - "When no-death night becomes a public debate topic"
+      - "When a player uses the event to accuse without enough speech evidence"
+    counter_signals:
+      - "A role has voluntarily added public context that changes the discussion"
+      - "There is a stronger contradiction unrelated to the night result"
+    recommended_use: "Use from a public perspective to keep explanations as hypotheses and ask for speech-based support."
+    misuse_risk: "Collapsing uncertainty into one explanation can unfairly clear or condemn players."
 
 - entry_id: seed_foundation_peace_night_wolf
   title: "狼队空刀战术：拉长好人内讧+骗解药+为毒药收割铺路"
@@ -751,6 +1003,18 @@
       - peace_night
       - empty_knife
       - tactics
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=werewolf phase=night_discussion tags=werewolf,foundation,peace_night,empty_knife"
+    transferable_lesson: "A no-death narrative only works when the next-day public explanation and vote agenda are planned together."
+    applicability:
+      - "When night planning considers a public no-death story"
+      - "When next-day speakers need aligned explanations"
+    counter_signals:
+      - "The table already has strong public reasons to reject the story"
+      - "The plan would require visible contradiction with earlier stances"
+    recommended_use: "Use to connect night choice, next-day explanation, and pressure targets without naming private certainty."
+    misuse_risk: "Treating the tactic as a trick by itself ignores public credibility and may expose coordination."
 
 - entry_id: seed_foundation_vote_record_hardest_info
   title: "基础常识：投票记录是最硬的公开信息，发言可以造假投票不能"
@@ -785,6 +1049,18 @@
       - analysis
       - vote_pattern
       - logic
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=any phase=speech tags=vote,foundation,analysis,vote_pattern"
+    transferable_lesson: "Public votes are durable evidence, so compare them against stated reasons before trusting speech alone."
+    applicability:
+      - "When speeches conflict with recorded choices"
+      - "When the table needs a stable evidence base"
+    counter_signals:
+      - "The vote was forced by a public consensus everyone had acknowledged"
+      - "A later explanation credibly resolves the mismatch"
+    recommended_use: "Use to anchor analysis in observable vote behavior and identify contradictions."
+    misuse_risk: "Treating vote records as self-interpreting can miss context, pressure, or changed information."
 
 - entry_id: seed_foundation_counterclaim_analysis
   title: "基础常识：对跳预言家判断框架——验人时间线+警徽流兑现+站边一致性"
@@ -820,6 +1096,18 @@
       - foundation
       - analysis
       - sheriff_speech
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=any phase=sheriff_speech tags=seer,counterclaim,foundation,analysis"
+    transferable_lesson: "Compare competing claims across timeline, plan consistency, support structure, and speech quality instead of relying on one signal."
+    applicability:
+      - "When two public claim narratives compete"
+      - "When deciding which claim deserves temporary trust"
+    counter_signals:
+      - "A separate verified public contradiction must be resolved first"
+      - "The evidence set is too thin for broad faction mapping"
+    recommended_use: "Use as a public-view checklist for claim comparison."
+    misuse_risk: "Overweighting supporter analysis can smuggle assumed identities into a public debate."
 
 - entry_id: seed_foundation_withdraw_tactics
   title: "基础常识：退水是获取信息不担责任的战术，退水后变警下投票"
@@ -855,6 +1143,18 @@
       - foundation
       - tactics
       - sheriff_speech
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=any phase=sheriff_speech tags=sheriff,withdraw,foundation,tactics"
+    transferable_lesson: "Candidate exit decisions should be framed as information gathering, accountability, and later vote influence rather than as status play."
+    applicability:
+      - "When a speaker considers leaving a contest after gathering speech data"
+      - "When comparing candidate commitment with table utility"
+    counter_signals:
+      - "Leaving would abandon a needed leadership contest"
+      - "The move cannot be explained without procedural technicalities"
+    recommended_use: "Use to explain why a flexible contest posture can still serve public analysis."
+    misuse_risk: "Using the maneuver only to dodge responsibility makes later voting look opportunistic."
 
 - entry_id: seed_hunter_evidence_vote_01
   title: "猎人投票：用公开证据独立选目标"
@@ -885,6 +1185,18 @@
       - vote
       - evidence
       - independent_judgment
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=hunter phase=vote tags=hunter,vote,evidence,independent_judgment"
+    transferable_lesson: "A role with visible leverage should make vote choices auditable through public evidence rather than authority."
+    applicability:
+      - "When role pressure could distort an otherwise evidence-based vote"
+      - "When deciding between close targets"
+    counter_signals:
+      - "The public case is too weak to justify independent divergence"
+      - "The table needs consensus to avoid a worse outcome"
+    recommended_use: "Use to rank targets by speech contradictions, stance changes, and vote evidence."
+    misuse_risk: "Independence without shared evidence can become vanity voting and reduce trust."
 
 - entry_id: seed_idiot_evidence_vote_01
   title: "白痴投票：珍惜票权并给出可核验依据"
@@ -915,3 +1227,15 @@
       - vote
       - evidence
       - vote_power
+  schema_version: 2
+  tactical_frame:
+    situation_signature: "role=idiot phase=vote tags=idiot,vote,evidence,vote_power"
+    transferable_lesson: "Survival confidence should not lower vote quality; even protected positions need public reasons and clear tradeoffs."
+    applicability:
+      - "When personal risk feels lower than the table's need for a disciplined vote"
+      - "When evidence between targets is close"
+    counter_signals:
+      - "The vote would be symbolic and unable to affect the real decision"
+      - "The explanation relies on role comfort rather than observable facts"
+    recommended_use: "Use to keep vote power aligned with public checks, speech contradictions, and stated tradeoffs."
+    misuse_risk: "Casual voting from a safer seat can create false consensus and damage later review."

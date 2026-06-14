@@ -308,8 +308,54 @@ def test_custom_yaml_v2_seed_preserves_tactical_frame(tmp_path) -> None:
     ]
 
 
+def test_all_seed_entries_are_v2_with_tactical_frame() -> None:
+    expected_ids = {
+        "seed_ext_seer_claim_01",
+        "seed_ext_wolf_deep_hook_01",
+        "seed_rule_seer_badge_flow_01",
+        "seed_seer_counterclaim_vote_push_01",
+        "seed_tutorial_yumindao_seer_beginner_450",
+        "seed_tutorial_yumindao_witch_beginner_450",
+        "seed_tutorial_yumindao_hunter_idiot_civilian_488",
+        "seed_tutorial_yumindao_wolf_roles_883",
+        "seed_tutorial_yumindao_hybrid_beginner_488",
+        "seed_speech_wolf_defense_01",
+        "seed_ext_witch_poison_timing_01",
+        "seed_godview_review_01",
+        "seed_hybrid_survive_01",
+        "seed_jingcheng_villager_fake_seer_250709",
+        "seed_jingcheng_wolf_antiprophet_push_250415",
+        "seed_jingcheng_review_double_bomb_badge_loss_241218",
+        "seed_jingcheng_wolf_god_hunt_260227",
+        "seed_foundation_seer_night1_blind",
+        "seed_foundation_gold_water_strategy",
+        "seed_foundation_speech_originality",
+        "seed_foundation_peace_night",
+        "seed_foundation_peace_night_wolf",
+        "seed_foundation_vote_record_hardest_info",
+        "seed_foundation_counterclaim_analysis",
+        "seed_foundation_withdraw_tactics",
+        "seed_hunter_evidence_vote_01",
+        "seed_idiot_evidence_vote_01",
+    }
+
+    entries = create_seed_entries()
+
+    assert {entry.entry_id for entry in entries} == expected_ids
+    assert len(entries) == 27
+    for entry in entries:
+        assert entry.schema_version == 2, entry.entry_id
+        assert entry.tactical_frame is not None, entry.entry_id
+        assert entry.tactical_frame.situation_signature, entry.entry_id
+        assert entry.tactical_frame.transferable_lesson, entry.entry_id
+        assert entry.tactical_frame.applicability, entry.entry_id
+        assert entry.tactical_frame.counter_signals, entry.entry_id
+        assert entry.tactical_frame.recommended_use, entry.entry_id
+        assert entry.tactical_frame.misuse_risk, entry.entry_id
+
+
 class TestRagHardeningPII:
-    """rag-hardening-2: PII / player-ID filter in
+    r"""rag-hardening-2: PII / player-ID filter in
     ``_validate_forbidden_content``.
 
     The 12-player V1 board uses ``pNN`` exclusively, so the
