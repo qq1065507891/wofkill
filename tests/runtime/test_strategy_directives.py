@@ -121,8 +121,14 @@ class TestWitchStrategyHints:
         assert assessment["actionable"] is True
         assert "probability_framework" in assessment
         assert assessment["probability_framework"]["p_seer"] > 0
+        assessment_text = str(assessment)
+        assert "首夜必须救人" not in assessment_text
+        assert "不救的风险极高" not in assessment_text
         # Must NOT contain the old hard-coded directive
         assert "首夜大概率应该救人" not in ctx.strategy_directive.get("witch_night_action", "")
+        action_text = ctx.strategy_directive.get("witch_night_action", "")
+        assert "[强烈推荐]" not in action_text
+        assert "不救人的女巫等于白板平民" not in action_text
 
     def test_later_night_has_scored_assessment(self) -> None:
         """N2+ should have a numeric score and interpretation."""
@@ -2273,6 +2279,15 @@ class TestVoteDirectiveBranchesByRole:
                 f"got: {sorted(sd.keys())}"
             )
 
+    def test_hunter_vote_never_recommends_illegal_abstention_or_herding(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import agent_day_vote
+
+        state, engine, registry = self._make_vote_state("p08", "hunter")
+        agent_day_vote(state, engine, registry, "p08")
+        text = registry.agent.last_context.strategy_directive["hunter_vote_strategy"]
+        assert "弃票" not in text
+        assert "跟大多数人" not in text
+
 
 class TestDefenseSpeechHandler:
     """D-8: DEFENSE_SPEECH task type must have a corresponding agent handler."""
@@ -2543,6 +2558,52 @@ class TestSeerDirectiveLatePosition:
             f"boundary-position seer (6/12) incorrectly tagged as late: {directive!r}"
         )
 
+    def test_late_position_seer_reports_actual_good_result(self):
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 13)
+        }
+        players["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        gs = GameState(
+            players=players,
+            day_number=1,
+            night_number=1,
+            events=[
+                GameEvent(
+                    type="seer_check",
+                    payload={
+                        "target_id": "p06",
+                        "alignment": "good",
+                        "night_number": 1,
+                    },
+                ),
+            ],
+        )
+        speech_order = [f"p{i:02d}" for i in range(2, 13)] + ["p01"]
+        text = build_seer_directive(
+            gs, "p01", speech_order=speech_order,
+        )["seer_speech_directive"]
+        assert "第 1 夜验了 p06 是好人" in text
+        assert "首夜查杀" not in text
+
+    def test_late_position_seer_without_result_does_not_fabricate_one(self):
+        from werewolf_agent.runtime.directives.seer import build_seer_directive
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 13)
+        }
+        players["p01"] = PlayerState(id="p01", role="seer", alive=True)
+        gs = GameState(players=players, day_number=1, night_number=1)
+        speech_order = [f"p{i:02d}" for i in range(2, 13)] + ["p01"]
+        text = build_seer_directive(
+            gs, "p01", speech_order=speech_order,
+        )["seer_speech_directive"]
+        assert "首夜查杀" not in text
+        assert "没有可报告的验人结果" in text
+
 
 class TestWolfFakeSeerConsistency:
     """P0-G3223805846-4: 狼 fake_seer 启用时各角色 prompt 必须有话术一致条款。"""
@@ -2584,16 +2645,29 @@ class TestWitchPoisonPublicSource:
             f"witch directive missing prohibition: {directive!r}"
         )
 
-    def test_witch_directive_contains_antidote_default_rule(self):
+    def test_witch_directive_uses_evidence_sensitive_antidote_rule(self):
         from werewolf_agent.runtime.directives.witch import build_witch_directive
         from werewolf_agent.core.models import GameState
         gs = GameState(players={}, day_number=2, night_number=2)
         d = build_witch_directive(gs, "p03")
         directive = d.get("witch_speech_directive", "")
-        # 解药默认救狼刀目标
-        assert "解药" in directive and ("默认" in directive or "当晚" in directive), (
-            f"witch directive missing antidote default rule: {directive!r}"
-        )
+        assert "仍应救" not in directive
+        assert "结合目标价值和公开证据" in directive
+
+
+def test_idiot_directive_treats_reveal_as_survival_with_vote_cost():
+    from werewolf_agent.runtime.directives.idiot import build_idiot_directive
+
+    players = {
+        "p01": PlayerState(
+            id="p01", role="idiot", alive=True, revealed_idiot=False,
+        ),
+    }
+    text = build_idiot_directive(
+        GameState(players=players, day_number=1), "p01",
+    )["idiot_speech_directive"]
+    assert "失去投票权" in text
+    assert "自动有利" not in text
 
 
 class TestHunterShotEvidence:
@@ -2683,6 +2757,8 @@ class TestNoSheriffVoteHint:
         assert "归票" in full or "跟随" in full, (
             f"no-sheriff directive missing 归票 hint: {full!r}"
         )
+        assert "跟随查杀方" not in full
+        assert "核验预言家可信度" in full
 
     def test_no_sheriff_vote_directive_key_uses_distinct_name(self):
         """P0-G3223805846-9: the new hint must use a dict key distinct

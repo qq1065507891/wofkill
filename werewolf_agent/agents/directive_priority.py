@@ -1,0 +1,70 @@
+"""Shared prompt priority policy for strategy directive keys."""
+
+from __future__ import annotations
+
+
+HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
+    "wolf_fake_seer_execution",
+    "must_address_alerts",
+    "first_night_killed",
+    "speech_silent",
+    "vote_silent",
+    "witch_night_action",
+    "seer_night_check",
+    "role_alerts",
+    "vote_pressure",
+    "wolf_sheriff_must_claim_seer",
+    "wolf_no_reveal_seer",
+    "wolf_fake_seer_teammate",
+    "wolf_kill_instruction",
+    "wolf_team_discussion",
+    "wolf_universal_rules",
+    "anti_herd",
+    "hybrid_wolf_master_directive",
+    "hybrid_good_master_directive",
+    "hunter_shot_directive",
+    "last_words",
+    "badge_decision",
+    "sheriff_silent",
+    "witch_poison_deterrent",
+    "required_evaluation",
+    "vote_basis_hint",
+    "gold_water_duty",
+    "unreported_checks",
+    "my_check_history",
+})
+
+SUGGESTION_KEYS: frozenset[str] = frozenset({
+    "wolf_speech_directive",
+    "villager_speech_directive",
+    "seer_speech_directive",
+    "witch_speech_directive",
+    "hunter_speech_directive",
+    "idiot_speech_directive",
+    "hybrid_speech_directive",
+    "wolf_vote_strategy",
+    "wolf_vote_role_hint",
+    "wolf_vote_target",
+    "seer_vote_strategy",
+    "witch_vote_strategy",
+    "hunter_vote_strategy",
+    "villager_vote_strategy",
+    "hybrid_vote_strategy",
+    "no_sheriff_vote_hint",
+    "good_vote_decision_guard",
+    "sheriff_vote_push",
+    "speech_originality",
+    "anti_following_and_peace_night_rule",
+})
+
+REFERENCE_KEYS: frozenset[str] = frozenset({
+    "skill_tactical_advice",
+    "wolf_day_push_target",
+    "wolf_high_priority_target",
+    "wolf_plan_target",
+    "master_behavior_summary",
+    "witch_pressure",
+    "witch_strategy_hint",
+    "day_discussion_summary",
+    "vote_pressure_context",
+})

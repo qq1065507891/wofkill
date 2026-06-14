@@ -75,3 +75,37 @@ class TestPersonaRouter:
         snap = router.resolve("p01", "vote")
         # Snapshot has no rule-affecting fields
         assert "legal_actions" not in snap.effective_params
+
+    def test_good_roles_remove_deceptive_persona_task_styles(self) -> None:
+        cases = (
+            ("bold_pretender", "villager", "speech", "fake_authority"),
+            ("bold_pretender", "seer", "sheriff_speech", "seer_claim_aggressive"),
+            ("deep_hooker", "witch", "vote", "appears_good_then_flips"),
+        )
+        for profile_id, role, task_type, unsafe_style in cases:
+            router = PersonaRouter.from_yaml(PERSONAS_YAML)
+            router.load_assignments({"p01": profile_id})
+            snap = router.resolve(
+                "p01",
+                task_type,
+                GameContext(own_role=role),
+            )
+
+            assert snap.task_style != unsafe_style
+            assert "deception_skill" not in snap.effective_params
+            assert "deception_skill" not in snap.dynamic_adjustments
+
+    def test_werewolf_may_keep_compatible_deceptive_persona_style(self) -> None:
+        router = PersonaRouter.from_yaml(PERSONAS_YAML)
+        router.load_assignments({"p04": "bold_pretender"})
+
+        snap = router.resolve(
+            "p04",
+            "deception",
+            GameContext(own_role="werewolf"),
+        )
+
+        assert snap.personality == "bold_deceiver"
+        assert snap.speech_style == "confident_fake_claim"
+        assert snap.task_style == "full_fake_seer"
+        assert "deception_skill" in snap.effective_params

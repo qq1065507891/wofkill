@@ -394,7 +394,7 @@ class TestSkillsForRole:
         assert SkillName.SWING_VOTE not in names
         assert SkillName.DEEP_HOOK not in names
 
-    def test_seer_has_counter_claim_but_villager_does_not(self):
+    def test_seer_has_counter_claim_but_not_hide_identity(self):
         reg = SkillRegistry()
         seer_skills = reg.skills_for_role("seer")
         villager_skills = reg.skills_for_role("villager")
@@ -402,7 +402,7 @@ class TestSkillsForRole:
         villager_names = {s.name for s in villager_skills}
         assert SkillName.COUNTER_CLAIM in seer_names
         assert SkillName.COUNTER_CLAIM not in villager_names
-        assert SkillName.HIDE_IDENTITY in seer_names
+        assert SkillName.HIDE_IDENTITY not in seer_names
         assert SkillName.HIDE_IDENTITY not in villager_names
 
     def test_dispatch_for_role_werewolf_speech(self):
@@ -624,7 +624,7 @@ class TestDynamicSkillOutput:
         out = apply_skill(SkillName.SWING_VOTE, inp)
         assert out.prompt_injectable != ""
 
-    def test_hide_identity_safe(self):
+    def test_hide_identity_warns_seer_to_report_truth(self):
         gs = _make_skill_gs(day=1, player_role="seer", player_id="p03")
         ws, bs, alerts = _build_cognition(gs, "p03")
         inp = SkillInput(
@@ -634,7 +634,9 @@ class TestDynamicSkillOutput:
         )
         out = apply_skill(SkillName.HIDE_IDENTITY, inp)
         assert out.prompt_injectable != ""
-        assert "隐蔽" in out.prompt_injectable or "藏" in out.prompt_injectable
+        assert "不应默认使用藏身份" in out.prompt_injectable
+        assert "准确公开" in out.prompt_injectable or "真实验人" in out.prompt_injectable
+        assert "避免泄露警徽流" not in out.prompt_injectable
 
     def test_last_words_analysis_with_death(self):
         gs = _make_skill_gs(day=1, player_role="villager", player_id="p04", events=[

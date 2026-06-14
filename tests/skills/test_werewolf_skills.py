@@ -1271,13 +1271,13 @@ def test_hide_identity_role_conditional() -> None:
     `hide_identity_handler` returned a one-size-fits-all string
     regardless of role. But seer/witch/wolf each have different
     "what to hide" priorities:
-    - seer hides 查验信息 (check info) and 警徽流
+    - seer should not use hiding identity as a default strategy
     - witch hides 药剂 (antidote/poison availability) and 救人时机
     - wolf hides 夜间会议 (night meeting) and teammate coordination
     - villager hides almost nothing (no night info to leak)
 
     Post-fix: branch on `inp.role` so the fallback advice is
-    role-tailored. The seer fallback must mention 查验 / 警徽;
+    role-tailored. The seer fallback must warn against hiding identity;
     the witch fallback must mention 药剂 / 解药 / 毒药; the wolf
     fallback must mention 夜杀 / 队友 / 夜间信息. A villager
     fallback stays generic.
@@ -1292,9 +1292,17 @@ def test_hide_identity_role_conditional() -> None:
         task_type="speech",
     )
     seer_text = apply_skill(SkillName.HIDE_IDENTITY, seer_inp).prompt_injectable
-    assert any(k in seer_text for k in ("查验", "警徽", "金水")), (
-        f"NEW-R4-P2-5: seer hide_identity fallback must mention "
-        f"查验 / 警徽 / 金水; got: {seer_text!r}"
+    assert "不应默认使用藏身份" in seer_text, (
+        f"NEW-R4-P2-5: seer hide_identity fallback must warn against "
+        f"default hide-identity usage; got: {seer_text!r}"
+    )
+    assert "准确公开" in seer_text or "真实验人" in seer_text, (
+        f"NEW-R4-P2-5: seer hide_identity fallback must prioritize "
+        f"truthful reporting; got: {seer_text!r}"
+    )
+    assert "避免泄露警徽流" not in seer_text, (
+        f"NEW-R4-P2-5: seer hide_identity fallback must not preserve "
+        f"old badge-flow hiding advice; got: {seer_text!r}"
     )
 
     witch_inp = SkillInput(

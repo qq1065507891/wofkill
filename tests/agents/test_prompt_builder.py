@@ -169,6 +169,27 @@ def test_no_key_appears_in_multiple_categories():
     )
 
 
+def test_all_role_decision_directives_are_explicitly_classified():
+    """Core role decisions must not silently fall through to reference."""
+    expected_suggestions = {
+        "villager_speech_directive",
+        "hunter_speech_directive",
+        "idiot_speech_directive",
+        "hybrid_speech_directive",
+        "witch_speech_directive",
+        "seer_vote_strategy",
+        "witch_vote_strategy",
+        "hunter_vote_strategy",
+        "villager_vote_strategy",
+        "wolf_vote_strategy",
+        "wolf_vote_role_hint",
+        "wolf_vote_target",
+        "no_sheriff_vote_hint",
+    }
+    assert expected_suggestions <= SUGGESTION_KEYS
+    assert "seer_night_check" in HARD_CONSTRAINT_KEYS
+
+
 # ---------------------------------------------------------------------------
 # Prompt-rendering: 3 distinct sections
 # ---------------------------------------------------------------------------
@@ -1349,18 +1370,14 @@ def test_rag_hints_filtered_by_type():
 
 
 def test_rag_truncation_note_in_tail():
-    """G-R4-12: when the JSON payload is truncated by ``_truncate_text``
-    (P2-4 marker ``...<已截断>`` appears), the tail reminder must
-    explicitly acknowledge the truncation. Otherwise the LLM sees
-    the head warning + half-JSON + a generic "以上案例仅供参考"
-    tail — and may attempt to parse the half-JSON or treat it as a
-    hard assertion. The tail must call out the truncation so the
-    LLM knows the JSON ended mid-document.
+    """G-R4-12: when the JSON payload is compacted into a truncation
+    envelope, the tail reminder must explicitly acknowledge the
+    truncation. Otherwise the LLM sees the head warning + shortened
+    JSON + a generic "以上案例仅供参考" tail, and may treat the prefix
+    as a complete case record.
     """
-    # Force the JSON to exceed the truncation cap. The RAG section
-    # cap is 1800 chars; a single item with a 2k-char summary blows
-    # past it.
-    long_summary = "狼" * 2000
+    # Force the JSON to exceed the truncation cap after slim rendering.
+    long_summary = "狼" * 5000
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
         "rag_hints": [{
@@ -1371,32 +1388,17 @@ def test_rag_truncation_note_in_tail():
         }],
     })
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The truncation marker is present.
-    assert "已截断" in prompt, (
+    # The compact JSON truncation envelope is present.
+    assert '"truncated":true' in prompt, (
         "G-R4-12: the test setup should force JSON truncation; "
-        "the `<已截断>` marker must be present in the prompt."
+        "the compact truncation envelope must be present in the prompt."
     )
-    # The tail must include an explicit truncation note. The exact
-    # wording is implementation-defined; the contract is just that
-    # the tail text references the truncation (e.g. "JSON 已截断",
-    # "内容已截断", etc.) — not just the generic "以上案例仅供参考".
     rag_start = prompt.find("知识库提示")
     assert rag_start != -1, "RAG hints section must be present"
     rag_section = prompt[rag_start:]
-    # The truncation note must be a clear reference to the cut.
-    truncation_keywords = ("已截断", "被截断", "中途截断", "截断提示")
-    has_truncation_note = any(
-        kw in rag_section for kw in truncation_keywords
-    )
-    # The truncated marker is already in the JSON; the tail must
-    # ALSO mention truncation so the LLM can see the tail's intent
-    # even if it skips the head warning.
-    assert rag_section.count("已截断") >= 2, (
-        f"G-R4-12: tail must include its own truncation note. "
-        f"Got {rag_section.count('已截断')} occurrences of '已截断' "
-        f"in the RAG section. The P2-4 marker is in the JSON body, "
-        f"but the tail reminder must add a second mention so the LLM "
-        f"sees 'this was truncated' in both places."
+    assert "JSON 已截断" in rag_section, (
+        f"G-R4-12: tail must include its own truncation note when "
+        f"_compact_json emits a truncation envelope. Got: {rag_section!r}"
     )
     # And the tail must still carry the existing reference framing.
     assert "以上案例仅供参考" in rag_section, (
@@ -1897,9 +1899,8 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
         "本局·",            # private memory
         "关键事件",          # salience
         "知识库提示",        # rag hints (M4-2: back to 辅助)
-        "长期能力画像",       # profile
-        "我的认知矩阵",       # cognition
-        "技能分析结果",       # skill analysis
+        "历史角色经验",       # profile
+        "认知校准摘要",       # cognition
     ]
     for header in auxiliary_headers:
         idx = prompt.find(header)
@@ -1954,17 +1955,8 @@ def test_priority_labels_for_auxiliary_sections_are_consistent():
 # / legal_targets constraints).
 
 
-def test_output_contract_not_duplicated():
-    """P1-4: the FULL_ACTION field list must appear only ONCE in the
-    assembled (system + user) prompt pair.
-
-    Pre-fix, the string ``action_type、target_id、speech、reason、confidence``
-    appeared in BOTH ``build_system_prompt()`` and
-    ``build_user_prompt()``. The user prompt version adds no new
-    information — the system prompt is already cacheable and the LLM
-    has the rule. The user prompt should keep phase-specific rules
-    only (vote audit fields, legal_actions / legal_targets).
-    """
+def test_output_contract_fields_live_only_in_dynamic_action_contract():
+    """Field-level schemas belong only to the current turn's ActionContract."""
     ctx = AgentContext(
         agent_id="p05",
         task_type=TaskType.SPEECH,
@@ -1979,19 +1971,15 @@ def test_output_contract_not_duplicated():
     system_prompt = builder.build_system_prompt()
     user_prompt = builder.build_user_prompt(RetryInfo())
 
-    field_list = "action_type、target_id、speech、reason、confidence"
-    # Sanity: must appear at least once (in the system prompt).
-    assert system_prompt.count(field_list) >= 1, (
-        "Field list must still be advertised in the system prompt "
-        "(stable rule — keep the LLM trained on the format)."
-    )
-    # P1-4: must NOT appear in the user prompt (it would be a duplicate).
-    assert user_prompt.count(field_list) == 0, (
-        "P1-4: field list is duplicated in the user prompt. The system "
-        "prompt already has it — the user prompt should only carry "
-        "phase-specific rules (legal_actions, legal_targets, vote audit "
-        "fields). User prompt excerpt: " + user_prompt[:500]
-    )
+    stable_contract = builder._build_output_contract()
+    for discriminator in ("action_type", "choice", "intent"):
+        assert discriminator not in stable_contract, (
+            f"Stable system output contract must not enumerate "
+            f"{discriminator!r}; the current ActionContract is the sole "
+            f"field-level source of truth. contract={stable_contract!r}"
+        )
+    assert "ActionContract" in stable_contract
+    assert "最终输出协议" in user_prompt
 
 
 def test_output_contract_vote_rule_still_in_user_prompt():
@@ -2916,6 +2904,85 @@ def test_persona_empty_snapshot_is_noop():
     assert "人格设定: " not in user_prompt
 
 
+def test_good_role_persona_prompt_renders_only_sanitized_expression_fields():
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        persona_snapshot={
+            "profile_id": "bold_pretender",
+            "display_name": "悍跳进攻型",
+            "personality": "bold_deceiver",
+            "speech_style": "confident_fake_claim",
+            "task_style": "fake_authority",
+            "effective_params": {
+                "deception_skill": 0.91,
+                "logic_skill": 0.55,
+            },
+            "dynamic_adjustments": {"deception_skill": 0.10},
+            "phrase_style": "固定冒充预言家",
+        },
+    )
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    assert "bold_pretender" not in prompt
+    assert "悍跳进攻型" not in prompt
+    assert "bold_deceiver" not in prompt
+    assert "confident_fake_claim" not in prompt
+    assert "fake_authority" not in prompt
+    assert "固定冒充预言家" not in prompt
+    assert "role_consistent_expression" in prompt
+    assert "evidence_based_expression" in prompt
+    assert "deception_skill" not in prompt
+
+
+def test_live_memory_prompt_omits_ability_ranks_and_duplicate_cognition_lists():
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        profile_memory_hint={
+            "games_played": 8,
+            "current_role": "villager",
+            "current_role_games": 3,
+            "current_role_win_rate_pct": 67,
+            "win_rate_confidence": "样本中等(3局)",
+            "logic_rank": "前 30%",
+            "deception_rank": "需要提升",
+        },
+        cognition_matrix_hint={
+            "suspects": [{
+                "player": "p03",
+                "trust": 0.2,
+                "key_evidence": ["salience_items#abc123"],
+            }],
+            "trusted": [{
+                "player": "p04",
+                "trust": 0.8,
+                "open_questions": ["salience_items#def456"],
+            }],
+        },
+    )
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    assert "logic_rank" not in prompt
+    assert "deception_rank" not in prompt
+    assert "前 30%" not in prompt
+    assert "需要提升" not in prompt
+    assert '"suspects"' not in prompt
+    assert '"trusted"' not in prompt
+    assert "salience_items#" not in prompt
+    assert "tracked_suspect_count" in prompt
+    assert "tracked_trusted_count" in prompt
+
+
 # ---------------------------------------------------------------------------
 # P0-1: _format_examples else branch must follow ctx.own_role for true_role
 # ---------------------------------------------------------------------------
@@ -3340,9 +3407,10 @@ def test_salience_events_section_absent_when_empty():
 # failure handler distinguish "truncated by design" from "garbled".
 
 
-def test_compact_json_truncation_marks_omission():
-    """P2-4: a long dict passed through _compact_json must end with
-    a clearly visible omission marker."""
+def test_compact_json_truncation_stays_valid_json():
+    """Oversized context must remain machine-readable after truncation."""
+    import json
+
     builder = PlayerPromptBuilder(
         AgentContext(
             agent_id="p01",
@@ -3359,17 +3427,11 @@ def test_compact_json_truncation_marks_omission():
         for i in range(50)
     }
     out = builder._compact_json(big)
-    assert out.endswith("<已截断>"), (
-        f"P2-4: truncated compact JSON must end with the `<已截断>` "
-        f"marker so the LLM knows the snippet was intentionally cut. "
-        f"Last 30 chars: {out[-30:]!r}"
-    )
-    # And confirm the truncation actually fired (i.e. the input was
-    # bigger than the cap).
-    assert len(big) > 0  # sanity
-    # The marker suffix length matters: a future regression that drops
-    # the marker should fail this assertion.
-    assert "<已截断>" in out
+    parsed = json.loads(out)
+    assert parsed["truncated"] is True
+    assert parsed["original_type"] == "dict"
+    assert "content_prefix" in parsed
+    assert len(out) <= 1800
 
 
 
@@ -3608,17 +3670,7 @@ def test_sheriff_example_includes_withdraw():
 def _make_budget_pressure_context() -> AgentContext:
     """Context that genuinely exceeds the 6_250-char user-prompt budget.
 
-    Used by G-R4-15 to verify persona and RAG hints survive while lower-value
-    auxiliary sections (profile, salience, etc.) are dropped.
-
-    The persona, strategy_directive and output contract must NOT be dropped.
-    The 辅助 sections (phase_context, belief,
-    public_summary, visible_state, private_memory, salience,
-    reflection, profile, cognition) are each ~1.8k chars — together
-    they push the joined prompt well past 6_250. RAG hints (also
-    ~1k+ chars with proper ``type: "rag_hit"``) sit in the middle
-    of the 辅助 drop order today; the fix moves them to a new
-    higher tier.
+    Current-game grounding should survive while style/history sections drop.
     """
     return AgentContext(
         agent_id="p10",
@@ -3645,14 +3697,23 @@ def _make_budget_pressure_context() -> AgentContext:
                 for i in range(6, 11)
             ],
         },
-        public_summary="公开事实 " + ("D2 投票事实数据 " * 200),
-        visible_world_state={f"key_{i}": f"value_{i} " * 30 for i in range(20)},
+        public_summary="PUBLIC_FACT_MARKER " + ("D2 投票事实数据 " * 200),
+        visible_world_state={
+            "VISIBLE_STATE_MARKER": "alive/sheriff state",
+            **{f"key_{i}": f"value_{i} " * 30 for i in range(20)},
+        },
         private_memory_hints={
             "logic_flaws": [{"day": 2, "point": f"逻辑 {i} " * 25} for i in range(8)],
             "valid_points": [{"day": 2, "point": f"有效 {i} " * 25} for i in range(8)],
         },
         salience_items=[
-            {"id": f"sal-{i}", "weight": 0.5, "summary": f"事件 {i} " * 30}
+            {
+                "id": f"sal-{i}",
+                "weight": 0.5,
+                "summary": (
+                    "SALIENCE_MARKER " if i == 0 else ""
+                ) + f"事件 {i} " * 30,
+            }
             for i in range(8)
         ],
         # RAG hints with the proper discriminator (the render filter
@@ -3674,6 +3735,13 @@ def _make_budget_pressure_context() -> AgentContext:
                           "note": "画像 " * 20}
             for i in range(1, 13)
         },
+        recent_transcript=[
+            {
+                "speaker": "p07",
+                "day_number": 2,
+                "text": "LATEST_TRANSCRIPT_MARKER " + ("公开发言证据 " * 20),
+            },
+        ],
         # 硬约束 equivalent (NEVER_DROP) — keeps strategy + contract
         # in the prompt no matter what.
         strategy_directive={
@@ -3684,37 +3752,68 @@ def _make_budget_pressure_context() -> AgentContext:
     )
 
 
-def test_rag_hints_survive_budget_pressure() -> None:
-    """Persona and RAG both survive after persona fields are compacted."""
+def test_current_game_grounding_survives_before_style_and_history() -> None:
+    """Current facts outrank persona, RAG, reflection, and profile memory."""
     ctx = _make_budget_pressure_context()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # Sanity: the budget trimmer must have actually run. With
-    # 10 辅助 sections × ~1.8k each + 硬约束 (strategy + contract)
-    # the joined length is well over 6_250. The final prompt must
-    # therefore be under the cap (trimmer did its job) AND have
-    # dropped at least one 辅助 section.
     assert len(prompt) <= _USER_PROMPT_BUDGET_CHARS + 750, (
-        f"G-R4-15: budget trimmer should keep joined prompt under "
+        f"budget trimmer should keep joined prompt under "
         f"~6_250 + 750 chars; got {len(prompt)} chars."
     )
-    # RAG hints MUST survive — they are the whole point of the
-    # 知识库提示 section.
-    assert "budget-pressure-rag" in prompt, (
-        f"G-R4-15: RAG hints section was dropped under budget pressure. "
-        f"Got prompt (first 400 chars): {prompt[:400]!r}"
+    for marker in (
+        "PUBLIC_FACT_MARKER",
+        "VISIBLE_STATE_MARKER",
+        "SALIENCE_MARKER",
+        "LATEST_TRANSCRIPT_MARKER",
+    ):
+        assert marker in prompt, (
+            f"current-game grounding marker {marker!r} was dropped before "
+            f"style/history context. prompt[:500]={prompt[:500]!r}"
+        )
+    assert "人格设定" not in prompt
+    assert "budget-pressure-rag" not in prompt
+    assert "长期能力画像" not in prompt
+    assert "我的认知矩阵" not in prompt
+
+
+def test_phase_and_legal_context_survives_extreme_budget_pressure() -> None:
+    """Legal action context is the task contract, not optional grounding."""
+    ctx = AgentContext(
+        agent_id="p10",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=2,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p05", "p07"],
+        strategy_directive={
+            "must_address_alerts": ["必须回应" + "X" * 4000],
+            "anti_herd": "不要盲目跟票 " * 400,
+        },
+        public_summary="PUBLIC_OVERFLOW " + ("公开事实 " * 400),
+        visible_world_state={f"key_{i}": "value " * 40 for i in range(20)},
+        salience_items=[
+            {"id": f"sal-{i}", "summary": "事件 " * 80}
+            for i in range(3)
+        ],
+        recent_transcript=[
+            {"speaker": f"p{i:02d}", "day_number": 2, "text": "发言 " * 120}
+            for i in range(1, 5)
+        ],
     )
-    assert "知识库提示" in prompt, (
-        f"G-R4-15: the 知识库提示 header was dropped under budget "
-        f"pressure. RAG hints must be in a higher-priority tier "
-        f"(【参考】) than the other 辅助 sections that get dropped."
-    )
-    # Persona drives per-player differentiation and must survive the
-    # same budget pressure as the strategy/output contracts.
-    assert "人格设定" in prompt, (
-        f"persona_snapshot must survive budget trimming so players do not "
-        f"collapse to the same generic style. prompt[:400]={prompt[:400]!r}"
-    )
-    assert "X" * 100 not in prompt
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    assert "当前阶段: day" in prompt
+    assert "可用操作: ['vote']" in prompt
+    assert "可选目标: ['p05', 'p07']" in prompt
+    assert "本轮投票必须选择一名玩家放逐" in prompt
+
+
+def test_persona_is_droppable_under_budget_pressure() -> None:
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+
+    assert "_build_persona" not in PlayerPromptBuilder._NEVER_DROP
 
 
 # ---------------------------------------------------------------------------
@@ -3896,14 +3995,8 @@ def test_reasoning_method_has_three_numbered_steps():
 # ---------------------------------------------------------------------------
 
 
-def test_system_output_contract_advertises_vote_nine_fields():
-    """Phase 2 P2-3: the stable system output contract must advertise
-    the 9 fields used by TARGET_CHOICE+VOTE (the per-turn contract
-    emits 9 fields for VOTE, not 5).  Pre-fix the system prompt
-    advertised only 5, conflicting with the user prompt's
-    per-turn contract and causing the LLM to omit the vote-audit
-    fields on first try.
-    """
+def test_system_output_contract_defers_vote_fields_to_action_contract():
+    """Stable system guidance must not compete with the vote contract."""
     ctx = AgentContext(
         agent_id="p05",
         task_type=TaskType.VOTE,
@@ -3913,17 +4006,28 @@ def test_system_output_contract_advertises_vote_nine_fields():
         legal_actions=[ActionType.VOTE],
         legal_targets=["p02", "p03"],
     )
-    sys_prompt = PlayerPromptBuilder(ctx).build_system_prompt()
-    # 9 vote-audit fields must all be advertised in the system prompt
+    builder = PlayerPromptBuilder(ctx)
+    stable_contract = builder._build_output_contract()
+    user_prompt = builder.build_user_prompt(RetryInfo())
     for field in (
         "choice", "reason", "seer_stance", "vote_basis",
         "standing_with_seer", "suspect_reason", "not_voting_reason",
         "private_reason", "confidence",
     ):
-        assert field in sys_prompt, (
-            f"P2-3: system output contract must mention vote field "
-            f"{field!r} so the LLM doesn't omit it on first try"
-        )
+        assert field not in stable_contract
+        assert field in user_prompt
+
+
+def test_information_boundaries_do_not_hardcode_wrong_section_count():
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+    )
+    boundaries = PlayerPromptBuilder(ctx)._build_information_boundaries()
+    assert "11 类" not in boundaries
+    assert "user-prompt" in boundaries
 
 
 # ---------------------------------------------------------------------------

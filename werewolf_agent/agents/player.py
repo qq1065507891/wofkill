@@ -88,7 +88,11 @@ from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputPolicy,
     classify_structured_failure,
 )
-from werewolf_agent.persona_runtime.router import GameContext, PersonaRouter
+from werewolf_agent.persona_runtime.router import (
+    GameContext,
+    PersonaRouter,
+    sanitize_persona_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -724,7 +728,16 @@ class PlayerAgent:
 
     def _attach_persona_snapshot(self, context: AgentContext) -> AgentContext:
         """Resolve the per-turn persona before any prompt is rendered."""
-        if context.persona_snapshot or not self.persona_key or self.persona_router is None:
+        if context.persona_snapshot:
+            sanitized = sanitize_persona_snapshot(
+                context.persona_snapshot,
+                own_role=context.own_role or "",
+                task_type=context.task_type.value,
+            )
+            if sanitized == context.persona_snapshot:
+                return context
+            return context.model_copy(update={"persona_snapshot": sanitized})
+        if not self.persona_key or self.persona_router is None:
             return context
 
         visible = context.visible_world_state or {}

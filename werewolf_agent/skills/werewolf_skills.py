@@ -964,21 +964,33 @@ def find_power_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
 
 @register_handler(SkillName.HIDE_IDENTITY)
 def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
+    if inp.role == "seer":
+        prompt = (
+            "藏身份提示（预言家视角）：预言家不应默认使用藏身份。"
+            "如果已有验人结果，或处于警上、对跳、PK、后置发言、需要带队等公开窗口，"
+            "必须准确公开身份与真实验人结果。"
+            "只有在尚未进入公开窗口时，才可以短暂避免暴露验人动机，"
+            "但不能用藏身份覆盖报验人和带队的硬要求。"
+        )
+        return SkillOutput(
+            skill_name=skill.name.value,
+            speech_structure=["准确公开验人", "说明信息来源", "按局势带队"],
+            risk_alerts=[
+                "藏身份会延误真实验人信息，可能污染好人视角",
+                "公开窗口继续隐藏会削弱预言家带队价值",
+            ],
+            confidence=0.25,
+            reasoning="预言家以真实验人信息输出为主，藏身份只能是短暂信息控制",
+            prompt_injectable=_cap_prompt_injectable(prompt),
+        )
+
     gs = inp.game_state
     if gs is None:
-        # NEW-R4-P2-5: role-tailored static fallback. Seer hides
-        # 查验 / 警徽; witch hides 药剂 / 救人时机; wolf hides
-        # 夜杀 / 队友 / 夜间信息. Villagers (and other roles with
-        # no night info to leak) keep the generic advice.
+        # NEW-R4-P2-5: role-tailored static fallback. Witch hides 药剂 /
+        # 救人时机; wolf hides 夜杀 / 队友 / 夜间信息. Villagers (and
+        # other roles with no night info to leak) keep the generic advice.
         risks = ["藏身份过久可能导致无法在关键时刻发挥作用"]
-        if inp.role == "seer":
-            prompt = (
-                "藏身份建议（预言家视角）：不要提前暴露查验结果和金水。"
-                "如果还没到必须跳预言家的时候，保持中立发言节奏，"
-                "避免在发言中泄露警徽流和验人动机。"
-                "被质疑时，用侧面试探而非直接亮金水。"
-            )
-        elif inp.role == "witch":
+        if inp.role == "witch":
             prompt = (
                 "藏身份建议（女巫视角）：不要暴露你的药剂状态——"
                 "既不要让人知道解药是否已用，也不要暗示毒药还在。"

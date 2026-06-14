@@ -176,6 +176,20 @@ class TestJudgeProfilePublicOnlyBoundary:
                 f"{public_clause!r}; got: {snap.system_prompt!r}"
             )
 
+    def test_peace_night_patterns_are_fact_only(self) -> None:
+        import yaml as _yaml
+        with open(self.PROFILES_YAML, encoding="utf-8") as f:
+            profiles = _yaml.safe_load(f).get("judge_profiles", {})
+
+        for pname, prof in profiles.items():
+            pattern = prof.get("broadcast_patterns", {}).get("peace_night", "")
+            assert pattern
+            assert "守护" not in pattern
+            assert "保护" not in pattern
+            assert "解药" not in pattern
+            system_prompt = prof.get("system_prompt", "")
+            assert "不得推断平安夜原因" in system_prompt, pname
+
 
 class TestPersonaSystemMessageInjection:
     """J-7: persona should be passed as a separate system_prompt, not concatenated to user prompt."""

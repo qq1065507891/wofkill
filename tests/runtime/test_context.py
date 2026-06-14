@@ -14,7 +14,9 @@ from werewolf_agent.memory.schemas import PlayerProfile, ReflectionEntry
 from werewolf_agent.runtime.context import (
     _cognition_matrix_hint,
     _inject_seed_rag_hints,
+    _normalize_legal_actions_to_tags,
     _profile_memory_hint,
+    _rag_phase_for_task,
     _reflection_memory_hints,
     build_agent_context,
 )
@@ -90,6 +92,34 @@ def test_reflection_hints_orders_newer_game_id_first_within_same_priority() -> N
 
     # 3 inputs → 2 outputs (cap=2 per role), in newest-first order.
     assert [h["text"] for h in hints] == ["new", "middle"]
+
+
+def test_hybrid_reflection_is_not_generic_good_faction_history() -> None:
+    refs = [
+        _make_reflection(
+            game_id="2025-01-01",
+            role="hybrid",
+            text="hybrid-history",
+        ),
+        _make_reflection(
+            game_id="2025-01-01",
+            role="werewolf",
+            text="wolf-history",
+        ),
+    ]
+    refs[0].entry_id = "z_hybrid"
+    refs[1].entry_id = "a_wolf"
+
+    hints = _reflection_memory_hints(
+        refs,
+        current_role="seer",
+        current_faction="good",
+    )
+
+    assert [hint["text"] for hint in hints[:2]] == [
+        "wolf-history",
+        "hybrid-history",
+    ]
 
 
 def test_reflection_hints_tie_broken_by_game_id_descending() -> None:
@@ -1233,6 +1263,21 @@ def test_rag_situation_actions_normalized_to_tags() -> None:
     # inside a ``[`` / ``]`` pair with quote chars around it.)
     assert "['wolf_kill']" not in situation
     assert "['wolf_kill'," not in situation
+
+
+def test_vote_task_uses_vote_rag_phase() -> None:
+    assert _rag_phase_for_task(TaskType.VOTE, "day") == "vote"
+
+
+def test_self_destruct_uses_werewolf_rag_tags() -> None:
+    tags = set(
+        _normalize_legal_actions_to_tags(
+            [ActionType.SELF_DESTRUCT],
+        ).split()
+    )
+    assert {"werewolf", "self_destruct"}.issubset(tags)
+    assert "idiot" not in tags
+    assert "idiot_reveal" not in tags
 
 
 # P1-M12: reflection hint diversity.

@@ -14,6 +14,11 @@ import json
 from typing import Any
 
 from werewolf_agent.agents.action_contract import ActionContract
+from werewolf_agent.agents.directive_priority import (
+    HARD_CONSTRAINT_KEYS,
+    REFERENCE_KEYS,
+    SUGGESTION_KEYS,
+)
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
@@ -21,6 +26,7 @@ from werewolf_agent.agents.schemas import (
     RetryInfo,
     TaskType,
 )
+from werewolf_agent.persona_runtime.router import sanitize_persona_snapshot
 
 # P2-4: role name mapping was previously duplicated as
 # ``_ROLE_NAMES`` here AND ``_ROLE_LABEL_CN`` in
@@ -98,6 +104,7 @@ _SPEECH_INTENTS = {
 }
 
 _MAX_JSON_CONTEXT_CHARS = 1800
+_MAX_PUBLIC_SUMMARY_CHARS = 700
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
 _MAX_SALIENCE_ITEMS = 3
@@ -122,115 +129,6 @@ _VOTE_REASON_PRIVACY_GUARD = (
 # sections (可选 → 辅助) until the prompt fits. 硬约束 sections are
 # never dropped.
 _USER_PROMPT_BUDGET_CHARS = 6_250
-
-# P0-S5: strategy_directive is split into 3 priority tiers so the LLM can
-# distinguish hard constraints (must obey) from suggestions (recommended) and
-# reference context (background). New keys not listed here default to 参考.
-# Game trace g_3528592081 confirmed directives are received and acted on
-# (e.g., p08 wolf followed `wolf_fake_seer_execution` to claim seer), so
-# the LLM needs explicit priority labels to disambiguate.
-HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
-    # Wolf fake-seer execution plan — set at night, must be acted on
-    "wolf_fake_seer_execution",
-    # Contradiction / role alerts that must be addressed
-    "must_address_alerts",
-    # N1 death identity (forced to be silent or to mention)
-    "first_night_killed",
-    # Speech must be empty / vote must be empty
-    "speech_silent",
-    "vote_silent",
-    # Witch must use / not use antidote/poison this night
-    "witch_night_action",
-    # Per-role alerts (hunter, idiot, etc.)
-    "role_alerts",
-    # Hard vote pressure (e.g., must-vote target)
-    "vote_pressure",
-    # Phase 1 self-audit (P1-1 revert): the ``directive`` key
-    # (context.py:1149, "你必须在发言中回应以下矛盾") has been
-    # removed entirely.  ``must_address_alerts`` above already
-    # covers the same imperative — adding ``directive`` as a
-    # second key produced two MUST sub-group renderings of the
-    # same instruction.  Context.py:1149 deletes the producer.
-    # ─────────────────────────────────────────────────────────────────
-    # Phase 2 P2-1: 13 additional hard-constraint keys that
-    # previously fell through to REFERENCE 兜底.  All contain
-    # "强制执行" / "严禁信息穿越" / "必须" / "不能" framing but
-    # LLM was treating them as soft suggestions because of the
-    # REFERENCE 兜底.  Promoting to HARD restores the binding
-    # signal the directive text already carries.
-    # ─────────────────────────────────────────────────────────────────
-    # Wolf team — must-execute plans
-    "wolf_sheriff_must_claim_seer",      # agent_adapter.py:1896
-    "wolf_no_reveal_seer",              # agent_adapter.py:1908
-    "wolf_fake_seer_teammate",          # directives/wolf.py:148/166 — 严禁信息穿越
-    "wolf_kill_instruction",            # agent_adapter.py:547
-    "wolf_team_discussion",             # agent_adapter.py:676
-    # P3 (post-review-v2): wolf universal rules contain
-    # "绝对不要提到你的队友是狼人" / "严禁暴露" framing — must
-    # be obeyed, not merely suggested.  Promoted from SUGGESTION.
-    "wolf_universal_rules",             # directives/wolf.py:105 — 绝对 / 严禁
-    # P3 (post-review-v2): anti_herd is P0-K6 hard constraint
-    # (independent judgment over following the crowd) — promoted
-    # from SUGGESTION to HARD.
-    "anti_herd",                        # runtime/agent_adapter.py:1276 — 严禁跟票
-    # Hybrid — master-faction binding
-    "hybrid_wolf_master_directive",      # directives/hybrid.py:51
-    "hybrid_good_master_directive",      # directives/hybrid.py:69
-    # Hunter / last words / badge decisions
-    "hunter_shot_directive",            # agent_adapter.py:1555 — 你现在可以开枪
-    "last_words",                       # agent_adapter.py:1410 — 遗言必须简短有力
-    "badge_decision",                   # agent_adapter.py:1487
-    # Sheriff silenced — must still vote
-    "sheriff_silent",                   # agent_adapter.py:865 (P1-3 wording)
-    # Witch deterrent — must not reveal identity
-    "witch_poison_deterrent",           # context.py:883 — 不要明报身份
-    # Generic evaluation requirement
-    "required_evaluation",              # agent_adapter.py:302 — 必须在 reason 中解释
-    # M2-2 follow-up: vote_basis guidance contains "不要用 seer_check" — a
-    # command, not a suggestion. Previously fell through to 【参考】
-    # where the budget trimmer would drop it under tight token budgets,
-    # removing the seer_check prohibition. Promote to HARD so the
-    # prohibition is preserved.
-    "vote_basis_hint",
-})
-
-SUGGESTION_KEYS: frozenset[str] = frozenset({
-    # Wolf speech style (hard variants — wolf_universal_rules — promoted
-    # to HARD_CONSTRAINT_KEYS in P3 because the directive text uses
-    # 绝对 / 严禁 framing).
-    "wolf_speech_directive",
-    # Good-side vote quality guard
-    "good_vote_decision_guard",
-    # Sheriff vote push (soft: only a "should")
-    "sheriff_vote_push",
-    # Speech style suggestions
-    "speech_originality",
-    "seer_speech_directive",
-    # NOTE: ``witch_speech_constraint`` was renamed to
-    # ``witch_speech_directive`` in D-1 but never removed here.  The
-    # key is dead — no producer exists (grep zero hits).  Dropped in
-    # Phase-1 audit.
-    # Behavioral rules (anti-following, peace-night rule)
-    "anti_following_and_peace_night_rule",
-})
-
-REFERENCE_KEYS: frozenset[str] = frozenset({
-    # Tactical advice from skill analysis (read-only)
-    "skill_tactical_advice",
-    # Wolf target / plan hints (background, not binding)
-    "wolf_day_push_target",
-    "wolf_high_priority_target",
-    "wolf_plan_target",
-    # Hybrid master behavior summary
-    "master_behavior_summary",
-    # Witch pressure / strategy hints
-    "witch_pressure",
-    "witch_strategy_hint",
-    # Public discussion summary
-    "day_discussion_summary",
-    # Vote pressure context (not hard)
-    "vote_pressure_context",
-})
 
 _STRATEGY_GROUP_ORDER: tuple[frozenset[str], str, str] = (
     (HARD_CONSTRAINT_KEYS, "【硬约束】", "以下指令必须遵守（MUST）："),
@@ -328,7 +226,7 @@ class PlayerPromptBuilder:
         # LLM correctly distinguish "人格设定" (a hint) from
         # "公开事实" (a record) from "私信" (private).
         return (
-            "【信息边界】你收到 11 类 user-prompt 段（每段前有【硬约束/辅助/参考/可选】"
+            "【信息边界】你会收到以下 user-prompt 段（每段前有【硬约束/辅助/参考/可选】"
             "或【场上记录/策略指令】标签）："
             "人格设定、阶段上下文、我的判断、当前局公开事实、可见世界状态、"
             "本局·私有记忆、关键事件、知识库提示、跨局反思记忆、长期能力画像、我的认知矩阵、"
@@ -390,8 +288,14 @@ class PlayerPromptBuilder:
         role_rules = {
             "hunter": "猎人规则：被狼人杀死或被放逐时可以开枪带走一人；被女巫毒杀时不能开枪。夜间无法自保。",
             "idiot": "白痴规则：被放逐时亮出身份免死，但失去投票权且不能再被放逐；之后被狼人杀死才算真正死亡。夜间无法自保。",
-            "witch": "女巫规则：有一瓶解药和一瓶毒药，不能在同一夜同时使用。解药不能自救。N1 / 首夜大概率应该救人。",
-            "seer": "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。上警时必须留两夜警徽流。",
+            "witch": (
+                "女巫规则：有一瓶解药和一瓶毒药，不能在同一夜同时使用。解药不能自救。"
+                "药水决策应结合目标价值、公开证据和保留药水的机会成本。"
+            ),
+            "seer": (
+                "预言家规则：每晚可查验一人身份（好人/狼人），查验混血儿结果为好人。"
+                "竞选警长或公开身份时，只能准确报告真实验人，并给出与当前局势相符的警徽流。"
+            ),
             "werewolf": "狼人规则：夜间与队友讨论击杀目标。可以悍跳预言家上警对抗真预言家。",
             "hybrid": (
                 "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。"
@@ -402,7 +306,7 @@ class PlayerPromptBuilder:
             "villager": (
                 "村民规则：身份公开时表明好人立场；"
                 "分析发言矛盾/票型；"
-                "N1 公开讨论中支持解药救人；"
+                "讨论解药选择时结合目标价值、公开证据与药水机会成本；"
                 "归票基于证据链,不跟风。"
             ),
         }
@@ -419,47 +323,13 @@ class PlayerPromptBuilder:
         return "\n".join(lines) if lines else ""
 
     def _build_output_contract(self) -> str:
-        """Stable output format rules — same regardless of phase.
-
-        P2-3: synchronised the field list to match the per-turn
-        TARGET_CHOICE+VOTE schema (9 fields) rather than the bare
-        5-field full-action list.  Pre-fix the system prompt
-        advertised 5 fields but the user prompt's
-        ``_build_strict_output_contract`` emitted 9 for VOTE — the
-        LLM was getting conflicting requirements.  Field count
-        here is the upper bound; per-action-type tasks (e.g. wolf
-        kill) may use a strict subset, but the system prompt should
-        advertise the max so the LLM is never surprised by a field
-        the per-turn contract adds.
-
-        M2-3: field lists are now sourced from the module-level
-        ``_OUTPUT_SCHEMA_*_FIELDS`` constants so the system prompt
-        and the per-turn strict contract cannot drift on future
-        edits.  The constants encode the *max* set; the per-turn
-        ``_build_strict_output_contract`` may emit strict subsets
-        (non-vote TARGET_CHOICE drops to 3 fields, SPEECH_INTENT
-        uses ``intent`` instead of ``action_type``) but those are
-        different schemas, not the same schema with fewer fields.
-        """
-        vote_fields = "、".join(_OUTPUT_SCHEMA_VOTE_FIELDS)
-        speech_fields = "、".join(_OUTPUT_SCHEMA_SPEECH_FIELDS)
-        # The skill field list includes a "（空）" hint on the
-        # ``speech`` field so the LLM knows skill actions carry an
-        # empty speech payload.  The constant holds the field name;
-        # the hint is appended here to preserve the original P0
-        # framing.
-        skill_fields = "、".join(
-            f"{f}（空）" if f == "speech" else f
-            for f in _OUTPUT_SCHEMA_SKILL_FIELDS
-        )
+        """Stable protocol invariants; fields come from the turn contract."""
         return (
-            "请优先通过 submit_player_action 工具提交结构化行动。"
-            "如果当前模型无法调用工具，则只输出一个JSON对象，不要解释、不要Markdown。"
-            f"投票回合字段最多{len(_OUTPUT_SCHEMA_VOTE_FIELDS)}个：{vote_fields}。"
-            f"发言回合最多{len(_OUTPUT_SCHEMA_SPEECH_FIELDS)}个：{speech_fields}。"
-            "技能行动（kill/check/poison/shoot/choose_master/badge 等）"
-            f"最少{len(_OUTPUT_SCHEMA_SKILL_FIELDS)}个：{skill_fields}。"
-            "重要：speech字段必须使用中文，这是你在游戏中的公开发言。"
+            "【结构化输出】当前回合 user prompt 中的 ActionContract 与"
+            "「最终输出协议」是字段、枚举和必填项的唯一依据。"
+            "优先通过当前回合提供的工具提交；无法调用工具时，只输出一个"
+            "符合当前 ActionContract 的 JSON 对象。不要解释、不要 Markdown、"
+            "不要添加合同之外的字段。公开发言正文必须使用中文。"
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -492,9 +362,11 @@ class PlayerPromptBuilder:
     #      to learn two priority systems in the same prompt.
     _NEVER_DROP: frozenset[str] = frozenset({
         "_build_strategy_directive",
-        # Persona is compact, per-player state. Dropping it under pressure
-        # collapses distinct agents back toward the same generic prompt.
-        "_build_persona",
+        "_build_phase_context",
+        "_build_public_summary",
+        "_build_visible_state",
+        "_build_salience_events",
+        "_build_recent_transcript",
         # AUDIT-2-04: retry hint is the LLM's only feedback on the
         # previous turn's failure (error_message snippet +
         # correction_hint). Without it the LLM repeats the same
@@ -505,6 +377,22 @@ class PlayerPromptBuilder:
         # drops it. Runtime FallbackAction still enforces safety
         # (so this is corrective guidance, not the only safety net).
         "_build_retry_hint",
+    })
+    _GROUNDING_SECTIONS: frozenset[str] = frozenset({
+        "_build_phase_context",
+        "_build_public_summary",
+        "_build_visible_state",
+        "_build_salience_events",
+        "_build_recent_transcript",
+    })
+    _LOW_VALUE_SECTIONS: frozenset[str] = frozenset({
+        "_build_persona",
+        "_build_belief_state",
+        "_build_rag_hints",
+        "_build_reflection_memory_hints",
+        "_build_profile_memory_hint",
+        "_build_cognition_matrix_hint",
+        "_build_error_pattern_hint",
     })
     _SECTION_PRIORITIES: dict[str, str] = {
         "_build_persona": "【人格】",
@@ -685,6 +573,14 @@ class PlayerPromptBuilder:
             label = priority.get(name, "")
             if label == "【硬约束】":
                 continue
+            if name in self._LOW_VALUE_SECTIONS:
+                tier = 0
+                droppable.append((tier, idx))
+                continue
+            if name in self._GROUNDING_SECTIONS:
+                tier = 3
+                droppable.append((tier, idx))
+                continue
             # Tier ordering: 可选 (0) → 辅助 (1) → 【参考】 (2)
             # → never drop 硬约束. M4-2: RAG hints reverted to 辅助
             # tier, reflection promoted to 【参考】. The trimmer
@@ -736,8 +632,13 @@ class PlayerPromptBuilder:
             # tier; otherwise skip and continue. G-R4-15: tier
             # mapping matches the outer build step — 可选=0,
             # 辅助=1, 【参考】=2.
-            label = priority.get(parts[idx][0], "")
-            if label == "【可选】":
+            name = parts[idx][0]
+            label = priority.get(name, "")
+            if name in self._LOW_VALUE_SECTIONS:
+                expected_tier = 0
+            elif name in self._GROUNDING_SECTIONS:
+                expected_tier = 3
+            elif label == "【可选】":
                 expected_tier = 0
             elif label == "【参考】":
                 expected_tier = 2
@@ -864,7 +765,10 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.public_summary:
             return ""
-        return "当前局公开事实:\n" + self._truncate_text(ctx.public_summary, _MAX_JSON_CONTEXT_CHARS)
+        return "当前局公开事实:\n" + self._truncate_text(
+            ctx.public_summary,
+            _MAX_PUBLIC_SUMMARY_CHARS,
+        )
 
     def _build_visible_state(self) -> str:
         ctx = self.context
@@ -986,15 +890,21 @@ class PlayerPromptBuilder:
         # matches the head framing so the LLM sees a consistent
         # "this is reference only" message before it generates.
         tail = "（以上案例仅供参考，不得作为本局事实或硬性指令。）"
-        # G-R4-12: when the JSON payload is truncated by the
-        # ``_truncate_text`` P2-4 marker (the suffix ``...<已截断>``),
-        # the LLM would otherwise see a half-JSON with no tail
-        # acknowledgement. Without a second mention in the tail, the
-        # LLM may attempt to parse the half-JSON or treat it as a
-        # hard assertion. Detect the marker and append a clear
-        # truncation note to the tail so the model sees "this was
-        # truncated" in both the JSON body and the tail.
-        if json_payload.endswith("...<已截断>"):
+        # G-R4-12: when the JSON payload is compacted into the
+        # truncation envelope, the LLM would otherwise see shortened
+        # JSON with no tail acknowledgement. Add a clear truncation
+        # note to the tail so the model sees "this was truncated" at
+        # the end of the RAG section, not only inside the JSON body.
+        json_was_truncated = False
+        try:
+            payload_obj = json.loads(json_payload)
+            json_was_truncated = (
+                isinstance(payload_obj, dict)
+                and payload_obj.get("truncated") is True
+            )
+        except json.JSONDecodeError:
+            json_was_truncated = json_payload.endswith("...<已截断>")
+        if json_was_truncated:
             tail = tail + "（JSON 已截断，案例未完整呈现。）"
         return (
             "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
@@ -1073,18 +983,33 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.profile_memory_hint:
             return ""
+        live_hint = {
+            key: value
+            for key, value in ctx.profile_memory_hint.items()
+            if not key.endswith("_rank")
+        }
+        if not live_hint:
+            return ""
         return (
-            "长期能力画像: 以下是你的历史能力画像和角色经历，只用于调整策略风格。\n"
-            + self._compact_json(ctx.profile_memory_hint)
+            "历史角色经验: 以下仅是样本量与当前角色经历，不代表本局能力高低。\n"
+            + self._compact_json(live_hint)
         )
 
     def _build_cognition_matrix_hint(self) -> str:
         ctx = self.context
         if not ctx.cognition_matrix_hint:
             return ""
+        live_hint = {
+            "tracked_suspect_count": len(
+                ctx.cognition_matrix_hint.get("suspects") or []
+            ),
+            "tracked_trusted_count": len(
+                ctx.cognition_matrix_hint.get("trusted") or []
+            ),
+        }
         return (
-            "我的认知矩阵: 以下是你自己的判断倾向，不是事实，也不包含其他玩家私密视角。\n"
-            + self._compact_json(ctx.cognition_matrix_hint)
+            "认知校准摘要: 历史矩阵只用于提醒你重新核验判断，不提供本局嫌疑名单。\n"
+            + self._compact_json(live_hint)
         )
 
     def _build_strategy_directive(self) -> str:
@@ -1196,23 +1121,22 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.persona_snapshot:
             return ""
+        sanitized_snapshot = sanitize_persona_snapshot(
+            ctx.persona_snapshot,
+            own_role=ctx.own_role or "",
+            task_type=ctx.task_type.value,
+        )
         allowed_fields = (
-            "profile_id",
-            "display_name",
-            "personality",
             "speech_style",
             "task_style",
             "effective_params",
             "dynamic_adjustments",
-            # Backward-compatible fields used by custom persona callers.
             "tone",
-            "style",
-            "phrase_style",
         )
         compact_snapshot = {
-            key: ctx.persona_snapshot[key]
+            key: sanitized_snapshot[key]
             for key in allowed_fields
-            if key in ctx.persona_snapshot
+            if key in sanitized_snapshot
         }
         if not compact_snapshot:
             return ""
@@ -1743,17 +1667,24 @@ class PlayerPromptBuilder:
 
     def _compact_json(self, value: Any) -> str:
         text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        # P2-4: JSON truncation uses the angle-bracket marker
-        # ``<已截断>`` (preserved from before D4-8) and bypasses the
-        # sentence-boundary preference — JSON has no sentences and
-        # the cut must not chase punctuation that may live inside a
-        # string literal. See _truncate_text for the prose default.
-        return self._truncate_text(
-            text,
-            _MAX_JSON_CONTEXT_CHARS,
-            marker="...<已截断>",
-            prefer_sentence_boundary=False,
-        )
+        if len(text) <= _MAX_JSON_CONTEXT_CHARS:
+            return text
+
+        prefix = text[: _MAX_JSON_CONTEXT_CHARS // 2]
+        while True:
+            rendered = json.dumps(
+                {
+                    "truncated": True,
+                    "original_type": type(value).__name__,
+                    "content_prefix": prefix,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if len(rendered) <= _MAX_JSON_CONTEXT_CHARS or not prefix:
+                return rendered
+            overflow = len(rendered) - _MAX_JSON_CONTEXT_CHARS
+            prefix = prefix[: max(0, len(prefix) - overflow - 8)]
 
     @staticmethod
     def _truncate_text(

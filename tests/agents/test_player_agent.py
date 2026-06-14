@@ -747,10 +747,36 @@ class TestPlayerAgentRetryFallback:
         assert provider.prompts
         prompt = provider.prompts[0]
         assert "人格设定" in prompt
-        assert '"profile_id":"aggressive_bluffer"' in prompt
-        assert '"personality":"dominant_pressurer"' in prompt
+        assert '"profile_id":"aggressive_bluffer"' not in prompt
+        assert '"personality":"dominant_pressurer"' not in prompt
         assert '"speech_style":"aggressive_short"' in prompt
         assert '"task_style":"pressure_attack"' in prompt
+
+    def test_existing_good_role_persona_snapshot_is_sanitized(self) -> None:
+        agent = self._make_agent('{"action_type":"no_action"}')
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            persona_snapshot={
+                "profile_id": "bold_pretender",
+                "display_name": "悍跳进攻型",
+                "personality": "bold_deceiver",
+                "speech_style": "confident_fake_claim",
+                "task_style": "fake_authority",
+                "effective_params": {"deception_skill": 0.91, "logic_skill": 0.55},
+                "dynamic_adjustments": {"deception_skill": 0.1},
+            },
+        )
+
+        attached = agent._attach_persona_snapshot(context)
+
+        assert attached.persona_snapshot["speech_style"] == "role_consistent_expression"
+        assert attached.persona_snapshot["task_style"] == "evidence_based_expression"
+        assert "deception_skill" not in attached.persona_snapshot["effective_params"]
+        assert "deception_skill" not in attached.persona_snapshot["dynamic_adjustments"]
 
     def test_persona_suspicion_adjustment_requires_nearby_self_reference(self) -> None:
         model_router = ModelRouter(
@@ -1354,8 +1380,8 @@ class TestPlayerAgentRetryFallback:
         assert "知识库提示:" in prompt
         assert "知识库提示不是当前局事实" in prompt
         assert "跨局反思记忆:" in prompt
-        assert "长期能力画像:" in prompt
-        assert "我的认知矩阵:" in prompt
+        assert "历史角色经验:" in prompt
+        assert "认知校准摘要:" in prompt
         assert "本轮策略指令:" in prompt
         # NEW-S04-A: the legacy "技能分析结果:" section is dropped.
         # The structured skill_tactical_advice in strategy_directive

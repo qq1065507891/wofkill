@@ -444,8 +444,8 @@
     ruleset_id: pre_witch_hunter_idiot_mixed
     player_count: 12
     phase: speech
-    role_perspective: villager
-    visibility_boundary: player_perspective
+    role_perspective: god_view
+    visibility_boundary: god_view
     source:
       source_type: public_tournament
       source_url: https://www.bilibili.com/video/BV1GEGMz4EQm/
@@ -459,6 +459,7 @@
       - fake_seer
       - pressure_speech
       - good_side_deception
+      - review_only
 
 - entry_id: seed_jingcheng_wolf_antiprophet_push_250415
   title: "京城大师赛250415：狼队抗推预言家后继续推进好人混"
@@ -854,3 +855,63 @@
       - foundation
       - tactics
       - sheriff_speech
+
+- entry_id: seed_hunter_evidence_vote_01
+  title: "猎人投票：用公开证据独立选目标"
+  summary: >
+    猎人的投票不应由身份强势感代替推理。先比较候选人的发言矛盾、站边变化和公开票型，
+    再选择证据最集中的目标；不要为了隐藏身份而机械跟随多数，也不要用技能威慑替代投票理由。
+  key_decisions:
+    - "按发言矛盾、站边变化和票型证据排序目标。"
+    - "独立选择最可疑目标，不机械跟随多数。"
+    - "公开理由只引用场上可见信息，不用身份压人。"
+  short_quotes: []
+  metadata:
+    case_type: role_strategy
+    quality_grade: expert_review
+    review_status: approved
+    reviewer: prompt_balance_review
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: vote
+    role_perspective: hunter
+    visibility_boundary: player_perspective
+    source:
+      source_type: expert_commentary
+      source_title: "猎人证据投票策略"
+      source_author: project_strategy_review
+    tags:
+      - hunter
+      - vote
+      - evidence
+      - independent_judgment
+
+- entry_id: seed_idiot_evidence_vote_01
+  title: "白痴投票：珍惜票权并给出可核验依据"
+  summary: >
+    白痴仍应把当前票权用于推进好人信息。投票前比较公开查验、发言矛盾、站边链和票型，
+    不因自身生存能力而随意投人；当证据接近时说明取舍，避免无理由跟票制造错误共识。
+  key_decisions:
+    - "把公开查验、发言矛盾和票型作为主要投票依据。"
+    - "不因身份能力而降低投票质量。"
+    - "证据接近时明确说明取舍，不无理由跟票。"
+  short_quotes: []
+  metadata:
+    case_type: role_strategy
+    quality_grade: expert_review
+    review_status: approved
+    reviewer: prompt_balance_review
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: vote
+    role_perspective: idiot
+    visibility_boundary: player_perspective
+    source:
+      source_type: expert_commentary
+      source_title: "白痴证据投票策略"
+      source_author: project_strategy_review
+    tags:
+      - idiot
+      - vote
+      - evidence
+      - vote_power

@@ -25,6 +25,11 @@ from werewolf_agent.agents.schemas import (
     AgentContext,
     TaskType,
 )
+from werewolf_agent.agents.directive_priority import (
+    HARD_CONSTRAINT_KEYS,
+    REFERENCE_KEYS,
+    SUGGESTION_KEYS,
+)
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.skills.registry import SkillRegistry
@@ -140,7 +145,9 @@ def _rag_phase_for_task(task_type: TaskType, phase: str) -> str:
         return "night_discussion"
     if task_type == TaskType.NIGHT_ACTION:
         return "night_action"
-    if task_type in (TaskType.VOTE, TaskType.SPEECH, TaskType.PK_SPEECH):
+    if task_type == TaskType.VOTE:
+        return "vote"
+    if task_type in (TaskType.SPEECH, TaskType.PK_SPEECH):
         return "speech"
     if task_type == TaskType.DEFENSE_SPEECH:
         return "defense_speech"
@@ -170,7 +177,7 @@ _LEGAL_ACTION_TAGS: dict[str, tuple[str, ...]] = {
     "check_alignment": ("seer", "seer_check"),
     "choose_master": ("hybrid", "hybrid_master"),
     "hunter_shot": ("hunter", "hunter_shot"),
-    "self_destruct": ("idiot", "idiot_reveal"),
+    "self_destruct": ("werewolf", "self_destruct"),
     "sheriff_register": ("sheriff", "sheriff_register"),
     "sheriff_withdraw": ("sheriff", "sheriff_withdraw"),
     "sheriff_vote": ("sheriff", "sheriff_vote"),
@@ -480,6 +487,7 @@ def _profile_memory_hint(
 # 同一角色填满 (max 2 per role × 2~3 roles),跨角色学习受限。
 # 8 hints × 2 per role = 覆盖 4 角色族,适合好人阵营 5 角色 + 狼 1 角色场景。
 HINT_BUDGET = 8
+_EXPLICIT_GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
 
 
 def _reflection_memory_hints(reflections: list[Any], current_role: str, current_faction: str) -> list[dict[str, Any]]:
@@ -494,7 +502,7 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
         if r.role == current_role:
             priority = 2
         elif (r.role == "werewolf" and current_faction == "werewolf") or (
-            r.role != "werewolf" and current_faction == "good"
+            r.role in _EXPLICIT_GOOD_ROLES and current_faction == "good"
         ):
             priority = 1
         # reflect-cross-3: 胜局反思优先 (成功模式可复用)。
@@ -939,14 +947,10 @@ _ROUND_SPECIFIC_DROP_KEYS: tuple[str, ...] = (
     "sheriff_election_record",
     "day_discussion_summary",
     "vote_pressure_context",
-    "vote_pressure",
     "vote_history",
     "skill_tactical_advice",
-    "role_alerts",
-    "must_address_alerts",
     "death_cause_evaluation",
     "witch_death_cause_evaluations",
-    "wolf_fake_seer_teammate",
     "wolf_teammate_exposed",
     "belief_state",
     "must_address",
@@ -975,13 +979,29 @@ def _cap_strategy_directive(
     """
     if _directive_size(directive) <= cap_tokens:
         return directive
-    # Walk round-specific keys in drop-priority order; remove
-    # them one at a time until the cap fits.
+    ordered_candidates: list[str] = []
     for key in _ROUND_SPECIFIC_DROP_KEYS:
+        if key in directive and key not in HARD_CONSTRAINT_KEYS:
+            ordered_candidates.append(key)
+    for key in directive:
+        if key in REFERENCE_KEYS and key not in ordered_candidates:
+            ordered_candidates.append(key)
+    # SUGGESTION_KEYS contains role-specific strategy text. Keep it
+    # structural for cap purposes; only explicit low-value/reference
+    # context and truly unknown keys are candidates.
+    for key in directive:
+        if (
+            key not in HARD_CONSTRAINT_KEYS
+            and key not in SUGGESTION_KEYS
+            and key not in REFERENCE_KEYS
+            and key not in ordered_candidates
+        ):
+            ordered_candidates.append(key)
+
+    for key in ordered_candidates:
         if _directive_size(directive) <= cap_tokens:
             break
-        if key in directive:
-            directive = {k: v for k, v in directive.items() if k != key}
+        directive = {k: v for k, v in directive.items() if k != key}
     return directive
 
 

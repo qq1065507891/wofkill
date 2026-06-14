@@ -14,6 +14,83 @@ from typing import Any
 import yaml
 
 
+_INCOMPATIBLE_GOOD_ROLE_STYLE_MARKERS = (
+    "fake",
+    "deceiv",
+    "deception",
+    "manipulat",
+    "hook",
+    "infiltrat",
+    "mislead",
+    "appears_good",
+    "redirect_blame",
+    "seer_claim",
+    "悍跳",
+    "倒钩",
+    "欺骗",
+    "操纵",
+    "冒充",
+)
+
+_ROLE_NEUTRAL_TASK_STYLES = {
+    "speech": "evidence_based_expression",
+    "vote": "independent_evidence_vote",
+    "night_action": "deliberate_legal_action",
+    "deception": "role_consistent_expression",
+    "sheriff_speech": "evidence_based_sheriff_speech",
+    "defense_speech": "evidence_based_defense",
+    "last_words": "concise_factual_summary",
+    "reflection": "factual_self_review",
+}
+
+
+def _has_incompatible_good_role_style(value: Any) -> bool:
+    text = str(value or "").lower()
+    return any(marker in text for marker in _INCOMPATIBLE_GOOD_ROLE_STYLE_MARKERS)
+
+
+def sanitize_persona_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    own_role: str,
+    task_type: str,
+) -> dict[str, Any]:
+    """Remove identity strategy from a non-wolf persona snapshot.
+
+    Persona may shape expression, but it must not assign fake claims,
+    manipulation plans, or wolf-team duties to a role that cannot legally
+    rely on those strategies.
+    """
+    sanitized = dict(snapshot)
+    if not own_role or own_role == "werewolf":
+        return sanitized
+
+    if _has_incompatible_good_role_style(sanitized.get("personality")):
+        sanitized["personality"] = "role_consistent_player"
+    if _has_incompatible_good_role_style(sanitized.get("speech_style")):
+        sanitized["speech_style"] = "role_consistent_expression"
+    if _has_incompatible_good_role_style(sanitized.get("task_style")):
+        sanitized["task_style"] = _ROLE_NEUTRAL_TASK_STYLES.get(
+            task_type,
+            "role_consistent_expression",
+        )
+
+    for field_name in ("effective_params", "dynamic_adjustments", "base_params"):
+        params = sanitized.get(field_name)
+        if isinstance(params, dict):
+            sanitized[field_name] = {
+                key: value
+                for key, value in params.items()
+                if key != "deception_skill"
+            }
+
+    for field_name in ("tone", "style", "phrase_style"):
+        if _has_incompatible_good_role_style(sanitized.get(field_name)):
+            sanitized.pop(field_name, None)
+
+    return sanitized
+
+
 @dataclass(frozen=True)
 class PersonaSnapshot:
     """Stable runtime snapshot of a persona for one agent call."""
@@ -103,16 +180,32 @@ class PersonaRouter:
         for k, delta in dynamic_adj.items():
             effective[k] = max(0.0, min(1.0, effective.get(k, 0.5) + delta))
 
+        snapshot_data = sanitize_persona_snapshot(
+            {
+                "agent_id": agent_id,
+                "profile_id": profile_id,
+                "display_name": profile.get("display_name", profile_id),
+                "personality": str(base.get("personality", "")),
+                "speech_style": str(base.get("speech_style", "")),
+                "base_params": base_params,
+                "task_style": task_style,
+                "dynamic_adjustments": dynamic_adj,
+                "effective_params": effective,
+            },
+            own_role=game_context.own_role if game_context else "",
+            task_type=task_type,
+        )
+
         return PersonaSnapshot(
-            agent_id=agent_id,
-            profile_id=profile_id,
-            display_name=profile.get("display_name", profile_id),
-            personality=str(base.get("personality", "")),
-            speech_style=str(base.get("speech_style", "")),
-            base_params=base_params,
-            task_style=task_style,
-            dynamic_adjustments=dynamic_adj,
-            effective_params=effective,
+            agent_id=snapshot_data["agent_id"],
+            profile_id=snapshot_data["profile_id"],
+            display_name=snapshot_data["display_name"],
+            personality=snapshot_data["personality"],
+            speech_style=snapshot_data["speech_style"],
+            base_params=snapshot_data["base_params"],
+            task_style=snapshot_data["task_style"],
+            dynamic_adjustments=snapshot_data["dynamic_adjustments"],
+            effective_params=snapshot_data["effective_params"],
         )
 
     def get_profile_for_agent(self, agent_id: str) -> str:

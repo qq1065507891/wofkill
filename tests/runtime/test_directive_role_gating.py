@@ -242,16 +242,17 @@ class TestStrategyDirectiveTokenCapD9:
         directive: dict = {
             "seer_speech_directive": "structural — must be kept",
             "wolf_speech_directive": "structural — must be kept",
+            "must_address_alerts": ["must survive"],
+            "role_alerts": ["must survive"],
+            "vote_pressure": "must vote",
         }
         # Add round-specific blocks whose total size > cap.
         big_text = "X" * (_MAX_STRATEGY_DIRECTIVE_TOKENS * 2)
         for k in (
             "sheriff_election_record",
             "day_discussion_summary",
-            "vote_pressure",
             "vote_pressure_context",
             "skill_tactical_advice",
-            "role_alerts",
             "death_cause_evaluation",
         ):
             directive[k] = big_text
@@ -265,6 +266,9 @@ class TestStrategyDirectiveTokenCapD9:
         # Structural keys must survive.
         assert "seer_speech_directive" in capped
         assert "wolf_speech_directive" in capped
+        assert "must_address_alerts" in capped
+        assert "role_alerts" in capped
+        assert "vote_pressure" in capped
         # Round-specific blocks must be dropped.
         assert "sheriff_election_record" not in capped
         assert "day_discussion_summary" not in capped
@@ -276,3 +280,25 @@ class TestStrategyDirectiveTokenCapD9:
         assert _cap_strategy_directive(small) is small or (
             _cap_strategy_directive(small) == small
         )
+
+    def test_unknown_current_turn_keys_survive_before_reference_noise(self) -> None:
+        from werewolf_agent.runtime.context import _cap_strategy_directive
+
+        directive: dict = {
+            "seer_speech_directive": "structural — must be kept",
+            "wolf_speech_directive": "structural — must be kept",
+            "gold_water_duty": "current-turn role fact " * 200,
+            "unreported_checks": "current-turn role fact " * 200,
+            "my_check_history": "current-turn role fact " * 200,
+            "day_discussion_summary": "reference noise " * 1200,
+            "vote_pressure_context": "reference noise " * 1200,
+        }
+
+        capped = _cap_strategy_directive(directive)
+
+        assert "seer_speech_directive" in capped
+        assert "wolf_speech_directive" in capped
+        assert "gold_water_duty" in capped
+        assert "unreported_checks" in capped
+        assert "my_check_history" in capped
+        assert "day_discussion_summary" not in capped or "vote_pressure_context" not in capped

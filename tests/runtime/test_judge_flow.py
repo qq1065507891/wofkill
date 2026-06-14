@@ -625,7 +625,7 @@ class TestJudgePersonaIntegration:
         from werewolf_agent.agents.judge import JudgeAgent
         judge = JudgeAgent(model_router=None)
         assert judge._resolve_persona() is None
-        assert judge._persona_system_prompt() == ""
+        assert "不得推断平安夜原因" in judge._persona_system_prompt()
 
     def test_persona_inject_prepends_prompt(self):
         """_persona_inject returns (user_prompt, system_prompt) tuple.
@@ -640,8 +640,9 @@ class TestJudgePersonaIntegration:
         judge = JudgeAgent(model_router=None, profile_router=router,
                            profile_id="ancient_mystic")
         user_prompt, system_prompt = judge._persona_inject("请宣布天黑闭眼", "judge_phase")
-        # user_prompt is the original prompt unchanged
-        assert user_prompt == "请宣布天黑闭眼"
+        # user_prompt keeps the request and adds a fact-only boundary
+        assert user_prompt.startswith("请宣布天黑闭眼")
+        assert "不得补充未提供的身份、技能或夜间原因" in user_prompt
         # system_prompt carries the persona — ancient_mystic should match
         # one of the documented sentinel phrases.
         assert (

@@ -228,13 +228,13 @@ def agent_night_witch(
         can_self = wolf_kill_target_id != witch_id
         save_hint = f"（他被狼人杀害了）" if can_self else "（但是你不能自救！）"
         options.append(
-            f"1) [强烈推荐] 使用解药救{wolf_kill_target_id}{save_hint} —— action_type='use_antidote', target_id='{wolf_kill_target_id}'"
+            f"1) 使用解药救{wolf_kill_target_id}{save_hint} —— action_type='use_antidote', target_id='{wolf_kill_target_id}'"
         )
     if not gs.poison_used and ActionType.USE_POISON in legal_actions:
         options.append(
-            "2) [推荐] 使用毒药毒杀某人 —— action_type='use_poison', target_id='目标玩家ID'"
+            "2) 使用毒药毒杀某人 —— action_type='use_poison', target_id='目标玩家ID'"
         )
-    no_action_label = "3) [不推荐] 不使用药水 —— action_type='no_action'"
+    no_action_label = "3) 暂不使用药水 —— action_type='no_action'"
     if not options:
         no_action_label = "1) 不使用药水（无可用行动）—— action_type='no_action'"
     options.append(no_action_label)
@@ -242,16 +242,15 @@ def agent_night_witch(
     witch_directive["witch_night_action"] += "\n\n重要规则：不能在同一夜同时使用解药和毒药。"
     if not can_self:
         witch_directive["witch_night_action"] += "解药不能自救。"
-    # Push the LLM away from no_action
     if wolf_kill_target_id and not gs.antidote_used:
         witch_directive["witch_night_action"] += (
-            f"\n\n你应该优先使用解药救{wolf_kill_target_id}。"
-            f"不救人的女巫等于白板平民——你的解药是最强大的好人技能，不用则浪费。"
+            "\n\n请结合下方 save_value_assessment、公开证据和药水机会成本决定是否救人；"
+            "不要仅因存在刀口就机械使用解药。"
         )
     elif not gs.poison_used:
         witch_directive["witch_night_action"] += (
-            "\n\n你的毒药还在。你是目前最能直接消灭狼人的人。"
-            "选择你最有把握的狼人目标——这会改变游戏走势。"
+            "\n\n你的毒药仍可用。只有存在可追溯的公开证据和高置信目标时才考虑使用；"
+            "没有明确目标时保留毒药，避免用猜测制造额外好人损失。"
         )
 
     # Structured target value assessment — LLM reasons over data, not vague text
@@ -354,10 +353,9 @@ def agent_night_witch(
     if wolf_kill_target_id == witch_id and not gs.poison_used:
         witch_directive["first_night_killed"] = (
             "你是女巫，N1 / 首夜就被狼人杀害了！你即将死亡，无法自救。"
-            "强烈建议使用毒药毒杀一名你怀疑是狼人的玩家。"
-            "理由：1) 你已确认死亡，毒药留着没有用；"
-            "2) 你的毒药命中可以帮好人阵营获取关键信息；"
-            "3) 你可以在遗言中公布身份和毒药目标，为好人提供信息。"
+            "若已有可追溯的高证据狼人目标，可以权衡使用毒药；"
+            "若只有模糊怀疑，宁可不盲毒，避免在信息最少时额外击杀好人。"
+            "遗言只能准确说明你实际采取的行动和当时依据。"
         )
 
     # Add poison pressure targets if available
@@ -1681,7 +1679,7 @@ def agent_day_vote(
             "1) 投完票后可能被放逐——一旦你被放逐，你会开枪\n"
             "2) 投票时考虑：如果我被放逐，我最想带谁？把票投给最像狼的人\n"
             "3) 不要投给明显是好人的人——浪费你的枪\n"
-            "4) 如果你不想暴露自己，宁可弃票或跟大多数人票"
+            "4) 如果你不想暴露自己，仍应基于公开证据独立选择最可疑目标，不机械跟随多数"
         )
     elif voter_role in ("villager", "idiot"):
         seer_claimants = _public_seer_claimants(gs)
@@ -2066,8 +2064,9 @@ def agent_sheriff_register(
     wolf_plan = state.get("wolf_team_plan")
     if player_role == "seer":
         role_hint = (
-            "你是预言家，强烈建议上警！预言家几乎必须上警留警徽流，"
-            "这是预言家的核心玩法——通过警徽流传递验人信息。"
+            "你是预言家。上警通常有利于公开真实验人和建立警徽流，"
+            "但应结合已有验人、发言顺序和场上声明决定；"
+            "若上警，只能准确报告真实信息，不得为增强可信度编造结果。"
         )
     elif player_role == "werewolf":
         wolf_assignment = _get_wolf_role_assignment(wolf_plan, player_id)

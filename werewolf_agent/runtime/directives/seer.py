@@ -123,14 +123,32 @@ def build_seer_directive(
         pos = speech_order.index(seer_id)
         total = len(speech_order)
         if total > 0 and pos >= total * LATE_POSITION_RATIO:
-            reporting_parts.append(
-                f"\n【后位硬约束】你当前排在发言顺序第 {pos + 1}/{total} 位（后段）。"
-                "**必须在本次发言的第 1 句就公开声明预言家身份 + 报出首夜查杀**，"
-                "不能等别人先跳。前段玩家会先你发言完毕，他们的错误共识一旦形成，"
-                "你越晚亮身份被错杀的概率越高。"
-                "格式：'我是预言家，第 1 夜验了 pXX 是 [好人/狼人]'——"
-                "首句先报这两件事，再展开分析。"
+            first_check = min(
+                check_results,
+                key=lambda item: int(item.get("night", 999)),
+                default=None,
             )
+            position_hint = (
+                f"\n【后位硬约束】你当前排在发言顺序第 {pos + 1}/{total} 位（后段）。"
+            )
+            if first_check:
+                target = str(first_check.get("target", "")).strip()
+                alignment = str(first_check.get("alignment", "")).strip().lower()
+                night = int(first_check.get("night", 1))
+                alignment_label = "狼人" if alignment == "wolf" else "好人"
+                reporting_parts.append(
+                    position_hint
+                    + "**必须在本次发言的第 1 句公开声明预言家身份并准确报告已有验人结果**："
+                    f"'我是预言家，第 {night} 夜验了 {target} 是{alignment_label}。'"
+                    "不能等别人先跳，也不得把金水说成查杀。首句报完真实结果后再展开分析。"
+                )
+            else:
+                reporting_parts.append(
+                    position_hint
+                    + "**必须在本次发言的第 1 句公开声明预言家身份**。"
+                    "当前没有可报告的验人结果，不得编造查杀或金水；"
+                    "应明确说明尚无验人信息，再基于公开证据展开分析。"
+                )
 
     parts["seer_speech_directive"] = "\n".join(reporting_parts)
 

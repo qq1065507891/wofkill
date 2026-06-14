@@ -219,3 +219,57 @@ class TestDispatchForRoleFilteredByTaskType:
         )
         names = [o.skill_name for o in outputs]
         assert "bold_claim" in names
+
+
+def test_markdown_body_append_respects_final_prompt_cap() -> None:
+    from werewolf_agent.skills.werewolf_skills import PROMPT_INJECTABLE_CAP
+
+    registry = SkillRegistry()
+    registry.register(SkillDefinition(
+        name=SkillName.BOLD_CLAIM,
+        display_name="bold_claim",
+        description="test",
+        applicable_roles=["werewolf"],
+        applicable_phases=["speech"],
+        applies_to_task_types=["speech"],
+        faction=SkillFaction.WOLF,
+        body="超长技能正文" * 500,
+    ))
+
+    outputs = registry.dispatch_for_role(
+        role="werewolf",
+        phase="speech",
+        task_type="speech",
+        skill_input=SkillInput(
+            role="werewolf",
+            phase="speech",
+            task_type="speech",
+        ),
+    )
+    output = next(out for out in outputs if out.skill_name == "bold_claim")
+
+    assert len(output.prompt_injectable) <= PROMPT_INJECTABLE_CAP
+    assert output.prompt_injectable.endswith("...（已省略）")
+
+
+def test_skill_bodies_do_not_reintroduce_false_role_rules() -> None:
+    registry = SkillRegistry()
+    bodies = {
+        skill.name.value: skill.body
+        for skill in registry.all_skills()
+    }
+
+    assert "预言家查验你是好人" not in bodies["deep_hook"]
+    assert "狼人不敢刀你" not in bodies["counter_claim"]
+    assert "查杀更有说服力" not in bodies["bold_claim"]
+    assert "被放逐对白痴有利" not in bodies["resist_push"]
+    assert "不需抗推" not in bodies["resist_push"]
+    assert "死亡方式不证明遗言内容为真" in bodies["last_words"]
+
+
+def test_shared_power_analysis_is_private_for_good_roles() -> None:
+    registry = SkillRegistry()
+    find_power = registry.get(SkillName.FIND_POWER)
+    assert find_power is not None
+    assert "仅用于私下防守分析" in find_power.body
+    assert "不得在公开发言中点明" in find_power.body

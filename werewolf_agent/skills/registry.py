@@ -18,6 +18,7 @@ from werewolf_agent.skills.schemas import (
 )
 from werewolf_agent.skills.werewolf_skills import (
     SKILL_DEFINITIONS,
+    _cap_prompt_injectable,
     apply_skill,
 )
 
@@ -152,8 +153,13 @@ class SkillRegistry:
         # 现状不变。
         for skill_def, out in zip(skills, outputs):
             if skill_def.body and out.prompt_injectable:
-                out.prompt_injectable += (
-                    f"\n\n## 技能说明\n{skill_def.body}\n"
+                out.prompt_injectable = _cap_prompt_injectable(
+                    out.prompt_injectable
+                    + f"\n\n## 技能说明\n{skill_def.body}\n"
+                )
+            else:
+                out.prompt_injectable = _cap_prompt_injectable(
+                    out.prompt_injectable
                 )
         return outputs
 

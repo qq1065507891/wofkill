@@ -503,6 +503,34 @@ class TestSeedData:
             for section in required_sections:
                 assert section in entry.summary, f"{entry.entry_id} missing {section}"
 
+    def test_villager_fake_seer_case_is_not_live_player_advice(self):
+        entries = create_seed_entries()
+        injector = RAGInjector(StrategyRetriever(entries))
+        hits = injector.inject(
+            RAGQuery(
+                role="villager",
+                phase="speech",
+                situation="role=villager task=speech fake_seer",
+                max_results=20,
+            ),
+            injection_context=InjectionContext.LIVE_PLAYER,
+        )
+        assert "seed_jingcheng_villager_fake_seer_250709" not in {
+            hit.entry_id for hit in hits
+        }
+
+    def test_hunter_and_idiot_have_role_specific_vote_seeds(self):
+        entries = create_seed_entries()
+        for role in ("hunter", "idiot"):
+            matched = [
+                entry
+                for entry in entries
+                if entry.metadata.role_perspective == role
+                and entry.metadata.phase == "vote"
+                and "vote" in entry.metadata.tags
+            ]
+            assert matched, f"missing role-specific vote seed for {role}"
+
     def test_beginner_tutorial_seed_pack_exists(self):
         entries = create_seed_entries()
         ids = {entry.entry_id for entry in entries}

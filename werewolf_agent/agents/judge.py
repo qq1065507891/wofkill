@@ -27,6 +27,15 @@ from werewolf_agent.runtime.timeline import phase_label
 
 logger = logging.getLogger(__name__)
 
+_JUDGE_FACT_ONLY_SYSTEM_PROMPT = (
+    "你只能根据调用中明确提供的公开字段播报结果，不得补充隐藏身份、技能使用或夜间行动。"
+    "不得推断平安夜原因；不得把无人死亡归因于守护、解药、空刀或任何未公开行动。"
+)
+
+_JUDGE_FACT_ONLY_USER_BOUNDARY = (
+    "仅陈述上文明确给出的公开结果，不得补充未提供的身份、技能或夜间原因。"
+)
+
 
 class JudgeAgent:
     """Non-adjudicating judge agent for broadcast and flow control.
@@ -68,9 +77,11 @@ class JudgeAgent:
     def _persona_system_prompt(self, task_type: str = "judge_phase") -> str:
         """Build a persona-aware system prompt snippet for LLM calls."""
         persona = self._resolve_persona(task_type)
-        if persona is None:
-            return ""
-        return persona.system_prompt
+        persona_prompt = persona.system_prompt if persona is not None else ""
+        return "\n\n".join(
+            part for part in (persona_prompt, _JUDGE_FACT_ONLY_SYSTEM_PROMPT)
+            if part
+        )
 
     def _persona_inject(self, prompt: str, task_type: str = "judge_phase") -> tuple[str, str | None]:
         """Resolve the persona system prompt and return (user_prompt, system_prompt).
@@ -79,8 +90,9 @@ class JudgeAgent:
         the user prompt) so downstream LLM providers can route it through the
         native system role instead of burying it in user content.
         """
+        bounded_prompt = f"{prompt}\n{_JUDGE_FACT_ONLY_USER_BOUNDARY}"
         sys_p = self._persona_system_prompt(task_type) or None
-        return prompt, sys_p
+        return bounded_prompt, sys_p
 
     def broadcast_phase(
         self,
