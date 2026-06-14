@@ -107,6 +107,9 @@ _MAX_SALIENCE_ITEMS = 3
 _MAX_PERSONA_LINE_CHARS = 180
 _MAX_LEARNING_TEXT_CHARS = 160
 _MAX_RAG_TEXT_CHARS = 220
+_MAX_LEARNING_CONTEXT_CHARS = 3_600
+_MAX_SKILL_TACTICAL_ADVICE_ITEMS = 3
+_MAX_SKILL_TACTICAL_ADVICE_CHARS = 180
 # P0-G3223805846-8: vote 阶段的 ``reason`` 字段是公开发言可见的（对所有
 # 玩家公开），禁止任何私视角表述。游戏轨迹 g_3223805846 观察到 LLM 把
 # ``我作为预言家`` / ``狼队 N1 刀了 p0X`` 等私有意图写入 ``reason`` 字段，
@@ -121,12 +124,9 @@ _VOTE_REASON_PRIVACY_GUARD = (
     "如果你要表达'我作为预言家认为'，应改写为"
     "'X 报出的查验有 Y 漏洞，因此'\n"
 )
-# P1-5: global user-prompt budget. ≈ 2,500 CJK tokens at the rough
-# 2.5 chars/token ratio. The 16 user-prompt sections are truncated
-# per-section, but the SUM can still run 3,000-5,000 tokens when many
-# sections have content. The budget cap follows each section's
+# P1-5: global user-prompt budget. The cap follows each section's
 # ``drop_tier`` in ``_USER_SECTION_SPECS``; never-drop sections remain.
-_USER_PROMPT_BUDGET_CHARS = 6_250
+_USER_PROMPT_BUDGET_CHARS = 20_000
 
 
 @dataclass(frozen=True)
@@ -796,29 +796,42 @@ class PlayerPromptBuilder:
         )
 
     def _build_learning_context(self) -> str:
-        parts: list[str] = []
-        rag = self._build_rag_hints()
-        if rag:
-            parts.append(rag)
-        reflection = self._build_reflection_memory_hints()
-        if reflection:
-            parts.append(reflection)
-        profile = self._build_profile_memory_hint()
-        if profile:
-            parts.append(profile)
-        cognition = self._build_cognition_matrix_hint()
-        if cognition:
-            parts.append(cognition)
+        header = (
+            "跨局学习参考: 以下内容只是历史经验与自我校准，"
+            "不代表本局任何玩家真实身份。"
+        )
+        parts: list[tuple[str, int, str]] = []
         error_pattern = self._build_error_pattern_hint()
         if error_pattern:
-            parts.append(error_pattern)
+            parts.append(("error_pattern", 4, error_pattern))
+        reflection = self._build_reflection_memory_hints()
+        if reflection:
+            parts.append(("reflection", 3, reflection))
+        profile = self._build_profile_memory_hint()
+        if profile:
+            parts.append(("profile", 2, profile))
+        cognition = self._build_cognition_matrix_hint()
+        if cognition:
+            parts.append(("cognition", 1, cognition))
+        rag = self._build_rag_hints()
+        if rag:
+            parts.append(("rag", 0, rag))
         if not parts:
             return ""
-        return (
-            "跨局学习参考: 以下内容只是历史经验与自我校准，不代表本局任何玩家真实身份。"
-            "\n\n"
-            + "\n\n".join(parts)
-        )
+
+        active = list(parts)
+
+        def render(items: list[tuple[str, int, str]]) -> str:
+            return header + "\n\n" + "\n\n".join(text for _, _, text in items)
+
+        while active and len(render(active)) > _MAX_LEARNING_CONTEXT_CHARS:
+            lowest_priority = min(priority for _, priority, _ in active)
+            for idx in range(len(active) - 1, -1, -1):
+                if active[idx][1] == lowest_priority:
+                    del active[idx]
+                    break
+
+        return render(active) if active else ""
 
     @staticmethod
     def _slim_rag_hint_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1073,18 +1086,32 @@ class PlayerPromptBuilder:
         text rather than a JSON envelope.
         """
         lines: list[str] = ["技能战术建议:"]
-        for entry in advice:
+        rendered = advice[:_MAX_SKILL_TACTICAL_ADVICE_ITEMS]
+        for entry in rendered:
             if not isinstance(entry, dict):
-                lines.append(f"- {json.dumps(entry, ensure_ascii=False)}")
+                text = PlayerPromptBuilder._clean_prompt_text(
+                    json.dumps(entry, ensure_ascii=False),
+                    max_chars=_MAX_SKILL_TACTICAL_ADVICE_CHARS,
+                )
+                lines.append(f"- {text}")
                 continue
-            skill = entry.get("skill", "")
+            skill = PlayerPromptBuilder._clean_prompt_text(
+                entry.get("skill", ""),
+                max_chars=40,
+            )
             conf = entry.get("confidence", "")
-            text = entry.get("advice", "")
+            text = PlayerPromptBuilder._clean_prompt_text(
+                entry.get("advice", ""),
+                max_chars=_MAX_SKILL_TACTICAL_ADVICE_CHARS,
+            )
             try:
                 conf_str = f"{float(conf):.2f}"
             except (TypeError, ValueError):
                 conf_str = str(conf)
             lines.append(f"- [{skill}/{conf_str}] {text}")
+        omitted = len(advice) - len(rendered)
+        if omitted > 0:
+            lines.append(f"- 其余 {omitted} 条技能战术建议已省略。")
         return "\n".join(lines)
 
     def _build_skill_analysis_hints(self) -> str:
@@ -1239,6 +1266,9 @@ class PlayerPromptBuilder:
             return self._format_speech_intent_prompt()
         return self._format_examples()
 
+    def _example_target(self, fallback: str = "pXX") -> str:
+        return self.context.legal_targets[0] if self.context.legal_targets else fallback
+
     def _format_examples(self) -> str:
         ctx = self.context
         parts: list[str] = []
@@ -1325,32 +1355,36 @@ class PlayerPromptBuilder:
         # the day), then witch actions, then sheriff badge actions,
         # then hybrid's master choice (only on the first night).
         elif ActionType.HUNTER_SHOT in ctx.legal_actions:
+            example_target = self._example_target()
             parts.append("示例输出（猎人开枪场景）：")
             parts.append(
-                '{"action_type": "hunter_shot", "target_id": "p07", '
+                f'{{"action_type": "hunter_shot", "target_id": "{example_target}", '
                 '"speech": "", '
-                '"reason": "我带走最可疑的p07", "confidence": 0.7}'
+                f'"reason": "我带走最可疑的{example_target}", "confidence": 0.7}}'
             )
         elif ActionType.USE_ANTIDOTE in ctx.legal_actions:
+            example_target = self._example_target()
             parts.append("示例输出（女巫解药场景）：")
             parts.append(
-                '{"action_type": "use_antidote", "target_id": "p05", '
+                f'{{"action_type": "use_antidote", "target_id": "{example_target}", '
                 '"speech": "", '
-                '"reason": "救下被刀的p05", "confidence": 0.7}'
+                f'"reason": "救下被刀的{example_target}", "confidence": 0.7}}'
             )
         elif ActionType.USE_POISON in ctx.legal_actions:
+            example_target = self._example_target()
             parts.append("示例输出（女巫毒药场景）：")
             parts.append(
-                '{"action_type": "use_poison", "target_id": "p07", '
+                f'{{"action_type": "use_poison", "target_id": "{example_target}", '
                 '"speech": "", '
-                '"reason": "毒死确认的狼人p07", "confidence": 0.7}'
+                f'"reason": "毒死确认的狼人{example_target}", "confidence": 0.7}}'
             )
         elif ActionType.BADGE_TRANSFER in ctx.legal_actions:
+            example_target = self._example_target()
             parts.append("示例输出（警徽移交场景）：")
             parts.append(
-                '{"action_type": "badge_transfer", "target_id": "p05", '
+                f'{{"action_type": "badge_transfer", "target_id": "{example_target}", '
                 '"speech": "", '
-                '"reason": "把警徽传给更可信的p05", "confidence": 0.7}'
+                f'"reason": "把警徽传给更可信的{example_target}", "confidence": 0.7}}'
             )
         elif ActionType.BADGE_TEAR in ctx.legal_actions:
             parts.append("示例输出（撕毁警徽场景）：")
@@ -1360,11 +1394,12 @@ class PlayerPromptBuilder:
                 '"reason": "本局无合适人选，撕毁警徽", "confidence": 0.7}'
             )
         elif ActionType.CHOOSE_MASTER in ctx.legal_actions:
+            example_target = self._example_target()
             parts.append("示例输出（混血儿选主场景）：")
             parts.append(
-                '{"action_type": "choose_master", "target_id": "p05", '
+                f'{{"action_type": "choose_master", "target_id": "{example_target}", '
                 '"speech": "", '
-                '"reason": "选择p05作为我的主人", "confidence": 0.7}'
+                f'"reason": "选择{example_target}作为我的主人", "confidence": 0.7}}'
             )
         else:
             role = ctx.own_role or "villager"

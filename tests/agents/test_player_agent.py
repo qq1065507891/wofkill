@@ -1388,8 +1388,8 @@ class TestPlayerAgentRetryFallback:
         # The structured skill_tactical_advice in strategy_directive
         # is the single source of truth.
         assert "技能分析结果:" not in prompt
-        assert prompt.index("跨局学习参考:") < prompt.index("知识库提示:")
-        assert prompt.index("知识库提示:") < prompt.index("跨局反思记忆:")
+        assert prompt.index("跨局学习参考:") < prompt.index("跨局反思记忆:")
+        assert prompt.index("跨局反思记忆:") < prompt.index("知识库提示:")
         assert prompt.index("跨局反思记忆:") < prompt.index("本轮策略指令:")
         assert "策略建议:" not in prompt
 

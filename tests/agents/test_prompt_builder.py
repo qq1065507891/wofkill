@@ -22,6 +22,7 @@ import re
 
 import pytest
 
+from werewolf_agent.agents import prompt_builder as prompt_builder_module
 from werewolf_agent.agents.prompt_builder import (
     HARD_CONSTRAINT_KEYS,
     REFERENCE_KEYS,
@@ -1966,6 +1967,114 @@ def test_user_prompt_uses_merged_learning_and_output_sections() -> None:
     assert prompt.index("纠正提示") < prompt.index("最终输出协议")
 
 
+def test_learning_context_orders_player_calibration_before_rag() -> None:
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        rag_hints=[{
+            "type": "rag_hit",
+            "title": "RAG_ORDER_MARKER",
+            "summary": "通用案例",
+        }],
+        reflection_memory_hints=[{
+            "role": "villager",
+            "result": "负",
+            "text": "REFLECTION_ORDER_MARKER",
+        }],
+        profile_memory_hint={"games_played": 3, "summary": "PROFILE_ORDER_MARKER"},
+        cognition_matrix_hint={"suspects": [{"player": "p02", "trust": 0.2}]},
+        error_pattern_hint={
+            "total_reflections": 2,
+            "top_mistakes": [("vote_mistake", 2)],
+        },
+    )
+
+    text = PlayerPromptBuilder(ctx)._build_learning_context()
+
+    assert text.index("跨局错误模式") < text.index("跨局反思记忆")
+    assert text.index("跨局反思记忆") < text.index("历史角色经验")
+    assert text.index("历史角色经验") < text.index("认知校准摘要")
+    assert text.index("认知校准摘要") < text.index("知识库提示")
+
+
+def test_learning_context_drops_rag_before_player_reflection_when_too_large() -> None:
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        rag_hints=[
+            {
+                "type": "rag_hit",
+                "title": f"RAG_LOW_PRIORITY_MARKER_{idx}",
+                "summary": "低优先级案例" * 600,
+                "key_decisions": ["低优先级决策" * 300],
+            }
+            for idx in range(6)
+        ],
+        reflection_memory_hints=[
+            {
+                "role": "villager",
+                "result": "负",
+                "text": (
+                    "REFLECTION_HIGH_PRIORITY_MARKER " if idx == 0 else ""
+                ) + ("反思" * 600),
+            }
+            for idx in range(8)
+        ],
+        profile_memory_hint={"games_played": 3, "summary": "PROFILE_LOW_PRIORITY_MARKER" * 80},
+        cognition_matrix_hint={
+            "suspects": [
+                {"player": f"p{i:02d}", "trust": 0.2, "open_questions": ["q"] * 20}
+                for i in range(12)
+            ]
+        },
+        error_pattern_hint={
+            "total_reflections": 2,
+            "top_mistakes": [("vote_mistake", 2)],
+        },
+    )
+
+    text = PlayerPromptBuilder(ctx)._build_learning_context()
+
+    assert "跨局错误模式" in text
+    assert "REFLECTION_HIGH_PRIORITY_MARKER" in text
+    assert "RAG_LOW_PRIORITY_MARKER" not in text
+
+
+def test_strategy_tactical_advice_is_bounded_in_prompt() -> None:
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        strategy_directive={
+            "skill_tactical_advice": [
+                {
+                    "skill": f"skill_{idx}",
+                    "confidence": 0.9,
+                    "advice": f"ADVICE_MARKER_{idx} " + ("长建议" * 300),
+                }
+                for idx in range(8)
+            ]
+        },
+    )
+
+    text = PlayerPromptBuilder(ctx)._build_strategy_directive()
+
+    assert "ADVICE_MARKER_0" in text
+    assert "ADVICE_MARKER_1" in text
+    assert "ADVICE_MARKER_2" in text
+    assert "ADVICE_MARKER_3" not in text
+    assert "长建议" * 80 not in text
+    assert "其余 5 条技能战术建议已省略" in text
+
+
 def test_information_boundaries_are_generated_from_section_metadata() -> None:
     ctx = AgentContext(
         agent_id="p05",
@@ -2152,7 +2261,11 @@ def test_output_contract_vote_rule_still_in_user_prompt():
 # registry-defined drop_tier when the assembled prompt exceeds the
 # budget; never-drop sections are preserved.
 
-_USER_PROMPT_BUDGET_CHARS = 6_250  # ≈ 2,500 CJK tokens (rough)
+_USER_PROMPT_BUDGET_CHARS = 20_000
+
+
+def test_user_prompt_budget_is_raised_to_20k() -> None:
+    assert prompt_builder_module._USER_PROMPT_BUDGET_CHARS == 20_000
 
 
 def _make_ctx_with_all_sections_populated() -> AgentContext:
@@ -2172,7 +2285,12 @@ def _make_ctx_with_all_sections_populated() -> AgentContext:
         for i in range(8)
     ]
     long_rag = [
-        {"title": f"案例 {i}", "summary": f"内容 {i} " * 50, "key_decisions": [f"决策 {i}"]}
+        {
+            "type": "rag_hit",
+            "title": f"案例 {i}",
+            "summary": f"内容 {i} " * 50,
+            "key_decisions": [f"决策 {i}"],
+        }
         for i in range(3)
     ]
     long_reflection = [
@@ -2244,12 +2362,10 @@ def test_user_prompt_within_budget_when_all_sections_populated():
     """
     ctx = _make_ctx_with_all_sections_populated()
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # rough CJK token estimate: 1 token ≈ 2.5 chars
-    approx_tokens = len(user_prompt) / 2.5
-    assert approx_tokens < 2_500, (
-        f"P1-5: user prompt is over budget. approx_tokens={approx_tokens:.0f}, "
-        f"chars={len(user_prompt)}, budget=2,500 tokens "
-        f"(~6,250 chars). Drop lowest-priority sections first when over "
+    assert len(user_prompt) < _USER_PROMPT_BUDGET_CHARS, (
+        f"P1-5: user prompt is over budget. chars={len(user_prompt)}, "
+        f"budget={_USER_PROMPT_BUDGET_CHARS} chars. "
+        f"Drop lowest-priority sections first when over "
         f"budget. user_prompt[:500]={user_prompt[:500]!r}"
     )
 
@@ -2291,8 +2407,7 @@ def test_budget_trimmer_respects_registry_drop_tiers():
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     # Pin the contract: budget is hard, and trim order comes from
     # _USER_SECTION_SPECS rather than label-name heuristics.
-    approx_tokens = len(user_prompt) / 2.5
-    assert approx_tokens < 2_500
+    assert len(user_prompt) < _USER_PROMPT_BUDGET_CHARS
 
 
 # ---------------------------------------------------------------------------
@@ -3865,6 +3980,33 @@ def test_sheriff_example_includes_withdraw():
     )
 
 
+def test_full_action_examples_use_current_legal_target() -> None:
+    scenarios = [
+        (ActionType.HUNTER_SHOT, "hunter_shot"),
+        (ActionType.USE_ANTIDOTE, "use_antidote"),
+        (ActionType.USE_POISON, "use_poison"),
+        (ActionType.BADGE_TRANSFER, "badge_transfer"),
+        (ActionType.CHOOSE_MASTER, "choose_master"),
+    ]
+    for action, action_text in scenarios:
+        ctx = AgentContext(
+            agent_id="p03",
+            task_type=TaskType.NIGHT_ACTION,
+            phase="night",
+            night_number=2,
+            own_role="witch",
+            legal_actions=[action, ActionType.NO_ACTION],
+            legal_targets=["p11"],
+        )
+
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+        assert action_text in prompt
+        assert '"target_id": "p11"' in prompt
+        assert '"target_id": "p05"' not in prompt
+        assert '"target_id": "p07"' not in prompt
+
+
 # ---------------------------------------------------------------------------
 # G-R4-15 → M4-2 reversal: RAG hints are NO LONGER guaranteed to survive
 # budget pressure.
@@ -3982,8 +4124,8 @@ def _make_budget_pressure_context() -> AgentContext:
     )
 
 
-def test_current_game_grounding_survives_before_style_and_history() -> None:
-    """Current facts outrank persona, RAG, reflection, and profile memory."""
+def test_current_game_grounding_survives_with_expanded_budget() -> None:
+    """Current facts stay present while the 20k budget may retain history."""
     ctx = _make_budget_pressure_context()
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     assert len(prompt) <= _USER_PROMPT_BUDGET_CHARS + 750, (
@@ -4002,7 +4144,6 @@ def test_current_game_grounding_survives_before_style_and_history() -> None:
         )
     assert "人格设定" in prompt
     assert "budget-pressure-persona" in prompt
-    assert "budget-pressure-rag" not in prompt
     assert "长期能力画像" not in prompt
     assert "我的认知矩阵" not in prompt
 

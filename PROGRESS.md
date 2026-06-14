@@ -4,12 +4,42 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **prompt-module-merge-hardening** — 2026-06-14 (COMPLETE)
-- Active task: 玩家 prompt 学习上下文与输出约束模块合并已完成；当前局 grounding、persona、strategy_directive 继续保持独立
+- Current phase: **prompt-budget-and-internal-caps** — 2026-06-14 (COMPLETE)
+- Active task: 玩家 prompt 预算上限已调至 20k；学习上下文内部裁剪、策略建议限长、示例合法目标修复已完成
 - Task owner: Codex development session
 - Last updated: 2026-06-14
+- **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## prompt-budget-and-internal-caps — 2026-06-14 (已完成)
+
+**背景**:
+
+1. 6,250 字符的 user prompt 预算过紧，合并后的结构虽然更清晰，但真实对局中当前局 grounding、persona、策略、近期发言和输出约束同时保留时容易触发过度裁剪。
+2. 预算放宽不能替代内部治理：never-drop section 如果没有自身限长，仍可能在长策略建议或长历史参考下撑爆上下文。
+3. FULL_ACTION 示例中部分技能/行动仍硬编码 `p05/p07`，可能与当前 `legal_targets` 冲突。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| 全局预算 | `_USER_PROMPT_BUDGET_CHARS=6250` 对当前 prompt 结构偏紧 | 调整为 `20_000` 字符，测试不再复制旧常量 |
+| 跨局学习参考 | 合并后内部顺序仍是 RAG 优先，且预算压力下只能整段保留/整段丢弃 | 调整顺序为错误模式 → 反思 → 画像 → 认知 → RAG；新增内部上限，超限时从低优先级 RAG 开始裁剪 |
+| 策略建议 | `skill_tactical_advice` bullet 渲染绕过 `_compact_json()`，没有条数/单条限长 | 限制最多 3 条、单条文本限长，并显式提示省略数量 |
+| 示例目标 | hunter/witch/badge/hybrid 等 FULL_ACTION 示例硬编码 `p05/p07` | 改为优先使用 `ctx.legal_targets[0]`，没有合法目标才使用占位符 |
+| 预算测试 | 压力测试中的 RAG 缺少 `type="rag_hit"`，实际不会渲染 | 补齐 discriminator，使测试覆盖真实 RAG 渲染路径 |
+
+**新增/更新测试**:
+
+- `tests/agents/test_prompt_builder.py`: 20k 预算常量、学习上下文顺序与内部裁剪、策略建议限长、FULL_ACTION 示例合法 target、真实 RAG 预算压力。
+
+**验证**:
+
+- 已通过 `pytest tests/agents/test_prompt_builder.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
+- 已通过 `pytest tests/agents/test_prompt_builder.py tests/agents/test_prompt_injection_fixes.py tests/agents/test_prompt_mode_isolation.py tests/agents/test_parse_dispatch.py tests/agents/test_player_agent.py tests/runtime/test_context.py tests/runtime/test_agent_adapter.py tests/runtime/test_strategy_directives.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
+- 已通过 `python -m compileall -q werewolf_agent tests`。
+- 已通过 `git diff --check`。
 
 ## prompt-module-merge-hardening — 2026-06-14 (已完成)
 
