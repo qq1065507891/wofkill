@@ -56,10 +56,12 @@ class CaseIngester:
 
     def ingest(self, entry: RAGEntry) -> RAGEntry:
         """Validate and store an entry. Raises IngestionError on violation."""
-        self._validate_forbidden_content(entry)
+        try:
+            validate_rag_entry_prompt_safe(entry)
+        except ValueError as exc:
+            raise IngestionError(str(exc)) from exc
         self._validate_source_metadata(entry)
         self._validate_quality(entry)
-        self._validate_not_rule_truth(entry)
 
         # Auto-timestamp if missing
         if not entry.metadata.source.collected_at:
@@ -232,3 +234,13 @@ def create_seed_entries():  # type: ignore[no-redef]
     """Backward-compatible re-export from seed_data (lazy to avoid circular import)."""
     from werewolf_agent.rag.seed_data import create_seed_entries as _real
     return _real()
+
+
+def validate_rag_entry_prompt_safe(entry: RAGEntry) -> None:
+    """Validate text that can become prompt-visible RAG content."""
+    checker = CaseIngester()
+    try:
+        checker._validate_forbidden_content(entry)
+        checker._validate_not_rule_truth(entry)
+    except IngestionError as exc:
+        raise ValueError(str(exc)) from exc

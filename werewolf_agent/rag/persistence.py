@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from werewolf_agent.rag.ingestion import validate_rag_entry_prompt_safe
 from werewolf_agent.rag.schemas import RAGEntry
 
 
@@ -31,5 +32,7 @@ def load_rag_entries(data: list[dict[str, Any]]) -> list[RAGEntry]:
     for raw in data:
         item = dict(raw)
         item.setdefault("schema_version", 1)
-        entries.append(RAGEntry(**item))
+        entry = RAGEntry(**item)
+        validate_rag_entry_prompt_safe(entry)
+        entries.append(entry)
     return entries

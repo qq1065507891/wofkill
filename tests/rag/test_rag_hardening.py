@@ -20,6 +20,7 @@ from werewolf_agent.rag.schemas import (
     RAGEntry,
     RAGHit,
     RAGQuery,
+    RAGTacticalFrame,
     ReviewStatus,
     SourceMetadata,
     SourceType,
@@ -48,6 +49,42 @@ def _make_entry(entry_id: str = "e1", role: str = "seer") -> RAGEntry:
             visibility_boundary=VisibilityBoundary.PUBLIC_ONLY,
             source=SourceMetadata(source_type=SourceType.SELF_PLAY),
             tags=["seer", "strategy"],
+        ),
+    )
+
+
+def _make_v2_entry(
+    *,
+    entry_id: str = "v2_persisted",
+    frame_overrides: dict[str, object] | None = None,
+) -> RAGEntry:
+    frame_data: dict[str, object] = {
+        "situation_signature": "Day vote pressure is concentrating on a claimed seer",
+        "transferable_lesson": "Explain the vote motive before shifting focus to speech contradictions",
+        "applicability": ["werewolf daytime speech", "pressure near claim resolution"],
+        "counter_signals": ["teammate vote pattern is already exposed"],
+        "recommended_use": "Use when reducing team clustering in public speech",
+        "misuse_risk": "Forced use in low-information spots sounds preplanned",
+    }
+    if frame_overrides:
+        frame_data.update(frame_overrides)
+    return RAGEntry(
+        schema_version=2,
+        entry_id=entry_id,
+        title="Persisted V2 prompt safety",
+        tactical_frame=RAGTacticalFrame(**frame_data),
+        metadata=CaseMetadata(
+            case_type=CaseType.EXTERNAL_TACTICS,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="werewolf",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+            tags=["v2", "strategy"],
         ),
     )
 
@@ -112,6 +149,33 @@ class TestRAGPersistence:
         assert len(loaded) == 1
         assert loaded[0].schema_version == 1
         assert loaded[0].tactical_frame is None
+
+    @pytest.mark.parametrize(
+        ("field_name", "field_value", "match"),
+        [
+            ("situation_signature", "role=werewolf p01 pressure spot", "player-ID"),
+            ("transferable_lesson", "Do not anchor on p02 in a later game", "player-ID"),
+            ("applicability", ["rule_engine_says this was legal"], "Forbidden keyword"),
+            ("counter_signals", ["witch cannot self-save is rule truth"], "base rule truth"),
+            ("recommended_use", "actual_role_is werewolf", "Forbidden keyword"),
+            ("misuse_risk", "Do not anchor on p05 in a later game", "player-ID"),
+        ],
+    )
+    def test_load_rejects_prompt_unsafe_v2_tactical_frame(
+        self,
+        field_name: str,
+        field_value: object,
+        match: str,
+    ) -> None:
+        from werewolf_agent.rag.persistence import load_rag_entries
+
+        persisted = _make_v2_entry(
+            entry_id=f"unsafe_{field_name}",
+            frame_overrides={field_name: field_value},
+        ).model_dump()
+
+        with pytest.raises(ValueError, match=match):
+            load_rag_entries([persisted])
 
 
 # ---------------------------------------------------------------------------

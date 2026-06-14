@@ -168,6 +168,7 @@ from werewolf_agent.rag.schemas import (
     CaseMetadata,
     QualityGrade,
     RAGEntry,
+    RAGTacticalFrame,
     ReviewStatus,
     SourceMetadata,
     SourceType,
@@ -212,6 +213,99 @@ def _make_entry(
             ),
         ),
     )
+
+
+def _make_v2_entry(
+    *,
+    frame_overrides: dict[str, object] | None = None,
+) -> RAGEntry:
+    frame_data: dict[str, object] = {
+        "situation_signature": "Day vote pressure is concentrating on a claimed seer",
+        "transferable_lesson": "Explain the vote motive before shifting focus to speech contradictions",
+        "applicability": ["werewolf daytime speech", "pressure near claim resolution"],
+        "counter_signals": ["teammate vote pattern is already exposed"],
+        "recommended_use": "Use when reducing team clustering in public speech",
+        "misuse_risk": "Forced use in low-information spots sounds preplanned",
+    }
+    if frame_overrides:
+        frame_data.update(frame_overrides)
+    return RAGEntry(
+        schema_version=2,
+        entry_id="v2_ingestion_prompt_safety",
+        title="V2 prompt safety",
+        tactical_frame=RAGTacticalFrame(**frame_data),
+        metadata=CaseMetadata(
+            case_type=CaseType.EXTERNAL_TACTICS,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="werewolf",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            tags=["v2", "strategy"],
+            source=SourceMetadata(
+                source_type=SourceType.EXPERT_COMMENTARY,
+            ),
+        ),
+    )
+
+
+def test_custom_yaml_v2_seed_preserves_tactical_frame(tmp_path) -> None:
+    from werewolf_agent.rag.seed_data import create_seed_entries
+
+    seed_path = tmp_path / "v2_seed.yaml"
+    seed_path.write_text(
+        """
+- schema_version: 2
+  entry_id: custom_v2_seed
+  title: Custom V2 seed
+  summary: Legacy summary remains optional context
+  content_type: tactical_note
+  metadata:
+    case_type: external_tactics
+    quality_grade: expert_review
+    review_status: approved
+    reviewer: test
+    ruleset_id: pre_witch_hunter_idiot_mixed
+    player_count: 12
+    phase: speech
+    role_perspective: werewolf
+    visibility_boundary: player_perspective
+    source:
+      source_type: manual_entry
+    tags:
+      - v2
+      - strategy
+  tactical_frame:
+    situation_signature: Day vote pressure is concentrating on a claimed seer
+    transferable_lesson: Explain the vote motive before shifting focus to speech contradictions
+    applicability:
+      - werewolf daytime speech
+      - pressure near claim resolution
+    counter_signals:
+      - teammate vote pattern is already exposed
+    recommended_use: Use when reducing team clustering in public speech
+    misuse_risk: Forced use in low-information spots sounds preplanned
+""",
+        encoding="utf-8",
+    )
+
+    entries = create_seed_entries(seed_path)
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.schema_version == 2
+    assert entry.content_type == "tactical_note"
+    assert entry.tactical_frame is not None
+    assert entry.tactical_frame.situation_signature == (
+        "Day vote pressure is concentrating on a claimed seer"
+    )
+    assert entry.tactical_frame.applicability == [
+        "werewolf daytime speech",
+        "pressure near claim resolution",
+    ]
 
 
 class TestRagHardeningPII:
@@ -295,6 +389,29 @@ class TestRagHardeningIdentityLeak:
         entry = _make_entry(summary="p03 查杀 p05,预言家获胜")
         with pytest.raises(IngestionError, match="player-ID"):
             ingester.ingest(entry)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value", "match"),
+    [
+        ("situation_signature", "role=werewolf p01 pressure spot", "player-ID"),
+        ("transferable_lesson", "Do not anchor on p02 in a later game", "player-ID"),
+        ("applicability", ["rule_engine_says this was legal"], "Forbidden keyword"),
+        ("counter_signals", ["witch cannot self-save is rule truth"], "base rule truth"),
+        ("recommended_use", "actual_role_is werewolf", "Forbidden keyword"),
+        ("misuse_risk", "Do not anchor on p05 in a later game", "player-ID"),
+    ],
+)
+def test_case_ingester_rejects_prompt_unsafe_v2_tactical_frame(
+    field_name: str,
+    field_value: object,
+    match: str,
+) -> None:
+    ingester = CaseIngester()
+    entry = _make_v2_entry(frame_overrides={field_name: field_value})
+
+    with pytest.raises(IngestionError, match=match):
+        ingester.ingest(entry)
 
 
 # ---------------------------------------------------------------------------

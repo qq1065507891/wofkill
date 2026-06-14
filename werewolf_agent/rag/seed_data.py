@@ -107,6 +107,7 @@ def _build_entry(raw: dict[str, Any]) -> RAGEntry:
         entry_id=entry_id,
         title=raw.get("title", ""),
         summary=raw.get("summary", ""),
+        content_type=raw.get("content_type", "strategy"),
         tactical_frame=raw.get("tactical_frame"),
         key_decisions=raw.get("key_decisions", []),
         short_quotes=raw.get("short_quotes", []),
