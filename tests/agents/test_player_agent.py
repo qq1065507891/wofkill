@@ -748,9 +748,9 @@ class TestPlayerAgentRetryFallback:
         prompt = provider.prompts[0]
         assert "人格设定" in prompt
         assert '"profile_id":"aggressive_bluffer"' not in prompt
-        assert '"personality":"dominant_pressurer"' in prompt
-        assert '"speech_style":"aggressive_short"' in prompt
-        assert '"task_style":"pressure_attack"' in prompt
+        assert "人格核心: dominant_pressurer" in prompt
+        assert "表达风格: aggressive_short" in prompt
+        assert "任务风格: pressure_attack" in prompt
 
     def test_existing_good_role_persona_snapshot_is_sanitized(self) -> None:
         agent = self._make_agent('{"action_type":"no_action"}')

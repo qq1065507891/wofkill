@@ -1370,13 +1370,12 @@ def test_rag_hints_filtered_by_type():
 
 
 def test_rag_truncation_note_in_tail():
-    """G-R4-12: when the JSON payload is compacted into a truncation
-    envelope, the tail reminder must explicitly acknowledge the
-    truncation. Otherwise the LLM sees the head warning + shortened
-    JSON + a generic "以上案例仅供参考" tail, and may treat the prefix
-    as a complete case record.
+    """Long RAG fields are truncated before the whole JSON envelope.
+
+    The live prompt should keep the RAG reference framing while avoiding
+    a generic content_prefix/content_suffix envelope for one oversized
+    field.
     """
-    # Force the JSON to exceed the truncation cap after slim rendering.
     long_summary = "狼" * 5000
     ctx = _make_villager_context()
     ctx = ctx.model_copy(update={
@@ -1388,22 +1387,14 @@ def test_rag_truncation_note_in_tail():
         }],
     })
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # The compact JSON truncation envelope is present.
-    assert '"truncated":true' in prompt, (
-        "G-R4-12: the test setup should force JSON truncation; "
-        "the compact truncation envelope must be present in the prompt."
-    )
     rag_start = prompt.find("知识库提示")
     assert rag_start != -1, "RAG hints section must be present"
     rag_section = prompt[rag_start:]
-    assert "JSON 已截断" in rag_section, (
-        f"G-R4-12: tail must include its own truncation note when "
-        f"_compact_json emits a truncation envelope. Got: {rag_section!r}"
+    assert "…已截断" in rag_section, (
+        f"Long RAG summary should be truncated at field level. Got: {rag_section!r}"
     )
-    # And the tail must still carry the existing reference framing.
     assert "以上案例仅供参考" in rag_section, (
-        "G-R4-12: the truncation note must augment, not replace, the "
-        "existing '以上案例仅供参考' tail reminder."
+        "The existing '以上案例仅供参考' tail reminder must remain."
     )
 
 
@@ -1758,7 +1749,7 @@ def test_private_memory_label_uses_day_number_correctly():
 
 
 # ---------------------------------------------------------------------------
-# P1-S3: every user-prompt section gets a [硬约束/辅助/可选] priority label
+# P1-S3: every user-prompt section gets a typed priority/context label
 # ---------------------------------------------------------------------------
 #
 # Audit P1-S3 finding: build_user_prompt concatenates 16 sections
@@ -1770,15 +1761,9 @@ def test_private_memory_label_uses_day_number_correctly():
 # attention (e.g., transcript while the retry hint is telling it to
 # shorten the response).
 #
-# Fix: prepend each section with one of three priority labels:
-# - 【硬约束】 strategy_directive, retry hint, output contract
-#   (must be addressed / must be obeyed)
-# - 【辅助】   phase, belief, summary, visible state, private memory,
-#   salience, rag hints, reflection, profile, cognition, skill hints
-#   (background context for reasoning; ignore fields not relevant to
-#   current task)
-# - 【可选】   transcript (reference, may be skimmed or dropped if
-#   output is constrained)
+# Fix: prepend each section with a typed label derived from the
+# section metadata registry. The same registry also defines budget
+# behavior so labels and trimming cannot drift.
 #
 # Task prompt itself is NOT relabeled — the task description is what
 # the LLM acts on and adding a prefix would risk confusing the action
@@ -1822,8 +1807,8 @@ def _make_ctx_for_priority_label_test(
 
 def test_sections_have_priority_labels():
     """P1-S3: each of the 16 user-prompt sections is prefixed with a
-    [硬约束/辅助/可选] priority label so the LLM can rank which sections
-    to attend to under tight token budget.
+    typed priority/context label so the LLM can rank which sections to
+    attend to under tight token budget.
 
     Sections grouped:
     - 【硬约束】 strategy_directive, retry hint, output contract
@@ -1833,7 +1818,7 @@ def test_sections_have_priority_labels():
     - 【参考】   reflection  # Note: reflection was demoted from 辅助 to
                               # 参考 in M4-2 (commit 0022d25) — per-player
                               # history outranks generic RAG under budget.
-    - 【可选】   transcript
+    - 【场上记录】 transcript
 
     The test verifies the label appears in the user prompt and the
     label appears BEFORE the section's first content character.
@@ -1874,9 +1859,9 @@ def test_sections_have_priority_labels():
     )
     assert "【人格】 人格设定:" in prompt
 
-    # The transcript is the only 可选 section in build_user_prompt.
-    assert "【可选】" in prompt, (
-        "Expected at least one 【可选】 label (transcript section)."
+    assert "【可选】" not in prompt, (
+        "No live section should be labeled 【可选】 while also being "
+        "protected from budget trimming."
     )
 
     # Verify the label is followed by the section's own header text so
@@ -1904,13 +1889,48 @@ def test_sections_have_priority_labels():
         f"the priority signal). Got: {preceding!r}"
     )
 
-    # Transcript is the only 可选 section — its header is "近期发言".
+    # Transcript is current-game public record, not optional context.
     transcript_idx = prompt.find("近期发言")
     assert transcript_idx > 0
     preceding = prompt[max(0, transcript_idx - 60):transcript_idx]
-    assert "【可选】" in preceding, (
-        f"Transcript must be preceded by 【可选】 label, got: {preceding!r}"
+    assert "【场上记录】" in preceding, (
+        f"Transcript must be preceded by 【场上记录】 label, got: {preceding!r}"
     )
+
+
+def test_section_metadata_is_single_source_for_labels_and_budget() -> None:
+    specs = PlayerPromptBuilder._USER_SECTION_SPECS
+    by_name = PlayerPromptBuilder._SECTION_SPEC_BY_NAME
+
+    assert set(by_name) == {spec.builder_name for spec in specs}
+    assert PlayerPromptBuilder._SECTION_PRIORITIES == {
+        spec.builder_name: spec.label for spec in specs
+    }
+    assert PlayerPromptBuilder._NEVER_DROP == {
+        spec.builder_name for spec in specs if spec.drop_tier is None
+    }
+    assert PlayerPromptBuilder._LOW_VALUE_SECTIONS == {
+        spec.builder_name for spec in specs if spec.drop_tier == 0
+    }
+    assert "_build_reflection_memory_hints" not in PlayerPromptBuilder._LOW_VALUE_SECTIONS
+    assert by_name["_build_reflection_memory_hints"].drop_tier == 2
+    assert by_name["_build_recent_transcript"].label == "【场上记录】"
+    assert by_name["_build_recent_transcript"].drop_tier is None
+
+
+def test_information_boundaries_are_generated_from_section_metadata() -> None:
+    ctx = AgentContext(
+        agent_id="p05",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+    )
+    text = PlayerPromptBuilder(ctx)._build_information_boundaries()
+
+    for spec in PlayerPromptBuilder._USER_SECTION_SPECS:
+        assert spec.display_name in text
+        assert spec.label in text
+    assert "本轮任务/候选枚举或示例不加外层优先级标签" in text
 
 
 def test_priority_labels_for_hard_sections_distinct_from_internal_directive_groups():
@@ -2085,10 +2105,9 @@ def test_output_contract_vote_rule_still_in_user_prompt():
 # prompt. Per-section truncation at _MAX_JSON_CONTEXT_CHARS = 1800 is
 # not enough; the global sum is the constraint that matters.
 #
-# Fix: implement a global token budget. Drop lowest-priority sections
-# (可选 before 辅助; never drop 硬约束) when the assembled prompt
-# exceeds the budget. Use the existing _SECTION_PRIORITIES map for
-# the priority signal.
+# Fix: implement a global token budget. Drop sections by their
+# registry-defined drop_tier when the assembled prompt exceeds the
+# budget; never-drop sections are preserved.
 
 _USER_PROMPT_BUDGET_CHARS = 6_250  # ≈ 2,500 CJK tokens (rough)
 
@@ -2177,8 +2196,8 @@ def test_user_prompt_within_budget_when_all_sections_populated():
     under the budget cap.
 
     Pre-fix: the user prompt could reach 3,000-5,000 tokens. The fix
-    drops lowest-priority sections (可选 first, then 辅助) until the
-    prompt fits under the budget. 硬约束 sections are never dropped.
+    drops lowest-priority sections by registry drop_tier until the
+    prompt fits under the budget. Never-drop sections are preserved.
     """
     ctx = _make_ctx_with_all_sections_populated()
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
@@ -2195,11 +2214,8 @@ def test_user_prompt_within_budget_when_all_sections_populated():
 def test_hard_sections_never_dropped_under_budget():
     """P1-5: budget enforcement must NEVER drop truly-binding sections.
 
-    P1-9: retry hint is now 【辅助】 (advisory), so under extreme
-    budget pressure it may be dropped — the runtime FallbackAction
-    handles the safety case regardless. strategy_directive and
-    output contract are the two truly-binding sections that the
-    LLM must always see; the trimmer must never drop them.
+    strategy_directive, retry hint, output contract, persona, and
+    current-game grounding are registry-marked never-drop sections.
     """
     ctx = _make_ctx_with_all_sections_populated()
     retry = RetryInfo(
@@ -2223,22 +2239,12 @@ def test_hard_sections_never_dropped_under_budget():
     )
 
 
-def test_optional_sections_dropped_first():
-    """P1-5: under tight budget, 可选 sections are dropped first.
-
-    The transcript is the only 可选 section in build_user_prompt.
-    """
+def test_budget_trimmer_respects_registry_drop_tiers():
+    """P1-5: under tight budget, registry drop_tier controls trimming."""
     ctx = _make_ctx_with_all_sections_populated()
     user_prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
-    # If the budget requires any drop, the 可选 section (transcript)
-    # should be the first to go. We can't pin the exact behavior
-    # (it depends on payload sizes), but we can assert the budget is
-    # respected — the trimmer always picks the lowest-priority section.
-    # The contract under test is "budget is enforced", not "transcript
-    # is always dropped", so this test is a sanity check that the
-    # transcript MAY be present (it didn't HAVE to be dropped) when
-    # other smaller payloads fit.
-    # Pin the contract: budget is hard.
+    # Pin the contract: budget is hard, and trim order comes from
+    # _USER_SECTION_SPECS rather than label-name heuristics.
     approx_tokens = len(user_prompt) / 2.5
     assert approx_tokens < 2_500
 
@@ -3055,6 +3061,53 @@ def test_live_memory_prompt_omits_ability_ranks_and_duplicate_cognition_lists():
     assert "salience_items#" not in prompt
     assert "tracked_suspect_count" in prompt
     assert "tracked_trusted_count" in prompt
+    assert "open_question_count" in prompt
+    assert "calibration_warning" in prompt
+
+
+def test_learning_context_renderers_whitelist_prompt_safe_fields() -> None:
+    ctx = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.SPEECH],
+        reflection_memory_hints=[{
+            "role": "seer",
+            "result": "负",
+            "text": "上一局 p03 是真预言家但我跟错票",
+            "raw_transcript": "RAW_SECRET_SHOULD_NOT_RENDER",
+            "debug_trace": "DEBUG_SHOULD_NOT_RENDER",
+            "hidden_role_truth": {"p03": "seer"},
+        }],
+        profile_memory_hint={
+            "games_played": 8,
+            "current_role": "villager",
+            "summary": "累计 p04 相关经验",
+            "raw_games": ["RAW_GAME_SHOULD_NOT_RENDER"],
+            "private_labels": {"p04": "wolf"},
+            "logic_rank": "前 10%",
+        },
+        rag_hints=[{
+            "type": "rag_hit",
+            "title": "案例 p05",
+            "summary": "案例中 p06 冲票成功",
+            "key_decisions": "不要被拆成字符列表",
+            "debug": "RAG_DEBUG_SHOULD_NOT_RENDER",
+        }],
+    )
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    assert "RAW_SECRET_SHOULD_NOT_RENDER" not in prompt
+    assert "DEBUG_SHOULD_NOT_RENDER" not in prompt
+    assert "hidden_role_truth" not in prompt
+    assert "RAW_GAME_SHOULD_NOT_RENDER" not in prompt
+    assert "private_labels" not in prompt
+    assert "logic_rank" not in prompt
+    assert "RAG_DEBUG_SHOULD_NOT_RENDER" not in prompt
+    assert "历史玩家" in prompt
+    assert "不要被拆成字符列表" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -3504,7 +3557,9 @@ def test_compact_json_truncation_stays_valid_json():
     parsed = json.loads(out)
     assert parsed["truncated"] is True
     assert parsed["original_type"] == "dict"
-    assert "content_prefix" in parsed
+    assert parsed["omitted_middle"] is True
+    assert "head" in parsed
+    assert "tail" in parsed
     assert len(out) <= 1800
 
 
@@ -3530,6 +3585,30 @@ def test_compact_json_preserves_tail_context_when_truncated():
 
     assert parsed["truncated"] is True
     assert "TAIL_CRITICAL_MARKER" in out
+
+
+def test_compact_json_structured_summary_keeps_shape_metadata():
+    import json
+
+    builder = PlayerPromptBuilder(
+        AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+        )
+    )
+    big = {f"k{i:02d}": "x" * 300 for i in range(20)}
+
+    parsed = json.loads(builder._compact_json(big))
+
+    assert parsed["truncated"] is True
+    assert parsed["original_type"] == "dict"
+    assert parsed["original_length"] == 20
+    assert parsed["omitted_middle"] is True
+    assert "k00" in parsed["head"]
+    assert "k19" in parsed["tail"]
 
 
 

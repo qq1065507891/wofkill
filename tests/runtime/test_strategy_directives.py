@@ -3686,7 +3686,8 @@ class TestReflectionCrossGameLearning:
         builder.context = ctx
         text = builder._build_error_pattern_hint()
         assert "【跨局错误模式" in text
-        assert "vote_mistake" in text
+        assert "投票错误" in text
+        assert "role_execution" not in text
         assert "3次" in text
         assert "保留" in text or "复用" in text
         assert "seer" in text  # same_role_reflections 应被提到

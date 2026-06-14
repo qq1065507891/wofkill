@@ -11,6 +11,8 @@ dynamic sections go in the user message (effectively a "system reminder").
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from werewolf_agent.agents.action_contract import ActionContract
@@ -102,6 +104,9 @@ _MAX_PUBLIC_SUMMARY_CHARS = 700
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
 _MAX_SALIENCE_ITEMS = 3
+_MAX_PERSONA_LINE_CHARS = 180
+_MAX_LEARNING_TEXT_CHARS = 160
+_MAX_RAG_TEXT_CHARS = 220
 # P0-G3223805846-8: vote 阶段的 ``reason`` 字段是公开发言可见的（对所有
 # 玩家公开），禁止任何私视角表述。游戏轨迹 g_3223805846 观察到 LLM 把
 # ``我作为预言家`` / ``狼队 N1 刀了 p0X`` 等私有意图写入 ``reason`` 字段，
@@ -119,10 +124,24 @@ _VOTE_REASON_PRIVACY_GUARD = (
 # P1-5: global user-prompt budget. ≈ 2,500 CJK tokens at the rough
 # 2.5 chars/token ratio. The 16 user-prompt sections are truncated
 # per-section, but the SUM can still run 3,000-5,000 tokens when many
-# sections have content. The budget cap drops the lowest-priority
-# sections (可选 → 辅助) until the prompt fits. 硬约束 sections are
-# never dropped.
+# sections have content. The budget cap follows each section's
+# ``drop_tier`` in ``_USER_SECTION_SPECS``; never-drop sections remain.
 _USER_PROMPT_BUDGET_CHARS = 6_250
+
+
+@dataclass(frozen=True)
+class _SectionSpec:
+    """Single source of truth for user-prompt section metadata."""
+
+    builder_name: str
+    label: str
+    display_name: str
+    info_kind: str
+    drop_tier: int | None
+    public_record: bool = False
+
+
+_NEVER_DROP_TIER: int | None = None
 
 _STRATEGY_GROUP_ORDER: tuple[frozenset[str], str, str] = (
     (HARD_CONSTRAINT_KEYS, "【硬约束】", "以下指令必须遵守（MUST）："),
@@ -211,21 +230,16 @@ class PlayerPromptBuilder:
         )
 
     def _build_information_boundaries(self) -> str:
-        # Phase 3 P3-2: list the 11 actual user-prompt sections that
-        # the LLM sees (per ``_SECTION_PRIORITIES``), not the 6 abstract
-        # categories the LLM was told about pre-fix.  When the section
-        # list is abstract, the LLM doesn't know which prompts map to
-        # which tier and falls back to treating all input as one big
-        # "background info" blob.  Listing concrete sections lets the
-        # LLM correctly distinguish "人格设定" (a hint) from
-        # "公开事实" (a record) from "私信" (private).
+        section_names = "、".join(
+            spec.display_name for spec in self._USER_SECTION_SPECS
+        )
+        labels = "、".join(
+            dict.fromkeys(spec.label for spec in self._USER_SECTION_SPECS)
+        )
         return (
-            "【信息边界】你会收到以下 user-prompt 段（每段前有【硬约束/辅助/参考/可选】"
-            "或【场上记录/策略指令】标签）："
-            "人格设定、阶段上下文、我的判断、当前局公开事实、可见世界状态、"
-            "本局·私有记忆、关键事件、知识库提示、跨局反思记忆、历史角色经验、认知校准摘要、"
-            "跨局错误模式、策略指令（含技能战术建议）、近期发言、本轮任务/候选枚举或示例、"
-            "纠正提示、最终输出协议。"
+            f"【信息边界】你会收到以下 user-prompt 段（外层标签包括{labels}；"
+            "本轮任务/候选枚举或示例不加外层优先级标签）："
+            f"{section_names}、本轮任务/候选枚举或示例。"
             "公开发言时，只有『当前局公开事实』『可见世界状态』『近期发言』『关键事件』"
             "可以称为「场上已知」或「公开记录」。"
             "私信可以用于决策，但不能伪装成公开事实。"
@@ -337,135 +351,50 @@ class PlayerPromptBuilder:
     #  User prompt: per-turn dynamic context (system reminder)
     # ═══════════════════════════════════════════════════════════════
 
-    # P1-S3: section-level priority labels so the LLM can rank which
-    # sections to attend to under tight token budget. The labels group
-    # the 16 user-prompt sections into three priority tiers:
-    #   - 硬约束 (HARD):     must be addressed / must be obeyed
-    #   - 辅助 (AUXILIARY):  background context, ignore non-relevant
-    #   - 可选 (OPTIONAL):   reference, may be skimmed or dropped
-    # Note: this is the OUTER section label, distinct from the inner
-    # 硬约束/建议/参考 sub-grouping already in P0-S5 for strategy_directive.
-    # P1-6: strategy_directive's outer label is 【策略指令】 (neutral)
-    # to avoid double-labeling with the inner P0-S5 sub-group. The
-    # P1-5 budget trimmer treats it as a never-dropped section
-    # because it carries binding rules.
-    #
-    # P2-7: the proposal to flatten the 3-tier labels into flat
-    # inline `[MUST]/[SHOULD]/[REF]` tags was considered and DROPPED.
-    # Three reasons:
-    #   1. The P1-S3 outer 3-tier drives the budget trimmer — flat
-    #      tags would lose the trim signal.
-    #   2. The LLM has been observed to read section headers more
-    #      reliably than scattered inline tags; the cluster structure
-    #      makes it easier to skim under tight tokens.
-    #   3. The 3-tier format is consistent with the inner P0-S5
-    #      sub-grouping (硬约束/建议/参考), so the LLM does not have
-    #      to learn two priority systems in the same prompt.
-    _NEVER_DROP: frozenset[str] = frozenset({
-        "_build_persona",
-        "_build_strategy_directive",
-        "_build_phase_context",
-        "_build_public_summary",
-        "_build_visible_state",
-        "_build_salience_events",
-        "_build_recent_transcript",
-        # AUDIT-2-04: retry hint is the LLM's only feedback on the
-        # previous turn's failure (error_message snippet +
-        # correction_hint). Without it the LLM repeats the same
-        # mistake and burns the retry budget. Game trace
-        # g_3528592081 Action 50: p10 had 3 retries on the same
-        # parse_error before fallback. The fix promotes retry hint
-        # from 【辅助】 to 【硬约束】 so the budget trimmer never
-        # drops it. Runtime FallbackAction still enforces safety
-        # (so this is corrective guidance, not the only safety net).
-        "_build_retry_hint",
-    })
-    _GROUNDING_SECTIONS: frozenset[str] = frozenset({
-        "_build_phase_context",
-        "_build_public_summary",
-        "_build_visible_state",
-        "_build_salience_events",
-        "_build_recent_transcript",
-    })
-    _LOW_VALUE_SECTIONS: frozenset[str] = frozenset({
-        "_build_belief_state",
-        "_build_rag_hints",
-        "_build_reflection_memory_hints",
-        "_build_profile_memory_hint",
-        "_build_cognition_matrix_hint",
-        "_build_error_pattern_hint",
-    })
+    # Section-level metadata drives both prompt labels and budget
+    # trimming. The visible label tells the LLM what kind of content
+    # follows; ``drop_tier`` tells the trimmer what can disappear under
+    # pressure. Keeping both in one table prevents drift such as a
+    # section being labeled "optional" while also being never-dropped.
+    _USER_SECTION_SPECS: tuple[_SectionSpec, ...] = (
+        _SectionSpec("_build_persona", "【人格】", "人格设定", "style", _NEVER_DROP_TIER),
+        _SectionSpec("_build_phase_context", "【辅助】", "阶段上下文", "action_context", _NEVER_DROP_TIER),
+        _SectionSpec("_build_belief_state", "【辅助】", "我的判断", "private_reasoning", 0),
+        _SectionSpec("_build_public_summary", "【场上记录】", "当前局公开事实", "public_record", _NEVER_DROP_TIER, True),
+        _SectionSpec("_build_visible_state", "【辅助】", "可见世界状态", "public_record", _NEVER_DROP_TIER, True),
+        _SectionSpec("_build_private_memory_hints", "【辅助】", "本局·私有记忆", "private_memory", 1),
+        _SectionSpec("_build_salience_events", "【辅助】", "关键事件", "public_record", _NEVER_DROP_TIER, True),
+        _SectionSpec("_build_rag_hints", "【辅助】", "知识库提示", "cross_game_reference", 0),
+        _SectionSpec("_build_reflection_memory_hints", "【参考】", "跨局反思记忆", "cross_game_reference", 2),
+        _SectionSpec("_build_profile_memory_hint", "【辅助】", "历史角色经验", "cross_game_reference", 0),
+        _SectionSpec("_build_cognition_matrix_hint", "【辅助】", "认知校准摘要", "cross_game_reference", 0),
+        _SectionSpec("_build_error_pattern_hint", "【辅助】", "跨局错误模式", "cross_game_reference", 0),
+        _SectionSpec("_build_strategy_directive", "【策略指令】", "策略指令", "directive", _NEVER_DROP_TIER),
+        _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
+        _SectionSpec("_build_retry_hint", "【硬约束】", "纠正提示", "output_constraint", _NEVER_DROP_TIER),
+        _SectionSpec("_build_strict_output_contract", "【硬约束】", "最终输出协议", "output_constraint", _NEVER_DROP_TIER),
+    )
+    _SECTION_SPEC_BY_NAME: dict[str, _SectionSpec] = {
+        spec.builder_name: spec for spec in _USER_SECTION_SPECS
+    }
+    _NEVER_DROP: frozenset[str] = frozenset(
+        spec.builder_name
+        for spec in _USER_SECTION_SPECS
+        if spec.drop_tier is _NEVER_DROP_TIER
+    )
+    _GROUNDING_SECTIONS: frozenset[str] = frozenset(
+        spec.builder_name
+        for spec in _USER_SECTION_SPECS
+        if spec.public_record or spec.info_kind == "action_context"
+    )
+    _LOW_VALUE_SECTIONS: frozenset[str] = frozenset(
+        spec.builder_name
+        for spec in _USER_SECTION_SPECS
+        if spec.drop_tier == 0
+    )
     _SECTION_PRIORITIES: dict[str, str] = {
-        "_build_persona": "【人格】",
-        "_build_phase_context": "【辅助】",
-        "_build_belief_state": "【辅助】",
-        # Phase 1 self-audit (P1-6 label rename): use a distinctive
-        # section label to avoid collision with the strategy_directive
-        # inner sub-group ``【参考】`` marker.  Both labels are
-        # semantically "reference" but refer to different scopes
-        # (this is game-record; the strategy sub-group is internal
-        # reference).  LLM reads ``【场上记录】`` as the public record
-        # section, distinct from the strategy_directive 参考 sub-group.
-        # The priority tier (辅助) and budget-drop semantics are
-        # preserved.
-        "_build_public_summary": "【场上记录】",
-        "_build_visible_state": "【辅助】",
-        "_build_private_memory_hints": "【辅助】",
-        "_build_salience_events": "【辅助】",
-        # M4-2: reflection/RAG priority swap. Per-player reflection
-        # history is strictly more relevant to THIS player than
-        # generic RAG community knowledge, so under tight token
-        # budget the budget trimmer should drop RAG first and
-        # keep reflection. RAG is community-wide, generic, replacable
-        # from the corpus; reflection is this-player + this-role
-        # accumulated gameplay lessons — losing it means repeating
-        # the same mistakes across games.
-        #
-        # This INVERTS the G-R4-15 judgment ("RAG must survive
-        # budget cuts"). That rationale conflated retrieval cost
-        # (RAG is expensive to fetch) with prompt value (what the
-        # LLM should attend to). They are different questions.
-        # Reflection is more valuable per-token to this player.
-        #
-        # Drop order under budget pressure:
-        #   1) 辅助 (lowest) — phase_context, belief,
-        #      public_summary, visible_state, private_memory,
-        #      salience, rag_hints, profile, cognition, error_pattern
-        #   2) 参考 (middle) — reflection_memory_hints
-        #   3) 硬约束 (highest, never dropped) — strategy_directive,
-        #      retry_hint, strict_output_contract
-        # Note: 【场上记录】 (public_summary) and 【策略指令】
-        # (strategy_directive) use distinctive section labels
-        # for LLM-skim clarity but map to the same 3-tier drop
-        # semantics.
-        "_build_rag_hints": "【辅助】",
-        "_build_reflection_memory_hints": "【参考】",
-        "_build_profile_memory_hint": "【辅助】",
-        "_build_cognition_matrix_hint": "【辅助】",
-        "_build_error_pattern_hint": "【辅助】",
-        # P1-6: strategy_directive outer label is NEUTRAL. The
-        # function internally splits keys into 【硬约束】/【建议】/【参考】
-        # sub-headers (P0-S5) that carry the priority signal. The
-        # outer section label cannot also be 【硬约束】 (double-labeling
-        # contradicts the inner "REFERENCE" sub-group).
-        "_build_strategy_directive": "【策略指令】",
-        # NEW-S04-A: skill_analysis_hints render path is dropped. The
-        # structured skill_tactical_advice is the single source of
-        # truth (rendered inside strategy_directive's 【参考】 group).
-        # The opaque-dict dual render is gone.
-        "_build_recent_transcript": "【可选】",
-        # AUDIT-2-04: retry hint label is now 【硬约束】. The
-        # correction_hint + error_message are the LLM's only
-        # signal of what went wrong on the previous attempt; losing
-        # them under budget pressure makes the LLM repeat the same
-        # mistake and waste the retry budget. (P1-9 originally
-        # classified this as 【辅助】 advisory — that was a
-        # conservative call that has since been overridden by
-        # observed retry-loop behavior in g_3528592081.)
-        "_build_retry_hint": "【硬约束】",
-        "_build_strict_output_contract": "【硬约束】",
-        # Note: _build_task_prompt is intentionally unlabeled — the
-        # task prompt is the action spec the LLM is executing.
+        spec.builder_name: spec.label
+        for spec in _USER_SECTION_SPECS
     }
 
     def _label_section(self, builder_name: str, body: str) -> str:
@@ -484,12 +413,9 @@ class PlayerPromptBuilder:
 
     def build_user_prompt(self, retry: RetryInfo) -> str:
         # P1-5: build the full prompt first, then enforce the global
-        # token budget by dropping lowest-priority sections until the
-        # prompt fits. Sections are dropped in priority order:
-        #   可选 (transcript) → 辅助 (profile, belief, ...).
-        # Persona is compact but droppable; current-game grounding and
-        # 硬约束 (strategy_directive, retry hint, output contract) are
-        # never dropped.
+        # token budget by dropping sections with the lowest ``drop_tier``.
+        # Current-game grounding, persona, strategy, retry, and output
+        # contract sections are marked never-drop in _USER_SECTION_SPECS.
         parts: list[tuple[str, str]] = []
         # Boundary marker per s10: above = stable, below = dynamic.
         # Boundary marker + task prompt are always kept (they are not
@@ -500,9 +426,9 @@ class PlayerPromptBuilder:
         # with other per-turn dynamic context and does not invalidate
         # the system-prompt cache on each turn.
         parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
-        # P1-S3: each section is wrapped with a [硬约束/辅助/可选]
-        # priority label so the LLM can rank attention under tight
-        # token budgets. The label is prepended at the section level
+        # P1-S3: each section is wrapped with a label so the LLM can
+        # rank attention under tight token budgets. The label is
+        # prepended at the section level
         # — internal sub-grouping (e.g., P0-S5 within strategy_directive)
         # is preserved.
         parts.append(("_build_phase_context", self._label_section("_build_phase_context", self._build_phase_context())))
@@ -542,10 +468,9 @@ class PlayerPromptBuilder:
         """Join parts with blank-line separator, then trim if over budget.
 
         P1-5: when the joined prompt exceeds ``_USER_PROMPT_BUDGET_CHARS``,
-        drop the lowest-priority sections (those whose builder_name is
-        labeled 【可选】 then 【辅助】) until it fits. Sections with the
-        【硬约束】 label, the boundary marker, and the task prompt are
-        never dropped.
+        drop sections by ``_USER_SECTION_SPECS.drop_tier`` until it fits.
+        Sections with ``drop_tier is None``, the boundary marker, and the
+        task prompt are never dropped.
 
         Implementation note (carries over from prior fix): ``drop_indices``
         here is the EXCLUSION set — indices still in the set are EXCLUDED
@@ -558,44 +483,16 @@ class PlayerPromptBuilder:
         full_joined = "\n\n".join(p for _, p in parts if p)
         if len(full_joined) <= _USER_PROMPT_BUDGET_CHARS:
             return full_joined
-        # Build the drop order: every droppable section in priority
-        # order (lowest first). Skip sections with no label (boundary
-        # marker, task prompt), sections labeled 【硬约束】, and
-        # sections in _NEVER_DROP (e.g., strategy_directive — the
-        # outer label is 【策略指令】 per P1-6 but the section is
-        # never dropped because it carries binding rules).
-        priority = self._SECTION_PRIORITIES
+        # Build the drop order from the section registry. Sections
+        # absent from the registry or marked never-drop are skipped.
         droppable: list[tuple[int, int]] = []
         for idx, (name, _) in enumerate(parts):
             if not name:
                 continue
-            if name in self._NEVER_DROP:
+            spec = self._SECTION_SPEC_BY_NAME.get(name)
+            if spec is None or spec.drop_tier is None:
                 continue
-            label = priority.get(name, "")
-            if label == "【硬约束】":
-                continue
-            if name in self._LOW_VALUE_SECTIONS:
-                tier = 0
-                droppable.append((tier, idx))
-                continue
-            if name in self._GROUNDING_SECTIONS:
-                tier = 3
-                droppable.append((tier, idx))
-                continue
-            # Tier ordering: 可选 (0) → 辅助 (1) → 【参考】 (2)
-            # → never drop 硬约束. M4-2: RAG hints reverted to 辅助
-            # tier, reflection promoted to 【参考】. The trimmer
-            # drops 辅助 sections first (which now includes RAG
-            # hints), then 参考 sections (reflection), and never
-            # 硬约束. See M4-2 commit 0022d25 for the rationale.
-            if label == "【可选】":
-                tier = 0
-            elif label == "【参考】":
-                tier = 2
-            else:
-                # 辅助 and any unlabeled-but-not-NEVER_DROP sections.
-                tier = 1
-            droppable.append((tier, idx))
+            droppable.append((spec.drop_tier, idx))
         # Sort by tier first, then keep original order within a tier
         # (stable sort). Note: this means within a tier, sections
         # earlier in the parts list (e.g. phase_context, belief_state)
@@ -629,23 +526,9 @@ class PlayerPromptBuilder:
                 break
             if idx in dropped:
                 continue
-            # Only drop if the section's label is in the matching
-            # tier; otherwise skip and continue. G-R4-15: tier
-            # mapping matches the outer build step — 可选=0,
-            # 辅助=1, 【参考】=2.
-            name = parts[idx][0]
-            label = priority.get(name, "")
-            if name in self._LOW_VALUE_SECTIONS:
-                expected_tier = 0
-            elif name in self._GROUNDING_SECTIONS:
-                expected_tier = 3
-            elif label == "【可选】":
-                expected_tier = 0
-            elif label == "【参考】":
-                expected_tier = 2
-            else:
-                expected_tier = 1
-            if expected_tier != tier:
+            # Only drop if the section still maps to the same tier.
+            spec = self._SECTION_SPEC_BY_NAME.get(parts[idx][0])
+            if spec is None or spec.drop_tier != tier:
                 continue
             # Mark as dropped and update running total: SUBTRACT
             # the body + 2 chars (one separator for the part that
@@ -940,11 +823,29 @@ class PlayerPromptBuilder:
         for item in items:
             if not isinstance(item, dict):
                 continue
+            key_decisions = item.get("key_decisions") or []
+            if isinstance(key_decisions, str):
+                key_decisions = [key_decisions]
+            if not isinstance(key_decisions, list):
+                key_decisions = []
             slim.append({
-                "title": str(item.get("title", "") or ""),
-                "summary": str(item.get("summary", "") or ""),
+                "title": PlayerPromptBuilder._clean_prompt_text(
+                    item.get("title", ""),
+                    max_chars=_MAX_LEARNING_TEXT_CHARS,
+                ),
+                "summary": PlayerPromptBuilder._clean_prompt_text(
+                    item.get("summary", ""),
+                    max_chars=_MAX_RAG_TEXT_CHARS,
+                ),
                 # P2-6: cap uses the shared renderer constant.
-                "key_decisions": list(item.get("key_decisions") or [])[:_MAX_KEY_DECISIONS_IN_PROMPT],
+                "key_decisions": [
+                    PlayerPromptBuilder._clean_prompt_text(
+                        decision,
+                        max_chars=_MAX_LEARNING_TEXT_CHARS,
+                    )
+                    for decision in key_decisions
+                    if isinstance(decision, str)
+                ][:_MAX_KEY_DECISIONS_IN_PROMPT],
             })
         return slim
 
@@ -953,9 +854,13 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.reflection_memory_hints:
             return ""
+        hints = self._slim_reflection_hints(ctx.reflection_memory_hints[:HINT_BUDGET])
+        if not hints:
+            return ""
         return (
             "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
-            + self._compact_json(ctx.reflection_memory_hints[:HINT_BUDGET])
+            "历史玩家 ID、身份真相和决策链不得映射到本局玩家。\n"
+            + self._compact_json(hints)
         )
 
     def _build_error_pattern_hint(self) -> str:
@@ -972,13 +877,20 @@ class PlayerPromptBuilder:
         top = ep.get("top_mistakes") or []
         if top:
             mistake_strs = [
-                f"{cat}({count}次)"
+                f"{self._normalize_error_category(cat)}({count}次)"
                 for cat, count in top
             ]
             parts.append(f"你最常犯的 2 类错误: {'、'.join(mistake_strs)}。")
+        strengths = [
+            self._clean_prompt_text(label, max_chars=40)
+            for label in (ep.get("preserved_strength_labels") or [])
+            if str(label or "").strip()
+        ][:2]
         preserved = ep.get("preserved_strength_count", 0)
-        if preserved:
-            parts.append(f"过去 {preserved} 局反思中你保留了具体优点,本局也请复用。")
+        if strengths:
+            parts.append(f"可复用优点: {'、'.join(strengths)}。")
+        elif preserved:
+            parts.append(f"过去 {preserved} 局反思中出现过可保留优点,本局先核验再复用。")
         same = ep.get("same_role_reflections", 0)
         if same:
             parts.append(
@@ -991,11 +903,25 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.profile_memory_hint:
             return ""
-        live_hint = {
-            key: value
-            for key, value in ctx.profile_memory_hint.items()
-            if not key.endswith("_rank")
-        }
+        allowed_fields = (
+            "games_played",
+            "current_role",
+            "current_role_games",
+            "current_role_win_rate_pct",
+            "win_rate_confidence",
+            "summary",
+        )
+        live_hint = {}
+        for key in allowed_fields:
+            if key not in ctx.profile_memory_hint:
+                continue
+            value = ctx.profile_memory_hint[key]
+            if isinstance(value, str):
+                value = self._clean_prompt_text(
+                    value,
+                    max_chars=_MAX_LEARNING_TEXT_CHARS,
+                )
+            live_hint[key] = value
         if not live_hint:
             return ""
         return (
@@ -1007,13 +933,41 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.cognition_matrix_hint:
             return ""
+        suspects = ctx.cognition_matrix_hint.get("suspects")
+        trusted = ctx.cognition_matrix_hint.get("trusted")
+        if suspects is None and trusted is None:
+            suspects = [
+                value for value in ctx.cognition_matrix_hint.values()
+                if isinstance(value, dict)
+                and (
+                    value.get("faction_lean") in {"wolf", "wolf_lean", "werewolf"}
+                    or float(value.get("trust", 0.5) or 0.5) < 0.4
+                )
+            ]
+            trusted = [
+                value for value in ctx.cognition_matrix_hint.values()
+                if isinstance(value, dict)
+                and (
+                    value.get("faction_lean") in {"good", "good_lean", "villager"}
+                    or float(value.get("trust", 0.5) or 0.5) > 0.6
+                )
+            ]
+        suspects = suspects or []
+        trusted = trusted or []
         live_hint = {
-            "tracked_suspect_count": len(
-                ctx.cognition_matrix_hint.get("suspects") or []
+            "tracked_suspect_count": len(suspects),
+            "tracked_trusted_count": len(trusted),
+            "open_question_count": sum(
+                len(item.get("open_questions") or [])
+                for item in list(suspects) + list(trusted)
+                if isinstance(item, dict)
             ),
-            "tracked_trusted_count": len(
-                ctx.cognition_matrix_hint.get("trusted") or []
+            "evidence_anchor_count": sum(
+                len(item.get("key_evidence") or [])
+                for item in list(suspects) + list(trusted)
+                if isinstance(item, dict)
             ),
+            "calibration_warning": "只复核证据充分性，不复用历史玩家名单。",
         }
         return (
             "认知校准摘要: 历史矩阵只用于提醒你重新核验判断，不提供本局嫌疑名单。\n"
@@ -1134,22 +1088,31 @@ class PlayerPromptBuilder:
             own_role=ctx.own_role or "",
             task_type=ctx.task_type.value,
         )
-        allowed_fields = (
-            "personality",
-            "speech_style",
-            "task_style",
-            "effective_params",
-            "dynamic_adjustments",
-            "tone",
+        lines = ["人格设定:"]
+        text_fields = (
+            ("personality", "人格核心"),
+            ("speech_style", "表达风格"),
+            ("task_style", "任务风格"),
+            ("tone", "语气"),
         )
-        compact_snapshot = {
-            key: sanitized_snapshot[key]
-            for key in allowed_fields
-            if key in sanitized_snapshot
-        }
-        if not compact_snapshot:
+        for key, label in text_fields:
+            value = sanitized_snapshot.get(key)
+            if value:
+                lines.append(f"- {label}: {self._clean_prompt_text(value)}")
+        effective = self._slim_numeric_params(
+            sanitized_snapshot.get("effective_params")
+        )
+        if effective:
+            lines.append(f"- 稳定倾向: {self._compact_json(effective)}")
+        adjustments = self._slim_numeric_params(
+            sanitized_snapshot.get("dynamic_adjustments")
+        )
+        if adjustments:
+            lines.append(f"- 本轮调整: {self._compact_json(adjustments)}")
+        if len(lines) == 1:
             return ""
-        return "人格设定: " + self._compact_json(compact_snapshot)
+        lines.append("注意: 人格只影响表达和决策风格，不代表身份信息、公开事实或固定战术。")
+        return "\n".join(lines)
 
     def _build_recent_transcript(self) -> str:
         ctx = self.context
@@ -1621,6 +1584,80 @@ class PlayerPromptBuilder:
     def _uses_speech_intent_pipeline(self) -> bool:
         return self._select_output_mode() == OutputMode.SPEECH_INTENT
 
+    @staticmethod
+    def _clean_prompt_text(
+        value: Any,
+        *,
+        max_chars: int = _MAX_PERSONA_LINE_CHARS,
+    ) -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"\bp\d{2}\b", "历史玩家", text)
+        text = text.replace("\r", " ").replace("\n", " ")
+        text = re.sub(r"\s+", " ", text)
+        if len(text) <= max_chars:
+            return text
+        return text[: max(0, max_chars - 6)] + "…已截断"
+
+    @staticmethod
+    def _slim_numeric_params(value: Any) -> dict[str, float]:
+        if not isinstance(value, dict):
+            return {}
+        slim: dict[str, float] = {}
+        for key, raw in value.items():
+            if key == "deception_skill" or key.endswith("_rank"):
+                continue
+            if not isinstance(raw, (int, float)):
+                continue
+            slim[str(key)] = round(float(raw), 2)
+        return slim
+
+    @classmethod
+    def _slim_reflection_hints(cls, hints: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        allowed_fields = (
+            "role",
+            "result",
+            "theme",
+            "summary",
+            "text",
+            "lesson",
+            "actionable_advice",
+        )
+        slimmed: list[dict[str, Any]] = []
+        for item in hints:
+            if not isinstance(item, dict):
+                continue
+            slim: dict[str, Any] = {}
+            for key in allowed_fields:
+                if key not in item:
+                    continue
+                value = item[key]
+                if isinstance(value, str):
+                    value = cls._clean_prompt_text(
+                        value,
+                        max_chars=_MAX_LEARNING_TEXT_CHARS,
+                    )
+                slim[key] = value
+            if slim:
+                slimmed.append(slim)
+        return slimmed
+
+    @staticmethod
+    def _normalize_error_category(category: Any) -> str:
+        raw = str(category or "").strip().lower()
+        mapping = {
+            "vote_mistake": "投票错误",
+            "info_miss": "漏读信息",
+            "role_execution": "角色执行",
+            "speech_quality": "发言质量",
+            "format_error": "格式错误",
+            "parse_error": "格式错误",
+        }
+        if raw in mapping:
+            return mapping[raw]
+        cleaned = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]+", "", raw)
+        cleaned = re.sub(r"\bp\d{2}\b", "历史玩家", cleaned)
+        return cleaned[:24] or "other"
+
     # ── Choice/target helpers ──
 
     def _vote_choice_map(self) -> dict[str, str]:
@@ -1683,6 +1720,16 @@ class PlayerPromptBuilder:
         if len(text) <= _MAX_JSON_CONTEXT_CHARS:
             return text
 
+        structured = self._structured_json_summary(value)
+        if structured is not None:
+            structured_text = json.dumps(
+                structured,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if len(structured_text) <= _MAX_JSON_CONTEXT_CHARS:
+                return structured_text
+
         prefix = text[: _MAX_JSON_CONTEXT_CHARS // 3]
         suffix = text[-(_MAX_JSON_CONTEXT_CHARS // 3):]
         while True:
@@ -1690,6 +1737,8 @@ class PlayerPromptBuilder:
                 {
                     "truncated": True,
                     "original_type": type(value).__name__,
+                    "original_length": len(text),
+                    "omitted_middle": True,
                     "content_prefix": prefix,
                     "content_suffix": suffix,
                 },
@@ -1703,6 +1752,78 @@ class PlayerPromptBuilder:
             trim_suffix = min(len(suffix), overflow - trim_prefix + 8)
             prefix = prefix[: max(0, len(prefix) - trim_prefix)]
             suffix = suffix[min(len(suffix), trim_suffix):]
+
+    @staticmethod
+    def _structured_json_summary(value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            items = list(value.items())
+            if not items:
+                return None
+            head_count = min(6, len(items))
+            tail_count = min(4, max(0, len(items) - head_count))
+            head = {
+                key: PlayerPromptBuilder._summarize_json_value(val)
+                for key, val in items[:head_count]
+            }
+            tail_items = items[-tail_count:] if tail_count else []
+            tail = {
+                key: PlayerPromptBuilder._summarize_json_value(val)
+                for key, val in tail_items
+            }
+            return {
+                "truncated": True,
+                "original_type": "dict",
+                "original_length": len(items),
+                "omitted_middle": len(items) > head_count + tail_count,
+                "head": head,
+                "tail": tail,
+            }
+        if isinstance(value, list):
+            if not value:
+                return None
+            head_count = min(4, len(value))
+            tail_count = min(3, max(0, len(value) - head_count))
+            return {
+                "truncated": True,
+                "original_type": "list",
+                "original_length": len(value),
+                "omitted_middle": len(value) > head_count + tail_count,
+                "head": [
+                    PlayerPromptBuilder._summarize_json_value(item)
+                    for item in value[:head_count]
+                ],
+                "tail": [
+                    PlayerPromptBuilder._summarize_json_value(item)
+                    for item in (value[-tail_count:] if tail_count else [])
+                ],
+            }
+        return None
+
+    @staticmethod
+    def _summarize_json_value(value: Any) -> Any:
+        if isinstance(value, str):
+            return PlayerPromptBuilder._clean_prompt_text(
+                value,
+                max_chars=_MAX_LEARNING_TEXT_CHARS,
+            )
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        if isinstance(value, list):
+            return [
+                PlayerPromptBuilder._summarize_json_value(item)
+                for item in value[:3]
+            ]
+        if isinstance(value, dict):
+            slim: dict[str, Any] = {}
+            for idx, (key, val) in enumerate(value.items()):
+                if idx >= 5:
+                    break
+                slim[str(key)] = PlayerPromptBuilder._summarize_json_value(val)
+            return slim
+        return PlayerPromptBuilder._clean_prompt_text(
+            value,
+            max_chars=_MAX_LEARNING_TEXT_CHARS,
+        )
 
     @staticmethod
     def _truncate_text(

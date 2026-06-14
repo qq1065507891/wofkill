@@ -4,11 +4,45 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **prompt-context-budget-hardening** — 2026-06-14 (COMPLETE)
-- Active task: 玩家 persona 核心保留与 JSON 上下文压缩优化已完成；真实对局指标验证与批量实验暂缓
+- Current phase: **prompt-section-registry-hardening** — 2026-06-14 (COMPLETE)
+- Active task: 玩家 prompt 模块注册、预算语义、persona 渲染与学习上下文瘦身已完成；真实对局指标验证与批量实验暂缓
 - Task owner: Codex development session
 - Last updated: 2026-06-14
-- **本次新增 (prompt-context-budget-hardening)**: 在 prompt 模块审计后继续加固上下文工程：persona 核心性格不再被预算裁剪，长 JSON 压缩不再只保留前缀，避免丢失尾部关键线索。
+- **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## prompt-section-registry-hardening — 2026-06-14 (已完成)
+
+**背景**:
+
+1. user prompt 模块的标签、never-drop、低价值裁剪、信息边界说明分散维护，已出现“近期发言标成 `【可选】` 但实际 never-drop”和“reflection 标成 `【参考】` 却在 low-value 集合中优先丢”的漂移。
+2. persona 虽已保留核心字段，但仍以 JSON 配置形态渲染，模型可读性偏弱。
+3. reflection/profile/RAG/error/cognition 等跨局学习上下文缺少统一 live-prompt 白名单，容易把上一局玩家 ID、debug 字段或任意 future field 带入当前局。
+4. `_compact_json()` 虽已保留首尾，但仍偏字符级截断；结构化对象更适合用 head/tail/omitted metadata 保留形态。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| section 元数据 | 标签、预算层、never-drop、信息边界说明多处手写同步 | 新增 `_SectionSpec` / `_USER_SECTION_SPECS`，派生 `_SECTION_PRIORITIES`、`_NEVER_DROP`、`_LOW_VALUE_SECTIONS` 和信息边界清单 |
+| 近期发言标签 | `recent_transcript` 是当前局公开 grounding，却显示为 `【可选】` | 改为 `【场上记录】` 且保持 never-drop |
+| reflection 优先级 | `reflection` 标为 `【参考】`，但低价值集合会先丢 | 从 low-value 派生集合中移除，使用 registry `drop_tier=2` |
+| persona 渲染 | JSON 配置对象可读性差，容易被当作事实字段 | 改成“人格核心/表达风格/任务风格/语气/稳定倾向/本轮调整”的短行行为提示，仍不暴露 `profile_id/display_name` |
+| 学习上下文 | reflection/profile/RAG/error/cognition 可能带入上一局 ID、debug/raw 字段或任意 future field | reflection/profile/RAG 改白名单与字段级截断；玩家 ID 去标识化为“历史玩家”；error 类别规范化；cognition 只输出计数和校准提醒 |
+| JSON 压缩 | 长 dict/list 只靠字符串首尾片段，结构语义弱 | `_compact_json()` 优先输出结构化摘要：`head`/`tail`/`original_length`/`omitted_middle`，必要时再回退到 prefix/suffix envelope |
+
+**新增/更新测试**:
+
+- `tests/agents/test_prompt_builder.py`: section registry 派生一致性、信息边界自动覆盖真实标签、学习上下文字段白名单、结构化 JSON 摘要、RAG 字段级截断。
+- `tests/agents/test_player_agent.py`: persona prompt 改验行为化短行，同时继续禁止原始 profile id。
+- `tests/runtime/test_strategy_directives.py`: error pattern 渲染改验规范化类别标签。
+
+**验证**:
+
+- 已通过 `pytest tests/agents/test_prompt_builder.py tests/agents/test_prompt_injection_fixes.py tests/agents/test_prompt_mode_isolation.py tests/agents/test_parse_dispatch.py tests/agents/test_player_agent.py tests/runtime/test_context.py tests/runtime/test_agent_adapter.py tests/runtime/test_strategy_directives.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
+- 已通过 `python -m compileall -q werewolf_agent tests`（仅有既有测试 docstring escape warning）。
+- 已通过 `git diff --check`。
+
+---
 
 ## prompt-context-budget-hardening — 2026-06-14 (已完成)
 
