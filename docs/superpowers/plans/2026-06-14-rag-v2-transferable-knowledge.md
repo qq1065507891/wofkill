@@ -16,7 +16,7 @@
 - Create `werewolf_agent/rag/tactical_text.py`: shared `get_prompt_tactical_frame()`, `build_rag_retrieval_text()`, and prompt dict helpers used by retrieval, vector indexing, prompt rendering, prompt builder, and deduplication. These helpers must accept `RAGEntry`, `RAGHit`, and already-slim dicts.
 - Modify `werewolf_agent/rag/persistence.py`: normalize legacy dicts to `schema_version=1`, load V2 dicts, and run prompt-visible safety validation.
 - Modify `werewolf_agent/rag/ingestion.py`: validate V2 tactical fields in the same forbidden-content and rule-truth checks as legacy fields.
-- Modify `werewolf_agent/rag/seed_data.py`: parse `content_type`, `schema_version`, and `tactical_frame` from YAML.
+- Modify `werewolf_agent/rag/seed_data.py`: treat missing seed `schema_version` as legacy `1`, then parse `content_type`, explicit `schema_version`, and `tactical_frame` from YAML.
 - Modify `werewolf_agent/rag/retriever.py`: use shared tactical text for reranker documents and carry `tactical_frame` into `RAGHit`.
 - Modify `werewolf_agent/rag/knowledge_service.py`: use shared tactical text for vector indexing and apply live-safe role/phase/ruleset/visibility filtering to vector hits.
 - Modify `werewolf_agent/rag/prompt_renderer.py`: emit V2 prompt-safe fields and dedup on shared tactical text.
@@ -29,6 +29,7 @@
 
 **Files:**
 - Modify: `werewolf_agent/rag/schemas.py`
+- Modify: `werewolf_agent/rag/seed_data.py`
 - Create: `werewolf_agent/rag/tactical_text.py`
 - Test: `tests/rag/test_schemas.py`
 - Compatibility Test: `tests/rag/test_rag.py`
@@ -181,6 +182,17 @@ Important compatibility step: after changing the default `schema_version` to
 intentionally legacy to pass `schema_version=1`. Do not paper over failures by
 making incomplete V2 frames valid.
 
+Also update `seed_data._build_entry()` in this task so current unmigrated YAML
+seeds remain loadable during intermediate commits:
+
+```python
+schema_version=raw.get("schema_version", 1)
+```
+
+This is temporary compatibility for existing seed YAML. Task 5 will add
+explicit `schema_version: 2` and complete `tactical_frame` blocks to all bundled
+seeds.
+
 Create `werewolf_agent/rag/tactical_text.py`:
 
 ```python
@@ -230,7 +242,7 @@ fixtures now set `schema_version=1`.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add werewolf_agent/rag/schemas.py werewolf_agent/rag/tactical_text.py tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py
+git add werewolf_agent/rag/schemas.py werewolf_agent/rag/seed_data.py werewolf_agent/rag/tactical_text.py tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py
 git commit -m "feat: add rag v2 tactical frame schema"
 ```
 
@@ -330,10 +342,13 @@ V2 fields.
 In `seed_data._build_entry()`, pass:
 
 ```python
-schema_version=raw.get("schema_version", 2),
+schema_version=raw.get("schema_version", 1),
 tactical_frame=raw.get("tactical_frame"),
 content_type=raw.get("content_type", "strategy"),
 ```
+
+Use `raw.get("schema_version", 1)`, not `2`, until Task 5 explicitly migrates
+all bundled seed entries. Missing schema version means legacy seed data.
 
 In `persistence.load_rag_entries()`:
 
