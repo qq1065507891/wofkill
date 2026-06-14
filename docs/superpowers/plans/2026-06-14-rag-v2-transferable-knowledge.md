@@ -13,7 +13,7 @@
 ## File Structure
 
 - Modify `werewolf_agent/rag/schemas.py`: add `RAGTacticalFrame`, `schema_version`, `tactical_frame`, and V2 invariant validators on `RAGEntry` / `RAGHit`.
-- Create `werewolf_agent/rag/tactical_text.py`: shared `get_prompt_tactical_frame()` and `build_rag_retrieval_text()` helpers used by retrieval, vector indexing, prompt rendering, and deduplication.
+- Create `werewolf_agent/rag/tactical_text.py`: shared `get_prompt_tactical_frame()`, `build_rag_retrieval_text()`, and prompt dict helpers used by retrieval, vector indexing, prompt rendering, prompt builder, and deduplication. These helpers must accept `RAGEntry`, `RAGHit`, and already-slim dicts.
 - Modify `werewolf_agent/rag/persistence.py`: normalize legacy dicts to `schema_version=1`, load V2 dicts, and run prompt-visible safety validation.
 - Modify `werewolf_agent/rag/ingestion.py`: validate V2 tactical fields in the same forbidden-content and rule-truth checks as legacy fields.
 - Modify `werewolf_agent/rag/seed_data.py`: parse `content_type`, `schema_version`, and `tactical_frame` from YAML.
@@ -31,6 +31,8 @@
 - Modify: `werewolf_agent/rag/schemas.py`
 - Create: `werewolf_agent/rag/tactical_text.py`
 - Test: `tests/rag/test_schemas.py`
+- Compatibility Test: `tests/rag/test_rag.py`
+- Compatibility Test: `tests/rag/test_prompt_renderer.py`
 
 - [ ] **Step 1: Write failing schema tests**
 
@@ -65,6 +67,35 @@ def test_rag_entry_v2_accepts_complete_tactical_frame() -> None:
     )
     assert entry.schema_version == 2
     assert entry.tactical_frame.transferable_lesson.startswith("对跳局")
+
+
+def test_rag_entry_v2_can_omit_legacy_summary() -> None:
+    entry = RAGEntry(
+        entry_id="v2_no_legacy_summary",
+        title="V2 no legacy summary",
+        schema_version=2,
+        tactical_frame=_complete_tactical_frame(),
+        metadata=_metadata(),
+    )
+    assert entry.summary == ""
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("situation_signature", ""),
+        ("transferable_lesson", ""),
+        ("applicability", []),
+        ("counter_signals", []),
+        ("recommended_use", ""),
+        ("misuse_risk", ""),
+    ],
+)
+def test_rag_tactical_frame_rejects_incomplete_fields(field: str, value) -> None:
+    data = _complete_tactical_frame().model_dump()
+    data[field] = value
+    with pytest.raises(ValueError, match=field):
+        RAGTacticalFrame(**data)
 ```
 
 Add tests for helper behavior:
@@ -94,7 +125,7 @@ Run:
 pytest tests/rag/test_schemas.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 ```
 
-Expected: fails because `RAGTacticalFrame`, `schema_version`, `tactical_frame`, and helper functions do not exist.
+Expected: fails because `RAGTacticalFrame`, `schema_version`, `tactical_frame`, `summary` defaulting, completeness validation, and helper functions do not exist.
 
 - [ ] **Step 3: Implement minimal schema and helper code**
 
@@ -102,16 +133,37 @@ In `werewolf_agent/rag/schemas.py`:
 
 ```python
 class RAGTacticalFrame(BaseModel):
-    situation_signature: str = ""
-    transferable_lesson: str = ""
-    applicability: list[str] = Field(default_factory=list)
-    counter_signals: list[str] = Field(default_factory=list)
-    recommended_use: str = ""
-    misuse_risk: str = ""
+    situation_signature: str
+    transferable_lesson: str
+    applicability: list[str]
+    counter_signals: list[str]
+    recommended_use: str
+    misuse_risk: str
+
+    @field_validator(
+        "situation_signature",
+        "transferable_lesson",
+        "recommended_use",
+        "misuse_risk",
+    )
+    @classmethod
+    def non_empty_text(cls, value: str, info: ValidationInfo) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must be non-empty")
+        return value
+
+    @field_validator("applicability", "counter_signals")
+    @classmethod
+    def non_empty_list(cls, value: list[str], info: ValidationInfo) -> list[str]:
+        cleaned = [item.strip() for item in value if item.strip()]
+        if not cleaned:
+            raise ValueError(f"{info.field_name} must be non-empty")
+        return cleaned
 
 
 class RAGEntry(BaseModel):
     ...
+    summary: str = ""
     tactical_frame: RAGTacticalFrame | None = None
     schema_version: int = 2
 
@@ -124,14 +176,26 @@ class RAGEntry(BaseModel):
 
 Add the same optional `tactical_frame` to `RAGHit`.
 
+Important compatibility step: after changing the default `schema_version` to
+`2`, update existing test helpers or direct `RAGEntry(...)` fixtures that are
+intentionally legacy to pass `schema_version=1`. Do not paper over failures by
+making incomplete V2 frames valid.
+
 Create `werewolf_agent/rag/tactical_text.py`:
 
 ```python
 def get_prompt_tactical_frame(item: Any) -> RAGTacticalFrame | None:
-    frame = getattr(item, "tactical_frame", None)
+    frame = item.get("tactical_frame") if isinstance(item, dict) else getattr(item, "tactical_frame", None)
     if frame is not None:
+        if isinstance(frame, dict):
+            return RAGTacticalFrame(**frame)
         return frame
     # Build conservative legacy fallback from summary, key_decisions, metadata.
+
+
+def tactical_frame_to_prompt_dict(item: Any) -> dict[str, Any] | None:
+    frame = get_prompt_tactical_frame(item)
+    # Return title plus prompt-safe V2 fields, or None if no safe content exists.
 
 
 def build_rag_retrieval_text(
@@ -154,10 +218,19 @@ pytest tests/rag/test_schemas.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest
 
 Expected: schema/helper tests pass.
 
+Then run compatibility tests before committing:
+
+```powershell
+pytest tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp
+```
+
+Expected: existing legacy fixtures still pass because intentional legacy
+fixtures now set `schema_version=1`.
+
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add werewolf_agent/rag/schemas.py werewolf_agent/rag/tactical_text.py tests/rag/test_schemas.py
+git add werewolf_agent/rag/schemas.py werewolf_agent/rag/tactical_text.py tests/rag/test_schemas.py tests/rag/test_rag.py tests/rag/test_prompt_renderer.py
 git commit -m "feat: add rag v2 tactical frame schema"
 ```
 
@@ -175,6 +248,10 @@ git commit -m "feat: add rag v2 tactical frame schema"
 Add tests:
 
 ```python
+from werewolf_agent.rag.persistence import load_rag_entries
+from werewolf_agent.rag.seed_data import create_seed_entries as load_seed_entries
+
+
 def test_load_rag_entries_treats_missing_schema_version_as_legacy() -> None:
     loaded = load_rag_entries([_legacy_entry_dict_without_schema_version()])
     assert loaded[0].schema_version == 1
@@ -184,19 +261,55 @@ def test_load_rag_entries_treats_missing_schema_version_as_legacy() -> None:
 def test_seed_loader_preserves_v2_fields(tmp_path) -> None:
     seed_path = tmp_path / "seed.yaml"
     seed_path.write_text(_single_v2_seed_yaml(), encoding="utf-8")
-    entry = create_seed_entries(seed_path)[0]
+    entry = load_seed_entries(seed_path)[0]
     assert entry.schema_version == 2
     assert entry.content_type == "strategy"
     assert entry.tactical_frame.transferable_lesson
 ```
 
-Add malicious persisted data regression:
+Add parametrized malicious data regressions for both ingestion and persisted
+repository loading:
 
 ```python
-def test_load_rag_entries_rejects_malicious_v2_tactical_frame() -> None:
-    data = _v2_entry_dict()
-    data["tactical_frame"]["transferable_lesson"] = "p01 是狼"
-    with pytest.raises(ValueError, match="player"):
+@pytest.mark.parametrize(
+    "field,bad_value,match",
+    [
+        ("situation_signature", "role=seer p01", "player"),
+        ("transferable_lesson", "p01 是狼", "player"),
+        ("applicability", ["rule_engine_says this works"], "Forbidden keyword"),
+        ("counter_signals", ["女巫不能自救"], "rule"),
+        ("recommended_use", "actual_role_is werewolf", "Forbidden keyword"),
+        ("misuse_risk", "p02 直接出局", "player"),
+    ],
+)
+def test_ingestion_rejects_forbidden_content_in_v2_tactical_fields(
+    field: str,
+    bad_value,
+    match: str,
+) -> None:
+    entry = _v2_entry_with_tactical_update(field, bad_value)
+    with pytest.raises(IngestionError, match=match):
+        CaseIngester().ingest(entry)
+
+
+@pytest.mark.parametrize(
+    "field,bad_value,match",
+    [
+        ("situation_signature", "role=seer p01", "player"),
+        ("transferable_lesson", "p01 是狼", "player"),
+        ("applicability", ["rule_engine_says this works"], "Forbidden keyword"),
+        ("counter_signals", ["女巫不能自救"], "rule"),
+        ("recommended_use", "actual_role_is werewolf", "Forbidden keyword"),
+        ("misuse_risk", "p02 直接出局", "player"),
+    ],
+)
+def test_load_rag_entries_rejects_forbidden_content_in_v2_tactical_fields(
+    field: str,
+    bad_value,
+    match: str,
+) -> None:
+    data = _v2_entry_dict_with_tactical_update(field, bad_value)
+    with pytest.raises(ValueError, match=match):
         load_rag_entries([data])
 ```
 
@@ -208,7 +321,9 @@ Run:
 pytest tests/rag/test_ingestion.py tests/rag/test_knowledge_service.py -q -n 0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp -k "schema_version or tactical_frame or malicious_v2"
 ```
 
-Expected: fails because loader drops V2 fields and persistence does not normalize or validate V2 fields.
+Expected: fails because loader drops V2 fields, test imports need the direct
+seed loader / persistence loader, and persistence does not normalize or validate
+V2 fields.
 
 - [ ] **Step 3: Implement loader and validation changes**
 
@@ -234,6 +349,11 @@ return normalized
 ```
 
 In `ingestion.py`, add or extract `validate_rag_entry_prompt_safe(entry)` and make `CaseIngester._validate_forbidden_content()` / `_validate_not_rule_truth()` include every V2 tactical field.
+
+If `werewolf_agent.rag.ingestion.create_seed_entries()` remains as a
+backward-compatible wrapper, optionally update it to forward `yaml_path`; tests
+that need custom paths should still import `create_seed_entries` from
+`werewolf_agent.rag.seed_data` directly.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -283,7 +403,7 @@ def test_entry_to_hit_carries_tactical_frame() -> None:
     assert hit.tactical_frame.recommended_use
 ```
 
-Add vector live-safe regression:
+Add vector live-safe regressions for role, phase, ruleset, and visibility:
 
 ```python
 def test_vector_candidate_role_filter_blocks_werewolf_frame_for_villager(repo) -> None:
@@ -296,6 +416,31 @@ def test_vector_candidate_role_filter_blocks_werewolf_frame_for_villager(repo) -
     hits = service.retrieve_live_hints(RAGQuery(role="villager", phase="speech"))
     assert all(hit.role_perspective in ("villager", "general", "any", "") for hit in hits)
     assert all(hit.entry_id != "wolf_entry" for hit in hits)
+
+
+@pytest.mark.parametrize(
+    "bad_entry_factory,query",
+    [
+        (_v2_entry_with_phase("night_action"), RAGQuery(role="villager", phase="speech")),
+        (_v2_entry_with_ruleset("other_ruleset"), RAGQuery(role="villager", phase="speech", ruleset_id="pre_witch_hunter_idiot_mixed")),
+        (_v2_entry_with_visibility(VisibilityBoundary.GOD_VIEW), RAGQuery(role="villager", phase="speech")),
+        (_v2_entry_with_visibility(VisibilityBoundary.MODERATOR_ONLY), RAGQuery(role="villager", phase="speech")),
+    ],
+)
+def test_vector_candidates_obey_phase_ruleset_and_visibility_filters(
+    repo,
+    bad_entry_factory,
+    query,
+) -> None:
+    bad_entry = bad_entry_factory(entry_id="bad_vector_entry")
+    service = RAGKnowledgeService(
+        repository=repo,
+        vector_store=_FakeVectorStoreReturning(["bad_vector_entry"]),
+        seed_provider=lambda: [bad_entry, _v2_villager_entry(entry_id="safe_entry")],
+    )
+    service.ensure_seeded()
+    hits = service.retrieve_live_hints(query)
+    assert all(hit.entry_id != "bad_vector_entry" for hit in hits)
 ```
 
 Add dedup test:
@@ -422,7 +567,11 @@ In `prompt_builder._slim_rag_hint_items()`:
 
 - preserve V2 keys.
 - field-cap strings and list items according to the spec.
-- support legacy input by converting `summary/key_decisions` to fallback card values.
+- call the shared tactical prompt helper from `werewolf_agent.rag.tactical_text`
+  for both V2 dicts and legacy dicts.
+- do not implement a separate `summary/key_decisions` fallback inside
+  `PlayerPromptBuilder`; fallback behavior belongs in the shared helper so
+  retrieval, dedup, prompt renderer, and prompt builder stay aligned.
 
 In `_render_rag_hint_cards()`:
 
@@ -459,11 +608,42 @@ Add tests:
 
 ```python
 def test_all_seed_entries_are_v2_with_tactical_frame() -> None:
+    expected_ids = {
+        "seed_ext_seer_claim_01",
+        "seed_ext_wolf_deep_hook_01",
+        "seed_rule_seer_badge_flow_01",
+        "seed_seer_counterclaim_vote_push_01",
+        "seed_tutorial_yumindao_seer_beginner_450",
+        "seed_tutorial_yumindao_witch_beginner_450",
+        "seed_tutorial_yumindao_hunter_idiot_civilian_488",
+        "seed_tutorial_yumindao_wolf_roles_883",
+        "seed_tutorial_yumindao_hybrid_beginner_488",
+        "seed_speech_wolf_defense_01",
+        "seed_ext_witch_poison_timing_01",
+        "seed_godview_review_01",
+        "seed_hybrid_survive_01",
+        "seed_jingcheng_villager_fake_seer_250709",
+        "seed_jingcheng_wolf_antiprophet_push_250415",
+        "seed_jingcheng_review_double_bomb_badge_loss_241218",
+        "seed_jingcheng_wolf_god_hunt_260227",
+        "seed_foundation_seer_night1_blind",
+        "seed_foundation_gold_water_strategy",
+        "seed_foundation_speech_originality",
+        "seed_foundation_peace_night",
+        "seed_foundation_peace_night_wolf",
+        "seed_foundation_vote_record_hardest_info",
+        "seed_foundation_counterclaim_analysis",
+        "seed_foundation_withdraw_tactics",
+        "seed_hunter_evidence_vote_01",
+        "seed_idiot_evidence_vote_01",
+    }
     entries = create_seed_entries()
-    assert entries
+    assert {entry.entry_id for entry in entries} == expected_ids
+    assert len(entries) == 27
     for entry in entries:
         assert entry.schema_version == 2, entry.entry_id
         assert entry.tactical_frame is not None, entry.entry_id
+        assert entry.tactical_frame.situation_signature, entry.entry_id
         assert entry.tactical_frame.transferable_lesson, entry.entry_id
         assert entry.tactical_frame.applicability, entry.entry_id
         assert entry.tactical_frame.counter_signals, entry.entry_id
