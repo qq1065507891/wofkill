@@ -288,6 +288,7 @@ def _make_rag_entry(
     )
 
     return RAGEntry(
+        schema_version=1,
         entry_id=entry_id,
         title=entry_id,
         summary="r9 test summary",

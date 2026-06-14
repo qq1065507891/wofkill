@@ -18,6 +18,28 @@ from werewolf_agent.rag.schemas import (
 )
 
 
+def _entry_safety_text(entry: RAGEntry) -> str:
+    """Collect all RAG text fields that must pass safety validation."""
+    parts: list[str] = [
+        entry.title,
+        entry.summary,
+        *entry.key_decisions,
+        *entry.short_quotes,
+        *entry.metadata.tags,
+    ]
+    if entry.tactical_frame is not None:
+        frame = entry.tactical_frame
+        parts.extend([
+            frame.situation_signature,
+            frame.transferable_lesson,
+            *frame.applicability,
+            *frame.counter_signals,
+            frame.recommended_use,
+            frame.misuse_risk,
+        ])
+    return " ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Ingestion validation
 # ---------------------------------------------------------------------------
@@ -80,12 +102,7 @@ class CaseIngester:
         # tags are user-supplied free text and used to be silently
         # skipped, which let an entry with a clean title/summary
         # but a ``moderator_knows`` tag pass ingestion.
-        text = (
-            f"{entry.title} {entry.summary} "
-            f"{' '.join(entry.key_decisions)} "
-            f"{' '.join(entry.short_quotes)} "
-            f"{' '.join(entry.metadata.tags)}"
-        )
+        text = _entry_safety_text(entry)
         text_lower = text.lower()
         for kw in FORBIDDEN_RAG_KEYWORDS:
             if kw in text_lower:
@@ -202,12 +219,7 @@ class CaseIngester:
         # rule-truth pattern in its tags used to pass ingestion. The
         # RAG contract is "no RAG entry may carry a rule-truth
         # statement anywhere", which includes tags.
-        text = (
-            f"{entry.title} {entry.summary} "
-            f"{' '.join(entry.key_decisions)} "
-            f"{' '.join(entry.short_quotes)} "
-            f"{' '.join(entry.metadata.tags)}"
-        ).lower()
+        text = _entry_safety_text(entry).lower()
         for pattern in rule_truth_patterns:
             if re.search(pattern, text):
                 raise IngestionError(

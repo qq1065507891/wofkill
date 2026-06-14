@@ -32,6 +32,7 @@ from werewolf_agent.rag.injector import RAGInjector, InjectionContext
 
 def _make_entry(entry_id: str = "e1", role: str = "seer") -> RAGEntry:
     return RAGEntry(
+        schema_version=1,
         entry_id=entry_id,
         title="Test entry",
         summary="A test strategy entry",
@@ -98,6 +99,19 @@ class TestRAGPersistence:
         loaded = load_rag_entries(parsed)
         assert loaded[0].entry_id == "json1"
         assert loaded[0].metadata.role_perspective == "seer"
+
+    def test_load_legacy_dict_without_schema_version_as_v1(self) -> None:
+        from werewolf_agent.rag.persistence import load_rag_entries
+
+        legacy = _make_entry("legacy_dict").model_dump()
+        legacy.pop("schema_version", None)
+        legacy.pop("tactical_frame", None)
+
+        loaded = load_rag_entries([legacy])
+
+        assert len(loaded) == 1
+        assert loaded[0].schema_version == 1
+        assert loaded[0].tactical_frame is None
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +230,7 @@ class TestRAGHitAudit:
         from werewolf_agent.rag.schemas import RAGEntry, CaseMetadata, SourceMetadata, SourceType
 
         god_view_entry = RAGEntry(
+            schema_version=1,
             entry_id="god1",
             title="God view case",
             summary="Only visible in review mode",

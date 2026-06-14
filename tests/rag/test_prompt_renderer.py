@@ -361,6 +361,7 @@ class TestSlimAndAuditCoexist:
         )
 
         entry = RAGEntry(
+            schema_version=1,
             entry_id="audit_check_001",
             title=hit.title,
             summary=hit.summary,

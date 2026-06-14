@@ -192,6 +192,7 @@ def _make_entry(
     maps the kwarg to ``metadata.tags`` to match the validator.
     """
     return RAGEntry(
+        schema_version=1,
         entry_id=entry_id,
         title=title,
         summary=summary,

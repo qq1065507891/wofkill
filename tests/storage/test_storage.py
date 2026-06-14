@@ -795,6 +795,7 @@ class TestPersistentMemoryCoordinator:
 
         retriever = StrategyRetriever()
         retriever.add_entry(RAGEntry(
+            schema_version=1,
             entry_id="coord_rag_1",
             title="Test Entry",
             summary="A test RAG entry for coordinator",
@@ -862,6 +863,7 @@ class TestPersistentMemoryCoordinator:
 
         retriever = StrategyRetriever()
         retriever.add_entry(RAGEntry(
+            schema_version=1,
             entry_id="all_rag_1",
             title="Combined Test",
             summary="Test entry for combined save",
@@ -894,6 +896,7 @@ class TestPersistentMemoryCoordinator:
 
         retriever = StrategyRetriever()
         retriever.add_entry(RAGEntry(
+            schema_version=1,
             entry_id="restart_rag",
             title="Restart Test",
             summary="Should survive DB restart",

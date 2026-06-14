@@ -330,6 +330,7 @@ class TestFinalAcceptance:
 
         # RAG entry creation does not touch GameState
         entry = RAGEntry(
+            schema_version=1,
             entry_id="test",
             title="Test",
             summary="Test",

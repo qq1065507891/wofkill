@@ -27,4 +27,9 @@ def save_rag_entries(source: list[RAGEntry] | Any) -> list[dict[str, Any]]:
 
 def load_rag_entries(data: list[dict[str, Any]]) -> list[RAGEntry]:
     """Deserialize RAG entries from dicts."""
-    return [RAGEntry(**d) for d in data]
+    entries: list[RAGEntry] = []
+    for raw in data:
+        item = dict(raw)
+        item.setdefault("schema_version", 1)
+        entries.append(RAGEntry(**item))
+    return entries

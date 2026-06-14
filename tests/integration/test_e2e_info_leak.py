@@ -256,6 +256,7 @@ class TestRAGVisibilityBoundary:
     def rag_setup(self) -> tuple[StrategyRetriever, RAGInjector]:
         entries = [
             RAGEntry(
+                schema_version=1,
                 entry_id="god_view_1",
                 title="God View Analysis",
                 summary="All roles: wolf1=werewolf, seer=seer, witch=witch",
@@ -268,6 +269,7 @@ class TestRAGVisibilityBoundary:
                 ),
             ),
             RAGEntry(
+                schema_version=1,
                 entry_id="seer_strategy_1",
                 title="Seer Claim Strategy",
                 summary="As seer, claim on day 1 and give badge flow",
@@ -280,6 +282,7 @@ class TestRAGVisibilityBoundary:
                 ),
             ),
             RAGEntry(
+                schema_version=1,
                 entry_id="wolf_deep_hook",
                 title="Wolf Deep Hook Tactic",
                 summary="Pretend to be seer and give fake checks",

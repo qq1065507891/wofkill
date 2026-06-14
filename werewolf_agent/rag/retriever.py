@@ -574,6 +574,7 @@ class StrategyRetriever:
             entry_id=entry.entry_id,
             title=entry.title,
             summary=entry.summary[:800],
+            tactical_frame=entry.tactical_frame,
             relevance_score=round(score, 3),
             quality_grade=meta.quality_grade,
             source_type=meta.source.source_type,

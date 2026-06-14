@@ -112,11 +112,44 @@ class CaseMetadata(BaseModel):
 # RAG entry — the full case stored in the knowledge base
 # ---------------------------------------------------------------------------
 
+class RAGTacticalFrame(BaseModel):
+    """Transferable tactical frame for RAG V2 entries."""
+    situation_signature: str
+    transferable_lesson: str
+    applicability: list[str]
+    counter_signals: list[str]
+    recommended_use: str
+    misuse_risk: str
+
+    @field_validator(
+        "situation_signature",
+        "transferable_lesson",
+        "recommended_use",
+        "misuse_risk",
+    )
+    @classmethod
+    def text_not_empty(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("tactical frame text fields must not be empty")
+        return cleaned
+
+    @field_validator("applicability", "counter_signals")
+    @classmethod
+    def list_not_empty(cls, v: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in v if item.strip()]
+        if not cleaned:
+            raise ValueError("tactical frame list fields must not be empty")
+        return cleaned
+
+
 class RAGEntry(BaseModel):
     """A single RAG knowledge base entry."""
+    schema_version: int = 2
     entry_id: str
     title: str
-    summary: str = Field(..., description="Structured summary, not full-text dump")
+    summary: str = Field("", description="Legacy structured summary, not full-text dump")
+    tactical_frame: RAGTacticalFrame | None = None
     key_decisions: list[str] = Field(default_factory=list)
     short_quotes: list[str] = Field(default_factory=list, description="Brief quotes, not full paragraphs")
     metadata: CaseMetadata
@@ -129,6 +162,15 @@ class RAGEntry(BaseModel):
             raise ValueError(f"RAG entry content_type '{v}' is forbidden")
         return v
 
+    @model_validator(mode="after")
+    def require_v2_tactical_frame(self) -> "RAGEntry":
+        if self.schema_version == 2 and self.tactical_frame is None:
+            raise ValueError(
+                f"RAGEntry entry_id='{self.entry_id}' schema_version=2 "
+                "requires tactical_frame"
+            )
+        return self
+
 
 # ---------------------------------------------------------------------------
 # RAG hit — a retrieval result
@@ -139,6 +181,7 @@ class RAGHit(BaseModel):
     entry_id: str
     title: str
     summary: str
+    tactical_frame: RAGTacticalFrame | None = None
     relevance_score: float = Field(0.0, ge=0.0, le=1.0)
     quality_grade: QualityGrade
     source_type: SourceType

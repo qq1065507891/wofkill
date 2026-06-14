@@ -103,9 +103,11 @@ def _build_entry(raw: dict[str, Any]) -> RAGEntry:
         raise ValueError("Found a seed entry without entry_id")
     metadata = _build_metadata(raw.get("metadata", {}), entry_id)
     return RAGEntry(
+        schema_version=raw.get("schema_version", 1),
         entry_id=entry_id,
         title=raw.get("title", ""),
         summary=raw.get("summary", ""),
+        tactical_frame=raw.get("tactical_frame"),
         key_decisions=raw.get("key_decisions", []),
         short_quotes=raw.get("short_quotes", []),
         metadata=metadata,

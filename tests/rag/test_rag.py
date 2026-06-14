@@ -22,6 +22,7 @@ from werewolf_agent.rag.schemas import (
     RAGEntry,
     RAGHit,
     RAGQuery,
+    RAGTacticalFrame,
     ReviewStatus,
     SourceMetadata,
     SourceType,
@@ -53,6 +54,7 @@ def _make_entry(
     vis = VisibilityBoundary.GOD_VIEW if god_view else visibility
     role_p = "god_view" if god_view else role
     return RAGEntry(
+        schema_version=1,
         entry_id=entry_id,
         title=title,
         summary=summary,
@@ -93,6 +95,41 @@ def _make_external_entry(
     )
 
 
+def _make_v2_tactical_entry(
+    *,
+    frame_overrides: dict[str, object] | None = None,
+) -> RAGEntry:
+    frame_data: dict[str, object] = {
+        "situation_signature": "白天票型集中到预言家",
+        "transferable_lesson": "先解释票型动机再转移焦点",
+        "applicability": ["狼人白天发言"],
+        "counter_signals": ["队友票型已经暴露"],
+        "recommended_use": "用于降低抱团感",
+        "misuse_risk": "低信息局强套会显得预设视角",
+    }
+    if frame_overrides:
+        frame_data.update(frame_overrides)
+    return RAGEntry(
+        schema_version=2,
+        entry_id="v2_ingestion_scan",
+        title="V2 tactical frame scan",
+        tactical_frame=RAGTacticalFrame(**frame_data),
+        metadata=CaseMetadata(
+            case_type=CaseType.EXTERNAL_TACTICS,
+            quality_grade=QualityGrade.EXPERT_REVIEW,
+            review_status=ReviewStatus.APPROVED,
+            reviewer="test",
+            ruleset_id="pre_witch_hunter_idiot_mixed",
+            player_count=12,
+            phase="speech",
+            role_perspective="werewolf",
+            visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+            source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+            tags=["werewolf", "speech"],
+        ),
+    )
+
+
 # ===================================================================
 # TestSchemaValidation
 # ===================================================================
@@ -107,6 +144,7 @@ class TestSchemaValidation:
     def test_forbidden_content_type_rejected(self):
         with pytest.raises(Exception):
             RAGEntry(
+                schema_version=1,
                 entry_id="bad_001",
                 title="Rule truth",
                 summary="This is a rule",
@@ -168,6 +206,42 @@ class TestSchemaValidation:
             case_type=CaseType.EXTERNAL_HIGH_END_CASE,
         )
         assert hit.allowed_in_live_context is False
+
+    def test_retrieved_v2_hit_preserves_tactical_frame(self):
+        frame = RAGTacticalFrame(
+            situation_signature="白天票型集中到预言家",
+            transferable_lesson="先解释票型动机再转移焦点",
+            applicability=["狼人白天发言"],
+            counter_signals=["队友票型已经暴露"],
+            recommended_use="用于降低抱团感",
+            misuse_risk="低信息局强套会显得预设视角",
+        )
+        entry = RAGEntry(
+            schema_version=2,
+            entry_id="v2_hit_frame",
+            title="V2 frame preservation",
+            tactical_frame=frame,
+            metadata=CaseMetadata(
+                case_type=CaseType.EXTERNAL_TACTICS,
+                quality_grade=QualityGrade.EXPERT_REVIEW,
+                review_status=ReviewStatus.APPROVED,
+                reviewer="test",
+                ruleset_id="pre_witch_hunter_idiot_mixed",
+                player_count=12,
+                phase="speech",
+                role_perspective="werewolf",
+                visibility_boundary=VisibilityBoundary.PLAYER_PERSPECTIVE,
+                source=SourceMetadata(source_type=SourceType.EXPERT_COMMENTARY),
+                tags=["werewolf", "speech"],
+            ),
+        )
+
+        hits = StrategyRetriever([entry]).retrieve(
+            RAGQuery(role="werewolf", phase="speech"),
+        )
+
+        assert hits
+        assert hits[0].tactical_frame == frame
 
     def test_rag_query_schema(self):
         q = RAGQuery(role="seer", phase="speech", max_results=3)
@@ -426,6 +500,78 @@ class TestIngestion:
             summary="Clean summary, no rule claims.",
             tags=["tactic", "女巫不能自救"],
         )
+        with pytest.raises(IngestionError, match="base rule truth"):
+            ingester.ingest(entry)
+
+    @pytest.mark.parametrize(
+        ("field_name", "field_value"),
+        [
+            ("situation_signature", "p05 白天票型异常"),
+            ("transferable_lesson", "参考 p05 的发言节奏"),
+            ("applicability", ["p05 位被集火时"]),
+            ("counter_signals", ["p05 已经被坐实"]),
+            ("recommended_use", "不要直接点 p05"),
+            ("misuse_risk", "误把 p05 当作当前玩家"),
+        ],
+    )
+    def test_forbidden_player_id_in_v2_tactical_frame_rejected(
+        self,
+        field_name: str,
+        field_value: object,
+    ):
+        ingester = CaseIngester()
+        entry = _make_v2_tactical_entry(
+            frame_overrides={field_name: field_value},
+        )
+
+        with pytest.raises(IngestionError, match="player-ID"):
+            ingester.ingest(entry)
+
+    @pytest.mark.parametrize(
+        ("field_name", "field_value"),
+        [
+            ("situation_signature", "rule_engine_says 这是安全策略"),
+            ("transferable_lesson", "不要复述 rule_engine_says"),
+            ("applicability", ["rule_engine_says 可用时"]),
+            ("counter_signals", ["出现 rule_engine_says"]),
+            ("recommended_use", "避开 rule_engine_says"),
+            ("misuse_risk", "rule_engine_says 会泄露裁判视角"),
+        ],
+    )
+    def test_forbidden_keyword_in_v2_tactical_frame_rejected(
+        self,
+        field_name: str,
+        field_value: object,
+    ):
+        ingester = CaseIngester()
+        entry = _make_v2_tactical_entry(
+            frame_overrides={field_name: field_value},
+        )
+
+        with pytest.raises(IngestionError, match="Forbidden keyword"):
+            ingester.ingest(entry)
+
+    @pytest.mark.parametrize(
+        ("field_name", "field_value"),
+        [
+            ("situation_signature", "女巫不能自救"),
+            ("transferable_lesson", "女巫不能自救，所以不要这么聊"),
+            ("applicability", ["女巫不能自救的局面"]),
+            ("counter_signals", ["女巫不能自救"]),
+            ("recommended_use", "围绕女巫不能自救展开"),
+            ("misuse_risk", "把女巫不能自救当作发言依据"),
+        ],
+    )
+    def test_rule_truth_in_v2_tactical_frame_rejected(
+        self,
+        field_name: str,
+        field_value: object,
+    ):
+        ingester = CaseIngester()
+        entry = _make_v2_tactical_entry(
+            frame_overrides={field_name: field_value},
+        )
+
         with pytest.raises(IngestionError, match="base rule truth"):
             ingester.ingest(entry)
 
@@ -756,6 +902,7 @@ class TestRetriever:
             "悍跳狼倾向给中立玩家发金水来拉票",
         ]
         entry = RAGEntry(
+            schema_version=1,
             entry_id="rerank_test",
             title=title,
             summary="summary text that is otherwise unique",
@@ -877,6 +1024,7 @@ class TestRetriever:
         # produce "[self_play|self_play_candidate]"; the new
         # annotation must not contain those raw tokens.
         entry = RAGEntry(
+            schema_version=1,
             entry_id="g8_test",
             title="G8 案例",
             summary="summary",
@@ -903,6 +1051,7 @@ class TestRetriever:
 
         # Same check for the common high-end case.
         entry2 = RAGEntry(
+            schema_version=1,
             entry_id="g8_test2",
             title="G8 高端案例",
             summary="summary",
@@ -944,6 +1093,7 @@ class TestRetriever:
         )
 
         entry = RAGEntry(
+            schema_version=1,
             entry_id="g8_pipe",
             title="G8 pipe 案例",
             summary="summary",
@@ -1005,6 +1155,7 @@ class TestRetriever:
         ]
         for case_type, expected_label in cases:
             entry = RAGEntry(
+                schema_version=1,
                 entry_id=f"r17_{case_type.value}",
                 title=f"R17 案例 {case_type.value}",
                 summary="summary",
@@ -1080,6 +1231,7 @@ class TestRetriever:
         )
         decisions = [f"决策{i}: 详细说明" for i in range(8)]
         entry = RAGEntry(
+            schema_version=1,
             entry_id="many_decisions_001",
             title="多决策案例测试",
             summary="summary",
@@ -1154,6 +1306,7 @@ class TestRoleAnyMatchesGeneral:
 
         def _entry(role_p: str) -> RAGEntry:
             return RAGEntry(
+                schema_version=1,
                 entry_id=f"g_r4_11_{role_p}",
                 title=f"G-R4-11 {role_p} case",
                 summary="G-R4-11 test summary",
@@ -1457,6 +1610,7 @@ class TestRAGInjector:
         # is still a valid QualityGrade enum value, but the retriever
         # no longer knows its priority.
         entry = RAGEntry(
+            schema_version=1,
             entry_id="r20_test",
             title="R20 案例",
             summary="summary",
@@ -1554,6 +1708,7 @@ class TestRAGInjector:
         # offender on the entry side) and a query whose quality_min
         # we will temporarily make 'unregistered'.
         entry = RAGEntry(
+            schema_version=1,
             entry_id="n2_test",
             title="N2 案例",
             summary="summary",
@@ -1633,6 +1788,7 @@ class TestRAGInjector:
         )
 
         entry = RAGEntry(
+            schema_version=1,
             entry_id="n3_test",
             title="N3 案例",
             summary="summary",
@@ -1703,6 +1859,7 @@ class TestRAGInjector:
         )
 
         entry = RAGEntry(
+            schema_version=1,
             entry_id="n7_test",
             title="N7 案例",
             summary="summary",
@@ -2011,6 +2168,7 @@ class TestRetrieverEdgeCases:
         # External case with the LOWEST possible quality grade
         # (UNREVIEWED) so the case_type bonus has to carry it.
         external = RAGEntry(
+            schema_version=1,
             entry_id="ext_high_end",
             title="外网高段位赛案例",
             summary="External high-end case for priority test",
@@ -2037,6 +2195,7 @@ class TestRetrieverEdgeCases:
         # current stable-sort bug would put the template at the
         # top. The fix must reorder it.
         template = RAGEntry(
+            schema_version=1,
             entry_id="tpl_expert",
             title="高段位演说模板",
             summary="Speech template with pro_match quality",
@@ -2445,6 +2604,7 @@ def test_rule_only_high_score_beats_weak_vector_hit() -> None:
     )
 
     rule_only = RAGEntry(
+        schema_version=1,
         entry_id="rule_only",
         title="Rule-only entry",
         summary="",
@@ -2463,6 +2623,7 @@ def test_rule_only_high_score_beats_weak_vector_hit() -> None:
         ),
     )
     vector_hit = RAGEntry(
+        schema_version=1,
         entry_id="vector_hit",
         title="Vector-hit entry",
         summary="",
