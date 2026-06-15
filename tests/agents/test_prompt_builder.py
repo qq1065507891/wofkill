@@ -583,7 +583,13 @@ def test_skill_tactical_advice_rendered_as_human_readable_list():
                 {
                     "skill": "push_vote",
                     "advice": "归票建议: p05 发言逻辑矛盾，盘他",
+                    "situation_signature": "role=villager task=speech phase=day",
+                    "recommended_use": "把公开发言矛盾转成可解释的归票建议。",
+                    "risk_alerts": ["不要把推测说成铁狼"],
+                    "counter_signals": ["当前没有可公开解释的目标"],
+                    "forbidden_use": "不得把技能建议当成裁判真相。",
                     "confidence": 0.65,
+                    "relevance": 0.8,
                 },
                 {
                     "skill": "bold_claim",
@@ -609,6 +615,11 @@ def test_skill_tactical_advice_rendered_as_human_readable_list():
         "skill_tactical_advice advice text must be visible to LLM "
         "(NEW-R4-P1-1); got ref_body:\n" + ref_body
     )
+    assert "适用局面：role=villager task=speech phase=day" in ref_body
+    assert "本轮建议：把公开发言矛盾转成可解释的归票建议。" in ref_body
+    assert "风险：不要把推测说成铁狼" in ref_body
+    assert "不适用信号：当前没有可公开解释的目标" in ref_body
+    assert "禁止套用：不得把技能建议当成裁判真相。" in ref_body
 
     # Negative: the raw JSON envelope (the bug) must NOT appear.
     # If we see `[{"skill":` in the prompt, the renderer is still

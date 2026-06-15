@@ -120,6 +120,41 @@ class TestSkillOutput:
         assert out.skill_name == "bold_claim"
         assert out.confidence == 0.6
 
+    def test_skill_advice_frame_creation(self):
+        from werewolf_agent.skills.schemas import SkillAdviceFrame
+
+        frame = SkillAdviceFrame(
+            skill="push_vote",
+            situation_signature="role=villager task=speech phase=day",
+            recommended_use="把公开发言矛盾转成投票建议。",
+            risk_alerts=["不要把推测说成铁狼"],
+            counter_signals=["当前没有可公开解释的目标"],
+            forbidden_use="不得直接套用历史票型。",
+            confidence=0.7,
+            relevance=0.8,
+        )
+
+        assert frame.skill == "push_vote"
+        assert frame.recommended_use.startswith("把公开发言")
+        assert frame.counter_signals == ["当前没有可公开解释的目标"]
+        assert frame.relevance == 0.8
+
+    def test_skill_output_can_carry_advice_frame(self):
+        from werewolf_agent.skills.schemas import SkillAdviceFrame
+
+        frame = SkillAdviceFrame(
+            skill="push_vote",
+            situation_signature="role=villager task=speech phase=day",
+            recommended_use="优先解释当前局公开证据。",
+            forbidden_use="不能把技能建议当成裁判真相。",
+            confidence=0.6,
+            relevance=0.7,
+        )
+        out = SkillOutput(skill_name="push_vote", advice_frame=frame)
+
+        assert out.advice_frame is frame
+        assert out.advice_frame.forbidden_use == "不能把技能建议当成裁判真相。"
+
 
 # ---------------------------------------------------------------------------
 # Skill dispatch

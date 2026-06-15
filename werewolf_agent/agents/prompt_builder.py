@@ -1133,7 +1133,38 @@ class PlayerPromptBuilder:
                 conf_str = f"{float(conf):.2f}"
             except (TypeError, ValueError):
                 conf_str = str(conf)
-            lines.append(f"- [{skill}/{conf_str}] {text}")
+            frame_lines = [f"- [{skill}/{conf_str}] {text}"]
+            situation = PlayerPromptBuilder._clean_prompt_text(
+                entry.get("situation_signature", ""),
+                max_chars=120,
+            )
+            recommended_use = PlayerPromptBuilder._clean_prompt_text(
+                entry.get("recommended_use", ""),
+                max_chars=_MAX_SKILL_TACTICAL_ADVICE_CHARS,
+            )
+            risk_alerts = [
+                PlayerPromptBuilder._clean_prompt_text(item, max_chars=100)
+                for item in list(entry.get("risk_alerts") or [])[:2]
+            ]
+            counter_signals = [
+                PlayerPromptBuilder._clean_prompt_text(item, max_chars=100)
+                for item in list(entry.get("counter_signals") or [])[:2]
+            ]
+            forbidden_use = PlayerPromptBuilder._clean_prompt_text(
+                entry.get("forbidden_use", ""),
+                max_chars=120,
+            )
+            if situation:
+                frame_lines.append(f"  适用局面：{situation}")
+            if recommended_use:
+                frame_lines.append(f"  本轮建议：{recommended_use}")
+            if risk_alerts:
+                frame_lines.append(f"  风险：{'；'.join(risk_alerts)}")
+            if counter_signals:
+                frame_lines.append(f"  不适用信号：{'；'.join(counter_signals)}")
+            if forbidden_use:
+                frame_lines.append(f"  禁止套用：{forbidden_use}")
+            lines.extend(frame_lines)
         omitted = len(advice) - len(rendered)
         if omitted > 0:
             lines.append(f"- 其余 {omitted} 条技能战术建议已省略。")

@@ -33,7 +33,7 @@ from werewolf_agent.agents.directive_priority import (
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.skills.registry import SkillRegistry
-from werewolf_agent.skills.schemas import SkillInput, SkillName
+from werewolf_agent.skills.schemas import SkillAdviceFrame, SkillInput, SkillName
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
     current_phase_label,
@@ -61,6 +61,8 @@ from werewolf_agent.runtime.strategy import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MAX_SKILL_TACTICAL_ADVICE_ITEMS = 3
 
 _SPEECH_STYLE_HINTS = {
     "structured_logical": "用严谨的逻辑推理链分析场上信息，像法官一样条理清晰地展示判断依据。",
@@ -719,6 +721,53 @@ def _action_trace_payload(action: Any) -> dict[str, Any] | None:
     return trace.model_dump() if trace else None
 
 
+def _skill_output_to_advice_frame(
+    output: Any,
+    skill_input: SkillInput,
+) -> SkillAdviceFrame:
+    if getattr(output, "advice_frame", None) is not None:
+        return output.advice_frame
+    advice = (getattr(output, "prompt_injectable", "") or "").strip()
+    reasoning = (getattr(output, "reasoning", "") or "").strip()
+    recommended_use = advice or reasoning or "该技能当前只提供低优先级参考。"
+    confidence = float(getattr(output, "confidence", 0.5) or 0.0)
+    relevance = max(0.0, min(1.0, confidence))
+    skill_name = getattr(output, "skill_name", "") or ""
+    return SkillAdviceFrame(
+        skill=skill_name,
+        situation_signature=(
+            f"role={skill_input.role} task={skill_input.task_type or skill_input.phase} "
+            f"phase={skill_input.phase} day={skill_input.day}"
+        ),
+        recommended_use=recommended_use,
+        risk_alerts=list(getattr(output, "risk_alerts", []) or []),
+        counter_signals=["当前局公开事实不足以支撑该技能建议时不要使用。"],
+        forbidden_use="不得把技能建议当成裁判真相、隐藏身份真相或当前局公开记录。",
+        confidence=confidence,
+        relevance=relevance,
+        evidence_refs=list((getattr(output, "metadata", {}) or {}).get("evidence_refs", []) or []),
+    )
+
+
+def _skill_advice_frame_to_prompt_dict(
+    frame: SkillAdviceFrame,
+    *,
+    advice: str,
+) -> dict[str, Any]:
+    return {
+        "skill": frame.skill,
+        "advice": advice,
+        "situation_signature": frame.situation_signature,
+        "recommended_use": frame.recommended_use,
+        "risk_alerts": frame.risk_alerts,
+        "counter_signals": frame.counter_signals,
+        "forbidden_use": frame.forbidden_use,
+        "confidence": frame.confidence,
+        "relevance": frame.relevance,
+        "evidence_refs": frame.evidence_refs,
+    }
+
+
 def _inject_skill_output(
     strategy_directive: dict[str, Any],
     gs: GameState,
@@ -901,11 +950,18 @@ def _inject_skill_output(
             if illegal:
                 # Drop this entry — it recommends an illegal target.
                 continue
-        structured.append({
-            "skill": skill_name,
-            "advice": prompt,
-            "confidence": conf,
-        })
+        frame = _skill_output_to_advice_frame(source_output, skill_input)
+        structured.append(
+            _skill_advice_frame_to_prompt_dict(frame, advice=prompt)
+        )
+    structured.sort(
+        key=lambda item: (
+            float(item.get("relevance", 0.0) or 0.0),
+            float(item.get("confidence", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    structured = structured[:_MAX_SKILL_TACTICAL_ADVICE_ITEMS]
     if structured:
         strategy_directive["skill_tactical_advice"] = structured
     return strategy_directive, skill_analyses

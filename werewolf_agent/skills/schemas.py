@@ -80,6 +80,19 @@ class SkillInput:
 
 
 @dataclass
+class SkillAdviceFrame:
+    skill: str
+    situation_signature: str
+    recommended_use: str
+    risk_alerts: list[str] = field(default_factory=list)
+    counter_signals: list[str] = field(default_factory=list)
+    forbidden_use: str = ""
+    confidence: float = 0.5
+    relevance: float = 0.5
+    evidence_refs: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SkillOutput:
     skill_name: str
     speech_structure: list[str] = field(default_factory=list)
@@ -88,6 +101,7 @@ class SkillOutput:
     reasoning: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     prompt_injectable: str = ""
+    advice_frame: SkillAdviceFrame | None = None
 
 
 # ---------------------------------------------------------------------------

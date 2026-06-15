@@ -2046,6 +2046,103 @@ def test_skill_tactical_advice_is_structured():
             )
 
 
+def test_skill_tactical_advice_entries_use_frame_schema():
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime.context import _inject_skill_output
+    from werewolf_agent.cognition.world_state import StructuredWorldState
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    ws = StructuredWorldState()
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(ws.facts, gs.day_number)
+
+    directive, _ = _inject_skill_output(
+        {}, gs, "p01", ws, bs, alerts, "speech",
+    )
+
+    advice = directive.get("skill_tactical_advice", [])
+    assert advice
+    for entry in advice:
+        assert set(entry) >= {
+            "skill",
+            "situation_signature",
+            "recommended_use",
+            "risk_alerts",
+            "counter_signals",
+            "forbidden_use",
+            "confidence",
+            "relevance",
+        }
+        assert isinstance(entry["risk_alerts"], list)
+        assert isinstance(entry["counter_signals"], list)
+        assert entry["recommended_use"]
+        assert entry["forbidden_use"]
+
+
+def test_skill_tactical_advice_gates_to_top_three_by_relevance(monkeypatch):
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.runtime import context as context_mod
+    from werewolf_agent.skills.schemas import SkillOutput
+
+    class _FakeRegistry:
+        def dispatch_for_role(self, role, phase, skill_input, task_type="", gs=None):
+            return [
+                SkillOutput(
+                    skill_name=f"skill_{idx}",
+                    confidence=0.2 + idx / 10,
+                    prompt_injectable=f"技能建议 {idx}",
+                )
+                for idx in range(5)
+            ]
+
+    monkeypatch.setattr(context_mod, "SkillRegistry", _FakeRegistry)
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 7)
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="skill_gate_test",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.cognition.contradiction import ContradictionEngine
+    from werewolf_agent.cognition.world_state import build_world_state
+
+    world_state = build_world_state(gs)
+    belief = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    alerts = ContradictionEngine().detect(world_state.facts, gs.day_number)
+
+    directive, _ = context_mod._inject_skill_output(
+        {}, gs, "p01", world_state, belief, alerts, "speech",
+    )
+
+    advice = directive.get("skill_tactical_advice", [])
+    assert len(advice) == 3
+    assert [entry["skill"] for entry in advice] == [
+        "skill_4",
+        "skill_3",
+        "skill_2",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # S-16: single-source wolf-role skip — context.py does NOT skip;
 # the handler does.
