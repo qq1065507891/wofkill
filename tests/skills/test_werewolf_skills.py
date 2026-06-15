@@ -374,6 +374,63 @@ def test_hide_identity_emits_native_advice_frame() -> None:
     assert any("公开" in s or "被怀疑" in s for s in out.advice_frame.counter_signals)
 
 
+def test_all_core_skills_emit_native_advice_frame_from_skill_layer() -> None:
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    cases = {
+        SkillName.BOLD_CLAIM: SkillInput(role="werewolf", phase="speech", day=1, task_type="speech"),
+        SkillName.COUNTER_CLAIM: SkillInput(role="seer", phase="speech", day=1, task_type="speech"),
+        SkillName.PUSH_VOTE: SkillInput(role="villager", phase="speech", day=1, task_type="speech"),
+        SkillName.SWING_VOTE: SkillInput(role="werewolf", phase="speech", day=1, task_type="speech"),
+        SkillName.DEEP_HOOK: SkillInput(role="werewolf", phase="speech", day=1, task_type="speech"),
+        SkillName.FIND_POWER: SkillInput(role="werewolf", phase="speech", day=1, task_type="speech"),
+        SkillName.HIDE_IDENTITY: SkillInput(role="witch", phase="speech", day=1, task_type="speech"),
+        SkillName.RESIST_PUSH: SkillInput(role="villager", phase="defense_speech", day=1, task_type="defense_speech"),
+        SkillName.WOLF_PIT_ANALYSIS: SkillInput(role="villager", phase="speech", day=1, task_type="speech"),
+        SkillName.PROTECT_POWER: SkillInput(role="villager", phase="speech", day=1, task_type="speech"),
+        SkillName.LAST_WORDS_ANALYSIS: SkillInput(role="villager", phase="last_words", day=1, task_type="last_words"),
+        SkillName.REVIEW_CORRECTION: SkillInput(role="villager", phase="review", day=1, task_type="review"),
+    }
+
+    for skill_name, skill_input in cases.items():
+        out = apply_skill(skill_name, skill_input)
+        _assert_native_advice_frame(out, skill=skill_name.value)
+
+
+def test_empty_prompt_skill_returns_native_advice_frame() -> None:
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="night",
+        day_number=1,
+        night_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="werewolf", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        },
+    )
+
+    out = apply_skill(
+        SkillName.SWING_VOTE,
+        SkillInput(
+            role="werewolf",
+            phase="night",
+            day=1,
+            game_state=gs,
+            player_id="p01",
+            task_type="wolf_discussion",
+        ),
+    )
+
+    _assert_native_advice_frame(out, skill="swing_vote")
+    assert "无冲刀目标" in out.advice_frame.recommended_use
+
+
 # ---------------------------------------------------------------------------
 # Hybrid skill dispatch must not reveal the master's hidden faction.
 # ---------------------------------------------------------------------------

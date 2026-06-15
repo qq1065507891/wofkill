@@ -3838,3 +3838,37 @@ test_live_runtime.py -p no:cacheprovider -q`
 - 编译: `python -m compileall -q werewolf_agent tests`。
 - 格式: `git diff --check`。
 
+## Prompt/Skill optimization — skill-layer frame coverage complete (2026-06-15)
+
+**目标**: 用户要求“一步到位”。将技能层定义为 `SkillAdviceFrame`
+的主产出边界: 所有 12 个核心技能在离开
+`werewolf_skills.apply_skill()` 时都必须带 `advice_frame`。运行时
+`context._skill_output_to_advice_frame()` 仅保留为外部旧接口/异常路径
+兜底,不再作为核心技能的常规结构化来源。
+
+**实现**:
+- 新增技能层统一补全函数 `_ensure_skill_advice_frame()`。
+- 已有专用 frame 的技能保持原样: `push_vote`, `counter_claim`,
+  `hide_identity`。
+- 对其余技能及低置信早退路径统一补充技能级 frame:
+  `bold_claim`, `swing_vote`, `deep_hook`, `find_power`,
+  `resist_push`, `wolf_pit`, `protect_power`, `last_words`,
+  `review_correct`。
+- 为每类技能提供专属 `counter_signals` 与 `forbidden_use`,
+  避免退回泛化的“当前局公开事实不足”模板。
+- 空 `prompt_injectable` 路径使用 `reasoning` 作为
+  `recommended_use`,并降低 `relevance`,避免无内容建议被高权重注入。
+
+**新增测试**:
+- `test_all_core_skills_emit_native_advice_frame_from_skill_layer`
+- `test_empty_prompt_skill_returns_native_advice_frame`
+
+**验证**:
+- RED: 新增测试先分别失败于 `bold_claim.advice_frame is None`
+  和 `swing_vote` 空 prompt 早退路径 `advice_frame is None`。
+- GREEN: 目标测试 → 2 passed。
+- 技能全量: `python -m pytest tests/skills -q ...` → 143 passed。
+- 相关回归: `python -m pytest tests/skills tests/runtime/test_context.py tests/agents/test_prompt_builder.py tests/agents/test_player_agent.py -q ...` → 444 passed。
+- 编译: `python -m compileall -q werewolf_agent tests`。
+- 格式: `git diff --check`。
+
