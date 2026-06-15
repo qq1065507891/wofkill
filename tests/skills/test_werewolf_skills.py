@@ -231,6 +231,150 @@ class TestPushVoteHandlerBranchesOnTaskType:
 
 
 # ---------------------------------------------------------------------------
+# SK-FRAME-1: core skills emit native advice frames.
+# ---------------------------------------------------------------------------
+
+def _assert_native_advice_frame(out, *, skill: str) -> None:
+    frame = out.advice_frame
+    assert frame is not None, (
+        f"{skill} must emit a native SkillAdviceFrame instead of relying "
+        f"on runtime compatibility conversion."
+    )
+    assert frame.skill == skill
+    assert frame.situation_signature
+    assert frame.recommended_use
+    assert frame.counter_signals
+    assert frame.forbidden_use
+    assert 0.0 <= frame.confidence <= 1.0
+    assert 0.0 <= frame.relevance <= 1.0
+
+
+def test_push_vote_emits_native_advice_frame() -> None:
+    from werewolf_agent.cognition.belief import BeliefUpdater
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="villager", alive=True),
+        },
+    )
+    bs = BeliefUpdater().initialize(list(gs.players.keys()), "p01")
+    bs.beliefs["p02"].faction_lean = "wolf_lean"
+    bs.beliefs["p02"].trust = 0.2
+
+    out = apply_skill(
+        SkillName.PUSH_VOTE,
+        SkillInput(
+            role="villager",
+            phase="speech",
+            day=1,
+            game_state=gs,
+            belief_state=bs,
+            player_id="p01",
+            task_type="speech",
+        ),
+    )
+
+    _assert_native_advice_frame(out, skill="push_vote")
+    assert "p02" in out.advice_frame.situation_signature
+    assert "归票" in out.advice_frame.recommended_use
+    assert any("票" in s or "目标" in s for s in out.advice_frame.counter_signals)
+
+
+def test_counter_claim_emits_native_advice_frame() -> None:
+    from werewolf_agent.cognition.world_state import (
+        StructuredFact,
+        StructuredWorldState,
+    )
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=1,
+        night_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id="p03", role="villager", alive=True),
+        },
+    )
+    ws = StructuredWorldState()
+    ws.append(StructuredFact(
+        fact_type="claimed_role",
+        source_player="p02",
+        value="seer",
+        day=1,
+    ))
+
+    out = apply_skill(
+        SkillName.COUNTER_CLAIM,
+        SkillInput(
+            role="seer",
+            phase="speech",
+            day=1,
+            game_state=gs,
+            world_state=ws,
+            player_id="p01",
+            task_type="speech",
+        ),
+    )
+
+    _assert_native_advice_frame(out, skill="counter_claim")
+    assert "p02" in out.advice_frame.situation_signature
+    assert "对跳" in out.advice_frame.recommended_use
+    assert any("时间线" in s or "查验" in s for s in out.advice_frame.counter_signals)
+
+
+def test_hide_identity_emits_native_advice_frame() -> None:
+    from werewolf_agent.core.models import GameState, PlayerState
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    gs = GameState(
+        ruleset_id="test",
+        game_id="g",
+        phase="speech",
+        day_number=2,
+        night_number=2,
+        players={
+            "p01": PlayerState(id="p01", role="witch", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="werewolf", alive=True),
+        },
+    )
+
+    out = apply_skill(
+        SkillName.HIDE_IDENTITY,
+        SkillInput(
+            role="witch",
+            phase="speech",
+            day=2,
+            game_state=gs,
+            player_id="p01",
+            task_type="speech",
+        ),
+    )
+
+    _assert_native_advice_frame(out, skill="hide_identity")
+    assert "witch" in out.advice_frame.situation_signature
+    assert "藏身份" in out.advice_frame.recommended_use
+    assert any("公开" in s or "被怀疑" in s for s in out.advice_frame.counter_signals)
+
+
+# ---------------------------------------------------------------------------
 # Hybrid skill dispatch must not reveal the master's hidden faction.
 # ---------------------------------------------------------------------------
 

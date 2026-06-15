@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from werewolf_agent.skills.schemas import (
+    SkillAdviceFrame,
     SkillDefinition,
     SkillFaction,
     SkillInput,
@@ -144,6 +145,121 @@ def _cap_prompt_injectable(text: str, cap: int = PROMPT_INJECTABLE_CAP) -> str:
         return text
     marker = PROMPT_INJECTABLE_MARKER_TAIL
     return text[: cap - len(marker)] + marker
+
+
+def _advice_frame(
+    *,
+    skill: SkillDefinition,
+    inp: SkillInput,
+    recommended_use: str,
+    risk_alerts: list[str] | None,
+    counter_signals: list[str],
+    forbidden_use: str,
+    confidence: float,
+    relevance: float | None = None,
+    situation_detail: str = "",
+    evidence_refs: list[str] | None = None,
+) -> SkillAdviceFrame:
+    """Build native structured skill advice for prompt injection."""
+    conf = max(0.0, min(1.0, float(confidence)))
+    rel = conf if relevance is None else max(0.0, min(1.0, float(relevance)))
+    task = inp.task_type or inp.phase
+    situation = (
+        f"role={inp.role} task={task} phase={inp.phase} day={inp.day}"
+    )
+    if inp.player_id:
+        situation += f" player={inp.player_id}"
+    if situation_detail:
+        situation += f" {situation_detail}"
+    return SkillAdviceFrame(
+        skill=skill.name.value,
+        situation_signature=situation,
+        recommended_use=recommended_use,
+        risk_alerts=list(risk_alerts or []),
+        counter_signals=counter_signals,
+        forbidden_use=forbidden_use,
+        confidence=conf,
+        relevance=rel,
+        evidence_refs=list(evidence_refs or []),
+    )
+
+
+def _push_vote_advice_frame(
+    inp: SkillInput,
+    skill: SkillDefinition,
+    *,
+    prompt: str,
+    risks: list[str],
+    confidence: float,
+    primary: str = "",
+) -> SkillAdviceFrame:
+    target_detail = f"target={primary}" if primary else "target=unknown"
+    return _advice_frame(
+        skill=skill,
+        inp=inp,
+        recommended_use=prompt,
+        risk_alerts=risks,
+        counter_signals=[
+            "没有明确公开证据或信任模型未形成狼倾向时，不要强行归票。",
+            "目标已死亡、不在合法投票范围或票型信息不足时，需要降级为观察。",
+        ],
+        forbidden_use="不得把嫌疑排序当成裁判身份真相；不得虚构查验、票型或发言。",
+        confidence=confidence,
+        relevance=0.7 if primary else 0.35,
+        situation_detail=target_detail,
+    )
+
+
+def _counter_claim_advice_frame(
+    inp: SkillInput,
+    skill: SkillDefinition,
+    *,
+    prompt: str,
+    risks: list[str],
+    confidence: float,
+    target: str = "",
+) -> SkillAdviceFrame:
+    target_detail = f"target={target}" if target else "target=none"
+    return _advice_frame(
+        skill=skill,
+        inp=inp,
+        recommended_use=prompt,
+        risk_alerts=risks,
+        counter_signals=[
+            "场上无人跳预言家或不存在可对跳对象时，不要使用对跳话术。",
+            "没有完整查验时间线、验人动机或警徽流解释时，不要硬跳。",
+        ],
+        forbidden_use="不得把对跳建议当成真实身份证明；不得泄漏隐藏阵营信息或编造裁判结果。",
+        confidence=confidence,
+        relevance=0.7 if target else 0.25,
+        situation_detail=target_detail,
+    )
+
+
+def _hide_identity_advice_frame(
+    inp: SkillInput,
+    skill: SkillDefinition,
+    *,
+    prompt: str,
+    risks: list[str],
+    confidence: float,
+    exposure: str = "",
+) -> SkillAdviceFrame:
+    detail = f"exposure={exposure}" if exposure else ""
+    return _advice_frame(
+        skill=skill,
+        inp=inp,
+        recommended_use=prompt,
+        risk_alerts=risks,
+        counter_signals=[
+            "进入公开窗口、需要带队或必须报验人时，不要继续隐藏。",
+            "已经被重点怀疑时，不能只沉默，需要释放可公开信息自证。",
+        ],
+        forbidden_use="不得用藏身份覆盖强制公开信息、合法行动要求或已经公开的身份声明。",
+        confidence=confidence,
+        relevance=0.6,
+        situation_detail=detail,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -422,39 +538,66 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     if gs is None:
         # static fallback — role-tailored phrasing
         if is_seer:
+            risks = ["对跳时一定要保持自己验人时间线的一致性"]
+            prompt = (
+                "对跳建议（真预言家视角）：用你的真实查验结果逐条对比对方的"
+                "假时间线。任何不匹配都是暴露对方假预言家的机会。"
+                "重点攻击验人动机、警徽流矛盾。"
+            )
             return SkillOutput(
                 skill_name=skill.name.value,
                 speech_structure=["展示自己的真查验结果", "攻击对方时间线漏洞", "对比警徽流"],
-                risk_alerts=["对跳时一定要保持自己验人时间线的一致性"],
+                risk_alerts=risks,
                 confidence=0.6,
                 reasoning="真预言家对跳：核心是守护自己的查验时间线",
-                prompt_injectable=_cap_prompt_injectable(
-                    "对跳建议（真预言家视角）：用你的真实查验结果逐条对比对方的"
-                    "假时间线。任何不匹配都是暴露对方假预言家的机会。"
-                    "重点攻击验人动机、警徽流矛盾。"
+                prompt_injectable=_cap_prompt_injectable(prompt),
+                advice_frame=_counter_claim_advice_frame(
+                    inp,
+                    skill,
+                    prompt=prompt,
+                    risks=risks,
+                    confidence=0.6,
                 ),
             )
         if is_wolf:
+            risks = ["悍跳风险：如果对方是真预言家，可信度会大幅下降"]
+            prompt = (
+                "对跳建议（狼队悍跳视角）：你作为狼的悍跳者，需要准备完整的"
+                "假验人时间线来对跳真预言家。重点攻击对方的验人动机和警徽流漏洞，"
+                "并用排坑占边把节奏拉到自己这边。"
+            )
             return SkillOutput(
                 skill_name=skill.name.value,
                 speech_structure=["准备完整的假验人记录", "攻击真预言家的逻辑漏洞", "排坑占边"],
-                risk_alerts=["悍跳风险：如果对方是真预言家，可信度会大幅下降"],
+                risk_alerts=risks,
                 confidence=0.55,
                 reasoning="悍跳对跳：核心是构建与队友一致的假时间线",
-                prompt_injectable=_cap_prompt_injectable(
-                    "对跳建议（狼队悍跳视角）：你作为狼的悍跳者，需要准备完整的"
-                    "假验人时间线来对跳真预言家。重点攻击对方的验人动机和警徽流漏洞，"
-                    "并用排坑占边把节奏拉到自己这边。"
+                prompt_injectable=_cap_prompt_injectable(prompt),
+                advice_frame=_counter_claim_advice_frame(
+                    inp,
+                    skill,
+                    prompt=prompt,
+                    risks=risks,
+                    confidence=0.55,
                 ),
             )
         # Other roles (villager/hunter/witch/...) — neutral counter-claim.
+        risks = ["对跳风险：真预言家对跳时好人会倾向真预言家"]
+        prompt = "对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。"
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=["指出对方漏洞", "报自身查验信息", "建立时间线对比"],
-            risk_alerts=["对跳风险：真预言家对跳时好人会倾向真预言家"],
+            risk_alerts=risks,
             confidence=0.55,
             reasoning="对跳需要充分的逻辑支撑和时间线一致性",
-            prompt_injectable=_cap_prompt_injectable("对跳建议：如果有人跳预言家，准备好完整的假验人记录来对跳。重点攻击对方的验人时间线和警徽流漏洞。"),
+            prompt_injectable=_cap_prompt_injectable(prompt),
+            advice_frame=_counter_claim_advice_frame(
+                inp,
+                skill,
+                prompt=prompt,
+                risks=risks,
+                confidence=0.55,
+            ),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -462,10 +605,19 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
     alerts = inp.contradiction_alerts
 
     if not claimants:
+        prompt = "对跳分析：场上无人跳预言家，无需对跳，保持观察并保留发言弹性。"
         return SkillOutput(
             skill_name=skill.name.value,
             confidence=0.35,
             reasoning="场上无人跳预言家，无需对跳",
+            prompt_injectable=_cap_prompt_injectable(prompt),
+            advice_frame=_counter_claim_advice_frame(
+                inp,
+                skill,
+                prompt=prompt,
+                risks=[],
+                confidence=0.35,
+            ),
         )
 
     target = claimants[0]
@@ -552,6 +704,14 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         confidence=conf,
         reasoning=f"动态分析（S-10: {inp.role} 对跳）：根据{target}的发言一致性调整策略",
         prompt_injectable=_cap_prompt_injectable(prompt),
+        advice_frame=_counter_claim_advice_frame(
+            inp,
+            skill,
+            prompt=prompt,
+            risks=risks,
+            confidence=conf,
+            target=target,
+        ),
     )
 
 
@@ -581,13 +741,21 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
                 "陈述理由时需要有理有据，号召全场跟随。"
             )
             speech = ["陈述归票理由", "分析目标嫌疑", "号召全场归票"]
+        risks = ["归票错误目标可能导致好人损失"]
         return SkillOutput(
             skill_name=skill.name.value,
             speech_structure=speech,
-            risk_alerts=["归票错误目标可能导致好人损失"],
+            risk_alerts=risks,
             confidence=0.6,
             reasoning="归票需要有充分的逻辑依据和说服力",
             prompt_injectable=_cap_prompt_injectable(prompt),
+            advice_frame=_push_vote_advice_frame(
+                inp,
+                skill,
+                prompt=prompt,
+                risks=risks,
+                confidence=0.6,
+            ),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -614,6 +782,13 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
             confidence=0.4,
             reasoning="当前无明确嫌疑目标",
             prompt_injectable=_cap_prompt_injectable(prompt),
+            advice_frame=_push_vote_advice_frame(
+                inp,
+                skill,
+                prompt=prompt,
+                risks=[],
+                confidence=0.4,
+            ),
         )
 
     primary, lean, trust = top_suspects[0]
@@ -661,15 +836,24 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         speech = [f"陈述{primary}的嫌疑理由", "分析其行为链", "号召全场归票"]
         risks = ["归票错误目标可能导致好人损失"]
 
+    conf = 0.6 + min(0.2, len(reasons) * 0.05)
     return SkillOutput(
         skill_name=skill.name.value,
         speech_structure=speech,
         risk_alerts=risks,
-        confidence=0.6 + min(0.2, len(reasons) * 0.05),
+        confidence=conf,
         reasoning=f"动态分析：{primary} 有{len(reasons)}个嫌疑信号"
                   + ("（vote task）" if is_vote_task else
                      "（speech task）" if is_speech_task else ""),
         prompt_injectable=_cap_prompt_injectable(prompt),
+        advice_frame=_push_vote_advice_frame(
+            inp,
+            skill,
+            prompt=prompt,
+            risks=risks,
+            confidence=conf,
+            primary=primary,
+        ),
     )
 
 
@@ -982,6 +1166,17 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
             confidence=0.25,
             reasoning="预言家以真实验人信息输出为主，藏身份只能是短暂信息控制",
             prompt_injectable=_cap_prompt_injectable(prompt),
+            advice_frame=_hide_identity_advice_frame(
+                inp,
+                skill,
+                prompt=prompt,
+                risks=[
+                    "藏身份会延误真实验人信息，可能污染好人视角",
+                    "公开窗口继续隐藏会削弱预言家带队价值",
+                ],
+                confidence=0.25,
+                exposure="seer_public_window",
+            ),
         )
 
     gs = inp.game_state
@@ -1018,6 +1213,14 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
             confidence=0.6,
             reasoning="藏身份需要在隐匿和发挥作用之间找到平衡",
             prompt_injectable=_cap_prompt_injectable(prompt),
+            advice_frame=_hide_identity_advice_frame(
+                inp,
+                skill,
+                prompt=prompt,
+                risks=risks,
+                confidence=0.6,
+                exposure="static_fallback",
+            ),
         )
     # dynamic analysis
     ws = inp.world_state
@@ -1042,6 +1245,7 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
             f"身份已不完全隐蔽。建议继续维持已声明的人设，保持一致性。"
         )
         conf = 0.4
+        exposure = "claimed_role"
     elif under_pressure:
         pressure_desc = "; ".join(a.description for a in my_alerts[:2])
         prompt = (
@@ -1051,12 +1255,14 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         )
         conf = 0.55
         risks.append("被怀疑时过度隐蔽反而加深嫌疑")
+        exposure = "under_pressure"
     else:
         prompt = (
             f"藏身份建议：你目前身份隐蔽状态良好，没有公开声明也没有被重点怀疑。"
             f"继续保持中立发言节奏，避免暴露信息优势。"
         )
         conf = 0.65
+        exposure = "hidden"
 
     if day > 3:
         risks.append("已过Day 3，继续藏身份可能导致无法在关键时刻发挥作用")
@@ -1069,6 +1275,14 @@ def hide_identity_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
         confidence=conf,
         reasoning="动态分析：根据自身暴露状态和被怀疑程度调整策略",
         prompt_injectable=_cap_prompt_injectable(prompt),
+        advice_frame=_hide_identity_advice_frame(
+            inp,
+            skill,
+            prompt=prompt,
+            risks=risks,
+            confidence=conf,
+            exposure=exposure,
+        ),
     )
 
 

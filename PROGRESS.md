@@ -3811,3 +3811,30 @@ token 估算 687→495 (-28%)。反思路径总 prompt 从 ~2400 降到
 + `pytest tests/integration/test_directive_role_gating.py
 test_live_runtime.py -p no:cacheprovider -q`
 
+## Prompt/Skill optimization — native core skill frames (2026-06-15)
+
+**背景**: 上一阶段已把 `skill_tactical_advice` 升级为结构化
+`SkillAdviceFrame` 渲染,但多数 handler 仍只产出 `prompt_injectable`,
+由 `runtime.context._skill_output_to_advice_frame()` 做兼容转换。这样能用,
+但结构化字段的信息密度有限,`counter_signals` / `forbidden_use` /
+`situation_signature` 缺少技能级语义。
+
+**本次优化**:
+- 新增本地 frame 构造 helper,统一生成 `SkillAdviceFrame`。
+- `push_vote` 原生输出 frame: 标明归票目标、反信号、禁止把嫌疑排序当裁判真相。
+- `counter_claim` 原生输出 frame: 标明对跳目标、时间线/查验反信号、禁止把对跳建议当真实身份证明。
+- `hide_identity` 原生输出 frame: 标明暴露状态,保留预言家“不应默认藏身份”的禁止套用约束。
+- 保留原有 `prompt_injectable`,兼容旧渲染路径和已有测试。
+
+**新增测试**:
+- `test_push_vote_emits_native_advice_frame`
+- `test_counter_claim_emits_native_advice_frame`
+- `test_hide_identity_emits_native_advice_frame`
+
+**验证**:
+- RED: 3 个新增测试先失败于 `advice_frame is None`。
+- GREEN: `python -m pytest tests/skills/test_werewolf_skills.py -q ... -k "native_advice_frame"` → 3 passed。
+- 回归: `python -m pytest tests/skills tests/runtime/test_context.py tests/agents/test_prompt_builder.py tests/agents/test_player_agent.py -q ...` → 442 passed。
+- 编译: `python -m compileall -q werewolf_agent tests`。
+- 格式: `git diff --check`。
+
