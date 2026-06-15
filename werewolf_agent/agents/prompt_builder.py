@@ -194,9 +194,9 @@ class PlayerPromptBuilder:
         # is per-turn (situation-driven) and should be a dynamic section
         # grouped with other per-turn context, not a stable section in
         # the system prompt.
-        parts.append(self._build_information_boundaries())
         parts.append(self._build_game_rules())
         parts.append(self._build_role_guide())
+        parts.append(self._build_information_boundaries())
         parts.append(self._build_reasoning_method())
         # P0-K1: skill tool path removed; policy about calling skill tools
         # is gone. Skill analyses are pre-injected (skill_analysis_hints).
@@ -357,16 +357,16 @@ class PlayerPromptBuilder:
     # pressure. Keeping both in one table prevents drift such as a
     # section being labeled "optional" while also being never-dropped.
     _USER_SECTION_SPECS: tuple[_SectionSpec, ...] = (
-        _SectionSpec("_build_persona", "【人格】", "人格设定", "style", _NEVER_DROP_TIER),
         _SectionSpec("_build_phase_context", "【辅助】", "阶段上下文", "action_context", _NEVER_DROP_TIER),
-        _SectionSpec("_build_belief_state", "【辅助】", "我的判断", "private_reasoning", 0),
         _SectionSpec("_build_public_summary", "【场上记录】", "当前局公开事实", "public_record", _NEVER_DROP_TIER, True),
         _SectionSpec("_build_visible_state", "【辅助】", "可见世界状态", "public_record", _NEVER_DROP_TIER, True),
-        _SectionSpec("_build_private_memory_hints", "【辅助】", "本局·私有记忆", "private_memory", 1),
         _SectionSpec("_build_salience_events", "【辅助】", "关键事件", "public_record", _NEVER_DROP_TIER, True),
+        _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
+        _SectionSpec("_build_persona", "【人格】", "人格设定", "style", _NEVER_DROP_TIER),
+        _SectionSpec("_build_belief_state", "【辅助】", "我的判断", "private_reasoning", 0),
+        _SectionSpec("_build_private_memory_hints", "【辅助】", "本局·私有记忆", "private_memory", 1),
         _SectionSpec("_build_learning_context", "【参考】", "跨局学习参考", "cross_game_reference", 2),
         _SectionSpec("_build_strategy_directive", "【策略指令】", "策略指令", "directive", _NEVER_DROP_TIER),
-        _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
         _SectionSpec("_build_final_output_guard", "【硬约束】", "最终输出约束", "output_constraint", _NEVER_DROP_TIER),
     )
     _SECTION_SPEC_BY_NAME: dict[str, _SectionSpec] = {
@@ -416,22 +416,22 @@ class PlayerPromptBuilder:
         # Boundary marker + task prompt are always kept (they are not
         # sections with a priority label).
         parts.append(("", "=== DYNAMIC_BOUNDARY ==="))
-        # P2-S10: persona (per-turn style/tone hint) lives in the user
-        # message, right after the boundary marker, so it stays grouped
-        # with other per-turn dynamic context and does not invalidate
-        # the system-prompt cache on each turn.
-        parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
         # P1-S3: each section is wrapped with a label so the LLM can
         # rank attention under tight token budgets. The label is
         # prepended at the section level
         # — internal sub-grouping (e.g., P0-S5 within strategy_directive)
         # is preserved.
         parts.append(("_build_phase_context", self._label_section("_build_phase_context", self._build_phase_context())))
-        parts.append(("_build_belief_state", self._label_section("_build_belief_state", self._build_belief_state())))
         parts.append(("_build_public_summary", self._label_section("_build_public_summary", self._build_public_summary())))
         parts.append(("_build_visible_state", self._label_section("_build_visible_state", self._build_visible_state())))
-        parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
         parts.append(("_build_salience_events", self._label_section("_build_salience_events", self._build_salience_events())))
+        parts.append(("_build_recent_transcript", self._label_section("_build_recent_transcript", self._build_recent_transcript())))
+        # P2-S10: persona (per-turn style/tone hint) lives in the user
+        # message so it stays dynamic, but it follows current-game public
+        # grounding to avoid style hints interrupting the public record chain.
+        parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
+        parts.append(("_build_belief_state", self._label_section("_build_belief_state", self._build_belief_state())))
+        parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
         parts.append(("_build_learning_context", self._label_section("_build_learning_context", self._build_learning_context())))
         parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
         # NEW-S04-A: skill_analysis_hints render path dropped. The
@@ -439,7 +439,6 @@ class PlayerPromptBuilder:
         # truth (rendered inside strategy_directive's 【参考】 group).
         # The opaque-dict dual render is gone. _build_skill_analysis_hints
         # is no longer called from here.
-        parts.append(("_build_recent_transcript", self._label_section("_build_recent_transcript", self._build_recent_transcript())))
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM
         # read "纠正提示..." and then got distracted by the task

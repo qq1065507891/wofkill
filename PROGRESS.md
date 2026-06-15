@@ -4,15 +4,36 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **rag-v2-transferable-knowledge** — 2026-06-15 (COMPLETE)
-- Active task: RAG 已迁移到 V2 可迁移战术知识 schema；检索、向量索引、去重、live prompt 和 bundled seeds 均走 tactical frame
+- Current phase: **prompt-section-order-hardening** — 2026-06-15 (COMPLETE)
+- Active task: 已调整玩家 system/user prompt 模块顺序；system 先建立规则与角色职责，再解释信息边界；user 先集中当前局公开 grounding，再进入 persona、私有判断、跨局参考、策略、任务和输出约束
 - Task owner: Codex development session
 - Last updated: 2026-06-15
+- **本次新增 (prompt-section-order-hardening)**: `build_system_prompt()` 改为“身份 → 游戏规则 → 角色指南 → 信息边界 → 推理方法 → 技能建议 → 输出契约”；`build_user_prompt()` 改为“阶段上下文 → 当前局公开事实 → 可见世界状态 → 关键事件 → 近期发言 → 人格设定 → 我的判断 → 本局私有记忆 → 跨局学习参考 → 策略指令 → 本轮任务 → 最终输出约束”，并新增顺序回归测试。
 - **本次新增 (rag-v2-transferable-knowledge)**: 新增 `RAGTacticalFrame` / `schema_version` / `tactical_frame`，旧持久化数据缺失 `schema_version` 时按 legacy V1 加载；新增共享 tactical text helper，并让 reranker、vector indexing、dedup、prompt renderer、`PlayerPromptBuilder` 使用同一套 prompt-safe V2 字段；27 条 bundled RAG seed 已全部迁移为显式 V2 tactical frame。
 - **本次新增 (rag-live-prompt-card-rendering)**: `知识库提示` 不再把 `title/summary/key_decisions` 作为 JSON 数组直接注入，而是渲染为“案例摘要 / 可借鉴原则 / 使用前检查 / 禁止套用”的中文案例卡片；仍保留 RAG 玩家 ID/战术不可直接套用的前置警告与尾部参考提醒。
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## prompt-section-order-hardening — 2026-06-15 (已完成)
+
+**背景**:
+
+1. system prompt 中“信息边界”位于游戏规则和角色指南之前，顺序上先解释 user 段落归因，再建立规则世界模型。
+2. user prompt 中 persona/私有判断会打断当前局公开 grounding，策略指令也在近期发言之前，距离任务较远。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| system 顺序 | 信息边界过早，规则/角色职责建立偏晚 | 改为身份、游戏规则、角色指南、信息边界、推理方法、技能建议、输出契约 |
+| user 顺序 | persona 和私有判断打断当前局公开事实链；策略指令离任务较远 | 改为当前局公开 grounding 集中在前，persona/私有判断/私有记忆在后，策略指令紧贴任务和最终输出约束 |
+| 回归测试 | 缺少 system/user 全局模块顺序约束 | 新增顺序测试锁定 system 基础规则顺序与 user current-game grounding 顺序 |
+
+**验证**:
+
+- 已通过 `python -m pytest tests/agents/test_prompt_builder.py::test_system_prompt_orders_rules_before_boundaries_and_reasoning tests/agents/test_prompt_builder.py::test_user_prompt_groups_current_public_context_before_private_and_strategy_before_task -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp E:\NLP\agent\wofkill\.pytest_tmp`。
+- 已通过 `python -m pytest tests/agents/test_prompt_builder.py tests/agents/test_player_agent.py tests/agents/test_prompt_injection_fixes.py tests/agents/test_prompt_mode_isolation.py -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp E:\NLP\agent\wofkill\.pytest_tmp` — **262 passed**。
 
 ## rag-v2-transferable-knowledge — 2026-06-15 (已完成)
 

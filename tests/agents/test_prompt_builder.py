@@ -462,6 +462,81 @@ def test_section_ordering_is_hard_then_suggestion_then_reference():
     )
 
 
+def test_system_prompt_orders_rules_before_boundaries_and_reasoning() -> None:
+    ctx = _make_villager_context()
+
+    prompt = PlayerPromptBuilder(ctx).build_system_prompt()
+
+    identity_idx = prompt.index("你是一场狼人杀游戏的玩家")
+    rules_idx = prompt.index("【禁止事项】")
+    role_idx = prompt.index("村民规则")
+    boundaries_idx = prompt.index("【信息边界】")
+    reasoning_idx = prompt.index("【推理方法-3 步】")
+    skill_idx = prompt.index("【技能与建议】")
+    output_idx = prompt.index("【结构化输出】")
+    assert (
+        identity_idx
+        < rules_idx
+        < role_idx
+        < boundaries_idx
+        < reasoning_idx
+        < skill_idx
+        < output_idx
+    )
+
+
+def test_user_prompt_groups_current_public_context_before_private_and_strategy_before_task() -> None:
+    ctx = _make_ctx_for_priority_label_test().model_copy(
+        update={
+            "belief_state": {
+                "my_suspects": [
+                    {
+                        "player": "p07",
+                        "faction_lean": "werewolf",
+                        "top_role_guess": "werewolf",
+                    }
+                ],
+                "my_trusted": [
+                    {
+                        "player": "p05",
+                        "faction_lean": "good",
+                        "trust": 0.8,
+                    }
+                ],
+            }
+        }
+    )
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    phase_idx = prompt.index("当前阶段:")
+    public_idx = prompt.index("当前局公开事实")
+    visible_idx = prompt.index("可见状态")
+    salience_idx = prompt.index("关键事件")
+    transcript_idx = prompt.index("近期发言")
+    persona_idx = prompt.index("人格设定")
+    belief_idx = prompt.index("我的判断")
+    private_idx = prompt.index("本局·第2轮·私有记忆")
+    learning_idx = prompt.index("跨局学习参考")
+    strategy_idx = prompt.index("本轮策略指令")
+    task_idx = prompt.index("发言意图枚举")
+    output_idx = prompt.index("最终输出约束")
+    assert (
+        phase_idx
+        < public_idx
+        < visible_idx
+        < salience_idx
+        < transcript_idx
+        < persona_idx
+        < belief_idx
+        < private_idx
+        < learning_idx
+        < strategy_idx
+        < task_idx
+        < output_idx
+    )
+
+
 # ---------------------------------------------------------------------------
 # Smoke: directive section also present (header prefix)
 # ---------------------------------------------------------------------------
