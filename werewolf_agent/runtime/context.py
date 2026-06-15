@@ -1120,6 +1120,7 @@ def build_agent_context(
     wolf_team_plan: dict[str, Any] | None = None,
     rag_service: Any | None = None,
     restored_memory: Any | None = None,
+    cognition_state_manager: Any | None = None,
     discussion_positions: dict[str, str] | None = None,
 ) -> AgentContext:
     """Build AgentContext for a player from current game state.
@@ -1367,6 +1368,9 @@ def build_agent_context(
     ctx_alerts: list[dict[str, Any]] = []
     must_address: list[dict[str, Any]] = []
     belief_dict: dict[str, Any] = {}
+    possible_worlds_dict: dict[str, Any] = {}
+    simulation_predictions_dict: dict[str, Any] = {}
+    possible_worlds_set = None
     world_state = None
     belief_state = None
     alerts: list[Any] = []
@@ -1460,6 +1464,70 @@ def build_agent_context(
             strategy_directive["must_address_alerts"] = must_address
     except Exception:
         logger.debug("Contradiction/belief building failed, skipping", exc_info=True)
+
+    if cognition_state_manager is not None:
+        try:
+            prompt_belief_summary = cognition_state_manager.prompt_belief_summary(
+                player_id,
+                gs,
+            )
+            if prompt_belief_summary:
+                belief_dict = prompt_belief_summary
+        except Exception:
+            logger.debug(
+                "Live cognition manager summary failed for %s; using fallback",
+                player_id,
+                exc_info=True,
+            )
+
+    try:
+        from werewolf_agent.cognition.worlds import PossibleWorldsEngine
+
+        role_counts = {
+            role: int(cfg.get("count", 0))
+            for role, cfg in engine.ruleset.raw.get("roles", {}).items()
+            if int(cfg.get("count", 0)) > 0
+        }
+        known_roles = {player_id: player.role}
+        if player.role == "werewolf":
+            known_roles.update({
+                pid: p.role
+                for pid, p in gs.players.items()
+                if p.role == "werewolf"
+            })
+        worlds = PossibleWorldsEngine().generate(
+            viewer_id=player_id,
+            viewer_role=player.role,
+            player_ids=list(gs.players.keys()),
+            role_counts=role_counts,
+            belief_summary=belief_dict,
+            known_roles=known_roles,
+            generated_at_event_index=len(gs.events),
+            top_k=3,
+        )
+        if worlds.worlds:
+            possible_worlds_set = worlds
+            possible_worlds_dict = worlds.to_prompt_dict(max_assignments=4)
+    except Exception:
+        logger.debug("Possible-world generation failed for %s", player_id, exc_info=True)
+
+    if possible_worlds_set is not None:
+        try:
+            from werewolf_agent.cognition.simulator import BoundedSimulator
+
+            simulation = BoundedSimulator().simulate(
+                viewer_id=player_id,
+                possible_worlds=possible_worlds_set,
+                alive_players=[
+                    pid for pid, player_state in gs.players.items()
+                    if player_state.alive
+                ],
+                day_number=gs.day_number,
+                top_k=2,
+            )
+            simulation_predictions_dict = simulation.to_prompt_dict()
+        except Exception:
+            logger.debug("Simulation generation failed for %s", player_id, exc_info=True)
 
     if legal_actions is None:
         legal_actions = []
@@ -1589,6 +1657,8 @@ def build_agent_context(
         recent_transcript=transcript,
         contradiction_alerts=ctx_alerts,
         belief_state=belief_dict,
+        possible_worlds=possible_worlds_dict,
+        simulation_predictions=simulation_predictions_dict,
         strategy_directive=strategy_directive,
         skill_analyses=skill_analyses,
         # NEW-S04-A: skill_analysis_hints is no longer populated. The

@@ -40,6 +40,7 @@ from werewolf_agent.api.views import (
     build_public_state,
     build_replay,
     build_timeline,
+    build_world_model_audit,
 )
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
@@ -606,6 +607,49 @@ def create_game_router(
             "rag_audits": audits,
             "audits": audits,  # 双 key 兼容
         }
+
+    @router.get("/games/{game_id}/world-model-audit")
+    def get_world_model_audit(
+        game_id: str,
+        caller_id: str = Query(""),
+        caller_role: CallerRole = Query(CallerRole.MODERATOR),
+        session_token: str = Query(""),
+    ) -> dict:
+        state = _get_game(games, game_id)
+        resolved_role = _resolve_caller_role(
+            authorized_callers, caller_id, caller_role,
+            session_token=session_token, auth_manager=auth,
+        )
+        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
+            raise HTTPException(
+                403,
+                "world-model-audit requires moderator or debugger role",
+            )
+
+        audits: list[dict] = []
+        events = state.events
+        if repo is not None and hasattr(repo, "load_events"):
+            try:
+                events = repo.load_events(game_id)
+            except Exception:
+                events = state.events
+        for event in events:
+            event_type = getattr(event, "type", None) or (
+                event.get("type") if isinstance(event, dict) else None
+            )
+            if event_type != "world_model_audit":
+                continue
+            payload = getattr(event, "payload", None) or (
+                event.get("payload") if isinstance(event, dict) else {}
+            )
+            if isinstance(payload, dict):
+                audits.append(payload)
+
+        return build_world_model_audit(
+            state,
+            ViewMode.MODERATOR_FULL,
+            audit_events=audits,
+        )
 
     return router
 

@@ -25,6 +25,7 @@ from werewolf_agent.api.views import (
     KNOWN_SENSITIVE_FIELDS,
     _build_event,
     _build_public_event,
+    build_world_model_audit,
 )
 from werewolf_agent.api.routes.games import _pick_public_mvp_candidate
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
@@ -70,6 +71,37 @@ def test_private_state_200_for_real_player():
     )
     assert resp.status_code == 200
     assert resp.json()["player_info"]["player_id"] == "p01"
+
+
+def test_world_model_audit_is_moderator_only():
+    state = GameState(
+        game_id="wm_audit",
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        },
+        events=[
+            GameEvent(
+                type="world_model_audit",
+                payload={
+                    "player_id": "p01",
+                    "belief": {"p02": {"wolf": 0.7}},
+                    "possible_worlds": [{"label": "World A", "roles": {"p02": "werewolf"}}],
+                    "simulation_predictions": [{"event": "next_day_vote_pressure"}],
+                    "decision_plan": {"action_type": "vote"},
+                    "dialogue_plan": {"public_intent": "push"},
+                },
+            )
+        ],
+    )
+
+    public = build_world_model_audit(state, ViewMode.PUBLIC)
+    moderator = build_world_model_audit(state, ViewMode.MODERATOR_FULL)
+
+    assert public["audits"] == []
+    assert moderator["audits"][0]["player_id"] == "p01"
+    assert "roles" not in str(moderator["audits"][0])
+    assert moderator["audits"][0]["possible_worlds"][0]["label"] == "World A"
 
 
 # ---------------------------------------------------------------------------

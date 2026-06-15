@@ -2881,6 +2881,192 @@ def test_skill_analysis_hints_field_empty_after_build_agent_context() -> None:
     )
 
 
+def test_build_agent_context_prefers_live_cognition_manager_belief_summary() -> None:
+    """Phase 1: live in-game cognition beats the recompute fallback."""
+    from werewolf_agent.runtime.graph import _new_engine
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+    }
+    gs = GameState(
+        game_id="live_cognition_context",
+        phase="day",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    expected = {
+        "my_suspects": [
+            {
+                "player": "p02",
+                "faction_lean": "wolf_lean",
+                "trust": 0.22,
+                "top_role_guess": "werewolf",
+                "top_role_prob": 0.78,
+            }
+        ],
+        "my_trusted": [],
+    }
+
+    class _Manager:
+        def prompt_belief_summary(self, viewer_id, game_state):
+            assert viewer_id == "p01"
+            assert game_state is gs
+            return expected
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        cognition_state_manager=_Manager(),
+    )
+
+    assert ctx.belief_state == expected
+
+
+def test_build_agent_context_populates_possible_worlds_from_belief_summary() -> None:
+    """Phase 3: context carries bounded prompt-safe possible worlds."""
+    from werewolf_agent.runtime.cognition_state import CognitionStateManager
+    from werewolf_agent.runtime.graph import _new_engine
+
+    roles = [
+        "seer",
+        "witch",
+        "hunter",
+        "idiot",
+        "hybrid",
+        "werewolf",
+        "werewolf",
+        "werewolf",
+        "villager",
+        "villager",
+        "villager",
+        "villager",
+    ]
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=True)
+        for i, role in enumerate(roles, start=1)
+    }
+    gs = GameState(
+        game_id="possible_world_context",
+        phase="day",
+        day_number=1,
+        night_number=1,
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p01",
+                    "text": "我是预言家，查验 p06 是狼人",
+                    "day_number": 1,
+                },
+            )
+        ],
+    )
+    manager = CognitionStateManager()
+    manager.initialize(gs)
+    manager.update_from_events(gs)
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p09",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        cognition_state_manager=manager,
+    )
+
+    assert ctx.possible_worlds["type"] == "possible_worlds"
+    assert ctx.possible_worlds["top_worlds"]
+    assert "roles" not in ctx.possible_worlds["top_worlds"][0]
+    assert "warning" in ctx.possible_worlds
+
+
+def test_build_agent_context_populates_simulation_predictions() -> None:
+    """Phase 5: context carries bounded prompt-safe simulator predictions."""
+    from werewolf_agent.runtime.cognition_state import CognitionStateManager
+    from werewolf_agent.runtime.graph import _new_engine
+
+    roles = [
+        "seer",
+        "witch",
+        "hunter",
+        "idiot",
+        "hybrid",
+        "werewolf",
+        "werewolf",
+        "werewolf",
+        "villager",
+        "villager",
+        "villager",
+        "villager",
+    ]
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=True)
+        for i, role in enumerate(roles, start=1)
+    }
+    gs = GameState(
+        game_id="simulation_context",
+        phase="day",
+        day_number=2,
+        night_number=1,
+        players=players,
+        events=[
+            GameEvent(
+                type="vote_resolved",
+                payload={
+                    "votes": [
+                        {"voter": "p01", "target": "p06"},
+                        {"voter": "p02", "target": "p06"},
+                    ],
+                    "day_number": 1,
+                },
+            )
+        ],
+    )
+    manager = CognitionStateManager()
+    manager.initialize(gs)
+    manager.update_from_events(gs)
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p09",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        cognition_state_manager=manager,
+    )
+
+    assert ctx.simulation_predictions["type"] == "simulation"
+    assert ctx.simulation_predictions["warning"] == "Prediction, not fact."
+    assert len(ctx.simulation_predictions["predictions"]) <= 2
+    assert "roles" not in str(ctx.simulation_predictions)
+
+
+def test_agent_reflection_passes_memory_context_managers() -> None:
+    import inspect
+    from werewolf_agent.runtime.agent_adapter import _agent_reflection
+
+    source = inspect.getsource(_agent_reflection)
+
+    assert 'restored_memory=state.get("restored_memory")' in source
+    assert 'cognition_state_manager=state.get("cognition_state_manager")' in source
+
+
+def test_summarize_positions_passes_memory_context_managers() -> None:
+    import inspect
+    from werewolf_agent.runtime.nodes.summary import summarize_positions
+
+    source = inspect.getsource(summarize_positions)
+
+    assert 'restored_memory=state.get("restored_memory")' in source
+    assert 'cognition_state_manager=state.get("cognition_state_manager")' in source
+
+
 # ---------------------------------------------------------------------------
 # NEW-S19-C: illegal-target filter applies to the surviving render path.
 # ---------------------------------------------------------------------------

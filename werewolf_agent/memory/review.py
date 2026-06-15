@@ -18,6 +18,7 @@ from typing import Any
 from werewolf_agent.cognition.belief import BeliefState
 from werewolf_agent.memory.cognition_matrix import CognitionMatrix
 from werewolf_agent.memory.relation_graph import RelationGraph
+from werewolf_agent.memory.relation_scoring import score_relation_event
 from werewolf_agent.memory.schemas import (
     CognitionMatrixEntry,
     PlayerProfile,
@@ -192,6 +193,10 @@ class ReviewGenerator:
                     predicate=RelationType.SPOKE_AGAINST,
                     target=target,
                 )
+                attacks = sorted(
+                    attacks,
+                    key=lambda event: (-score_relation_event(event), event.source),
+                )
                 for attack in attacks:
                     if attack.source != player_id and attack.source not in report.deceived_by:
                         attacker_role = ground_truth.get(attack.source, "")
@@ -206,6 +211,10 @@ class ReviewGenerator:
                     same_voters = graph.query(
                         predicate=RelationType.VOTED,
                         target=target,
+                    )
+                    same_voters = sorted(
+                        same_voters,
+                        key=lambda event: (-score_relation_event(event), event.source),
                     )
                     for v in same_voters:
                         if v.source != player_id and v.source not in report.deceived_by:

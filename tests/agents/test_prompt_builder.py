@@ -2171,8 +2171,11 @@ def test_section_metadata_is_single_source_for_labels_and_budget() -> None:
     assert PlayerPromptBuilder._LOW_VALUE_SECTIONS == {
         spec.builder_name for spec in specs if spec.drop_tier == 0
     }
-    assert "_build_learning_context" not in PlayerPromptBuilder._LOW_VALUE_SECTIONS
-    assert by_name["_build_learning_context"].drop_tier == 2
+    assert "_build_learning_context" in PlayerPromptBuilder._LOW_VALUE_SECTIONS
+    assert by_name["_build_learning_context"].drop_tier == 0
+    assert by_name["_build_learning_context"].drop_tier < by_name["_build_belief_state"].drop_tier
+    assert by_name["_build_learning_context"].drop_tier < by_name["_build_possible_worlds"].drop_tier
+    assert by_name["_build_learning_context"].drop_tier < by_name["_build_simulation_predictions"].drop_tier
     assert "_build_rag_hints" not in by_name
     assert "_build_reflection_memory_hints" not in by_name
     assert "_build_profile_memory_hint" not in by_name
@@ -4998,6 +5001,115 @@ class TestHardConstraintTierAccuracy:
         assert "anti_herd" in HARD_CONSTRAINT_KEYS, (
             f"anti_herd 应在 HARD_CONSTRAINT_KEYS"
         )
+
+
+class TestWorldModelPhase0PromptBoundary:
+    """Phase 0: future world-model context fields are not rendered yet."""
+
+    def test_world_model_placeholders_do_not_render_without_renderer(self):
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            possible_worlds={
+                "top_worlds": [
+                    {
+                        "world_id": "w_secret",
+                        "roles": {"p03": "werewolf"},
+                        "supporting_evidence": ["hidden teammate truth"],
+                    }
+                ]
+            },
+            simulation_predictions={
+                "predictions": [
+                    {"event": "wolves kill p04", "rationale": "secret night info"}
+                ]
+            },
+            decision_plan_audit={"private_goal": "push hidden wolf teammate"},
+            dialogue_plan_audit={"conceal": ["p03 is my teammate"]},
+        )
+
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+        for forbidden in (
+            "possible_worlds",
+            "simulation_predictions",
+            "decision_plan_audit",
+            "dialogue_plan_audit",
+            "hidden teammate truth",
+            "secret night info",
+            "p03 is my teammate",
+        ):
+            assert forbidden not in prompt
+
+    def test_possible_worlds_render_prompt_safe_hypotheses(self):
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            possible_worlds={
+                "type": "possible_worlds",
+                "top_worlds": [
+                    {
+                        "label": "World A",
+                        "probability": 0.62,
+                        "key_assignments": {"p03": "werewolf"},
+                        "why": ["p03 vote pattern conflicts"],
+                        "watch_for": ["p03 defense target"],
+                        "roles": {"p02": "seer", "p03": "werewolf"},
+                        "supporting_evidence": ["audit-only raw evidence"],
+                    }
+                ],
+                "warning": "These are hypotheses from visible evidence, not ground truth.",
+            },
+        )
+
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+        assert "World A" in prompt
+        assert "p03=werewolf" in prompt
+        assert "hypotheses" in prompt
+        assert "roles" not in prompt
+        assert "supporting_evidence" not in prompt
+        assert "audit-only raw evidence" not in prompt
+
+    def test_simulation_predictions_render_prompt_safe_cards(self):
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            simulation_predictions={
+                "type": "simulation",
+                "horizon": "next_turn",
+                "predictions": [
+                    {
+                        "event": "next_day_vote_pressure",
+                        "probability": 0.72,
+                        "affected_players": ["p03"],
+                        "rationale": "current relation pressure is concentrated",
+                        "world_ids": ["World A"],
+                        "roles": {"p03": "werewolf"},
+                        "secret": "hidden truth",
+                    }
+                ],
+                "warning": "Prediction, not fact.",
+            },
+        )
+
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+        assert "next_day_vote_pressure" in prompt
+        assert "Prediction, not fact." in prompt
+        assert "p03" in prompt
+        assert "World A" in prompt
+        assert "roles" not in prompt
+        assert "hidden truth" not in prompt
 
 
 if __name__ == "__main__":

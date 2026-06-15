@@ -174,7 +174,28 @@ class RelationGraph:
                 metadata={"night": fact.night},
             ))
 
-        return events
+        elif fact.fact_type == "seer_check_claim":
+            events.append(RelationEvent(
+                predicate=RelationType.NIGHT_RESULT_CLAIMED,
+                source=fact.source_player or "?",
+                target=fact.target_player,
+                day=day,
+                value=fact.value,
+                metadata={"claim_type": fact.metadata.get("claim_type", "")},
+            ))
+
+        if not events:
+            return events
+        from werewolf_agent.memory.relation_scoring import annotate_relation_event
+
+        event_ref = fact.metadata.get("event_ref") or (
+            f"fact:{fact.fact_type}:{fact.source_player or ''}:"
+            f"{fact.target_player or ''}:d{day}"
+        )
+        return [
+            annotate_relation_event(event, event_ref=event_ref)
+            for event in events
+        ]
 
     # --- Serialization ---
 

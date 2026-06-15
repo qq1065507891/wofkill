@@ -323,6 +323,68 @@ def build_evaluation(
 # Cognitive diff view (Killer UI per design doc §12.2)
 # ---------------------------------------------------------------------------
 
+def build_world_model_audit(
+    game_state: GameState,
+    view_mode: ViewMode,
+    audit_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return moderator-only world-model audit records."""
+    view_value = view_mode.value if hasattr(view_mode, "value") else str(view_mode)
+    if view_mode != ViewMode.MODERATOR_FULL:
+        return {"game_id": game_state.game_id, "view_mode": view_value, "audits": []}
+
+    raw_events = audit_events
+    if raw_events is None:
+        raw_events = [
+            event.payload
+            for event in game_state.events
+            if event.type == "world_model_audit" and isinstance(event.payload, dict)
+        ]
+    return {
+        "game_id": game_state.game_id,
+        "view_mode": view_value,
+        "audits": [_sanitize_world_model_audit(event) for event in raw_events],
+    }
+
+
+def _sanitize_world_model_audit(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "player_id",
+        "belief",
+        "possible_worlds",
+        "simulation_predictions",
+        "decision_plan",
+        "dialogue_plan",
+        "persona_policy_prior",
+        "metrics",
+    }
+    return {
+        key: _strip_world_model_private_fields(value)
+        for key, value in payload.items()
+        if key in allowed
+    }
+
+
+def _strip_world_model_private_fields(value: Any) -> Any:
+    forbidden = {
+        "roles",
+        "supporting_evidence",
+        "private_goal",
+        "conceal",
+        "raw_prompt",
+        "raw_response",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _strip_world_model_private_fields(child)
+            for key, child in value.items()
+            if key not in forbidden
+        }
+    if isinstance(value, list):
+        return [_strip_world_model_private_fields(item) for item in value]
+    return value
+
+
 def build_cognitive_diff(
     game_state: GameState,
     viewer_id: str,

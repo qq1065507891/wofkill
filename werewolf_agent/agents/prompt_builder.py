@@ -133,6 +133,20 @@ _VOTE_REASON_PRIVACY_GUARD = (
 _USER_PROMPT_BUDGET_CHARS = 20_000
 
 
+def _safe_float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clean_current_game_token(value: Any, *, max_chars: int) -> str:
+    text = str(value or "").strip()
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text[:max_chars]
+
+
 @dataclass(frozen=True)
 class _SectionSpec:
     """Single source of truth for user-prompt section metadata."""
@@ -367,9 +381,11 @@ class PlayerPromptBuilder:
         _SectionSpec("_build_salience_events", "【辅助】", "关键事件", "public_record", _NEVER_DROP_TIER, True),
         _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
         _SectionSpec("_build_persona", "【人格】", "人格设定", "style", _NEVER_DROP_TIER),
-        _SectionSpec("_build_belief_state", "【辅助】", "我的判断", "private_reasoning", 0),
+        _SectionSpec("_build_belief_state", "【辅助】", "我的判断", "private_reasoning", 2),
+        _SectionSpec("_build_possible_worlds", "【辅助】", "可能世界假设", "private_reasoning", 2),
+        _SectionSpec("_build_simulation_predictions", "【辅助】", "未来预测", "private_reasoning", 2),
         _SectionSpec("_build_private_memory_hints", "【辅助】", "本局·私有记忆", "private_memory", 1),
-        _SectionSpec("_build_learning_context", "【参考】", "跨局学习参考", "cross_game_reference", 2),
+        _SectionSpec("_build_learning_context", "【参考】", "跨局学习参考", "cross_game_reference", 0),
         _SectionSpec("_build_strategy_directive", "【策略指令】", "策略指令", "directive", _NEVER_DROP_TIER),
         _SectionSpec("_build_final_output_guard", "【硬约束】", "最终输出约束", "output_constraint", _NEVER_DROP_TIER),
     )
@@ -435,6 +451,8 @@ class PlayerPromptBuilder:
         # grounding to avoid style hints interrupting the public record chain.
         parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
         parts.append(("_build_belief_state", self._label_section("_build_belief_state", self._build_belief_state())))
+        parts.append(("_build_possible_worlds", self._label_section("_build_possible_worlds", self._build_possible_worlds())))
+        parts.append(("_build_simulation_predictions", self._label_section("_build_simulation_predictions", self._build_simulation_predictions())))
         parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
         parts.append(("_build_learning_context", self._label_section("_build_learning_context", self._build_learning_context())))
         parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
@@ -644,6 +662,113 @@ class PlayerPromptBuilder:
         if belief_lines:
             return "【我的判断（基于已有信息的推理，可能是错的）】" + " ".join(belief_lines)
         return ""
+
+    def _build_possible_worlds(self) -> str:
+        ctx = self.context
+        if not ctx.possible_worlds:
+            return ""
+        worlds = ctx.possible_worlds.get("top_worlds")
+        if not isinstance(worlds, list) or not worlds:
+            return ""
+        warning = self._clean_prompt_text(
+            ctx.possible_worlds.get(
+                "warning",
+                "These are hypotheses from visible evidence, not ground truth.",
+            ),
+            max_chars=160,
+        )
+        lines = [
+            "可能世界假设: 以下是假设，不是裁判真相；只能用于私有推理，不能当作公开事实。"
+        ]
+        if warning:
+            lines.append(warning)
+        for idx, world in enumerate(worlds[:3], start=1):
+            if not isinstance(world, dict):
+                continue
+            label = self._clean_prompt_text(
+                world.get("label") or f"World {idx}",
+                max_chars=40,
+            )
+            probability = _safe_float(world.get("probability"), default=0.0)
+            assignments = world.get("key_assignments")
+            if isinstance(assignments, dict):
+                assignment_text = ", ".join(
+                    f"{_clean_current_game_token(pid, max_chars=16)}="
+                    f"{_clean_current_game_token(role, max_chars=24)}"
+                    for pid, role in sorted(assignments.items())[:4]
+                )
+            else:
+                assignment_text = ""
+            why = self._clean_list_items(world.get("why"), limit=2, max_chars=80)
+            watch_for = self._clean_list_items(
+                world.get("watch_for"),
+                limit=2,
+                max_chars=80,
+            )
+            line = f"- {label}: prob={probability:.2f}"
+            if assignment_text:
+                line += f"; key={assignment_text}"
+            if why:
+                line += "; why=" + "；".join(why)
+            if watch_for:
+                line += "; watch=" + "；".join(watch_for)
+            lines.append(line)
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _build_simulation_predictions(self) -> str:
+        ctx = self.context
+        simulation = ctx.simulation_predictions
+        if not simulation or simulation.get("type") != "simulation":
+            return ""
+        predictions = simulation.get("predictions")
+        if not isinstance(predictions, list) or not predictions:
+            return ""
+        warning = self._clean_prompt_text(
+            simulation.get("warning", "Prediction, not fact."),
+            max_chars=120,
+        )
+        horizon = self._clean_prompt_text(
+            simulation.get("horizon", "next_turn"),
+            max_chars=40,
+        )
+        lines = [
+            f"Simulation predictions ({horizon}): use as private planning signals only."
+        ]
+        if warning:
+            lines.append(warning)
+        for item in predictions[:2]:
+            if not isinstance(item, dict):
+                continue
+            event = self._clean_prompt_text(item.get("event"), max_chars=48)
+            if not event:
+                continue
+            probability = _safe_float(item.get("probability"), default=0.0)
+            affected_raw = item.get("affected_players")
+            affected = [
+                _clean_current_game_token(player_id, max_chars=16)
+                for player_id in (
+                    affected_raw[:3] if isinstance(affected_raw, list) else []
+                )
+                if str(player_id or "").strip()
+            ]
+            rationale = self._clean_prompt_text(
+                item.get("rationale"),
+                max_chars=100,
+            )
+            world_ids = self._clean_list_items(
+                item.get("world_ids"),
+                limit=3,
+                max_chars=32,
+            )
+            line = f"- {event}: prob={probability:.2f}"
+            if affected:
+                line += "; players=" + ", ".join(affected)
+            if world_ids:
+                line += "; worlds=" + ", ".join(world_ids)
+            if rationale:
+                line += "; why=" + rationale
+            lines.append(line)
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def _build_public_summary(self) -> str:
         ctx = self.context
@@ -1748,6 +1873,22 @@ class PlayerPromptBuilder:
         if len(text) <= max_chars:
             return text
         return text[: max(0, max_chars - 6)] + "…已截断"
+
+    @classmethod
+    def _clean_list_items(
+        cls,
+        value: Any,
+        *,
+        limit: int,
+        max_chars: int,
+    ) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [
+            cls._clean_prompt_text(item, max_chars=max_chars)
+            for item in value[:limit]
+            if str(item or "").strip()
+        ]
 
     @staticmethod
     def _slim_numeric_params(value: Any) -> dict[str, float]:

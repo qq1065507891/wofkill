@@ -686,6 +686,10 @@ class AgentContext(BaseModel):
     strategy_directive: dict[str, Any] = Field(default_factory=dict)
     persona_snapshot: dict[str, Any] = Field(default_factory=dict)
     model_config_snapshot: dict[str, Any] = Field(default_factory=dict)
+    possible_worlds: dict[str, Any] = Field(default_factory=dict)
+    simulation_predictions: dict[str, Any] = Field(default_factory=dict)
+    decision_plan_audit: dict[str, Any] = Field(default_factory=dict)
+    dialogue_plan_audit: dict[str, Any] = Field(default_factory=dict)
     recent_transcript: list[dict[str, Any]] = Field(default_factory=list)
     output_schema_hint: str = ""
     skill_analyses: dict[str, str] = Field(

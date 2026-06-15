@@ -34,6 +34,7 @@ from werewolf_agent.evaluation.schemas import (
     ReplayRecord,
     RoleMetrics,
     SafetyMetrics,
+    WorldModelMetrics,
 )
 
 _CLAIM_ROLE_MAP = {
@@ -107,6 +108,7 @@ class MetricsAggregator:
         self._compute_role_metrics(snap)
         self._compute_quality_metrics(snap)
         self._compute_safety_metrics(snap)
+        self._compute_world_model_metrics(snap)
         self._compute_cost_metrics(snap)
         self._compute_growth_curve(snap)
 
@@ -579,6 +581,57 @@ class MetricsAggregator:
         snap.safety_metrics = s
 
     # -----------------------------------------------------------------------
+    # World-model metrics
+    # -----------------------------------------------------------------------
+
+    def _compute_world_model_metrics(self, snap: MetricsSnapshot) -> None:
+        belief_scores: list[float] = []
+        possible_world_hits: list[bool] = []
+        simulation_hits: list[bool] = []
+        decision_legal: list[bool] = []
+        dialogue_leaks: list[bool] = []
+
+        for result in self._results:
+            for review in result.reviews:
+                audit = review.get("world_model_audit") if isinstance(review, dict) else None
+                if not isinstance(audit, dict):
+                    continue
+                for sample in audit.get("belief_calibration_samples", []) or []:
+                    if not isinstance(sample, dict):
+                        continue
+                    predicted = _bounded_float(sample.get("predicted"))
+                    actual = 1.0 if bool(sample.get("actual")) else 0.0
+                    belief_scores.append(1.0 - abs(predicted - actual))
+                possible_world_hits.extend(
+                    bool(item.get("hit"))
+                    for item in audit.get("possible_world_checks", []) or []
+                    if isinstance(item, dict)
+                )
+                simulation_hits.extend(
+                    bool(item.get("hit"))
+                    for item in audit.get("simulation_checks", []) or []
+                    if isinstance(item, dict)
+                )
+                decision_legal.extend(
+                    bool(item.get("legal"))
+                    for item in audit.get("decision_legality_checks", []) or []
+                    if isinstance(item, dict)
+                )
+                dialogue_leaks.extend(
+                    bool(item.get("leaked"))
+                    for item in audit.get("dialogue_leak_checks", []) or []
+                    if isinstance(item, dict)
+                )
+
+        snap.world_model_metrics = WorldModelMetrics(
+            belief_calibration=_avg(belief_scores),
+            possible_world_topk_hit_rate=_bool_rate(possible_world_hits),
+            simulator_prediction_hit_rate=_bool_rate(simulation_hits),
+            decision_legality_rate=_bool_rate(decision_legal),
+            dialogue_leakage_rate=_bool_rate(dialogue_leaks),
+        )
+
+    # -----------------------------------------------------------------------
     # Cost / latency metrics
     # -----------------------------------------------------------------------
 
@@ -822,3 +875,23 @@ def compute_pace_metrics(
         "finish_night_number": finish_night,
         "pace_target_met": pace_target_met,
     }
+
+
+def _avg(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _bool_rate(values: list[bool]) -> float:
+    if not values:
+        return 0.0
+    return sum(1 for value in values if value) / len(values)
+
+
+def _bounded_float(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, parsed))

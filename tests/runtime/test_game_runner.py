@@ -46,6 +46,52 @@ def test_game_runner_runtime_state_does_not_force_badge_tear() -> None:
     assert runtime_state["badge_target_id"] is None
 
 
+def test_game_runner_runtime_state_includes_live_cognition_manager() -> None:
+    runner = GameRunner(GameRunnerConfig(seed=42))
+
+    runtime_state = runner._build_runtime_state()
+
+    assert runtime_state["cognition_state_manager"] is runner._cognition_state_manager
+
+
+def test_game_runner_process_chunk_updates_live_cognition_manager() -> None:
+    runner = GameRunner(GameRunnerConfig(seed=42))
+    base_state = GameState(
+        game_id=runner.game_id,
+        phase="day",
+        day_number=1,
+        night_number=1,
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="werewolf", alive=True),
+        },
+    )
+    next_state = replace(
+        base_state,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p01",
+                    "text": "我是预言家，查验 p03 是狼人",
+                    "day_number": 1,
+                },
+            )
+        ],
+    )
+    runner._state = base_state
+    runner._cognition_state_manager.initialize(base_state)
+
+    runner._process_chunk({"speech": {"game_state": next_state}})
+
+    assert runner._cognition_state_manager.processed_event_count() == 1
+    assert runner._cognition_state_manager.prompt_belief_summary(
+        "p02",
+        next_state,
+    )["my_suspects"][0]["player"] == "p03"
+
+
 # ---------------------------------------------------------------------------
 # Config tests
 # ---------------------------------------------------------------------------
@@ -748,6 +794,90 @@ class TestGameRunnerMemoryLifecycle:
         snapshot = repo.load_memory_snapshot(runner.game_id)
         matrices = snapshot.get("cognition_matrices", {})
         assert len(matrices) == 12, f"Expected 12 cognition matrices, got {len(matrices)}"
+
+    def test_save_memory_snapshot_preserves_live_cognition_evidence(self) -> None:
+        """Phase 1: saved snapshot reuses the live manager MemoryStore."""
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=125,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        runner._state = GameState(
+            game_id=runner.game_id,
+            phase="finished",
+            day_number=1,
+            winning_faction="good",
+            players={
+                "p01": PlayerState(id="p01", role="seer", alive=True),
+                "p02": PlayerState(id="p02", role="villager", alive=True),
+                "p03": PlayerState(id="p03", role="werewolf", alive=False),
+            },
+            events=[
+                GameEvent(
+                    type="speech",
+                    payload={
+                        "speaker": "p01",
+                        "text": "我是预言家，查验 p03 是狼人",
+                        "day_number": 1,
+                    },
+                )
+            ],
+        )
+        runner._cognition_state_manager.initialize(runner._state)
+        runner._cognition_state_manager.update_from_events(runner._state)
+
+        runner._save_memory_snapshot()
+
+        snapshot = repo.load_memory_snapshot(runner.game_id)
+        matrices = snapshot.get("cognition_matrices", {})
+        evidence_count = sum(
+            len(entry.get("key_evidence", []))
+            for matrix in matrices.values()
+            for entry in matrix.get("entries", {}).values()
+        )
+        assert evidence_count > 0
+
+    def test_save_memory_snapshot_does_not_duplicate_relation_graph(self) -> None:
+        """Repeated snapshot saves must rebuild relation graph idempotently."""
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=126,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        runner._state = GameState(
+            game_id=runner.game_id,
+            phase="finished",
+            day_number=1,
+            winning_faction="good",
+            players={
+                "p01": PlayerState(id="p01", role="seer", alive=True),
+                "p02": PlayerState(id="p02", role="villager", alive=True),
+            },
+            events=[
+                GameEvent(
+                    type="vote",
+                    payload={"voter": "p01", "target": "p02", "day_number": 1},
+                )
+            ],
+        )
+
+        runner._save_memory_snapshot()
+        first = repo.load_memory_snapshot(runner.game_id)
+        runner._save_memory_snapshot()
+        second = repo.load_memory_snapshot(runner.game_id)
+
+        assert len(first["relation_graph"]["events"]) == 1
+        assert len(second["relation_graph"]["events"]) == 1
 
     def test_save_memory_snapshot_writes_v2_reflections_only(self) -> None:
         from werewolf_agent.core.models import GameEvent, GameState, PlayerState

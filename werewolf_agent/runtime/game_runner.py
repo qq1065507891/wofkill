@@ -25,8 +25,10 @@ from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.judge import JudgeAgent
 from werewolf_agent.agents.judge_hitl import JudgeHITLInterface
 from werewolf_agent.model_gateway.router import ModelRouter
+from werewolf_agent.memory.store import MemoryStore
 from werewolf_agent.persona_runtime.judge_router import JudgeProfileRouter
 from werewolf_agent.persona_runtime.router import PersonaRouter
+from werewolf_agent.runtime.cognition_state import CognitionStateManager
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,9 @@ class GameRunner:
         # Memory restored from previous game (None if no coordinator/repository)
         self._restored_memory: Any = None
         self._restored_rag: list[Any] | None = None
+        self._cognition_state_manager = CognitionStateManager(
+            MemoryStore(repo=config.repository)
+        )
         self._model_router: ModelRouter | None = None
         self._persona_router: PersonaRouter | None = None
         self._rag_service: Any = config.rag_service
@@ -241,6 +246,7 @@ class GameRunner:
             rt["rag_service"] = self._rag_service
         if self._config.agent_call_timeout > 0:
             rt["agent_call_timeout"] = self._config.agent_call_timeout
+        rt["cognition_state_manager"] = self._cognition_state_manager
         if self._restored_memory is not None:
             rt["restored_memory"] = self._restored_memory
         if self._config.repository is not None:
@@ -347,6 +353,14 @@ class GameRunner:
             node_name = name
             if output is not None and "game_state" in output:
                 self._state = output["game_state"]
+                try:
+                    self._cognition_state_manager.update_from_events(self._state)
+                except Exception:
+                    logger.warning(
+                        "Live cognition update failed after node %s",
+                        node_name,
+                        exc_info=True,
+                    )
         return node_name
 
     def run(self, max_steps: int = 1000) -> GameState:
@@ -569,21 +583,23 @@ class GameRunner:
             return
         try:
             from werewolf_agent.cognition.world_state import build_world_state
-            from werewolf_agent.memory.store import MemoryStore
+            from werewolf_agent.memory.relation_graph import RelationGraph
             from werewolf_agent.memory.reflection import (
                 ReflectionQualityGate,
                 ReflectionSynthesizer,
             )
 
-            mem_store = MemoryStore(repo=self._config.repository)
+            mem_store = self._cognition_state_manager.memory_store
             player_ids = list(self._state.players.keys())
             role_names = list({p.role for p in self._state.players.values()})
 
             ws = build_world_state(self._state)
+            mem_store.relation_graph = RelationGraph()
             mem_store.import_world_state(ws)
 
             for pid in player_ids:
-                mem_store.init_matrix(pid, player_ids, role_names)
+                if mem_store.get_matrix(pid) is None:
+                    mem_store.init_matrix(pid, player_ids, role_names)
 
             winning_faction = self._state.winning_faction or "good"
             ground_truth = {pid: p.role for pid, p in self._state.players.items()}

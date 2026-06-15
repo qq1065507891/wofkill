@@ -204,6 +204,7 @@ def agent_night_witch(
         wolf_kill_target_id=wolf_kill_target_id,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
 
     # Build witch strategy directive with clear action guidance
@@ -472,6 +473,7 @@ def agent_night_seer(
         legal_targets=legal_targets,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -891,6 +893,7 @@ def _single_wolf_vote(
         wolf_team_plan=wolf_plan,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -1012,6 +1015,7 @@ def agent_wolf_discussion(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
 
     # Inject teammate transcript into recent_transcript for prompt visibility
@@ -1073,6 +1077,7 @@ def agent_defense_speech(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
         discussion_positions=state.get("discussion_positions"),
     )
 
@@ -1125,6 +1130,7 @@ def agent_day_speech(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
         discussion_positions=state.get("discussion_positions"),
     )
 
@@ -1327,6 +1333,7 @@ def agent_sheriff_pick_speech_order(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     strategy_directive = {
         "choose_speech_order": (
@@ -1385,6 +1392,7 @@ def agent_sheriff_endorse(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -1430,6 +1438,7 @@ def agent_pk_speech(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     # Add prior tally to visible state
     if prior_tally:
@@ -1730,6 +1739,7 @@ def agent_day_vote(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     if strategy_directive:
         context = _merge_strategy_directive(context, strategy_directive)
@@ -1788,6 +1798,7 @@ def agent_hybrid_choose_master(
         legal_targets=candidates,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -1817,6 +1828,7 @@ def agent_exile_last_words(
         legal_actions=[ActionType.SPEECH],
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     strategy_directive = {
         "last_words": (
@@ -1874,6 +1886,7 @@ def agent_badge_decision(
         legal_targets=alive_others,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     player_role = gs.players[sheriff_id].role if sheriff_id in gs.players else ""
     role_hint = ""
@@ -1981,6 +1994,7 @@ def agent_hunter_shot(
         legal_targets=legal_targets,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2010,6 +2024,7 @@ def agent_sheriff_vote(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
 
     # Wolf strategy for sheriff voting
@@ -2103,6 +2118,7 @@ def agent_sheriff_register(
         wolf_team_plan=wolf_plan,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2146,6 +2162,7 @@ def agent_sheriff_withdraw(
         legal_actions=[ActionType.SHERIFF_WITHDRAW, ActionType.NO_ACTION],
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
 
     try:
@@ -2359,6 +2376,7 @@ def agent_sheriff_election_speech(
         wolf_team_plan=state.get("wolf_team_plan"),
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
+        cognition_state_manager=state.get("cognition_state_manager"),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2422,6 +2440,8 @@ def _agent_reflection(
         context = build_agent_context(
             engine, gs, player_id, TaskType.REFLECTION,
             legal_actions=[ActionType.SPEECH],
+            restored_memory=state.get("restored_memory"),
+            cognition_state_manager=state.get("cognition_state_manager"),
         )
         reflection_task = _build_reflection_prompt(
             player=player,

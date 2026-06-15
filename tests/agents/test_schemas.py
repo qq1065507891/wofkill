@@ -238,7 +238,7 @@ class TestP2_1ExtraForbid:
             )
 
     def test_agent_context_accepts_known_fields(self) -> None:
-        """Regression: all 25 documented AgentContext fields still validate."""
+        """Regression: all documented AgentContext fields still validate."""
         AgentContext(
             agent_id="p01",
             task_type=TaskType.VOTE,
@@ -263,12 +263,28 @@ class TestP2_1ExtraForbid:
             strategy_directive={},
             persona_snapshot={},
             model_config_snapshot={},
+            possible_worlds={},
+            simulation_predictions={},
+            decision_plan_audit={},
+            dialogue_plan_audit={},
             recent_transcript=[],
             output_schema_hint="",
             skill_analyses={},
             skill_analysis_hints={},
             rag_anomaly_count=0,
         )
+
+    def test_agent_context_world_model_placeholders_default_empty(self) -> None:
+        """Phase 0: future world-model fields exist but default to empty dicts."""
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+        )
+
+        assert ctx.possible_worlds == {}
+        assert ctx.simulation_predictions == {}
+        assert ctx.decision_plan_audit == {}
+        assert ctx.dialogue_plan_audit == {}
 
 
 # ---------------------------------------------------------------------------

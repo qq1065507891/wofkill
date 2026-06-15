@@ -19,6 +19,12 @@ def test_cognitive_diff_section(dashboard_html):
 def test_rag_hit_panel(dashboard_html):
     assert "rag-hit" in dashboard_html or "rag-audit" in dashboard_html
 
+def test_world_model_panel(dashboard_html, dashboard_js):
+    assert "world-model-panel" in dashboard_html
+    assert "worldModelBody" in dashboard_html
+    assert "loadWorldModelAudit" in dashboard_js
+    assert "/world-model-audit" in dashboard_js
+
 def test_model_routing_panel(dashboard_html):
     assert "model-routing" in dashboard_html or "llm-profile" in dashboard_html
 

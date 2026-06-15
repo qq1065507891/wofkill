@@ -39,6 +39,7 @@ from werewolf_agent.agents.parse_dispatch import (
     select_output_mode as _select_output_mode,
 )
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+from werewolf_agent.agents.planning import planning_envelope_to_action
 from werewolf_agent.agents.metrics_collector import MetricsCollector
 from werewolf_agent.agents.output_parser import (
     repair_json_text as _repair_json_impl,
@@ -513,7 +514,13 @@ class PlayerAgent:
             # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
             # the program maps that choice back into a legal PlayerAction.
             choice_data: dict[str, Any] | None = None
-            if output_mode == OutputMode.TARGET_CHOICE:
+            action, parse_error, choice_data = self._parse_planning_action(
+                result.text,
+                context,
+            )
+            if action is not None or parse_error:
+                pass
+            elif output_mode == OutputMode.TARGET_CHOICE:
                 action, parse_error, choice_data = _parse_choice_action(
                     result.text,
                     context,
@@ -841,6 +848,26 @@ class PlayerAgent:
 
     def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
         return _parse_action_impl(text)
+
+    def _parse_planning_action(
+        self,
+        text: str,
+        context: AgentContext,
+    ) -> tuple[PlayerAction | None, str | None, dict[str, Any] | None]:
+        data, parse_error = _extract_decision_impl(text)
+        if data is None:
+            return None, None, None
+        has_decision = "decision_plan" in data
+        has_dialogue = "dialogue_plan" in data
+        if not has_decision and not has_dialogue:
+            return None, None, None
+        if not has_decision or not has_dialogue:
+            return None, "Planning envelope requires decision_plan and dialogue_plan", None
+        try:
+            action, audit = planning_envelope_to_action(data, context)
+        except Exception as exc:
+            return None, f"Planning envelope validation error: {exc}", None
+        return action, None, audit
 
     def _action_from_data(self, data: Any) -> tuple[PlayerAction | None, str | None]:
         return _action_from_data_impl(data)

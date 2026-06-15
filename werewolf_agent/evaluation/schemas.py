@@ -235,6 +235,15 @@ class SafetyMetrics:
 
 
 @dataclass
+class WorldModelMetrics:
+    belief_calibration: float = 0.0
+    possible_world_topk_hit_rate: float = 0.0
+    simulator_prediction_hit_rate: float = 0.0
+    dialogue_leakage_rate: float = 0.0
+    decision_legality_rate: float = 0.0
+
+
+@dataclass
 class CostMetrics:
     total_cost: float = 0.0
     avg_cost_per_game: float = 0.0
@@ -272,6 +281,7 @@ class MetricsSnapshot:
     role_metrics: dict[str, RoleMetrics] = field(default_factory=dict)
     quality_metrics: QualityMetrics = field(default_factory=QualityMetrics)
     safety_metrics: SafetyMetrics = field(default_factory=SafetyMetrics)
+    world_model_metrics: WorldModelMetrics = field(default_factory=WorldModelMetrics)
     cost_metrics: CostMetrics = field(default_factory=CostMetrics)
     growth_curve: list[GrowthPoint] = field(default_factory=list)
     provenance: dict[str, MetricProvenance] = field(default_factory=dict)
@@ -294,6 +304,7 @@ class MetricsSnapshot:
             "role_metrics": _dataclass_to_dict(self.role_metrics),
             "quality_metrics": _dataclass_to_dict(self.quality_metrics),
             "safety_metrics": _dataclass_to_dict(self.safety_metrics),
+            "world_model_metrics": _dataclass_to_dict(self.world_model_metrics),
             "cost_metrics": _dataclass_to_dict(self.cost_metrics),
             "growth_curve": _dataclass_to_dict(self.growth_curve),
             "provenance": _dataclass_to_dict(self.provenance),

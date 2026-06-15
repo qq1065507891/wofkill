@@ -389,6 +389,46 @@ class TestMetricsAggregator:
         agg.add_results([_make_game_result(game_id="g1"), _make_game_result(game_id="g2")])
         assert len(agg.results) == 2
 
+    def test_world_model_metrics_from_audit_reviews(self):
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            reviews=[
+                {
+                    "world_model_audit": {
+                        "belief_calibration_samples": [
+                            {"predicted": 0.9, "actual": True},
+                            {"predicted": 0.2, "actual": False},
+                        ],
+                        "possible_world_checks": [
+                            {"hit": True},
+                            {"hit": False},
+                        ],
+                        "simulation_checks": [
+                            {"hit": True},
+                        ],
+                        "decision_legality_checks": [
+                            {"legal": True},
+                            {"legal": True},
+                        ],
+                        "dialogue_leak_checks": [
+                            {"leaked": False},
+                            {"leaked": True},
+                        ],
+                    }
+                }
+            ],
+        )
+        agg.add_result(result)
+
+        snap = agg.compute_snapshot()
+
+        assert snap.world_model_metrics.belief_calibration == pytest.approx(0.85)
+        assert snap.world_model_metrics.possible_world_topk_hit_rate == pytest.approx(0.5)
+        assert snap.world_model_metrics.simulator_prediction_hit_rate == pytest.approx(1.0)
+        assert snap.world_model_metrics.decision_legality_rate == pytest.approx(1.0)
+        assert snap.world_model_metrics.dialogue_leakage_rate == pytest.approx(0.5)
+        assert "world_model_metrics" in snap.to_json_dict()
+
 
 # ===========================================================================
 # Batch runner tests

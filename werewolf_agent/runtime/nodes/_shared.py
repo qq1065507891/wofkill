@@ -94,6 +94,8 @@ class RuntimeState(TypedDict, total=False):
     rag_service: Any
     # Restored MemoryStore from previous game (cross-game learning)
     restored_memory: Any
+    # Live current-game cognition manager; separate from cross-game memory
+    cognition_state_manager: Any
     # Runtime flow-control timer; must not adjudicate RuleEngine truth
     runtime_timer: Any
     # Anti-stall: consecutive days with no exile from vote

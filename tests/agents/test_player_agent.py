@@ -502,6 +502,51 @@ class TestPlayerAgentRetryFallback:
         assert action.trace.parsed_action["choice"] == "B"
         assert retry.error_code is None
 
+    def test_mandatory_vote_accepts_decision_dialogue_plan_envelope(self) -> None:
+        json_resp = json.dumps({
+            "decision_plan": {
+                "action_type": "vote",
+                "target_id": "p07",
+                "confidence": 0.83,
+                "private_goal": "resolve p07 contradiction",
+                "evidence_refs": ["event:12:speech"],
+                "reference_refs": ["rag:vote_pressure"],
+                "selected_world_ids": ["World A"],
+                "risk_flags": ["could_be_wrong"],
+            },
+            "dialogue_plan": {
+                "public_intent": "push p07",
+                "public_target_id": "p07",
+                "talking_points": [
+                    "p07 changed stance twice",
+                    "vote p07 to resolve the conflict",
+                ],
+                "conceal": ["p06 is my wolf teammate"],
+                "tone": "direct",
+            },
+        })
+        agent = self._make_agent(json_resp)
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.VOTE,
+            phase="day",
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p06", "p07"],
+        )
+
+        action, retry = agent.act(ctx)
+
+        assert isinstance(action, PlayerAction)
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p07"
+        assert action.confidence == 0.83
+        assert "p07 changed stance twice" in action.reason
+        assert "wolf teammate" not in action.reason
+        assert action.private_reason
+        assert action.trace is not None
+        assert action.trace.parsed_action["planning_mode"] == "decision_dialogue"
+        assert retry.error_code is None
+
     def test_vote_choice_pipeline_repairs_mixed_text_json(self) -> None:
         json_resp = (
             "我先分析一下局势。"

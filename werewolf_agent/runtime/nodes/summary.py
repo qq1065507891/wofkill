@@ -96,6 +96,9 @@ def summarize_positions(state: RuntimeState) -> dict[str, Any]:
                         engine, gs, pid, TaskType.SPEECH,
                         legal_actions=[ActionType.SPEECH],
                         wolf_team_plan=state.get("wolf_team_plan"),
+                        rag_service=state.get("rag_service"),
+                        restored_memory=state.get("restored_memory"),
+                        cognition_state_manager=state.get("cognition_state_manager"),
                         discussion_positions=state.get("discussion_positions"),
                     )
                     extra_directive = {

@@ -472,6 +472,7 @@ async function loadEnhancedPanels(p) {
   await Promise.all([
     loadPrivateIntent(p),
     loadRagAudit(p),
+    loadWorldModelAudit(p),
     loadModelRouting(p),
     loadPersonaRouting(p),
     loadAttentionStats(p),
@@ -547,6 +548,40 @@ async function loadRagAudit(p) {
   } catch (e) {
     el.innerHTML = '<div class="empty-state">RAG audit endpoint not available</div>';
     console.error('rag audit error', e);
+  }
+}
+
+// World Model Panel
+async function loadWorldModelAudit(p) {
+  const el = document.getElementById('worldModelBody');
+  if (!el) return;
+  try {
+    const r = await api(`/games/${currentGame}/world-model-audit?${toParams(p)}`);
+    if (!r.ok) {
+      el.innerHTML = '<div class="empty-state">No world-model audit access</div>';
+      return;
+    }
+    const data = await r.json();
+    const audits = data.audits || [];
+    if (!audits.length) {
+      el.innerHTML = '<div class="empty-state">No world-model audit records</div>';
+      return;
+    }
+    el.innerHTML = audits.slice(0, 8).map(a => {
+      const worlds = a.possible_worlds || [];
+      const predictions = a.simulation_predictions || [];
+      return `<div class="rag-hit-entry">
+        <div class="hit-header">
+          <span class="hit-id">${a.player_id || '?'}</span>
+          <span class="hit-score">${worlds.length} worlds · ${predictions.length} predictions</span>
+        </div>
+        <div class="hit-detail">Belief: ${JSON.stringify(a.belief || {}).slice(0, 120)}</div>
+        <div class="hit-detail">Decision: ${JSON.stringify(a.decision_plan || {}).slice(0, 120)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">World-model audit endpoint not available</div>';
+    console.error('world model audit error', e);
   }
 }
 
