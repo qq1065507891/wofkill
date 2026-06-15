@@ -202,7 +202,7 @@ def test_enter_night_increments_night() -> None:
     assert result["game_state"].night_number == 1
     assert result["game_state"].phase == "night"
 
-def test_reflection_node_persists_entries_to_repository() -> None:
+def test_reflection_node_records_self_reviews_without_persisting_v1() -> None:
     from werewolf_agent.runtime.nodes.summary import reflection
 
     class FakeRepository:
@@ -230,8 +230,9 @@ def test_reflection_node_persists_entries_to_repository() -> None:
     result = reflection({"game_state": gs, "engine": _new_engine(), "repository": repo})
 
     assert result["game_state"].events[-1].type == "reflection_complete"
-    assert [entry["player_id"] for entry in repo.saved] == ["p01", "p02"]
-    assert all(entry["game_id"] == "reflection_persist" for entry in repo.saved)
+    assert repo.saved == []
+    payload = result["game_state"].events[-1].payload
+    assert [entry["player_id"] for entry in payload["entries"]] == ["p01", "p02"]
 
 def test_single_wolf_vote_uses_global_agent_timeout(monkeypatch) -> None:
     engine = _new_engine()

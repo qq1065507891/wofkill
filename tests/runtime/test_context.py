@@ -11,6 +11,7 @@ from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.memory.schemas import PlayerProfile, ReflectionEntry
+from tests.memory.test_reflection_v2 import _v2_entry
 from werewolf_agent.runtime.context import (
     _cognition_matrix_hint,
     _inject_seed_rag_hints,
@@ -193,6 +194,148 @@ def test_reflection_hints_higher_priority_wins_over_newer_game() -> None:
 
     # Priority 2 (same role) must beat priority 0 (other), even when other is newer
     assert [h["text"] for h in hints] == ["old-same", "new-other"]
+
+
+def test_v2_reflection_hints_render_prompt_card_only() -> None:
+    ref = _v2_entry(
+        quality_status="approved",
+        quality_score=0.86,
+        source={
+            "llm_self_review": "raw source should not render",
+            "auto_review_summary": "actual_role=werewolf should not render",
+            "merged_by": "reflection_synthesizer_v2",
+        },
+    )
+
+    hints = _reflection_memory_hints([ref], current_role="seer", current_faction="good")
+
+    assert len(hints) == 1
+    hint = hints[0]
+    assert hint["theme"] == ref.prompt_card.theme
+    assert hint["lesson"] == ref.prompt_card.lesson
+    assert hint["trigger_signals"] == ref.prompt_card.trigger_signals
+    assert hint["recommended_action"] == ref.prompt_card.recommended_action
+    assert hint["misuse_risk"] == ref.prompt_card.misuse_risk
+    assert "source" not in hint
+    assert "quality_score" not in hint
+    assert "mistake_patterns" not in hint
+
+
+def test_build_agent_context_injects_reflections_without_profile() -> None:
+    from werewolf_agent.memory.store import MemoryStore
+    from werewolf_agent.runtime.graph import _new_engine
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="werewolf", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="v2_no_profile",
+        phase="day",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    memory = MemoryStore()
+    memory.reflections.store_v2(
+        _v2_entry(quality_status="approved", quality_score=0.86)
+    )
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        restored_memory=memory,
+    )
+
+    assert ctx.profile_memory_hint == {}
+    assert ctx.reflection_memory_hints
+    assert ctx.reflection_memory_hints[0]["theme"] == "对跳局先核验警徽流"
+    assert ctx.error_pattern_hint["top_mistakes"] == [("vote_mistake", 1)]
+
+
+def test_build_agent_context_does_not_inject_legacy_reflection_text() -> None:
+    from werewolf_agent.memory.store import MemoryStore
+    from werewolf_agent.runtime.graph import _new_engine
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="werewolf", alive=True),
+    }
+    gs = GameState(
+        game_id="legacy_reflection_no_live_prompt",
+        phase="day",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    memory = MemoryStore()
+    memory.store_reflection(ReflectionEntry(
+        entry_id="legacy_ref_1",
+        game_id="old_game",
+        player_id="p01",
+        role="seer",
+        faction_won=False,
+        text="legacy raw reflection must not reach live prompt",
+        tags=["seer"],
+    ))
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        restored_memory=memory,
+    )
+
+    assert ctx.reflection_memory_hints == []
+    assert "legacy raw reflection" not in str(ctx.error_pattern_hint)
+
+
+def test_build_agent_context_queries_v2_reflections_with_card_budget() -> None:
+    from werewolf_agent.runtime.graph import _new_engine
+
+    captured: dict[str, int] = {}
+
+    class _ReflectionMemory:
+        def query_live(self, query):
+            captured["max_results"] = query.max_results
+            return []
+
+    class _RestoredMemory:
+        reflections = _ReflectionMemory()
+
+        def get_profile(self, pid):
+            return None
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="v2_card_budget",
+        phase="day",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+
+    build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        restored_memory=_RestoredMemory(),
+    )
+
+    assert captured["max_results"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -2227,30 +2370,20 @@ def test_wolf_skip_in_handler_only():
 
 
 # ---------------------------------------------------------------------------
-# MEM-NEW-3: build_agent_context's cross-game memory hint must use
-# ``MemoryStore._player_faction`` (the canonical helper) to compute
-# the current faction, not a hard-coded ternary that duplicates the
-# logic. The two WILL drift if a new role is added or the role sets
-# in ``MemoryStore`` change.
-#
-# The user-visible consequence: a hybrid whose master is a werewolf
-# was being treated as "good" by the inline ternary at
-# context.py:1032-1037 (the branch for current_role == "hybrid"
-# checked gs.hybrid_master_faction, but the surrounding fallthrough
-# landed on "good"). After the fix, the hybrid's reflections are
-# ranked the same way as a werewolf's (priority 1 for werewolf
-# reflections), not the same way as a seer's.
+# Reflection V2 live prompt boundary: legacy V1 reflection bodies are audit /
+# migration inputs only. They must not be injected into player prompts even
+# when a profile exists.
 # ---------------------------------------------------------------------------
 
 
-def test_cross_game_hint_does_not_use_hybrid_master_faction() -> None:
+def test_build_agent_context_ignores_legacy_reflections_even_with_profile() -> None:
     from werewolf_agent.agents.schemas import TaskType
     from werewolf_agent.core.models import GameState, PlayerState
     from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
     from werewolf_agent.runtime.context import build_agent_context
 
-    # Build a GameState where p01 is hybrid and the master has
-    # already been chosen (gs.hybrid_master_faction='werewolf').
+    # Build a GameState where p01 has a profile and legacy V1 reflection rows.
+    # V2 live-learning must not fall back to these raw reflection bodies.
     players = {
         "p01": PlayerState(id="p01", role="hybrid", alive=True),
         "p02": PlayerState(id="p02", role="werewolf", alive=True),
@@ -2266,8 +2399,6 @@ def test_cross_game_hint_does_not_use_hybrid_master_faction() -> None:
         hybrid_master_faction="werewolf",
     )
 
-    # Same-date losing reflections tie on every public criterion. The
-    # deterministic entry id order must win; hidden master faction must not.
     werewolf_ref = ReflectionEntry(
         entry_id="z_wolf",
         game_id="2025-01-01",
@@ -2312,14 +2443,10 @@ def test_cross_game_hint_does_not_use_hybrid_master_faction() -> None:
         restored_memory=_FakeRestoredMemory(),
     )
 
-    hints = ctx.reflection_memory_hints
-    assert hints, "MEM-NEW-3: cross-game hint should be populated for hybrid with past games"
-    texts = [h["text"] for h in hints]
-    wolf_idx = texts.index("wolf-perspective-reflection") if "wolf-perspective-reflection" in texts else -1
-    seer_idx = texts.index("seer-perspective-reflection") if "seer-perspective-reflection" in texts else -1
-    assert wolf_idx != -1, f"MEM-NEW-3: werewolf reflection missing from hints: {texts!r}"
-    assert seer_idx != -1, f"MEM-NEW-3: seer reflection missing from hints: {texts!r}"
-    assert seer_idx < wolf_idx
+    assert ctx.profile_memory_hint
+    assert ctx.reflection_memory_hints == []
+    assert "wolf-perspective-reflection" not in str(ctx.error_pattern_hint)
+    assert "seer-perspective-reflection" not in str(ctx.error_pattern_hint)
 
 
 def test_dead_hybrid_master_context_does_not_reveal_master_faction() -> None:

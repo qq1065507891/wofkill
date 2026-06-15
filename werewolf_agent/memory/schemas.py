@@ -10,7 +10,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 _LOG = logging.getLogger(__name__)
@@ -208,6 +210,140 @@ class ReviewReport:
     improvement_suggestions: list[str] = field(default_factory=list)
     ability_deltas: dict[str, float] = field(default_factory=dict)
     summary: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Reflection V2 — structured long-term learning cards
+# ---------------------------------------------------------------------------
+
+
+class ReflectionQualityStatus(str, Enum):
+    APPROVED = "approved"
+    REVIEW_ONLY = "review_only"
+    REJECTED = "rejected"
+
+
+class SituationSignature(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str = ""
+    faction: str = ""
+    outcome: str = ""
+    phase_focus: list[str] = Field(default_factory=list)
+    game_patterns: list[str] = Field(default_factory=list)
+
+
+class ReflectionMistakePattern(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: str = ""
+    trigger: str = ""
+    wrong_action: str = ""
+    better_action: str = ""
+    fact_basis: str = "llm_transferable"
+    auto_verified: bool = False
+    corrected_from_llm: bool = False
+
+
+class ReflectionPreservedStrength(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: str = ""
+    behavior: str = ""
+    reuse_condition: str = ""
+
+
+class ReflectionPromptCard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    theme: str
+    lesson: str
+    trigger_signals: list[str] = Field(default_factory=list)
+    recommended_action: str
+    misuse_risk: str
+    fact_basis: str = "llm_transferable"
+    auto_verified: bool = False
+
+
+class ReflectionSource(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    llm_self_review: str = ""
+    auto_review_summary: str = ""
+    merged_by: str = "reflection_synthesizer_v2"
+
+
+class ReflectionEntryV2(BaseModel):
+    """Structured reflection entry stored inside reflections.entry_json.
+
+    Only ``prompt_card`` and aggregate labels derived from approved V2 entries
+    may be rendered into live prompts. Source and quality fields are audit-only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[2] = 2
+    entry_id: str
+    game_id: str
+    player_id: str
+    role: str
+    faction: str = ""
+    faction_won: bool = False
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    quality_status: ReflectionQualityStatus = ReflectionQualityStatus.REVIEW_ONLY
+    quality_flags: list[str] = Field(default_factory=list)
+    situation_signature: SituationSignature = Field(default_factory=SituationSignature)
+    mistake_patterns: list[ReflectionMistakePattern] = Field(default_factory=list)
+    preserved_strengths: list[ReflectionPreservedStrength] = Field(default_factory=list)
+    actionable_advice: list[str] = Field(default_factory=list)
+    avoid_next_time: list[str] = Field(default_factory=list)
+    prompt_card: ReflectionPromptCard
+    source: ReflectionSource = Field(default_factory=ReflectionSource)
+
+    @model_validator(mode="after")
+    def _identity_must_exist(self) -> "ReflectionEntryV2":
+        if not self.entry_id.strip():
+            raise ValueError("ReflectionEntryV2.entry_id must be non-empty")
+        if not self.game_id.strip():
+            raise ValueError("ReflectionEntryV2.game_id must be non-empty")
+        if not self.player_id.strip():
+            raise ValueError("ReflectionEntryV2.player_id must be non-empty")
+        if not self.role.strip():
+            raise ValueError("ReflectionEntryV2.role must be non-empty")
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ReflectionEntryV2":
+        return cls.model_validate(data)
+
+    def prompt_visible_texts(self) -> list[str]:
+        """Return every field that can influence live prompt rendering."""
+        texts = [
+            self.prompt_card.theme,
+            self.prompt_card.lesson,
+            self.prompt_card.recommended_action,
+            self.prompt_card.misuse_risk,
+            *self.prompt_card.trigger_signals,
+            *self.actionable_advice,
+            *self.avoid_next_time,
+        ]
+        for pattern in self.mistake_patterns:
+            texts.extend([
+                pattern.category,
+                pattern.trigger,
+                pattern.wrong_action,
+                pattern.better_action,
+            ])
+        for strength in self.preserved_strengths:
+            texts.extend([
+                strength.category,
+                strength.behavior,
+                strength.reuse_condition,
+            ])
+        return [str(t) for t in texts if str(t or "").strip()]
 
 
 # ---------------------------------------------------------------------------

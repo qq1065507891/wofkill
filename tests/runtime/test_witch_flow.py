@@ -628,47 +628,50 @@ class TestWitchPoisonPressureContext:
         """Good-side players should receive actionable good-side failure reflections."""
         from werewolf_agent.runtime.agent_adapter import build_agent_context
 
-        class FakeProfile:
-            games_played = 3
-            logic = 0.6
-            deception = 0.2
-            credibility = 0.7
+        from tests.memory.test_reflection_v2 import _v2_entry
+        from werewolf_agent.memory.schemas import PlayerProfile
 
-        class FakeReflection:
-            def __init__(
-                self,
-                entry_id: int,
-                role: str,
-                faction_won: bool,
-                text: str,
-                situation: str = "",
-            ) -> None:
-                self.entry_id = entry_id
-                self.role = role
-                self.faction_won = faction_won
-                self.text = text
-                self.situation = situation
+        class FakeReflectionMemory:
+            def query_live(self, query):
+                return [
+                    _v2_entry(
+                        entry_id="reflection_good_failure",
+                        game_id="old_good_failure",
+                        player_id="p01",
+                        role="villager",
+                        quality_status="approved",
+                        quality_score=0.9,
+                        prompt_card={
+                            **_v2_entry().prompt_card.model_dump(),
+                            "theme": "好人失败归票校准",
+                            "lesson": "好人失败原因：没有把预言家查杀转成统一投票。",
+                            "recommended_action": "改进：先按查验和票型排序。",
+                        },
+                    )
+                ]
+
+            def live_error_pattern(self, player_id, role=""):
+                return {
+                    "top_mistakes": [("vote_mistake", 1)],
+                    "preserved_strength_count": 0,
+                    "preserved_strength_labels": [],
+                    "total_reflections": 1,
+                    "same_role_reflections": 1,
+                    "dominant_mistake_ratio": 1.0,
+                    "current_role": role,
+                }
 
         class FakeMemory:
-            def get_profile(self, player_id):
-                return FakeProfile()
+            reflections = FakeReflectionMemory()
 
-            def reflections_by_player(self, player_id):
-                return [
-                    FakeReflection(
-                        1,
-                        "werewolf",
-                        True,
-                        "狼人赢在好人分票和女巫盲毒。",
-                    ),
-                    FakeReflection(
-                        2,
-                        "villager",
-                        False,
-                        "好人失败原因：没有把预言家查杀转成统一投票；改进：先按查验和票型排序。",
-                        "D2放逐前",
-                    ),
-                ]
+            def get_profile(self, player_id):
+                return PlayerProfile(
+                    player_id=player_id,
+                    games_played=3,
+                    logic=0.6,
+                    deception=0.2,
+                    credibility=0.7,
+                )
 
             def get_matrix(self, player_id):
                 class Entry:
@@ -709,7 +712,7 @@ class TestWitchPoisonPressureContext:
         joined = str(reflections)
         assert "好人失败原因" in joined
         assert "改进" in joined
-        assert joined.index("villager") < joined.index("werewolf")
+        assert "werewolf" not in joined
         assert context.profile_memory_hint["games_played"] == 3
         assert context.cognition_matrix_hint["suspects"][0]["player"] == "p02"
 

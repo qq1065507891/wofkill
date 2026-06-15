@@ -50,17 +50,37 @@ class PersistentMemoryCoordinator:
     # -- Memory store --------------------------------------------------------
 
     def save_memory(self, memory_store: Any, snapshot_id: str = "latest") -> None:
-        """Persist full MemoryStore snapshot."""
+        """Persist MemoryStore snapshot and update latest alias.
+
+        Reflection bodies are written to the durable ``reflections`` table, not
+        embedded in the snapshot. The snapshot stores only lightweight IDs.
+        """
+        self._persist_reflection_rows(memory_store)
         data = save_memory_store(memory_store)
         self._repo.save_memory_snapshot(snapshot_id, data)
+        if snapshot_id != "latest":
+            self._repo.save_memory_snapshot("latest", data)
 
-    def restore_memory(self, snapshot_id: str = "latest") -> Any:
+    def restore_memory(
+        self,
+        snapshot_id: str = "latest",
+        *,
+        fallback_to_latest: bool = False,
+    ) -> Any:
         """Restore MemoryStore from a snapshot. Returns MemoryStore or None."""
         from werewolf_agent.memory.store import MemoryStore
         data = self._repo.load_memory_snapshot(snapshot_id)
+        if data is None and fallback_to_latest and snapshot_id != "latest":
+            data = self._repo.load_memory_snapshot("latest")
         if data is None:
             return MemoryStore(repo=self._repo)
         return restore_memory_store(data, repo=self._repo)
+
+    def restore_latest_memory(self) -> Any:
+        return self.restore_memory("latest")
+
+    def restore_for_new_game(self, game_id: str) -> Any:
+        return self.restore_memory(game_id, fallback_to_latest=True)
 
     def list_snapshots(self) -> list[dict[str, Any]]:
         return self._repo.list_memory_snapshots()
@@ -78,3 +98,19 @@ class PersistentMemoryCoordinator:
         mem = self.restore_memory(snapshot_id)
         rag = self.restore_rag()
         return mem, rag
+
+    def _persist_reflection_rows(self, memory_store: Any) -> None:
+        if memory_store is None or not hasattr(self._repo, "save_reflection"):
+            return
+        reflections = getattr(memory_store, "reflections", None)
+        if reflections is None:
+            return
+        for entry in getattr(reflections, "all_entries", lambda: [])():
+            entry_id = getattr(entry, "entry_id", "")
+            existing = None
+            if entry_id and hasattr(self._repo, "load_reflection"):
+                existing = self._repo.load_reflection(entry_id)
+            if existing is None:
+                self._repo.save_reflection(entry.to_dict())
+        for entry in getattr(reflections, "all_v2_entries", lambda: [])():
+            self._repo.save_reflection(entry.to_dict())

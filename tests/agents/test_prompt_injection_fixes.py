@@ -10,8 +10,8 @@ later tasks will add their own tests below.
 from __future__ import annotations
 
 
-def test_reflection_hints_slice_uses_budget_8() -> None:
-    """M4-1: prompt_builder must slice reflection hints with budget=8, not 5."""
+def test_reflection_hints_slice_uses_card_budget_3() -> None:
+    """Reflection live prompt rendering must cap cards at the V2 card budget."""
     from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
     from werewolf_agent.agents.schemas import AgentContext, TaskType
 
@@ -43,9 +43,9 @@ def test_reflection_hints_slice_uses_budget_8() -> None:
     # ``"text":"反思 `` (note trailing space — the header has no JSON
     # ``"text":"反思 "``).
     item_count = text.count('"text":"反思 ')
-    assert item_count == 8, (
-        f"Expected 8 reflection hints in output, got {item_count}. "
-        f"Budget is 8 in context.py but prompt_builder slices with [:5]."
+    assert item_count == 3, (
+        f"Expected 3 reflection hints in output, got {item_count}. "
+        "Reflection V2 live prompt card budget is 3."
     )
 
 

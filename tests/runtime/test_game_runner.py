@@ -667,6 +667,27 @@ class TestGameRunnerMemoryLifecycle:
         # restored_memory should now be non-None
         assert runner2.restored_memory is not None
 
+    def test_game_runner_restores_latest_memory_for_new_game_id(self) -> None:
+        """New game IDs should fall back to the latest cross-game snapshot."""
+        from werewolf_agent.memory.store import MemoryStore
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        store = MemoryStore()
+        store.init_matrix("p01", ["p01", "p02"])
+        coord.save_memory(store, "g_previous")
+
+        runner = GameRunner(GameRunnerConfig(
+            seed=98765,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+
+        assert runner.restored_memory is not None
+        assert runner.restored_memory.get_matrix("p01") is not None
+
     def test_no_memory_save_without_coordinator(self) -> None:
         """Without memory_coordinator, no memory snapshot should be saved."""
         from werewolf_agent.storage.memory_store import InMemoryGameRepository
@@ -727,3 +748,110 @@ class TestGameRunnerMemoryLifecycle:
         snapshot = repo.load_memory_snapshot(runner.game_id)
         matrices = snapshot.get("cognition_matrices", {})
         assert len(matrices) == 12, f"Expected 12 cognition matrices, got {len(matrices)}"
+
+    def test_save_memory_snapshot_writes_v2_reflections_only(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coord = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=123,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        runner._state = GameState(
+            game_id=runner.game_id,
+            phase="finished",
+            day_number=2,
+            winning_faction="good",
+            players={
+                "p01": PlayerState(id="p01", role="seer", alive=True),
+                "p02": PlayerState(id="p02", role="werewolf", alive=False),
+            },
+            events=[
+                GameEvent(
+                    type="reflection_complete",
+                    payload={
+                        "player_count": 2,
+                        "entries": [
+                            {
+                                "player_id": "p01",
+                                "role": "seer",
+                                "alive": True,
+                                "reflection": "我在对跳局需要先核验警徽流。",
+                            },
+                            {
+                                "player_id": "p02",
+                                "role": "werewolf",
+                                "alive": False,
+                                "reflection": "下次悍跳前要统一警徽流口径。",
+                            },
+                        ],
+                    },
+                )
+            ],
+        )
+
+        runner._save_memory_snapshot()
+
+        rows = repo.load_all_reflections()
+        assert len(rows) == 2
+        assert {row["schema_version"] for row in rows} == {2}
+        assert all("quality_status" in row for row in rows)
+        assert all("text" not in row for row in rows)
+
+    def test_save_memory_snapshot_does_not_rewrite_legacy_v1_reflections(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        repo.save_reflection({
+            "entry_id": "legacy_v1",
+            "game_id": "old_game",
+            "player_id": "p01",
+            "role": "seer",
+            "faction_won": False,
+            "text": "legacy row must remain untouched",
+            "tags": ["seer"],
+            "legacy_marker": "preserve-me",
+        })
+        coord = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=124,
+            repository=repo,
+            memory_coordinator=coord,
+        ))
+        runner._state = GameState(
+            game_id=runner.game_id,
+            phase="finished",
+            day_number=2,
+            winning_faction="good",
+            players={
+                "p01": PlayerState(id="p01", role="seer", alive=True),
+            },
+            events=[
+                GameEvent(
+                    type="reflection_complete",
+                    payload={
+                        "player_count": 1,
+                        "entries": [
+                            {
+                                "player_id": "p01",
+                                "role": "seer",
+                                "alive": True,
+                                "reflection": "我在对跳局需要先核验警徽流。",
+                            },
+                        ],
+                    },
+                )
+            ],
+        )
+
+        runner._save_memory_snapshot()
+
+        legacy = repo.load_reflection("legacy_v1")
+        assert legacy is not None
+        assert legacy["legacy_marker"] == "preserve-me"

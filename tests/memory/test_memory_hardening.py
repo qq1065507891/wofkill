@@ -234,8 +234,11 @@ class TestMemoryStoreSnapshot:
         # Verify relation
         assert restored.relation_graph.count() == 1
 
-        # Verify reflection
-        assert len(restored.reflections.by_player("p1")) == 1
+        # Verify reflection boundary: snapshots keep IDs only and do not
+        # rehydrate full reflection bodies. Durable reflection rows are restored
+        # from the reflections table by PersistentMemoryCoordinator.
+        assert parsed["reflections"] == ["snap_r1"]
+        assert len(restored.reflections.by_player("p1")) == 0
 
         # Verify profile
         p = restored.get_profile("p1")

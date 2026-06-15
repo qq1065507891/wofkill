@@ -18,6 +18,7 @@ import logging
 import re
 import threading
 from collections import Counter
+from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
@@ -63,6 +64,8 @@ from werewolf_agent.runtime.strategy import (
 logger = logging.getLogger(__name__)
 
 _MAX_SKILL_TACTICAL_ADVICE_ITEMS = 3
+_NEGATIVE_SIGNAL_TOKENS = ("不需要", "不要", "避免", "禁止", "不能", "不建议", "无需")
+_LOW_CONFIDENCE_SKILL_THRESHOLD = 0.4
 
 _SPEECH_STYLE_HINTS = {
     "structured_logical": "用严谨的逻辑推理链分析场上信息，像法官一样条理清晰地展示判断依据。",
@@ -490,6 +493,7 @@ def _profile_memory_hint(
 # 同一角色填满 (max 2 per role × 2~3 roles),跨角色学习受限。
 # 8 hints × 2 per role = 覆盖 4 角色族,适合好人阵营 5 角色 + 狼 1 角色场景。
 HINT_BUDGET = 8
+REFLECTION_CARD_BUDGET = 3
 _EXPLICIT_GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
 
 
@@ -551,12 +555,25 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
         if role_counts.get(role, 0) >= MAX_PER_ROLE:
             continue
         role_counts[role] = role_counts.get(role, 0) + 1
-        hints.append({
-            "role": ref.role,
-            "result": "胜" if ref.faction_won else "负",
-            "text": ref.text,
-            "situation": ref.situation,
-        })
+        prompt_card = getattr(ref, "prompt_card", None)
+        if prompt_card is not None:
+            hints.append({
+                "role": ref.role,
+                "result": "胜" if ref.faction_won else "负",
+                "theme": prompt_card.theme,
+                "lesson": prompt_card.lesson,
+                "trigger_signals": list(prompt_card.trigger_signals),
+                "recommended_action": prompt_card.recommended_action,
+                "misuse_risk": prompt_card.misuse_risk,
+                "entry_id": ref.entry_id,
+            })
+        else:
+            hints.append({
+                "role": ref.role,
+                "result": "胜" if ref.faction_won else "负",
+                "text": ref.text,
+                "situation": ref.situation,
+            })
     return hints
 
 
@@ -721,17 +738,36 @@ def _action_trace_payload(action: Any) -> dict[str, Any] | None:
     return trace.model_dump() if trace else None
 
 
+def _has_negative_signal_advice(*parts: Any) -> bool:
+    text = " ".join(str(part or "") for part in parts)
+    return any(token in text for token in _NEGATIVE_SIGNAL_TOKENS)
+
+
 def _skill_output_to_advice_frame(
     output: Any,
     skill_input: SkillInput,
 ) -> SkillAdviceFrame:
     if getattr(output, "advice_frame", None) is not None:
-        return output.advice_frame
+        frame = output.advice_frame
+        if (
+            frame.confidence < _LOW_CONFIDENCE_SKILL_THRESHOLD
+            and _has_negative_signal_advice(
+                getattr(output, "reasoning", ""),
+                frame.recommended_use,
+            )
+        ):
+            return replace(frame, relevance=max(frame.relevance, 0.65))
+        return frame
     advice = (getattr(output, "prompt_injectable", "") or "").strip()
     reasoning = (getattr(output, "reasoning", "") or "").strip()
     recommended_use = advice or reasoning or "该技能当前只提供低优先级参考。"
     confidence = float(getattr(output, "confidence", 0.5) or 0.0)
     relevance = max(0.0, min(1.0, confidence))
+    if (
+        confidence < _LOW_CONFIDENCE_SKILL_THRESHOLD
+        and _has_negative_signal_advice(recommended_use)
+    ):
+        relevance = max(relevance, 0.65)
     skill_name = getattr(output, "skill_name", "") or ""
     return SkillAdviceFrame(
         skill=skill_name,
@@ -954,6 +990,9 @@ def _inject_skill_output(
         structured.append(
             _skill_advice_frame_to_prompt_dict(frame, advice=prompt)
         )
+    # Retention is relevance-first so the limited prompt budget keeps
+    # actionable low-confidence warnings. Presentation is confidence-first
+    # so stronger advice still appears before weaker fallback advice.
     structured.sort(
         key=lambda item: (
             float(item.get("relevance", 0.0) or 0.0),
@@ -962,6 +1001,13 @@ def _inject_skill_output(
         reverse=True,
     )
     structured = structured[:_MAX_SKILL_TACTICAL_ADVICE_ITEMS]
+    structured.sort(
+        key=lambda item: (
+            float(item.get("confidence", 0.0) or 0.0),
+            float(item.get("relevance", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
     if structured:
         strategy_directive["skill_tactical_advice"] = structured
     return strategy_directive, skill_analyses
@@ -1478,41 +1524,47 @@ def build_agent_context(
     if restored_memory is not None:
         try:
             profile = restored_memory.get_profile(player_id)
+            current_role = player.role
+            from werewolf_agent.memory.store import MemoryStore
+            current_faction = MemoryStore._player_faction(
+                current_role,
+                master_faction=None,
+            )
+            v2_refs: list[Any] = []
+            reflection_memory = getattr(restored_memory, "reflections", None)
+            if reflection_memory is not None and hasattr(reflection_memory, "query_live"):
+                from werewolf_agent.memory.schemas import CrossGameQuery
+                v2_refs = reflection_memory.query_live(
+                    CrossGameQuery(
+                        player_id=player_id,
+                        role=current_role,
+                        max_results=REFLECTION_CARD_BUDGET,
+                    )
+                )
+            if v2_refs:
+                reflection_memory_hints = _reflection_memory_hints(
+                    v2_refs, current_role, current_faction
+                )
+                if hasattr(reflection_memory, "live_error_pattern"):
+                    error_pattern_hint = reflection_memory.live_error_pattern(
+                        player_id, current_role
+                    )
+
             if profile is not None and profile.games_played > 0:
                 # Aggregate by role across all reflections for pattern summary
                 role_stats: dict[str, dict[str, int]] = {}
-                for ref in restored_memory.reflections_by_player(player_id):
+                refs_for_profile: list[Any] = []
+                if hasattr(restored_memory, "reflections_by_player"):
+                    refs_for_profile = restored_memory.reflections_by_player(player_id)
+                elif v2_refs:
+                    refs_for_profile = v2_refs
+                for ref in refs_for_profile:
                     r = ref.role or "?"
                     role_stats.setdefault(r, {"count": 0, "wins": 0})
                     role_stats[r]["count"] += 1
                     if ref.faction_won:
                         role_stats[r]["wins"] += 1
                 profile_memory_hint = _profile_memory_hint(profile, role_stats, player.role)
-
-                # Inject detailed reflections (self-evolution)
-                all_refs = restored_memory.reflections_by_player(player_id)
-                if all_refs:
-                    current_role = player.role
-                    # MEM-NEW-3: use the canonical _player_faction
-                    # helper instead of a duplicated ternary. The
-                    # inline version was functionally correct for the
-                    # current role set, but the two WILL drift if a
-                    # new role is added or MemoryStore's role sets
-                    # change. A single source of truth is much easier
-                    # to keep aligned.
-                    from werewolf_agent.memory.store import MemoryStore
-                    current_faction = MemoryStore._player_faction(
-                        current_role,
-                        master_faction=None,
-                    )
-                    reflection_memory_hints = _reflection_memory_hints(
-                        all_refs, current_role, current_faction
-                    )
-                    # reflect-cross-1: 跨局错误模式聚合 (top 2 错误类别 + 保留优点段)。
-                    # 不调 LLM,纯 section header regex 解析 + 频率统计。
-                    error_pattern_hint = _compute_error_pattern(
-                        all_refs, current_role
-                    )
             cognition_matrix_hint = _cognition_matrix_hint(restored_memory, player_id)
         except Exception:
             logger.debug("Failed to inject cross-game memory for %s", player_id, exc_info=True)

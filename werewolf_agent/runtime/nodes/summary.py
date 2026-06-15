@@ -291,38 +291,12 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
         }
         reflection_entries.append(entry)
 
-    # Persist to ReflectionMemory when available
-    _GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
-    winning = gs.winning_faction or ""
-    try:
-        from werewolf_agent.memory.reflection import ReflectionMemory
-        rm = ReflectionMemory(repo=state.get("repository"))
-        for entry in reflection_entries:
-            pid = entry["player_id"]
-            role = entry["role"]
-            pf = "unknown"
-            if role == "hybrid":
-                pf = gs.hybrid_master_faction or "unknown"
-            elif role in _GOOD_ROLES:
-                pf = "good"
-            elif role == "werewolf":
-                pf = "werewolf"
-            player_faction_won = pf == winning
-            rm.store(
-                gs.game_id,
-                player_id=pid,
-                role=role,
-                faction_won=player_faction_won,
-                text=entry.get("reflection", ""),
-                tags=[role, "post_game"],
-                situation={"alive": entry["alive"], "day": gs.day_number},
-            )
-    except Exception:
-        logger.warning("Failed to persist reflection entries", exc_info=True)
-
     event = GameEvent(
         type="reflection_complete",
-        payload={"player_count": len(reflection_entries)},
+        payload={
+            "player_count": len(reflection_entries),
+            "entries": reflection_entries,
+        },
     )
     gs = replace(gs, events=gs.events + [event])
 

@@ -170,6 +170,42 @@ def test_no_key_appears_in_multiple_categories():
     )
 
 
+def test_reflection_prompt_renders_v2_prompt_card_whitelist_only() -> None:
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.SPEECH,
+        phase="day",
+        day_number=1,
+        own_role="seer",
+        reflection_memory_hints=[
+            {
+                "role": "seer",
+                "result": "负",
+                "theme": "对跳局先核验警徽流",
+                "lesson": "历史教训只说明你过去曾过早站边。",
+                "trigger_signals": ["双预言家对跳", "警徽流解释不完整"],
+                "recommended_action": "先比较验人时间线、警徽流和票型承接。",
+                "misuse_risk": "不要映射到本局玩家身份。",
+                "source": {"llm_self_review": "raw source must not render"},
+                "quality_score": 0.91,
+                "quality_status": "approved",
+                "mistake_patterns": [{"category": "vote_mistake"}],
+            }
+        ],
+    )
+    builder = PlayerPromptBuilder(ctx)
+
+    rendered = builder._build_reflection_memory_hints()
+
+    assert "对跳局先核验警徽流" in rendered
+    assert "双预言家对跳" in rendered
+    assert "先比较验人时间线" in rendered
+    assert "source" not in rendered
+    assert "raw source" not in rendered
+    assert "quality_score" not in rendered
+    assert "mistake_patterns" not in rendered
+
+
 def test_all_role_decision_directives_are_explicitly_classified():
     """Core role decisions must not silently fall through to reference."""
     expected_suggestions = {
@@ -630,6 +666,20 @@ def test_skill_tactical_advice_rendered_as_human_readable_list():
     )
     # The dict key "skill_tactical_advice" may still appear as a
     # label, but the value must not be a JSON array of objects.
+
+
+def test_prompt_text_cleaner_scrubs_cjk_adjacent_player_ids() -> None:
+    cleaned = PlayerPromptBuilder._clean_prompt_text("上次p03悍跳时我被带偏")
+
+    assert "p03" not in cleaned
+    assert "历史玩家" in cleaned
+
+
+def test_error_category_normalizer_scrubs_cjk_adjacent_player_ids() -> None:
+    cleaned = PlayerPromptBuilder._normalize_error_category("p03的预言家发言")
+
+    assert "p03" not in cleaned
+    assert "历史玩家" in cleaned
 
 
 # ---------------------------------------------------------------------------

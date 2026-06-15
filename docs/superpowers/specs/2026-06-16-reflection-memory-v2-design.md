@@ -1,7 +1,7 @@
 # Reflection Memory V2 Design
 
 Date: 2026-06-16
-Status: Proposed for implementation planning
+Status: Implemented in code; database migration pending operator run
 Owner: Codex development session
 
 ## Problem
@@ -839,3 +839,42 @@ The upgrade is complete only when:
    details.
 5. Production game-end code does not create new V1 live-learning reflection
    rows.
+
+## Implementation Progress
+
+Implemented on 2026-06-16:
+
+1. Added `ReflectionEntryV2`, prompt-card schema, quality status, deterministic
+   quality gate, synthesizer, and approved-only live query support.
+2. Updated cross-game context injection so approved V2 reflections inject even
+   when no `PlayerProfile` exists.
+3. Updated prompt rendering so V2 live prompts render only prompt-card
+   whitelist fields.
+4. Added latest snapshot restore semantics and `latest` alias writes through
+   `PersistentMemoryCoordinator`.
+5. Changed MemoryStore snapshots to store reflection IDs only and ignore dirty
+   legacy snapshot reflection bodies on restore.
+6. Changed production game-end persistence to synthesize/gate/store V2
+   reflections only; raw LLM self-review is retained as synthesis input, not
+   written directly as live memory.
+7. Added migration helpers and `scripts/migrate_reflection_memory_v2.py` for
+   backup, dry-run legacy-row quality reports, and snapshot
+   reflection-boundary cleanup.
+
+Verification on 2026-06-16:
+
+- `python -m pytest tests/runtime tests/agents -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp E:\NLP\agent\wofkill\.pytest_tmp`
+  passed: 1614 tests.
+- `python -m pytest tests/memory tests/storage/test_storage.py -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp E:\NLP\agent\wofkill\.pytest_tmp`
+  passed: 257 tests.
+- `python -m pytest tests/storage tests/skills -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp E:\NLP\agent\wofkill\.pytest_tmp`
+  passed: 297 tests.
+
+Operational follow-up:
+
+- Run `scripts/migrate_reflection_memory_v2.py` against the target database in
+  dry-run mode and inspect the JSON report for legacy row quality.
+- Rerun with `--apply` only to clean dirty memory snapshots after backup. This
+  helper reports legacy reflection rows but does not mutate or convert them;
+  row conversion/deletion should be handled in a separately reviewed migration
+  after the report is accepted.

@@ -53,11 +53,16 @@ def save_memory_store(store: MemoryStore) -> dict[str, Any]:
         m = store.get_matrix(viewer_id)
         if m is not None:
             matrices[viewer_id] = m.to_dict()
+    reflection_ids = [e.entry_id for e in store.reflections.all_entries()]
+    if hasattr(store.reflections, "all_v2_entries"):
+        reflection_ids.extend(
+            e.entry_id for e in store.reflections.all_v2_entries()
+        )
 
     return {
         "cognition_matrices": matrices,
         "relation_graph": store.relation_graph.to_dict(),
-        "reflections": save_reflections(store.reflections),
+        "reflections": reflection_ids,
         "profiles": save_profiles(store.profiles),
     }
 
@@ -77,10 +82,10 @@ def restore_memory_store(data: dict[str, Any], repo: Any = None) -> MemoryStore:
     if rg_data:
         store.relation_graph = RelationGraph.from_dict(rg_data)
 
-    # Restore reflections
-    for ref_data in data.get("reflections", []):
-        entry = ReflectionEntry.from_dict(ref_data)
-        store.reflections.store(entry)
+    # Snapshot reflections are IDs only in V2. Dirty legacy snapshots may still
+    # contain full bodies; they are intentionally ignored so old snapshots cannot
+    # rehydrate rejected/review-only text into live memory or write it back to
+    # the reflections table.
 
     # Restore profiles
     for prof_data in data.get("profiles", []):

@@ -385,3 +385,64 @@ class SqliteGameRepository:
                 "DELETE FROM memory_snapshots WHERE snapshot_id = ?", (snapshot_id,)
             )
             self._conn.commit()
+
+    # -- Reflections --------------------------------------------------------
+
+    def save_reflection(self, entry: dict[str, Any]) -> None:
+        with self._lock:
+            entry_id = str(entry.get("entry_id", ""))
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO reflections
+                    (entry_id, game_id, player_id, entry_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    str(entry.get("game_id", "")),
+                    str(entry.get("player_id", "")),
+                    json.dumps(entry, ensure_ascii=False),
+                ),
+            )
+            self._conn.commit()
+
+    def load_reflection(self, entry_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT entry_json FROM reflections WHERE entry_id = ?",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return json.loads(row[0])
+
+    def load_reflections_by_game(self, game_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT entry_json FROM reflections WHERE game_id = ?",
+                (game_id,),
+            ).fetchall()
+            return [json.loads(row[0]) for row in rows]
+
+    def load_reflections_by_player(self, player_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT entry_json FROM reflections WHERE player_id = ?",
+                (player_id,),
+            ).fetchall()
+            return [json.loads(row[0]) for row in rows]
+
+    def load_all_reflections(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT entry_json FROM reflections ORDER BY entry_id"
+            ).fetchall()
+            return [json.loads(row[0]) for row in rows]
+
+    def delete_reflection(self, entry_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM reflections WHERE entry_id = ?",
+                (entry_id,),
+            )
+            self._conn.commit()

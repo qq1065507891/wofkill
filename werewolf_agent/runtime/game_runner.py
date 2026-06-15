@@ -545,7 +545,11 @@ class GameRunner:
         if coordinator is None or self._config.repository is None:
             return
         try:
-            mem, rag = coordinator.restore_all(snapshot_id=self._game_id)
+            if hasattr(coordinator, "restore_for_new_game"):
+                mem = coordinator.restore_for_new_game(self._game_id)
+                rag = coordinator.restore_rag()
+            else:
+                mem, rag = coordinator.restore_all(snapshot_id=self._game_id)
             self._restored_memory = mem
             self._restored_rag = rag
             if mem is not None:
@@ -566,6 +570,10 @@ class GameRunner:
         try:
             from werewolf_agent.cognition.world_state import build_world_state
             from werewolf_agent.memory.store import MemoryStore
+            from werewolf_agent.memory.reflection import (
+                ReflectionQualityGate,
+                ReflectionSynthesizer,
+            )
 
             mem_store = MemoryStore(repo=self._config.repository)
             player_ids = list(self._state.players.keys())
@@ -579,13 +587,41 @@ class GameRunner:
 
             winning_faction = self._state.winning_faction or "good"
             ground_truth = {pid: p.role for pid, p in self._state.players.items()}
-            mem_store.generate_reviews_for_game(
+            reports = mem_store.generate_reviews_for_game(
                 game_id=self._game_id,
                 player_ids=player_ids,
                 roles=ground_truth,
                 winning_faction=winning_faction,
                 ground_truth=ground_truth,
+                hybrid_master_factions={
+                    pid: self._state.hybrid_master_faction
+                    for pid, role in ground_truth.items()
+                    if role == "hybrid" and self._state.hybrid_master_faction
+                },
+                generate_reflection=False,
             )
+            self_reviews = self._latest_self_reviews()
+            synthesizer = ReflectionSynthesizer()
+            for report in reports:
+                role = ground_truth.get(report.player_id, report.role)
+                master_faction = (
+                    self._state.hybrid_master_faction
+                    if role == "hybrid"
+                    else None
+                )
+                faction = MemoryStore._player_faction(
+                    role,
+                    master_faction=master_faction,
+                )
+                candidate = synthesizer.synthesize(
+                    llm_self_review=self_reviews.get(report.player_id, ""),
+                    review_report=report,
+                    faction=faction,
+                )
+                gate = ReflectionQualityGate(
+                    existing_entries=mem_store.reflections.all_v2_entries()
+                )
+                mem_store.reflections.store_v2(gate.evaluate(candidate))
 
             coordinator.save_all(
                 memory_store=mem_store,
@@ -601,3 +637,18 @@ class GameRunner:
                 "Failed to save memory snapshot for game %s", self._game_id,
                 exc_info=True,
             )
+
+    def _latest_self_reviews(self) -> dict[str, str]:
+        for event in reversed(self._state.events):
+            if event.type != "reflection_complete":
+                continue
+            entries = event.payload.get("entries", [])
+            result: dict[str, str] = {}
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                pid = str(entry.get("player_id", ""))
+                if pid:
+                    result[pid] = str(entry.get("reflection", "") or "")
+            return result
+        return {}

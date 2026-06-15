@@ -44,7 +44,7 @@ from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES 
 # the hint-generation helper cannot drift.  Previously this was a
 # closure constant inside ``_reflection_memory_hints`` while the
 # prompt builder hard-coded ``[:5]``, silently dropping 3 hints.
-from werewolf_agent.runtime.context import HINT_BUDGET  # noqa: E402
+from werewolf_agent.runtime.context import REFLECTION_CARD_BUDGET  # noqa: E402
 
 # M2-3 (2026-06-09): single source of truth for the output schema
 # field set.  Both ``_build_output_contract`` (system prompt) and
@@ -110,6 +110,10 @@ _MAX_RAG_TEXT_CHARS = 220
 _MAX_LEARNING_CONTEXT_CHARS = 3_600
 _MAX_SKILL_TACTICAL_ADVICE_ITEMS = 3
 _MAX_SKILL_TACTICAL_ADVICE_CHARS = 180
+_PLAYER_ID_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:p\d{1,3}|player[_-]?\d{1,3}|agent[_-]?\d{1,3})(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 # P0-G3223805846-8: vote 阶段的 ``reason`` 字段是公开发言可见的（对所有
 # 玩家公开），禁止任何私视角表述。游戏轨迹 g_3223805846 观察到 LLM 把
 # ``我作为预言家`` / ``狼队 N1 刀了 p0X`` 等私有意图写入 ``reason`` 字段，
@@ -907,14 +911,43 @@ class PlayerPromptBuilder:
         ctx = self.context
         if not ctx.reflection_memory_hints:
             return ""
-        hints = self._slim_reflection_hints(ctx.reflection_memory_hints[:HINT_BUDGET])
+        hints = self._slim_reflection_hints(
+            ctx.reflection_memory_hints[:REFLECTION_CARD_BUDGET]
+        )
         if not hints:
             return ""
+        if any("recommended_action" in hint or "trigger_signals" in hint for hint in hints):
+            return (
+                "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
+                "历史玩家 ID、身份真相和决策链不得映射到本局玩家。\n"
+                + self._render_reflection_hint_cards(hints)
+            )
         return (
             "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
             "历史玩家 ID、身份真相和决策链不得映射到本局玩家。\n"
             + self._compact_json(hints)
         )
+
+    @staticmethod
+    def _render_reflection_hint_cards(hints: list[dict[str, Any]]) -> str:
+        def join_values(value: Any, *, fallback: str) -> str:
+            if isinstance(value, list):
+                text = "；".join(str(part).strip() for part in value if str(part).strip())
+                return text or fallback
+            text = str(value or "").strip()
+            return text or fallback
+
+        cards: list[str] = []
+        for idx, hint in enumerate(hints, start=1):
+            title = join_values(hint.get("theme"), fallback="历史反思")
+            cards.append(
+                f"\n\n反思 {idx}: {title}\n"
+                f"- 触发信号: {join_values(hint.get('trigger_signals'), fallback='仅当本局公开事实相似时参考。')}\n"
+                f"- 历史教训: {join_values(hint.get('lesson') or hint.get('summary') or hint.get('text'), fallback='历史经验仅供参考。')}\n"
+                f"- 本局做法: {join_values(hint.get('recommended_action') or hint.get('actionable_advice'), fallback='先核验本局公开证据，再决定是否采用。')}\n"
+                f"- 误用风险: {join_values(hint.get('misuse_risk'), fallback='不要把历史经验直接映射到本局玩家身份。')}"
+            )
+        return "".join(cards)
 
     def _build_error_pattern_hint(self) -> str:
         """reflect-cross-1: 跨局错误模式聚合,顶部强提示 LLM 自我修正。
@@ -1709,7 +1742,7 @@ class PlayerPromptBuilder:
         max_chars: int = _MAX_PERSONA_LINE_CHARS,
     ) -> str:
         text = str(value or "").strip()
-        text = re.sub(r"\bp\d{2}\b", "历史玩家", text)
+        text = _PLAYER_ID_RE.sub("历史玩家", text)
         text = text.replace("\r", " ").replace("\n", " ")
         text = re.sub(r"\s+", " ", text)
         if len(text) <= max_chars:
@@ -1738,6 +1771,9 @@ class PlayerPromptBuilder:
             "summary",
             "text",
             "lesson",
+            "trigger_signals",
+            "recommended_action",
+            "misuse_risk",
             "actionable_advice",
         )
         slimmed: list[dict[str, Any]] = []
@@ -1754,6 +1790,15 @@ class PlayerPromptBuilder:
                         value,
                         max_chars=_MAX_LEARNING_TEXT_CHARS,
                     )
+                elif isinstance(value, list):
+                    value = [
+                        cls._clean_prompt_text(
+                            part,
+                            max_chars=_MAX_LEARNING_TEXT_CHARS,
+                        )
+                        for part in value
+                        if str(part or "").strip()
+                    ][:4]
                 slim[key] = value
             if slim:
                 slimmed.append(slim)
@@ -1773,7 +1818,7 @@ class PlayerPromptBuilder:
         if raw in mapping:
             return mapping[raw]
         cleaned = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]+", "", raw)
-        cleaned = re.sub(r"\bp\d{2}\b", "历史玩家", cleaned)
+        cleaned = _PLAYER_ID_RE.sub("历史玩家", cleaned)
         return cleaned[:24] or "other"
 
     # ── Choice/target helpers ──

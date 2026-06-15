@@ -842,6 +842,104 @@ class TestPersistentMemoryCoordinator:
         assert len(refs) == 1
         assert refs[0].text == "Test reflection from coordinator"
 
+    def test_restore_for_new_game_falls_back_to_latest_snapshot(self, repo) -> None:
+        from werewolf_agent.memory.store import MemoryStore
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        store = MemoryStore()
+        store.init_matrix("p01", ["p01", "p02"])
+
+        coord = PersistentMemoryCoordinator(repo)
+        coord.save_memory(store, "g_previous")
+
+        restored = coord.restore_for_new_game("g_new")
+
+        assert restored is not None
+        assert restored.get_matrix("p01") is not None
+
+    def test_explicit_missing_snapshot_does_not_fallback_to_latest(self, repo) -> None:
+        from werewolf_agent.memory.store import MemoryStore
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        store = MemoryStore()
+        store.init_matrix("p01", ["p01", "p02"])
+
+        coord = PersistentMemoryCoordinator(repo)
+        coord.save_memory(store, "g_previous")
+
+        restored = coord.restore_memory("g_new", fallback_to_latest=False)
+
+        assert restored is not None
+        assert restored.get_matrix("p01") is None
+
+    def test_save_memory_updates_game_snapshot_and_latest_alias(self, repo) -> None:
+        from werewolf_agent.memory.store import MemoryStore
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        store = MemoryStore()
+        store.init_matrix("p01", ["p01", "p02"])
+
+        coord = PersistentMemoryCoordinator(repo)
+        coord.save_memory(store, "g_specific")
+
+        assert repo.load_memory_snapshot("g_specific") is not None
+        assert repo.load_memory_snapshot("latest") is not None
+
+    def test_new_snapshots_store_reflection_ids_not_bodies(self, repo) -> None:
+        from werewolf_agent.memory.store import MemoryStore
+        from werewolf_agent.memory.schemas import ReflectionEntry
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        store = MemoryStore()
+        store.store_reflection(ReflectionEntry(
+            entry_id="snap_ref_1",
+            game_id="g1",
+            player_id="p01",
+            role="seer",
+            faction_won=False,
+            text="full reflection body must not live in snapshot",
+            tags=["seer"],
+        ))
+
+        coord = PersistentMemoryCoordinator(repo)
+        coord.save_memory(store, "snap_boundary")
+
+        snapshot = repo.load_memory_snapshot("snap_boundary")
+        assert snapshot is not None
+        assert snapshot.get("reflections") == ["snap_ref_1"]
+        assert "full reflection body" not in json.dumps(snapshot, ensure_ascii=False)
+
+        restored = coord.restore_memory("snap_boundary")
+        refs = restored.reflections_by_player("p01")
+        assert len(refs) == 1
+        assert refs[0].entry_id == "snap_ref_1"
+
+    def test_dirty_snapshot_reflection_bodies_do_not_rehydrate(self, repo) -> None:
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo.save_memory_snapshot("dirty", {
+            "cognition_matrices": {},
+            "relation_graph": {"events": []},
+            "profiles": [],
+            "reflections": [
+                {
+                    "entry_id": "dirty_ref",
+                    "game_id": "g_dirty",
+                    "player_id": "p01",
+                    "role": "seer",
+                    "faction_won": False,
+                    "text": "rejected dirty legacy reflection",
+                    "tags": ["seer"],
+                }
+            ],
+        })
+
+        coord = PersistentMemoryCoordinator(repo)
+        restored = coord.restore_memory("dirty")
+
+        assert restored.reflections_by_player("p01") == []
+        assert repo.load_all_reflections() == []
+
     def test_save_all_and_restore_all(self, repo) -> None:
         from werewolf_agent.memory.store import MemoryStore
         from werewolf_agent.memory.schemas import ReflectionEntry

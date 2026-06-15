@@ -115,7 +115,7 @@ def test_compact_json_overflow_remains_valid_json() -> None:
 
     assert parsed["truncated"] is True
     assert parsed["original_type"] == "dict"
-    assert "content_prefix" in parsed
+    assert "content_prefix" in parsed or "head" in parsed
 
 
 def test_static_audit_does_not_touch_wolf_team_plan_files() -> None:

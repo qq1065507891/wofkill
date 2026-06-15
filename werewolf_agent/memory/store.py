@@ -191,6 +191,7 @@ class MemoryStore:
         ground_truth: dict[str, str],
         player_factions: dict[str, str] | None = None,
         hybrid_master_factions: dict[str, str] | None = None,
+        generate_reflection: bool = True,
     ) -> list[ReviewReport]:
         """Generate reviews for all players in a game.
 
@@ -252,6 +253,7 @@ class MemoryStore:
                 faction_won=faction_won,
                 ground_truth=ground_truth,
                 faction=pf,
+                generate_reflection=generate_reflection,
             )
             reports.append(report)
         return reports
