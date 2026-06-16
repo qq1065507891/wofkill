@@ -45,18 +45,18 @@ Remaining gaps:
 ## Core Design
 
 The closure loop uses one invariant identity across runtime, evaluation, and
-approval:
+approval. The public name is `trace_id`; `decision_key` is not a separate
+concept and must not appear in event payloads or storage schemas:
 
 ```text
-decision_key = {game_id}:{player_id}:{phase}:D{day}:N{night}:{task_type}:{action_index}
+trace_id = {game_id}:{player_id}:{phase}:D{day}:N{night}:{task_type}:{action_index}
 ```
 
-`decision_key` matches the existing `EvaluationTraceBuilder.make_trace_id()`.
+`trace_id` matches the existing `EvaluationTraceBuilder.make_trace_id()`.
 Runtime code must attach it to both `action_trace_audit` and module exposure
-events. If a call site cannot know final `action_index` before action
-completion, it may emit a temporary `decision_ref` containing the same fields
-except index, and the final action audit resolves it. The preferred path is to
-assign `action_index` centrally before building an `AgentContext`.
+events. `action_index` must be allocated centrally by the runtime immediately
+before `AgentContext` construction. Temporary `decision_ref` payloads are not
+allowed in Phase 1 because they would create a second join path.
 
 The loop has five layers:
 
@@ -98,7 +98,9 @@ class DecisionIdentity:
 ```
 
 `EvaluationTraceBuilder.make_trace_id()` should delegate to this helper so
-runtime and evaluation cannot drift.
+runtime and evaluation cannot drift. The runtime action dispatcher should store
+the allocated `DecisionIdentity` in the per-action state and pass it to context
+construction, exposure collection, and `_action_trace_event()`.
 
 ### Module Exposure Event
 
@@ -120,58 +122,87 @@ Common payload fields:
   "night_number": 1,
   "task_type": "vote",
   "visibility": "moderator_only",
+  "module": "rag"
+}
+```
+
+RAG event payload adds `hits`:
+
+```json
+{
+  "type": "rag_exposure_audit",
+  "trace_id": "g1:p01:vote:D2:N1:vote:4",
   "module": "rag",
-  "items": []
+  "visibility": "moderator_only",
+  "hits": [
+    {
+      "entry_id": "seer_duel_anchor",
+      "rank": 1,
+      "relevance_score": 0.82,
+      "prompt_visible": true,
+      "title": "对跳预言家主线",
+      "situation_signature": "seer duel speech",
+      "retrieval_reason": "role_phase_match"
+    }
+  ]
 }
 ```
 
-RAG item fields:
+Reflection event payload adds `cards`:
 
 ```json
 {
-  "entry_id": "seer_duel_anchor",
-  "rank": 1,
-  "relevance_score": 0.82,
-  "prompt_visible": true,
-  "title": "对跳预言家主线",
-  "situation_signature": "seer duel speech",
-  "retrieval_reason": "role_phase_match"
+  "type": "reflection_exposure_audit",
+  "trace_id": "g1:p01:vote:D2:N1:vote:4",
+  "module": "reflection",
+  "visibility": "moderator_only",
+  "cards": [
+    {
+      "entry_id": "reflection:v2:abc",
+      "rank": 1,
+      "quality_score": 0.86,
+      "prompt_visible": true,
+      "lesson_key": "overtrust_claim",
+      "quality_status": "approved"
+    }
+  ]
 }
 ```
 
-Reflection item fields:
+Skill event payload adds `analyses`:
 
 ```json
 {
-  "entry_id": "reflection:v2:abc",
-  "rank": 1,
-  "quality_score": 0.86,
-  "prompt_visible": true,
-  "lesson_key": "overtrust_claim",
-  "quality_status": "approved"
+  "type": "skill_exposure_audit",
+  "trace_id": "g1:p01:vote:D2:N1:vote:4",
+  "module": "skills",
+  "visibility": "moderator_only",
+  "analyses": [
+    {
+      "skill_name": "vote_analysis",
+      "rank": 1,
+      "prompt_visible": true,
+      "summary_hash": "sha256:<prompt-visible-advice-hash>",
+      "advice_type": "tactical"
+    }
+  ]
 }
 ```
 
-Skill item fields:
+Persona event payload adds `snapshot`:
 
 ```json
 {
-  "skill_name": "vote_analysis",
-  "rank": 1,
-  "prompt_visible": true,
-  "summary_hash": "sha256:<prompt-visible-advice-hash>",
-  "advice_type": "tactical"
-}
-```
-
-Persona item fields:
-
-```json
-{
-  "profile_id": "aggressive_bluffer",
-  "prompt_visible": true,
-  "policy_keys": ["vote_confidence_threshold_delta"],
-  "sanitized": true
+  "type": "persona_exposure_audit",
+  "trace_id": "g1:p01:vote:D2:N1:vote:4",
+  "module": "persona",
+  "visibility": "moderator_only",
+  "snapshot": {
+    "profile_id": "aggressive_bluffer",
+    "prompt_visible": true,
+    "policy_keys": ["vote_confidence_threshold_delta"],
+    "sanitized": true
+  }
 }
 ```
 
@@ -216,6 +247,11 @@ Integration rule:
   exposure audit events for that decision.
 - If a context is built but no LLM/action call happens, exposure events are
   discarded.
+- `EvaluationTraceBuilder.build(result, exposure_audits=None)` must scan
+  `result.event_log` for `rag_exposure_audit`, `reflection_exposure_audit`,
+  `skill_exposure_audit`, and `persona_exposure_audit` events. The side-channel
+  `exposure_audits` argument remains for tests/imports, but runtime events are
+  the primary path.
 - Tests must assert that the trace builder can build supported RAG/reflection
   exposure metrics from real runtime events with no side-channel argument.
 
@@ -231,6 +267,11 @@ class FullGameAblationConfig:
     removed_modules: list[str]
     player_count: int
     ruleset_id: str
+    ruleset_snapshot: dict[str, Any]
+    agent_mode: Literal["deterministic_fake", "replay", "live_model"]
+    model_config_snapshot: dict[str, Any]
+    storage_namespace: str
+    replay_policy: Literal["strict_replay", "deterministic_fallback_only", "unsupported_live_model"]
 
 class FullGameAblationRunner:
     def run(self, config: FullGameAblationConfig) -> FullGameAblationReport:
@@ -244,6 +285,23 @@ The baseline and ablated runs must use:
 - same ruleset snapshot;
 - same role assignment;
 - same deterministic fallbacks where no real model is configured.
+
+For reproducibility, Phase 2 supports only:
+
+- `agent_mode="deterministic_fake"`: deterministic fake/simulated agents,
+  suitable for local tests;
+- `agent_mode="replay"` with `replay_policy="strict_replay"`: previously
+  recorded model outputs replayed by trace/order.
+
+`agent_mode="live_model"` must return a report with live causal metrics marked
+unsupported unless a replay capture is supplied. The runner must not claim
+same-seed causal deltas from fresh nondeterministic model calls.
+
+Storage isolation:
+
+- baseline and ablated runs use separate storage namespaces;
+- neither run may write to production RAG or reflection stores;
+- candidate regression runs use a third candidate namespace.
 
 Module toggles should be applied at context construction:
 
@@ -297,18 +355,22 @@ Approval flow:
 candidate generated
 -> pending store
 -> approve(candidate_id, reviewer, notes)
--> materialize into RAG or Reflection draft
--> run same-seed regression gate
--> promote if gate passes
--> rollback/quarantine if gate fails
+-> materialize into draft-only namespace
+-> run baseline vs candidate-enabled same-seed regression gate
+-> promote draft to live-eligible store if gate passes
+-> rollback/quarantine draft if gate fails
 ```
 
 Materialization rules:
 
-- RAG candidates become `RAGEntry(schema_version=2)` with
-  `review_status=approved` only after approval and gate pass.
-- Reflection candidates become `ReflectionEntryV2` with
-  `quality_status=approved` only after approval and gate pass.
+- RAG candidates first become `RAGEntry(schema_version=2)` with
+  `review_status=review_only` in a draft-only namespace.
+- Reflection candidates first become `ReflectionEntryV2` with
+  `quality_status=review_only` in a draft-only namespace.
+- Draft namespaces are never queried by live games.
+- Only after approval and regression pass can a draft entry be promoted to
+  `review_status=approved` or `quality_status=approved` in the live-eligible
+  namespace.
 - Rejected or failed candidates never enter live query results.
 - Every materialized entry stores source diagnosis IDs and regression report
   refs in audit metadata.
@@ -316,15 +378,35 @@ Materialization rules:
 Regression gate:
 
 ```python
+@dataclass(frozen=True)
+class CandidateRegressionConfig:
+    candidate_id: str
+    target_module: Literal["rag", "reflection", "prompt", "simulator", "skills"]
+    target_faction: Literal["good", "werewolf", "neutral", "all"] = "all"
+    seed_set: list[int]
+    tolerances: dict[str, float]
+
 class RegressionGate:
     def evaluate(
         self,
         candidate: ImprovementCandidate,
-        regression_report: FullGameAblationReport,
+        regression_report: CandidateRegressionReport,
     ) -> GateResult:
         """Return pass/fail plus blocking metric reasons."""
         raise NotImplementedError
 ```
+
+Candidate regression is not module-off ablation. It runs:
+
+```text
+baseline current system
+vs
+candidate-enabled system using draft namespace
+```
+
+The report stores paired deltas as `candidate - baseline` for improvement
+metrics and `baseline - candidate` for harm metrics. `GateResult` must expose
+the normalized pass/fail values so UI code does not infer sign conventions.
 
 Default gate blocks promotion on:
 
@@ -333,6 +415,18 @@ Default gate blocks promotion on:
 - lower good/wolf win-rate beyond configured tolerance for the target faction;
 - increased illegal actions;
 - prompt-safety validation failure.
+
+Default tolerances:
+
+```json
+{
+  "max_leakage_increase": 0.0,
+  "max_illegal_action_increase": 0.0,
+  "max_vote_quality_drop": 0.03,
+  "max_target_faction_win_rate_drop": 0.05,
+  "max_harmful_transfer_increase": 0.0
+}
+```
 
 ## Phase 4: LangSmith Full Decision Trace
 
@@ -381,7 +475,9 @@ Redaction:
 - hidden roles and factions are removed unless viewer is moderator trace;
 - prompt text is off by default; only prompt section hashes and sizes are
   recorded unless debug export is explicitly enabled;
-- raw model output can be disabled by config.
+- raw model output is off/redacted by default. It can be enabled only with an
+  explicit debug config flag and still passes through the same hidden-truth
+  redactor.
 
 LangSmith must remain optional. Tests should monkeypatch an injected fake
 client; no network calls.
@@ -390,12 +486,24 @@ client; no network calls.
 
 Add API endpoints:
 
-- `GET /api/evaluation/feedback/report/{batch_id}`
-- `GET /api/evaluation/ablation/{batch_id}`
-- `GET /api/evaluation/candidates`
-- `POST /api/evaluation/candidates/{id}/approve`
-- `POST /api/evaluation/candidates/{id}/reject`
-- `GET /api/evaluation/regressions/{candidate_id}`
+- add a new `evaluation` router mounted consistently with the existing API
+  route registration style;
+- `GET /api/evaluation/feedback/report/{batch_id}`;
+- `GET /api/evaluation/ablation/{batch_id}`;
+- `GET /api/evaluation/candidates`;
+- `POST /api/evaluation/candidates/{id}/approve`;
+- `POST /api/evaluation/candidates/{id}/reject`;
+- `GET /api/evaluation/regressions/{candidate_id}`.
+
+Authorization and view modes:
+
+- candidate review, regression, ablation, trace links, and world-model audit
+  fields require moderator/evaluator view mode;
+- public view receives only aggregate redacted metrics;
+- hidden roles, target factions, outcome labels, diagnosis evidence, raw trace
+  payloads, and LangSmith URLs are never returned to public view;
+- write endpoints require explicit reviewer identity and must store reviewer,
+  timestamp, and notes.
 
 Dashboard panels:
 
