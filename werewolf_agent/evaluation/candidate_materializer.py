@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import inspect
 from typing import Any, Callable
 
 from werewolf_agent.evaluation.candidate_store import (
@@ -52,8 +53,6 @@ class CandidateMaterializer:
         self._draft_namespace = draft_namespace
         self._live_namespace = live_namespace
         self._clock = clock or _utc_now
-        self._draft_ids_by_candidate: dict[str, str] = {}
-        self._draft_namespaces_by_candidate: dict[str, str] = {}
 
     def materialize(self, candidate_id: str) -> CandidateMaterializationResult:
         return self.materialize_draft(candidate_id)
@@ -96,13 +95,12 @@ class CandidateMaterializer:
         adapter = self._adapter_for(candidate.target_module)
         draft = self._draft_entry(candidate)
         draft_id = _save_review_only(adapter, draft, draft_namespace)
-        self._draft_ids_by_candidate[candidate_id] = draft_id
-        self._draft_namespaces_by_candidate[candidate_id] = draft_namespace
         self._candidate_store.transition(
             candidate_id,
             CandidateStatus.MATERIALIZED,
             reviewer="materializer",
             notes=f"review-only draft written to {draft_namespace}",
+            metadata={"draft_id": draft_id, "draft_namespace": draft_namespace},
         )
         return CandidateMaterializationResult(
             candidate_id=candidate_id,
@@ -137,11 +135,15 @@ class CandidateMaterializer:
                 draft_namespace=self._draft_namespace,
             )
         adapter = self._adapter_for(candidate.target_module)
-        draft_id = self._draft_ids_by_candidate.get(candidate_id, candidate_id)
-        draft_namespace = self._draft_namespaces_by_candidate.get(
-            candidate_id,
-            self._draft_namespace,
-        )
+        draft_metadata = _draft_metadata(record)
+        if draft_metadata is None:
+            return CandidateMaterializationResult(
+                candidate_id=candidate_id,
+                status="missing_draft_metadata",
+                target_module=candidate.target_module,
+                draft_namespace=self._draft_namespace,
+            )
+        draft_id, draft_namespace = draft_metadata
         _quarantine(adapter, draft_id, reason, draft_namespace)
         self._candidate_store.transition(
             candidate_id,
@@ -180,16 +182,20 @@ class CandidateMaterializer:
         live_namespace = live_namespace or self._live_namespace
         if not regression_report.passed:
             return self.rollback(candidate_id, "regression_gate_failed", regression_report)
-        draft_id = self._draft_ids_by_candidate.get(candidate_id, candidate_id)
-        draft_namespace = self._draft_namespaces_by_candidate.get(
-            candidate_id,
-            self._draft_namespace,
-        )
+        draft_metadata = _draft_metadata(record)
+        if draft_metadata is None:
+            return CandidateMaterializationResult(
+                candidate_id=candidate_id,
+                status="missing_draft_metadata",
+                target_module=candidate.target_module,
+                draft_namespace=self._draft_namespace,
+                live_namespace=live_namespace,
+            )
+        draft_id, draft_namespace = draft_metadata
         metadata = {
             "candidate_id": candidate.candidate_id,
             "target_module": candidate.target_module,
             "source_diagnosis_ids": list(candidate.source_diagnosis_ids),
-            "source_audit_evidence": dict(candidate.audit_evidence),
             "regression": regression_report.to_json_dict(),
             "promoted_at": self._clock(),
         }
@@ -228,8 +234,10 @@ class CandidateMaterializer:
         except CandidateNotFound:
             if isinstance(candidate_or_id, str):
                 raise
-            status = CandidateStatus(candidate_or_id.review_status or "pending")
-            return self._candidate_store.add(candidate_or_id, status=status)
+            return self._candidate_store.add(
+                candidate_or_id,
+                status=CandidateStatus.PENDING,
+            )
 
     def _draft_entry(self, candidate: ImprovementCandidate) -> dict[str, Any]:
         entry = {
@@ -247,11 +255,32 @@ class CandidateMaterializer:
 
 
 def _save_review_only(adapter: Any, entry: dict[str, Any], namespace: str) -> str:
-    try:
-        result = adapter.save_review_only(entry, namespace)
-    except TypeError:
-        result = adapter.save_review_only(namespace, entry)
+    result = _call_save_review_only(adapter.save_review_only, entry, namespace)
     return str(result or entry["candidate_id"])
+
+
+def _call_save_review_only(method: Any, entry: dict[str, Any], namespace: str) -> Any:
+    signature = inspect.signature(method)
+    params = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    if len(params) >= 2 and params[0].name in {"namespace", "draft_namespace"}:
+        return method(namespace, entry)
+    return method(entry, namespace)
+
+
+def _draft_metadata(record: CandidateRecord) -> tuple[str, str] | None:
+    draft_id = str(record.metadata.get("draft_id") or "")
+    draft_namespace = str(record.metadata.get("draft_namespace") or "")
+    if not draft_id or not draft_namespace:
+        return None
+    return draft_id, draft_namespace
 
 
 def _promote(

@@ -34,6 +34,7 @@ class CandidateRecord:
     notes: str = ""
     updated_at: str = ""
     history: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +44,7 @@ class CandidateRecord:
             "notes": self.notes,
             "updated_at": self.updated_at,
             "history": [dict(item) for item in self.history],
+            "metadata": dict(self.metadata),
         }
 
     @classmethod
@@ -57,6 +59,7 @@ class CandidateRecord:
             notes=str(data.get("notes") or ""),
             updated_at=str(data.get("updated_at") or ""),
             history=[dict(item) for item in data.get("history", [])],
+            metadata=dict(data.get("metadata", {})),
         )
 
 
@@ -79,12 +82,14 @@ class CandidateStore(Protocol):
         *,
         reviewer: str,
         notes: str,
+        metadata: dict[str, Any] | None = None,
     ) -> CandidateRecord: ...
 
 
 _ALLOWED_TRANSITIONS: set[tuple[CandidateStatus, CandidateStatus]] = {
     (CandidateStatus.PENDING, CandidateStatus.APPROVED),
     (CandidateStatus.PENDING, CandidateStatus.REJECTED),
+    (CandidateStatus.APPROVED, CandidateStatus.REJECTED),
     (CandidateStatus.APPROVED, CandidateStatus.MATERIALIZED),
     (CandidateStatus.MATERIALIZED, CandidateStatus.ROLLED_BACK),
 }
@@ -148,10 +153,15 @@ class InMemoryCandidateStore:
         *,
         reviewer: str,
         notes: str,
+        metadata: dict[str, Any] | None = None,
     ) -> CandidateRecord:
         record = self.get(candidate_id)
         _validate_transition(record.status, to_status)
         timestamp = self._clock()
+        merged_metadata = {
+            **dict(record.metadata),
+            **dict(metadata or {}),
+        }
         history = [
             *record.history,
             {
@@ -160,6 +170,7 @@ class InMemoryCandidateStore:
                 "reviewer": reviewer,
                 "notes": notes,
                 "timestamp": timestamp,
+                "metadata": dict(metadata or {}),
             },
         ]
         updated = CandidateRecord(
@@ -169,6 +180,7 @@ class InMemoryCandidateStore:
             notes=notes,
             updated_at=timestamp,
             history=history,
+            metadata=merged_metadata,
         )
         self._records[candidate_id] = updated
         return updated
@@ -224,6 +236,7 @@ class RepositoryCandidateStore:
         *,
         reviewer: str,
         notes: str,
+        metadata: dict[str, Any] | None = None,
     ) -> CandidateRecord:
         self._require("update_candidate_status")
         current = self.get(candidate_id)
@@ -234,6 +247,7 @@ class RepositoryCandidateStore:
             reviewer,
             notes,
             self._clock(),
+            dict(metadata or {}),
         )
         return CandidateRecord.from_json_dict(dict(updated))
 

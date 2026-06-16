@@ -379,3 +379,69 @@ def test_feedback_report_public_candidate_workflow_omits_private_evidence() -> N
     assert "target_role" not in serialized
     assert "werewolf" not in serialized
     assert "p01" not in serialized
+
+
+def test_feedback_report_public_view_scrubs_candidate_payload_and_gate_results() -> None:
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateMetricDelta,
+        CandidateRegressionReport,
+        GateCheck,
+    )
+
+    candidate = ImprovementCandidate(
+        candidate_id="candidate:p01",
+        source_diagnosis_ids=["d1"],
+        target_module="rag",
+        operation="review_or_rewrite",
+        priority="high",
+        prompt_safe_payload={
+            "recommended_use": "Do not reveal target_role for p01 ground_truth."
+        },
+        audit_evidence={"target_role": "werewolf"},
+        review_status="materialized",
+    )
+    gate_report = CandidateRegressionReport(
+        candidate_id="candidate:p01",
+        passed=False,
+        metric_deltas=[
+            CandidateMetricDelta(
+                metric="werewolf_win_rate",
+                baseline=0.7,
+                candidate=0.5,
+                candidate_minus_baseline=-0.2,
+                higher_is_better=True,
+                regression_amount=0.2,
+                tolerance=0.05,
+            )
+        ],
+        checks=[
+            GateCheck(
+                name="werewolf_win_rate",
+                passed=False,
+                reason="werewolf_win_rate_dropped",
+            )
+        ],
+        blocked_reasons=["werewolf_win_rate_dropped"],
+        prompt_safe=False,
+    )
+
+    report = build_feedback_report(
+        report_id="feedback_gate_private",
+        batch_id="batch_1",
+        traces=[],
+        candidates=[candidate],
+        candidate_gate_reports=[gate_report],
+    )
+
+    public_serialized = json.dumps(report.to_json_dict(), ensure_ascii=False)
+    private_serialized = json.dumps(
+        report.to_json_dict(include_private_audit=True),
+        ensure_ascii=False,
+    )
+
+    assert "target_role" not in public_serialized
+    assert "ground_truth" not in public_serialized
+    assert "p01" not in public_serialized
+    assert "werewolf" not in public_serialized
+    assert "werewolf_win_rate_dropped" in private_serialized

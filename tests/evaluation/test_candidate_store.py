@@ -65,6 +65,57 @@ def test_in_memory_candidate_store_tracks_valid_transitions_and_review_metadata(
     assert store.get("c1").candidate.review_status == "rolled_back"
 
 
+def test_candidate_store_can_reject_approved_candidate_when_safety_recheck_fails() -> None:
+    from werewolf_agent.evaluation.candidate_store import (
+        CandidateStatus,
+        InMemoryCandidateStore,
+    )
+
+    store = InMemoryCandidateStore(clock=lambda: "2026-06-17T10:00:00")
+    store.add(_candidate())
+    store.transition(
+        "c1",
+        CandidateStatus.APPROVED,
+        reviewer="moderator",
+        notes="initial approval",
+    )
+
+    rejected = store.transition(
+        "c1",
+        CandidateStatus.REJECTED,
+        reviewer="prompt_safety",
+        notes="unsafe after recheck",
+    )
+
+    assert rejected.status == CandidateStatus.REJECTED
+    assert [item["to_status"] for item in rejected.history] == [
+        "approved",
+        "rejected",
+    ]
+
+
+def test_candidate_store_persists_materialization_metadata() -> None:
+    from werewolf_agent.evaluation.candidate_store import (
+        CandidateStatus,
+        InMemoryCandidateStore,
+    )
+
+    store = InMemoryCandidateStore(clock=lambda: "2026-06-17T10:00:00")
+    store.add(_candidate())
+    store.transition("c1", CandidateStatus.APPROVED, reviewer="mod", notes="ok")
+
+    record = store.transition(
+        "c1",
+        CandidateStatus.MATERIALIZED,
+        reviewer="materializer",
+        notes="draft",
+        metadata={"draft_id": "draft:1", "draft_namespace": "review"},
+    )
+
+    assert record.metadata["draft_id"] == "draft:1"
+    assert record.to_json_dict()["metadata"]["draft_namespace"] == "review"
+
+
 def test_in_memory_candidate_store_rejects_invalid_direct_materialization() -> None:
     from werewolf_agent.evaluation.candidate_store import (
         CandidateStatus,
@@ -122,6 +173,7 @@ def test_repository_candidate_store_delegates_when_methods_exist() -> None:
             reviewer: str,
             notes: str,
             timestamp: str,
+            metadata: dict | None = None,
         ) -> dict:
             record = dict(self.saved[candidate_id])
             history = list(record.get("history", []))
@@ -141,6 +193,10 @@ def test_repository_candidate_store_delegates_when_methods_exist() -> None:
                 "notes": notes,
                 "updated_at": timestamp,
                 "history": history,
+                "metadata": {
+                    **dict(record.get("metadata", {})),
+                    **dict(metadata or {}),
+                },
             })
             self.saved[candidate_id] = record
             return record

@@ -97,6 +97,7 @@ class FeedbackReport:
             "candidate_workflow": _candidate_workflow_summary(
                 self.candidates,
                 self.candidate_gate_reports,
+                include_private_audit=include_private_audit,
             ),
             "regression_summary": _regression_summary(self.candidates),
             "ablations": [
@@ -198,12 +199,19 @@ def _candidate_to_dict(
     include_private_audit: bool,
 ) -> dict[str, Any]:
     data = {
-        "candidate_id": candidate.candidate_id,
+        "candidate_id": _public_safe_identifier(
+            candidate.candidate_id,
+            fallback="redacted_candidate",
+            include_private_audit=include_private_audit,
+        ),
         "source_diagnosis_ids": list(candidate.source_diagnosis_ids),
         "target_module": candidate.target_module,
         "operation": candidate.operation,
         "priority": candidate.priority,
-        "prompt_safe_payload": _json_safe(candidate.prompt_safe_payload),
+        "prompt_safe_payload": _candidate_prompt_payload(
+            candidate.prompt_safe_payload,
+            include_private_audit=include_private_audit,
+        ),
         "audit_evidence": _public_audit_evidence(candidate.audit_evidence),
         "regression_seed_set": list(candidate.regression_seed_set),
         "review_status": candidate.review_status,
@@ -302,6 +310,8 @@ def _regression_summary(candidates: list[ImprovementCandidate]) -> dict[str, Any
 def _candidate_workflow_summary(
     candidates: list[ImprovementCandidate],
     gate_reports: list[CandidateRegressionReport],
+    *,
+    include_private_audit: bool,
 ) -> dict[str, Any]:
     counts = {
         "pending": 0,
@@ -318,10 +328,47 @@ def _candidate_workflow_summary(
     return {
         **counts,
         "gate_results": [
-            _json_safe(report.to_json_dict())
+            _gate_report_to_dict(
+                report,
+                include_private_audit=include_private_audit,
+            )
             for report in gate_reports
         ],
     }
+
+
+def _candidate_prompt_payload(
+    payload: dict[str, Any],
+    *,
+    include_private_audit: bool,
+) -> dict[str, Any]:
+    if include_private_audit:
+        return _json_safe(payload)
+    safe = _public_safe_json(payload)
+    return safe if isinstance(safe, dict) else {}
+
+
+def _gate_report_to_dict(
+    report: CandidateRegressionReport,
+    *,
+    include_private_audit: bool,
+) -> dict[str, Any]:
+    data = report.to_json_dict()
+    if include_private_audit:
+        return _json_safe(data)
+    safe = _public_safe_json(data)
+    return safe if isinstance(safe, dict) else {}
+
+
+def _public_safe_identifier(
+    value: str,
+    *,
+    fallback: str,
+    include_private_audit: bool,
+) -> str:
+    if include_private_audit:
+        return value
+    return value if _is_public_safe_text(value) else fallback
 
 
 def _refs_to_dict(refs: list[str], *, include_private_audit: bool) -> list[str]:

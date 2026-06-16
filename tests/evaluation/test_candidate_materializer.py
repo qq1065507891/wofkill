@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from werewolf_agent.evaluation.feedback_schemas import ImprovementCandidate
 
 
@@ -91,12 +89,12 @@ def test_materializer_writes_rag_candidate_to_review_only_draft_namespace() -> N
     assert candidate_store.get(candidate.candidate_id).status == CandidateStatus.MATERIALIZED
 
 
-def test_materializer_accepts_approved_candidate_object_and_custom_namespace() -> None:
+def test_materializer_accepts_candidate_object_when_store_record_is_approved() -> None:
     from werewolf_agent.evaluation.candidate_materializer import CandidateMaterializer
-    from werewolf_agent.evaluation.candidate_store import CandidateStatus, InMemoryCandidateStore
+    from werewolf_agent.evaluation.candidate_store import CandidateStatus
 
-    candidate = replace(_candidate(target_module="rag"), review_status="approved")
-    candidate_store = InMemoryCandidateStore(clock=lambda: "2026-06-17T10:00:00")
+    candidate = _candidate(target_module="rag")
+    candidate_store = _approved_store(candidate)
     rag_store = _DraftStore()
     materializer = CandidateMaterializer(
         candidate_store=candidate_store,
@@ -155,6 +153,75 @@ def test_materializer_rejects_prompt_unsafe_candidate_without_writing_draft() ->
     assert result.status == "rejected"
     assert rag_store.drafts == []
     assert candidate_store.get(unsafe.candidate_id).status == CandidateStatus.REJECTED
+
+
+def test_materializer_rejects_approved_prompt_unsafe_candidate_without_writing_draft() -> None:
+    from werewolf_agent.evaluation.candidate_materializer import CandidateMaterializer
+    from werewolf_agent.evaluation.candidate_store import CandidateStatus
+
+    unsafe = _candidate(
+        payload={"recommended_use": "Use target_role and p03 ground_truth."},
+    )
+    candidate_store = _approved_store(unsafe)
+    rag_store = _DraftStore()
+    materializer = CandidateMaterializer(
+        candidate_store=candidate_store,
+        rag_store=rag_store,
+    )
+
+    result = materializer.materialize_draft(unsafe.candidate_id)
+
+    assert result.status == "rejected"
+    assert rag_store.drafts == []
+    assert candidate_store.get(unsafe.candidate_id).status == CandidateStatus.REJECTED
+
+
+def test_materializer_does_not_trust_external_candidate_review_status() -> None:
+    from werewolf_agent.evaluation.candidate_materializer import CandidateMaterializer
+    from werewolf_agent.evaluation.candidate_store import CandidateStatus, InMemoryCandidateStore
+
+    candidate = _candidate(target_module="rag")
+    object.__setattr__(candidate, "review_status", "approved")
+    candidate_store = InMemoryCandidateStore(clock=lambda: "2026-06-17T10:00:00")
+    rag_store = _DraftStore()
+    materializer = CandidateMaterializer(
+        candidate_store=candidate_store,
+        rag_store=rag_store,
+        draft_namespace="default_draft",
+    )
+
+    result = materializer.materialize_draft(candidate, namespace="custom_review")
+
+    assert result.status == "not_approved"
+    assert rag_store.drafts == []
+    assert candidate_store.get(candidate.candidate_id).status == CandidateStatus.PENDING
+
+
+def test_materializer_does_not_retry_when_adapter_raises_internal_type_error() -> None:
+    from werewolf_agent.evaluation.candidate_materializer import CandidateMaterializer
+
+    class RaisingDraftStore:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def save_review_only(self, entry: dict, namespace: str) -> str:
+            self.calls += 1
+            raise TypeError("internal adapter bug")
+
+    candidate = _candidate(target_module="rag")
+    candidate_store = _approved_store(candidate)
+    rag_store = RaisingDraftStore()
+    materializer = CandidateMaterializer(
+        candidate_store=candidate_store,
+        rag_store=rag_store,
+    )
+
+    try:
+        materializer.materialize_draft(candidate.candidate_id)
+    except TypeError as exc:
+        assert "internal adapter bug" in str(exc)
+
+    assert rag_store.calls == 1
 
 
 def test_materializer_quarantines_failed_gate_and_never_promotes() -> None:
@@ -240,6 +307,77 @@ def test_materializer_uses_returned_draft_id_for_rollback_and_promotion() -> Non
     ]
 
 
+def test_materializer_can_promote_after_restarting_with_persisted_draft_metadata() -> None:
+    from werewolf_agent.evaluation.candidate_materializer import CandidateMaterializer
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig,
+        RegressionGate,
+    )
+
+    candidate = _candidate(target_module="rag")
+    candidate_store = _approved_store(candidate)
+    writer_store = _DraftStore(draft_id="draft:persisted")
+    CandidateMaterializer(
+        candidate_store=candidate_store,
+        rag_store=writer_store,
+        draft_namespace="candidate_review",
+    ).materialize_draft(candidate.candidate_id)
+    promoter_store = _DraftStore()
+    reloaded_materializer = CandidateMaterializer(
+        candidate_store=candidate_store,
+        rag_store=promoter_store,
+        draft_namespace="candidate_review",
+        live_namespace="live",
+    )
+    pass_report = RegressionGate().evaluate(
+        CandidateRegressionConfig(candidate_id=candidate.candidate_id),
+        baseline_metrics={"hidden_info_leak_rate": 0.0},
+        candidate_metrics={"hidden_info_leak_rate": 0.0},
+        prompt_safe=True,
+    )
+
+    promoted = reloaded_materializer.promote(candidate.candidate_id, pass_report)
+
+    assert promoted.status == "promoted"
+    assert promoter_store.promotions[0][0] == "draft:persisted"
+
+
+def test_materializer_fails_closed_when_materialized_record_lacks_draft_metadata() -> None:
+    from werewolf_agent.evaluation.candidate_materializer import CandidateMaterializer
+    from werewolf_agent.evaluation.candidate_store import CandidateStatus, InMemoryCandidateStore
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig,
+        RegressionGate,
+    )
+
+    candidate = _candidate(target_module="rag")
+    candidate_store = InMemoryCandidateStore(clock=lambda: "2026-06-17T10:00:00")
+    candidate_store.add(candidate)
+    candidate_store.transition("c1", CandidateStatus.APPROVED, reviewer="mod", notes="ok")
+    candidate_store.transition(
+        "c1",
+        CandidateStatus.MATERIALIZED,
+        reviewer="legacy",
+        notes="missing metadata",
+    )
+    rag_store = _DraftStore()
+    materializer = CandidateMaterializer(
+        candidate_store=candidate_store,
+        rag_store=rag_store,
+    )
+    pass_report = RegressionGate().evaluate(
+        CandidateRegressionConfig(candidate_id=candidate.candidate_id),
+        baseline_metrics={"hidden_info_leak_rate": 0.0},
+        candidate_metrics={"hidden_info_leak_rate": 0.0},
+        prompt_safe=True,
+    )
+
+    result = materializer.promote(candidate.candidate_id, pass_report)
+
+    assert result.status == "missing_draft_metadata"
+    assert rag_store.promotions == []
+
+
 def test_materializer_does_not_promote_before_draft_materialization() -> None:
     from werewolf_agent.evaluation.candidate_materializer import CandidateMaterializer
     from werewolf_agent.evaluation.regression_gate import (
@@ -313,3 +451,4 @@ def test_materializer_promotes_passed_gate_with_source_and_regression_metadata()
     assert metadata["candidate_id"] == candidate.candidate_id
     assert metadata["source_diagnosis_ids"] == ["d1"]
     assert metadata["regression"]["passed"] is True
+    assert "source_audit_evidence" not in metadata
