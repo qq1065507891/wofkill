@@ -26,8 +26,10 @@ from werewolf_agent.runtime.sheriff_policy import (
 from werewolf_agent.runtime.nodes._shared import (
     logger,
     RuntimeState,
+    _action_audit_events,
     _action_trace_event,
     _agent_timeout,
+    _allocate_decision_identity,
     _call_agent,
     _dispatch_agent,
     _judge_broadcast,
@@ -38,6 +40,7 @@ from werewolf_agent.runtime.nodes._shared import (
     AGENT_TIMEOUTS,
     _stable_seed,
 )
+from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeline import phase_label
 
 
@@ -373,12 +376,23 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
 
     if registry:
         for candidate_id in speech_order:
+            decision_identity = _allocate_decision_identity(
+                state,
+                player_id=candidate_id,
+                phase="sheriff_speech",
+                task_type="sheriff_speech",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            exposure_collector = ModuleExposureAuditCollector()
             result = _dispatch_agent(
                 state,
                 agent_sheriff_election_speech,
                 candidate_id,
                 candidates,
                 timeout_override=AGENT_TIMEOUTS.day_speech,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
             )
             speech_text = result.get("speech_text", "") if result else ""
             logger.debug(f"  [警上发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
@@ -393,13 +407,18 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
             )
             new_events.append(speech_event)
             if result and result.get("action_trace"):
-                new_events.append(_action_trace_event(
+                new_events.extend(_action_audit_events(
+                    state=state,
                     player_id=candidate_id,
                     phase="sheriff_speech",
                     action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
                     day_number=gs.day_number,
                     night_number=gs.night_number,
                 ))
+            else:
+                exposure_collector.flush_events()
             # Incrementally update gs so next candidate sees previous speeches
             gs = replace(gs, events=gs.events + new_events)
             state["game_state"] = gs
@@ -434,11 +453,22 @@ def sheriff_endorse(state: RuntimeState) -> dict[str, Any]:
         visibility="public",
     )
 
+    decision_identity = _allocate_decision_identity(
+        state,
+        player_id=sheriff_id,
+        phase="sheriff_endorse",
+        task_type="vote",
+        day_number=gs.day_number,
+        night_number=gs.night_number,
+    )
+    exposure_collector = ModuleExposureAuditCollector()
     result = _dispatch_agent(
         state,
         _sheriff_endorse_adapter,
         sheriff_id,
         timeout_override=120,
+        decision_identity=decision_identity,
+        exposure_collector=exposure_collector,
     )
 
     if result:
@@ -448,14 +478,18 @@ def sheriff_endorse(state: RuntimeState) -> dict[str, Any]:
 
         # Private audit: sheriff's internal reasoning (moderator only)
         if action_trace:
-            from werewolf_agent.runtime.nodes._shared import _action_trace_event
-            gs = replace(gs, events=gs.events + [_action_trace_event(
+            gs = replace(gs, events=gs.events + _action_audit_events(
+                state=state,
                 player_id=sheriff_id,
                 phase="sheriff_endorse",
                 action_trace=action_trace,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
                 day_number=gs.day_number,
                 night_number=gs.night_number,
-            )])
+            ))
+        else:
+            exposure_collector.flush_events()
 
         # Public: announce endorsed target
         if endorse_target and endorse_target in gs.players:
@@ -501,6 +535,10 @@ def _sheriff_endorse_adapter(
     engine: RuleEngine,
     registry: Any,
     sheriff_id: str,
+    *,
+    decision_identity: Any = None,
+    exposure_collector: Any = None,
+    decision_trace_sink: Any = None,
 ) -> dict[str, Any]:
     """Adapter: sheriff privately decides endorsement target.
 
@@ -509,7 +547,15 @@ def _sheriff_endorse_adapter(
     The sheriff's private reasoning stays in ``private_intent`` and
     ``action_trace`` — never visible to other players.
     """
-    result = agent_sheriff_endorse(state, engine, registry, sheriff_id)
+    result = agent_sheriff_endorse(
+        state,
+        engine,
+        registry,
+        sheriff_id,
+        decision_identity=decision_identity,
+        exposure_collector=exposure_collector,
+        decision_trace_sink=decision_trace_sink,
+    )
     if result is None:
         return {}
     return result

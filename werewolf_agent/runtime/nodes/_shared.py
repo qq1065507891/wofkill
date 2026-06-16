@@ -20,6 +20,8 @@ from werewolf_agent.core.models import (
     VictoryResult,
 )
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.agent_adapter import (
     AgentRegistry,
     agent_badge_decision,
@@ -78,6 +80,7 @@ class RuntimeState(TypedDict, total=False):
     exile_vote_revote: bool
     pk_candidates: list[str]
     vote_action_traces: dict[str, Any]
+    vote_decision_identities: dict[str, DecisionIdentity]
     revote: bool
     # Sheriff election inputs
     sheriff_candidates: list[str]
@@ -114,6 +117,8 @@ class RuntimeState(TypedDict, total=False):
     judge_hitl_enabled: bool
     hitl_auto_pause_after: list[str]
     agent_call_delay_ms: int
+    action_index_by_game: dict[str, int]
+    pending_exposure_events_by_trace: dict[str, list[GameEvent]]
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +197,38 @@ def _player_display(state: RuntimeState, player_id: str) -> str:
     return player_id
 
 
-def _call_agent(fn, state: RuntimeState, *args, timeout_override: float | None = None):
+def _allocate_decision_identity(
+    state: RuntimeState,
+    *,
+    player_id: str,
+    phase: str,
+    task_type: str,
+    day_number: int,
+    night_number: int,
+) -> DecisionIdentity:
+    gs = state["game_state"]
+    next_index_by_game = state.setdefault("action_index_by_game", {})
+    action_index = int(next_index_by_game.get(gs.game_id, 0))
+    next_index_by_game[gs.game_id] = action_index + 1
+    return DecisionIdentity(
+        game_id=gs.game_id,
+        player_id=player_id,
+        phase=phase,
+        day_number=day_number,
+        night_number=night_number,
+        task_type=task_type,
+        action_index=action_index,
+    )
+
+
+def _call_agent(fn, state: RuntimeState, *args, timeout_override: float | None = None, **kwargs):
     """Call an agent adapter function, optionally wrapped with a timeout."""
     timeout = timeout_override if timeout_override is not None else _agent_timeout(state)
     if timeout > 0:
-        return timed_call(fn, *args, timeout=timeout)
-    return fn(*args)
+        if kwargs:
+            return timed_call(lambda *inner_args: fn(*inner_args, **kwargs), *args, timeout=timeout)
+        return timed_call(fn, *args, timeout=timeout, **kwargs)
+    return fn(*args, **kwargs)
 
 
 def _dispatch_agent(
@@ -205,6 +236,7 @@ def _dispatch_agent(
     fn,
     *extra_args,
     timeout_override: float | None = None,
+    **extra_kwargs,
 ) -> dict[str, Any] | None:
     """Helper to dispatch to an agent after checking registry existence.
 
@@ -229,6 +261,7 @@ def _dispatch_agent(
         engine,
         registry,
         *extra_args,
+        **extra_kwargs,
         timeout_override=timeout_override,
     )
 
@@ -240,6 +273,7 @@ def _action_trace_event(
     action_trace: dict[str, Any],
     day_number: int = 0,
     night_number: int = 0,
+    decision_identity: DecisionIdentity | None = None,
 ) -> GameEvent:
     audit_text_parts: list[str] = []
     raw_text = action_trace.get("raw_text")
@@ -253,18 +287,48 @@ def _action_trace_event(
                 audit_text_parts.append(str(value))
     timeline_confusion = detect_timeline_confusion("\n".join(audit_text_parts))
     payload = {
-        "player_id": player_id,
-        "phase": phase,
-        "day_number": day_number,
-        "night_number": night_number,
+        "player_id": decision_identity.player_id if decision_identity else player_id,
+        "phase": decision_identity.phase if decision_identity else phase,
+        "day_number": decision_identity.day_number if decision_identity else day_number,
+        "night_number": decision_identity.night_number if decision_identity else night_number,
         "visibility": "moderator_only",
         "action_trace": action_trace,
         "timeline_confusion": timeline_confusion,
     }
+    if decision_identity is not None:
+        payload.update({
+            "trace_id": decision_identity.trace_id(),
+            "game_id": decision_identity.game_id,
+            "task_type": decision_identity.task_type,
+            "action_index": decision_identity.action_index,
+        })
     if phase == "vote":
         payload.update(_private_vote_audit_payload(action_trace))
 
     return GameEvent(type="action_trace_audit", payload=payload)
+
+
+def _action_audit_events(
+    *,
+    state: RuntimeState,
+    player_id: str,
+    phase: str,
+    action_trace: dict[str, Any],
+    decision_identity: DecisionIdentity | None,
+    exposure_collector: ModuleExposureAuditCollector | None,
+    day_number: int = 0,
+    night_number: int = 0,
+) -> list[GameEvent]:
+    event = _action_trace_event(
+        player_id=player_id,
+        phase=phase,
+        action_trace=action_trace,
+        day_number=day_number,
+        night_number=night_number,
+        decision_identity=decision_identity,
+    )
+    exposure_events = exposure_collector.flush_events() if exposure_collector else []
+    return [*exposure_events, event]
 
 
 def _private_vote_audit_payload(action_trace: dict[str, Any]) -> dict[str, Any]:

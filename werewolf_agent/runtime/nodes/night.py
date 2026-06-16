@@ -18,6 +18,7 @@ from werewolf_agent.runtime.nodes._shared import (
     RULESET_PATH,
     logger,
     RuntimeState,
+    _action_audit_events,
     _alive_non_wolves,
     _alive_wolves,
     _call_agent,
@@ -33,12 +34,14 @@ from werewolf_agent.runtime.nodes._shared import (
     _timer_expired,
     _agent_timeout,
     _action_trace_event,
+    _allocate_decision_identity,
     AGENT_TIMEOUTS,
     timed_call,
     _force_wolf_kill,
     _planned_wolf_kill,
     _build_wolf_team_plan,
 )
+from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeline import phase_label
 
 def enter_night(state: RuntimeState) -> dict[str, Any]:
@@ -523,11 +526,22 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         round_state["wolf_discussion_round"] = round_number
         for wolf_id in wolves:
             round_state["game_state"] = gs  # Latest gs with accumulated speeches
+            decision_identity = _allocate_decision_identity(
+                round_state,
+                player_id=wolf_id,
+                phase=f"wolf_discussion_round_{round_number}",
+                task_type="wolf_discussion",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            exposure_collector = ModuleExposureAuditCollector()
             result = _dispatch_agent(
                 round_state,
                 agent_wolf_discussion,
                 wolf_id,
                 timeout_override=AGENT_TIMEOUTS.wolf_discussion_per_player,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
             )
             speech_text = result.get("speech_text", "") if result else ""
             logger.debug(
@@ -548,15 +562,20 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
             gs = replace(gs, events=gs.events + [disc_event])
             events.append(disc_event)
             if result and result.get("action_trace"):
-                trace_event = _action_trace_event(
+                trace_events = _action_audit_events(
+                    state=round_state,
                     player_id=wolf_id,
                     phase=f"wolf_discussion_round_{round_number}",
                     action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
                     day_number=gs.day_number,
                     night_number=gs.night_number,
                 )
-                gs = replace(gs, events=gs.events + [trace_event])
-                events.append(trace_event)
+                gs = replace(gs, events=gs.events + trace_events)
+                events.extend(trace_events)
+            else:
+                exposure_collector.flush_events()
 
         # Check if wolves reached consensus after this round — end early if so
         if round_number < round_count:

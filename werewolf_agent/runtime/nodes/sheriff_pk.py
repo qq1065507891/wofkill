@@ -13,12 +13,15 @@ from werewolf_agent.runtime.agent_adapter import (
 from werewolf_agent.runtime.nodes._shared import (
     logger,
     RuntimeState,
+    _action_audit_events,
     _action_trace_event,
+    _allocate_decision_identity,
     _dispatch_agent,
     _judge_broadcast,
     _player_display,
     AGENT_TIMEOUTS,
 )
+from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.sheriff_policy import (
     choose_no_sheriff_speech_order,
     choose_sheriff_led_speech_order,
@@ -51,12 +54,23 @@ def sheriff_pk_speech(state: RuntimeState) -> dict[str, Any]:
     )
 
     for candidate_id in pk_candidates:
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=candidate_id,
+            phase="sheriff_pk_speech",
+            task_type="sheriff_speech",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
         result = _dispatch_agent(
             state,
             agent_sheriff_election_speech,
             candidate_id,
             pk_candidates,
             timeout_override=AGENT_TIMEOUTS.day_speech,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
         )
         speech_text = result.get("speech_text", "") if result else ""
         logger.debug(f"  [警长PK发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
@@ -69,13 +83,18 @@ def sheriff_pk_speech(state: RuntimeState) -> dict[str, Any]:
             },
         ))
         if result and result.get("action_trace"):
-            events.append(_action_trace_event(
+            events.extend(_action_audit_events(
+                state=state,
                 player_id=candidate_id,
                 phase="sheriff_pk_speech",
                 action_trace=result["action_trace"],
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             ))
+        else:
+            exposure_collector.flush_events()
 
     gs = replace(gs, events=gs.events + events)
     return {"game_state": gs}

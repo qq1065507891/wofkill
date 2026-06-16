@@ -15,8 +15,10 @@ from werewolf_agent.runtime.agent_adapter import (
 from werewolf_agent.runtime.nodes._shared import (
     logger,
     RuntimeState,
+    _action_audit_events,
     _action_trace_event,
     _agent_timeout,
+    _allocate_decision_identity,
     _call_agent,
     _dispatch_agent,
     _judge_broadcast,
@@ -28,6 +30,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _with_vote_target_in_trace,
     _timer_expired,
 )
+from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.sheriff_policy import (
     choose_no_sheriff_speech_order,
     choose_sheriff_led_speech_order,
@@ -268,12 +271,25 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         )
         speech_text = state.get("speech_text", "")
         action_trace = None
+        decision_identity = None
+        exposure_collector = None
         if not speech_text:
+            decision_identity = _allocate_decision_identity(
+                state,
+                player_id=speaker_id,
+                phase="speech",
+                task_type="speech",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            exposure_collector = ModuleExposureAuditCollector()
             result = _dispatch_agent(
                 state,
                 agent_day_speech,
                 speaker_id,
                 timeout_override=AGENT_TIMEOUTS.day_speech,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
             )
             if result is not None:
                 if result.get("self_destruct"):
@@ -301,10 +317,13 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         }
         events = [GameEvent(type="speech", payload=payload)]
         if action_trace:
-            events.append(_action_trace_event(
+            events.extend(_action_audit_events(
+                state=state,
                 player_id=speaker_id,
                 phase="speech",
                 action_trace=action_trace,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             ))
@@ -362,6 +381,8 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
         logger.debug(f"\n  --- 投票开始 ---")
     votes: dict[str, str] = {}
     vote_traces: dict[str, Any] = {}
+    vote_identities: dict[str, Any] = {}
+    pending_exposure_events = state.setdefault("pending_exposure_events_by_trace", {})
     has_agents = False
     # Count eligible voters for per-voter calling
     eligible_voter_ids = [pid for pid, p in gs.players.items() if p.alive and p.vote_enabled]
@@ -387,11 +408,22 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
                     "sheriff_weight": 1.5 if pid == sheriff_id else 1.0,
                 },
             )
+            decision_identity = _allocate_decision_identity(
+                state,
+                player_id=pid,
+                phase="vote",
+                task_type="vote",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            exposure_collector = ModuleExposureAuditCollector()
             result = _dispatch_agent(
                 state,
                 agent_day_vote,
                 pid,
                 timeout_override=AGENT_TIMEOUTS.day_vote,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
             )
             if result is not None:
                 has_agents = True
@@ -402,7 +434,12 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
                     logger.debug(f"    {_player_display(state, pid)} 弃票")
                 if result.get("action_trace"):
                     vote_traces[pid] = result["action_trace"]
+                    vote_identities[pid] = decision_identity
+                    pending_exposure_events[decision_identity.trace_id()] = (
+                        exposure_collector.flush_events()
+                    )
             else:
+                exposure_collector.flush_events()
                 has_agents = True
                 logger.warning(f"    {_player_display(state, pid)} 投票超时（视为弃票）")
 
@@ -412,6 +449,8 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
                 "game_state": gs,
                 "exile_votes": votes,
                 "vote_action_traces": vote_traces,
+                "vote_decision_identities": vote_identities,
+                "pending_exposure_events_by_trace": pending_exposure_events,
                 "exile_vote_day": gs.day_number,
                 "exile_vote_revote": state.get("revote", False),
                 "revote": state.get("revote", False),
@@ -567,12 +606,17 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         payload["tied"] = result.tied_player_ids
     vote_trace_events = []
     for pid, trace in (state.get("vote_action_traces") or {}).items():
+        decision_identity = (state.get("vote_decision_identities") or {}).get(pid)
+        trace_id = decision_identity.trace_id() if decision_identity else ""
+        pending_by_trace = state.get("pending_exposure_events_by_trace", {})
+        exposure_events = pending_by_trace.pop(trace_id, []) if trace_id else []
         audit_event = _action_trace_event(
             player_id=pid,
             phase="vote",
             action_trace=_with_vote_target_in_trace(trace, state.get("exile_votes", {}).get(pid, "")),
             day_number=gs.day_number,
             night_number=gs.night_number,
+            decision_identity=decision_identity,
         )
         thought = audit_event.payload.get("private_vote_thought") or {}
         if thought:
@@ -584,7 +628,7 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
                 f"排除理由={thought.get('not_voting_reason') or '未说明'}；"
                 f"内心理由={thought.get('private_reason') or '未说明'}"
             )
-        vote_trace_events.append(audit_event)
+        vote_trace_events.extend([*exposure_events, audit_event])
     gs = replace(gs, votes=votes,
                  events=gs.events + [GameEvent(
                      type="vote_resolved",

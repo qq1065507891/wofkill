@@ -24,6 +24,8 @@ from werewolf_agent.agents.schemas import (
 )
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import phase_label
@@ -61,6 +63,20 @@ from werewolf_agent.runtime.directives._shared import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _audit_context_kwargs(
+    decision_identity: DecisionIdentity | None,
+    exposure_collector: ModuleExposureAuditCollector | None,
+    decision_trace_sink: Any | None = None,
+) -> dict[str, Any]:
+    if decision_identity is None or exposure_collector is None:
+        return {}
+    return {
+        "decision_identity": decision_identity,
+        "exposure_collector": exposure_collector,
+        "decision_trace_sink": decision_trace_sink,
+    }
 
 
 class AgentRegistry(Protocol):
@@ -166,6 +182,10 @@ def agent_night_witch(
     state: dict[str, Any],
     engine: RuleEngine,
     registry: AgentRegistry,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Try to get witch decision from agent. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -205,6 +225,7 @@ def agent_night_witch(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
 
     # Build witch strategy directive with clear action guidance
@@ -387,6 +408,10 @@ def agent_night_seer(
     state: dict[str, Any],
     engine: RuleEngine,
     registry: AgentRegistry,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Try to get seer decision from agent. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -474,6 +499,7 @@ def agent_night_seer(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -849,6 +875,10 @@ def _single_wolf_vote(
     engine: RuleEngine,
     registry: AgentRegistry,
     wolf_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Get a single wolf's kill/no_kill vote.
 
@@ -894,6 +924,7 @@ def _single_wolf_vote(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -932,6 +963,10 @@ def agent_wolf_discussion(
     engine: RuleEngine,
     registry: AgentRegistry,
     wolf_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Get wolf's private discussion speech. Returns None if agent unavailable."""
     gs: GameState = state["game_state"]
@@ -1016,6 +1051,7 @@ def agent_wolf_discussion(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
 
     # Inject teammate transcript into recent_transcript for prompt visibility
@@ -1051,6 +1087,10 @@ def agent_defense_speech(
     engine: RuleEngine,
     registry: AgentRegistry,
     speaker_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """D-8: handler for TaskType.DEFENSE_SPEECH.
 
@@ -1079,6 +1119,7 @@ def agent_defense_speech(
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
         discussion_positions=state.get("discussion_positions"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
 
     strategy_directive = context.strategy_directive or {}
@@ -1117,6 +1158,10 @@ def agent_day_speech(
     engine: RuleEngine,
     registry: AgentRegistry,
     speaker_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Try to get day speech from agent. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -1132,6 +1177,7 @@ def agent_day_speech(
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
         discussion_positions=state.get("discussion_positions"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
 
     strategy_directive = context.strategy_directive or {}
@@ -1312,6 +1358,10 @@ def agent_sheriff_pick_speech_order(
     engine: RuleEngine,
     registry: AgentRegistry,
     sheriff_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> list[str] | None:
     """Ask the sheriff agent to choose the first speaker. Returns full speech order or None."""
     gs: GameState = state["game_state"]
@@ -1334,6 +1384,7 @@ def agent_sheriff_pick_speech_order(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     strategy_directive = {
         "choose_speech_order": (
@@ -1359,6 +1410,10 @@ def agent_sheriff_endorse(
     engine: RuleEngine,
     registry: AgentRegistry,
     sheriff_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Sheriff privately decides endorsement target via VOTE action.
 
@@ -1393,6 +1448,7 @@ def agent_sheriff_endorse(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -1418,6 +1474,10 @@ def agent_pk_speech(
     engine: RuleEngine,
     registry: AgentRegistry,
     speaker_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Get PK speech from a tied candidate. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -1439,6 +1499,7 @@ def agent_pk_speech(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     # Add prior tally to visible state
     if prior_tally:
@@ -1538,6 +1599,10 @@ def agent_day_vote(
     engine: RuleEngine,
     registry: AgentRegistry,
     voter_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Try to get vote from agent. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -1740,6 +1805,7 @@ def agent_day_vote(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     if strategy_directive:
         context = _merge_strategy_directive(context, strategy_directive)
@@ -1771,6 +1837,10 @@ def agent_hybrid_choose_master(
     engine: RuleEngine,
     registry: AgentRegistry,
     hybrid_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Ask hybrid agent to choose their master. Returns None if agent unavailable."""
     gs: GameState = state["game_state"]
@@ -1799,6 +1869,7 @@ def agent_hybrid_choose_master(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -1815,6 +1886,10 @@ def agent_exile_last_words(
     engine: RuleEngine,
     registry: AgentRegistry,
     player_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Exiled player gives last words."""
     gs: GameState = state["game_state"]
@@ -1829,6 +1904,7 @@ def agent_exile_last_words(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     strategy_directive = {
         "last_words": (
@@ -1872,6 +1948,10 @@ def agent_badge_decision(
     engine: RuleEngine,
     registry: AgentRegistry,
     sheriff_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Dying sheriff decides to transfer badge or tear it."""
     gs: GameState = state["game_state"]
@@ -1887,6 +1967,7 @@ def agent_badge_decision(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     player_role = gs.players[sheriff_id].role if sheriff_id in gs.players else ""
     role_hint = ""
@@ -1935,6 +2016,10 @@ def agent_hunter_shot(
     engine: RuleEngine,
     registry: AgentRegistry,
     hunter_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> str | None:
     """Get hunter shot target from agent. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -1995,6 +2080,7 @@ def agent_hunter_shot(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2010,6 +2096,10 @@ def agent_sheriff_vote(
     registry: AgentRegistry,
     voter_id: str,
     candidates: list[str],
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Get sheriff vote from agent. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -2025,6 +2115,7 @@ def agent_sheriff_vote(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
 
     # Wolf strategy for sheriff voting
@@ -2064,6 +2155,10 @@ def agent_sheriff_register(
     engine: RuleEngine,
     registry: AgentRegistry,
     player_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Ask a player whether they want to register for sheriff election.
 
@@ -2119,6 +2214,7 @@ def agent_sheriff_register(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 
@@ -2137,6 +2233,10 @@ def agent_sheriff_withdraw(
     engine: RuleEngine,
     registry: AgentRegistry,
     candidate_id: str,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Ask a sheriff candidate whether they want to withdraw.
 
@@ -2163,6 +2263,7 @@ def agent_sheriff_withdraw(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
 
     try:
@@ -2181,6 +2282,10 @@ def agent_sheriff_election_speech(
     registry: AgentRegistry,
     candidate_id: str,
     all_candidates: list[str],
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Get sheriff election speech from a candidate.
 
@@ -2377,6 +2482,7 @@ def agent_sheriff_election_speech(
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
+        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
     )
     context = _merge_strategy_directive(context, strategy_directive)
 

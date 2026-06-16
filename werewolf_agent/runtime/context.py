@@ -33,6 +33,8 @@ from werewolf_agent.agents.directive_priority import (
 )
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.skills.registry import SkillRegistry
 from werewolf_agent.skills.schemas import SkillAdviceFrame, SkillInput, SkillName
 from werewolf_agent.runtime.timeline import (
@@ -1122,6 +1124,10 @@ def build_agent_context(
     restored_memory: Any | None = None,
     cognition_state_manager: Any | None = None,
     discussion_positions: dict[str, str] | None = None,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    ablation_toggles: Any | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> AgentContext:
     """Build AgentContext for a player from current game state.
 
@@ -1669,10 +1675,19 @@ def build_agent_context(
         # budget. Now only the structured path remains.
         skill_analysis_hints={},
     )
-    return _inject_seed_rag_hints(
+    final_context = _inject_seed_rag_hints(
         context,
         ruleset_id=gs.ruleset_id,
         rag_service=rag_service,
         game_id=gs.game_id,
         n_alive=sum(1 for p in gs.players.values() if p.alive),
     )
+    if decision_identity is not None and exposure_collector is not None:
+        exposure_collector.record_rag(decision_identity, final_context.rag_hints)
+        exposure_collector.record_reflection(
+            decision_identity,
+            final_context.reflection_memory_hints,
+        )
+        exposure_collector.record_skill(decision_identity, final_context.skill_analyses)
+        exposure_collector.record_persona(decision_identity, final_context.persona_snapshot)
+    return final_context
