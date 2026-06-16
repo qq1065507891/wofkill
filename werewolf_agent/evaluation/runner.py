@@ -15,6 +15,11 @@ from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
+from werewolf_agent.evaluation.ablation import (
+    AblationReport,
+    OfflineTraceAblationRunner,
+)
+from werewolf_agent.evaluation.feedback_schemas import EvaluationTrace
 from werewolf_agent.evaluation.schemas import (
     ActionRecord,
     ActionVerdict,
@@ -25,6 +30,18 @@ from werewolf_agent.evaluation.schemas import (
     ReplayRecord,
 )
 from werewolf_agent.model_gateway.router import UsageRecord
+
+
+def run_offline_trace_ablation(
+    traces: list[EvaluationTrace],
+    *,
+    removed_modules: list[str],
+) -> AblationReport:
+    """Run offline feedback ablation without executing live agents."""
+    return OfflineTraceAblationRunner().run(
+        traces,
+        removed_modules=removed_modules,
+    )
 
 
 class BatchRunner:

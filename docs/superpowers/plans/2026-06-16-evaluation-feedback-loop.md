@@ -344,10 +344,17 @@ Implementation note:
 - Modify: `werewolf_agent/evaluation/runner.py`
 - Test: `tests/evaluation/test_ablation_runner.py`
 
-- [ ] Add offline trace ablation first.
-- [ ] Mark causal live-agent metrics unsupported in offline mode.
+- [x] Add offline trace ablation first.
+- [x] Mark causal live-agent metrics unsupported in offline mode.
 - [ ] Add live-agent harness only after trace tests are stable.
-- [ ] Commit with `feat: add feedback ablation runner`.
+- [x] Commit with `feat: add feedback ablation runner`.
+
+Implementation note:
+- Offline trace ablation removes selected module exposures from immutable
+  `EvaluationTrace` copies and compares baseline vs ablated attribution
+  summaries. Live win-rate deltas and causal decision deltas are explicitly
+  reported as unsupported in offline mode; no live-agent harness is introduced
+  in this phase.
 
 ## Task 11: Phase 8 Reports And Optional LangSmith Export
 
