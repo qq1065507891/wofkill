@@ -192,3 +192,48 @@ def test_replay_mode_with_complete_artifact_reports_replay_only_without_fresh_ru
 
     assert report.pair_count == 1
     assert report.metric_deltas["good_win_rate"].delta == 1.0
+
+
+def test_event_order_replay_uses_ordered_records_without_trace_id_match() -> None:
+    from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
+    from werewolf_agent.evaluation.replay import ReplayArtifact, ReplayRecord
+
+    report = FullGameAblationRunner(
+        game_runner_factory=lambda **kwargs: pytest.fail("must not call fresh runner"),
+        replay_artifact=ReplayArtifact(records=[
+            ReplayRecord(trace_id="legacy-0", output={"winning_faction": "good"}, event_index=0),
+            ReplayRecord(trace_id="legacy-1", output={"winning_faction": "werewolf"}, event_index=1),
+        ]),
+    ).run(_config(
+        seed_set=[1],
+        agent_mode="replay",
+        replay_policy="strict_replay",
+        replay_capture_ref="legacy.json",
+        replay_match_key="event_order",
+    ))
+
+    assert report.pair_count == 1
+    assert report.metric_deltas["good_win_rate"].delta == 1.0
+
+
+def test_event_order_replay_rejects_extra_records() -> None:
+    from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
+    from werewolf_agent.evaluation.replay import ReplayArtifact, ReplayRecord
+
+    report = FullGameAblationRunner(
+        game_runner_factory=lambda **kwargs: pytest.fail("must not call fresh runner"),
+        replay_artifact=ReplayArtifact(records=[
+            ReplayRecord(trace_id="legacy-0", output={"winning_faction": "good"}, event_index=0),
+            ReplayRecord(trace_id="legacy-1", output={"winning_faction": "werewolf"}, event_index=1),
+            ReplayRecord(trace_id="legacy-2", output={"winning_faction": "good"}, event_index=2),
+        ]),
+    ).run(_config(
+        seed_set=[1],
+        agent_mode="replay",
+        replay_policy="strict_replay",
+        replay_capture_ref="legacy.json",
+        replay_match_key="event_order",
+    ))
+
+    assert report.pair_count == 0
+    assert report.unsupported_metrics["replay"] == "event_order_length_mismatch"

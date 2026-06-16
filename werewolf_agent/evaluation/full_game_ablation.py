@@ -165,13 +165,20 @@ class FullGameAblationRunner:
         assert self._replay_artifact is not None
         pairs: list[FullGameAblationPair] = []
         records_by_trace = {record.trace_id: record for record in self._replay_artifact.records}
-        for seed in config.seed_set:
+        for seed_offset, seed in enumerate(config.seed_set):
+            if config.replay_match_key == "event_order":
+                offset = seed_offset * 2
+                baseline_record = self._replay_artifact.records[offset]
+                ablated_record = self._replay_artifact.records[offset + 1]
+            else:
+                baseline_record = records_by_trace[_replay_trace_id(config, seed, "baseline")]
+                ablated_record = records_by_trace[_replay_trace_id(config, seed, "ablated")]
             baseline = _result_from_replay_record(
-                records_by_trace[_replay_trace_id(config, seed, "baseline")],
+                baseline_record,
                 game_id=f"{config.batch_id}:{seed}:baseline",
             )
             ablated = _result_from_replay_record(
-                records_by_trace[_replay_trace_id(config, seed, "ablated")],
+                ablated_record,
                 game_id=f"{config.batch_id}:{seed}:ablated",
             )
             pairs.append(FullGameAblationPair(
@@ -195,6 +202,9 @@ class FullGameAblationRunner:
     def _validate_replay(self, config: FullGameAblationConfig) -> str:
         if self._replay_artifact is None:
             return "missing_replay_capture"
+        expected_records = len(config.seed_set) * 2
+        if config.replay_match_key == "event_order" and len(self._replay_artifact.records) != expected_records:
+            return "event_order_length_mismatch"
         matcher = ReplayMatcher(self._replay_artifact)
         event_index = 0
         for seed in config.seed_set:
