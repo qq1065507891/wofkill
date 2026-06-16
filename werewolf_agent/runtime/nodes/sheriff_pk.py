@@ -140,10 +140,42 @@ def sheriff_revote(state: RuntimeState) -> dict[str, Any]:
 
     votes: dict[str, str] = {}
     vote_records: list[dict[str, Any]] = []
+    audit_events: list[GameEvent] = []
     for voter_id in voters:
-        result = _dispatch_agent(state, agent_sheriff_vote, voter_id, pk_candidates)
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=voter_id,
+            phase="sheriff_revote",
+            task_type="sheriff_vote",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
+        result = _dispatch_agent(
+            state,
+            agent_sheriff_vote,
+            voter_id,
+            pk_candidates,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
+        )
         if result is not None:
+            if result.get("action_trace"):
+                audit_events.extend(_action_audit_events(
+                    state=state,
+                    player_id=voter_id,
+                    phase="sheriff_revote",
+                    action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
+            else:
+                exposure_collector.flush_events()
             if result.get("self_destruct"):
+                if audit_events:
+                    gs = replace(gs, events=gs.events + audit_events)
                 return {"game_state": gs, "self_destruct_wolf_id": voter_id}
             if result.get("vote_target"):
                 votes[voter_id] = result["vote_target"]
@@ -155,12 +187,14 @@ def sheriff_revote(state: RuntimeState) -> dict[str, Any]:
             else:
                 vote_records.append({"voter": voter_id, "target": None})
                 logger.debug(f"  [警长复投] {_player_display(state, voter_id)} 弃票")
+        else:
+            exposure_collector.flush_events()
 
     if vote_records:
         gs = replace(gs, events=gs.events + [GameEvent(
             type="sheriff_vote_record",
             payload={"votes": vote_records, "candidates": pk_candidates, "revote": True},
-        )])
+        )] + audit_events)
 
     gs, event = engine.resolve_sheriff_vote(gs, votes=votes, candidates=pk_candidates)
     gs = replace(gs, events=gs.events + [event])

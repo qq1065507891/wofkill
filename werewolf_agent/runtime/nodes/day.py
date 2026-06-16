@@ -154,18 +154,43 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
     if registry and eligible:
         for pid in eligible:
             call_state = {**state, "game_state": gs}
+            decision_identity = _allocate_decision_identity(
+                call_state,
+                player_id=pid,
+                phase="night_death_last_words",
+                task_type="last_words",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            exposure_collector = ModuleExposureAuditCollector()
             result = _dispatch_agent(
                 call_state,
                 agent_exile_last_words,
                 pid,
                 timeout_override=AGENT_TIMEOUTS.day_speech,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
             )
             speech_text = result.get("speech_text", "") if result else ""
             logger.debug(f"  [夜死遗言] {_player_display(state, pid)}: {speech_text if speech_text else '(无遗言)'}")
-            gs = replace(gs, events=gs.events + [GameEvent(
+            new_events = [GameEvent(
                 type="night_death_last_words",
                 payload={"speaker": pid, "day_number": gs.day_number, "text": speech_text},
-            )])
+            )]
+            if result and result.get("action_trace"):
+                new_events.extend(_action_audit_events(
+                    state=call_state,
+                    player_id=pid,
+                    phase="night_death_last_words",
+                    action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
+            else:
+                exposure_collector.flush_events()
+            gs = replace(gs, events=gs.events + new_events)
 
     return {"game_state": gs}
 
@@ -199,12 +224,43 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
     if not speech_order:
         if gs.sheriff_id and gs.sheriff_badge_state == "active":
             # Sheriff agent picks first speaker; fallback to static order
-            agent_order = _dispatch_agent(
+            decision_identity = _allocate_decision_identity(
+                state,
+                player_id=gs.sheriff_id,
+                phase="sheriff_speech_order",
+                task_type="speech_order",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            exposure_collector = ModuleExposureAuditCollector()
+            agent_order_result = _dispatch_agent(
                 state,
                 agent_sheriff_pick_speech_order,
                 gs.sheriff_id,
                 timeout_override=AGENT_TIMEOUTS.day_speech,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
+                include_action_trace=True,
             )
+            action_trace = None
+            if isinstance(agent_order_result, dict):
+                agent_order = agent_order_result.get("speech_order")
+                action_trace = agent_order_result.get("action_trace")
+            else:
+                agent_order = agent_order_result
+            if action_trace:
+                gs = replace(gs, events=gs.events + _action_audit_events(
+                    state=state,
+                    player_id=gs.sheriff_id,
+                    phase="sheriff_speech_order",
+                    action_trace=action_trace,
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
+            else:
+                exposure_collector.flush_events()
             speech_order = agent_order or choose_sheriff_led_speech_order(gs, gs.sheriff_id)
         else:
             speech_order = choose_no_sheriff_speech_order(gs)
@@ -718,18 +774,43 @@ def exile_last_words(state: RuntimeState) -> dict[str, Any]:
 
     registry = state.get("agent_registry")
     if registry:
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=exiled_id,
+            phase="exile_last_words",
+            task_type="last_words",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
         result = _dispatch_agent(
             state,
             agent_exile_last_words,
             exiled_id,
             timeout_override=AGENT_TIMEOUTS.day_speech,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
         )
         speech_text = result.get("speech_text", "") if result else ""
         logger.debug(f"  [遗言] {_player_display(state, exiled_id)}: {speech_text if speech_text else '(无遗言)'}")
-        gs = replace(gs, events=gs.events + [GameEvent(
+        new_events = [GameEvent(
             type="exile_last_words",
             payload={"speaker": exiled_id, "day_number": gs.day_number, "text": speech_text},
-        )])
+        )]
+        if result and result.get("action_trace"):
+            new_events.extend(_action_audit_events(
+                state=state,
+                player_id=exiled_id,
+                phase="exile_last_words",
+                action_trace=result["action_trace"],
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            ))
+        else:
+            exposure_collector.flush_events()
+        gs = replace(gs, events=gs.events + new_events)
 
     return {"game_state": gs}
 

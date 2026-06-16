@@ -770,6 +770,10 @@ def agent_wolf_consensus(
     state: dict[str, Any],
     engine: RuleEngine,
     registry: AgentRegistry,
+    *,
+    decision_identities: dict[str, DecisionIdentity] | None = None,
+    exposure_collectors: dict[str, ModuleExposureAuditCollector] | None = None,
+    decision_trace_sink: Any | None = None,
 ) -> dict[str, Any] | None:
     """Try to get wolf consensus from agents. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
@@ -781,14 +785,34 @@ def agent_wolf_consensus(
     kill_votes: dict[str, int] = {}
     no_kill_count = 0
     action_traces: dict[str, Any] = {}
+    action_decision_identities: dict[str, DecisionIdentity] = {}
+    action_exposure_collectors: dict[str, ModuleExposureAuditCollector] = {}
 
     for wolf_id in wolves:
-        vote = _single_wolf_vote(state, engine, registry, wolf_id)
+        decision_identity = (decision_identities or {}).get(wolf_id)
+        exposure_collector = (exposure_collectors or {}).get(wolf_id)
+        vote = _single_wolf_vote(
+            state,
+            engine,
+            registry,
+            wolf_id,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
+            decision_trace_sink=decision_trace_sink,
+        )
         if vote is None:
+            if exposure_collector is not None:
+                exposure_collector.flush_events()
             no_kill_count += 1
             continue
         if vote.get("action_trace"):
             action_traces[wolf_id] = vote["action_trace"]
+            if decision_identity is not None:
+                action_decision_identities[wolf_id] = decision_identity
+            if exposure_collector is not None:
+                action_exposure_collectors[wolf_id] = exposure_collector
+        elif exposure_collector is not None:
+            exposure_collector.flush_events()
         if vote.get("wolf_action") == "kill" and vote.get("wolf_kill_target_id"):
             target = vote["wolf_kill_target_id"]
             kill_votes[target] = kill_votes.get(target, 0) + 1
@@ -800,10 +824,14 @@ def agent_wolf_consensus(
         best_target = max(kill_votes, key=kill_votes.get)
         return {"wolf_action": "kill", "wolf_kill_target_id": best_target,
                 "wolf_action_reason": f"majority({total_kill}/{total_kill + no_kill_count})",
-                "action_traces": action_traces}
+                "action_traces": action_traces,
+                "action_decision_identities": action_decision_identities,
+                "action_exposure_collectors": action_exposure_collectors}
     return {"wolf_action": "no_kill", "wolf_kill_target_id": None,
             "wolf_action_reason": f"no_kill_majority({no_kill_count}/{total_kill + no_kill_count})",
-            "action_traces": action_traces}
+            "action_traces": action_traces,
+            "action_decision_identities": action_decision_identities,
+            "action_exposure_collectors": action_exposure_collectors}
 
 
 def _build_wolf_kill_directive(
@@ -1362,7 +1390,8 @@ def agent_sheriff_pick_speech_order(
     decision_identity: DecisionIdentity | None = None,
     exposure_collector: ModuleExposureAuditCollector | None = None,
     decision_trace_sink: Any | None = None,
-) -> list[str] | None:
+    include_action_trace: bool = False,
+) -> list[str] | dict[str, Any] | None:
     """Ask the sheriff agent to choose the first speaker. Returns full speech order or None."""
     gs: GameState = state["game_state"]
     agent = registry.get_agent(sheriff_id)
@@ -1396,12 +1425,18 @@ def agent_sheriff_pick_speech_order(
     context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
+    action_trace = _action_trace_payload(action)
     first_speaker = action.target_id if action.action_type == ActionType.VOTE else None
 
     if first_speaker and first_speaker in alive_players:
         # Build order: first_speaker, then remaining in original order, sheriff last
         remaining = [pid for pid in alive_players if pid != first_speaker]
-        return [first_speaker] + remaining + [sheriff_id]
+        speech_order = [first_speaker] + remaining + [sheriff_id]
+        if include_action_trace:
+            return {"speech_order": speech_order, "action_trace": action_trace}
+        return speech_order
+    if include_action_trace:
+        return {"speech_order": None, "action_trace": action_trace}
     return None
 
 
@@ -2237,9 +2272,14 @@ def agent_sheriff_register(
 
     try:
         action, retry_info = agent.act(context)
+        action_trace = _action_trace_payload(action)
         if action.action_type == ActionType.SELF_DESTRUCT:
-            return {"registered": False, "self_destruct": True}
-        return {"registered": action.action_type == ActionType.SHERIFF_REGISTER, "self_destruct": False}
+            return {"registered": False, "self_destruct": True, "action_trace": action_trace}
+        return {
+            "registered": action.action_type == ActionType.SHERIFF_REGISTER,
+            "self_destruct": False,
+            "action_trace": action_trace,
+        }
     except Exception:
         logger.warning("Sheriff registration failed for %s", player_id, exc_info=True)
         return {"registered": False, "self_destruct": False}
@@ -2285,9 +2325,14 @@ def agent_sheriff_withdraw(
 
     try:
         action, retry_info = agent.act(context)
+        action_trace = _action_trace_payload(action)
         if action.action_type == ActionType.SELF_DESTRUCT:
-            return {"withdrew": False, "self_destruct": True}
-        return {"withdrew": action.action_type == ActionType.SHERIFF_WITHDRAW, "self_destruct": False}
+            return {"withdrew": False, "self_destruct": True, "action_trace": action_trace}
+        return {
+            "withdrew": action.action_type == ActionType.SHERIFF_WITHDRAW,
+            "self_destruct": False,
+            "action_trace": action_trace,
+        }
     except Exception:
         logger.warning("Sheriff withdrawal failed for %s", candidate_id, exc_info=True)
         return {"withdrew": False, "self_destruct": False}

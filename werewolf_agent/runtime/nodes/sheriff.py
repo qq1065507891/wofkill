@@ -82,14 +82,44 @@ def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
     for pid, p in gs.players.items():
         if not p.alive:
             continue
-        result = _dispatch_agent(state, agent_sheriff_register, pid)
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=pid,
+            phase="sheriff_registration",
+            task_type="sheriff_register",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
+        result = _dispatch_agent(
+            state,
+            agent_sheriff_register,
+            pid,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
+        )
         if result is not None:
             has_agents = True
+            if result.get("action_trace"):
+                gs = replace(gs, events=gs.events + _action_audit_events(
+                    state=state,
+                    player_id=pid,
+                    phase="sheriff_registration",
+                    action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
+            else:
+                exposure_collector.flush_events()
             if result.get("self_destruct"):
                 return {"game_state": gs, "self_destruct_wolf_id": pid}
             if result.get("registered"):
                 candidates.append(pid)
                 logger.debug(f"  [上警报名] {_player_display(state, pid)} 报名上警")
+        else:
+            exposure_collector.flush_events()
     if not has_agents:
         # Scripted fallback: all alive players register
         candidates = state.get("sheriff_candidates", [])
@@ -139,14 +169,44 @@ def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
     withdrawing: list[str] = []
     has_agents = False
     for candidate_id in candidates:
-        result = _dispatch_agent(state, agent_sheriff_withdraw, candidate_id)
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=candidate_id,
+            phase="sheriff_withdraw",
+            task_type="sheriff_withdraw",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
+        result = _dispatch_agent(
+            state,
+            agent_sheriff_withdraw,
+            candidate_id,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
+        )
         if result is not None:
             has_agents = True
+            if result.get("action_trace"):
+                gs = replace(gs, events=gs.events + _action_audit_events(
+                    state=state,
+                    player_id=candidate_id,
+                    phase="sheriff_withdraw",
+                    action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
+            else:
+                exposure_collector.flush_events()
             if result.get("self_destruct"):
                 return {"game_state": gs, "self_destruct_wolf_id": candidate_id}
             if result.get("withdrew"):
                 withdrawing.append(candidate_id)
                 logger.debug(f"  [退水] {_player_display(state, candidate_id)} 退出竞选")
+        else:
+            exposure_collector.flush_events()
     if not has_agents:
         withdrawing = state.get("sheriff_withdrawing", [])
 
@@ -244,16 +304,43 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
     votes: dict[str, str] = {}
     has_agents = False
     vote_records: list[dict[str, Any]] = []
+    audit_events: list[GameEvent] = []
     for voter_id in voters:
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=voter_id,
+            phase="sheriff_vote",
+            task_type="sheriff_vote",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
         result = _dispatch_agent(
             state,
             agent_sheriff_vote,
             voter_id,
             candidates,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
         )
         if result is not None:
             has_agents = True
+            if result.get("action_trace"):
+                audit_events.extend(_action_audit_events(
+                    state=state,
+                    player_id=voter_id,
+                    phase="sheriff_vote",
+                    action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
+            else:
+                exposure_collector.flush_events()
             if result.get("self_destruct"):
+                if audit_events:
+                    gs = replace(gs, events=gs.events + audit_events)
                 return {"game_state": gs, "self_destruct_wolf_id": voter_id}
             if result.get("vote_target"):
                 votes[voter_id] = result["vote_target"]
@@ -262,6 +349,8 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
             else:
                 vote_records.append({"voter": voter_id, "target": None})
                 logger.debug(f"  [警长投票] {_player_display(state, voter_id)} 弃票")
+        else:
+            exposure_collector.flush_events()
     if not has_agents:
         votes = state.get("sheriff_votes", {})
 
@@ -280,7 +369,7 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
         gs = replace(gs, events=gs.events + [GameEvent(
             type="sheriff_vote_record",
             payload={"votes": vote_records, "candidates": candidates},
-        )])
+        )] + audit_events)
 
     # Announce result
     elected_id = event.payload.get("sheriff_id")

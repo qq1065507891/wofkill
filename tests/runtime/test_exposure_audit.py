@@ -7,11 +7,15 @@ import pytest
 
 from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
-from werewolf_agent.core.models import Death, GameState, PlayerState
+from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+from werewolf_agent.runtime import agent_adapter
+from werewolf_agent.runtime.nodes import day as day_nodes
 from werewolf_agent.runtime.nodes import night as night_nodes
+from werewolf_agent.runtime.nodes import sheriff as sheriff_nodes
+from werewolf_agent.runtime.nodes import sheriff_pk as sheriff_pk_nodes
 from werewolf_agent.runtime.nodes import skills as skill_nodes
 
 
@@ -159,6 +163,319 @@ def _state(gs: GameState) -> dict[str, Any]:
         "agent_registry": _Registry(),
         "agent_call_delay_ms": -1,
     }
+
+
+def _audit_event_order(events: list[Any]) -> tuple[int, int]:
+    event_types = [event.type for event in events]
+    exposure_index = event_types.index("rag_exposure_audit")
+    action_index = event_types.index("action_trace_audit")
+    return exposure_index, action_index
+
+
+def _record_exposure(kwargs: dict[str, Any], entry_id: str) -> None:
+    collector = kwargs.get("exposure_collector")
+    identity = kwargs.get("decision_identity")
+    if collector is not None and identity is not None:
+        collector.record_rag(identity, [{"entry_id": entry_id, "rank": 1}])
+
+
+def test_wolf_consensus_dispatches_each_vote_with_identity_and_flushes_action_audits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_single_vote(
+        state: dict[str, Any],
+        engine: RuleEngine,
+        registry: Any,
+        wolf_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        calls.append({"wolf_id": wolf_id, "kwargs": kwargs})
+        _record_exposure(kwargs, f"wolf_{wolf_id}")
+        return {
+            "wolf_action": "kill" if wolf_id == "wolf1" else "no_kill",
+            "wolf_kill_target_id": "target" if wolf_id == "wolf1" else None,
+            "action_trace": {"parsed_action": {"reason": f"{wolf_id} choice"}},
+        }
+
+    monkeypatch.setattr(agent_adapter, "_single_wolf_vote", fake_single_vote)
+    gs = GameState(
+        game_id="audit_wolf_consensus",
+        players={
+            "wolf1": PlayerState(id="wolf1", role="werewolf"),
+            "wolf2": PlayerState(id="wolf2", role="werewolf"),
+            "target": PlayerState(id="target", role="villager"),
+        },
+        phase="night",
+        night_number=1,
+    )
+
+    result = night_nodes.wolf_consensus(_state(gs))
+
+    assert {call["wolf_id"] for call in calls} == {"wolf1", "wolf2"}
+    for call in calls:
+        identity = call["kwargs"]["decision_identity"]
+        assert identity.player_id == call["wolf_id"]
+        assert identity.phase == "wolf_consensus"
+        assert isinstance(call["kwargs"]["exposure_collector"], ModuleExposureAuditCollector)
+    events = result["game_state"].events
+    event_types = [event.type for event in events]
+    assert event_types.count("rag_exposure_audit") == 2
+    assert event_types.count("action_trace_audit") == 2
+    first_exposure, first_action = _audit_event_order(events)
+    assert first_exposure < first_action
+
+
+@pytest.mark.parametrize(
+    ("node", "agent_fn", "players", "state_updates"),
+    [
+        (
+            sheriff_nodes.sheriff_registration,
+            sheriff_nodes.agent_sheriff_register,
+            {
+                "p01": PlayerState(id="p01", role="villager"),
+                "p02": PlayerState(id="p02", role="werewolf"),
+            },
+            {},
+        ),
+        (
+            sheriff_nodes.sheriff_withdraw,
+            sheriff_nodes.agent_sheriff_withdraw,
+            {
+                "p01": PlayerState(id="p01", role="villager"),
+                "p02": PlayerState(id="p02", role="villager"),
+            },
+            {"sheriff_candidates": ["p01", "p02"]},
+        ),
+    ],
+)
+def test_sheriff_registration_and_withdrawal_flush_action_audits(
+    monkeypatch: pytest.MonkeyPatch,
+    node: Any,
+    agent_fn: Any,
+    players: dict[str, PlayerState],
+    state_updates: dict[str, Any],
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_dispatch(state: dict[str, Any], fn: Any, player_id: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append({"fn": fn, "player_id": player_id, "kwargs": kwargs})
+        _record_exposure(kwargs, f"sheriff_{player_id}")
+        if fn is sheriff_nodes.agent_sheriff_register:
+            return {
+                "registered": player_id == "p01",
+                "self_destruct": False,
+                "action_trace": {"parsed_action": {"reason": f"register {player_id}"}},
+            }
+        if fn is sheriff_nodes.agent_sheriff_withdraw:
+            return {
+                "withdrew": player_id == "p02",
+                "self_destruct": False,
+                "action_trace": {"parsed_action": {"reason": f"withdraw {player_id}"}},
+            }
+        return {}
+
+    monkeypatch.setattr(sheriff_nodes, "_dispatch_agent", fake_dispatch)
+    gs = GameState(
+        game_id=f"audit_{node.__name__}",
+        players=players,
+        phase="day",
+        day_number=1,
+        **state_updates,
+    )
+
+    result = node(_state(gs))
+
+    assert calls
+    assert all(call["fn"] is agent_fn for call in calls)
+    assert all(call["kwargs"]["decision_identity"].player_id == call["player_id"] for call in calls)
+    assert all(isinstance(call["kwargs"]["exposure_collector"], ModuleExposureAuditCollector) for call in calls)
+    event_types = [event.type for event in result["game_state"].events]
+    assert "rag_exposure_audit" in event_types
+    assert "action_trace_audit" in event_types
+    exposure_index, action_index = _audit_event_order(result["game_state"].events)
+    assert exposure_index < action_index
+
+
+@pytest.mark.parametrize(
+    ("module", "node", "players", "state_updates"),
+    [
+        (
+            sheriff_nodes,
+            sheriff_nodes.sheriff_vote,
+            {
+                "p01": PlayerState(id="p01", role="villager"),
+                "p02": PlayerState(id="p02", role="villager"),
+                "p03": PlayerState(id="p03", role="werewolf"),
+            },
+            {"sheriff_candidates": ["p01", "p02"]},
+        ),
+        (
+            sheriff_pk_nodes,
+            sheriff_pk_nodes.sheriff_revote,
+            {
+                "p01": PlayerState(id="p01", role="villager"),
+                "p02": PlayerState(id="p02", role="villager"),
+                "p03": PlayerState(id="p03", role="werewolf"),
+            },
+            {"sheriff_pk_candidates": ["p01", "p02"], "sheriff_tie_count": 1},
+        ),
+    ],
+)
+def test_sheriff_vote_and_pk_revote_flush_action_audits(
+    monkeypatch: pytest.MonkeyPatch,
+    module: Any,
+    node: Any,
+    players: dict[str, PlayerState],
+    state_updates: dict[str, Any],
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_dispatch(
+        state: dict[str, Any],
+        fn: Any,
+        voter_id: str,
+        candidates: list[str],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        calls.append({"voter_id": voter_id, "kwargs": kwargs})
+        _record_exposure(kwargs, f"sheriff_vote_{voter_id}")
+        return {
+            "vote_target": candidates[0],
+            "self_destruct": False,
+            "action_trace": {"parsed_action": {"target_id": candidates[0], "reason": f"vote {voter_id}"}},
+        }
+
+    monkeypatch.setattr(module, "_dispatch_agent", fake_dispatch)
+    gs = GameState(
+        game_id=f"audit_{node.__name__}",
+        players=players,
+        phase="day",
+        day_number=1,
+        **state_updates,
+    )
+
+    result = node(_state(gs))
+
+    assert calls
+    assert all(call["kwargs"]["decision_identity"].player_id == call["voter_id"] for call in calls)
+    assert all(isinstance(call["kwargs"]["exposure_collector"], ModuleExposureAuditCollector) for call in calls)
+    event_types = [event.type for event in result["game_state"].events]
+    assert "rag_exposure_audit" in event_types
+    assert "action_trace_audit" in event_types
+    exposure_index, action_index = _audit_event_order(result["game_state"].events)
+    assert exposure_index < action_index
+
+
+def test_sheriff_speech_order_selection_flushes_action_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_dispatch(
+        state: dict[str, Any],
+        fn: Any,
+        sheriff_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        calls.append({"fn": fn, "sheriff_id": sheriff_id, "kwargs": kwargs})
+        _record_exposure(kwargs, "speech_order")
+        return {
+            "speech_order": ["p02", "p03", "p01"],
+            "action_trace": {"parsed_action": {"target_id": "p02", "reason": "start left"}},
+        }
+
+    monkeypatch.setattr(day_nodes, "_dispatch_agent", fake_dispatch)
+    gs = GameState(
+        game_id="audit_speech_order",
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="villager"),
+            "p03": PlayerState(id="p03", role="werewolf"),
+        },
+        phase="day",
+        day_number=1,
+        sheriff_id="p01",
+        sheriff_badge_state="active",
+    )
+
+    result = day_nodes.free_discussion({**_state(gs), "speech_text": "opening"})
+
+    call = calls[0]
+    assert call["fn"] is day_nodes.agent_sheriff_pick_speech_order
+    assert call["kwargs"]["decision_identity"].player_id == "p01"
+    assert isinstance(call["kwargs"]["exposure_collector"], ModuleExposureAuditCollector)
+    assert result["speech_order"] == ["p02", "p03", "p01"]
+    event_types = [event.type for event in result["game_state"].events]
+    assert "rag_exposure_audit" in event_types
+    assert "action_trace_audit" in event_types
+    exposure_index, action_index = _audit_event_order(result["game_state"].events)
+    assert exposure_index < action_index
+
+
+@pytest.mark.parametrize(
+    ("node", "gs"),
+    [
+        (
+            day_nodes.night_death_last_words,
+            GameState(
+                game_id="audit_night_last_words",
+                players={"p01": PlayerState(id="p01", role="villager", alive=False)},
+                phase="day",
+                day_number=1,
+                night_number=1,
+                deaths=[
+                    Death(
+                        player_id="p01",
+                        reason="wolf_kill",
+                        timing="night",
+                        resolution_batch="night_1",
+                        can_leave_last_words=True,
+                    )
+                ],
+            ),
+        ),
+        (
+            day_nodes.exile_last_words,
+            GameState(
+                game_id="audit_exile_last_words",
+                players={"p01": PlayerState(id="p01", role="villager", alive=False)},
+                phase="day",
+                day_number=1,
+                events=[GameEvent(type="vote_resolved", payload={"exiled": "p01"})],
+            ),
+        ),
+    ],
+)
+def test_last_words_paths_flush_action_audits(
+    monkeypatch: pytest.MonkeyPatch,
+    node: Any,
+    gs: GameState,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_dispatch(state: dict[str, Any], fn: Any, player_id: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append({"fn": fn, "player_id": player_id, "kwargs": kwargs})
+        _record_exposure(kwargs, f"last_words_{player_id}")
+        return {
+            "speech_text": "final read",
+            "action_trace": {"parsed_action": {"speech_text": "final read"}},
+        }
+
+    monkeypatch.setattr(day_nodes, "_dispatch_agent", fake_dispatch)
+
+    result = node(_state(gs))
+
+    assert calls
+    assert all(call["fn"] is day_nodes.agent_exile_last_words for call in calls)
+    assert all(call["kwargs"]["decision_identity"].player_id == call["player_id"] for call in calls)
+    assert all(isinstance(call["kwargs"]["exposure_collector"], ModuleExposureAuditCollector) for call in calls)
+    event_types = [event.type for event in result["game_state"].events]
+    assert "rag_exposure_audit" in event_types
+    assert "action_trace_audit" in event_types
+    exposure_index, action_index = _audit_event_order(result["game_state"].events)
+    assert exposure_index < action_index
 
 
 @pytest.mark.parametrize(

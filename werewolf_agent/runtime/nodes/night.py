@@ -90,14 +90,44 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
 
     # Try agent-driven decision first
     if state.get("agent_registry") and not state.get("wolf_action"):
+        wolves = _alive_wolves(gs)
+        decision_identities = {
+            wolf_id: _allocate_decision_identity(
+                state,
+                player_id=wolf_id,
+                phase="wolf_consensus",
+                task_type="wolf_consensus",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            for wolf_id in wolves
+        }
+        exposure_collectors = {
+            wolf_id: ModuleExposureAuditCollector()
+            for wolf_id in wolves
+        }
         result = _dispatch_agent(
             state,
             agent_wolf_consensus,
             timeout_override=AGENT_TIMEOUTS.wolf_consensus,
+            decision_identities=decision_identities,
+            exposure_collectors=exposure_collectors,
         )
         if result is not None:
             action = result.get("wolf_action", "kill")
             target = result.get("wolf_kill_target_id")
+            audit_events: list[GameEvent] = []
+            for wolf_id, action_trace in (result.get("action_traces") or {}).items():
+                audit_events.extend(_action_audit_events(
+                    state=state,
+                    player_id=wolf_id,
+                    phase="wolf_consensus",
+                    action_trace=action_trace,
+                    decision_identity=(result.get("action_decision_identities") or {}).get(wolf_id),
+                    exposure_collector=(result.get("action_exposure_collectors") or {}).get(wolf_id),
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
             if action == "no_kill":
                 if consecutive_no_kill >= max_consecutive_no_kill:
                     logger.debug(f"  [狼人决策] 连续{consecutive_no_kill}夜空刀，强制击杀")
@@ -111,7 +141,7 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
                         "action_traces": result.get("action_traces", {}),
                     },
                 )
-                gs = replace(gs, events=gs.events + [event])
+                gs = replace(gs, events=gs.events + audit_events + [event])
                 return {"game_state": gs, "wolf_kill_target_id": None}
             if action == "kill" and target:
                 target_state = gs.players.get(target)
@@ -125,7 +155,7 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
                             "action_traces": result.get("action_traces", {}),
                         },
                     )
-                    gs = replace(gs, events=gs.events + [event])
+                    gs = replace(gs, events=gs.events + audit_events + [event])
                     return {"game_state": gs, "wolf_kill_target_id": target}
         else:
             # Agent call timed out entirely
