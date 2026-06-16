@@ -18,6 +18,7 @@ from werewolf_agent.evaluation.feedback_schemas import (
     FailureDiagnosis,
     ImprovementCandidate,
 )
+from werewolf_agent.evaluation.regression_gate import CandidateRegressionReport
 
 
 _PLAYER_ID_RE = re.compile(
@@ -56,6 +57,7 @@ class FeedbackReport:
     schema_version: int = 1
     source_refs: list[str] = field(default_factory=list)
     full_game_ablation_reports: list[FullGameAblationReport] = field(default_factory=list)
+    candidate_gate_reports: list[CandidateRegressionReport] = field(default_factory=list)
 
     def to_json_dict(self, *, include_private_audit: bool = False) -> dict[str, Any]:
         failure_clusters = _failure_clusters(
@@ -92,6 +94,10 @@ class FeedbackReport:
                 )
                 for candidate in self.candidates
             ],
+            "candidate_workflow": _candidate_workflow_summary(
+                self.candidates,
+                self.candidate_gate_reports,
+            ),
             "regression_summary": _regression_summary(self.candidates),
             "ablations": [
                 _ablation_to_dict(report)
@@ -121,6 +127,7 @@ def build_feedback_report(
     candidates: list[ImprovementCandidate] | None = None,
     ablation_reports: list[AblationReport] | None = None,
     full_game_ablation_reports: list[FullGameAblationReport] | None = None,
+    candidate_gate_reports: list[CandidateRegressionReport] | None = None,
     generated_at: str = "",
 ) -> FeedbackReport:
     """Build a compact feedback report from local evaluation artifacts."""
@@ -133,6 +140,7 @@ def build_feedback_report(
         candidates=list(candidates or []),
         ablation_reports=list(ablation_reports or []),
         full_game_ablation_reports=list(full_game_ablation_reports or []),
+        candidate_gate_reports=list(candidate_gate_reports or []),
         generated_at=generated_at,
         source_refs=_collect_source_refs(traces),
     )
@@ -288,6 +296,31 @@ def _regression_summary(candidates: list[ImprovementCandidate]) -> dict[str, Any
         "seed_set": seeds,
         "candidate_count": candidate_count,
         "unsupported_metrics": [],
+    }
+
+
+def _candidate_workflow_summary(
+    candidates: list[ImprovementCandidate],
+    gate_reports: list[CandidateRegressionReport],
+) -> dict[str, Any]:
+    counts = {
+        "pending": 0,
+        "approved": 0,
+        "rejected": 0,
+        "materialized": 0,
+        "rolled_back": 0,
+    }
+    for candidate in candidates:
+        status = str(candidate.review_status or "pending")
+        if status not in counts:
+            counts[status] = 0
+        counts[status] += 1
+    return {
+        **counts,
+        "gate_results": [
+            _json_safe(report.to_json_dict())
+            for report in gate_reports
+        ],
     }
 
 

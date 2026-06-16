@@ -284,3 +284,98 @@ def test_feedback_report_serializes_full_game_ablations_separately() -> None:
     assert data["ablations"] == []
     assert data["full_game_ablations"][0]["mode"] == "full_game"
     assert data["full_game_ablations"][0]["metric_deltas"]["good_win_rate"]["delta"] == 1.0
+
+
+def test_feedback_report_includes_candidate_workflow_summary() -> None:
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig,
+        RegressionGate,
+    )
+
+    candidates = [
+        ImprovementCandidate(
+            candidate_id="c_pending",
+            source_diagnosis_ids=["d1"],
+            target_module="rag",
+            operation="review_or_rewrite",
+            priority="medium",
+            prompt_safe_payload={"recommended_use": "Review issue."},
+            review_status="pending",
+        ),
+        ImprovementCandidate(
+            candidate_id="c_approved",
+            source_diagnosis_ids=["d2"],
+            target_module="reflection",
+            operation="quarantine_or_rewrite",
+            priority="high",
+            prompt_safe_payload={"recommended_use": "Review lesson."},
+            review_status="approved",
+        ),
+        ImprovementCandidate(
+            candidate_id="c_materialized",
+            source_diagnosis_ids=["d3"],
+            target_module="rag",
+            operation="review_or_rewrite",
+            priority="high",
+            prompt_safe_payload={"recommended_use": "Review draft."},
+            review_status="materialized",
+        ),
+        ImprovementCandidate(
+            candidate_id="c_rolled_back",
+            source_diagnosis_ids=["d4"],
+            target_module="rag",
+            operation="review_or_rewrite",
+            priority="high",
+            prompt_safe_payload={"recommended_use": "Review rollback."},
+            review_status="rolled_back",
+        ),
+    ]
+    gate_report = RegressionGate().evaluate(
+        CandidateRegressionConfig(candidate_id="c_materialized"),
+        baseline_metrics={"hidden_info_leak_rate": 0.0},
+        candidate_metrics={"hidden_info_leak_rate": 0.0},
+        prompt_safe=True,
+    )
+
+    report = build_feedback_report(
+        report_id="feedback_candidates",
+        batch_id="batch_1",
+        traces=[],
+        candidates=candidates,
+        candidate_gate_reports=[gate_report],
+    )
+    data = report.to_json_dict()
+
+    assert data["candidate_workflow"]["pending"] == 1
+    assert data["candidate_workflow"]["approved"] == 1
+    assert data["candidate_workflow"]["materialized"] == 1
+    assert data["candidate_workflow"]["rolled_back"] == 1
+    assert data["candidate_workflow"]["gate_results"][0]["candidate_id"] == "c_materialized"
+
+
+def test_feedback_report_public_candidate_workflow_omits_private_evidence() -> None:
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+
+    candidate = ImprovementCandidate(
+        candidate_id="c_private",
+        source_diagnosis_ids=["d1"],
+        target_module="rag",
+        operation="review_or_rewrite",
+        priority="high",
+        prompt_safe_payload={"recommended_use": "Review issue."},
+        audit_evidence={"trace_ids": ["p01"], "target_role": "werewolf"},
+        review_status="materialized",
+    )
+
+    report = build_feedback_report(
+        report_id="feedback_private_workflow",
+        batch_id="batch_1",
+        traces=[],
+        candidates=[candidate],
+    )
+    serialized = json.dumps(report.to_json_dict(), ensure_ascii=False)
+
+    assert "target_role" not in serialized
+    assert "werewolf" not in serialized
+    assert "p01" not in serialized

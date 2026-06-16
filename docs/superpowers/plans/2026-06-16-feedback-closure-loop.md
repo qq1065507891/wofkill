@@ -714,7 +714,15 @@ git commit -m "feat: add reproducible full game ablation runner"
 - Test: `tests/evaluation/test_regression_gate.py`
 - Test: `tests/evaluation/test_improvement_candidates.py`
 
-- [ ] **Step 1: Write failing store transition tests**
+Status: implemented in commit pending for this working session. The final
+implementation keeps candidate generation review-only, stores explicit reviewer
+metadata for approval/rejection/materialization/rollback transitions, writes
+RAG/reflection candidates only to adapter-owned draft namespaces, gates draft
+promotion with baseline-vs-candidate regression checks, and exposes
+`candidate_workflow` in feedback reports without private audit evidence in the
+public view.
+
+- [x] **Step 1: Write failing store transition tests**
 
 Cover allowed and forbidden transitions:
 
@@ -730,7 +738,7 @@ def test_candidate_store_approval_records_reviewer_metadata() -> None:
 
 Also assert rejected candidates cannot be approved/materialized without reset.
 
-- [ ] **Step 2: Run failing store tests**
+- [x] **Step 2: Run failing store tests**
 
 Run:
 
@@ -740,7 +748,7 @@ python -m pytest tests/evaluation/test_candidate_store.py -q --basetemp E:\NLP\a
 
 Expected: FAIL because module does not exist.
 
-- [ ] **Step 3: Implement store**
+- [x] **Step 3: Implement store**
 
 In `candidate_store.py`, implement:
 
@@ -763,7 +771,7 @@ MATERIALIZED -> ROLLED_BACK
 
 Do not allow direct `PENDING -> MATERIALIZED`.
 
-- [ ] **Step 4: Write materializer tests**
+- [x] **Step 4: Write materializer tests**
 
 Cover:
 
@@ -773,7 +781,7 @@ Cover:
 - failed gate rollback quarantines draft and never promotes.
 - passed gate promotes to approved in live-eligible namespace and stores source diagnosis/regression metadata.
 
-- [ ] **Step 5: Implement materializer**
+- [x] **Step 5: Implement materializer**
 
 In `candidate_materializer.py`, implement:
 
@@ -793,7 +801,7 @@ class DraftRAGStoreAdapter:
 
 Do not query draft namespaces from live runtime.
 
-- [ ] **Step 6: Write regression gate tests**
+- [x] **Step 6: Write regression gate tests**
 
 Cover pass/fail for:
 
@@ -804,7 +812,7 @@ Cover pass/fail for:
 - harmful transfer increase blocks;
 - normalized UI values do not require sign inference.
 
-- [ ] **Step 7: Implement regression gate**
+- [x] **Step 7: Implement regression gate**
 
 In `regression_gate.py`, implement:
 
@@ -821,7 +829,7 @@ Use sign conventions:
 - harm metric delta = `baseline - candidate`
 - `GateCheck.normalized_value` is always "higher is better for passing" or explicitly stores comparator, threshold, and passed boolean.
 
-- [ ] **Step 8: Integrate report serialization**
+- [x] **Step 8: Integrate report serialization**
 
 In `feedback_report.py`, include candidate records and gate results when present:
 
@@ -837,7 +845,7 @@ In `feedback_report.py`, include candidate records and gate results when present
 
 Public view must not include hidden trace evidence or raw diagnosis evidence.
 
-- [ ] **Step 9: Run candidate tests**
+- [x] **Step 9: Run candidate tests**
 
 Run:
 
