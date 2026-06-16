@@ -143,7 +143,7 @@ def test_live_context_ablation_harness_reports_paired_decision_deltas() -> None:
     assert report.failed_pair_count == 0
     assert report.action_changed_count == 0
     assert report.target_changed_count == 1
-    assert report.avg_confidence_delta == pytest.approx(-0.3)
+    assert report.avg_confidence_delta == pytest.approx(0.3)
     assert report.unsupported_metrics["live_win_rate_delta"] == (
         "live_context_mode_decision_only"
     )
@@ -206,6 +206,29 @@ def test_live_context_ablation_records_failed_pairs_without_delta_impact() -> No
     assert report.pairs[0].baseline.error == "baseline failed"
     assert report.pairs[0].baseline.action_type == ""
     assert report.pairs[0].baseline.raw == {}
+
+
+def test_live_context_ablation_records_empty_message_exceptions_as_failures() -> None:
+    from werewolf_agent.evaluation.ablation import (
+        AblationToggleSet,
+        LiveContextAblationHarness,
+    )
+
+    def runner(context: AgentContext) -> DecisionSnapshot:
+        raise TimeoutError()
+
+    report = LiveContextAblationHarness(runner=runner).run(
+        [_context()],
+        toggles=AblationToggleSet(["rag"]),
+    )
+
+    assert report.pair_count == 1
+    assert report.failed_pair_count == 1
+    assert report.action_changed_count == 0
+    assert report.target_changed_count == 0
+    assert report.avg_confidence_delta == 0.0
+    assert report.pairs[0].baseline.error == "TimeoutError"
+    assert report.pairs[0].ablated.error == "TimeoutError"
 
 
 def test_live_context_ablation_converts_supported_runner_outputs() -> None:

@@ -281,7 +281,7 @@ def test_live_context_ablation_harness_reports_paired_decision_deltas():
     assert report.failed_pair_count == 0
     assert report.action_changed_count == 0
     assert report.target_changed_count == 1
-    assert report.avg_confidence_delta == pytest.approx(-0.3)
+    assert report.avg_confidence_delta == pytest.approx(0.3)
     assert report.pairs[0].baseline.target_id == "p02"
     assert report.pairs[0].ablated.target_id == "p03"
     assert calls[0].rag_hints

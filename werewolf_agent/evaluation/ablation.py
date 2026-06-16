@@ -147,7 +147,7 @@ class LiveContextAblationHarness:
                     not failed and baseline.target_id != ablated.target_id
                 ),
                 confidence_delta=(
-                    0.0 if failed else ablated.confidence - baseline.confidence
+                    0.0 if failed else baseline.confidence - ablated.confidence
                 ),
             )
             pairs.append(pair)
@@ -188,7 +188,7 @@ class LiveContextAblationHarness:
                 target_id=None,
                 confidence=0.0,
                 raw={},
-                error=str(exc),
+                error=str(exc) or type(exc).__name__,
             )
 
 
