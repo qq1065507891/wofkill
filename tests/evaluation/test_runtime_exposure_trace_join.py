@@ -132,3 +132,93 @@ def test_trace_builder_keeps_side_channel_exposure_compatibility() -> None:
         (exposure.module, exposure.item_id)
         for exposure in traces[0].module_exposures
     } >= {("rag", "side_channel_rag")}
+
+
+def test_runtime_event_type_overrides_payload_type_field() -> None:
+    trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
+
+    traces = EvaluationTraceBuilder().build(
+        _result([
+            {
+                "type": "rag_exposure_audit",
+                "payload": {
+                    "type": "not_an_audit_type",
+                    "trace_id": trace_id,
+                    "hits": [{"entry_id": "rag_type_conflict", "prompt_visible": True}],
+                },
+            },
+            _action_event(trace_id),
+        ])
+    )
+
+    exposures = {(exposure.module, exposure.item_id) for exposure in traces[0].module_exposures}
+    assert ("rag", "rag_type_conflict") in exposures
+    assert ("rag", "missing_source") not in exposures
+
+
+def test_skill_exposure_metadata_keeps_only_safe_summary_fields() -> None:
+    trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
+
+    traces = EvaluationTraceBuilder().build(
+        _result([_action_event(trace_id)]),
+        exposure_audits=[
+            {
+                "type": "skill_exposure_audit",
+                "trace_id": trace_id,
+                "analyses": [
+                    {
+                        "skill_name": "vote_analysis",
+                        "rank": 1,
+                        "prompt_visible": True,
+                        "summary_hash": "sha256:safe",
+                        "advice_type": "tactical",
+                        "raw_prompt": "private prompt",
+                        "private_reason": "hidden chain",
+                        "analysis": "raw advice text",
+                    }
+                ],
+            }
+        ],
+    )
+
+    exposure = next(
+        exposure
+        for exposure in traces[0].module_exposures
+        if exposure.module == "skills"
+    )
+    assert exposure.metadata == {
+        "summary_hash": "sha256:safe",
+        "advice_type": "tactical",
+    }
+
+
+def test_persona_exposure_metadata_keeps_only_safe_policy_fields() -> None:
+    trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
+
+    traces = EvaluationTraceBuilder().build(
+        _result([_action_event(trace_id)]),
+        exposure_audits=[
+            {
+                "type": "persona_exposure_audit",
+                "trace_id": trace_id,
+                "snapshot": {
+                    "profile_id": "logic_leader",
+                    "prompt_visible": True,
+                    "policy_keys": ["risk"],
+                    "sanitized": True,
+                    "effective_params": {"deception_skill": 0.9},
+                    "private_note": "hidden",
+                },
+            }
+        ],
+    )
+
+    exposure = next(
+        exposure
+        for exposure in traces[0].module_exposures
+        if exposure.module == "persona"
+    )
+    assert exposure.metadata == {
+        "policy_keys": ["risk"],
+        "sanitized": True,
+    }

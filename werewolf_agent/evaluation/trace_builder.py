@@ -159,7 +159,7 @@ class EvaluationTraceBuilder:
             payload = _event_payload(event)
             if not isinstance(payload, dict):
                 continue
-            audits.append({"type": event_type, **payload})
+            audits.append({**payload, "type": event_type})
         return audits
 
 
@@ -223,9 +223,9 @@ def _skill_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
             rank=_int(analysis.get("rank")),
             prompt_visible=bool(analysis.get("prompt_visible")),
             metadata={
-                key: value
-                for key, value in analysis.items()
-                if key not in {"skill_name", "rank", "prompt_visible"}
+                key: analysis[key]
+                for key in ("summary_hash", "advice_type")
+                if key in analysis
             },
         ))
     return exposures
@@ -244,9 +244,9 @@ def _persona_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
             item_id=profile_id,
             prompt_visible=bool(snapshot.get("prompt_visible", True)),
             metadata={
-                key: value
-                for key, value in snapshot.items()
-                if key not in {"profile_id", "prompt_visible"}
+                key: snapshot[key]
+                for key in ("policy_keys", "sanitized")
+                if key in snapshot
             },
         )
     ]
