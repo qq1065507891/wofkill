@@ -54,9 +54,10 @@ trace_id = {game_id}:{player_id}:{phase}:D{day}:N{night}:{task_type}:{action_ind
 
 `trace_id` matches the existing `EvaluationTraceBuilder.make_trace_id()`.
 Runtime code must attach it to both `action_trace_audit` and module exposure
-events. `action_index` must be allocated centrally by the runtime immediately
-before `AgentContext` construction. Temporary `decision_ref` payloads are not
-allowed in Phase 1 because they would create a second join path.
+events. `action_index` is monotonic per game over emitted action audit records
+and must be allocated centrally by the runtime immediately before
+`AgentContext` construction. Temporary `decision_ref` payloads are not allowed
+in Phase 1 because they would create a second join path.
 
 The loop has five layers:
 
@@ -226,7 +227,7 @@ class ModuleExposureAuditCollector:
     def record_reflection(self, identity: DecisionIdentity, cards: list[dict[str, Any]]) -> None:
         raise NotImplementedError
 
-    def record_skill(self, identity: DecisionIdentity, analyses: dict[str, str]) -> None:
+    def record_skill(self, identity: DecisionIdentity, analyses: list[dict[str, Any]]) -> None:
         raise NotImplementedError
 
     def record_persona(self, identity: DecisionIdentity, snapshot: dict[str, Any]) -> None:
@@ -270,8 +271,12 @@ class FullGameAblationConfig:
     ruleset_snapshot: dict[str, Any]
     agent_mode: Literal["deterministic_fake", "replay", "live_model"]
     model_config_snapshot: dict[str, Any]
-    storage_namespace: str
+    baseline_storage_namespace: str
+    ablated_storage_namespace: str
+    candidate_storage_namespace: str = ""
     replay_policy: Literal["strict_replay", "deterministic_fallback_only", "unsupported_live_model"]
+    replay_capture_ref: str = ""
+    replay_match_key: Literal["trace_id", "event_order"] = "trace_id"
 
 class FullGameAblationRunner:
     def run(self, config: FullGameAblationConfig) -> FullGameAblationReport:
@@ -297,11 +302,23 @@ For reproducibility, Phase 2 supports only:
 unsupported unless a replay capture is supplied. The runner must not claim
 same-seed causal deltas from fresh nondeterministic model calls.
 
+Replay contract:
+
+- `replay_capture_ref` points to a local replay artifact or repository record
+  containing previously captured model outputs;
+- `replay_match_key="trace_id"` requires every replayed output to match the
+  current decision `trace_id`;
+- `replay_match_key="event_order"` is allowed only for legacy captures and must
+  fail closed if the number or order of action decisions differs;
+- missing replay outputs mark affected live causal metrics unsupported rather
+  than silently falling back to fresh model calls.
+
 Storage isolation:
 
-- baseline and ablated runs use separate storage namespaces;
+- baseline and ablated runs use separate storage namespaces encoded in
+  `baseline_storage_namespace` and `ablated_storage_namespace`;
 - neither run may write to production RAG or reflection stores;
-- candidate regression runs use a third candidate namespace.
+- candidate regression runs use `candidate_storage_namespace`.
 
 Module toggles should be applied at context construction:
 
@@ -498,7 +515,10 @@ Add API endpoints:
 Authorization and view modes:
 
 - candidate review, regression, ablation, trace links, and world-model audit
-  fields require moderator/evaluator view mode;
+  fields require existing `ViewMode.MODERATOR_FULL`;
+- only existing `CallerRole.MODERATOR` and `CallerRole.DEBUGGER` may access
+  these endpoints;
+- no new `evaluator` role or view mode is introduced in this phase;
 - public view receives only aggregate redacted metrics;
 - hidden roles, target factions, outcome labels, diagnosis evidence, raw trace
   payloads, and LangSmith URLs are never returned to public view;
