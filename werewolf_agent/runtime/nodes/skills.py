@@ -76,18 +76,44 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         target = state.get("hunter_shot_target_id")
         if target is None:
             shot_state = {**state, "hunter_death_reason": death.reason}
+            decision_identity = _allocate_decision_identity(
+                shot_state,
+                player_id=death.player_id,
+                phase="hunter_shot_prompt",
+                task_type="hunter_shot",
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            )
+            exposure_collector = ModuleExposureAuditCollector()
             shot_result = _dispatch_agent(
                 shot_state,
                 agent_hunter_shot,
                 death.player_id,
                 timeout_override=AGENT_TIMEOUTS.hunter_shot,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
             )
             if isinstance(shot_result, dict):
                 target = shot_result.get("hunter_shot_target_id")
+                if shot_result.get("action_trace"):
+                    gs = replace(gs, events=gs.events + _action_audit_events(
+                        state=shot_state,
+                        player_id=death.player_id,
+                        phase="hunter_shot_prompt",
+                        action_trace=shot_result["action_trace"],
+                        decision_identity=decision_identity,
+                        exposure_collector=exposure_collector,
+                        day_number=gs.day_number,
+                        night_number=gs.night_number,
+                    ))
+                else:
+                    exposure_collector.flush_events()
             elif isinstance(shot_result, str):
                 target = shot_result
+                exposure_collector.flush_events()
             else:
                 target = None
+                exposure_collector.flush_events()
         if target is None:
             target = _hunter_shot_target_from_last_words(gs, death.player_id)
         if target and target in gs.players and gs.players[target].alive and target != death.player_id:
@@ -197,15 +223,41 @@ def sheriff_badge_transfer(state: RuntimeState) -> dict[str, Any]:
 
     # Agent-driven: dying sheriff decides transfer or tear
     if decision is None:
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=gs.sheriff_id,
+            phase="badge_decision",
+            task_type="badge_decision",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
         result = _dispatch_agent(
             state,
             agent_badge_decision,
             gs.sheriff_id,
             timeout_override=AGENT_TIMEOUTS.day_vote,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
         )
         if result:
             decision = result.get("badge_decision", "tear")
             target_id = result.get("badge_target_id")
+            if result.get("action_trace"):
+                gs = replace(gs, events=gs.events + _action_audit_events(
+                    state=state,
+                    player_id=gs.sheriff_id,
+                    phase="badge_decision",
+                    action_trace=result["action_trace"],
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
+            else:
+                exposure_collector.flush_events()
+        else:
+            exposure_collector.flush_events()
 
     if decision is None:
         decision = "tear"

@@ -232,10 +232,22 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
     state = {**state, "game_state": gs}
 
     # Try agent-driven decision first
+    witch_id = _find_role(gs, "witch") or ""
+    decision_identity = _allocate_decision_identity(
+        state,
+        player_id=witch_id,
+        phase="witch_choose",
+        task_type="night_action",
+        day_number=gs.day_number,
+        night_number=gs.night_number,
+    )
+    exposure_collector = ModuleExposureAuditCollector()
     result = _dispatch_agent(
         state,
         agent_night_witch,
         timeout_override=AGENT_TIMEOUTS.witch_action,
+        decision_identity=decision_identity,
+        exposure_collector=exposure_collector,
     )
     if result is not None:
         use_antidote = result.get("use_antidote", False)
@@ -265,6 +277,19 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
             },
         )
         gs = replace(gs, events=gs.events + [audit])
+        if result.get("witch_action_trace"):
+            gs = replace(gs, events=gs.events + _action_audit_events(
+                state=state,
+                player_id=witch_id,
+                phase="witch_choose",
+                action_trace=result["witch_action_trace"],
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            ))
+        else:
+            exposure_collector.flush_events()
         gs, _ = _judge_broadcast(
             phase="witch_sleep",
             message="女巫请闭眼",
@@ -272,6 +297,7 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
             visibility="moderator_only",
         )
         return {"game_state": gs, **result}
+    exposure_collector.flush_events()
 
     # Scripted fallback
     gs, _ = _judge_broadcast(
@@ -320,16 +346,42 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     state = {**state, "game_state": gs}
 
     # Try agent-driven decision first
+    seer_id = _find_role(gs, "seer") or ""
+    decision_identity = _allocate_decision_identity(
+        state,
+        player_id=seer_id,
+        phase="seer_choose",
+        task_type="night_action",
+        day_number=gs.day_number,
+        night_number=gs.night_number,
+    )
+    exposure_collector = ModuleExposureAuditCollector()
     result = _dispatch_agent(
         state,
         agent_night_seer,
         timeout_override=AGENT_TIMEOUTS.seer_check,
+        decision_identity=decision_identity,
+        exposure_collector=exposure_collector,
     )
     if result is not None:
         target = result.get("seer_target_id")
         if target:
             logger.debug(f"  [预言家] 查验目标: {_player_display(state, target)}")
+        if result.get("seer_action_trace"):
+            gs = replace(gs, events=gs.events + _action_audit_events(
+                state=state,
+                player_id=seer_id,
+                phase="seer_choose",
+                action_trace=result["seer_action_trace"],
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            ))
+        else:
+            exposure_collector.flush_events()
         return {"game_state": gs, **result}
+    exposure_collector.flush_events()
 
     # Scripted fallback
     return {"seer_target_id": state.get("seer_target_id"), "game_state": gs}
@@ -396,17 +448,34 @@ def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
     logger.debug(f"  [法官] 混血儿{_player_display(state, hybrid_id)}请睁眼，选择你的主人")
 
     master_target = state.get("hybrid_master_target_id")
+    hybrid_decision_identity = None
+    hybrid_exposure_collector = None
+    hybrid_action_trace = None
 
     # Agent-driven: ask hybrid player to choose master
     if master_target is None:
+        hybrid_decision_identity = _allocate_decision_identity(
+            state,
+            player_id=hybrid_id,
+            phase="hybrid_choose",
+            task_type="night_action",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        hybrid_exposure_collector = ModuleExposureAuditCollector()
         result = _dispatch_agent(
             state,
             agent_hybrid_choose_master,
             hybrid_id,
             timeout_override=AGENT_TIMEOUTS.seer_check,
+            decision_identity=hybrid_decision_identity,
+            exposure_collector=hybrid_exposure_collector,
         )
         if result and result.get("master_target_id"):
             master_target = result["master_target_id"]
+            hybrid_action_trace = result.get("action_trace")
+        if not hybrid_action_trace:
+            hybrid_exposure_collector.flush_events()
 
     # Fallback: random selection
     if master_target is None:
@@ -419,6 +488,17 @@ def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
         return {}
     gs, event = engine.choose_master(gs, hybrid_id=hybrid_id, master_id=master_target)
     gs = replace(gs, events=gs.events + [event])
+    if hybrid_action_trace is not None:
+        gs = replace(gs, events=gs.events + _action_audit_events(
+            state=state,
+            player_id=hybrid_id,
+            phase="hybrid_choose",
+            action_trace=hybrid_action_trace,
+            decision_identity=hybrid_decision_identity,
+            exposure_collector=hybrid_exposure_collector,
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        ))
     gs, _ = _judge_broadcast(
         phase="hybrid_sleep",
         message="混血儿请闭眼",

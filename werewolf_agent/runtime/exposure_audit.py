@@ -76,6 +76,7 @@ def _skill_rows(analyses: Any) -> list[dict[str, Any]]:
                 "rank": index + 1,
                 "prompt_visible": True,
                 "summary_hash": _summary_hash(summary),
+                "advice_type": "tactical",
             }
             for index, (name, summary) in enumerate(analyses.items())
             if summary
@@ -118,10 +119,13 @@ class ModuleExposureAuditCollector:
     def record_rag(self, identity: DecisionIdentity, hits: list[dict[str, Any]] | None) -> None:
         if not hits:
             return
+        sanitized = _sanitize_allowed(hits, _RAG_KEYS)
+        if not any(row for row in sanitized if row):
+            return
         self._append(
             "rag_exposure_audit",
             identity,
-            {"hits": _sanitize_allowed(hits, _RAG_KEYS)},
+            {"hits": sanitized},
         )
 
     def record_reflection(
@@ -131,10 +135,13 @@ class ModuleExposureAuditCollector:
     ) -> None:
         if not cards:
             return
+        sanitized = _sanitize_allowed(cards, _REFLECTION_KEYS)
+        if not any(row for row in sanitized if row):
+            return
         self._append(
             "reflection_exposure_audit",
             identity,
-            {"cards": _sanitize_allowed(cards, _REFLECTION_KEYS)},
+            {"cards": sanitized},
         )
 
     def record_skill(self, identity: DecisionIdentity, analyses: Any) -> None:
@@ -149,6 +156,7 @@ class ModuleExposureAuditCollector:
         sanitized = _sanitize_allowed(snapshot, _PERSONA_KEYS)
         if not sanitized:
             return
+        sanitized.setdefault("sanitized", True)
         self._append("persona_exposure_audit", identity, {"snapshot": sanitized})
 
     def flush_events(self) -> list[GameEvent]:

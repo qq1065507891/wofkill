@@ -745,9 +745,13 @@ class PlayerAgent:
                 own_role=context.own_role or "",
                 task_type=context.task_type.value,
             )
-            if sanitized == context.persona_snapshot:
-                return context
-            return context.model_copy(update={"persona_snapshot": sanitized})
+            attached = (
+                context
+                if sanitized == context.persona_snapshot
+                else context.model_copy(update={"persona_snapshot": sanitized})
+            )
+            self._record_persona_exposure(attached)
+            return attached
         if not self.persona_key or self.persona_router is None:
             return context
 
@@ -791,7 +795,16 @@ class PlayerAgent:
         data = asdict(snapshot)
         data.pop("agent_id", None)
         data.pop("base_params", None)
-        return context.model_copy(update={"persona_snapshot": data})
+        attached = context.model_copy(update={"persona_snapshot": data})
+        self._record_persona_exposure(attached)
+        return attached
+
+    @staticmethod
+    def _record_persona_exposure(context: AgentContext) -> None:
+        identity = getattr(context, "decision_identity", None)
+        collector = getattr(context, "exposure_collector", None)
+        if identity is not None and collector is not None:
+            collector.record_persona(identity, context.persona_snapshot)
 
     def _latest_generation_failure_reason(self) -> str | None:
         get_usage_log = getattr(self.model_router, "get_usage_log", None)

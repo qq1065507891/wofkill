@@ -1667,6 +1667,8 @@ def build_agent_context(
         simulation_predictions=simulation_predictions_dict,
         strategy_directive=strategy_directive,
         skill_analyses=skill_analyses,
+        decision_identity=decision_identity,
+        exposure_collector=exposure_collector,
         # NEW-S04-A: skill_analysis_hints is no longer populated. The
         # single source of truth is strategy_directive.skill_tactical_advice
         # (rendered inside the strategy_directive section). The old
@@ -1689,5 +1691,4 @@ def build_agent_context(
             final_context.reflection_memory_hints,
         )
         exposure_collector.record_skill(decision_identity, final_context.skill_analyses)
-        exposure_collector.record_persona(decision_identity, final_context.persona_snapshot)
     return final_context

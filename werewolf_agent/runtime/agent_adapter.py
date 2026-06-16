@@ -1878,7 +1878,10 @@ def agent_hybrid_choose_master(
     if master_target_id is None and candidates:
         master_target_id = candidates[0]
 
-    return {"master_target_id": master_target_id}
+    return {
+        "master_target_id": master_target_id,
+        "action_trace": _action_trace_payload(action),
+    }
 
 
 def agent_exile_last_words(
@@ -2003,8 +2006,16 @@ def agent_badge_decision(
 
     action, retry_info = agent.act(context)
     if action.action_type == ActionType.BADGE_TRANSFER and action.target_id:
-        return {"badge_decision": "transfer", "badge_target_id": action.target_id}
-    return {"badge_decision": "tear", "badge_target_id": None}
+        return {
+            "badge_decision": "transfer",
+            "badge_target_id": action.target_id,
+            "action_trace": _action_trace_payload(action),
+        }
+    return {
+        "badge_decision": "tear",
+        "badge_target_id": None,
+        "action_trace": _action_trace_payload(action),
+    }
 
 
 # Re-export from runtime.strategy (Task 2 extraction)
@@ -2020,7 +2031,7 @@ def agent_hunter_shot(
     decision_identity: DecisionIdentity | None = None,
     exposure_collector: ModuleExposureAuditCollector | None = None,
     decision_trace_sink: Any | None = None,
-) -> str | None:
+) -> dict[str, Any] | str | None:
     """Get hunter shot target from agent. Returns None for scripted fallback."""
     gs: GameState = state["game_state"]
     agent = registry.get_agent(hunter_id)
@@ -2086,8 +2097,14 @@ def agent_hunter_shot(
 
     action, retry_info = agent.act(context)
     if action.action_type == ActionType.HUNTER_SHOT and action.target_id:
-        return action.target_id
-    return None
+        return {
+            "hunter_shot_target_id": action.target_id,
+            "action_trace": _action_trace_payload(action),
+        }
+    return {
+        "hunter_shot_target_id": None,
+        "action_trace": _action_trace_payload(action),
+    }
 
 
 def agent_sheriff_vote(
