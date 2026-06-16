@@ -24,7 +24,10 @@ class EvaluationTraceBuilder:
         result: GameResult,
         exposure_audits: list[dict[str, Any]] | None = None,
     ) -> list[EvaluationTrace]:
-        exposure_by_trace = self._group_exposure_audits(exposure_audits or [])
+        runtime_exposure_audits = self._collect_exposure_events(result.event_log)
+        side_channel_audits = exposure_audits or []
+        exposure_by_trace = self._group_exposure_audits(runtime_exposure_audits + side_channel_audits)
+        exposure_sources_provided = bool(runtime_exposure_audits or side_channel_audits)
         traces: list[EvaluationTrace] = []
         action_index = 0
         for event_index, event in enumerate(result.event_log):
@@ -43,7 +46,7 @@ class EvaluationTraceBuilder:
                 action_index=action_index,
                 event_index=event_index,
                 exposure_by_trace=exposure_by_trace,
-                exposure_sources_provided=bool(exposure_audits),
+                exposure_sources_provided=exposure_sources_provided,
             )
             traces.append(trace)
             action_index += 1
@@ -73,15 +76,17 @@ class EvaluationTraceBuilder:
             or action_trace.get("final_action_type")
             or ""
         )
-        trace_id = make_trace_id(
-            game_id=result.game_id,
-            player_id=player_id,
-            phase=phase,
-            day_number=day_number,
-            night_number=night_number,
-            task_type=task_type,
-            action_index=action_index,
-        )
+        trace_id = str(payload.get("trace_id") or "")
+        if not trace_id:
+            trace_id = make_trace_id(
+                game_id=result.game_id,
+                player_id=player_id,
+                phase=phase,
+                day_number=day_number,
+                night_number=night_number,
+                task_type=task_type,
+                action_index=action_index,
+            )
         decision = _decision_snapshot(action_trace, parsed_action)
         exposures = []
         exposures.extend(_world_model_exposures(action_trace.get("world_model_audit")))
@@ -133,7 +138,29 @@ class EvaluationTraceBuilder:
                 grouped[trace_id].extend(_rag_exposures(audit))
             elif audit_type == "reflection_exposure_audit":
                 grouped[trace_id].extend(_reflection_exposures(audit))
+            elif audit_type == "skill_exposure_audit":
+                grouped[trace_id].extend(_skill_exposures(audit))
+            elif audit_type == "persona_exposure_audit":
+                grouped[trace_id].extend(_persona_exposures(audit))
         return grouped
+
+    @staticmethod
+    def _collect_exposure_events(event_log: list[Any]) -> list[dict[str, Any]]:
+        audits: list[dict[str, Any]] = []
+        for event in event_log:
+            event_type = _event_type(event)
+            if event_type not in {
+                "rag_exposure_audit",
+                "reflection_exposure_audit",
+                "skill_exposure_audit",
+                "persona_exposure_audit",
+            }:
+                continue
+            payload = _event_payload(event)
+            if not isinstance(payload, dict):
+                continue
+            audits.append({"type": event_type, **payload})
+        return audits
 
 
 def _rag_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
@@ -180,6 +207,49 @@ def _reflection_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
             },
         ))
     return exposures
+
+
+def _skill_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
+    exposures: list[ModuleExposure] = []
+    for analysis in audit.get("analyses", []) or []:
+        if not isinstance(analysis, dict):
+            continue
+        skill_name = str(analysis.get("skill_name") or "")
+        if not skill_name:
+            continue
+        exposures.append(ModuleExposure(
+            module="skills",
+            item_id=skill_name,
+            rank=_int(analysis.get("rank")),
+            prompt_visible=bool(analysis.get("prompt_visible")),
+            metadata={
+                key: value
+                for key, value in analysis.items()
+                if key not in {"skill_name", "rank", "prompt_visible"}
+            },
+        ))
+    return exposures
+
+
+def _persona_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
+    snapshot = audit.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return []
+    profile_id = str(snapshot.get("profile_id") or "")
+    if not profile_id:
+        return []
+    return [
+        ModuleExposure(
+            module="persona",
+            item_id=profile_id,
+            prompt_visible=bool(snapshot.get("prompt_visible", True)),
+            metadata={
+                key: value
+                for key, value in snapshot.items()
+                if key not in {"profile_id", "prompt_visible"}
+            },
+        )
+    ]
 
 
 def _world_model_exposures(audit: Any) -> list[ModuleExposure]:
