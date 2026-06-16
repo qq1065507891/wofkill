@@ -325,13 +325,17 @@ Implementation note:
 - Test: `tests/evaluation/test_feedback_diagnostics.py`
 - Test: `tests/evaluation/test_improvement_candidates.py`
 
-- [ ] Classify illegal action, hidden info leak, wrong target, low true-world
+- [x] Classify illegal action, hidden info leak, wrong target, low true-world
   rank, RAG harmful transfer, reflection harmful transfer, simulator false
   positive.
-- [ ] Generate `ImprovementCandidate` objects without mutating RAG or memory
+- [x] Generate `ImprovementCandidate` objects without mutating RAG or memory
   stores.
-- [ ] Add negative tests that patch store methods and assert they are not called.
-- [ ] Commit with `feat: diagnose feedback failures`.
+- [x] Add negative tests that patch store methods and assert they are not called.
+- [x] Commit with `feat: diagnose feedback failures`.
+
+Implementation note:
+- Candidate generation returns review-only objects and filters prompt-unsafe
+  payloads; it does not write RAG entries, reflection cards, or persistence rows.
 
 ## Task 10: Phase 7 Ablation
 
