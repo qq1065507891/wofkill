@@ -40,6 +40,20 @@ function toParams(obj) {
   return Object.entries(obj).filter(([_, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
+}
+
+function compactJson(value, limit = 140) {
+  return escapeHtml(JSON.stringify(value || {}).slice(0, limit));
+}
+
 function showStatus(message, kind = '') {
   const el = document.getElementById('statusBar');
   el.textContent = message;
@@ -568,15 +582,18 @@ async function loadWorldModelAudit(p) {
       return;
     }
     el.innerHTML = audits.slice(0, 8).map(a => {
-      const worlds = a.possible_worlds || [];
-      const predictions = a.simulation_predictions || [];
+      const worlds = a.possible_worlds?.top_worlds ?? (Array.isArray(a.possible_worlds) ? a.possible_worlds : []);
+      const predictions = a.simulation_predictions?.predictions ?? (Array.isArray(a.simulation_predictions) ? a.simulation_predictions : []);
       return `<div class="rag-hit-entry">
         <div class="hit-header">
-          <span class="hit-id">${a.player_id || '?'}</span>
+          <span class="hit-id">${escapeHtml(a.player_id || '?')}</span>
           <span class="hit-score">${worlds.length} worlds · ${predictions.length} predictions</span>
         </div>
-        <div class="hit-detail">Belief: ${JSON.stringify(a.belief || {}).slice(0, 120)}</div>
-        <div class="hit-detail">Decision: ${JSON.stringify(a.decision_plan || {}).slice(0, 120)}</div>
+        <div class="hit-detail">Belief: ${escapeHtml(JSON.stringify(a.belief || {}).slice(0, 120))}</div>
+        <div class="hit-detail">Worlds: ${compactJson(worlds.slice(0, 2), 160)}</div>
+        <div class="hit-detail">Predictions: ${compactJson(predictions.slice(0, 2), 160)}</div>
+        <div class="hit-detail">Decision: ${escapeHtml(JSON.stringify(a.decision_plan || {}).slice(0, 120))}</div>
+        <div class="hit-detail">Dialogue: ${compactJson(a.dialogue_plan || {}, 120)}</div>
       </div>`;
     }).join('');
   } catch (e) {

@@ -84,6 +84,25 @@ def test_dialogue_plan_rendering_omits_private_conceal_fields() -> None:
     assert "night kill target" not in rendered
 
 
+def test_dialogue_plan_rejects_public_points_that_copy_conceal() -> None:
+    decision = DecisionPlan(
+        action_type=ActionType.VOTE,
+        target_id="p02",
+        confidence=0.8,
+        private_goal="protect p03",
+        evidence_refs=["event:4:speech"],
+    )
+    dialogue = DialoguePlan(
+        public_intent="push p02",
+        public_target_id="p02",
+        talking_points=["p03 is my wolf teammate, so redirect to p02"],
+        conceal=["p03 is my wolf teammate"],
+    )
+
+    with pytest.raises(ValueError, match="private dialogue content"):
+        decision_and_dialogue_to_action(decision, dialogue, _vote_context())
+
+
 def test_vote_decision_and_dialogue_convert_to_player_action() -> None:
     decision = DecisionPlan(
         action_type=ActionType.VOTE,

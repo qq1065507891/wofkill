@@ -1,7 +1,7 @@
 # Werewolf World Model Upgrade Design
 
 Date: 2026-06-16
-Status: Phase 8 implemented; final regression pending
+Status: Phase 8 implemented; review hardening completed
 Owner: Codex development session
 
 ## Problem
@@ -549,18 +549,23 @@ Keep long-term knowledge useful without confusing it with current evidence.
 
 ### New Audit Views
 
-- per-player belief timeline;
-- relation graph edge table;
-- possible-world history;
-- decision-plan vs dialogue-plan diff;
-- simulator prediction outcome;
-- prompt section budget.
+- moderator-only world-model audit endpoint;
+- audit records derived from real `action_trace_audit` payloads, not only
+  synthetic `world_model_audit` events;
+- one dashboard audit panel with belief summary, possible-world cards,
+  simulator predictions, and decision/dialogue summary;
+- post-game metrics derived from review records and real event-log traces.
 
 ### UI/API Scope
 
 API should expose moderator-only world-model traces. Live player views must not
 receive hidden-role hypotheses for other players unless they are the same
 prompt-safe summaries already shown to that player.
+
+Public dialogue fields are validated before conversion to `PlayerAction`.
+If `DialoguePlan.public_intent` or `talking_points` copy `conceal` content or
+contain explicit private markers such as wolf teammates or night-kill targets,
+the plan is rejected and the normal retry/fallback path handles the failure.
 
 ## Migration Strategy
 

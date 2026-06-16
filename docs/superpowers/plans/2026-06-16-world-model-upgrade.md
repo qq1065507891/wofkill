@@ -61,6 +61,11 @@
   moderator-only world-model audit view/API, and optional dashboard audit
   panel. Verified with:
   `pytest -n0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp tests/evaluation/test_evaluation.py tests/api/test_views.py tests/ui/test_dashboard_enhanced.py -q`.
+- 2026-06-16: Phase 8 review hardening completed. World-model audit now flows
+  from real `action_trace_audit` records into API/UI/evaluation, public
+  `DialoguePlan` text rejects copied private conceal content, and the dashboard
+  reads nested world/prediction audit cards with HTML escaping. Verified with:
+  `pytest -n0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp tests/agents/test_planning.py tests/agents/test_trace_builder.py tests/api/test_views.py tests/evaluation/test_evaluation.py tests/ui/test_dashboard_enhanced.py -q`.
 - 2026-06-16: Final regression completed. Verified all selected world-model
   and application suites with:
   `pytest -n0 --basetemp E:\NLP\agent\wofkill\.pytest_tmp tests/cognition tests/memory tests/agents tests/runtime tests/rag tests/persona_runtime tests/evaluation tests/api tests/ui -q`
@@ -95,6 +100,8 @@
   - Converts sanitized persona snapshots into policy priors.
 - `tests/persona_runtime/test_policy.py`
   - Covers role-safe persona priors.
+- `werewolf_agent/runtime/world_model_audit.py`
+  - Centralizes world-model audit sanitization and extraction from action traces.
 
 ### Modified Files
 
@@ -673,15 +680,18 @@ Use post-game ground truth only in evaluation paths.
 
 Expose audit data only to moderator/spectator-authorized views.
 
-- [x] **Step 4: Add optional dashboard panels**
+- [x] **Step 4: Add optional dashboard audit panel**
 
-Panels:
+Delivered scope:
 
-- belief timeline;
-- possible worlds;
-- relation graph;
-- decision/dialogue diff;
-- simulator prediction outcome.
+- one moderator/debugger-only world-model audit panel;
+- belief summary;
+- possible-world cards;
+- simulator prediction cards;
+- decision/dialogue summary.
+
+The earlier multi-panel target remains a future UI expansion, not part of the
+completed Phase 8 implementation.
 
 - [x] **Step 5: Run Phase 8 tests**
 

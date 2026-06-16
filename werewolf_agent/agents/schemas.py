@@ -168,6 +168,7 @@ class ActionTrace(BaseModel):
     structured_failure_stage: str | None = None
     # P3-G3223805846-1: 成功路径上累计重试次数（0 表示一次成功）
     total_retry_count_until_success: int = 0
+    world_model_audit: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

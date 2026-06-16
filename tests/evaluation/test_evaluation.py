@@ -429,6 +429,87 @@ class TestMetricsAggregator:
         assert snap.world_model_metrics.dialogue_leakage_rate == pytest.approx(0.5)
         assert "world_model_metrics" in snap.to_json_dict()
 
+    def test_world_model_metrics_from_action_trace_event_log(self):
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            player_roles={"p01": "villager", "p02": "werewolf"},
+            player_factions={"p01": "good", "p02": "werewolf"},
+            event_log=[
+                {
+                    "type": "action_trace_audit",
+                    "payload": {
+                        "player_id": "p01",
+                        "phase": "vote",
+                        "action_trace": {
+                            "final_action_type": "vote",
+                            "legal_actions": ["vote"],
+                            "legal_targets": ["p02"],
+                            "parsed_action": {
+                                "target_id": "p02",
+                                "decision_plan": {"action_type": "vote", "target_id": "p02"},
+                                "dialogue_plan": {
+                                    "public_intent": "push p02",
+                                    "talking_points": ["p02 changed stance twice"],
+                                    "conceal": ["p03 is my wolf teammate"],
+                                },
+                            },
+                            "world_model_audit": {
+                                "belief": {
+                                    "my_suspects": [
+                                        {
+                                            "player": "p02",
+                                            "top_role_guess": "werewolf",
+                                            "top_role_prob": 0.9,
+                                        }
+                                    ]
+                                },
+                                "possible_worlds": {
+                                    "top_worlds": [
+                                        {"key_assignments": {"p02": "werewolf"}}
+                                    ]
+                                },
+                            },
+                        },
+                    },
+                }
+            ],
+        )
+        agg.add_result(result)
+
+        snap = agg.compute_snapshot()
+
+        assert snap.world_model_metrics.belief_calibration == pytest.approx(0.9)
+        assert snap.world_model_metrics.possible_world_topk_hit_rate == pytest.approx(1.0)
+        assert snap.world_model_metrics.decision_legality_rate == pytest.approx(1.0)
+        assert snap.world_model_metrics.dialogue_leakage_rate == pytest.approx(0.0)
+
+    def test_world_model_metrics_marks_target_required_trace_without_target_illegal(self):
+        agg = MetricsAggregator()
+        result = _make_game_result(
+            event_log=[
+                {
+                    "type": "action_trace_audit",
+                    "payload": {
+                        "player_id": "p01",
+                        "phase": "vote",
+                        "action_trace": {
+                            "final_action_type": "vote",
+                            "legal_actions": ["vote"],
+                            "legal_targets": ["p02"],
+                            "parsed_action": {
+                                "decision_plan": {"action_type": "vote"},
+                            },
+                        },
+                    },
+                }
+            ],
+        )
+        agg.add_result(result)
+
+        snap = agg.compute_snapshot()
+
+        assert snap.world_model_metrics.decision_legality_rate == pytest.approx(0.0)
+
 
 # ===========================================================================
 # Batch runner tests

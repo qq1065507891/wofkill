@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.agents.schemas import ActionTrace, AgentContext, PlayerAction, RetryInfo
+from werewolf_agent.runtime.world_model_audit import build_world_model_audit_from_context
 
 
 def build_action_trace(
@@ -43,13 +44,14 @@ def build_action_trace(
         if hasattr(final_action_type, "value")
         else final_action_type
     )
+    parsed_payload = (
+        parsed_action.model_dump(exclude={"trace"})
+        if isinstance(parsed_action, PlayerAction)
+        else parsed_action
+    )
     return ActionTrace(
         raw_text=raw_text,
-        parsed_action=(
-            parsed_action.model_dump(exclude={"trace"})
-            if isinstance(parsed_action, PlayerAction)
-            else parsed_action
-        ),
+        parsed_action=parsed_payload,
         final_action_type=final_type_value,
         legal_actions=[action.value for action in context.legal_actions],
         legal_targets=list(context.legal_targets),
@@ -66,4 +68,8 @@ def build_action_trace(
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
+        world_model_audit=build_world_model_audit_from_context(
+            context,
+            parsed_action=parsed_payload,
+        ),
     )

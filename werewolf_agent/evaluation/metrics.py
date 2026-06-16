@@ -48,6 +48,17 @@ _CLAIM_ROLE_MAP = {
     "狼人": "werewolf",
 }
 
+_TARGET_REQUIRED_ACTIONS = {
+    "vote",
+    "wolf_kill",
+    "use_poison",
+    "check_alignment",
+    "choose_master",
+    "hunter_shot",
+    "badge_transfer",
+    "sheriff_vote",
+}
+
 
 def _extract_claim_events(event_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
     claims: list[dict[str, Any]] = []
@@ -596,32 +607,36 @@ class MetricsAggregator:
                 audit = review.get("world_model_audit") if isinstance(review, dict) else None
                 if not isinstance(audit, dict):
                     continue
-                for sample in audit.get("belief_calibration_samples", []) or []:
-                    if not isinstance(sample, dict):
-                        continue
-                    predicted = _bounded_float(sample.get("predicted"))
-                    actual = 1.0 if bool(sample.get("actual")) else 0.0
-                    belief_scores.append(1.0 - abs(predicted - actual))
-                possible_world_hits.extend(
-                    bool(item.get("hit"))
-                    for item in audit.get("possible_world_checks", []) or []
-                    if isinstance(item, dict)
+                _collect_world_model_audit_samples(
+                    audit,
+                    player_roles=result.player_roles,
+                    belief_scores=belief_scores,
+                    possible_world_hits=possible_world_hits,
+                    simulation_hits=simulation_hits,
+                    decision_legal=decision_legal,
+                    dialogue_leaks=dialogue_leaks,
                 )
-                simulation_hits.extend(
-                    bool(item.get("hit"))
-                    for item in audit.get("simulation_checks", []) or []
-                    if isinstance(item, dict)
-                )
-                decision_legal.extend(
-                    bool(item.get("legal"))
-                    for item in audit.get("decision_legality_checks", []) or []
-                    if isinstance(item, dict)
-                )
-                dialogue_leaks.extend(
-                    bool(item.get("leaked"))
-                    for item in audit.get("dialogue_leak_checks", []) or []
-                    if isinstance(item, dict)
-                )
+            for event in result.event_log:
+                trace = _action_trace_from_event(event)
+                if not trace:
+                    continue
+                audit = trace.get("world_model_audit")
+                if isinstance(audit, dict):
+                    _collect_world_model_audit_samples(
+                        audit,
+                        player_roles=result.player_roles,
+                        belief_scores=belief_scores,
+                        possible_world_hits=possible_world_hits,
+                        simulation_hits=simulation_hits,
+                        decision_legal=decision_legal,
+                        dialogue_leaks=dialogue_leaks,
+                    )
+                legal = _decision_is_legal_from_trace(trace)
+                if legal is not None:
+                    decision_legal.append(legal)
+                leaked = _dialogue_leaked_from_trace(trace)
+                if leaked is not None:
+                    dialogue_leaks.append(leaked)
 
         snap.world_model_metrics = WorldModelMetrics(
             belief_calibration=_avg(belief_scores),
@@ -875,6 +890,200 @@ def compute_pace_metrics(
         "finish_night_number": finish_night,
         "pace_target_met": pace_target_met,
     }
+
+
+def _collect_world_model_audit_samples(
+    audit: dict[str, Any],
+    *,
+    player_roles: dict[str, str],
+    belief_scores: list[float],
+    possible_world_hits: list[bool],
+    simulation_hits: list[bool],
+    decision_legal: list[bool],
+    dialogue_leaks: list[bool],
+) -> None:
+    for sample in audit.get("belief_calibration_samples", []) or []:
+        if not isinstance(sample, dict):
+            continue
+        predicted = _bounded_float(sample.get("predicted"))
+        actual = 1.0 if bool(sample.get("actual")) else 0.0
+        belief_scores.append(1.0 - abs(predicted - actual))
+    belief_scores.extend(_belief_scores_from_audit(audit, player_roles))
+
+    possible_world_hits.extend(
+        bool(item.get("hit"))
+        for item in audit.get("possible_world_checks", []) or []
+        if isinstance(item, dict)
+    )
+    world_hit = _possible_world_hit_from_audit(audit, player_roles)
+    if world_hit is not None:
+        possible_world_hits.append(world_hit)
+
+    simulation_hits.extend(
+        bool(item.get("hit"))
+        for item in audit.get("simulation_checks", []) or []
+        if isinstance(item, dict)
+    )
+    decision_legal.extend(
+        bool(item.get("legal"))
+        for item in audit.get("decision_legality_checks", []) or []
+        if isinstance(item, dict)
+    )
+    dialogue_leaks.extend(
+        bool(item.get("leaked"))
+        for item in audit.get("dialogue_leak_checks", []) or []
+        if isinstance(item, dict)
+    )
+
+
+def _belief_scores_from_audit(
+    audit: dict[str, Any],
+    player_roles: dict[str, str],
+) -> list[float]:
+    belief = audit.get("belief")
+    if not isinstance(belief, dict) or not player_roles:
+        return []
+    scores: list[float] = []
+    for group in ("my_suspects", "my_trusted"):
+        for item in belief.get(group, []) or []:
+            if not isinstance(item, dict):
+                continue
+            player_id = str(item.get("player") or "")
+            guessed_role = _normalize_role(item.get("top_role_guess"))
+            if not player_id or not guessed_role or player_id not in player_roles:
+                continue
+            predicted = _bounded_float(item.get("top_role_prob"))
+            actual = 1.0 if _normalize_role(player_roles[player_id]) == guessed_role else 0.0
+            scores.append(1.0 - abs(predicted - actual))
+    for player_id, role_probs in belief.items():
+        if player_id in {"my_suspects", "my_trusted"}:
+            continue
+        if not isinstance(role_probs, dict) or player_id not in player_roles:
+            continue
+        for role, predicted in role_probs.items():
+            normalized = _normalize_role(role)
+            if not normalized:
+                continue
+            actual = 1.0 if _normalize_role(player_roles[player_id]) == normalized else 0.0
+            scores.append(1.0 - abs(_bounded_float(predicted) - actual))
+    return scores
+
+
+def _possible_world_hit_from_audit(
+    audit: dict[str, Any],
+    player_roles: dict[str, str],
+) -> bool | None:
+    possible_worlds = audit.get("possible_worlds")
+    if isinstance(possible_worlds, dict):
+        worlds = possible_worlds.get("top_worlds")
+    else:
+        worlds = possible_worlds
+    if not isinstance(worlds, list) or not player_roles:
+        return None
+    saw_assignments = False
+    for world in worlds:
+        if not isinstance(world, dict):
+            continue
+        assignments = world.get("key_assignments")
+        if not isinstance(assignments, dict) or not assignments:
+            continue
+        comparable = {
+            str(pid): _normalize_role(role)
+            for pid, role in assignments.items()
+            if str(pid) in player_roles
+        }
+        if not comparable:
+            continue
+        saw_assignments = True
+        if all(_normalize_role(player_roles[pid]) == role for pid, role in comparable.items()):
+            return True
+    return False if saw_assignments else None
+
+
+def _action_trace_from_event(event: Any) -> dict[str, Any] | None:
+    if isinstance(event, dict):
+        event_type = event.get("type")
+        payload = event.get("payload") or {}
+    else:
+        event_type = getattr(event, "type", None)
+        payload = getattr(event, "payload", {}) or {}
+    if event_type != "action_trace_audit" or not isinstance(payload, dict):
+        return None
+    trace = payload.get("action_trace")
+    return trace if isinstance(trace, dict) else None
+
+
+def _decision_is_legal_from_trace(trace: dict[str, Any]) -> bool | None:
+    parsed = trace.get("parsed_action")
+    parsed = parsed if isinstance(parsed, dict) else {}
+    decision = parsed.get("decision_plan")
+    decision = decision if isinstance(decision, dict) else {}
+    action_type = str(
+        trace.get("final_action_type")
+        or parsed.get("action_type")
+        or decision.get("action_type")
+        or ""
+    )
+    if not action_type:
+        return None
+    legal_actions = trace.get("legal_actions")
+    if isinstance(legal_actions, list) and legal_actions and action_type not in legal_actions:
+        return False
+    target_id = parsed.get("target_id") or decision.get("target_id")
+    if action_type in _TARGET_REQUIRED_ACTIONS and not target_id:
+        return False
+    legal_targets = trace.get("legal_targets")
+    if (
+        target_id
+        and isinstance(legal_targets, list)
+        and legal_targets
+        and target_id not in legal_targets
+    ):
+        return False
+    return True
+
+
+def _dialogue_leaked_from_trace(trace: dict[str, Any]) -> bool | None:
+    parsed = trace.get("parsed_action")
+    if not isinstance(parsed, dict):
+        return None
+    dialogue = parsed.get("dialogue_plan")
+    if not isinstance(dialogue, dict):
+        return None
+    public_parts = [
+        dialogue.get("public_intent"),
+        *(dialogue.get("talking_points") or []),
+        parsed.get("reason"),
+        parsed.get("speech"),
+        parsed.get("speech_text"),
+    ]
+    public_text = "\n".join(str(part or "") for part in public_parts).lower()
+    if not public_text:
+        return False
+    for secret in dialogue.get("conceal") or []:
+        secret_text = str(secret or "").strip().lower()
+        if len(secret_text) >= 4 and secret_text in public_text:
+            return True
+    return any(
+        marker in public_text
+        for marker in (
+            "wolf teammate",
+            "my teammate",
+            "night kill",
+            "private goal",
+            "狼队友",
+            "我的队友",
+            "夜刀",
+            "真实身份",
+        )
+    )
+
+
+def _normalize_role(value: Any) -> str:
+    role = str(value or "").strip().lower()
+    if role in {"wolf", "werewolves"}:
+        return "werewolf"
+    return role
 
 
 def _avg(values: list[float]) -> float:

@@ -11,6 +11,19 @@ from werewolf_agent.persona_runtime.policy import PersonaPolicyPrior
 
 
 _REFERENCE_PREFIXES = ("rag:", "reflection:", "profile:", "memory:")
+_PRIVATE_PUBLIC_MARKERS = (
+    "wolf teammate",
+    "my teammate",
+    "night kill",
+    "private goal",
+    "hidden role",
+    "狼队友",
+    "我的队友",
+    "夜刀",
+    "夜间击杀",
+    "真实身份",
+    "私密目标",
+)
 _TARGET_REQUIRED_ACTIONS = {
     ActionType.VOTE,
     ActionType.WOLF_KILL,
@@ -121,6 +134,7 @@ def decision_and_dialogue_to_action(
 ) -> PlayerAction:
     """Validate a plan pair and convert it into a schema-constrained action."""
     _validate_against_context(decision, context)
+    _validate_public_dialogue(dialogue)
     public_reason = render_dialogue_plan(dialogue)
     target_id = decision.target_id or dialogue.public_target_id
 
@@ -183,6 +197,23 @@ def _private_audit_reason(decision: DecisionPlan) -> str:
     if decision.selected_world_ids:
         parts.append("worlds=" + ",".join(decision.selected_world_ids[:3]))
     return "; ".join(part for part in parts if part)
+
+
+def _validate_public_dialogue(dialogue: DialoguePlan) -> None:
+    public_parts = [
+        dialogue.public_intent,
+        *(dialogue.talking_points or []),
+    ]
+    public_text = "\n".join(_clean_public_text(part) for part in public_parts).lower()
+    if not public_text:
+        return
+    for secret in dialogue.conceal:
+        secret_text = _clean_public_text(secret).lower()
+        if len(secret_text) >= 4 and secret_text in public_text:
+            raise ValueError("private dialogue content leaked into public text")
+    for marker in _PRIVATE_PUBLIC_MARKERS:
+        if marker in public_text:
+            raise ValueError("private dialogue content leaked into public text")
 
 
 def _clean_public_text(value: Any) -> str:

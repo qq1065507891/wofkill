@@ -24,6 +24,11 @@ from werewolf_agent.api.schemas import (
     ViewMode,
 )
 from werewolf_agent.core.models import GameState
+from werewolf_agent.runtime.world_model_audit import (
+    extract_world_model_audits_from_events,
+    sanitize_world_model_audit,
+    strip_world_model_private_fields,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -335,11 +340,7 @@ def build_world_model_audit(
 
     raw_events = audit_events
     if raw_events is None:
-        raw_events = [
-            event.payload
-            for event in game_state.events
-            if event.type == "world_model_audit" and isinstance(event.payload, dict)
-        ]
+        raw_events = extract_world_model_audits_from_events(list(game_state.events))
     return {
         "game_id": game_state.game_id,
         "view_mode": view_value,
@@ -348,41 +349,11 @@ def build_world_model_audit(
 
 
 def _sanitize_world_model_audit(payload: dict[str, Any]) -> dict[str, Any]:
-    allowed = {
-        "player_id",
-        "belief",
-        "possible_worlds",
-        "simulation_predictions",
-        "decision_plan",
-        "dialogue_plan",
-        "persona_policy_prior",
-        "metrics",
-    }
-    return {
-        key: _strip_world_model_private_fields(value)
-        for key, value in payload.items()
-        if key in allowed
-    }
+    return sanitize_world_model_audit(payload)
 
 
 def _strip_world_model_private_fields(value: Any) -> Any:
-    forbidden = {
-        "roles",
-        "supporting_evidence",
-        "private_goal",
-        "conceal",
-        "raw_prompt",
-        "raw_response",
-    }
-    if isinstance(value, dict):
-        return {
-            key: _strip_world_model_private_fields(child)
-            for key, child in value.items()
-            if key not in forbidden
-        }
-    if isinstance(value, list):
-        return [_strip_world_model_private_fields(item) for item in value]
-    return value
+    return strip_world_model_private_fields(value)
 
 
 def build_cognitive_diff(

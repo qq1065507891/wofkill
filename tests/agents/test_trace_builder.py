@@ -179,3 +179,69 @@ class TestBuildActionTrace:
         # compare by value rather than identity.
         assert trace.parsed_action == choice_data
         assert trace.parsed_action["target_id"] == "p07"
+
+    def test_world_model_audit_attaches_sanitized_context_and_plan(self):
+        ctx = _context(
+            belief_state={
+                "my_suspects": [
+                    {
+                        "player": "p07",
+                        "top_role_guess": "werewolf",
+                        "top_role_prob": 0.9,
+                    }
+                ]
+            },
+            possible_worlds={
+                "top_worlds": [
+                    {
+                        "label": "World A",
+                        "roles": {"p07": "werewolf"},
+                        "key_assignments": {"p07": "werewolf"},
+                    }
+                ]
+            },
+            simulation_predictions={
+                "predictions": [
+                    {
+                        "event": "next_day_vote_pressure",
+                        "affected_players": ["p07"],
+                    }
+                ]
+            },
+        )
+        parsed_action = {
+            "planning_mode": "decision_dialogue",
+            "decision_plan": {
+                "action_type": "vote",
+                "target_id": "p07",
+                "private_goal": "protect p08",
+            },
+            "dialogue_plan": {
+                "public_intent": "push p07",
+                "talking_points": ["p07 changed stance twice"],
+                "conceal": ["p08 is my wolf teammate"],
+            },
+            "persona_policy_prior": {"vote_threshold": 0.62},
+        }
+
+        trace = build_action_trace(
+            ctx,
+            raw_text="{}",
+            parsed_action=parsed_action,
+            final_action_type=ActionType.VOTE,
+            retry=RetryInfo(),
+        )
+
+        audit = trace.world_model_audit
+        assert audit["player_id"] == "p01"
+        assert audit["belief"]["my_suspects"][0]["player"] == "p07"
+        assert audit["possible_worlds"]["top_worlds"][0]["key_assignments"] == {
+            "p07": "werewolf"
+        }
+        assert audit["simulation_predictions"]["predictions"][0]["affected_players"] == ["p07"]
+        assert audit["decision_plan"]["action_type"] == "vote"
+        assert audit["dialogue_plan"]["public_intent"] == "push p07"
+        assert audit["persona_policy_prior"]["vote_threshold"] == 0.62
+        assert "private_goal" not in str(audit)
+        assert "conceal" not in str(audit)
+        assert "roles" not in str(audit)

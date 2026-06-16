@@ -104,6 +104,60 @@ def test_world_model_audit_is_moderator_only():
     assert moderator["audits"][0]["possible_worlds"][0]["label"] == "World A"
 
 
+def test_world_model_audit_reads_action_trace_audit_events():
+    state = GameState(
+        game_id="wm_trace_audit",
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        },
+        events=[
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "player_id": "p01",
+                    "phase": "vote",
+                    "visibility": "moderator_only",
+                    "action_trace": {
+                        "world_model_audit": {
+                            "player_id": "p01",
+                            "belief": {"p02": {"wolf": 0.7}},
+                            "possible_worlds": {
+                                "top_worlds": [
+                                    {
+                                        "label": "World A",
+                                        "roles": {"p02": "werewolf"},
+                                        "key_assignments": {"p02": "werewolf"},
+                                    }
+                                ]
+                            },
+                            "simulation_predictions": {
+                                "predictions": [
+                                    {
+                                        "event": "next_day_vote_pressure",
+                                        "affected_players": ["p02"],
+                                    }
+                                ]
+                            },
+                        }
+                    },
+                },
+            )
+        ],
+    )
+
+    moderator = build_world_model_audit(state, ViewMode.MODERATOR_FULL)
+
+    assert len(moderator["audits"]) == 1
+    audit = moderator["audits"][0]
+    assert audit["player_id"] == "p01"
+    assert audit["phase"] == "vote"
+    assert audit["possible_worlds"]["top_worlds"][0]["key_assignments"] == {
+        "p02": "werewolf"
+    }
+    assert "roles" not in str(audit)
+
+
 # ---------------------------------------------------------------------------
 # NEW-P2-10
 # ---------------------------------------------------------------------------

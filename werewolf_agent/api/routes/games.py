@@ -44,6 +44,7 @@ from werewolf_agent.api.views import (
 )
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+from werewolf_agent.runtime.world_model_audit import extract_world_model_audits_from_events
 
 
 def create_game_router(
@@ -626,24 +627,13 @@ def create_game_router(
                 "world-model-audit requires moderator or debugger role",
             )
 
-        audits: list[dict] = []
         events = state.events
         if repo is not None and hasattr(repo, "load_events"):
             try:
                 events = repo.load_events(game_id)
             except Exception:
                 events = state.events
-        for event in events:
-            event_type = getattr(event, "type", None) or (
-                event.get("type") if isinstance(event, dict) else None
-            )
-            if event_type != "world_model_audit":
-                continue
-            payload = getattr(event, "payload", None) or (
-                event.get("payload") if isinstance(event, dict) else {}
-            )
-            if isinstance(payload, dict):
-                audits.append(payload)
+        audits = extract_world_model_audits_from_events(list(events))
 
         return build_world_model_audit(
             state,

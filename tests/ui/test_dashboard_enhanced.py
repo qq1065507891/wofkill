@@ -25,6 +25,11 @@ def test_world_model_panel(dashboard_html, dashboard_js):
     assert "loadWorldModelAudit" in dashboard_js
     assert "/world-model-audit" in dashboard_js
 
+def test_world_model_panel_reads_nested_audit_cards_and_escapes_json(dashboard_js):
+    assert "a.possible_worlds?.top_worlds" in dashboard_js
+    assert "a.simulation_predictions?.predictions" in dashboard_js
+    assert "escapeHtml(JSON.stringify" in dashboard_js
+
 def test_model_routing_panel(dashboard_html):
     assert "model-routing" in dashboard_html or "llm-profile" in dashboard_html
 
