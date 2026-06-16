@@ -197,6 +197,14 @@ def _player_display(state: RuntimeState, player_id: str) -> str:
     return player_id
 
 
+def _ensure_runtime_audit_state(state: RuntimeState) -> RuntimeState:
+    if not isinstance(state.get("action_index_by_game"), dict):
+        state["action_index_by_game"] = {}
+    if not isinstance(state.get("pending_exposure_events_by_trace"), dict):
+        state["pending_exposure_events_by_trace"] = {}
+    return state
+
+
 def _allocate_decision_identity(
     state: RuntimeState,
     *,
@@ -207,7 +215,7 @@ def _allocate_decision_identity(
     night_number: int,
 ) -> DecisionIdentity:
     gs = state["game_state"]
-    next_index_by_game = state.setdefault("action_index_by_game", {})
+    next_index_by_game = _ensure_runtime_audit_state(state)["action_index_by_game"]
     action_index = int(next_index_by_game.get(gs.game_id, 0))
     next_index_by_game[gs.game_id] = action_index + 1
     return DecisionIdentity(

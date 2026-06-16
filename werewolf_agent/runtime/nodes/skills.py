@@ -22,6 +22,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _allocate_decision_identity,
     _call_agent,
     _dispatch_agent,
+    _ensure_runtime_audit_state,
     _judge_broadcast,
     _jb,
     _player_display,
@@ -75,6 +76,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         # Get target: scripted, then agent, then explicit last-words declaration.
         target = state.get("hunter_shot_target_id")
         if target is None:
+            _ensure_runtime_audit_state(state)
             shot_state = {**state, "hunter_death_reason": death.reason}
             decision_identity = _allocate_decision_identity(
                 shot_state,

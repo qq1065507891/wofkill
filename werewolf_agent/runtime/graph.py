@@ -34,6 +34,7 @@ from werewolf_agent.runtime.nodes._shared import (  # noqa: F401
     _call_agent,
     _deaths_already_announced,
     _dispatch_agent,
+    _ensure_runtime_audit_state,
     _ensure_day_incremented,
     _find_role,
     _force_wolf_kill,
@@ -113,6 +114,7 @@ from werewolf_agent.runtime.nodes.summary import (  # noqa: F401
 # ---------------------------------------------------------------------------
 
 def setup_game(state: RuntimeState) -> dict[str, Any]:
+    _ensure_runtime_audit_state(state)
     gs = state.get("game_state")
     engine = state.get("engine") or _new_engine()
     if gs is None:
@@ -125,7 +127,12 @@ def setup_game(state: RuntimeState) -> dict[str, Any]:
             gs=gs,
             visibility="public",
         )
-    return {"game_state": gs, "engine": engine}
+    return {
+        "game_state": gs,
+        "engine": engine,
+        "action_index_by_game": state["action_index_by_game"],
+        "pending_exposure_events_by_trace": state["pending_exposure_events_by_trace"],
+    }
 
 
 def assign_roles(state: RuntimeState) -> dict[str, Any]:

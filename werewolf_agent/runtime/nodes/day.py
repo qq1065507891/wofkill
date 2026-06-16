@@ -25,6 +25,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _jb,
     _hitl_checkpoint,
     _ensure_day_incremented,
+    _ensure_runtime_audit_state,
     _player_display,
     _public_vote_reason,
     _with_vote_target_in_trace,
@@ -152,6 +153,7 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
 
     # Let each eligible dead player actually speak their last words via agent
     if registry and eligible:
+        _ensure_runtime_audit_state(state)
         for pid in eligible:
             call_state = {**state, "game_state": gs}
             decision_identity = _allocate_decision_identity(
@@ -438,7 +440,7 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
     votes: dict[str, str] = {}
     vote_traces: dict[str, Any] = {}
     vote_identities: dict[str, Any] = {}
-    pending_exposure_events = state.setdefault("pending_exposure_events_by_trace", {})
+    pending_exposure_events = _ensure_runtime_audit_state(state)["pending_exposure_events_by_trace"]
     has_agents = False
     # Count eligible voters for per-voter calling
     eligible_voter_ids = [pid for pid, p in gs.players.items() if p.alive and p.vote_enabled]

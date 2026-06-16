@@ -12,6 +12,7 @@ from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime import agent_adapter
+from werewolf_agent.runtime.nodes._shared import _allocate_decision_identity
 from werewolf_agent.runtime.nodes import day as day_nodes
 from werewolf_agent.runtime.nodes import night as night_nodes
 from werewolf_agent.runtime.nodes import sheriff as sheriff_nodes
@@ -549,6 +550,199 @@ def test_hybrid_master_choice_flushes_exposure_with_action_audit(
     action_index = event_types.index("action_trace_audit")
     assert exposure_index < action_index
     assert events[exposure_index].payload["trace_id"] == events[action_index].payload["trace_id"]
+
+
+def test_allocations_from_initialized_shallow_copies_remain_monotonic() -> None:
+    from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+
+    runtime_state = GameRunner(GameRunnerConfig(seed=321))._build_runtime_state()
+    first_branch = dict(runtime_state)
+    second_branch = dict(runtime_state)
+
+    first = _allocate_decision_identity(
+        first_branch,
+        player_id="p01",
+        phase="vote",
+        task_type="vote",
+        day_number=1,
+        night_number=1,
+    )
+    second = _allocate_decision_identity(
+        second_branch,
+        player_id="p02",
+        phase="vote",
+        task_type="vote",
+        day_number=1,
+        night_number=1,
+    )
+
+    assert [first.action_index, second.action_index] == [0, 1]
+
+
+def test_night_death_last_words_keeps_action_index_monotonic_across_call_state_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_dispatch(state: dict[str, Any], fn: Any, player_id: str, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "speech_text": f"last words from {player_id}",
+            "action_trace": {"parsed_action": {"speech_text": f"last words from {player_id}"}},
+        }
+
+    monkeypatch.setattr(day_nodes, "_dispatch_agent", fake_dispatch)
+    gs = GameState(
+        game_id="audit_last_words_monotonic",
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=False),
+            "p02": PlayerState(id="p02", role="villager", alive=False),
+        },
+        phase="day",
+        day_number=1,
+        night_number=1,
+        deaths=[
+            Death(
+                player_id="p01",
+                reason="wolf_kill",
+                timing="night",
+                resolution_batch="night_1",
+                can_leave_last_words=True,
+            ),
+            Death(
+                player_id="p02",
+                reason="wolf_kill",
+                timing="night",
+                resolution_batch="night_1",
+                can_leave_last_words=True,
+            ),
+        ],
+    )
+
+    result = day_nodes.night_death_last_words(_state(gs))
+
+    audit_indexes = [
+        event.payload["action_index"]
+        for event in result["game_state"].events
+        if event.type == "action_trace_audit"
+    ]
+    assert audit_indexes == [0, 1]
+
+
+def test_night_witch_and_seer_keep_action_index_monotonic_across_state_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _capture_dispatch(monkeypatch, night_nodes)
+    gs = GameState(
+        game_id="audit_night_copy_monotonic",
+        players={
+            "witch": PlayerState(id="witch", role="witch"),
+            "seer": PlayerState(id="seer", role="seer"),
+            "p02": PlayerState(id="p02", role="villager"),
+        },
+        phase="night",
+        night_number=1,
+    )
+    state = _state(gs)
+
+    witch_result = night_nodes.night_witch(state)
+    state.update(witch_result)
+    seer_result = night_nodes.night_seer(state)
+
+    audit_indexes = [
+        event.payload["action_index"]
+        for event in seer_result["game_state"].events
+        if event.type == "action_trace_audit"
+    ]
+    assert audit_indexes == [0, 1]
+
+
+def test_wolf_discussion_keeps_action_index_monotonic_across_round_state_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import werewolf_agent.runtime.wolf_strategy as wolf_strategy
+
+    def fake_dispatch(state: dict[str, Any], fn: Any, wolf_id: str, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "speech_text": f"{wolf_id} round {state['wolf_discussion_round']}",
+            "action_trace": {
+                "parsed_action": {
+                    "speech_text": f"{wolf_id} round {state['wolf_discussion_round']}",
+                },
+            },
+        }
+
+    monkeypatch.setattr(night_nodes, "_dispatch_agent", fake_dispatch)
+    monkeypatch.setattr(wolf_strategy, "should_end_discussion_early", lambda *_args, **_kwargs: False)
+    gs = GameState(
+        game_id="audit_wolf_discussion_monotonic",
+        players={
+            "wolf1": PlayerState(id="wolf1", role="werewolf"),
+            "wolf2": PlayerState(id="wolf2", role="werewolf"),
+            "target": PlayerState(id="target", role="villager"),
+        },
+        phase="night",
+        night_number=1,
+    )
+
+    result = night_nodes.wolf_discussion(_state(gs))
+
+    audit_indexes = [
+        event.payload["action_index"]
+        for event in result["game_state"].events
+        if event.type == "action_trace_audit"
+    ]
+    assert audit_indexes == list(range(len(audit_indexes)))
+    assert len(audit_indexes) == 6
+
+
+def test_day_vote_resolve_vote_pairs_pending_exposures_with_action_audits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_dispatch(state: dict[str, Any], fn: Any, voter_id: str, **kwargs: Any) -> dict[str, Any]:
+        _record_exposure(kwargs, f"vote_hint_{voter_id}")
+        target = "p02" if voter_id != "p02" else "p01"
+        return {
+            "vote_target": target,
+            "action_trace": {
+                "parsed_action": {
+                    "target_id": target,
+                    "reason": f"vote from {voter_id}",
+                },
+            },
+        }
+
+    monkeypatch.setattr(day_nodes, "_dispatch_agent", fake_dispatch)
+    gs = GameState(
+        game_id="audit_day_vote_pending_pair",
+        players={
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+            "p03": PlayerState(id="p03", role="villager"),
+        },
+        phase="day",
+        day_number=1,
+        night_number=1,
+    )
+    state = _state(gs)
+
+    state.update(day_nodes.day_vote(state))
+    result = day_nodes.resolve_vote(state)
+
+    audit_events = [
+        event
+        for event in result["game_state"].events
+        if event.type in {"rag_exposure_audit", "action_trace_audit"}
+    ]
+    assert [event.type for event in audit_events] == [
+        "rag_exposure_audit",
+        "action_trace_audit",
+        "rag_exposure_audit",
+        "action_trace_audit",
+        "rag_exposure_audit",
+        "action_trace_audit",
+    ]
+    for exposure_event, action_event in zip(audit_events[0::2], audit_events[1::2]):
+        assert exposure_event.payload["trace_id"] == action_event.payload["trace_id"]
+    assert [event.payload["action_index"] for event in audit_events[1::2]] == [0, 1, 2]
+    assert state["pending_exposure_events_by_trace"] == {}
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _jb,
     _hitl_checkpoint,
     _new_engine,
+    _ensure_runtime_audit_state,
     _player_display,
     _player_ids,
     _stable_seed,
@@ -259,6 +260,7 @@ def night_witch(state: RuntimeState) -> dict[str, Any]:
             "available_actions": ["use_antidote", "use_poison", "no_action"],
         },
     )
+    _ensure_runtime_audit_state(state)
     state = {**state, "game_state": gs}
 
     # Try agent-driven decision first
@@ -373,6 +375,7 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
             "available_actions": ["check_alignment"],
         },
     )
+    _ensure_runtime_audit_state(state)
     state = {**state, "game_state": gs}
 
     # Try agent-driven decision first
@@ -626,6 +629,7 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
     round_count = 3 if gs.night_number == 1 else 2
     logger.debug(f"  [狼人密谈] 狼人: {[_player_display(state, w) for w in wolves]}，共{round_count}轮")
     discussion_start = time.monotonic()
+    _ensure_runtime_audit_state(state)
     for round_number in range(1, round_count + 1):
         # Check total discussion timeout
         elapsed = time.monotonic() - discussion_start
@@ -839,6 +843,7 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
         gs=gs, night_number=gs.night_number,
         visibility="moderator_only",
     )
+    _ensure_runtime_audit_state(state)
     state = {**state, "game_state": gs}
     planned = _planned_wolf_kill(state)
     if planned is not None and not state.get("wolf_action"):

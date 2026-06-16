@@ -178,6 +178,8 @@ def test_setup_game_node() -> None:
     gs = result["game_state"]
     assert gs.phase == "setup"
     assert result["engine"] is not None
+    assert result["action_index_by_game"] == {}
+    assert result["pending_exposure_events_by_trace"] == {}
 
 
 def test_assign_roles_node() -> None:

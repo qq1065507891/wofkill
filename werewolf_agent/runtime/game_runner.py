@@ -231,6 +231,8 @@ class GameRunner:
             "badge_decision": None,
             "badge_target_id": None,
             "hunter_shot_target_id": None,
+            "action_index_by_game": {},
+            "pending_exposure_events_by_trace": {},
         }
         if self._agent_registry is not None:
             rt["agent_registry"] = self._agent_registry

@@ -54,6 +54,15 @@ def test_game_runner_runtime_state_includes_live_cognition_manager() -> None:
     assert runtime_state["cognition_state_manager"] is runner._cognition_state_manager
 
 
+def test_game_runner_runtime_state_initializes_shared_audit_containers() -> None:
+    runner = GameRunner(GameRunnerConfig(seed=42))
+
+    runtime_state = runner._build_runtime_state()
+
+    assert runtime_state["action_index_by_game"] == {}
+    assert runtime_state["pending_exposure_events_by_trace"] == {}
+
+
 def test_game_runner_process_chunk_updates_live_cognition_manager() -> None:
     runner = GameRunner(GameRunnerConfig(seed=42))
     base_state = GameState(
