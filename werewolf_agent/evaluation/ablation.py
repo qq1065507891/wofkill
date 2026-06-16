@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, replace
 
+from werewolf_agent.agents.schemas import AgentContext
 from werewolf_agent.evaluation.feedback_metrics import (
     ModuleAttributionSummary,
     summarize_module_attribution,
@@ -27,6 +29,18 @@ class AblationReport:
     ablated_module_metrics: dict[str, ModuleAttributionSummary]
     unsupported_metrics: dict[str, str]
     ablated_traces: list[EvaluationTrace]
+
+
+@dataclass(frozen=True)
+class AblationToggleSet:
+    removed_modules: list[str]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "removed_modules",
+            _normalize_modules(self.removed_modules),
+        )
 
 
 class OfflineTraceAblationRunner:
@@ -54,6 +68,34 @@ class OfflineTraceAblationRunner:
             unsupported_metrics=dict(OFFLINE_UNSUPPORTED_METRICS),
             ablated_traces=ablated_traces,
         )
+
+
+def apply_ablation_toggles(
+    context: AgentContext,
+    toggles: AblationToggleSet,
+) -> AgentContext:
+    update: dict[str, object] = {}
+    removed = set(toggles.removed_modules)
+
+    if "rag" in removed:
+        update["rag_hints"] = []
+    if "reflection" in removed:
+        update["reflection_memory_hints"] = []
+        update["error_pattern_hint"] = {}
+    if "possible_worlds" in removed:
+        update["possible_worlds"] = {}
+    if "simulator" in removed:
+        update["simulation_predictions"] = {}
+    if "skills" in removed:
+        strategy = copy.deepcopy(context.strategy_directive)
+        strategy.pop("skill_tactical_advice", None)
+        update["strategy_directive"] = strategy
+        update["skill_analyses"] = {}
+        update["skill_analysis_hints"] = {}
+    if "persona" in removed:
+        update["persona_snapshot"] = {}
+
+    return context.model_copy(deep=True, update=update)
 
 
 def _normalize_modules(modules: list[str]) -> list[str]:
