@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any
 
 from werewolf_agent.evaluation.ablation import AblationReport
+from werewolf_agent.evaluation.full_game_ablation import FullGameAblationReport
 from werewolf_agent.evaluation.feedback_metrics import (
     ModuleAttributionSummary,
     summarize_module_attribution,
@@ -51,6 +52,7 @@ class FeedbackReport:
     diagnoses: list[FailureDiagnosis] = field(default_factory=list)
     candidates: list[ImprovementCandidate] = field(default_factory=list)
     ablation_reports: list[AblationReport] = field(default_factory=list)
+    full_game_ablation_reports: list[FullGameAblationReport] = field(default_factory=list)
     generated_at: str = ""
     schema_version: int = 1
     source_refs: list[str] = field(default_factory=list)
@@ -95,6 +97,10 @@ class FeedbackReport:
                 _ablation_to_dict(report)
                 for report in self.ablation_reports
             ],
+            "full_game_ablations": [
+                _full_game_ablation_to_dict(report)
+                for report in self.full_game_ablation_reports
+            ],
         }
 
     def to_json(self, *, include_private_audit: bool = False) -> str:
@@ -114,6 +120,7 @@ def build_feedback_report(
     diagnoses: list[FailureDiagnosis] | None = None,
     candidates: list[ImprovementCandidate] | None = None,
     ablation_reports: list[AblationReport] | None = None,
+    full_game_ablation_reports: list[FullGameAblationReport] | None = None,
     generated_at: str = "",
 ) -> FeedbackReport:
     """Build a compact feedback report from local evaluation artifacts."""
@@ -125,6 +132,7 @@ def build_feedback_report(
         diagnoses=list(diagnoses or []),
         candidates=list(candidates or []),
         ablation_reports=list(ablation_reports or []),
+        full_game_ablation_reports=list(full_game_ablation_reports or []),
         generated_at=generated_at,
         source_refs=_collect_source_refs(traces),
     )
@@ -302,6 +310,21 @@ def _ablation_to_dict(report: AblationReport) -> dict[str, Any]:
         "ablated_module_metrics": {
             module: _module_metric_to_dict(summary)
             for module, summary in report.ablated_module_metrics.items()
+        },
+        "unsupported_metrics": dict(sorted(report.unsupported_metrics.items())),
+    }
+
+
+def _full_game_ablation_to_dict(report: FullGameAblationReport) -> dict[str, Any]:
+    return {
+        "batch_id": report.batch_id,
+        "mode": report.mode,
+        "agent_mode": report.agent_mode,
+        "removed_modules": list(report.removed_modules),
+        "pair_count": report.pair_count,
+        "metric_deltas": {
+            metric: _json_safe(delta)
+            for metric, delta in sorted(report.metric_deltas.items())
         },
         "unsupported_metrics": dict(sorted(report.unsupported_metrics.items())),
     }

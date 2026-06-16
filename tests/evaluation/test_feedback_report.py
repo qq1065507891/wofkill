@@ -246,3 +246,41 @@ def test_feedback_report_default_view_scrubs_private_audit_fields() -> None:
     assert "target_faction" not in json.dumps(public_payload, ensure_ascii=False)
     assert "werewolf" not in json.dumps(public_payload, ensure_ascii=False)
     assert "target_role" in json.dumps(private_payload, ensure_ascii=False)
+
+
+def test_feedback_report_serializes_full_game_ablations_separately() -> None:
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+    from werewolf_agent.evaluation.full_game_ablation import (
+        FullGameAblationReport,
+        FullGameMetricDelta,
+    )
+
+    full_game_report = FullGameAblationReport(
+        batch_id="batch_1",
+        mode="full_game",
+        agent_mode="deterministic_fake",
+        removed_modules=["rag"],
+        pair_count=1,
+        metric_deltas={
+            "good_win_rate": FullGameMetricDelta(
+                metric="good_win_rate",
+                baseline=1.0,
+                ablated=0.0,
+                delta=1.0,
+            )
+        },
+        unsupported_metrics={},
+        pairs=[],
+    )
+
+    report = build_feedback_report(
+        report_id="feedback_full_game",
+        batch_id="batch_1",
+        traces=[],
+        full_game_ablation_reports=[full_game_report],
+    )
+    data = report.to_json_dict()
+
+    assert data["ablations"] == []
+    assert data["full_game_ablations"][0]["mode"] == "full_game"
+    assert data["full_game_ablations"][0]["metric_deltas"]["good_win_rate"]["delta"] == 1.0
