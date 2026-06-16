@@ -291,10 +291,14 @@ Implementation note:
 - Create: `werewolf_agent/memory/reflection_effectiveness.py`
 - Test: `tests/memory/test_reflection_effectiveness.py`
 
-- [ ] Compute reflection injection, citation, alignment, stale, and harmful flags
+- [x] Compute reflection injection, citation, alignment, stale, and harmful flags
   from `EvaluationTrace`.
-- [ ] Add candidate hints for repeated no-effect or harmful cards.
-- [ ] Commit with `feat: evaluate reflection effectiveness`.
+- [x] Add candidate hints for repeated no-effect or harmful cards.
+- [x] Commit with `feat: evaluate reflection effectiveness`.
+
+Implementation note:
+- Candidate hints are audit outputs only. This phase does not mutate
+  `ReflectionMemory` or persistence stores.
 
 ## Task 8: Phase 5 World Model Rank Metrics
 
