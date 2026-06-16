@@ -73,6 +73,22 @@ def test_live_model_without_replay_reports_unsupported_causal_metrics() -> None:
     assert report.unsupported_metrics["causal_decision_delta"] == "fresh_live_model_without_replay"
 
 
+def test_live_model_with_capture_ref_but_no_artifact_does_not_call_fresh_runner() -> None:
+    from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
+
+    report = FullGameAblationRunner(
+        game_runner_factory=lambda **kwargs: pytest.fail("must not run fresh live model"),
+    ).run(_config(
+        seed_set=[1],
+        agent_mode="live_model",
+        replay_policy="strict_replay",
+        replay_capture_ref="capture.json",
+    ))
+
+    assert report.pair_count == 0
+    assert report.unsupported_metrics["live_win_rate_delta"] == "fresh_live_model_without_replay"
+
+
 def test_deterministic_fake_report_uses_baseline_minus_ablated_deltas() -> None:
     from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
 
@@ -92,9 +108,9 @@ def test_deterministic_fake_report_uses_baseline_minus_ablated_deltas() -> None:
     assert report.metric_deltas["good_win_rate"].baseline == 1.0
     assert report.metric_deltas["good_win_rate"].ablated == 0.0
     assert report.metric_deltas["good_win_rate"].delta == 1.0
-    assert report.metric_deltas["illegal_action_rate"].baseline == 1.0
-    assert report.metric_deltas["illegal_action_rate"].ablated == 3.0
-    assert report.metric_deltas["illegal_action_rate"].delta == -2.0
+    assert report.metric_deltas["illegal_action_count"].baseline == 1.0
+    assert report.metric_deltas["illegal_action_count"].ablated == 3.0
+    assert report.metric_deltas["illegal_action_count"].delta == -2.0
     assert calls[0]["removed_modules"] == []
     assert calls[1]["removed_modules"] == ["rag"]
     assert calls[0]["ruleset_snapshot"] == {"id": "rules"}
@@ -123,6 +139,20 @@ def test_replay_matcher_event_order_requires_exact_order() -> None:
     assert matcher.unsupported_reason == "event_order_mismatch"
 
 
+def test_replay_matcher_event_order_consumes_records_in_order() -> None:
+    from werewolf_agent.evaluation.replay import ReplayArtifact, ReplayMatcher, ReplayRecord
+
+    matcher = ReplayMatcher(ReplayArtifact(records=[
+        ReplayRecord(trace_id="t0", output={"action_type": "vote"}, event_index=0),
+        ReplayRecord(trace_id="t1", output={"action_type": "speech"}, event_index=1),
+    ]))
+
+    assert matcher.match("ignored", event_index=0, match_key="event_order").trace_id == "t0"
+    assert matcher.match("ignored", event_index=1, match_key="event_order").trace_id == "t1"
+    assert matcher.match("ignored", event_index=1, match_key="event_order") is None
+    assert matcher.unsupported_reason == "event_order_exhausted"
+
+
 def test_full_game_ablation_report_rejects_fresh_replay_fallback() -> None:
     from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
     from werewolf_agent.evaluation.replay import ReplayArtifact, ReplayRecord
@@ -141,3 +171,24 @@ def test_full_game_ablation_report_rejects_fresh_replay_fallback() -> None:
 
     assert report.pair_count == 0
     assert report.unsupported_metrics["replay"] == "missing_replay_output"
+
+
+def test_replay_mode_with_complete_artifact_reports_replay_only_without_fresh_runner() -> None:
+    from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
+    from werewolf_agent.evaluation.replay import ReplayArtifact, ReplayRecord
+
+    report = FullGameAblationRunner(
+        game_runner_factory=lambda **kwargs: pytest.fail("must not call fresh runner"),
+        replay_artifact=ReplayArtifact(records=[
+            ReplayRecord(trace_id="b1:seed:1:baseline", output={"winning_faction": "good"}, event_index=0),
+            ReplayRecord(trace_id="b1:seed:1:ablated", output={"winning_faction": "werewolf"}, event_index=1),
+        ]),
+    ).run(_config(
+        seed_set=[1],
+        agent_mode="replay",
+        replay_policy="strict_replay",
+        replay_capture_ref="capture.json",
+    ))
+
+    assert report.pair_count == 1
+    assert report.metric_deltas["good_win_rate"].delta == 1.0

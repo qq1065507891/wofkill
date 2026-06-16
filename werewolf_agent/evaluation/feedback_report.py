@@ -52,10 +52,10 @@ class FeedbackReport:
     diagnoses: list[FailureDiagnosis] = field(default_factory=list)
     candidates: list[ImprovementCandidate] = field(default_factory=list)
     ablation_reports: list[AblationReport] = field(default_factory=list)
-    full_game_ablation_reports: list[FullGameAblationReport] = field(default_factory=list)
     generated_at: str = ""
     schema_version: int = 1
     source_refs: list[str] = field(default_factory=list)
+    full_game_ablation_reports: list[FullGameAblationReport] = field(default_factory=list)
 
     def to_json_dict(self, *, include_private_audit: bool = False) -> dict[str, Any]:
         failure_clusters = _failure_clusters(

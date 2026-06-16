@@ -22,6 +22,7 @@ class ReplayMatcher:
     def __init__(self, artifact: ReplayArtifact) -> None:
         self._artifact = artifact
         self.unsupported_reason = ""
+        self._next_event_order = 0
 
     def match(
         self,
@@ -39,9 +40,13 @@ class ReplayMatcher:
             return None
 
         if match_key == "event_order":
-            for record in self._artifact.records:
-                if record.event_index == event_index:
-                    return record
+            if self._next_event_order >= len(self._artifact.records):
+                self.unsupported_reason = "event_order_exhausted"
+                return None
+            record = self._artifact.records[self._next_event_order]
+            if record.event_index == event_index:
+                self._next_event_order += 1
+                return record
             self.unsupported_reason = "event_order_mismatch"
             return None
 

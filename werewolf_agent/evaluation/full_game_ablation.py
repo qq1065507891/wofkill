@@ -75,22 +75,13 @@ class FullGameAblationRunner:
         self._replay_artifact = replay_artifact
 
     def run(self, config: FullGameAblationConfig) -> FullGameAblationReport:
-        if config.agent_mode == "live_model" and not config.replay_capture_ref:
+        if config.agent_mode == "live_model" and self._replay_artifact is None:
             return _unsupported_live_model_report(config)
 
-        if config.agent_mode == "replay":
-            unsupported = self._validate_replay(config)
-            if unsupported:
-                return FullGameAblationReport(
-                    batch_id=config.batch_id,
-                    mode="full_game",
-                    agent_mode=config.agent_mode,
-                    removed_modules=list(config.removed_modules),
-                    pair_count=0,
-                    metric_deltas={},
-                    unsupported_metrics={"replay": unsupported},
-                    pairs=[],
-                )
+        if config.agent_mode == "replay" or (
+            config.agent_mode == "live_model" and self._replay_artifact is not None
+        ):
+            return self._run_replay(config)
 
         if self._game_runner_factory is None:
             return FullGameAblationReport(
@@ -157,18 +148,66 @@ class FullGameAblationRunner:
             model_config_snapshot=dict(config.model_config_snapshot),
         )
 
+    def _run_replay(self, config: FullGameAblationConfig) -> FullGameAblationReport:
+        unsupported = self._validate_replay(config)
+        if unsupported:
+            key = "live_win_rate_delta" if config.agent_mode == "live_model" else "replay"
+            return FullGameAblationReport(
+                batch_id=config.batch_id,
+                mode="full_game",
+                agent_mode=config.agent_mode,
+                removed_modules=list(config.removed_modules),
+                pair_count=0,
+                metric_deltas={},
+                unsupported_metrics={key: unsupported},
+                pairs=[],
+            )
+        assert self._replay_artifact is not None
+        pairs: list[FullGameAblationPair] = []
+        records_by_trace = {record.trace_id: record for record in self._replay_artifact.records}
+        for seed in config.seed_set:
+            baseline = _result_from_replay_record(
+                records_by_trace[_replay_trace_id(config, seed, "baseline")],
+                game_id=f"{config.batch_id}:{seed}:baseline",
+            )
+            ablated = _result_from_replay_record(
+                records_by_trace[_replay_trace_id(config, seed, "ablated")],
+                game_id=f"{config.batch_id}:{seed}:ablated",
+            )
+            pairs.append(FullGameAblationPair(
+                seed=seed,
+                baseline_game_id=baseline.game_id,
+                ablated_game_id=ablated.game_id,
+                baseline_metrics=_game_metrics(baseline),
+                ablated_metrics=_game_metrics(ablated),
+            ))
+        return FullGameAblationReport(
+            batch_id=config.batch_id,
+            mode="full_game",
+            agent_mode=config.agent_mode,
+            removed_modules=list(config.removed_modules),
+            pair_count=len(pairs),
+            metric_deltas=_metric_deltas(pairs),
+            unsupported_metrics={},
+            pairs=pairs,
+        )
+
     def _validate_replay(self, config: FullGameAblationConfig) -> str:
         if self._replay_artifact is None:
             return "missing_replay_capture"
         matcher = ReplayMatcher(self._replay_artifact)
-        if config.replay_match_key == "trace_id":
-            matcher.match(
-                f"{config.batch_id}:seed:{config.seed_set[0] if config.seed_set else 0}",
-                event_index=0,
-                match_key="trace_id",
-            )
-        else:
-            matcher.match("", event_index=0, match_key="event_order")
+        event_index = 0
+        for seed in config.seed_set:
+            for side in ("baseline", "ablated"):
+                trace_id = _replay_trace_id(config, seed, side)
+                record = matcher.match(
+                    trace_id,
+                    event_index=event_index,
+                    match_key=config.replay_match_key,
+                )
+                if record is None:
+                    return matcher.unsupported_reason
+                event_index += 1
         return matcher.unsupported_reason
 
 
@@ -194,7 +233,7 @@ def _game_metrics(result: GameResult) -> dict[str, float]:
     return {
         "good_win_rate": 1.0 if result.winning_faction == "good" else 0.0,
         "werewolf_win_rate": 1.0 if result.winning_faction == "werewolf" else 0.0,
-        "illegal_action_rate": float(
+        "illegal_action_count": float(
             sum(1 for event in result.event_log if _event_type(event) == "illegal_action")
         ),
     }
@@ -227,3 +266,19 @@ def _event_type(event: Any) -> str:
     if isinstance(event, dict):
         return str(event.get("type") or "")
     return str(getattr(event, "type", "") or "")
+
+
+def _replay_trace_id(config: FullGameAblationConfig, seed: int, side: str) -> str:
+    return f"{config.batch_id}:seed:{seed}:{side}"
+
+
+def _result_from_replay_record(record: Any, *, game_id: str) -> GameResult:
+    output = dict(record.output)
+    event_log = output.get("event_log")
+    return GameResult(
+        game_id=game_id,
+        initial_seed=0,
+        ruleset_id="replay",
+        event_log=event_log if isinstance(event_log, list) else [],
+        winning_faction=str(output.get("winning_faction") or ""),
+    )
