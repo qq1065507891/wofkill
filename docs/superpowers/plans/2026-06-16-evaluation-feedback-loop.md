@@ -254,15 +254,20 @@ git commit -m "feat: attach world model feedback traces"
 
 **Files:**
 - Create: `werewolf_agent/evaluation/feedback_metrics.py`
-- Modify: `werewolf_agent/evaluation/schemas.py`
-- Modify: `werewolf_agent/evaluation/metrics.py`
+- Deferred: `werewolf_agent/evaluation/schemas.py`
+- Deferred: `werewolf_agent/evaluation/metrics.py`
 - Test: `tests/evaluation/test_feedback_metrics.py`
 
-- [ ] Add metrics for exposure count, supported/unsupported source counts,
+- [x] Add metrics for exposure count, supported/unsupported source counts,
   citation rate, alignment rate, and harmful-transfer placeholder inputs.
-- [ ] Keep new metrics separate from existing world-model metrics until stable.
-- [ ] Add tests with synthetic traces.
-- [ ] Commit with `feat: add feedback attribution metrics`.
+- [x] Keep new metrics separate from existing world-model metrics until stable.
+- [x] Add tests with synthetic traces.
+- [x] Commit with `feat: add feedback attribution metrics`.
+
+Implementation note:
+- Prompt-visible, citation, alignment, and harmful-transfer rates use supported
+  exposures as the denominator so unsupported source markers expose missing
+  instrumentation without lowering quality rates.
 
 ## Task 6: Phase 3 RAG Golden Retrieval Eval
 
@@ -352,4 +357,3 @@ python -m pytest tests/evaluation/test_feedback_trace_builder.py tests/evaluatio
 python -m pytest tests/rag/test_retrieval_eval.py tests/memory/test_reflection_effectiveness.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 python -m pytest tests/evaluation/test_world_model_rank_metrics.py tests/evaluation/test_feedback_diagnostics.py tests/evaluation/test_ablation_runner.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 ```
-
