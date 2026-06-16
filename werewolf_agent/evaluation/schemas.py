@@ -241,6 +241,12 @@ class WorldModelMetrics:
     simulator_prediction_hit_rate: float = 0.0
     dialogue_leakage_rate: float = 0.0
     decision_legality_rate: float = 0.0
+    true_world_top1_rate: float = 0.0
+    true_world_top3_rate: float = 0.0
+    avg_true_world_rank: float = 0.0
+    world_rank_overconfidence_rate: float = 0.0
+    world_rank_supported_count: int = 0
+    world_rank_unsupported_count: int = 0
 
 
 @dataclass

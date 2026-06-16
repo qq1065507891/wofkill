@@ -308,10 +308,14 @@ Implementation note:
 - Modify: `werewolf_agent/evaluation/metrics.py`
 - Test: `tests/evaluation/test_world_model_rank_metrics.py`
 
-- [ ] Compute top-k-only true-world rank from sanitized assignments and
+- [x] Compute top-k-only true-world rank from sanitized assignments and
   `GameResult.player_roles`.
-- [ ] Add support status when comparable assignments are missing.
-- [ ] Commit with `feat: add world model rank metrics`.
+- [x] Add support status when comparable assignments are missing.
+- [x] Commit with `feat: add world model rank metrics`.
+
+Implementation note:
+- Unsupported world-rank samples are counted separately and excluded from
+  true-world rank rate denominators.
 
 ## Task 9: Phase 6 Diagnostics And Candidates
 

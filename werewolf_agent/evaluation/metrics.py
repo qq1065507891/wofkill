@@ -36,6 +36,8 @@ from werewolf_agent.evaluation.schemas import (
     SafetyMetrics,
     WorldModelMetrics,
 )
+from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
+from werewolf_agent.evaluation.world_model_eval import compute_world_model_rank_metrics
 
 _CLAIM_ROLE_MAP = {
     "预言家": "seer",
@@ -638,12 +640,41 @@ class MetricsAggregator:
                 if leaked is not None:
                     dialogue_leaks.append(leaked)
 
+        rank_supported = 0
+        rank_unsupported = 0
+        rank_top1_hits = 0.0
+        rank_top3_hits = 0.0
+        rank_sum = 0.0
+        rank_overconfident = 0.0
+        for result in self._results:
+            rank_metrics = compute_world_model_rank_metrics(
+                result,
+                EvaluationTraceBuilder().build(result, exposure_audits=[]),
+            )
+            rank_supported += rank_metrics.supported_count
+            rank_unsupported += rank_metrics.unsupported_count
+            rank_top1_hits += rank_metrics.true_world_top1_rate * rank_metrics.supported_count
+            rank_top3_hits += rank_metrics.true_world_top3_rate * rank_metrics.supported_count
+            rank_sum += rank_metrics.avg_true_world_rank * rank_metrics.supported_count
+            rank_overconfident += (
+                rank_metrics.overconfidence_rate * rank_metrics.supported_count
+            )
+
         snap.world_model_metrics = WorldModelMetrics(
             belief_calibration=_avg(belief_scores),
             possible_world_topk_hit_rate=_bool_rate(possible_world_hits),
             simulator_prediction_hit_rate=_bool_rate(simulation_hits),
             decision_legality_rate=_bool_rate(decision_legal),
             dialogue_leakage_rate=_bool_rate(dialogue_leaks),
+            true_world_top1_rate=_rate_from_counts(rank_top1_hits, rank_supported),
+            true_world_top3_rate=_rate_from_counts(rank_top3_hits, rank_supported),
+            avg_true_world_rank=_rate_from_counts(rank_sum, rank_supported),
+            world_rank_overconfidence_rate=_rate_from_counts(
+                rank_overconfident,
+                rank_supported,
+            ),
+            world_rank_supported_count=rank_supported,
+            world_rank_unsupported_count=rank_unsupported,
         )
 
     # -----------------------------------------------------------------------
@@ -1096,6 +1127,12 @@ def _bool_rate(values: list[bool]) -> float:
     if not values:
         return 0.0
     return sum(1 for value in values if value) / len(values)
+
+
+def _rate_from_counts(numerator: float, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return numerator / denominator
 
 
 def _bounded_float(value: Any) -> float:
