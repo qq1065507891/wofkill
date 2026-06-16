@@ -11,12 +11,16 @@ import hashlib
 import random
 import time
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
+from werewolf_agent.agents.schemas import AgentContext
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
 from werewolf_agent.evaluation.ablation import (
     AblationReport,
+    AblationToggleSet,
+    LiveAblationReport,
+    LiveContextAblationHarness,
     OfflineTraceAblationRunner,
 )
 from werewolf_agent.evaluation.feedback_schemas import EvaluationTrace
@@ -41,6 +45,19 @@ def run_offline_trace_ablation(
     return OfflineTraceAblationRunner().run(
         traces,
         removed_modules=removed_modules,
+    )
+
+
+def run_live_context_ablation(
+    contexts: list[AgentContext],
+    *,
+    removed_modules: list[str],
+    runner: Callable[[AgentContext], Any],
+) -> LiveAblationReport:
+    """Run context-level live ablation through an injected agent runner."""
+    return LiveContextAblationHarness(runner=runner).run(
+        contexts,
+        toggles=AblationToggleSet(removed_modules),
     )
 
 
