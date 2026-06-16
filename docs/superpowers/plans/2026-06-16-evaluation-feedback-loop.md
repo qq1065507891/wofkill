@@ -364,11 +364,20 @@ Implementation note:
 - Test: `tests/evaluation/test_feedback_report.py`
 - Test: `tests/evaluation/test_langsmith_exporter.py`
 
-- [ ] Add report JSON serialization.
-- [ ] Add optional LangSmith exporter that does not import or require LangSmith
+- [x] Add report JSON serialization.
+- [x] Add optional LangSmith exporter that does not import or require LangSmith
   unless called.
-- [ ] Add tests that run without network or LangSmith dependencies.
-- [ ] Commit with `feat: report feedback loop results`.
+- [x] Add tests that run without network or LangSmith dependencies.
+- [x] Commit with `feat: report feedback loop results`.
+
+Implementation note:
+- Feedback reports serialize compact aggregate artifacts only: trace counts,
+  source refs, module attribution metrics, diagnoses, improvement candidates,
+  and ablation summaries. Raw traces and hidden post-game outcome labels are not
+  emitted by default.
+- The LangSmith exporter has no import-time dependency on LangSmith. Payload
+  construction is local-only; actual export lazily imports LangSmith unless an
+  injected client is supplied.
 
 ## Verification Commands
 
@@ -379,4 +388,5 @@ python -m pytest tests/evaluation/test_feedback_trace_builder.py -q --basetemp E
 python -m pytest tests/evaluation/test_feedback_trace_builder.py tests/evaluation/test_feedback_metrics.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 python -m pytest tests/rag/test_retrieval_eval.py tests/memory/test_reflection_effectiveness.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 python -m pytest tests/evaluation/test_world_model_rank_metrics.py tests/evaluation/test_feedback_diagnostics.py tests/evaluation/test_ablation_runner.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
+python -m pytest tests/evaluation/test_feedback_report.py tests/evaluation/test_langsmith_exporter.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 ```
