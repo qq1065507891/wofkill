@@ -1,0 +1,43 @@
+# Offline RAG golden retrieval queries.
+# These queries are evaluation-only and do not get injected into live prompts.
+
+- query_id: seer_claim_badge_flow
+  role: seer
+  phase: sheriff_speech
+  situation: "seer claim badge flow sheriff speech audit trail"
+  ruleset_id: pre_witch_hunter_idiot_mixed
+  expected_entry_ids:
+    - seed_ext_seer_claim_01
+  forbidden_entry_ids:
+    - seed_ext_wolf_deep_hook_01
+  tags:
+    - seer
+    - claim
+    - badge_flow
+
+- query_id: werewolf_deep_hook
+  role: werewolf
+  phase: speech
+  situation: "werewolf deep hook selective pressure cover teammate indirectly"
+  ruleset_id: pre_witch_hunter_idiot_mixed
+  expected_entry_ids:
+    - seed_ext_wolf_deep_hook_01
+  forbidden_entry_ids:
+    - seed_ext_seer_claim_01
+  tags:
+    - werewolf
+    - deep_hook
+    - deception
+
+- query_id: witch_potion_timing
+  role: witch
+  phase: night
+  situation: "witch antidote poison timing avoid low value potion use"
+  ruleset_id: pre_witch_hunter_idiot_mixed
+  expected_entry_ids:
+    - seed_ext_witch_poison_timing_01
+  forbidden_entry_ids: []
+  tags:
+    - witch
+    - potion
+    - timing

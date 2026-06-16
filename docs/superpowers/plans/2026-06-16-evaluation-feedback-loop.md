@@ -276,10 +276,14 @@ Implementation note:
 - Create: `werewolf_agent/rag/evaluation.py`
 - Test: `tests/rag/test_retrieval_eval.py`
 
-- [ ] Add golden query schema.
-- [ ] Compute recall@1, recall@3, MRR, nDCG@3, forbidden hit count.
-- [ ] Test with fake retriever and seed entries.
-- [ ] Commit with `feat: add rag retrieval evaluation`.
+- [x] Add golden query schema.
+- [x] Compute recall@1, recall@3, MRR, nDCG@3, forbidden hit count.
+- [x] Test with fake retriever and seed entries.
+- [x] Commit with `feat: add rag retrieval evaluation`.
+
+Implementation note:
+- Golden queries are evaluation-only YAML fixtures. They validate that
+  referenced expected/forbidden entry IDs exist in the RAG seed corpus.
 
 ## Task 7: Phase 4 Reflection Effectiveness
 
