@@ -131,7 +131,7 @@ git add docs/superpowers/plans/2026-06-16-live-agent-ablation-harness.md
 git commit -m "docs: plan live agent ablation harness"
 ```
 
-- [ ] **Step 1: Write failing toggle tests**
+- [x] **Step 1: Write failing toggle tests**
 
 Add tests:
 
@@ -183,7 +183,7 @@ def test_ablation_toggle_set_normalizes_duplicate_and_blank_modules():
     assert toggles.removed_modules == ["rag", "skills"]
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -194,7 +194,7 @@ python -m pytest tests/evaluation/test_live_ablation_harness.py -q --basetemp E:
 Expected: FAIL because `AblationToggleSet` and `apply_ablation_toggles` do not
 exist.
 
-- [ ] **Step 3: Implement minimal toggle helper**
+- [x] **Step 3: Implement minimal toggle helper**
 
 In `werewolf_agent/evaluation/ablation.py`:
 
@@ -224,7 +224,7 @@ def apply_ablation_toggles(context: AgentContext, toggles: AblationToggleSet) ->
     return context.model_copy(deep=True, update=update)
 ```
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run:
 
@@ -234,7 +234,7 @@ python -m pytest tests/evaluation/test_live_ablation_harness.py -q --basetemp E:
 
 Expected: PASS for Task 1 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add werewolf_agent/evaluation/ablation.py tests/evaluation/test_live_ablation_harness.py
@@ -249,7 +249,7 @@ git commit -m "feat: add live ablation context toggles"
 - Modify: `werewolf_agent/evaluation/runner.py`
 - Test: `tests/evaluation/test_live_ablation_harness.py`
 
-- [ ] **Step 1: Write failing harness tests**
+- [x] **Step 1: Write failing harness tests**
 
 Add test:
 
@@ -303,7 +303,7 @@ def test_runner_exposes_live_context_ablation_entrypoint():
     assert report.removed_modules == ["persona"]
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -325,7 +325,7 @@ Also add tests for:
 - `strategy_directive` in the ablated context does not share the original
   nested dict.
 
-- [ ] **Step 3: Implement minimal harness**
+- [x] **Step 3: Implement minimal harness**
 
 In `werewolf_agent/evaluation/ablation.py`, add frozen dataclasses:
 
@@ -364,7 +364,7 @@ In `werewolf_agent/evaluation/ablation.py`, add frozen dataclasses:
 - mark `live_win_rate_delta` unsupported as `live_context_mode_decision_only`;
 - mark unknown toggles unsupported as `unsupported_toggle:<module>`.
 
-- [ ] **Step 4: Add runner wrapper**
+- [x] **Step 4: Add runner wrapper**
 
 In `werewolf_agent/evaluation/runner.py`, add:
 
@@ -384,7 +384,7 @@ def run_live_context_ablation(
 Use imports from `typing`, `werewolf_agent.agents.schemas`, and
 `werewolf_agent.evaluation.ablation`.
 
-- [ ] **Step 5: Run tests to verify GREEN**
+- [x] **Step 5: Run tests to verify GREEN**
 
 Run:
 
@@ -394,7 +394,7 @@ python -m pytest tests/evaluation/test_live_ablation_harness.py tests/evaluation
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add werewolf_agent/evaluation/ablation.py werewolf_agent/evaluation/runner.py tests/evaluation/test_live_ablation_harness.py

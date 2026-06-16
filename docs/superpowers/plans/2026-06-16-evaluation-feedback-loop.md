@@ -346,7 +346,7 @@ Implementation note:
 
 - [x] Add offline trace ablation first.
 - [x] Mark causal live-agent metrics unsupported in offline mode.
-- [ ] Add live-agent harness only after trace tests are stable.
+- [x] Add live-agent harness only after trace tests are stable.
 - [x] Commit with `feat: add feedback ablation runner`.
 
 Implementation note:
@@ -355,6 +355,9 @@ Implementation note:
   summaries. Live win-rate deltas and causal decision deltas are explicitly
   reported as unsupported in offline mode; no live-agent harness is introduced
   in this phase.
+- Phase 7B adds context-level live-context ablation using injected runners. It
+  compares paired decision deltas only and still marks full live win-rate causal
+  metrics as unsupported until same-seed full-game batches are implemented.
 
 ## Task 11: Phase 8 Reports And Optional LangSmith Export
 
@@ -388,5 +391,6 @@ python -m pytest tests/evaluation/test_feedback_trace_builder.py -q --basetemp E
 python -m pytest tests/evaluation/test_feedback_trace_builder.py tests/evaluation/test_feedback_metrics.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 python -m pytest tests/rag/test_retrieval_eval.py tests/memory/test_reflection_effectiveness.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 python -m pytest tests/evaluation/test_world_model_rank_metrics.py tests/evaluation/test_feedback_diagnostics.py tests/evaluation/test_ablation_runner.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
+python -m pytest tests/evaluation/test_live_ablation_harness.py tests/evaluation/test_ablation_runner.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 python -m pytest tests/evaluation/test_feedback_report.py tests/evaluation/test_langsmith_exporter.py -q --basetemp E:\NLP\agent\wofkill\.pytest_tmp
 ```
