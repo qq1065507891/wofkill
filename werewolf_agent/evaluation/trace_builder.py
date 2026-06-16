@@ -13,6 +13,7 @@ from werewolf_agent.evaluation.feedback_schemas import (
     ModuleExposure,
 )
 from werewolf_agent.evaluation.schemas import GameResult
+from werewolf_agent.evaluation.trace_identity import make_trace_id
 
 
 class EvaluationTraceBuilder:
@@ -133,22 +134,6 @@ class EvaluationTraceBuilder:
             elif audit_type == "reflection_exposure_audit":
                 grouped[trace_id].extend(_reflection_exposures(audit))
         return grouped
-
-
-def make_trace_id(
-    *,
-    game_id: str,
-    player_id: str,
-    phase: str,
-    day_number: int,
-    night_number: int,
-    task_type: str,
-    action_index: int,
-) -> str:
-    return (
-        f"{game_id}:{player_id}:{phase}:"
-        f"D{day_number}:N{night_number}:{task_type}:{action_index}"
-    )
 
 
 def _rag_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
@@ -312,4 +297,3 @@ def _float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
-
