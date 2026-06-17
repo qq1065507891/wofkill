@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from werewolf_agent.evaluation.decision_helpers import (
+    decision_is_legal_from_trace,
+    dialogue_leaked_from_trace,
+)
 from werewolf_agent.evaluation.feedback_schemas import (
     DecisionOutcome,
     DecisionSnapshot,
@@ -118,7 +122,7 @@ class EvaluationTraceBuilder:
             legal_targets=[str(item) for item in action_trace.get("legal_targets", []) or []],
             module_exposures=exposures,
             decision=decision,
-            outcome=_decision_outcome(result, decision),
+            outcome=_decision_outcome(result, decision, action_trace),
             source_refs=[f"event:{event_index}:action_trace_audit"],
         )
 
@@ -328,6 +332,7 @@ def _decision_snapshot(
 def _decision_outcome(
     result: GameResult,
     decision: DecisionSnapshot,
+    action_trace: dict[str, Any],
 ) -> DecisionOutcome:
     target_id = decision.target_id or ""
     target_role = result.player_roles.get(target_id, "")
@@ -335,10 +340,18 @@ def _decision_outcome(
     vote_hit_wolf = None
     if decision.action_type == "vote" and target_faction:
         vote_hit_wolf = target_faction == "werewolf"
+    legal: bool | None = None
+    leaked: bool = False
+    if isinstance(action_trace, dict):
+        legal = decision_is_legal_from_trace(action_trace)
+        leak_decision = dialogue_leaked_from_trace(action_trace)
+        leaked = leak_decision is True
     return DecisionOutcome(
+        legal=legal,
         target_role=target_role,
         target_faction=target_faction,
         vote_hit_wolf=vote_hit_wolf,
+        leaked_hidden_info=leaked,
         outcome_refs=[f"player_roles:{target_id}"] if target_id and target_role else [],
     )
 

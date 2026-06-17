@@ -188,3 +188,67 @@ def test_world_model_and_simulator_exposures_from_action_trace() -> None:
         "p02",
     ]
 
+
+def _build_result_with_action_trace(action_trace: dict, *, player_id: str) -> GameResult:
+    """Minimal GameResult carrying a single action_trace_audit event."""
+    return GameResult(
+        game_id="g_outcome",
+        initial_seed=11,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        player_roles={},
+        player_factions={},
+        event_log=[
+            {
+                "type": "action_trace_audit",
+                "payload": {
+                    "player_id": player_id,
+                    "phase": "speech",
+                    "action_trace": action_trace,
+                },
+            }
+        ],
+    )
+
+
+def test_outcome_flags_illegal_action_type():
+    from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
+
+    action_trace = {
+        "final_action_type": "vote",
+        "legal_actions": ["speech"],  # vote not in legal_actions -> illegal
+        "legal_targets": ["p03"],
+        "parsed_action": {"target_id": "p03"},
+    }
+    result = _build_result_with_action_trace(action_trace, player_id="p01")
+    traces = EvaluationTraceBuilder().build(result)
+    assert traces, "expected at least one trace"
+    assert traces[0].outcome.legal is False
+
+
+def test_outcome_flags_dialogue_leak():
+    from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
+
+    action_trace = {
+        "final_action_type": "speech",
+        "parsed_action": {
+            "speech": "我怀疑狼队友会刀我",  # contains the 狼队友 leak marker
+            "dialogue_plan": {
+                "public_intent": "我怀疑狼队友会刀我",
+                "conceal": ["夜刀目标"],
+            },
+        },
+    }
+    result = _build_result_with_action_trace(action_trace, player_id="p01")
+    traces = EvaluationTraceBuilder().build(result)
+    assert traces[0].outcome.leaked_hidden_info is True
+
+
+def test_outcome_legal_unknown_without_action_type():
+    from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
+
+    action_trace = {"parsed_action": {}}  # no action_type
+    result = _build_result_with_action_trace(action_trace, player_id="p01")
+    traces = EvaluationTraceBuilder().build(result)
+    assert traces[0].outcome.legal is None
+    assert traces[0].outcome.leaked_hidden_info is False
+

@@ -124,3 +124,49 @@ def test_diagnose_trace_failures_ignores_unsupported_world_rank_samples() -> Non
     )
 
     assert diagnose_trace_failures([trace], world_rank_samples=[sample]) == []
+
+
+def test_illegal_outcome_produces_illegal_action_diagnosis():
+    from werewolf_agent.evaluation.diagnostics import diagnose_trace_failures
+    from werewolf_agent.evaluation.feedback_schemas import (
+        DecisionOutcome,
+        DecisionSnapshot,
+        EvaluationTrace,
+    )
+
+    trace = EvaluationTrace(
+        trace_id="t1",
+        game_id="g1",
+        player_id="p01",
+        role="villager",
+        faction="good",
+        phase="day_vote",
+        decision=DecisionSnapshot(action_type="vote", target_id="p02"),
+        outcome=DecisionOutcome(legal=False, target_faction="good"),
+    )
+    diagnoses = diagnose_trace_failures([trace])
+    categories = {d.category for d in diagnoses}
+    assert "illegal_action" in categories
+
+
+def test_leaked_outcome_produces_hidden_info_leak_diagnosis():
+    from werewolf_agent.evaluation.diagnostics import diagnose_trace_failures
+    from werewolf_agent.evaluation.feedback_schemas import (
+        DecisionOutcome,
+        DecisionSnapshot,
+        EvaluationTrace,
+    )
+
+    trace = EvaluationTrace(
+        trace_id="t2",
+        game_id="g1",
+        player_id="p01",
+        role="villager",
+        faction="good",
+        phase="speech",
+        decision=DecisionSnapshot(action_type="speech"),
+        outcome=DecisionOutcome(leaked_hidden_info=True),
+    )
+    diagnoses = diagnose_trace_failures([trace])
+    categories = {d.category for d in diagnoses}
+    assert "hidden_info_leak" in categories
