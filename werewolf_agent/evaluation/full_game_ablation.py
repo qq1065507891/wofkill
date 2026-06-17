@@ -239,14 +239,38 @@ def _unsupported_live_model_report(
     )
 
 
+def _vote_quality_from_result(result: GameResult) -> float | None:
+    """好人阵营立场准确率：好人投票命中狼人的比例。
+
+    当没有好人投票时（例如 replay 路径的 GameResult 无 action_records）返回
+    None，从而省略该字段而非报出一个误导性的 0.0。
+    """
+    correct = 0
+    total = 0
+    for record in result.action_records:
+        if record.action_type != "vote" or not record.target_id:
+            continue
+        if result.player_factions.get(record.player_id) == "good":
+            total += 1
+            if result.player_factions.get(record.target_id) == "werewolf":
+                correct += 1
+    if total == 0:
+        return None
+    return round(correct / total, 6)
+
+
 def _game_metrics(result: GameResult) -> dict[str, float]:
-    return {
+    metrics: dict[str, float] = {
         "good_win_rate": 1.0 if result.winning_faction == "good" else 0.0,
         "werewolf_win_rate": 1.0 if result.winning_faction == "werewolf" else 0.0,
         "illegal_action_count": float(
             sum(1 for event in result.event_log if _event_type(event) == "illegal_action")
         ),
     }
+    vote_quality = _vote_quality_from_result(result)
+    if vote_quality is not None:
+        metrics["vote_quality"] = vote_quality
+    return metrics
 
 
 def _metric_deltas(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from werewolf_agent.evaluation.schemas import GameResult
+from werewolf_agent.evaluation.schemas import ActionRecord, ActionVerdict, GameResult
 
 
 def _config(**overrides):
@@ -214,6 +214,59 @@ def test_event_order_replay_uses_ordered_records_without_trace_id_match() -> Non
 
     assert report.pair_count == 1
     assert report.metric_deltas["good_win_rate"].delta == 1.0
+
+
+def _make_result_with_votes(
+    *,
+    player_factions: dict[str, str],
+    votes: list[tuple[str, str]],
+    winning_faction: str,
+) -> GameResult:
+    """构造带投票动作记录的 GameResult，用于 vote_quality 测试。"""
+    return GameResult(
+        game_id="vote_quality_test",
+        initial_seed=0,
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        player_factions=dict(player_factions),
+        action_records=[
+            ActionRecord(
+                player_id=voter,
+                action_type="vote",
+                target_id=target,
+                verdict=ActionVerdict.LEGAL,
+                phase="day_vote",
+                day_number=1,
+            )
+            for voter, target in votes
+        ],
+        event_log=[],
+        winning_faction=winning_faction,
+    )
+
+
+def test_game_metrics_includes_vote_quality_from_action_records():
+    from werewolf_agent.evaluation.full_game_ablation import _game_metrics
+    # p01 (good) votes p03 (werewolf) -> correct
+    # p02 (good) votes p01 (good)     -> wrong
+    # => good-faction stance accuracy = 1/2 = 0.5
+    result = _make_result_with_votes(
+        player_factions={"p01": "good", "p02": "good", "p03": "werewolf"},
+        votes=[("p01", "p03"), ("p02", "p01")],
+        winning_faction="good",
+    )
+    metrics = _game_metrics(result)
+    assert metrics["vote_quality"] == 0.5
+
+
+def test_game_metrics_omits_vote_quality_when_no_good_votes():
+    from werewolf_agent.evaluation.full_game_ablation import _game_metrics
+    result = _make_result_with_votes(
+        player_factions={"p01": "werewolf", "p02": "werewolf"},
+        votes=[("p01", "p02")],
+        winning_faction="werewolf",
+    )
+    metrics = _game_metrics(result)
+    assert "vote_quality" not in metrics
 
 
 def test_event_order_replay_rejects_extra_records() -> None:
