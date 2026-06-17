@@ -4,10 +4,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **seer-claim-credibility** — 2026-06-17 (COMPLETE)
-- Active task: 按 spec `docs/superpowers/specs/2026-06-17-seer-claim-credibility-design.md` 实现 SeerClaimCredibilityEngine——belief 链路按 fact 顺序 observe+apply（修 future_anchor），seer 查杀/role claim 用 credibility status（contested 不设 wolf_lean，替换 P1 一刀切降权），CognitionStateManager 存 engine per viewer（增量记住 seer 线），prompt 加预言家线可信度 section
+- Current phase: **monitoring-closure-fix** — 2026-06-18 (COMPLETE)
+- Active task: 按 plan `docs/superpowers/plans/2026-06-18-monitoring-closure-fix.md` 闭合监控反馈环——回归门 `required_metrics` fail-closed、`full_game_ablation._game_metrics` 补产 `vote_quality`、提取 `decision_helpers.py` 断 `metrics↔trace_builder` 循环并让 `trace_builder._decision_outcome` 填 `DecisionOutcome.legal/leaked_hidden_info`（复活 illegal/leak 诊断）、`feedback_report` 移除过宽 `werewolf` token
 - Task owner: Claude development session
-- Last updated: 2026-06-17
+- Last updated: 2026-06-18
+- **本次新增 (monitoring-closure-fix)**: `regression_gate.py` `CandidateRegressionConfig` 加 `required_metrics`（默认空，向后兼容），缺失即追加 `required_metric_missing:{m}` 失败检查；`full_game_ablation.py` `_game_metrics` 从 `action_records` 算好人投狼准确率产出 `vote_quality`（无好人票时省略 key，避免 replay 路径误报 0）；新增 `evaluation/decision_helpers.py`（迁出 `decision_is_legal_from_trace`/`dialogue_leaked_from_trace`/`TARGET_REQUIRED_ACTIONS`，metrics.py 改私有别名 import 保持调用点不变），`trace_builder._decision_outcome` 用其填 `legal`/`leaked_hidden_info`，diagnostics 的 `illegal_action`/`hidden_info_leak` 从死代码复活；`feedback_report._PRIVATE_AUDIT_TOKENS` 移除 `werewolf`（公共 `werewolf_win_rate` 不再被误删，私有字段仍由 `_PRIVATE_AUDIT_KEYS` 键级过滤保护）。5 任务 TDD subagent-driven 执行，每任务 spec+quality 双审通过。`tests/evaluation tests/cognition tests/runtime` 1289 passed。
 - **本次新增 (seer-claim-credibility)**: 新增 `cognition/claim_credibility.py`（SeerClaimCredibilityEngine + scoring/status/snapshot）；`belief.py` update 按 fact 顺序 observe+apply、`_apply_seer_claim`/`_apply_role_claim` 用 credibility、`_apply_vote` 用 running anchors；`cognition_state.py` 存 credibility engine per viewer；`schemas.py` AgentContext 加 seer_credibility；`runtime/context.py` build_agent_context 创建 engine 填充；`prompt_builder.py` 加 `_build_seer_credibility` section。8 条 acceptance 全达成，2123 tests passed，离线评估 good_false_sus 0.143→0.0
 - **本次新增 (llm-judge-regression-gate)**: 新增 `evaluation/llm_judge.py` 作为离线语义一致性 judge 接口，默认确定性检查身份一致性、阵营任务一致性、公开事实引用一致性；`regression_gate.py` 增加 `judge_consistency_rate_drop_tolerance` 与 `judge_consistency_rate` 高越好门，候选方案发言一致性下降超过容忍值会阻断。新增 5 条测试，`tests/evaluation/test_regression_gate.py tests/evaluation/test_llm_judge.py` 共 8 passed。
 - **judge 绑定修复**: 修正 `_public_text_supports()` 的 seer_claim 兜底过宽问题，避免 `public_facts` 里任意玩家的 `claimed seer` 误被当作别的玩家的预言家声明；补充 `tests/evaluation/test_llm_judge.py::test_judge_binds_seer_claim_reference_to_same_player`，整组 `tests/evaluation/test_llm_judge.py` 现为 6 passed。
@@ -23,6 +24,32 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## monitoring-closure-fix — 2026-06-18 (已完成)
+
+**背景**: 六模块审查发现监控反馈环两个 P0 断点 + 两处契约不对齐。回归门对 `vote_quality`/`judge_consistency_rate`/`harmful_transfer_rate` 因无 producer + 缺失即静默跳过（`regression_gate.py:200/232`）而空转；`trace_builder._decision_outcome` 不填 `legal`/`leaked_hidden_info`，diagnostics 的 illegal/leak 类别永不触发；`feedback_report._PRIVATE_AUDIT_TOKENS` 含 `werewolf` 误删公共 `werewolf_win_rate`。plan `docs/superpowers/plans/2026-06-18-monitoring-closure-fix.md`。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| `regression_gate.py` | `CandidateRegressionConfig.required_metrics: tuple[str,...]=()`；`evaluate` 在 prompt_safety 后、blocked_reasons 前对缺失 required metric 追加 `required_metric_missing:{m}` 失败检查（默认空，向后兼容） |
+| `full_game_ablation.py` | 新增 `_vote_quality_from_result`（好人投狼准确率，从 `action_records` 算）；`_game_metrics` 在非 None 时产 `vote_quality`（replay 路径 `action_records` 空→省略 key） |
+| `evaluation/decision_helpers.py`（新） | 迁出 `decision_is_legal_from_trace`/`dialogue_leaked_from_trace`/`TARGET_REQUIRED_ACTIONS`（断 `metrics→trace_builder` 循环）；`metrics.py` 改私有别名 import，调用点不变 |
+| `trace_builder.py` | `_decision_outcome(result, decision, action_trace)` 填 `legal`/`leaked_hidden_info`；复活 diagnostics 的 `illegal_action`/`hidden_info_leak` |
+| `feedback_report.py` | `_PRIVATE_AUDIT_TOKENS` 移除 `werewolf`；`_PRIVATE_AUDIT_KEYS` 不变 |
+
+**验证**:
+- 每任务 TDD red→green，subagent-driven + spec/quality 双审（commit `64dad32`/`e4e481c`/`53c3c12`/`072f3bf`）。
+- `python -m pytest tests/evaluation tests/cognition tests/runtime -q -o addopts=""` → **1289 passed**（无 fail/error）。
+- `python -m compileall -q werewolf_agent` 干净。
+- 注：本机 `pytest.ini` 强制 xdist 触发 `.pytest_tmp` 复用 `PermissionError`，故全程用 `-o addopts=""`（串行）；`test_game_balance_batch` 不指定 basetemp 时 5/5 通过。
+
+**开放风险/局限**:
+- `judge_consistency_rate` / `harmful_transfer_rate` 仍无 producer 接 traces 管线——本 plan 只让缺失可见（`required_metrics`），真正产出留后续 plan `judge-and-harmful-producers`。
+- replay 路径 `GameResult` 稀疏（无 `action_records`），`vote_quality` 按设计省略；replay ablation 调用方不得设 `required_metrics=("vote_quality",)` 除非同时富化 replay `GameResult`。
+- Task 4 防御纵深收窄：移除 `werewolf` token 后，非 `_PRIVATE_AUDIT_KEYS` 键下的自由格式字符串字段（`prompt_safe_payload`/`checks[].reason`/`blocked_reasons[]`/`moderator_notes`）中的裸 `werewolf` 值不再被 value-based 清理——这是为保留公共 `werewolf_win_rate` 的固有代价；带键私有字段（`actual_role`/`target_role`/...）仍由 `_PRIVATE_AUDIT_KEYS` 键级过滤保护，生产者约束是剩余防线。
+- `required_metrics` 默认空，历史 gate 调用方（candidate_materializer 等）零影响。
 
 ## seer-claim-credibility — 2026-06-17 (已完成)
 
