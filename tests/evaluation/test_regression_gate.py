@@ -125,3 +125,62 @@ def test_regression_gate_blocks_when_judge_consistency_rate_drops() -> None:
     assert "judge_consistency_rate_dropped" in report.blocked_reasons
     by_metric = {delta.metric: delta for delta in report.metric_deltas}
     assert by_metric["judge_consistency_rate"].regression_amount == 0.06
+
+
+def test_gate_fails_when_required_metric_is_missing():
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig,
+        RegressionGate,
+    )
+
+    config = CandidateRegressionConfig(
+        candidate_id="c1",
+        required_metrics=("vote_quality",),
+    )
+    report = RegressionGate().evaluate(
+        config,
+        baseline_metrics={"good_win_rate": 0.5},
+        candidate_metrics={"good_win_rate": 0.5},
+        prompt_safe=True,
+    )
+    assert report.passed is False
+    assert any(
+        "vote_quality" in reason and "missing" in reason
+        for reason in report.blocked_reasons
+    )
+
+
+def test_gate_passes_when_required_metric_is_present():
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig,
+        RegressionGate,
+    )
+
+    config = CandidateRegressionConfig(
+        candidate_id="c1",
+        required_metrics=("vote_quality",),
+    )
+    report = RegressionGate().evaluate(
+        config,
+        baseline_metrics={"vote_quality": 0.8, "good_win_rate": 0.5},
+        candidate_metrics={"vote_quality": 0.8, "good_win_rate": 0.5},
+        prompt_safe=True,
+    )
+    assert report.passed is True
+
+
+def test_gate_required_metrics_default_empty_is_backward_compatible():
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig,
+        RegressionGate,
+    )
+
+    # No required_metrics set → historical behaviour unchanged.
+    config = CandidateRegressionConfig(candidate_id="c1")
+    report = RegressionGate().evaluate(
+        config,
+        baseline_metrics={"good_win_rate": 0.5},
+        candidate_metrics={"good_win_rate": 0.5},
+        prompt_safe=True,
+    )
+    assert report.passed is True

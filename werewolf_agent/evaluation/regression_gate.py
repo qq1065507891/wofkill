@@ -16,6 +16,8 @@ class CandidateRegressionConfig:
     judge_consistency_rate_drop_tolerance: float = 0.0
     target_faction_win_rate_drop_tolerance: float = 0.0
     harmful_transfer_increase_tolerance: float = 0.0
+    # 缺失 producer 时让门 fail-closed 而非静默跳过；默认空保持历史行为
+    required_metrics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,16 @@ class RegressionGate:
             ))
         else:
             checks.append(GateCheck(name="prompt_safety", passed=True))
+
+        for required in config.required_metrics:
+            if required in baseline_metrics or required in candidate_metrics:
+                continue
+            checks.append(GateCheck(
+                name=f"required_{required}",
+                passed=False,
+                reason=f"required_metric_missing:{required}",
+                metric=required,
+            ))
 
         blocked_reasons = [
             check.reason
