@@ -2,14 +2,21 @@
 
 Updates beliefs using deterministic code logic — not LLM. The belief state
 is an agent's subjective view of the game, never the ground truth.
+
+Seer claims flow through a credibility engine (claim_credibility) so a
+contested or low-credibility black check cannot directly set wolf_lean.
+Facts are processed in order (observe + apply) so a later claim does not
+reinterpret an earlier vote.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+
+from werewolf_agent.cognition.public_evidence import PublicEvidenceIndex
 
 from werewolf_agent.cognition.world_state import StructuredFact
+from werewolf_agent.cognition.claim_credibility import SeerClaimCredibilityEngine
 
 
 # ---------------------------------------------------------------------------
@@ -46,11 +53,23 @@ class BeliefState:
 # Belief Updater
 # ---------------------------------------------------------------------------
 
-# Role claim confidence modifiers
+# Non-seer role claim confidence modifiers (seer claims go through credibility)
 _CLAIM_ROLE_BOOST: dict[str, dict[str, float]] = {
-    "seer": {"seer": 0.3, "werewolf": -0.1},
     "werewolf": {"werewolf": 0.4},
 }
+
+# P0 belief-public-vote-signals: 投票 trust 增量，全部基于公开锚点而非 ground truth
+# Seer black-check werewolf boost base, scaled by credibility score*confidence.
+# spec §Belief Integration: supported=strong, uncontested=medium,
+# contested=weak (no hard lean), weak=tiny, broken=none.
+_SEER_CHECK_BOOST_BY_STATUS = {
+    "supported": 0.40,
+    "uncontested": 0.25,
+    "contested": 0.12,
+    "weak": 0.05,
+    "broken": 0.0,
+}
+
 
 class BeliefUpdater:
     """Updates belief state from structured facts.
@@ -84,13 +103,25 @@ class BeliefUpdater:
         belief_state: BeliefState,
         facts: list[StructuredFact],
         current_day: int,
+        credibility: SeerClaimCredibilityEngine | None = None,
+        public_evidence: PublicEvidenceIndex | None = None,
     ) -> BeliefState:
-        """Update beliefs from a list of visible facts.
+        """Update beliefs from a list of visible facts, in fact order.
+
+        observe(fact) then apply(fact): a vote is judged only against claims
+        that came before it (no future anchors). ``credibility`` defaults to a
+        fresh engine (recompute); persistent callers pass a restored engine.
 
         注意：此方法原地修改 belief_state。
         """
+        if credibility is None:
+            credibility = SeerClaimCredibilityEngine()
+        if public_evidence is None:
+            public_evidence = PublicEvidenceIndex()
         for fact in facts:
-            belief_state = self._apply_fact(belief_state, fact)
+            credibility.observe(fact)
+            public_evidence.observe(fact)
+            belief_state = self._apply_fact(belief_state, fact, public_evidence, credibility)
         belief_state.last_updated_day = current_day
         return belief_state
 
@@ -98,6 +129,8 @@ class BeliefUpdater:
         self,
         state: BeliefState,
         fact: StructuredFact,
+        public_evidence: PublicEvidenceIndex,
+        credibility: SeerClaimCredibilityEngine,
     ) -> BeliefState:
         """Apply a single fact to update beliefs."""
         if fact.fact_type == "player_died":
@@ -107,13 +140,13 @@ class BeliefUpdater:
         if fact.fact_type == "idiot_revealed":
             return self._apply_idiot_reveal(state, fact)
         if fact.fact_type.startswith("claimed_role"):
-            return self._apply_role_claim(state, fact)
+            return self._apply_role_claim(state, fact, credibility)
         if fact.fact_type == "vote":
-            return self._apply_vote(state, fact)
+            return self._apply_vote(state, fact, public_evidence)
         if fact.fact_type == "speech":
             return self._apply_speech_signal(state, fact)
         if fact.fact_type == "seer_check_claim":
-            return self._apply_seer_claim(state, fact)
+            return self._apply_seer_claim(state, fact, credibility)
         return state
 
     def _apply_death(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
@@ -146,20 +179,40 @@ class BeliefUpdater:
             belief.trust = 0.8
         return state
 
-    def _apply_role_claim(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
-        """Role claim updates probability distribution."""
+    def _apply_role_claim(
+        self,
+        state: BeliefState,
+        fact: StructuredFact,
+        credibility: SeerClaimCredibilityEngine,
+    ) -> BeliefState:
+        """Role claim updates probability distribution.
+
+        Seer claims are scaled by credibility (seer_role_boost = 0.30 * score
+        * confidence; trust_delta = (score-0.50)*0.08), replacing one-size-
+        fits-all boosts. Other role claims keep fixed boosts.
+        """
         pid = fact.source_player
-        claimed = fact.value
+        claimed = (fact.value or "").lower()
         if not pid or pid not in state.beliefs:
             return state
 
         belief = state.beliefs[pid]
-        boosts = _CLAIM_ROLE_BOOST.get(claimed, {})
-        for role, delta in boosts.items():
-            if role in belief.role_probabilities:
-                belief.role_probabilities[role] = min(
-                    1.0, belief.role_probabilities[role] + delta
+        if claimed == "seer":
+            cred = credibility.score_for(pid)
+            boost = 0.30 * cred.score * cred.confidence
+            trust_delta = (cred.score - 0.50) * 0.08
+            if "seer" in belief.role_probabilities:
+                belief.role_probabilities["seer"] = min(
+                    1.0, belief.role_probabilities["seer"] + boost
                 )
+            belief.trust = max(0.0, min(1.0, belief.trust + trust_delta))
+        else:
+            boosts = _CLAIM_ROLE_BOOST.get(claimed, {})
+            for role, delta in boosts.items():
+                if role in belief.role_probabilities:
+                    belief.role_probabilities[role] = min(
+                        1.0, belief.role_probabilities[role] + delta
+                    )
 
         # Normalize
         total = sum(belief.role_probabilities.values())
@@ -168,17 +221,36 @@ class BeliefUpdater:
                 belief.role_probabilities[r] /= total
         return state
 
-    def _apply_vote(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
-        """投票给已确认狼人时增加投票者的好人倾向。"""
+    def _apply_vote(
+        self,
+        state: BeliefState,
+        fact: StructuredFact,
+        public_evidence: PublicEvidenceIndex,
+    ) -> BeliefState:
+        """投票信号：基于公开锚点更新 voter trust。
+
+        anchors 是 running（vote 之前已 observe 的 claim 集合），保证 future
+        anchor 不污染（后来的 claim 不影响该 vote 判断）。
+        """
         voter = fact.source_player
         target = fact.target_player
         if not voter or voter not in state.beliefs:
             return state
+        if not target:
+            return state
 
-        # 只有投票给已确认狼人时才增加信任
-        if target and target in state.confirmed_wolves:
-            belief = state.beliefs[voter]
+        belief = state.beliefs[voter]
+
+        if target in state.confirmed_wolves:
             belief.trust = min(1.0, belief.trust + 0.05)
+            return state
+
+        delta = public_evidence.vote_delta(fact)
+
+        if delta > 0:
+            belief.trust = min(1.0, belief.trust + delta)
+        elif delta < 0:
+            belief.trust = max(0.0, belief.trust + delta)
         return state
 
     def _apply_speech_signal(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
@@ -193,30 +265,55 @@ class BeliefUpdater:
             state.beliefs[pid].trust = min(1.0, state.beliefs[pid].trust + 0.02)
         return state
 
-    def _apply_seer_claim(self, state: BeliefState, fact: StructuredFact) -> BeliefState:
-        """公开查杀声明：目标 faction_lean 偏狼，role_probabilities 也偏狼，声明者信任微增。"""
+    def _apply_seer_claim(
+        self,
+        state: BeliefState,
+        fact: StructuredFact,
+        credibility: SeerClaimCredibilityEngine,
+    ) -> BeliefState:
+        """公开查杀/金水声明：依据声明者 credibility status 更新目标。
+
+        effective_strength = score * confidence。wolf_lean 只在 supported 或
+        uncontested 高分时设置；contested/weak/broken 不设 wolf_lean。
+        """
         target = fact.target_player
         source = fact.source_player
         val = (fact.value or "").lower()
+        cred = credibility.score_for(source) if source else None
+        status = cred.status if cred else "weak"
+        score = cred.score if cred else 0.0
+        conf = cred.confidence if cred else 0.0
+        effective = score * conf
+        boost_base = _SEER_CHECK_BOOST_BY_STATUS.get(status, 0.0)
+
         if "wolf" in val or "狼" in val:
             if target and target in state.beliefs:
                 belief = state.beliefs[target]
-                belief.faction_lean = "wolf_lean"
-                belief.trust = max(0.0, belief.trust - 0.03)
-                # Boost werewolf probability so top_role_guess converges
-                if "werewolf" in belief.role_probabilities:
+                # wolf_lean only when the line is supported or a strong uncontested line
+                if status == "supported" or (status == "uncontested" and score >= 0.65):
+                    belief.faction_lean = "wolf_lean"
+                boost = boost_base * effective if boost_base else 0.0
+                if boost > 0 and "werewolf" in belief.role_probabilities:
                     belief.role_probabilities["werewolf"] = min(
-                        1.0, belief.role_probabilities["werewolf"] + 0.4
+                        1.0, belief.role_probabilities["werewolf"] + boost
                     )
-                    # Renormalize
                     total = sum(belief.role_probabilities.values())
                     if total > 0:
                         for r in belief.role_probabilities:
                             belief.role_probabilities[r] /= total
-            if source and source in state.beliefs:
-                state.beliefs[source].trust = min(1.0, state.beliefs[source].trust + 0.02)
+                if effective > 0:
+                    belief.trust = max(0.0, belief.trust - 0.03 * effective)
+            if source and source in state.beliefs and conf > 0:
+                state.beliefs[source].trust = min(
+                    1.0, state.beliefs[source].trust + 0.02 * conf
+                )
         elif "good" in val or "好人" in val or "金水" in val:
             if target and target in state.beliefs:
-                state.beliefs[target].faction_lean = "good_lean"
-                state.beliefs[target].trust = min(1.0, state.beliefs[target].trust + 0.02)
+                # gold water: supported may set good_lean; contested/weak only slight trust
+                if status == "supported":
+                    state.beliefs[target].faction_lean = "good_lean"
+                if effective > 0:
+                    state.beliefs[target].trust = min(
+                        1.0, state.beliefs[target].trust + 0.02 * effective
+                    )
         return state

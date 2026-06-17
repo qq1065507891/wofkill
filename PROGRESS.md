@@ -4,10 +4,18 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **skill-advice-frame-gating** — 2026-06-15 (COMPLETE)
-- Active task: Skill 注入已从纯文本建议升级为结构化 `SkillAdviceFrame` 兼容层，并按 relevance/confidence 只保留 top 3 条进入玩家 prompt
-- Task owner: Codex development session
-- Last updated: 2026-06-15
+- Current phase: **seer-claim-credibility** — 2026-06-17 (COMPLETE)
+- Active task: 按 spec `docs/superpowers/specs/2026-06-17-seer-claim-credibility-design.md` 实现 SeerClaimCredibilityEngine——belief 链路按 fact 顺序 observe+apply（修 future_anchor），seer 查杀/role claim 用 credibility status（contested 不设 wolf_lean，替换 P1 一刀切降权），CognitionStateManager 存 engine per viewer（增量记住 seer 线），prompt 加预言家线可信度 section
+- Task owner: Claude development session
+- Last updated: 2026-06-17
+- **本次新增 (seer-claim-credibility)**: 新增 `cognition/claim_credibility.py`（SeerClaimCredibilityEngine + scoring/status/snapshot）；`belief.py` update 按 fact 顺序 observe+apply、`_apply_seer_claim`/`_apply_role_claim` 用 credibility、`_apply_vote` 用 running anchors；`cognition_state.py` 存 credibility engine per viewer；`schemas.py` AgentContext 加 seer_credibility；`runtime/context.py` build_agent_context 创建 engine 填充；`prompt_builder.py` 加 `_build_seer_credibility` section。8 条 acceptance 全达成，2123 tests passed，离线评估 good_false_sus 0.143→0.0
+- **本次新增 (llm-judge-regression-gate)**: 新增 `evaluation/llm_judge.py` 作为离线语义一致性 judge 接口，默认确定性检查身份一致性、阵营任务一致性、公开事实引用一致性；`regression_gate.py` 增加 `judge_consistency_rate_drop_tolerance` 与 `judge_consistency_rate` 高越好门，候选方案发言一致性下降超过容忍值会阻断。新增 5 条测试，`tests/evaluation/test_regression_gate.py tests/evaluation/test_llm_judge.py` 共 8 passed。
+- **judge 绑定修复**: 修正 `_public_text_supports()` 的 seer_claim 兜底过宽问题，避免 `public_facts` 里任意玩家的 `claimed seer` 误被当作别的玩家的预言家声明；补充 `tests/evaluation/test_llm_judge.py::test_judge_binds_seer_claim_reference_to_same_player`，整组 `tests/evaluation/test_llm_judge.py` 现为 6 passed。
+- **验证重跑**: 受本机 `pytest-xdist` 临时目录权限影响，`tests/evaluation/test_llm_judge.py` 和整组认知/评估回归改为 `-n0 --basetemp=.pytest_tmp\...` 重新运行；`tests/evaluation/test_llm_judge.py` 6/6 passed，`tests/cognition/test_public_evidence.py tests/cognition/test_claim_credibility.py tests/runtime/test_cognition_state.py tests/evaluation/test_llm_judge.py tests/evaluation/test_regression_gate.py` 30/30 passed。
+- **本次新增 (cognition-deadcode-cleanup)**: 删 `cognition/pipeline.py`+`cognition/context.py`（git rm ~980 行）；删 test_cognition 的 TestLocalContextBuilder/TestCognitivePipeline/TestVisibilityLeakComprehensive（-457 行）+ import；design doc §8 命名同步 CognitivePipeline→build_agent_context、LocalContext→AgentContext
+- **本次新增 (contradiction-prompt-section)**: `runtime/context.py` 的 ctx_alerts 收集全部 priority（不再只 high），must_address 仅 high；`prompt_builder` 新增 `_build_contradiction_alerts` section（private_reasoning tier，belief 之后）
+- **本次新增 (belief-counterclaim-dampening)**: 对跳判定 `len(seer_claimants)>1` 时，`_apply_seer_claim` 查杀 boost 与 `_apply_role_claim` seer boost 各取半额；`_apply_fact` 给这两个分支透传 anchors
+- **本次新增 (belief-public-vote-signals)**: `BeliefUpdater.update` 预聚合公开锚点集合（checked_wolves/gold_water/seer_claimants/public_suspects），`_apply_vote` 基于这些锚点对 voter trust 做小幅对称更新；不读 ground truth；`update` 外部签名不变
 - **本次新增 (skill-advice-frame-gating)**: 新增 `SkillAdviceFrame` 与 `SkillOutput.advice_frame`；`_inject_skill_output()` 将旧 handler 输出兼容转换为 frame dict，保留旧 `advice` 字段并新增 `situation_signature/recommended_use/risk_alerts/counter_signals/forbidden_use/relevance/evidence_refs`；按 relevance/confidence 限制最多 3 条 skill 建议；`PlayerPromptBuilder` 将 skill 建议渲染为“适用局面 / 本轮建议 / 风险 / 不适用信号 / 禁止套用”的战术卡。
 - **本次新增 (prompt-section-order-hardening)**: `build_system_prompt()` 改为“身份 → 游戏规则 → 角色指南 → 信息边界 → 推理方法 → 技能建议 → 输出契约”；`build_user_prompt()` 改为“阶段上下文 → 当前局公开事实 → 可见世界状态 → 关键事件 → 近期发言 → 人格设定 → 我的判断 → 本局私有记忆 → 跨局学习参考 → 策略指令 → 本轮任务 → 最终输出约束”，并新增顺序回归测试。
 - **本次新增 (rag-v2-transferable-knowledge)**: 新增 `RAGTacticalFrame` / `schema_version` / `tactical_frame`，旧持久化数据缺失 `schema_version` 时按 legacy V1 加载；新增共享 tactical text helper，并让 reranker、vector indexing、dedup、prompt renderer、`PlayerPromptBuilder` 使用同一套 prompt-safe V2 字段；27 条 bundled RAG seed 已全部迁移为显式 V2 tactical frame。
@@ -15,6 +23,177 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## seer-claim-credibility — 2026-06-17 (已完成)
+
+**背景**: spec `docs/superpowers/specs/2026-06-17-seer-claim-credibility-design.md`。P1 评估发现对跳降权 belief 层无效（一刀切误伤真查杀 + 只改 prob 不改 faction_lean）。引入 SeerClaimCredibilityEngine 在 visible facts 与 belief 之间加确定性 credibility 层。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| 新模块 `cognition/claim_credibility.py` | SeerClaimCredibilityEngine（observe/score_for/line_for/prompt_summary/snapshot/from_snapshot）+ scoring（base 0.50 + 正负信号 delta）+ status bands（uncontested/supported/contested/weak/broken） |
+| `belief.py` update | 按 fact 顺序 observe+`_update_anchors`+apply，修 future_anchor；`_apply_seer_claim`/`_apply_role_claim` 用 credibility status；`_apply_vote` 用 running anchors |
+| `_apply_seer_claim` | wolf_lean 仅 supported / uncontested(≥0.65)；contested/weak/broken 不设 lean；boost=status_base×score×confidence |
+| `_apply_role_claim`(seer) | seer_role_boost=0.30×score×confidence；trust_delta=(score−0.50)×0.08 |
+| `cognition_state.py` | `_credibility_engines` per viewer，增量 update 记住先前 seer 线 |
+| `schemas.py` / `runtime/context.py` / `prompt_builder.py` | AgentContext.seer_credibility；build_agent_context 创建 engine 填充；`_build_seer_credibility` section（private_reasoning, cap 3, droppable） |
+
+**验证**:
+
+- claim_credibility 单元 **9 passed**（scoring/status/snapshot）。
+- cognition **107** + cognition_state **5**（含 acceptance #7 增量测试）+ prompt/runtime/agents **334** passed。
+- 全量回归 integration+skills+memory+runtime+agents+cognition **2123 passed**。
+- 离线评估（`scripts/offline_belief_worlds_compare.py`，treatment=P0+credibility vs baseline=HEAD/P0前）：
+  - counterclaim `good_false_sus` 0.143→**0.0**（假查杀好人不再 wolf_lean，acceptance #8 核心）
+  - single_seer wolf_sus_rec/good_false_sus 不变（中性）
+  - vote_signal trust_sep 0.013→0.023（P0 vote 保留）
+- 8 条 acceptance criteria 全达成。
+
+**trade-off（spec §Risk 3 已预见）**: contested 时连真查杀也不硬 lean（wolf_sus_rec 0.25→0），靠 vote consistency（真线 vote_follows_black→supported）补偿。不读 ground truth；不动 RuleEngine；`update` 加可选 credibility 参数（旧调用兼容）。
+
+## cognition-deadcode-cleanup — 2026-06-17 (已完成)
+
+**背景**:
+
+1. `cognition/pipeline.py`（CognitivePipeline）+ `cognition/context.py`（LocalContextBuilder/PromptBudgetReport）是 design doc §8「认知协处理器」的早期实现，生产侧已被 `runtime/context.py::build_agent_context` + `CognitiveStateManager` 取代。
+2. 全仓 grep 确认 runtime/agents/api 完全不引用 CognitivePipeline/LocalContextBuilder（仅 pipeline.py 自身 + test_cognition + design doc §8 引用）。
+3. 产物等价：design doc §8 列的管线产物（belief_state/contradiction_alerts/strategy_directive/visible_world_state）全部由 build_agent_context 实际产出。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| `cognition/pipeline.py` | git rm（整文件） |
+| `cognition/context.py` | git rm（整文件） |
+| `tests/cognition/test_cognition.py` | 删 TestLocalContextBuilder/TestCognitivePipeline/TestVisibilityLeakComprehensive（Python 删行 1004-1460，-457 行）+ context/pipeline import + 头部 docstring 残留描述 |
+| design doc §8（line 726/853/865） | CognitivePipeline.build→build_agent_context、LocalContext→AgentContext、Local Context Builder→Context Builder(build_agent_context) |
+
+**保留**: cognition/ 的 belief/contradiction/world_state/simulator/worlds/role_monitor 被 build_agent_context 直接使用；attention/salience/strategy/visibility 有独立测试覆盖，本次不动（存废留待后续单独评估）。
+
+**验证**:
+
+- 已通过 `python -m pytest tests/cognition -q ...` — **85 passed**（删 3 类后剩余测试）。
+- 已通过 `python -m pytest tests/cognition tests/agents tests/runtime tests/integration/test_e2e_info_leak.py tests/skills -q ...` — **1941 passed**。
+- 已通过 `python -m compileall -q werewolf_agent tests`（无残留 import）。
+- 代码改动 `git diff --check` 干净（write_text 误转 CRLF 已修复回 LF）。
+
+## contradiction-prompt-section — 2026-06-17 (已完成)
+
+**背景**:
+
+1. 主路径 `ctx_alerts`（`runtime/context.py:1444`）只收集 `priority=="high"`，medium（如 `vote_conflict`：声称怀疑 X 却投 Y）完全不进 prompt。
+2. high 经 `must_address_alerts` 进 `strategy_directive`【硬约束】，但夹在硬约束里，无独立段落；vote_conflict 这种关键公开矛盾 LLM 根本看不到。
+3. `_inject_skill_output`（`context.py:1548`）用 `alerts` 对象（全部 priority），独立于 `ctx_alerts` dict——扩 `ctx_alerts` 不影响 skills。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| ctx_alerts 收集 | 只收 high | 收集全部 priority（high/medium/low） |
+| must_address 过滤 | 遍历 ctx_alerts 全部进 must_address | must_address 只挑 high（medium 不强制回应） |
+| prompt section | 无独立矛盾点段落 | `_build_contradiction_alerts` section（private_reasoning tier，belief 之后），按 priority 排序、限 3 条 |
+
+**边界声明**: skills 不受影响（用 `alerts` 对象路径，非 ctx_alerts）；不泄露 forbidden info（contradiction 来自公开 facts，与现有 high 进 must_address 同源）；`must_address` 语义不变（仍只 high 强制回应）。仅改 `runtime/context.py` + `agents/prompt_builder.py`。
+
+**TDD 测试计划**:
+
+- A（`runtime/context.py`，集成测试 `tests/runtime`）：构造 vote_conflict 场景 → `build_agent_context` 的 `contradiction_alerts` 含 medium；`must_address_alerts` 只含 high
+- B（`prompt_builder.py`，单元测试 `tests/agents/test_prompt_builder.py`）：contradiction_alerts 渲染为"公开矛盾点"section；空时省略；按 priority 排序；限 3 条
+
+**验证**:
+
+- TDD-B（prompt section）：先写 4 个 section 测试 → RED（3 failed/1 passed；p03 被 `_clean_prompt_text` 的 `_PLAYER_ID_RE` 替换为"历史玩家"）→ 当前局 id 改用 `_clean_current_game_token` 保留 → GREEN。
+- TDD-A（ctx_alerts）：先写 3 个集成测试 → RED（vote_conflict 被丢弃，ctx_alerts 只 `['claim_conflict']`）→ 实现 → GREEN。
+- 已通过 `python -m pytest tests/agents/test_contradiction_section.py tests/runtime/test_contradiction_ctx_alerts.py tests/agents/test_prompt_builder.py tests/runtime/test_directive_role_gating.py tests/runtime/test_context.py tests/runtime/test_agent_adapter.py tests/cognition -q ...` — **357 passed**。
+- 已通过 `python -m pytest tests/skills tests/runtime/test_skill_injection.py -q ...` — **145 passed**（验证 skills 用 alerts 对象路径，不受 ctx_alerts 扩展影响）。
+- 已通过 `python -m pytest tests/integration/test_e2e_info_leak.py -q ...` — **27 passed**（build_agent_context 端到端 + must_address 路径）。
+- 已通过 `python -m compileall -q werewolf_agent tests`。
+- 代码改动 `git diff --check` 干净（4 文件）。
+
+## belief-counterclaim-dampening — 2026-06-17 (已完成)
+
+**背景**:
+
+1. `_apply_seer_claim`（`cognition/belief.py:270`）对查杀目标直接 +0.4 werewolf，不区分真假预言家——悍跳狼假查杀会把好人打成狼，污染 belief。
+2. `_apply_role_claim`（`belief.py:160`）对 `claimed_role=seer` 固定 +0.3，不处理对跳——两人跳预言家时各自都满 boost，无法互相稀释。
+3. P0 已聚合 `seer_claimants` 锚点，P1 复用它判断对跳（`len(seer_claimants)>1`），不新增数据源。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| 查杀降权 | 假查杀与真查杀同等 +0.4 werewolf | 对跳时 wolf boost 0.4→0.2（半信半疑） |
+| 角色声明稀释 | 对跳者各自满 seer +0.3 | 对跳时 seer claim boost 0.3→0.15 |
+| anchors 透传 | `role_claim`/`seer_claim` 分支未接收 anchors | `_apply_fact` 给这两个分支传 anchors |
+
+**信号**: `_SEER_CHECK_WOLF_BOOST={full:0.4, dampened:0.2}`；`_SEER_CLAIM_BOOST={full:0.3, dampened:0.15}`。对跳判定 = `len(seer_claimants)>1`。金水分支本次不动（污染较轻，留后续）。
+
+**TDD 测试计划**（`tests/cognition/test_cognition.py::TestBeliefUpdater`）:
+
+1. `test_seer_check_wolf_boost_reduced_under_counterclaim` — 对跳查杀 boost < 无对跳
+2. `test_seer_role_claim_diluted_under_counterclaim` — 对跳 seer claim boost < 无对跳
+3. `test_counterclaim_prevents_false_check_from_dominating` — 悍跳狼假查杀不把目标 werewolf 推到压倒（< 无对跳场景）
+4. `test_no_counterclaim_keeps_full_seer_boost` — 单预言家查杀仍满 boost、top_role=werewolf（回归）
+
+**边界声明**: 仅改 `cognition/belief.py`。不读 ground truth（对跳判断用公开 `claimed_role=seer`）；不动 RuleEngine；`update` 外部签名不变。
+
+**验证**:
+
+- TDD：先写 4 个对跳降权测试 → RED（2 failed / 17 passed，boost 未降权符合预期）→ 实现 belief.py → GREEN。
+- 已通过 `python -m pytest tests/cognition/test_cognition.py::TestBeliefUpdater -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp .pytest_tmp` — **19 passed**（9 原有 + 6 P0 + 4 P1）。
+- 已通过 `python -m pytest tests/cognition tests/memory/test_belief_visibility.py tests/runtime/test_context.py tests/runtime/test_agent_adapter.py -q ...` — **201 passed**。
+- 已通过 `python -m compileall -q werewolf_agent tests`。
+- 代码改动 `git diff --check werewolf_agent/cognition/belief.py tests/cognition/test_cognition.py` 干净。
+
+## belief-public-vote-signals — 2026-06-17 (已完成)
+
+**背景**:
+
+1. `BeliefUpdater._apply_vote`（`cognition/belief.py:171`）只在 `target in state.confirmed_wolves` 时给 voter +0.05 trust，而 `confirmed_wolves` 只在 `_apply_self_destruct`（自爆，`:126`）填充。正常游戏里投票**完全不更新 belief**——这是空信号，非设计意图。
+2. 狼人杀里"谁投了谁"是好人辨狼的最强公开证据，且 belief 是 `belief → possible_worlds → simulation` 整条认知链的上游（`worlds.py:58` 接收 belief_summary），上游信号弱会向下游传导。
+3. vote fact（`world_state.py:361`）只有 `voter/target/day/value="voted_for"`，**无投票理由文本**，且 `BeliefUpdater.update` 是 fact-by-fact 处理，跨 fact 锚点需要预聚合。
+
+**改动**:
+
+| 项目 | 问题 | 修复 |
+|---|---|---|
+| 投票信号死逻辑 | `_apply_vote` 锚点用 `confirmed_wolves`，几乎不触发 | 预聚合公开锚点集合，按锚点对 voter trust 做小幅对称更新 |
+| 跨 fact 聚合 | `update` 是 fact-by-fact，单 fact 看不到全局锚点 | `update` 开头扫一遍 facts 建 `_build_public_anchors` 索引，传给 `_apply_vote` |
+| 签名兼容 | 外部多处调 `update(state, facts, day)` | `update` 外部签名不变；仅 `_apply_fact`/`_apply_vote` 加可选 `anchors` 参数 |
+| 边界 | 信号不能读 ground truth | 锚点全部来自公开 fact（seer_check_claim/claimed_role/claimed_suspect/claimed_good），belief 本就拿不到真实身份 |
+
+**信号设计**（保守，只对未确认玩家，对称、有上下限，全部基于公开锚点）:
+
+| 投票行为 | 锚点 fact | trust 变化 |
+|---|---|---|
+| 投票给**被公开查杀**目标 | `seer_check_claim value=wolf` | voter ↑ +0.04 |
+| 投票给**金水**目标 | `seer_check_claim value=good` / `claimed_good` | voter ↓ −0.04 |
+| 投票给**跳预言家**的人 | `claimed_role value=seer` | voter ↓ −0.03 |
+| 投票给**被公开怀疑**目标 | `claimed_suspect` | voter ↑ +0.03 |
+| 投票给**已自爆确认狼** | `confirmed_wolves`（旧逻辑保留） | voter ↑ +0.05 |
+
+**已知限制（留给 P1）**: P0 不过滤真假预言家，所以"被查杀"锚点包含悍跳狼的假查杀——幅度刻意取小（±0.03~0.05）以限制噪声。P1 补对跳与预言家可信度后，假查杀会被削弱。
+
+**TDD 测试计划**（`tests/cognition/test_cognition.py::TestBeliefUpdater`）:
+
+1. `test_vote_for_publicly_checked_wolf_increases_trust` — seer_check_claim(p08→p01,wolf) + vote(p05→p01) → p05 trust↑
+2. `test_vote_for_gold_water_decreases_trust` — seer_check_claim(p08→p07,good) + vote(p05→p07) → p05 trust↓
+3. `test_vote_for_seer_claimant_decreases_trust` — claimed_role(p08,seer) + vote(p05→p08) → p05 trust↓
+4. `test_vote_for_public_suspect_increases_trust` — claimed_suspect(p06→p01) + vote(p05→p01) → p05 trust↑
+5. `test_vote_without_anchor_is_neutral` — 单条 vote 无锚点 → trust 不变（回归，防过度更新）
+6. `test_vote_signal_bounded` — 多锚点叠加后 trust 仍在 [0,1]（回归上下限）
+
+**验证**:
+
+- TDD：先写 6 个 vote 信号测试 → RED（4 failed / 11 passed，trust 未变符合死逻辑预期）→ 实现 belief.py → GREEN。
+- 已通过 `python -m pytest tests/cognition/test_cognition.py::TestBeliefUpdater -q -o addopts='' -p no:cacheprovider -p no:xdist -p no:xdist.looponfail --basetemp .pytest_tmp` — **15 passed**。
+- 已通过 `python -m pytest tests/cognition -q ...` — **116 passed**。
+- 已通过 `python -m pytest tests/memory/test_belief_visibility.py tests/runtime/test_context.py tests/runtime/test_agent_adapter.py -q ...` — **81 passed**。
+- 已通过 `python -m compileall -q werewolf_agent tests`。
+- 代码改动 `git diff --check werewolf_agent/cognition/belief.py tests/cognition/test_cognition.py` 干净。注：`git diff --check` 对 PROGRESS.md 报的 3 个 conflict marker + 1 处 trailing whitespace 均位于 HEAD 历史遗留区域（line 1834/1850/1864/3738），本次未引入、未改动。
+
+**边界声明**: 仅改 `cognition/belief.py`。不动 `RuleEngine`、不读 ground truth、不改 `BeliefState` 字段（anchors 是 `update` 局部变量，不持久化、不进 `sync_matrix`）。`CognitivePipeline` 死代码（P3）本次不动。
 
 ## skill-advice-frame-gating — 2026-06-15 (已完成)
 
@@ -1783,7 +1962,6 @@ Worktree: `.worktrees/p3-memory` on branch `p3-memory`. Three tasks scoped to th
 
 **Memory sub-batch (Batch 3) results:** 3/3 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1186 passed**, 0 failed, 0 regression.
 
-<<<<<<< HEAD
 ### Batch 4 — Memory area (P1-M10, M11, M12, M13, M14) — COMPLETE 2026-06-04
 
 Worktree: `.worktrees/p4-memory` on branch `p4-memory`. Five P1 issues scoped to the **Memory** area (parallel worktrees: `p4-prompt`, `p4-skill`, `p4-rag`, `p4-directives`).
@@ -1799,7 +1977,7 @@ Worktree: `.worktrees/p4-memory` on branch `p4-memory`. Five P1 issues scoped to
 **Memory sub-batch (Batch 4) results:** 5/5 tasks done. `pytest tests/memory/ tests/agents/ tests/runtime/`: **1203 passed**, 0 failed, 0 regression. Each task is one commit, independently revertible.
 
 ---
-=======
+
 ### Batch 4 (P1 by area) — Directives sub-batch — IN PROGRESS 2026-06-04
 
 Worktree: `.worktrees/p4-directives` on branch `p4-directives`. Parallel siblings: `p4-prompt`, `p4-skill`, `p4-rag`, `p4-memory` (4 other Batch 4 sub-batches running concurrently — do not touch).
@@ -1813,7 +1991,6 @@ Worktree: `.worktrees/p4-directives` on branch `p4-directives`. Parallel sibling
 **Batch 4 (Directives) results so far:** 3/3 tasks done. 9 new tests added. `pytest tests/runtime/ tests/agents/`: **1096 passed** (697 runtime + 399 agents), 0 failed, 0 regression.
 
 ### Task 1.10 (P0-R3) — output_parser encoding repair 2026-06-03
->>>>>>> p4-directives
 
 **Problem:** Game trace `g_3528592081` Action 50 — p10's LLM
 output was `{��intent��:"question_target",...}`. The Chinese
@@ -3687,7 +3864,7 @@ safe no-op.
    keeps the catalog content the LLM still needs.
 
 2. **Bump `AGENT_TIMEOUTS` for seer/witch by 2x** —
-   `werewolf_agent/runtime/timeouts.py`. Renamed `seer` → 
+   `werewolf_agent/runtime/timeouts.py`. Renamed `seer` →
    `seer_check` and `witch` → `witch_action`; bumped 180s → 360s.
    Kept `seer` and `witch` as backward-compat aliases so any
    external code referencing the old names keeps working. Updated
@@ -3871,4 +4048,3 @@ test_live_runtime.py -p no:cacheprovider -q`
 - 相关回归: `python -m pytest tests/skills tests/runtime/test_context.py tests/agents/test_prompt_builder.py tests/agents/test_player_agent.py -q ...` → 444 passed。
 - 编译: `python -m compileall -q werewolf_agent tests`。
 - 格式: `git diff --check`。
-

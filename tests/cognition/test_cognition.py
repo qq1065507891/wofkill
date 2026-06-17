@@ -8,8 +8,6 @@ Covers:
 - Belief updater deterministic updates
 - Contradiction engine detection
 - Strategy selector role/situation mapping
-- Local context builder budget and assembly
-- Full pipeline integration
 - Visibility leak detection
 """
 
@@ -18,9 +16,7 @@ import pytest
 from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.cognition.attention import AttentionFilter
 from werewolf_agent.cognition.belief import BeliefState, BeliefUpdater
-from werewolf_agent.cognition.context import LocalContextBuilder, PromptBudgetReport
 from werewolf_agent.cognition.contradiction import ContradictionEngine
-from werewolf_agent.cognition.pipeline import CognitivePipeline
 from werewolf_agent.cognition.salience import SalienceEngine
 from werewolf_agent.cognition.strategy import StrategySelector, STRATEGIES
 from werewolf_agent.cognition.visibility import VisibilityPolicy
@@ -665,6 +661,169 @@ class TestBeliefUpdater:
         top_role, top_conf = state.beliefs["p03"].top_role_guess()
         assert top_role == "werewolf"
 
+    # --- P0 belief-public-vote-signals: 投票行为应基于公开锚点更新 voter trust ---
+
+    def test_vote_for_publicly_checked_wolf_increases_trust(self):
+        """投票给被公开查杀的目标 → voter trust 上升。"""
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03", "p05", "p08"], "p05")
+        facts = [
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p01", value="wolf", day=1),
+            StructuredFact(fact_type="vote", source_player="p03",
+                           target_player="p01", day=1),
+        ]
+        before = state.beliefs["p03"].trust
+        state = updater.update(state, facts, 1)
+        assert state.beliefs["p03"].trust > before
+
+    def test_vote_for_gold_water_decreases_trust(self):
+        """投票给金水目标 → voter trust 下降。"""
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03", "p05", "p07", "p08"], "p05")
+        facts = [
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p07", value="good", day=1),
+            StructuredFact(fact_type="vote", source_player="p03",
+                           target_player="p07", day=1),
+        ]
+        before = state.beliefs["p03"].trust
+        state = updater.update(state, facts, 1)
+        assert state.beliefs["p03"].trust < before
+
+    def test_vote_for_seer_claimant_decreases_trust(self):
+        """投票给跳预言家的人 → voter trust 下降（冲预言家偏狼）。"""
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03", "p05", "p08"], "p05")
+        facts = [
+            StructuredFact(fact_type="claimed_role", source_player="p08",
+                           value="seer", day=1),
+            StructuredFact(fact_type="vote", source_player="p03",
+                           target_player="p08", day=1),
+        ]
+        before = state.beliefs["p03"].trust
+        state = updater.update(state, facts, 1)
+        assert state.beliefs["p03"].trust < before
+
+    def test_vote_for_public_suspect_increases_trust(self):
+        """投票给被公开怀疑的目标 → voter trust 上升（弱）。"""
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03", "p05", "p06"], "p05")
+        facts = [
+            StructuredFact(fact_type="claimed_suspect", source_player="p06",
+                           target_player="p01", value="wolf", day=1),
+            StructuredFact(fact_type="vote", source_player="p03",
+                           target_player="p01", day=1),
+        ]
+        before = state.beliefs["p03"].trust
+        state = updater.update(state, facts, 1)
+        assert state.beliefs["p03"].trust > before
+
+    def test_vote_without_anchor_is_neutral(self):
+        """无任何公开锚点时投票不改变 trust（防过度更新）。"""
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p05"], "p05")
+        facts = [
+            StructuredFact(fact_type="vote", source_player="p02",
+                           target_player="p01", day=1),
+        ]
+        before = state.beliefs["p02"].trust
+        state = updater.update(state, facts, 1)
+        assert state.beliefs["p02"].trust == before
+
+    def test_vote_signal_bounded(self):
+        """多锚点叠加后 trust 仍落在 [0, 1]。"""
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p03", "p05", "p08"], "p05")
+        facts = [
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p01", value="wolf", day=1),
+            StructuredFact(fact_type="claimed_suspect", source_player="p08",
+                           target_player="p01", value="wolf", day=1),
+            StructuredFact(fact_type="vote", source_player="p02",
+                           target_player="p01", day=1),
+        ]
+        state = updater.update(state, facts, 1)
+        trust = state.beliefs["p02"].trust
+        assert 0.0 <= trust <= 1.0
+
+    # --- P1 belief-counterclaim-dampening: 对跳时削弱 seer 声明威力 ---
+
+    def test_seer_check_wolf_boost_reduced_under_counterclaim(self):
+        """对跳（两人跳预言家）时，查杀声明的 werewolf boost 应低于无对跳。"""
+        updater = BeliefUpdater()
+
+        def wolf_prob_after(facts):
+            st = updater.initialize(["p01", "p02", "p05", "p08"], "p05")
+            st = updater.update(st, facts, 1)
+            return st.beliefs["p02"].role_probabilities["werewolf"]
+
+        no_counter = [
+            StructuredFact(fact_type="claimed_role", source_player="p08", value="seer", day=1),
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p02", value="wolf", day=1),
+        ]
+        counter = [
+            StructuredFact(fact_type="claimed_role", source_player="p08", value="seer", day=1),
+            StructuredFact(fact_type="claimed_role", source_player="p01", value="seer", day=1),
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p02", value="wolf", day=1),
+        ]
+        assert wolf_prob_after(counter) < wolf_prob_after(no_counter)
+
+    def test_later_seer_claimant_gets_lower_seer_prob(self):
+        """对跳时后 claim 者（p01）seer boost 低于先 claim 者（p08）。
+
+        credibility 按时序：p08 claim 时是单 claimant（uncontested），
+        p01 claim 时已存在对跳（contested，受 multi penalty）。
+        """
+        updater = BeliefUpdater()
+        st = updater.initialize(["p01", "p05", "p08"], "p05")
+        st = updater.update(st, [
+            StructuredFact(fact_type="claimed_role", source_player="p08", value="seer", day=1),
+            StructuredFact(fact_type="claimed_role", source_player="p01", value="seer", day=1),
+        ], 1)
+        assert st.beliefs["p01"].role_probabilities["seer"] < st.beliefs["p08"].role_probabilities["seer"]
+
+    def test_counterclaim_gold_water_no_hard_good_lean(self):
+        """对跳金水声明不设 good_lean（spec: contested gold 只升 trust，不硬站边）。
+
+        单预言家（supported）金水仍设 good_lean。
+        """
+        updater = BeliefUpdater()
+
+        def gold_faction(facts):
+            st = updater.initialize(["p01", "p02", "p05", "p07", "p08"], "p05")
+            st = updater.update(st, facts, 1)
+            return st.beliefs["p07"].faction_lean
+
+        no_counter = [
+            StructuredFact(fact_type="claimed_role", source_player="p08", value="seer", day=1),
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p07", value="good", day=1),
+        ]
+        counter = [
+            StructuredFact(fact_type="claimed_role", source_player="p08", value="seer", day=1),
+            StructuredFact(fact_type="claimed_role", source_player="p01", value="seer", day=1),
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p07", value="good", day=1),
+        ]
+        assert gold_faction(no_counter) == "good_lean"
+        assert gold_faction(counter) != "good_lean"
+
+    def test_no_counterclaim_keeps_full_seer_boost(self):
+        """无对跳（单预言家）查杀仍满 boost、top_role=werewolf（回归）。"""
+        updater = BeliefUpdater()
+        state = updater.initialize(["p01", "p02", "p05", "p08"], "p05")
+        facts = [
+            StructuredFact(fact_type="claimed_role", source_player="p08", value="seer", day=1),
+            StructuredFact(fact_type="seer_check_claim", source_player="p08",
+                           target_player="p02", value="wolf", day=1),
+        ]
+        state = updater.update(state, facts, 1)
+        top_role, _ = state.beliefs["p02"].top_role_guess()
+        assert top_role == "werewolf"
+
 
 # ===================================================================
 # TestContradictionEngine
@@ -835,463 +994,6 @@ class TestStrategySelector:
     def test_get_nonexistent_strategy(self):
         sel = StrategySelector()
         assert sel.get_strategy("nonexistent") is None
-
-
-# ===================================================================
-# TestLocalContextBuilder
-# ===================================================================
-
-class TestLocalContextBuilder:
-
-    def _make_builder(self, budget: int = 4096) -> LocalContextBuilder:
-        policy = VisibilityPolicy()
-        attention = AttentionFilter(policy)
-        salience = SalienceEngine()
-        belief = BeliefUpdater()
-        contradiction = ContradictionEngine()
-        strategy = StrategySelector()
-        return LocalContextBuilder(
-            visibility_policy=policy,
-            attention_filter=attention,
-            salience_engine=salience,
-            belief_updater=belief,
-            contradiction_engine=contradiction,
-            strategy_selector=strategy,
-            token_budget=budget,
-        )
-
-    def test_build_basic_context(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, budget = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-            current_phase="speech",
-        )
-        assert ctx.agent_id == "p05"
-        assert ctx.own_role == "villager"
-        assert ctx.phase == "speech"
-        assert ctx.task_type == TaskType.SPEECH
-
-    def test_context_has_visible_state(self):
-        builder = self._make_builder()
-        state = _make_state_with_death()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert "alive_players" in ctx.visible_world_state
-        assert "dead_players" in ctx.visible_world_state
-        assert "p05" not in ctx.visible_world_state["alive_players"]
-
-    def test_werewolf_sees_teammates(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p01",
-            viewer_role="werewolf",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert "wolf_teammates" in ctx.visible_world_state
-        assert "p02" in ctx.visible_world_state["wolf_teammates"]
-        assert "p01" not in ctx.visible_world_state["wolf_teammates"]
-
-    def test_hybrid_sees_master(self):
-        builder = self._make_builder()
-        state = GameState(
-            players={"p12": PlayerState(id="p12", role="hybrid"), "p05": PlayerState(id="p05", role="villager")},
-            hybrid_master_id="p05",
-            hybrid_master_faction="good",
-            day_number=1, night_number=1,
-        )
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p12",
-            viewer_role="hybrid",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert ctx.visible_world_state.get("master_id") == "p05"
-
-    def test_hybrid_wolf_master_keeps_faction_neutral_strategy(self):
-        builder = self._make_builder()
-        state = GameState(
-            players={
-                "p12": PlayerState(id="p12", role="hybrid"),
-                "p01": PlayerState(id="p01", role="werewolf"),
-            },
-            hybrid_master_id="p01",
-            hybrid_master_faction="werewolf",
-            day_number=1, night_number=1,
-        )
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p12",
-            viewer_role="hybrid",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert ctx.strategy_directive["package"] == "survive_lay_low"
-
-    def test_seer_sees_check_results(self):
-        builder = self._make_builder()
-        state = _make_state()
-        seer_check_event = GameEvent(
-            type="seer_check",
-            payload={"seer_id": "p08", "target_id": "p01", "result": "werewolf", "night_number": 1},
-        )
-        state = GameState(
-            players=state.players,
-            day_number=1, night_number=1,
-            events=[seer_check_event],
-        )
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p08",
-            viewer_role="seer",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert "check_results" in ctx.visible_world_state
-        assert len(ctx.visible_world_state["check_results"]) == 1
-
-    def test_witch_sees_potion_availability(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p09",
-            viewer_role="witch",
-            task_type=TaskType.NIGHT_ACTION,
-            legal_actions=[ActionType.USE_POISON],
-            legal_targets=["p01"],
-        )
-        assert ctx.visible_world_state.get("antidote_available") is True
-        assert ctx.visible_world_state.get("poison_available") is True
-
-    def test_villager_no_private_access(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert "wolf_teammates" not in ctx.visible_world_state
-        assert "master_id" not in ctx.visible_world_state
-        assert "check_results" not in ctx.visible_world_state
-        assert "antidote_available" not in ctx.visible_world_state
-
-    def test_context_has_strategy_directive(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert "package" in ctx.strategy_directive
-        assert "goal" in ctx.strategy_directive
-
-    def test_context_has_belief_state(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert isinstance(ctx.belief_state, dict)
-
-    def test_budget_report(self):
-        builder = self._make_builder(budget=4096)
-        state = _make_state()
-        _, budget = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert budget.total_budget == 4096
-        assert budget.used <= 4096
-        assert budget.remaining >= 0
-
-    def test_over_budget_context_trims_salience_and_transcript(self):
-        builder = self._make_builder(budget=1000)
-        events = []
-        for idx in range(8):
-            events.append(GameEvent(
-                type="speech",
-                payload={
-                    "speaker": f"p{idx + 1:02d}",
-                    "text": "这是很长的发言内容" * 80,
-                    "phase": "speech",
-                    "day_number": 1,
-                },
-            ))
-        state = _make_state(events=events)
-
-        ctx, budget = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-            current_phase="speech",
-        )
-
-        assert budget.used <= budget.total_budget
-        assert len(ctx.recent_transcript) <= 3
-        assert all(item.get("bucket") == "high" for item in ctx.salience_items)
-        assert all(len(item.get("text", "")) <= 120 for item in ctx.recent_transcript)
-
-    def test_context_no_moderator_full(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        # Verify no moderator-full information leaks
-        ctx_str = str(ctx.visible_world_state)
-        assert "moderator" not in ctx_str.lower()
-        # Should not contain other player roles
-        for pid, p in state.players.items():
-            if pid != "p05" and p.role in ("werewolf", "seer", "witch", "hunter", "idiot", "hybrid"):
-                assert p.role not in str(ctx.visible_world_state)
-
-    def test_context_no_other_private_intent(self):
-        builder = self._make_builder()
-        state = _make_state()
-        ctx, _ = builder.build(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        ctx_str = str(ctx.visible_world_state) + str(ctx.belief_state) + str(ctx.salience_items)
-        assert "private_intent" not in ctx_str.lower()
-
-
-# ===================================================================
-# TestCognitivePipeline
-# ===================================================================
-
-class TestCognitivePipeline:
-
-    def test_pipeline_build_context(self):
-        pipeline = CognitivePipeline()
-        state = _make_state()
-        ctx, budget = pipeline.build_context(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-            current_phase="speech",
-        )
-        assert ctx.agent_id == "p05"
-        assert ctx.own_role == "villager"
-        assert budget.total_budget == 4096
-
-    def test_pipeline_with_events(self):
-        pipeline = CognitivePipeline()
-        events = [
-            GameEvent(type="player_died", payload={"player_id": "p05", "reason": "wolf_kill", "timing": "night"}),
-            GameEvent(type="sheriff_elected", payload={"sheriff_id": "p08"}),
-        ]
-        state = GameState(
-            players={
-                "p01": PlayerState(id="p01", role="werewolf"),
-                "p02": PlayerState(id="p02", role="werewolf"),
-                "p03": PlayerState(id="p03", role="werewolf"),
-                "p04": PlayerState(id="p04", role="werewolf"),
-                "p05": PlayerState(id="p05", role="villager", alive=False),
-                "p06": PlayerState(id="p06", role="villager"),
-                "p07": PlayerState(id="p07", role="villager"),
-                "p08": PlayerState(id="p08", role="seer"),
-                "p09": PlayerState(id="p09", role="witch"),
-                "p10": PlayerState(id="p10", role="hunter"),
-                "p11": PlayerState(id="p11", role="idiot"),
-                "p12": PlayerState(id="p12", role="hybrid"),
-            },
-            day_number=1, night_number=1,
-            events=events,
-            sheriff_id="p08",
-            sheriff_badge_state="active",
-            deaths=[Death(player_id="p05", reason="wolf_kill", timing="night", resolution_batch="night_1")],
-        )
-        ctx, _ = pipeline.build_context(
-            game_state=state,
-            viewer_id="p06",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-            current_phase="speech",
-        )
-        assert ctx.visible_world_state["sheriff_id"] == "p08"
-        assert "p05" not in ctx.visible_world_state["alive_players"]
-
-    def test_pipeline_visibility_is_hard_boundary(self):
-        pipeline = CognitivePipeline()
-        state = _make_state()
-        # Seer check result should NOT be in villager's context
-        ctx, _ = pipeline.build_context(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        # Check all context fields for seer private info
-        all_text = (
-            str(ctx.visible_world_state) +
-            str(ctx.salience_items) +
-            str(ctx.belief_state) +
-            str(ctx.contradiction_alerts) +
-            str(ctx.strategy_directive) +
-            str(ctx.recent_transcript)
-        )
-        # Should not contain check_results
-        assert "check_results" not in ctx.visible_world_state
-
-    def test_pipeline_werewolf_context(self):
-        pipeline = CognitivePipeline()
-        state = _make_state()
-        ctx, _ = pipeline.build_context(
-            game_state=state,
-            viewer_id="p01",
-            viewer_role="werewolf",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert ctx.visible_world_state.get("wolf_teammates") is not None
-        assert "p02" in ctx.visible_world_state["wolf_teammates"]
-
-
-# ===================================================================
-# TestVisibilityLeakComprehensive
-# ===================================================================
-
-class TestVisibilityLeakComprehensive:
-
-    def test_no_hidden_identities_in_context(self):
-        pipeline = CognitivePipeline()
-        state = _make_state()
-        for viewer_id, viewer_role in [
-            ("p05", "villager"), ("p08", "seer"), ("p09", "witch"),
-            ("p10", "hunter"), ("p11", "idiot"), ("p12", "hybrid"),
-        ]:
-            ctx, _ = pipeline.build_context(
-                game_state=state,
-                viewer_id=viewer_id,
-                viewer_role=viewer_role,
-                task_type=TaskType.SPEECH,
-                legal_actions=[ActionType.SPEECH],
-                legal_targets=[],
-            )
-            # No player should see other players' hidden roles
-            for pid, p in state.players.items():
-                if pid != viewer_id:
-                    # The visible_world_state should not contain role info
-                    assert "role" not in str(ctx.visible_world_state.get(pid, {}))
-
-    def test_seer_result_not_in_witch_context(self):
-        pipeline = CognitivePipeline()
-        seer_event = GameEvent(
-            type="seer_check",
-            payload={"seer_id": "p08", "target_id": "p01", "result": "werewolf"},
-        )
-        state = GameState(
-            players={
-                "p08": PlayerState(id="p08", role="seer"),
-                "p09": PlayerState(id="p09", role="witch"),
-                "p01": PlayerState(id="p01", role="werewolf"),
-            },
-            events=[seer_event],
-            day_number=1, night_number=1,
-        )
-        ctx, _ = pipeline.build_context(
-            game_state=state,
-            viewer_id="p09",
-            viewer_role="witch",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert "check_results" not in ctx.visible_world_state
-
-    def test_wolf_discussion_not_in_seer_context(self):
-        pipeline = CognitivePipeline()
-        state = _make_state()
-        ctx, _ = pipeline.build_context(
-            game_state=state,
-            viewer_id="p08",
-            viewer_role="seer",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        assert "wolf_teammates" not in ctx.visible_world_state
-
-    def test_no_forbidden_night_info_in_public(self):
-        pipeline = CognitivePipeline()
-        events = [
-            GameEvent(type="seer_check", payload={"target_id": "p01", "alignment": "werewolf", "night_number": 1}),
-            GameEvent(type="witch_antidote_used", payload={"target_id": "p05"}),
-            GameEvent(type="witch_poison_used", payload={"target_id": "p06"}),
-            GameEvent(type="hybrid_master_chosen", payload={"hybrid_id": "p12", "master_id": "p05"}),
-        ]
-        state = _make_state(events=events)
-        ctx, _ = pipeline.build_context(
-            game_state=state,
-            viewer_id="p05",
-            viewer_role="villager",
-            task_type=TaskType.SPEECH,
-            legal_actions=[ActionType.SPEECH],
-            legal_targets=[],
-        )
-        # Villager should NOT see any private night info
-        assert "check_results" not in ctx.visible_world_state
-        assert "antidote_available" not in ctx.visible_world_state
-        assert "master_id" not in ctx.visible_world_state
-        assert "wolf_teammates" not in ctx.visible_world_state
 
 
 # ===================================================================

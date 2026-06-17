@@ -147,3 +147,50 @@ def test_prompt_belief_summary_uses_live_matrix() -> None:
     assert summary["my_suspects"]
     assert summary["my_suspects"][0]["player"] == "p03"
     assert summary["my_suspects"][0]["top_role_guess"] == "werewolf"
+
+
+def test_incremental_remembers_prior_seer_claim_for_later_vote() -> None:
+    """acceptance #7: 增量更新记住先前 seer 线，后来 vote 用先前 claim 判断。"""
+    store = MemoryStore()
+    manager = CognitionStateManager(store)
+    speech = GameEvent(
+        type="speech",
+        payload={"speaker": "p01", "text": "我是预言家 查验p03是狼人", "day_number": 1},
+    )
+    gs1 = _game_with_events([speech])
+    manager.initialize(gs1)
+    manager.update_from_events(gs1)
+    gs2 = _game_with_events([
+        speech,
+        GameEvent(type="vote", payload={"voter": "p01", "target": "p03", "day_number": 1}),
+    ])
+    manager.update_from_events(gs2)
+    eng = manager._credibility_engines["p02"]
+    cred = eng.score_for("p01")
+    assert "vote_follows_black" in cred.evidence
+
+
+def test_incremental_vote_uses_prior_public_evidence_for_trust() -> None:
+    """Later incremental votes should use public anchors from previous batches."""
+    store = MemoryStore()
+    manager = CognitionStateManager(store)
+    speech = GameEvent(
+        type="speech",
+        payload={"speaker": "p01", "text": "我是预言家 查验p03是狼人", "day_number": 1},
+    )
+    gs1 = _game_with_events([speech])
+    manager.initialize(gs1)
+    manager.update_from_events(gs1)
+
+    matrix = store.get_matrix("p02")
+    assert matrix is not None
+    before = matrix.get("p04").trust
+
+    gs2 = _game_with_events([
+        speech,
+        GameEvent(type="vote", payload={"voter": "p04", "target": "p03", "day_number": 1}),
+    ])
+    manager.update_from_events(gs2)
+
+    after = matrix.get("p04").trust
+    assert after > before

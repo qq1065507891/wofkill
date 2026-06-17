@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from werewolf_agent.cognition.belief import BeliefState, BeliefUpdater
+from werewolf_agent.cognition.claim_credibility import SeerClaimCredibilityEngine
+from werewolf_agent.cognition.public_evidence import PublicEvidenceIndex
 from werewolf_agent.cognition.visibility import VisibilityPolicy
 from werewolf_agent.cognition.world_state import (
     StructuredFact,
@@ -46,6 +48,8 @@ class CognitionStateManager:
         self.memory_store = memory_store or MemoryStore()
         self._visibility_policy = visibility_policy or VisibilityPolicy()
         self._belief_states: dict[str, BeliefState] = {}
+        self._credibility_engines: dict[str, SeerClaimCredibilityEngine] = {}
+        self._public_evidence: dict[str, PublicEvidenceIndex] = {}
         self._processed_event_count = 0
         self._role_names: list[str] = []
         self._player_ids: list[str] = []
@@ -63,6 +67,8 @@ class CognitionStateManager:
 
         updater = BeliefUpdater(self._role_names)
         self._belief_states.clear()
+        self._credibility_engines.clear()
+        self._public_evidence.clear()
         self.memory_store.reset_game_memory()
         for viewer_id in self._player_ids:
             self.memory_store.init_matrix(
@@ -74,6 +80,8 @@ class CognitionStateManager:
                 self._player_ids,
                 viewer_id,
             )
+            self._credibility_engines[viewer_id] = SeerClaimCredibilityEngine()
+            self._public_evidence[viewer_id] = PublicEvidenceIndex()
         self._processed_event_count = 0
 
     def processed_event_count(self) -> int:
@@ -100,6 +108,12 @@ class CognitionStateManager:
             belief_state = self._belief_states.get(viewer_id)
             if belief_state is None:
                 belief_state = updater.initialize(self._player_ids, viewer_id)
+            engine = self._credibility_engines.get(viewer_id)
+            if engine is None:
+                engine = SeerClaimCredibilityEngine()
+            evidence_index = self._public_evidence.get(viewer_id)
+            if evidence_index is None:
+                evidence_index = PublicEvidenceIndex()
             visible_facts = [
                 fact for fact in self._visibility_policy.filter_visible_facts(
                     world_state,
@@ -110,8 +124,16 @@ class CognitionStateManager:
             ]
 
             before = self._belief_snapshot(belief_state)
-            belief_state = updater.update(belief_state, visible_facts, game_state.day_number)
+            belief_state = updater.update(
+                belief_state,
+                visible_facts,
+                game_state.day_number,
+                credibility=engine,
+                public_evidence=evidence_index,
+            )
             self._belief_states[viewer_id] = belief_state
+            self._credibility_engines[viewer_id] = engine
+            self._public_evidence[viewer_id] = evidence_index
             self.memory_store.sync_matrix(viewer_id, belief_state)
             evidence_refs = self._attach_evidence(viewer_id, visible_facts, game_state)
             after = self._belief_snapshot(belief_state)

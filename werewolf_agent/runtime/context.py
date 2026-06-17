@@ -1374,6 +1374,7 @@ def build_agent_context(
     ctx_alerts: list[dict[str, Any]] = []
     must_address: list[dict[str, Any]] = []
     belief_dict: dict[str, Any] = {}
+    seer_credibility_summary: dict[str, Any] = {}
     possible_worlds_dict: dict[str, Any] = {}
     simulation_predictions_dict: dict[str, Any] = {}
     possible_worlds_set = None
@@ -1395,6 +1396,7 @@ def build_agent_context(
         from werewolf_agent.cognition.world_state import build_world_state
         from werewolf_agent.cognition.contradiction import ContradictionEngine
         from werewolf_agent.cognition.belief import BeliefUpdater
+        from werewolf_agent.cognition.claim_credibility import SeerClaimCredibilityEngine
 
         world_state = build_world_state(gs)
 
@@ -1408,7 +1410,11 @@ def build_agent_context(
         visible_facts = _vis_policy.filter_visible_facts(
             world_state, player_id, _player_role
         )
-        belief_state = updater.update(belief_state, visible_facts, gs.day_number)
+        credibility_engine = SeerClaimCredibilityEngine()
+        belief_state = updater.update(
+            belief_state, visible_facts, gs.day_number, credibility=credibility_engine,
+        )
+        seer_credibility_summary = credibility_engine.prompt_summary()
 
         # Build structured belief summary for agent prompt
         suspect_list = []
@@ -1441,17 +1447,18 @@ def build_agent_context(
         alerts = contradiction_engine.detect(world_state.facts, gs.day_number)
 
         for alert in alerts:
-            if alert.priority == "high":
-                alert_entry = {
-                    "alert_type": alert.alert_type,
-                    "player_id": alert.player_id,
-                    "priority": alert.priority,
-                    "description": alert.description,
-                    "evidence": list(alert.evidence),
-                }
-                ctx_alerts.append(alert_entry)
+            alert_entry = {
+                "alert_type": alert.alert_type,
+                "player_id": alert.player_id,
+                "priority": alert.priority,
+                "description": alert.description,
+                "evidence": list(alert.evidence),
+            }
+            ctx_alerts.append(alert_entry)
 
         for alert in ctx_alerts:
+            if alert["priority"] != "high":
+                continue
             players = [p for p in alert["player_id"].split(",") if p]
             must_address.append({
                 "alert_type": alert["alert_type"],
@@ -1662,6 +1669,7 @@ def build_agent_context(
         error_pattern_hint=error_pattern_hint,
         recent_transcript=transcript,
         contradiction_alerts=ctx_alerts,
+        seer_credibility=seer_credibility_summary,
         belief_state=belief_dict,
         possible_worlds=possible_worlds_dict,
         simulation_predictions=simulation_predictions_dict,

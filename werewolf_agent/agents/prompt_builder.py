@@ -382,6 +382,8 @@ class PlayerPromptBuilder:
         _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
         _SectionSpec("_build_persona", "【人格】", "人格设定", "style", _NEVER_DROP_TIER),
         _SectionSpec("_build_belief_state", "【辅助】", "我的判断", "private_reasoning", 2),
+        _SectionSpec("_build_contradiction_alerts", "【辅助】", "公开矛盾点", "private_reasoning", 2),
+        _SectionSpec("_build_seer_credibility", "【辅助】", "预言家线可信度", "private_reasoning", 2),
         _SectionSpec("_build_possible_worlds", "【辅助】", "可能世界假设", "private_reasoning", 2),
         _SectionSpec("_build_simulation_predictions", "【辅助】", "未来预测", "private_reasoning", 2),
         _SectionSpec("_build_private_memory_hints", "【辅助】", "本局·私有记忆", "private_memory", 1),
@@ -451,6 +453,8 @@ class PlayerPromptBuilder:
         # grounding to avoid style hints interrupting the public record chain.
         parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
         parts.append(("_build_belief_state", self._label_section("_build_belief_state", self._build_belief_state())))
+        parts.append(("_build_contradiction_alerts", self._label_section("_build_contradiction_alerts", self._build_contradiction_alerts())))
+        parts.append(("_build_seer_credibility", self._label_section("_build_seer_credibility", self._build_seer_credibility())))
         parts.append(("_build_possible_worlds", self._label_section("_build_possible_worlds", self._build_possible_worlds())))
         parts.append(("_build_simulation_predictions", self._label_section("_build_simulation_predictions", self._build_simulation_predictions())))
         parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
@@ -662,6 +666,56 @@ class PlayerPromptBuilder:
         if belief_lines:
             return "【我的判断（基于已有信息的推理，可能是错的）】" + " ".join(belief_lines)
         return ""
+
+    def _build_contradiction_alerts(self) -> str:
+        ctx = self.context
+        alerts = ctx.contradiction_alerts
+        if not alerts:
+            return ""
+        _MAX = 3
+        _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+        typed = [a for a in alerts if isinstance(a, dict)]
+        if not typed:
+            return ""
+        typed.sort(key=lambda a: _PRIORITY_ORDER.get(str(a.get("priority", "")).lower(), 3))
+        lines = ["公开矛盾点（从公开行为推出，可作为攻击/防守依据，非裁判定性）:"]
+        for a in typed[:_MAX]:
+            player = _clean_current_game_token(a.get("player_id") or "", max_chars=24)
+            atype = _clean_current_game_token(a.get("alert_type") or "", max_chars=24)
+            desc = _clean_current_game_token(a.get("description") or "", max_chars=120)
+            line = f"- {player}"
+            if atype:
+                line += f" {atype}"
+            if desc:
+                line += f": {desc}"
+            lines.append(line)
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _build_seer_credibility(self) -> str:
+        ctx = self.context
+        summary = ctx.seer_credibility
+        if not summary:
+            return ""
+        lines_data = summary.get("seer_lines", [])
+        if not lines_data:
+            return ""
+        lines = ["预言家线可信度（公开证据推断，非裁判真相，仅辅助推理）:"]
+        for item in lines_data[:3]:
+            claimant = _clean_current_game_token(item.get("claimant") or "", max_chars=12)
+            status = _clean_current_game_token(item.get("status") or "", max_chars=12)
+            score = _safe_float(item.get("score"), default=0.0)
+            checks = ", ".join(
+                _clean_current_game_token(c, max_chars=20)
+                for c in item.get("checks", [])[:3]
+            )
+            evidence = ", ".join(item.get("evidence", [])[:3])
+            seg = [f"{claimant} {status} score={score:.2f}"]
+            if checks:
+                seg.append(f"查验[{checks}]")
+            if evidence:
+                seg.append(evidence)
+            lines.append("- " + "; ".join(seg))
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def _build_possible_worlds(self) -> str:
         ctx = self.context

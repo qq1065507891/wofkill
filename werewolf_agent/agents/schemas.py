@@ -684,6 +684,7 @@ class AgentContext(BaseModel):
     error_pattern_hint: dict[str, Any] = Field(default_factory=dict)
     belief_state: dict[str, Any] = Field(default_factory=dict)
     contradiction_alerts: list[dict[str, Any]] = Field(default_factory=list)
+    seer_credibility: dict[str, Any] = Field(default_factory=dict)
     strategy_directive: dict[str, Any] = Field(default_factory=dict)
     persona_snapshot: dict[str, Any] = Field(default_factory=dict)
     model_config_snapshot: dict[str, Any] = Field(default_factory=dict)

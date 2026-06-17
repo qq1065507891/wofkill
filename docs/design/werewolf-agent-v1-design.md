@@ -723,7 +723,7 @@ llm_profiles:
 
 认知协处理器原则：
 
-- 每次玩家 Agent 调用前，先执行 `CognitivePipeline.build(agent_id, task_type, game_state)`。
+- 每次玩家 Agent 调用前，先执行 `build_agent_context(engine, game_state, agent_id, task_type)`。
 - 管线产物包括 `structured_world_state_view`、`salience_items`、`belief_state`、`contradiction_alerts`、`strategy_directive` 和 `local_context`。
 - LLM 不负责记账、算身份概率或从长文本里寻找矛盾，这些工作由确定性代码或轻量模型在认知管线中完成。
 - `local_context` 才是进入 LLM 的主要输入，完整公开事件和私有事件只用于审计、回放和认知管线重算。
@@ -850,7 +850,7 @@ llm_profiles:
 Cognitive Coprocessor 是 Agent 调用 LLM 前的认知管线。它的目标是把 LLM 从“全能大脑”降级为“推理与生成引擎”：LLM 不直接吃完整历史，不负责维护关系图，不负责概率计算，也不负责判断自己该不该知道某条信息。
 
 ```text
-CognitivePipeline.build(agent_id, task_type, game_state) -> LocalContext
+build_agent_context(engine, game_state, agent_id, task_type) -> AgentContext
 ```
 
 ### 8.1 管线阶段
@@ -862,7 +862,7 @@ CognitivePipeline.build(agent_id, task_type, game_state) -> LocalContext
 5. Belief Updater：用代码逻辑或轻量概率模型更新 `role_probabilities`、阵营倾向、信任度和开放问题。LLM 只接收计算结果，不直接盘概率。
 6. Contradiction Engine：从关系图中发现矛盾和攻击抓手，例如“跳预言家的玩家没有投自己的查杀”或“警徽流与后续站边冲突”。
 7. Strategy Selector：结合身份、阵营任务、Persona Router 产物和局势风险，选择策略包，例如 `aggressive_defense`、`deep_hook`、`protect_seer`、`push_counter_wagon`。
-8. Local Context Builder：组装给 LLM 的极简上下文，包含身份视角、显著事实、信念摘要、矛盾警报、可用动作、策略指令和输出 schema。
+8. Context Builder（`build_agent_context`）：组装给 LLM 的极简上下文，包含身份视角、显著事实、信念摘要、矛盾警报、可用动作、策略指令和输出 schema。
 9. LLM：基于压缩后的结构化前提生成行动建议、投票理由和自然语言发言。
 
 ### 8.2 输入输出边界

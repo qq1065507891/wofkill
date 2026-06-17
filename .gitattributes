@@ -1,0 +1,1 @@
+werewolf_agent/agents/schemas.py -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

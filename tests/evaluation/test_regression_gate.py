@@ -103,3 +103,25 @@ def test_regression_gate_json_uses_explicit_direction_fields() -> None:
     assert delta["higher_is_better"] is False
     assert delta["regression_amount"] == 1.0
     assert data["checks"][0]["passed"] is False
+
+
+def test_regression_gate_blocks_when_judge_consistency_rate_drops() -> None:
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig,
+        RegressionGate,
+    )
+
+    report = RegressionGate().evaluate(
+        CandidateRegressionConfig(
+            candidate_id="c1",
+            judge_consistency_rate_drop_tolerance=0.02,
+        ),
+        baseline_metrics={"judge_consistency_rate": 0.92},
+        candidate_metrics={"judge_consistency_rate": 0.86},
+        prompt_safe=True,
+    )
+
+    assert report.passed is False
+    assert "judge_consistency_rate_dropped" in report.blocked_reasons
+    by_metric = {delta.metric: delta for delta in report.metric_deltas}
+    assert by_metric["judge_consistency_rate"].regression_amount == 0.06

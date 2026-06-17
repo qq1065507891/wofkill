@@ -13,6 +13,7 @@ class CandidateRegressionConfig:
     hidden_info_leak_increase_tolerance: float = 0.0
     illegal_action_increase_tolerance: float = 0.0
     vote_quality_drop_tolerance: float = 0.0
+    judge_consistency_rate_drop_tolerance: float = 0.0
     target_faction_win_rate_drop_tolerance: float = 0.0
     harmful_transfer_increase_tolerance: float = 0.0
 
@@ -126,6 +127,16 @@ class RegressionGate:
             baseline_metrics=baseline_metrics,
             candidate_metrics=candidate_metrics,
             tolerance=config.vote_quality_drop_tolerance,
+        )
+        self._add_higher_is_better_check(
+            metric_deltas,
+            checks,
+            name="judge_consistency_rate",
+            reason="judge_consistency_rate_dropped",
+            metric="judge_consistency_rate",
+            baseline_metrics=baseline_metrics,
+            candidate_metrics=candidate_metrics,
+            tolerance=config.judge_consistency_rate_drop_tolerance,
         )
         target_win_rate_metric = f"{config.target_faction}_win_rate"
         self._add_higher_is_better_check(
