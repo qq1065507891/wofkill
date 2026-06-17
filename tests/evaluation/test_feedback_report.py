@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from werewolf_agent.evaluation.ablation import OfflineTraceAblationRunner
+from werewolf_agent.evaluation.feedback_report import FeedbackReport
 from werewolf_agent.evaluation.feedback_schemas import (
     DecisionOutcome,
     EvaluationTrace,
@@ -443,5 +444,92 @@ def test_feedback_report_public_view_scrubs_candidate_payload_and_gate_results()
     assert "target_role" not in public_serialized
     assert "ground_truth" not in public_serialized
     assert "p01" not in public_serialized
-    assert "werewolf" not in public_serialized
+    # `werewolf_win_rate` is a public faction aggregate, not a hidden identity,
+    # so it must survive the public-view scrubber. Only the private
+    # `audit_evidence.target_role` payload above is redacted.
+    assert "werewolf_win_rate" in public_serialized
     assert "werewolf_win_rate_dropped" in private_serialized
+
+
+def test_public_view_keeps_werewolf_win_rate() -> None:
+    """The bare token `werewolf` must not scrub the public `werewolf_win_rate`.
+
+    Regression: `_PRIVATE_AUDIT_TOKENS` previously contained `"werewolf"`, which
+    caused any serialized key/value containing that substring (including the
+    legitimate public `werewolf_win_rate` faction aggregate) to be dropped by
+    `_public_safe_json` in the gate-report path
+    (`_gate_report_to_dict` -> `_public_safe_json`).
+    """
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateMetricDelta,
+        CandidateRegressionReport,
+        GateCheck,
+    )
+
+    gate_report = CandidateRegressionReport(
+        candidate_id="c1",
+        passed=False,
+        metric_deltas=[
+            CandidateMetricDelta(
+                metric="werewolf_win_rate",
+                baseline=0.7,
+                candidate=0.5,
+                candidate_minus_baseline=-0.2,
+                higher_is_better=True,
+                regression_amount=0.2,
+                tolerance=0.05,
+            )
+        ],
+        checks=[
+            GateCheck(
+                name="werewolf_win_rate",
+                passed=False,
+                reason="werewolf_win_rate_dropped",
+            )
+        ],
+        blocked_reasons=["werewolf_win_rate_dropped"],
+        prompt_safe=False,
+    )
+    report = FeedbackReport(
+        report_id="r1",
+        batch_id="b1",
+        trace_count=0,
+        module_metrics={},
+        candidate_gate_reports=[gate_report],
+    )
+    serialized = json.dumps(
+        report.to_json_dict(include_private_audit=False),
+        ensure_ascii=False,
+    )
+
+    assert "werewolf_win_rate" in serialized
+    assert "werewolf_win_rate_dropped" in serialized
+
+
+def test_public_view_still_scrubs_private_actual_role() -> None:
+    """Removing `werewolf` from `_PRIVATE_AUDIT_TOKENS` must not weaken the
+    scrubbing of genuinely private audit fields like `actual_role`."""
+    from werewolf_agent.evaluation.feedback_schemas import ImprovementCandidate
+
+    candidate = ImprovementCandidate(
+        candidate_id="c2",
+        source_diagnosis_ids=["d1"],
+        target_module="rag",
+        operation="review_or_rewrite",
+        priority="high",
+        prompt_safe_payload={"recommended_use": "Review issue."},
+        audit_evidence={"actual_role": "werewolf"},
+    )
+    report = FeedbackReport(
+        report_id="r2",
+        batch_id="b1",
+        trace_count=0,
+        module_metrics={},
+        candidates=[candidate],
+    )
+    serialized = json.dumps(
+        report.to_json_dict(include_private_audit=False),
+        ensure_ascii=False,
+    )
+
+    assert "actual_role" not in serialized

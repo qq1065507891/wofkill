@@ -40,7 +40,6 @@ _PRIVATE_AUDIT_TOKENS = {
     "target_faction",
     "target_role",
     "true_world_rank",
-    "werewolf",
 }
 
 
