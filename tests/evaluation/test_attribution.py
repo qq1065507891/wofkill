@@ -214,3 +214,162 @@ def test_is_harmful_false_when_not_cited():
                               cited_by_decision=False, aligned_with_decision=True)
     t = _trace(outcome=DecisionOutcome(legal=False))
     assert is_harmful(exposure, t) is False
+
+
+from werewolf_agent.evaluation.attribution import (
+    derive_public_claim,
+    rebuild_visible_facts,
+    judge_trace,
+)
+from werewolf_agent.evaluation.schemas import GameResult
+
+
+def _result_with_claim(event_log, player_roles=None, player_factions=None):
+    return GameResult(
+        game_id="g1", initial_seed=0, ruleset_id="pre_witch_hunter_idiot_mixed",
+        event_log=event_log,
+        player_roles=player_roles or {"p01": "villager", "p03": "werewolf"},
+        player_factions=player_factions or {"p01": "good", "p03": "werewolf"},
+    )
+
+
+def test_rebuild_visible_facts_uses_payload_day_and_excludes_future_events():
+    event_log = [
+        {"type": "speech", "payload": {
+            "speaker": "p03", "text": "我是预言家", "day_number": 1, "phase": "speech",
+        }},
+        {"type": "speech", "payload": {
+            "speaker": "p04", "text": "我是预言家", "day_number": 2, "phase": "speech",
+        }},
+    ]
+    result = _result_with_claim(
+        event_log,
+        player_roles={"p01": "villager", "p03": "werewolf", "p04": "seer"},
+        player_factions={"p01": "good", "p03": "werewolf", "p04": "good"},
+    )
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="villager",
+        faction="good", phase="speech", day_number=1,
+        decision=DecisionSnapshot(action_type="speech", reason="x"),
+        outcome=DecisionOutcome(),
+    )
+    facts = rebuild_visible_facts(result, trace)
+    assert any(f.fact_type == "speech" and f.source_player == "p03" and f.day == 1 for f in facts)
+    assert not any(f.source_player == "p04" for f in facts)
+
+
+def test_derive_public_claim_reads_prior_self_role_claim():
+    event_log = [
+        {"type": "speech", "payload": {
+            "speaker": "p01", "text": "我是预言家", "day_number": 1, "phase": "speech",
+        }},
+    ]
+    result = _result_with_claim(event_log)
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="villager",
+        faction="good", phase="speech", day_number=2,
+        decision=DecisionSnapshot(action_type="speech", reason="继续警徽流"),
+        outcome=DecisionOutcome(),
+    )
+    assert derive_public_claim(result, trace) == "seer"
+
+
+def test_judge_trace_sets_score_and_sentinel():
+    event_log = [
+        {"type": "speech", "payload": {
+            "speaker": "p01", "text": "我是狼人", "day_number": 1, "phase": "speech",
+        }},
+    ]
+    result = _result_with_claim(
+        event_log,
+        player_roles={"p01": "werewolf", "p03": "villager"},
+        player_factions={"p01": "werewolf", "p03": "good"},
+    )
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="werewolf",
+        faction="werewolf", phase="speech", day_number=2,
+        decision=DecisionSnapshot(action_type="speech", reason="继续公开认狼", raw={"speech": "我是狼人"}),
+        outcome=DecisionOutcome(),
+    )
+    judged = judge_trace(trace, result)
+    assert "judge_consistency_scored" in judged.outcome.outcome_refs
+    assert judged.outcome.local_quality_score == 1.0
+
+
+def test_rebuild_visible_facts_includes_unknown_phase_events_same_day():
+    # An event with an unlisted phase (e.g. "vote_collect") on the same day as
+    # the trace must NOT be excluded by _entry_is_in_trace_prefix just because
+    # its phase is unknown. Unknown phases must default to earliest (-1) so
+    # they stay in the decision prefix (conservative inclusion).
+    from werewolf_agent.evaluation.attribution import _entry_is_in_trace_prefix
+
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="villager",
+        faction="good", phase="speech", day_number=1,
+        decision=DecisionSnapshot(action_type="speech", reason="x"),
+        outcome=DecisionOutcome(),
+    )
+    same_day_unknown_phase = {
+        "type": "vote_collect",
+        "payload": {
+            "speaker": "p05", "text": "收票", "day_number": 1, "phase": "vote_collect",
+        },
+    }
+    future_day_unknown_phase = {
+        "type": "vote_collect",
+        "payload": {
+            "speaker": "p05", "text": "收票", "day_number": 2, "phase": "vote_collect",
+        },
+    }
+    # Same-day unknown-phase event must be retained (rank -1 < speech rank 30).
+    assert _entry_is_in_trace_prefix(same_day_unknown_phase, trace) is True
+    # Future-day unknown-phase event is still excluded by day filter (sanity).
+    assert _entry_is_in_trace_prefix(future_day_unknown_phase, trace) is False
+
+    # Also confirm the rank default directly.
+    from werewolf_agent.evaluation.attribution import _phase_rank
+    assert _phase_rank("vote_collect") == -1
+    assert _phase_rank("speech") == 30
+
+
+def test_derive_public_claim_structured_claim_beats_text_marker():
+    # Structured claim says seer, text mentions villager marker → seer wins.
+    event_log = [
+        {"type": "speech", "payload": {
+            "speaker": "p01", "text": "我是村民但其实是预言家",
+            "day_number": 1, "phase": "speech",
+            "claims": [{"type": "role", "value": "seer"}],
+        }},
+    ]
+    result = _result_with_claim(event_log)
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="seer",
+        faction="good", phase="speech", day_number=2,
+        decision=DecisionSnapshot(action_type="speech", reason="继续"),
+        outcome=DecisionOutcome(),
+    )
+    assert derive_public_claim(result, trace) == "seer"
+
+
+def test_judge_trace_lowers_score_when_wolf_self_id_without_prior_claim():
+    # Wolf says "我是狼人" with NO prior public claim → identity_consistency issue.
+    event_log = [
+        {"type": "speech", "payload": {
+            "speaker": "p02", "text": "天气不错", "day_number": 1, "phase": "speech",
+        }},
+    ]
+    result = _result_with_claim(
+        event_log,
+        player_roles={"p01": "werewolf", "p02": "villager"},
+        player_factions={"p01": "werewolf", "p02": "good"},
+    )
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="werewolf",
+        faction="werewolf", phase="speech", day_number=2,
+        decision=DecisionSnapshot(action_type="speech", reason="公开认狼", raw={"speech": "我是狼人"}),
+        outcome=DecisionOutcome(),
+    )
+    judged = judge_trace(trace, result)
+    assert "judge_consistency_scored" in judged.outcome.outcome_refs
+    # identity_consistency issue fired → score < 1.0
+    assert judged.outcome.local_quality_score < 1.0
