@@ -305,3 +305,26 @@ def test_synthesize_keeps_deterministic_strengths_when_no_llm_section() -> None:
     )
     behaviors = [s.behavior for s in entry.preserved_strengths]
     assert any("证据" in b for b in behaviors)
+
+
+def test_synthesize_marks_corrected_for_varied_denial_phrasings() -> None:
+    from werewolf_agent.memory.reflection import ReflectionSynthesizer
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    report = ReviewReport(game_id="g1", player_id="p01", role="villager", faction_won=False)
+    report.error_analysis.append("误判 某玩家 为 狼人（实际 预言家），最佳角色概率 0.80")
+    for denial in (
+        "我这局没什么问题",
+        "我的判断都挺准的",
+        "没有明显失误",
+        "都还好",
+    ):
+        entry = ReflectionSynthesizer().synthesize(
+            llm_self_review=denial,
+            review_report=report,
+            faction="good",
+        )
+        assert entry.mistake_patterns, f"expected patterns for denial={denial!r}"
+        assert entry.mistake_patterns[0].corrected_from_llm is True, (
+            f"expected corrected_from_llm=True for denial={denial!r}"
+        )
