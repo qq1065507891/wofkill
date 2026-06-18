@@ -14,7 +14,7 @@ from typing import Any, Callable
 from werewolf_agent.rag.ingestion import create_seed_entries
 from werewolf_agent.rag.injector import InjectionContext, RAGInjector
 from werewolf_agent.rag.persistence import load_rag_entries, save_rag_entries
-from werewolf_agent.rag.retriever import StrategyRetriever
+from werewolf_agent.rag.retriever import StrategyRetriever, role_phase_matches
 from werewolf_agent.rag.schemas import RAGEntry, RAGHit, RAGQuery, VisibilityBoundary
 from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
@@ -246,15 +246,7 @@ class RAGKnowledgeService:
             return False
         if query.ruleset_id and meta.ruleset_id and meta.ruleset_id != query.ruleset_id:
             return False
-        role_ok = (
-            not query.role
-            or meta.role_perspective in (query.role, "general", "any", "")
-        )
-        phase_ok = (
-            not query.phase
-            or meta.phase in (query.phase, "general", "")
-        )
-        return role_ok and phase_ok
+        return role_phase_matches(query, meta)
 
     def _vector_candidates(
         self,
@@ -325,30 +317,11 @@ class RAGKnowledgeService:
             meta = entry.metadata
             if query.ruleset_id and meta.ruleset_id and meta.ruleset_id != query.ruleset_id:
                 continue
-            # R9: the previous version used parallel ``if`` checks
-            # (OR semantics), so a cross-role case slipped into the
-            # candidate pool whenever the phase happened to match.
-            # We now require BOTH role and phase to match (each side
-            # accepts the ``general`` wildcard for universal entries),
-            # which preserves role isolation across the metadata
-            # fallback path.
-            #
-            # G-R4-02: the role check also accepts ``"any"`` as a
-            # universal-perspective wildcard, matching the convention
-            # used by the ``基础常识`` seed family (金水 / 银水 /
-            # 对跳判断 / 警徽票权重, etc.). Pre-fix the filter only
-            # accepted ``(query.role, "general", "")``, which
-            # silently dropped every "any" entry once at least one
-            # other entry had populated the ``selected`` pool.
-            role_ok = (
-                not query.role
-                or meta.role_perspective in (query.role, "general", "any", "")
-            )
-            phase_ok = (
-                not query.phase
-                or meta.phase in (query.phase, "general", "")
-            )
-            if role_ok and phase_ok:
+            # R9 / G-R4-02: role/phase hard gate (AND semantics, accepts
+            # the ``general`` / ``any`` / empty universal markers) is
+            # delegated to the shared predicate — single source of truth
+            # with ``StrategyRetriever._filter_candidates``.
+            if role_phase_matches(query, meta):
                 selected.setdefault(entry.entry_id, (0.0, entry))
 
         if selected:
