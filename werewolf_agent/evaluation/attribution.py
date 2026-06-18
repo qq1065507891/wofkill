@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from werewolf_agent.evaluation.feedback_schemas import ModuleExposure
+from werewolf_agent.evaluation.text_similarity import jaccard, tokenize
 
 
 _RAG_TEXT_FIELDS = (
@@ -75,3 +76,52 @@ class AttributionTextResolver:
             if self._reflection_entries is not None:
                 return self._reflection_entries.get(item_id)
         return None
+
+
+_CITED_THRESHOLD = 0.15
+_ACTION_VERBS = ("先", "不要", "避免", "必须", "优先", "核验", "比较", "列")
+
+
+def speech_from_decision(decision) -> str:
+    """Read the public speech text from DecisionSnapshot.raw.
+
+    EvaluationTrace does not retain a standalone parsed_action; speech lives
+    in decision.raw (set by EvaluationTraceBuilder._decision_snapshot).
+    """
+    if decision is None:
+        return ""
+    raw = decision.raw or {}
+    return str(raw.get("speech") or raw.get("public_story") or "")
+
+
+def exposure_representative_text(
+    exposure: ModuleExposure,
+    resolver: AttributionTextResolver,
+) -> str | None:
+    """Prompt-safe representative text for an exposure, or None if unresolved.
+
+    None signals the engine to mark the exposure MetricSupport.UNSUPPORTED
+    (RAG/reflection whose card text cannot be resolved post-game).
+    possible_worlds/simulator always resolve from their structured metadata.
+    """
+    module = exposure.module
+    meta = exposure.metadata
+    if module == "rag":
+        return resolver.rag_text(exposure)
+    if module == "reflection":
+        return resolver.reflection_text(exposure)
+    if module == "possible_worlds":
+        assignments = meta.get("key_assignments") or {}
+        return " ".join(f"{pid}={role}" for pid, role in assignments.items())
+    if module == "simulator":
+        affected = meta.get("affected_players") or []
+        return f"{exposure.item_id} {' '.join(str(p) for p in affected)}".strip()
+    return None
+
+
+def cited(decision, exposure: ModuleExposure, resolver: AttributionTextResolver) -> bool:
+    exp_text = exposure_representative_text(exposure, resolver)
+    if not exp_text:
+        return False  # unresolved → engine marks UNSUPPORTED; not cited
+    decision_text = f"{decision.reason or ''} {speech_from_decision(decision)}"
+    return jaccard(decision_text, exp_text) >= _CITED_THRESHOLD
