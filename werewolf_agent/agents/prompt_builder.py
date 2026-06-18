@@ -147,6 +147,27 @@ def _clean_current_game_token(value: Any, *, max_chars: int) -> str:
     return text[:max_chars]
 
 
+def _clean_current_game_list_items(
+    value: Any,
+    *,
+    limit: int,
+    max_chars: int,
+) -> list[str]:
+    """Clean a list of current-game text items, preserving player ids.
+
+    Mirror of ``_clean_list_items`` but uses ``_clean_current_game_token``
+    (no id substitution) so current-game ``p03`` references survive. Guards
+    against non-list input (returns []) and skips empty items.
+    """
+    if not isinstance(value, list):
+        return []
+    return [
+        _clean_current_game_token(item, max_chars=max_chars)
+        for item in value[:limit]
+        if str(item or "").strip()
+    ]
+
+
 @dataclass(frozen=True)
 class _SectionSpec:
     """Single source of truth for user-prompt section metadata."""
@@ -753,16 +774,12 @@ class PlayerPromptBuilder:
                 )
             else:
                 assignment_text = ""
-            why = [
-                _clean_current_game_token(w, max_chars=80)
-                for w in (world.get("why") or [])[:2]
-                if str(w or "").strip()
-            ]
-            watch_for = [
-                _clean_current_game_token(w, max_chars=80)
-                for w in (world.get("watch_for") or [])[:2]
-                if str(w or "").strip()
-            ]
+            why = _clean_current_game_list_items(
+                world.get("why"), limit=2, max_chars=80
+            )
+            watch_for = _clean_current_game_list_items(
+                world.get("watch_for"), limit=2, max_chars=80
+            )
             line = f"- {label}: prob={probability:.2f}"
             if assignment_text:
                 line += f"; key={assignment_text}"
@@ -797,7 +814,7 @@ class PlayerPromptBuilder:
         for item in predictions[:2]:
             if not isinstance(item, dict):
                 continue
-            event = self._clean_prompt_text(item.get("event"), max_chars=48)
+            event = _clean_current_game_token(item.get("event"), max_chars=48)
             if not event:
                 continue
             probability = _safe_float(item.get("probability"), default=0.0)
@@ -809,11 +826,11 @@ class PlayerPromptBuilder:
                 )
                 if str(player_id or "").strip()
             ]
-            rationale = self._clean_prompt_text(
+            rationale = _clean_current_game_token(
                 item.get("rationale"),
                 max_chars=100,
             )
-            world_ids = self._clean_list_items(
+            world_ids = _clean_current_game_list_items(
                 item.get("world_ids"),
                 limit=3,
                 max_chars=32,

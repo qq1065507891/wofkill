@@ -5138,6 +5138,42 @@ class TestWorldModelPhase0PromptBoundary:
         assert "roles" not in prompt
         assert "hidden truth" not in prompt
 
+    def test_simulation_keeps_current_game_ids_in_rationale_and_event(self):
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            simulation_predictions={
+                "type": "simulation",
+                "horizon": "next_turn",
+                "predictions": [
+                    {
+                        "event": "p03 exile pressure",
+                        "probability": 0.7,
+                        "affected_players": ["p03"],
+                        "rationale": "p03 vote pressure concentrated",
+                        "world_ids": ["World A"],
+                    }
+                ],
+                "warning": "Prediction, not fact.",
+            },
+        )
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        # Current-game IDs in event/rationale must be PRESERVED.
+        assert "p03 exile pressure" in prompt
+        assert "p03 vote pressure concentrated" in prompt
+
+    def test_clean_current_game_list_items_guards_non_list_input(self):
+        from werewolf_agent.agents.prompt_builder import _clean_current_game_list_items
+        # Non-list input must return [] (not iterate chars).
+        assert _clean_current_game_list_items("p03 vote", limit=2, max_chars=80) == []
+        assert _clean_current_game_list_items(None, limit=2, max_chars=80) == []
+        assert _clean_current_game_list_items(
+            ["p03 vote pattern conflicts", "p04 defense"], limit=2, max_chars=80
+        ) == ["p03 vote pattern conflicts", "p04 defense"]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
