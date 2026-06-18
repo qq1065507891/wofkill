@@ -168,3 +168,44 @@ def aligned(
         # the decision adopted a recommended action verb that the card also mentions
         return any(verb in reason and verb in exp_text for verb in _ACTION_VERBS)
     return False
+
+
+_HARMFUL_ACTION_TYPES = frozenset({"vote", "use_poison", "hunter_shot", "sheriff_vote"})
+
+
+def trace_outcome_is_bad(trace) -> bool:
+    """Did this trace's decision produce a bad outcome? Uses the signals
+    revived by monitoring-closure-fix (legal/leak) plus trace-level vote/
+    wrong-target checks that need faction + action_type."""
+    outcome = trace.outcome
+    if outcome is None:
+        return False
+    if outcome.legal is False:
+        return True
+    if outcome.leaked_hidden_info:
+        return True
+    decision = trace.decision
+    action_type = decision.action_type if decision else ""
+    if trace.faction == "good" and action_type == "vote":
+        if outcome.vote_hit_wolf is False:
+            return True
+    if action_type in _HARMFUL_ACTION_TYPES and trace.faction == "good":
+        if outcome.target_faction == "good":
+            return True
+    return False
+
+
+def is_harmful(exposure: ModuleExposure, trace) -> bool:
+    return bool(
+        exposure.cited_by_decision
+        and exposure.aligned_with_decision
+        and trace_outcome_is_bad(trace)
+    )
+
+
+def is_beneficial(exposure: ModuleExposure, trace) -> bool:
+    return bool(
+        exposure.cited_by_decision
+        and exposure.aligned_with_decision
+        and not trace_outcome_is_bad(trace)
+    )

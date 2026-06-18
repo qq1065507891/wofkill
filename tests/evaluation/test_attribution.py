@@ -149,3 +149,68 @@ def test_aligned_rag_missing_resolver_text_is_false():
     resolver = AttributionTextResolver()  # no entries
     exposure = ModuleExposure(module="rag", item_id="missing")
     assert aligned(decision, exposure, "good", resolver) is False
+
+
+from werewolf_agent.evaluation.attribution import trace_outcome_is_bad, is_harmful
+from werewolf_agent.evaluation.feedback_schemas import DecisionOutcome, EvaluationTrace
+
+
+def _trace(action_type="vote", target_id="p03", faction="good", outcome=None, decision=None):
+    return EvaluationTrace(
+        trace_id="t1", game_id="g1", player_id="p01", role="villager",
+        faction=faction, phase="day_vote", day_number=1,
+        decision=decision or DecisionSnapshot(action_type=action_type, target_id=target_id),
+        outcome=outcome,
+    )
+
+
+def test_outcome_is_bad_legal_false():
+    t = _trace(outcome=DecisionOutcome(legal=False))
+    assert trace_outcome_is_bad(t) is True
+
+
+def test_outcome_is_bad_leaked():
+    t = _trace(outcome=DecisionOutcome(leaked_hidden_info=True))
+    assert trace_outcome_is_bad(t) is True
+
+
+def test_outcome_is_bad_good_voter_missed_wolf():
+    t = _trace(
+        action_type="vote", target_id="p07", faction="good",
+        outcome=DecisionOutcome(target_faction="good", vote_hit_wolf=False),
+    )
+    assert trace_outcome_is_bad(t) is True
+
+
+def test_outcome_is_bad_wrong_target_good_hits_good():
+    t = _trace(
+        action_type="use_poison", target_id="p07", faction="good",
+        outcome=DecisionOutcome(target_faction="good", vote_hit_wolf=None),
+    )
+    assert trace_outcome_is_bad(t) is True
+
+
+def test_outcome_is_bad_correct_good_vote_is_false():
+    t = _trace(
+        action_type="vote", target_id="p03", faction="good",
+        outcome=DecisionOutcome(target_faction="werewolf", vote_hit_wolf=True),
+    )
+    assert trace_outcome_is_bad(t) is False
+
+
+def test_is_harmful_requires_cited_aligned_bad():
+    exposure = ModuleExposure(module="possible_worlds", item_id="W",
+                              metadata={"key_assignments": {"p03": "werewolf"}},
+                              cited_by_decision=True, aligned_with_decision=True)
+    t = _trace(action_type="vote", target_id="p03", faction="good",
+              outcome=DecisionOutcome(target_faction="good", vote_hit_wolf=False))
+    # p03 is wolf in world but actual good → bad outcome; cited+aligned → harmful
+    assert is_harmful(exposure, t) is True
+
+
+def test_is_harmful_false_when_not_cited():
+    exposure = ModuleExposure(module="possible_worlds", item_id="W",
+                              metadata={"key_assignments": {"p03": "werewolf"}},
+                              cited_by_decision=False, aligned_with_decision=True)
+    t = _trace(outcome=DecisionOutcome(legal=False))
+    assert is_harmful(exposure, t) is False
