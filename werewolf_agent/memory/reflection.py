@@ -17,6 +17,10 @@ import uuid
 from collections import Counter
 from typing import Any
 
+from werewolf_agent.evaluation.text_similarity import (
+    jaccard as _jaccard,
+    tokenize as _token_set,
+)
 from werewolf_agent.memory.schemas import (
     CrossGameQuery,
     ReflectionEntry,
@@ -58,20 +62,6 @@ def _cap_source_text(text: str, max_chars: int = _SOURCE_TEXT_CAP) -> str:
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[: max_chars - 6] + "…已截断"
-
-
-def _token_set(text: str) -> set[str]:
-    lowered = str(text or "").lower()
-    tokens = re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff]", lowered)
-    return set(tokens)
-
-
-def _jaccard(left: str, right: str) -> float:
-    a = _token_set(left)
-    b = _token_set(right)
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
 
 
 class ReflectionQualityGate:
