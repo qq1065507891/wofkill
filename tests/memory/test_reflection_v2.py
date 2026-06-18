@@ -328,3 +328,22 @@ def test_synthesize_marks_corrected_for_varied_denial_phrasings() -> None:
         assert entry.mistake_patterns[0].corrected_from_llm is True, (
             f"expected corrected_from_llm=True for denial={denial!r}"
         )
+
+
+def test_synthesize_does_not_mark_corrected_for_error_confessions() -> None:
+    # "我的判断都错了" is a CONFESSION, not a denial — must NOT set corrected_from_llm.
+    from werewolf_agent.memory.reflection import ReflectionSynthesizer
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    report = ReviewReport(game_id="g1", player_id="p01", role="villager", faction_won=False)
+    report.error_analysis.append("误判 某玩家 为 狼人（实际 预言家），最佳角色概率 0.80")
+    for confession in ("我的判断都错了", "我的判断都不准", "我的判断都偏了"):
+        entry = ReflectionSynthesizer().synthesize(
+            llm_self_review=confession,
+            review_report=report,
+            faction="good",
+        )
+        assert entry.mistake_patterns, f"expected patterns for confession={confession!r}"
+        assert entry.mistake_patterns[0].corrected_from_llm is False, (
+            f"confession {confession!r} must not be treated as a denial"
+        )

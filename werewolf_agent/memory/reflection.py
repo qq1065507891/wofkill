@@ -270,7 +270,7 @@ class ReflectionSynthesizer:
             review_report.error_analysis
             and re.search(
                 r"没有犯错|没犯错|无错误|都正确|没什么问题|没有明显失误|都还好|"
-                r"判断都挺准|判断都挺准的|没失误|没有失误|都对|我的判断都",
+                r"判断都挺准(?:的)?|没(?:有)?失误|都对",
                 llm_self_review or "",
             )
         )
