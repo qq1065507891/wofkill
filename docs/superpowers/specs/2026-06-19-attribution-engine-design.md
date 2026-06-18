@@ -41,7 +41,10 @@ decision, or caused a bad outcome.
 1. Build a post-game `AttributionEngine` that annotates every module exposure on
    an `EvaluationTrace` with `cited_by_decision`, `aligned_with_decision`, and a
    `harmful_transfer` metadata flag — for the four cognition modules: `rag`,
-   `reflection`, `possible_worlds`, `simulator`.
+   `reflection`, `possible_worlds`, `simulator`. RAG/reflection attribution must
+   resolve the prompt-safe card text post-game by `item_id`; unresolved entries
+   are marked `MetricSupport.UNSUPPORTED` for attribution instead of counted as
+   weak false negatives.
 2. Produce a `judge_consistency_rate` by running `judge_speech_consistency`
    end-to-end per trace, with the `public_facts` context rebuilt post-game from
    the event log.
@@ -67,7 +70,7 @@ decision, or caused a bad outcome.
 3. Do not re-rank reflection cards by `beneficial`/`harmful` signal in this
    plan. The `cited ∧ aligned ∧ correct` (`beneficial`) byproduct is computed
    and stored on the exposure but not fed into `reflection.query_live` ranking
-   (spec line 514 lists that as a future downrank signal). Tracked, not done.
+   in v1. Tracked, not done.
 4. Do not change `ActionContract`, output parsers, or example prompts to add an
    explicit `cited_modules` field. Citation is inferred from text, not declared
    by the LLM.
@@ -75,11 +78,12 @@ decision, or caused a bad outcome.
    behaviour.
 6. Do not run attribution or the judge on the runtime decision path.
 
-## Design Decisions (locked in brainstorming)
+## Design Decisions
 
 1. **`cited_by_decision` = text match (Jaccard).** `cited` is `True` when
    `Jaccard(tokenize(decision.reason + speech), tokenize(exposure_representative_text)) >= 0.15`.
-   Reuses the reflection module's existing `_jaccard` / `_tokenize_situation`.
+   Reuses a shared helper with the same token regex as
+   `memory.reflection._token_set` / `memory.reflection._jaccard`.
    The 0.15 floor is tuned for short texts (avoid false negatives); player IDs
    like `p03` are tokens and are captured, so `possible_worlds`/`simulator`
    need no special handling for citation.
@@ -96,9 +100,10 @@ decision, or caused a bad outcome.
 4. **Timing = post-game.** `AttributionEngine.annotate(traces, result)` runs
    after `EvaluationTraceBuilder.build`. The judge's `public_facts` context is
    rebuilt post-game by filtering `result.event_log` to the trace's
-   `day_number`/`phase` and re-running `build_world_state` — no runtime audit
-   payload change (spec "store source refs and compact module exposure records,
-   not full prompts").
+   `day_number`/`phase`, converting the prefix to `GameEvent` objects inside a
+   temporary `GameState`, and re-running `build_world_state` — no
+   `action_trace_audit` payload growth (spec "store source refs and compact
+   module exposure records, not full prompts").
 
 5. **`cited` text match = unified Jaccard** (not per-module keyword extraction).
    Per-module differences are carried by `aligned`; `cited` stays a single
@@ -117,13 +122,10 @@ EvaluationTraceBuilder.build(result)          # unchanged: assembles traces + ex
   ▼
 AttributionEngine.annotate(traces, result)    # NEW: pure post-game pass
   │   for each trace:
-  │     rebuild public_facts (filter event_log by trace day/phase → build_world_state)
+  │     rebuild public_facts (filter event_log prefix → GameState → build_world_state)
   │     for each exposure in trace.module_exposures (rag/reflection/possible_worlds/simulator):
-  │       exposure.cited_by_decision = _cited(trace.decision, exposure)
-  │       exposure.aligned_with_decision = _aligned(trace.decision, exposure, trace.faction)
-  │       if _is_harmful(exposure, trace.outcome):
-  │           exposure.metadata["harmful_transfer"] = True
-  │     trace.outcome.local_quality_score = judge_speech_consistency(context, action).consistency_score
+  │       rebuild exposure with cited_by_decision / aligned_with_decision / metadata
+  │     rebuild trace with updated exposures + local_quality_score
   │
   ▼
 FullGameAblationRunner                         # produces harmful_transfer_rate + judge_consistency_rate
@@ -142,40 +144,71 @@ decision-vs-exposure semantics.
 
 ## Components
 
+### `AttributionTextResolver` (`evaluation/attribution.py`, new)
+
+```python
+class AttributionTextResolver:
+    def rag_text(self, exposure: ModuleExposure) -> str | None: ...
+    def reflection_text(self, exposure: ModuleExposure) -> str | None: ...
+```
+
+The resolver is the post-game bridge from compact exposure records to the actual
+prompt-safe text the player saw. It may wrap `RAGRepository.get(entry_id)`, a
+`RAGKnowledgeService` entry cache, `ReflectionMemory.all_v2_entries()`, or a
+test fixture map. It must return only prompt-safe fields:
+
+| module | resolved text |
+|---|---|
+| `rag` | `title + situation_signature + transferable_lesson + recommended_action + misuse_risk` from the V2 tactical frame |
+| `reflection` | `prompt_card.theme + prompt_card.lesson + prompt_card.recommended_action + prompt_card.misuse_risk` |
+
+If an exposure cannot be resolved, attribution must rebuild that exposure with
+`support=MetricSupport.UNSUPPORTED` and `metadata["attribution_missing_text"] =
+True`. This keeps unsupported RAG/reflection samples out of
+`harmful_transfer_rate`'s denominator instead of treating them as non-cited /
+non-aligned.
+
 ### `AttributionEngine` (`evaluation/attribution.py`, new)
 
 ```python
 class AttributionEngine:
+    def __init__(self, text_resolver: AttributionTextResolver | None = None) -> None: ...
+
     def annotate(self, traces: list[EvaluationTrace], result: GameResult) -> list[EvaluationTrace]:
         """Post-game: fill cited/aligned/harmful on each cognition exposure,
         and set outcome.local_quality_score from the consistency judge."""
 ```
 
-It mutates exposure fields in place (exposures are `frozen=True` dataclasses —
-see Implementation Note A for the rebuild approach) and returns the traces.
+It returns rebuilt traces. `EvaluationTrace`, `ModuleExposure`, and
+`DecisionOutcome` are `frozen=True`, so the implementation must use
+`dataclasses.replace` and callers must use the returned list.
 
 ### `cited` — `_cited(decision, exposure) -> bool`
 
 ```python
-decision_text = decision.reason + " " + (parsed_action.speech or "")
+decision_text = decision.reason + " " + _speech_from_decision(decision)
 exposure_text = _exposure_representative_text(exposure)
 return _jaccard(_tokenize(decision_text), _tokenize(exposure_text)) >= _CITED_THRESHOLD  # 0.15
 ```
+
+`_speech_from_decision(decision)` reads `DecisionSnapshot.raw`, e.g.
+`raw.get("speech")` or `raw.get("public_story")`, because `EvaluationTrace`
+does not retain a standalone `parsed_action` object after
+`EvaluationTraceBuilder._decision_snapshot`.
 
 `_exposure_representative_text(exposure)` per module:
 
 | module | representative text |
 |---|---|
-| `rag` | `metadata["title"] + " " + metadata["lesson"] + " " + metadata["recommended_action"]` (V2 tactical frame fields; fall back to `metadata["title"]` alone if absent) |
-| `reflection` | `metadata["theme"] + " " + metadata["lesson"] + " " + metadata["recommended_action"]` (same fallback) |
+| `rag` | `text_resolver.rag_text(exposure)`; no weak metadata-only fallback |
+| `reflection` | `text_resolver.reflection_text(exposure)`; no weak `lesson_key`/`quality_status` fallback |
 | `possible_worlds` | `" ".join(f"{pid}={role}" for pid, role in metadata["key_assignments"].items())` (player IDs are tokens) |
-| `simulator` | `metadata["event"] + " " + " ".join(metadata["affected_players"])` |
+| `simulator` | `exposure.item_id + " " + " ".join(metadata["affected_players"])` (`trace_builder._world_model_exposures` stores the prediction event in `item_id`, not metadata) |
 
-`_tokenize` reuses the reflection `_tokenize_situation` regex
-(`[a-z0-9_]+|[一-鿿]`). `_jaccard` is imported from
-`werewolf_agent.memory.reflection` (already shared) or duplicated as a small
-helper in `attribution.py` to avoid a memory→evaluation dependency (see
-Implementation Note B).
+`_tokenize` uses the same regex as reflection's private `_token_set`
+(`[a-z0-9_]+|[一-鿿]`). `_jaccard` is provided by a new shared helper or
+duplicated as a small helper in `attribution.py` to avoid importing private
+memory-module functions.
 
 ### `aligned` — `_aligned(decision, exposure, faction) -> bool`
 
@@ -187,7 +220,7 @@ traces without a target, fall back to player IDs extracted from
 |---|---|
 | `possible_worlds` | `target_id` (or any reason-mentioned player) is in the world's wolf-role assignments (`key_assignments[pid] in {"werewolf","wolf"}`) |
 | `simulator` | `target_id` (or reason-mentioned player) is in `metadata["affected_players"]` |
-| `rag` / `reflection` | `decision.reason` contains an action verb from the `_looks_actionable` token set (`"先","不要","避免","必须","优先","核验","比较","列"`) that also appears in the exposure's `recommended_action` — i.e. the decision adopted the recommended action verb |
+| `rag` / `reflection` | `decision.reason` contains an action verb from the `_looks_actionable` token set (`"先","不要","避免","必须","优先","核验","比较","列"`) that also appears in the resolver-provided representative text. Missing resolver text → mark unsupported, not aligned |
 
 For non-vote/non-speech actions (`wolf_kill`, `use_poison`, `hunter_shot`,
 `sheriff_vote`), use `target_id` with the `possible_worlds`/`simulator` rules
@@ -247,7 +280,7 @@ change**.
 Per trace with non-empty speech:
 
 ```python
-visible_facts = _rebuild_visible_facts(result.event_log, trace)   # filter by day_number/phase → build_world_state → VisibilityPolicy.filter_visible_facts
+visible_facts = _rebuild_visible_facts(result, trace)   # filter event_log prefix → GameState → build_world_state → VisibilityPolicy.filter_visible_facts
 context = {
     "role": trace.role,
     "faction": trace.faction,
@@ -255,17 +288,37 @@ context = {
     "public_facts": visible_facts,
     "visible_facts": visible_facts,
 }
-action = {"speech": parsed.speech, "reason": trace.decision.reason}
+action = {"speech": _speech_from_decision(trace.decision), "reason": trace.decision.reason}
 judgment = judge_speech_consistency(context, action)
-trace.outcome.local_quality_score = judgment.consistency_score
+trace = _replace_trace_outcome_score(trace, judgment.consistency_score)
 ```
 
 `_rebuild_visible_facts` filters `result.event_log` to events with
-`day_number <= trace.day_number` (and matching phase scope), runs
-`build_world_state` (`cognition.world_state`) to get facts, then
-`VisibilityPolicy.filter_visible_facts(world_state, trace.player_id, trace.role)`
-to keep only what this player could see. This is deterministic given the event
-log and reuses the single `build_world_state` source the runtime itself uses.
+`day_number <= trace.day_number` (and matching phase scope), converts each
+filtered event dict to `GameEvent(type=event["type"], payload=event["payload"])`,
+builds a temporary `GameState` with concrete `PlayerState` objects, then runs
+`build_world_state` (`cognition.world_state`) to get facts:
+
+```python
+players = {
+    pid: PlayerState(id=pid, role=role, faction=result.player_factions.get(pid))
+    for pid, role in result.player_roles.items()
+}
+state = GameState(
+    game_id=result.game_id,
+    ruleset_id=result.ruleset_id,
+    players=players,
+    phase=trace.phase,
+    day_number=trace.day_number,
+    night_number=trace.night_number,
+    events=filtered_events,
+)
+```
+
+Then `VisibilityPolicy.filter_visible_facts(world_state, trace.player_id,
+trace.role)` keeps only what this player could see. This is deterministic given
+the event log and reuses the single `build_world_state` source the runtime
+itself uses.
 
 `judge_consistency_rate` = mean of `judgment.consistency_score` over traces
 whose `decision.reason + speech` is non-empty (empty-action traces are skipped,
@@ -278,10 +331,35 @@ In `FullGameAblationRunner` (after each `_run_game`):
 ```python
 metrics = _game_metrics(result)                  # existing
 traces = EvaluationTraceBuilder().build(result)
-AttributionEngine().annotate(traces, result)
-metrics["harmful_transfer_rate"] = _harmful_rate(traces)
+traces = AttributionEngine(text_resolver).annotate(traces, result)
+if text_resolver is not None:
+    metrics["harmful_transfer_rate"] = _harmful_rate(traces)
+else:
+    unsupported_metrics["attribution"] = "text_resolver_required"
 metrics["judge_consistency_rate"] = _mean_consistency(traces)
 ```
+
+`FullGameAblationRunner` therefore gets one new constructor dependency:
+
+```python
+class FullGameAblationRunner:
+    def __init__(
+        self,
+        game_runner_factory: Callable[..., GameResult] | None = None,
+        *,
+        replay_artifact: ReplayArtifact | None = None,
+        attribution_text_resolver: AttributionTextResolver | None = None,
+    ) -> None: ...
+```
+
+Full game runs that enable `required_metrics=("harmful_transfer_rate",
+"judge_consistency_rate")` must provide `attribution_text_resolver` for the
+`harmful_transfer_rate` half. If it is absent, `_enriched_metrics` still emits
+`judge_consistency_rate` when traces can be judged, but omits
+`harmful_transfer_rate` and records `unsupported_metrics["attribution"] =
+"text_resolver_required"` so the existing required-metrics fail-closed behavior
+governs. Unit tests may pass a fixture resolver instead of a real store-backed
+resolver.
 
 ```python
 def _harmful_rate(traces: list[EvaluationTrace]) -> float:
@@ -300,10 +378,17 @@ def _harmful_rate(traces: list[EvaluationTrace]) -> float:
 
 def _mean_consistency(traces: list[EvaluationTrace]) -> float | None:
     scores = [t.outcome.local_quality_score for t in traces
-              if t.outcome and t.decision and (t.decision.reason or _speech(t).strip())
-              and t.outcome.local_quality_score > 0]
+              if t.outcome and t.decision
+              and (t.decision.reason or _speech_from_decision(t.decision).strip())
+              and "judge_consistency_scored" in t.outcome.outcome_refs]
     return sum(scores) / len(scores) if scores else None
 ```
+
+Because `local_quality_score` defaults to `0.0` and a judged trace can also
+legitimately score `0.0`, the implementation must store an explicit sentinel
+(for example appending `"judge_consistency_scored"` to the existing
+`outcome.outcome_refs`) or equivalent side-channel when rebuilding the outcome.
+It must not filter by `local_quality_score > 0`.
 
 Replay path (`_result_from_replay_record`, sparse `GameResult` with empty
 `event_log`/`action_records`): cannot build traces → both keys omitted. Callers
@@ -322,10 +407,10 @@ FullGameAblationRunner.run
         baseline_metrics = _enriched_metrics(baseline)   # _game_metrics + traces + annotate + 2 new keys
         ablated_metrics  = _enriched_metrics(ablated)
         pair = FullGameAblationPair(..., baseline_metrics, ablated_metrics)
-  └─ _metric_deltas(pairs) → FullGameAblationReport.metric_deltas now includes
-     harmful_transfer_rate + judge_consistency_rate deltas
+  └─ _metric_deltas(pairs) → FullGameAblationReport.metric_deltas includes
+     emitted enriched metric deltas
   └─ RegressionGate.evaluate(config, baseline_metrics, candidate_metrics, ...)
-        → harmful_transfer (lower-is-better) + judge_consistency_rate (higher-is-better)
+        → harmful_transfer_rate when available + judge_consistency_rate
           checks now receive real values; required_metrics fail-closed triggers
           if a producer is silently absent
 ```
@@ -363,6 +448,10 @@ FullGameAblationRunner.run
 - `tests/evaluation/test_attribution.py` (new):
   - `_cited`: Jaccard above/below 0.15 threshold for each of the four modules'
     representative text; player-ID token capture for possible_worlds/simulator.
+  - `_exposure_representative_text`: RAG/reflection use resolver-provided
+    prompt-safe text; unresolved entries become `MetricSupport.UNSUPPORTED` with
+    `metadata["attribution_missing_text"] = True` and are excluded from
+    `_harmful_rate`'s supported denominator.
   - `_aligned`: each module's direction rule (possible_worlds wolf-assignment
     match/mismatch; simulator affected_players match; rag/reflection
     action-verb adoption).
@@ -371,11 +460,18 @@ FullGameAblationRunner.run
     good-voter `vote_hit_wolf=False`, wrong_target).
   - `judge` producer: rebuilt `public_facts` yield a non-empty
     `PublicEvidenceIndex`; `judge_consistency_rate` mean over traces.
+  - `judge_consistency_rate`: includes judged traces with
+    `local_quality_score == 0.0` when the explicit judged sentinel is present.
   - `annotate`: end-to-end on a fixture `GameResult` → exposures carry
     cited/aligned/harmful; `local_quality_score` populated.
 - `tests/evaluation/test_full_game_ablation.py` (extend):
-  - `_enriched_metrics` emits `harmful_transfer_rate` + `judge_consistency_rate`
-    on the deterministic-fallback path; replay path omits them.
+  - `_enriched_metrics` emits `harmful_transfer_rate` +
+    `judge_consistency_rate` on the deterministic-fallback path when an
+    `attribution_text_resolver` is present; replay path omits them.
+  - Missing `attribution_text_resolver` omits `harmful_transfer_rate`, still
+    emits `judge_consistency_rate` when judge inputs are present, and reports
+    `unsupported_metrics["attribution"]`, so `required_metrics` can fail closed
+    instead of silently emitting weak/no-op attribution.
 - `tests/evaluation/test_regression_gate.py` (extend):
   - End-to-end: an ablation pair carrying the two metrics, with
     `required_metrics=("judge_consistency_rate","harmful_transfer_rate")`,
@@ -387,16 +483,18 @@ FullGameAblationRunner.run
 1. **`EvaluationTrace` / `ModuleExposure` are `@dataclass(frozen=True)`.**
    Annotating cited/aligned/harmful requires rebuilding the exposure (and its
    parent trace) with updated fields, not mutating in place. Implementation
-   must use `dataclasses.replace` chains (see Implementation Note A). This is
+   must use `dataclasses.replace` chains. This is
    mechanical but verbose; a small `_replace_exposure` / `_replace_trace` helper
    keeps it readable.
-2. **`_jaccard` / `_tokenize_situation` live in `memory.reflection`.** Importing
-   them into `evaluation.attribution` creates an `evaluation → memory`
-   dependency. Preferred: move the two pure helpers into a shared
-   `evaluation/text_similarity.py` (or `memory/text_helpers.py`) and have both
-   `reflection` and `attribution` import from there. Fallback: duplicate the
-   ~10-line helpers in `attribution.py` (DRY violation but no cycle). Decision
-   deferred to the implementation plan (see Open Decision 1).
+2. **Text-similarity helpers are private today.** `memory.reflection` has
+   private `_token_set` / `_jaccard` helpers, while RAG retriever has its own
+   `_tokenize_situation`. Importing private helpers from `evaluation.attribution`
+   would create brittle cross-module coupling. Preferred: move the pure token
+   and Jaccard helpers into `evaluation/text_similarity.py` (or another shared
+   neutral module) and have both `reflection` and `attribution` import from
+   there. Fallback: duplicate the small helpers in `attribution.py` (DRY
+   violation but no cycle). Decision deferred to the implementation plan (see
+   Open Decision 1).
 3. **`public_claim` derivation for the judge.** `judge_speech_consistency`'s
    `identity_consistency` reads `context.public_claim`. The trace does not
    carry an explicit public_claim; it is derived from the player's public
@@ -414,38 +512,19 @@ FullGameAblationRunner.run
 
 ## Open Decisions
 
-1. **Shared text-similarity helper location.** Move `_jaccard` /
-   `_tokenize_situation` to a shared module (recommended, breaks the
-   evaluation→memory edge) vs duplicate in `attribution.py`. Recommend: move to
+1. **Shared text-similarity helper location.** Move reflection's private
+   `_token_set` / `_jaccard` and the compatible RAG token regex to a shared
+   module vs duplicate in `attribution.py`. Recommend: move to
    `evaluation/text_similarity.py` and have `memory.reflection` re-import, since
    `evaluation` is the broader consumer and `memory.reflection` already has an
-   `evaluation`-adjacent role.
+   evaluation-adjacent role.
 2. **Store `beneficial` on exposure metadata.** Cheap byproduct, unlocks
    future reflection downrank. Recommend: yes, store
    `metadata["beneficial"]=True` for `cited ∧ aligned ∧ ¬bad`, since the
    attribution pass already computes all three.
 
-## Out of Scope / Future
+## Future
 
-- `skill` / `persona` attribution (behavioural priors; ill-defined citation
-  semantics).
-- Feeding `beneficial` / `harmful` into `reflection.query_live` re-ranking
-  (spec line 514 downrank).
-- Live-agent ablation harness causal deltas (spec Phase 7B).
-- Per-module harmful rates broken out in the gate (currently the gate consumes
-  the aggregate `harmful_transfer_rate` across the four modules; per-module
-  breakdown stays in `feedback_report.module_metrics` for review).
-
-## Self-Review
-
-- **Placeholders:** none. Each component has concrete pseudocode or a table.
-- **Internal consistency:** `harmful = cited ∧ aligned ∧ bad` is stated
-  identically in Goals, Design Decisions, Components, and Safety. The four
-  modules are listed identically in Goals, Non-Goals (excluded skill/persona),
-  Components tables, and `_harmful_rate`.
-- **Scope:** one post-game engine + two metric producers + gate wiring. Single
-  implementation plan sized.
-- **Ambiguity:** `aligned` for rag/reflection is pinned to the
-  `_looks_actionable` verb set (reused, not invented); the frozen-dataclass
-  rebuild approach is named (`replace`); the `_jaccard` location is an explicit
-  Open Decision rather than left vague.
+- Per-module harmful rates broken out in the gate. V1 consumes the aggregate
+  `harmful_transfer_rate` across the four modules; per-module breakdown stays
+  in `feedback_report.module_metrics` for review.
