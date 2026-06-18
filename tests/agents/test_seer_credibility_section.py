@@ -40,3 +40,19 @@ def test_seer_credibility_capped_at_three():
     prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
     assert "p00" in prompt and "p01" in prompt and "p02" in prompt
     assert "p03" not in prompt
+
+
+def test_seer_credibility_evidence_is_cleaned_and_capped():
+    ctx = _make_ctx({"seer_lines": [
+        {"claimant": "p02", "status": "supported", "score": 0.8,
+         "checks": ["p03:wolf"],
+         "evidence": ["p03 black-check line one\nline two", "x" * 200]},
+    ]})
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    # newline collapsed: text on both sides still present, no raw newline leak
+    assert "line one" in prompt
+    assert "line two" in prompt
+    assert "\nline two" not in prompt
+    # each evidence item capped well below 200 chars (max_chars=40)
+    assert "x" * 200 not in prompt
+    assert "x" * 41 not in prompt  # truncated to <=40 chars

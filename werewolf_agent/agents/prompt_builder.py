@@ -729,7 +729,11 @@ class PlayerPromptBuilder:
                 _clean_current_game_token(c, max_chars=20)
                 for c in item.get("checks", [])[:3]
             )
-            evidence = ", ".join(item.get("evidence", [])[:3])
+            evidence = ", ".join(
+                _clean_current_game_token(e, max_chars=40)
+                for e in (item.get("evidence") or [])[:3]
+                if str(e or "").strip()
+            )
             seg = [f"{claimant} {status} score={score:.2f}"]
             if checks:
                 seg.append(f"查验[{checks}]")
