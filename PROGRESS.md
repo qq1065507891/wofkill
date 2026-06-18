@@ -4,10 +4,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **reflection-synthesis-upgrade** — 2026-06-18 (COMPLETE)
-- Active task: 按 plan `docs/superpowers/plans/2026-06-18-reflection-synthesis-upgrade.md` 升级反思合成——`wrong_action` 移出 prompt-visible 安全扫描集、synthesizer 解析 LLM【保留的优点】为 `preserved_strengths`、加宽 `corrected_from_llm` 否认检测（并收紧避免匹配错误自述）
+- Current phase: **prompt-sanitizer-fix** — 2026-06-18 (COMPLETE)
+- Active task: 按 plan `docs/superpowers/plans/2026-06-18-prompt-sanitizer-fix.md` 修提示词脱敏器误用——possible_worlds/simulation 改用本局清理器保留玩家 ID、seer_credibility.evidence 加清洗+上限、speech 示例 p05→pXX、persona never-drop 决议记入 spec
 - Task owner: Claude development session
 - Last updated: 2026-06-18
+- **本次新增 (prompt-sanitizer-fix)**: `prompt_builder.py` `_build_possible_worlds` 的 label/why/watch_for 与 `_build_simulation_predictions` 的 event/rationale/world_ids 从跨局脱敏器 `_clean_prompt_text`/`_clean_list_items`（会把本局 `p03` 替换成"历史玩家"，损坏本局推理信号）改用本局清理器 `_clean_current_game_token`（保留玩家 ID）；新增模块级 `_clean_current_game_list_items`（含 `isinstance(list)` 防护，id 保留）统一当前局 list 清理，possible_worlds why/watch_for 回填使用；`_build_seer_credibility` 的 `evidence` 从原始 join 改为 `_clean_current_game_token(e, max_chars=40)`（折叠换行+截断+跳空）；`_format_examples` 发言示例 2 处硬编码 `p05`→`pXX`（与 vote 示例占位符约定一致，防 LLM 误抄）；persona never-drop 与 spec `2026-06-12-prompt-balance-hardening-design.md:93` 冲突，记入该 spec 决议更新（保留 never-drop 行为，不改代码/测试）。5 任务 TDD subagent-driven，每任务 spec+quality 双审。全量 3387 passed, 1 skipped（零回归）。
 - **本次新增 (reflection-synthesis-upgrade)**: `schemas.py` `ReflectionEntryV2.prompt_visible_texts()` 移除 `mistake_patterns[].wrong_action`（承载 `review.py:108` 的 `实际 {actual}` 真相，audit-only，堵住 `_has_unsafe_truth_claim` 被 `auto_verified` 豁免的纵深洞）；`reflection.py` 新增 `_extract_llm_strengths`（regex 解析【保留的优点】段为 fact-free `preserved_strengths`，含真相 token 的条目丢弃 + ID scrub，上限 2），`synthesize` 与确定性 strengths 经 `_jaccard`≥0.6 去重合并（总上限 3，实现 spec Synthesis rule 1 的 strengths 半）；`corrected_from_llm` 否认 regex 加宽并收紧（去掉过宽的`我的判断都`前缀，避免匹配`我的判断都错了`这类错误自述，新增负面测试）。`tests/memory/test_reflection_v2.py` +6 测试。`reflection.py` 的 `ReflectionPreservedStrength` 无 `fact_basis` 字段（`extra="forbid"`），provenance 记在 docstring + `source.llm_self_review`。全量 3382 passed, 1 skipped（零回归）。
 - **本次新增 (monitoring-closure-fix)**: `regression_gate.py` `CandidateRegressionConfig` 加 `required_metrics`（默认空，向后兼容），缺失即追加 `required_metric_missing:{m}` 失败检查；`full_game_ablation.py` `_game_metrics` 从 `action_records` 算好人投狼准确率产出 `vote_quality`（无好人票时省略 key，避免 replay 路径误报 0）；新增 `evaluation/decision_helpers.py`（迁出 `decision_is_legal_from_trace`/`dialogue_leaked_from_trace`/`TARGET_REQUIRED_ACTIONS`，metrics.py 改私有别名 import 保持调用点不变），`trace_builder._decision_outcome` 用其填 `legal`/`leaked_hidden_info`，diagnostics 的 `illegal_action`/`hidden_info_leak` 从死代码复活；`feedback_report._PRIVATE_AUDIT_TOKENS` 移除 `werewolf`（公共 `werewolf_win_rate` 不再被误删，私有字段仍由 `_PRIVATE_AUDIT_KEYS` 键级过滤保护）。5 任务 TDD subagent-driven 执行，每任务 spec+quality 双审通过。`tests/evaluation tests/cognition tests/runtime` 1289 passed。
 - **本次新增 (seer-claim-credibility)**: 新增 `cognition/claim_credibility.py`（SeerClaimCredibilityEngine + scoring/status/snapshot）；`belief.py` update 按 fact 顺序 observe+apply、`_apply_seer_claim`/`_apply_role_claim` 用 credibility、`_apply_vote` 用 running anchors；`cognition_state.py` 存 credibility engine per viewer；`schemas.py` AgentContext 加 seer_credibility；`runtime/context.py` build_agent_context 创建 engine 填充；`prompt_builder.py` 加 `_build_seer_credibility` section。8 条 acceptance 全达成，2123 tests passed，离线评估 good_false_sus 0.143→0.0
@@ -25,6 +26,35 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## prompt-sanitizer-fix — 2026-06-18 (已完成)
+
+**背景**: 六模块审查发现提示词组建模块的脱敏器误用——本局认知 section（possible_worlds/simulation）误用跨局脱敏器 `_clean_prompt_text`/`_clean_list_items`，把本局 `p03` 替换成"历史玩家"，损坏本局推理信号（"为什么怀疑 p03"→"为什么怀疑历史玩家"）；seer_credibility.evidence 原始 join 无清洗无上限；speech 示例硬编码 p05（vote 段已改 pXX）；persona never-drop 与 spec 冲突。plan `docs/superpowers/plans/2026-06-18-prompt-sanitizer-fix.md`。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| `_build_possible_worlds` | label/why/watch_for 从 `_clean_prompt_text`/`_clean_list_items`（id→历史玩家）改用 `_clean_current_game_token`（保留本局 id）；warning 保留跨局清理（静态模板无真实 id） |
+| `_clean_current_game_list_items`（新，模块级） | 镜像 `_clean_list_items` 但用 `_clean_current_game_token`（id 保留）+ `isinstance(list)` 防护；possible_worlds why/watch_for + simulation world_ids 统一使用 |
+| `_build_simulation_predictions` | event/rationale 改 `_clean_current_game_token`；world_ids 改新 helper；warning/horizon 保留跨局清理 |
+| `_build_seer_credibility` | evidence 从原始 join 改 `_clean_current_game_token(e, max_chars=40)`（折叠换行+截断+跳空）；claimant/status/checks 未动 |
+| `_format_examples` | 发言示例 2 处硬编码 p05（speech 文本 + pressure_target）→ pXX，与 vote 示例约定一致 |
+| spec `2026-06-12-prompt-balance-hardening-design.md:93` | persona never-drop 决议更新（保留 never-drop 行为，覆盖原"no longer never-drop"提议；不改代码/测试） |
+
+**验证**:
+- 每任务 TDD red→green，subagent-driven + spec/quality 双审（commit `c0f87a2`/`e3b39f3`/`b49446b`/`e928dfd`）。
+- Task 1 code-quality 首轮 APPROVED 但标 CRLF 提交污染（`.gitattributes` 强制 test_prompt_builder.py CRLF→LF 重写，+1585/−1558，真实新增~25 行）——因 LF 是仓库既定基线且属一次性，接受；Task 2 起 test diff 恢复正常小 diff。
+- Task 2 新增 `_clean_current_game_list_items` helper 修复 Task 1 内联代码缺 `isinstance` 防护的 minor + 消除重复。
+- `python -m pytest -q -o addopts=""`（不指定 basetemp 规避复用权限）→ **3387 passed, 1 skipped**（零回归，比 reflection-synthesis-upgrade 的 3382 多 5 个新测试）。
+- `python -m compileall -q werewolf_agent` 干净。
+
+**开放风险/局限**:
+- **`example_target` fallback**（`prompt_builder.py:1596`）：`ctx.legal_targets[0] if ctx.legal_targets else "p05"` 仍硬编码 p05（legal_targets 空时的 fallback，罕见路径），plan 明确 out of scope，留后续。
+- **`_format_speech_intent_prompt`（1921-1922）也有硬编码 p05**（Task 4 code-quality 新发现，不在 plan 范围也未在 Open Risks 列）：`{"intent":"question_target","target_id":"p05",...}` 与 speech 示例同性质 LLM 误抄风险，属 `OutputMode.SPEECH_INTENT` 的独立 prompt 路径，留后续单独修复 + 加 intent 示例测试。
+- 截断后缀不一致：`_clean_current_game_token` 硬截断无 `…已截断`（跨局 `_clean_prompt_text` 有）；80/100 字符上限下很少触发，非阻塞，留后续统一。
+- `affected_players`（simulation）仍用内联 `_clean_current_game_token` 而非新 helper，预先存在且正确（保留 id），留后续收敛。
+- warning/horizon 静态模板保留跨局清理器（无真实 id，切换是装饰性，未做以保持最小 diff）。
 
 ## reflection-synthesis-upgrade — 2026-06-18 (已完成)
 

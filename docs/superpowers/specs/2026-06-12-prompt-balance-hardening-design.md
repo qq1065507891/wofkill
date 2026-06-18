@@ -92,6 +92,14 @@ does not grow without bound.
 
 Persona is therefore no longer a never-drop section.
 
+> **决议更新（2026-06-18，`prompt-sanitizer-fix`）**：实现中 persona 仍是 never-drop
+> （`prompt_builder.py` `_SectionSpec("_build_persona", ..., _NEVER_DROP_TIER)`，
+> 测试 `test_persona_core_survives_under_budget_pressure` 锁定），与上文"no longer
+> never-drop"的原始提议相反。保留 never-drop 的理由：persona 已行为化为短行
+> （`_clean_prompt_text` + `_MAX_PERSONA_LINE_CHARS` 限长），预算压力下很少触发裁剪；
+> 保持 persona 稳定可避免 LLM 在预算紧张时丢失人格/发言风格一致性。若未来要改回可裁剪，
+> 需同步更新该测试并评估对发言风格一致性的影响。此为对上文提议的覆盖性决议。
+
 ### 4. Persona Isolation
 
 Persona injection will contain role-neutral expression guidance only. Raw
