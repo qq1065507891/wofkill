@@ -4,7 +4,7 @@
 
 **Goal:** Build a post-game `AttributionEngine` that annotates cognition-module exposures with `cited_by_decision` / `aligned_with_decision` / `harmful_transfer`, runs the consistency judge per trace with rebuilt `public_facts`, and produces `harmful_transfer_rate` + `judge_consistency_rate` that feed the regression gate.
 
-**Architecture:** New `werewolf_agent/evaluation/attribution.py` (pure post-game pass) + `evaluation/text_similarity.py` (shared token/Jaccard helpers). `AttributionEngine.annotate(traces, result)` runs after `EvaluationTraceBuilder.build`, resolves RAG/reflection card text via an injected `AttributionTextResolver`, marks unresolved exposures `UNSUPPORTED`, and rebuilds the frozen traces with `dataclasses.replace`. `FullGameAblationRunner` gains an `attribution_text_resolver` constructor param and an `_enriched_metrics` helper that emits the two new metric keys. Zero runtime/schema/rule-engine change.
+**Architecture:** New `werewolf_agent/evaluation/attribution.py` (pure post-game pass) + `evaluation/text_similarity.py` (shared token/Jaccard helpers). `AttributionEngine.annotate(traces, result)` runs after `EvaluationTraceBuilder.build`, resolves RAG/reflection card text via an injected `AttributionTextResolver`, marks unresolved exposures `UNSUPPORTED`, and rebuilds the frozen traces with `dataclasses.replace`. `FullGameAblationRunner` gains an `attribution_text_resolver` constructor param and an `_enriched_metrics` helper that emits the two new metric keys plus unsupported reasons. Zero runtime/schema/rule-engine change.
 
 **Tech Stack:** Python 3.11, pytest, dataclasses (`replace` on frozen dataclasses), conda env `wofkill`, PowerShell. Tests run with `-o addopts=""` (no `--basetemp`, to avoid the local pytest-xdist `.pytest_tmp` permission issue).
 
@@ -15,7 +15,7 @@
 - **Create** `werewolf_agent/evaluation/text_similarity.py` — shared `tokenize` + `jaccard` (same regex as `memory.reflection._token_set`). Single responsibility: pure text-similarity primitives.
 - **Create** `werewolf_agent/evaluation/attribution.py` — `AttributionTextResolver`, `AttributionEngine`, and module-level helpers (`_speech_from_decision`, `_exposure_representative_text`, `_cited`, `_aligned`, `_trace_outcome_is_bad`, `_rebuild_visible_facts`). Single responsibility: post-game decision-vs-exposure attribution.
 - **Modify** `werewolf_agent/memory/reflection.py` — `_token_set` / `_jaccard` delegate to `evaluation.text_similarity` (keeps the private names as thin aliases so all in-file call sites are unchanged).
-- **Modify** `werewolf_agent/evaluation/full_game_ablation.py` — `FullGameAblationRunner.__init__` gains `attribution_text_resolver`; new `_enriched_metrics(result, resolver)` emits the two metric keys; `run`/`_run_replay` use it; replay path omits both keys.
+- **Modify** `werewolf_agent/evaluation/full_game_ablation.py` — `FullGameAblationRunner.__init__` gains `attribution_text_resolver`; new `_enriched_metrics(result, resolver)` emits the two metric keys and unsupported reasons; `run`/`_run_replay` use it; replay path omits both attribution keys.
 - **Test** `tests/evaluation/test_attribution.py` (new), `tests/evaluation/test_full_game_ablation.py` (extend), `tests/evaluation/test_regression_gate.py` (extend), `tests/evaluation/test_text_similarity.py` (new, small).
 
 **Design boundaries respected:** No change to game rules, role abilities, rule engine, runtime decision path, `action_trace_audit` payload, or the `reflections` DB schema. Attribution reads `GameResult` (a post-game artifact already allowed to hold ground truth, same boundary as `world_model_eval`). `public_facts` are rebuilt in-memory post-game, never persisted to an audit payload.
@@ -712,12 +712,12 @@ git commit -m "feat: attribution harmful and beneficial outcome signals"
 
 ---
 
-## Task 6: judge producer — rebuild public_facts + scored sentinel
+## Task 6: judge producer — rebuild public_facts + public_claim + scored sentinel
 
-**Why:** spec: per trace, rebuild `public_facts` from `result.event_log` prefix (filter by `day_number`, convert dicts to `GameEvent`, build a temporary `GameState`, run `build_world_state`, then `VisibilityPolicy.filter_visible_facts`), run `judge_speech_consistency`, store `consistency_score`. Because `local_quality_score` defaults to 0.0 and a judged trace can legitimately score 0.0, store an explicit sentinel (`"judge_consistency_scored"` appended to `outcome.outcome_refs`) — do NOT filter by `> 0`.
+**Why:** spec: per trace, rebuild `public_facts` from the `result.event_log` prefix (filter by payload/top-level `day_number` and same-day phase scope, convert dicts to `GameEvent`, build a temporary `GameState`, run `build_world_state`, then `VisibilityPolicy.filter_visible_facts`), derive `public_claim` from the player's prior public role claims, run `judge_speech_consistency`, and store `consistency_score`. Because `local_quality_score` defaults to 0.0 and a judged trace can legitimately score 0.0, store an explicit sentinel (`"judge_consistency_scored"` appended to `outcome.outcome_refs`) — do NOT filter by `> 0`.
 
 **Files:**
-- Modify: `werewolf_agent/evaluation/attribution.py` (add `rebuild_visible_facts`, `judge_trace`)
+- Modify: `werewolf_agent/evaluation/attribution.py` (add `rebuild_visible_facts`, `derive_public_claim`, `judge_trace`)
 - Test: `tests/evaluation/test_attribution.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -725,7 +725,11 @@ git commit -m "feat: attribution harmful and beneficial outcome signals"
 Append to `tests/evaluation/test_attribution.py`:
 
 ```python
-from werewolf_agent.evaluation.attribution import rebuild_visible_facts, judge_trace
+from werewolf_agent.evaluation.attribution import (
+    derive_public_claim,
+    rebuild_visible_facts,
+    judge_trace,
+)
 from werewolf_agent.evaluation.schemas import GameResult
 
 
@@ -738,11 +742,20 @@ def _result_with_claim(event_log, player_roles=None, player_factions=None):
     )
 
 
-def test_rebuild_visible_facts_returns_public_facts_for_viewer():
+def test_rebuild_visible_facts_uses_payload_day_and_excludes_future_events():
     event_log = [
-        {"type": "speech", "payload": {"player_id": "p03", "text": "我是预言家"}, "day_number": 1},
+        {"type": "speech", "payload": {
+            "speaker": "p03", "text": "我是预言家", "day_number": 1, "phase": "speech",
+        }},
+        {"type": "speech", "payload": {
+            "speaker": "p04", "text": "我是预言家", "day_number": 2, "phase": "speech",
+        }},
     ]
-    result = _result_with_claim(event_log)
+    result = _result_with_claim(
+        event_log,
+        player_roles={"p01": "villager", "p03": "werewolf", "p04": "seer"},
+        player_factions={"p01": "good", "p03": "werewolf", "p04": "good"},
+    )
     trace = EvaluationTrace(
         trace_id="t", game_id="g1", player_id="p01", role="villager",
         faction="good", phase="speech", day_number=1,
@@ -750,31 +763,54 @@ def test_rebuild_visible_facts_returns_public_facts_for_viewer():
         outcome=DecisionOutcome(),
     )
     facts = rebuild_visible_facts(result, trace)
-    assert isinstance(facts, list)
+    assert any(f.fact_type == "speech" and f.source_player == "p03" and f.day == 1 for f in facts)
+    assert not any(f.source_player == "p04" for f in facts)
 
 
-def test_judge_trace_sets_score_and_sentinel():
+def test_derive_public_claim_reads_prior_self_role_claim():
     event_log = [
-        {"type": "speech", "payload": {"player_id": "p01", "text": "我怀疑p03"}, "day_number": 1},
+        {"type": "speech", "payload": {
+            "speaker": "p01", "text": "我是预言家", "day_number": 1, "phase": "speech",
+        }},
     ]
     result = _result_with_claim(event_log)
     trace = EvaluationTrace(
         trace_id="t", game_id="g1", player_id="p01", role="villager",
-        faction="good", phase="speech", day_number=1,
-        decision=DecisionSnapshot(action_type="speech", reason="怀疑p03", raw={"speech": "怀疑p03"}),
+        faction="good", phase="speech", day_number=2,
+        decision=DecisionSnapshot(action_type="speech", reason="继续警徽流"),
+        outcome=DecisionOutcome(),
+    )
+    assert derive_public_claim(result, trace) == "seer"
+
+
+def test_judge_trace_sets_score_and_sentinel():
+    event_log = [
+        {"type": "speech", "payload": {
+            "speaker": "p01", "text": "我是狼人", "day_number": 1, "phase": "speech",
+        }},
+    ]
+    result = _result_with_claim(
+        event_log,
+        player_roles={"p01": "werewolf", "p03": "villager"},
+        player_factions={"p01": "werewolf", "p03": "good"},
+    )
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="werewolf",
+        faction="werewolf", phase="speech", day_number=2,
+        decision=DecisionSnapshot(action_type="speech", reason="继续公开认狼", raw={"speech": "我是狼人"}),
         outcome=DecisionOutcome(),
     )
     judged = judge_trace(trace, result)
     assert "judge_consistency_scored" in judged.outcome.outcome_refs
-    assert judged.outcome.local_quality_score >= 0.0
+    assert judged.outcome.local_quality_score == 1.0
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `python -m pytest tests/evaluation/test_attribution.py -q -o addopts="" -k "rebuild_visible_facts or judge_trace"`
+Run: `python -m pytest tests/evaluation/test_attribution.py -q -o addopts="" -k "rebuild_visible_facts or derive_public_claim or judge_trace"`
 Expected: FAIL — names not exported.
 
-- [ ] **Step 3: Implement rebuild_visible_facts + judge_trace**
+- [ ] **Step 3: Implement rebuild_visible_facts + derive_public_claim + judge_trace**
 
 Append to `werewolf_agent/evaluation/attribution.py`:
 
@@ -784,28 +820,91 @@ import dataclasses
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.cognition.world_state import build_world_state
 from werewolf_agent.cognition.visibility import VisibilityPolicy
+from werewolf_agent.evaluation.feedback_schemas import DecisionOutcome
 from werewolf_agent.evaluation.llm_judge import judge_speech_consistency
 
 _JUDGE_SENTINEL = "judge_consistency_scored"
+_PHASE_ORDER = {
+    "setup": 0,
+    "night": 10,
+    "wolf": 11,
+    "witch": 12,
+    "seer": 13,
+    "sheriff": 20,
+    "sheriff_speech": 21,
+    "speech": 30,
+    "day": 35,
+    "day_vote": 40,
+    "vote": 40,
+}
+_ROLE_CLAIMS = {
+    "werewolf": ("我是狼人", "我是狼", "我们狼队", "狼队视角"),
+    "seer": ("我是预言家", "我跳预言家", "认预言家"),
+    "witch": ("我是女巫", "我认女巫"),
+    "hunter": ("我是猎人", "我认猎人"),
+    "villager": ("我是村民", "我是民", "我认民"),
+}
+
+
+def _event_payload(entry: dict) -> dict:
+    payload = entry.get("payload")
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _event_day(entry: dict) -> int:
+    payload = _event_payload(entry)
+    value = entry.get("day_number", payload.get("day_number", 0))
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _event_phase(entry: dict) -> str:
+    payload = _event_payload(entry)
+    return str(entry.get("phase") or payload.get("phase") or "")
+
+
+def _phase_rank(phase: str) -> int:
+    return _PHASE_ORDER.get(str(phase or ""), 999)
+
+
+def _entry_is_in_trace_prefix(entry: dict, trace) -> bool:
+    day = _event_day(entry)
+    trace_day = trace.day_number or 0
+    if day > trace_day:
+        return False
+    if day == trace_day and _phase_rank(_event_phase(entry)) > _phase_rank(trace.phase):
+        return False
+    return True
+
+
+def _game_event_from_entry(entry: dict) -> GameEvent:
+    payload = _event_payload(entry)
+    if "day_number" not in payload and entry.get("day_number") is not None:
+        payload["day_number"] = entry.get("day_number")
+    if "phase" not in payload and entry.get("phase"):
+        payload["phase"] = entry.get("phase")
+    if "speaker" not in payload and payload.get("player_id"):
+        payload["speaker"] = payload["player_id"]
+    return GameEvent(type=str(entry.get("type") or ""), payload=payload)
 
 
 def rebuild_visible_facts(result, trace):
     """Rebuild the public facts visible to ``trace``'s player at decision time.
 
-    Filter result.event_log to events with day_number <= trace.day_number,
-    convert dicts to GameEvent, build a temporary GameState with concrete
-    PlayerState objects, run build_world_state, then filter to what this
-    player could see. Deterministic given the event log.
+    Filter result.event_log to the decision prefix using payload/top-level
+    day_number and same-day phase rank, convert dicts to GameEvent, build a
+    temporary GameState with concrete PlayerState objects, run
+    build_world_state, then filter to what this player could see.
     """
-    day = trace.day_number or 0
     events = []
     for entry in result.event_log:
         if not isinstance(entry, dict):
             continue
-        e_day = entry.get("day_number")
-        if e_day is not None and e_day > day:
+        if not _entry_is_in_trace_prefix(entry, trace):
             continue
-        events.append(GameEvent(type=str(entry.get("type") or ""), payload=entry.get("payload") or {}))
+        events.append(_game_event_from_entry(entry))
     players = {
         pid: PlayerState(id=pid, role=role, faction=result.player_factions.get(pid))
         for pid, role in result.player_roles.items()
@@ -823,6 +922,30 @@ def rebuild_visible_facts(result, trace):
     return VisibilityPolicy().filter_visible_facts(world_state, trace.player_id, trace.role)
 
 
+def derive_public_claim(result, trace) -> str:
+    """Return the player's latest prior public role claim, if one exists."""
+    latest = ""
+    for entry in result.event_log:
+        if not isinstance(entry, dict):
+            continue
+        if not _entry_is_in_trace_prefix(entry, trace):
+            continue
+        if str(entry.get("type") or "") not in {"speech", "sheriff_speech"}:
+            continue
+        payload = _event_payload(entry)
+        speaker = str(payload.get("speaker") or payload.get("player_id") or "")
+        if speaker != trace.player_id:
+            continue
+        for claim in payload.get("claims", []) or []:
+            if isinstance(claim, dict) and claim.get("type") == "role" and claim.get("value"):
+                latest = str(claim["value"]).lower()
+        text = str(payload.get("text") or payload.get("speech") or "")
+        for role, markers in _ROLE_CLAIMS.items():
+            if any(marker in text for marker in markers):
+                latest = role
+    return latest
+
+
 def judge_trace(trace, result):
     """Run the consistency judge on a trace with rebuilt public_facts.
 
@@ -838,13 +961,13 @@ def judge_trace(trace, result):
     context = {
         "role": trace.role,
         "faction": trace.faction,
-        "public_claim": "",
+        "public_claim": derive_public_claim(result, trace),
         "public_facts": visible_facts,
         "visible_facts": visible_facts,
     }
     action = {"speech": speech, "reason": reason}
     judgment = judge_speech_consistency(context, action)
-    old_outcome = trace.outcome
+    old_outcome = trace.outcome or DecisionOutcome()
     new_refs = list((old_outcome.outcome_refs if old_outcome else []) or [])
     if _JUDGE_SENTINEL not in new_refs:
         new_refs.append(_JUDGE_SENTINEL)
@@ -858,7 +981,7 @@ def judge_trace(trace, result):
 
 - [ ] **Step 4: Run the judge tests**
 
-Run: `python -m pytest tests/evaluation/test_attribution.py -q -o addopts="" -k "rebuild_visible_facts or judge_trace"`
+Run: `python -m pytest tests/evaluation/test_attribution.py -q -o addopts="" -k "rebuild_visible_facts or derive_public_claim or judge_trace"`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1152,7 +1275,7 @@ git commit -m "feat: attribution harmful_rate and mean_consistency metric helper
 
 ## Task 9: FullGameAblationRunner — resolver param + _enriched_metrics
 
-**Why:** spec: `FullGameAblationRunner.__init__` gains `attribution_text_resolver`. `_enriched_metrics(result, resolver)` emits `judge_consistency_rate` always (when traces can be judged) and `harmful_transfer_rate` only when a resolver is present (else records `unsupported_metrics["attribution"]`). Replay path (sparse GameResult) omits both.
+**Why:** spec: `FullGameAblationRunner.__init__` gains `attribution_text_resolver`. `_enriched_metrics(result, resolver)` emits `judge_consistency_rate` always (when traces can be judged) and `harmful_transfer_rate` only when a resolver is present (else records `unsupported_metrics["attribution"]`). `run` must merge per-result unsupported reasons into `FullGameAblationReport.unsupported_metrics`; otherwise the resolver-missing signal is silently lost. Replay path (sparse `GameResult`) omits both.
 
 **Files:**
 - Modify: `werewolf_agent/evaluation/full_game_ablation.py`
@@ -1200,6 +1323,16 @@ def test_enriched_metrics_omits_harmful_without_resolver():
         votes=[("p01", "p02")],
         winning_faction="good",
     )
+    result.event_log.append({
+        "type": "action_trace_audit",
+        "payload": {
+            "player_id": "p01", "phase": "day_vote", "day_number": 1,
+            "action_trace": {
+                "final_action_type": "vote",
+                "parsed_action": {"target_id": "p02", "reason": "投p02"},
+            },
+        },
+    })
     metrics, unsupported = _enriched_metrics(result, None)
     assert "harmful_transfer_rate" not in metrics
     assert unsupported.get("attribution") == "text_resolver_required"
@@ -1218,6 +1351,31 @@ def test_enriched_metrics_replay_omits_both():
     # replay-path sparse GameResult → no action_trace_audit → no traces → both keys omitted
     assert "harmful_transfer_rate" not in metrics
     assert "judge_consistency_rate" not in metrics
+
+
+def test_runner_reports_attribution_unsupported_when_resolver_missing():
+    from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
+
+    def fake_runner(**kwargs):
+        result = _make_result_with_votes(
+            player_factions={"p01": "good", "p02": "werewolf"},
+            votes=[("p01", "p02")],
+            winning_faction="good",
+        )
+        result.event_log.append({
+            "type": "action_trace_audit",
+            "payload": {
+                "player_id": "p01", "phase": "day_vote", "day_number": 1,
+                "action_trace": {
+                    "final_action_type": "vote",
+                    "parsed_action": {"target_id": "p02", "reason": "投p02"},
+                },
+            },
+        })
+        return result
+
+    report = FullGameAblationRunner(game_runner_factory=fake_runner).run(_config(seed_set=[1]))
+    assert report.unsupported_metrics["attribution"] == "text_resolver_required"
 ```
 
 (Adjust `_make_result_with_votes` usage to match the helper that monitoring-closure-fix Task 2 added to this file. If the helper isn't there, construct `GameResult` with `action_records=[ActionRecord(...)]` directly per the existing file pattern.)
@@ -1225,7 +1383,7 @@ def test_enriched_metrics_replay_omits_both():
 - [ ] **Step 3: Run to verify it fails**
 
 Run: `python -m pytest tests/evaluation/test_full_game_ablation.py -q -o addopts="" -k enriched_metrics`
-Expected: FAIL — `_enriched_metrics` not defined.
+Expected: FAIL — `_enriched_metrics` not defined; after `_enriched_metrics` exists but before report merging, the runner unsupported test still fails.
 
 - [ ] **Step 4: Implement _enriched_metrics + resolver param**
 
@@ -1266,6 +1424,13 @@ def _enriched_metrics(result: GameResult, text_resolver):
     else:
         unsupported["attribution"] = "text_resolver_required"
     return metrics, unsupported
+
+
+def _merge_unsupported_metrics(target: dict[str, str], *sources: dict[str, str]) -> None:
+    """Merge unsupported reasons from baseline/ablated result enrichment."""
+    for source in sources:
+        for key, reason in source.items():
+            target.setdefault(key, reason)
 ```
 
 Update `FullGameAblationRunner.__init__` to accept and store the resolver:
@@ -1282,20 +1447,35 @@ Update `FullGameAblationRunner.__init__` to accept and store the resolver:
         self._attribution_text_resolver = attribution_text_resolver
 ```
 
-Update the pair construction in `run` (lines 112-118) and `_run_replay` (184-190) to use `_enriched_metrics`:
+Update the pair construction in `run` (lines 112-118) and `_run_replay` (184-190) to use `_enriched_metrics`, and merge unsupported reasons into the report.
+
+Immediately before the seed loop, add:
+
 ```python
-            baseline_metrics, baseline_unsupported = _enriched_metrics(baseline, self._attribution_text_resolver)
-            ablated_metrics, ablated_unsupported = _enriched_metrics(ablated, self._attribution_text_resolver)
-            pairs.append(FullGameAblationPair(
-                seed=seed,
-                baseline_game_id=baseline.game_id,
-                ablated_game_id=ablated.game_id,
-                baseline_metrics=baseline_metrics,
-                ablated_metrics=ablated_metrics,
-            ))
+        unsupported_metrics: dict[str, str] = {}
 ```
 
-(For `_run_replay`, the replay path's sparse GameResult yields no traces → both keys omitted, which the test asserts. Keep `_metric_deltas` unchanged — it already aggregates whatever keys are present.)
+After each baseline and ablated `GameResult` pair is available, replace direct `_game_metrics(...)` calls with:
+
+```python
+            baseline_metrics, baseline_unsupported = _enriched_metrics(
+                baseline,
+                self._attribution_text_resolver,
+            )
+            ablated_metrics, ablated_unsupported = _enriched_metrics(
+                ablated,
+                self._attribution_text_resolver,
+            )
+            _merge_unsupported_metrics(
+                unsupported_metrics,
+                baseline_unsupported,
+                ablated_unsupported,
+            )
+```
+
+Then pass `unsupported_metrics=unsupported_metrics` into the returned `FullGameAblationReport`.
+
+(For `_run_replay`, the replay path's sparse GameResult yields no traces → both keys omitted and no attribution unsupported reason, which the test asserts. Keep `_metric_deltas` unchanged — it already aggregates whatever keys are present.)
 
 - [ ] **Step 5: Run the ablation test file**
 
@@ -1311,45 +1491,62 @@ git commit -m "feat: full-game ablation emits harmful_transfer_rate and judge_co
 
 ---
 
-## Task 10: Regression gate end-to-end with real producers
+## Task 10: Regression gate required-metrics hardening + producer wiring test
 
-**Why:** spec: prove the monitoring-closure-fix `required_metrics` fail-closed now has real producers behind it. An ablation pair carrying the two metrics, with `required_metrics=("judge_consistency_rate","harmful_transfer_rate")`, must pass when present and fail-closed when absent.
+**Why:** spec: prove the monitoring-closure-fix `required_metrics` fail-closed now has real producers behind it. An ablation pair carrying the two metrics, with `required_metrics=("judge_consistency_rate","harmful_transfer_rate")`, must pass when present and fail-closed when absent. The current gate only fails when both baseline and candidate lack a required metric; this task tightens it so one-sided producer loss also fails closed.
 
 **Files:**
+- Modify: `werewolf_agent/evaluation/regression_gate.py`
 - Test: `tests/evaluation/test_regression_gate.py`
 
-- [ ] **Step 1: Write the end-to-end test**
+- [ ] **Step 1: Write the producer-wiring and fail-closed tests**
 
 Append to `tests/evaluation/test_regression_gate.py`:
 
 ```python
-def test_gate_passes_when_required_metrics_produced():
+def test_gate_accepts_metrics_emitted_by_enriched_producer():
+    from werewolf_agent.evaluation.attribution import AttributionTextResolver
+    from werewolf_agent.evaluation.full_game_ablation import _enriched_metrics
     from werewolf_agent.evaluation.regression_gate import (
         CandidateRegressionConfig, RegressionGate,
     )
+    from werewolf_agent.evaluation.schemas import ActionRecord, GameResult
+
+    result = GameResult(
+        game_id="g", initial_seed=0, ruleset_id="pre_witch_hunter_idiot_mixed",
+        player_roles={"p01": "villager", "p02": "werewolf"},
+        player_factions={"p01": "good", "p02": "werewolf"},
+        winning_faction="good",
+        action_records=[ActionRecord(player_id="p01", action_type="vote", target_id="p02")],
+        event_log=[{
+            "type": "action_trace_audit",
+            "payload": {
+                "player_id": "p01", "phase": "day_vote", "day_number": 1,
+                "action_trace": {
+                    "final_action_type": "vote",
+                    "parsed_action": {"target_id": "p02", "reason": "投p02", "speech": ""},
+                },
+            },
+        }],
+    )
+    metrics, unsupported = _enriched_metrics(result, AttributionTextResolver())
+    assert unsupported == {}
+    assert {"judge_consistency_rate", "harmful_transfer_rate"} <= set(metrics)
+
     config = CandidateRegressionConfig(
         candidate_id="c1",
         required_metrics=("judge_consistency_rate", "harmful_transfer_rate"),
     )
     report = RegressionGate().evaluate(
         config,
-        baseline_metrics={
-            "good_win_rate": 0.5,
-            "judge_consistency_rate": 0.8,
-            "harmful_transfer_rate": 0.1,
-        },
-        candidate_metrics={
-            "good_win_rate": 0.5,
-            "judge_consistency_rate": 0.8,
-            "harmful_transfer_rate": 0.1,
-        },
+        baseline_metrics=metrics,
+        candidate_metrics=metrics,
         prompt_safe=True,
     )
     assert report.passed is True
 
 
 def test_gate_fails_closed_when_producer_silently_absent():
-    # A producer that forgets to emit the metrics → required_metrics fail-closed
     from werewolf_agent.evaluation.regression_gate import (
         CandidateRegressionConfig, RegressionGate,
     )
@@ -1367,18 +1564,69 @@ def test_gate_fails_closed_when_producer_silently_absent():
     reasons = " ".join(report.blocked_reasons)
     assert "judge_consistency_rate" in reasons
     assert "harmful_transfer_rate" in reasons
+
+
+def test_gate_fails_closed_when_required_metric_missing_on_one_side():
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig, RegressionGate,
+    )
+    config = CandidateRegressionConfig(
+        candidate_id="c1",
+        required_metrics=("judge_consistency_rate", "harmful_transfer_rate"),
+    )
+    report = RegressionGate().evaluate(
+        config,
+        baseline_metrics={
+            "good_win_rate": 0.5,
+            "judge_consistency_rate": 0.8,
+            "harmful_transfer_rate": 0.1,
+        },
+        candidate_metrics={
+            "good_win_rate": 0.5,
+            "judge_consistency_rate": 0.8,
+        },
+        prompt_safe=True,
+    )
+    assert report.passed is False
+    assert "required_metric_missing:harmful_transfer_rate:candidate" in report.blocked_reasons
 ```
 
-- [ ] **Step 2: Run the gate tests**
+- [ ] **Step 2: Run to verify the one-sided missing case fails**
 
-Run: `python -m pytest tests/evaluation/test_regression_gate.py -q -o addopts="" -k "required_metrics_produced or silently_absent"`
-Expected: PASS (these exercise the monitoring-closure-fix `required_metrics` mechanism against the keys this plan produces — proving the wiring).
+Run: `python -m pytest tests/evaluation/test_regression_gate.py -q -o addopts="" -k "silently_absent or one_side or enriched_producer"`
+Expected: FAIL before the gate hardening — the one-sided missing test passes incorrectly today because baseline has the key.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Harden required_metrics**
+
+In `werewolf_agent/evaluation/regression_gate.py`, replace the current `for required in config.required_metrics` block with:
+
+```python
+        for required in config.required_metrics:
+            missing_sides = []
+            if required not in baseline_metrics:
+                missing_sides.append("baseline")
+            if required not in candidate_metrics:
+                missing_sides.append("candidate")
+            if not missing_sides:
+                continue
+            checks.append(GateCheck(
+                name=f"required_{required}",
+                passed=False,
+                reason=f"required_metric_missing:{required}:{','.join(missing_sides)}",
+                metric=required,
+            ))
+```
+
+- [ ] **Step 4: Run the gate tests**
+
+Run: `python -m pytest tests/evaluation/test_regression_gate.py -q -o addopts="" -k "silently_absent or one_side or enriched_producer"`
+Expected: PASS (exercises producer wiring, both-sides missing fail-closed, and one-sided producer loss fail-closed).
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add tests/evaluation/test_regression_gate.py
-git commit -m "test: regression gate end-to-end with attribution producers"
+git add werewolf_agent/evaluation/regression_gate.py tests/evaluation/test_regression_gate.py
+git commit -m "fix: fail closed when required metrics are missing on one side"
 ```
 
 ---
@@ -1420,7 +1668,7 @@ git commit -m "docs: log attribution engine in PROGRESS"
 
 - **Attribution is correlation, not causation** (spec `evaluation-feedback-loop-design.md:842`). `harmful = cited ∧ aligned ∧ bad` is high-precision but may miss half-followed cards; strong causal claims need the live-agent ablation harness (out of scope).
 - **`skill` / `persona` excluded** (behavioural priors; ill-defined citation semantics).
-- **`beneficial` byproduct stored** (`metadata["beneficial"]`) but not fed to `reflection.query_live` re-ranking (spec line 514 future downrank). Tracked.
+- **`beneficial` byproduct stored** (`metadata["beneficial"]`) but not fed to `reflection.query_live` re-ranking (source-design future downrank). Tracked.
 - **Resolver production wiring:** tests use fixture dicts; production needs a store-backed resolver (`RAGRepository.get` / `ReflectionMemory.all_v2_entries`). A follow-up wires the real resolver into `game_runner` / the evaluation pipeline.
 - **`memory.reflection` now imports `evaluation.text_similarity`** (memory → evaluation edge). Verified non-cyclic (evaluation imports nothing from memory.reflection). If a future change makes evaluation import memory.reflection, this edge cycles — move `text_similarity` to a neutral `core/` module then.
 - **Judge `public_claim` derived as `""`** when no public claim event is found pre-trace; the identity dimension then only fires on wolf self-identification. Acceptable; documented in spec.
@@ -1429,5 +1677,5 @@ git commit -m "docs: log attribution engine in PROGRESS"
 ## Self-Review
 
 - **Spec coverage:** Goal 1 (cited/aligned/harmful + resolver + UNSUPPORTED) → Tasks 2-5, 7. Goal 2 (judge_consistency) → Task 6. Goal 3 (harmful_transfer_rate) → Tasks 8-9. Goal 4 (wire into runner) → Task 9. Goal 5 (zero runtime change) → respected throughout. Goal 6 (deterministic/unit-tested) → every task is TDD. spec Components (Resolver, Engine, cited, aligned, harmful, judge, metric producers) each map to a task. spec Testing bullets each map to test steps.
-- **Placeholder scan:** no TBD/TODO. Each code step shows actual code. Task 9 Step 1 references the `_make_result_with_votes` helper from monitoring-closure-fix Task 2 with a fallback instruction — verification, not a placeholder.
+- **Completeness scan:** no unresolved marker text. Each code step shows actual code. Task 9 Step 1 references the `_make_result_with_votes` helper from monitoring-closure-fix Task 2 with a fallback instruction — verification, not a placeholder.
 - **Type consistency:** `AttributionTextResolver` constructor used identically in Tasks 2/3/7/9. `AttributionEngine(text_resolver).annotate(traces, result)` signature consistent across Tasks 7/9. `_JUDGE_SENTINEL = "judge_consistency_scored"` defined in Task 6, used in Tasks 6/8. `_COGNITION_MODULES` defined in Task 7, used in Task 8. `MetricSupport.UNSUPPORTED` import added in Task 7 Step 3. `harmful_rate`/`mean_consistency` defined Task 8, imported Task 9.
