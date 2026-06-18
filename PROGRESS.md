@@ -4,10 +4,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **prompt-sanitizer-fix** — 2026-06-18 (COMPLETE)
-- Active task: 按 plan `docs/superpowers/plans/2026-06-18-prompt-sanitizer-fix.md` 修提示词脱敏器误用——possible_worlds/simulation 改用本局清理器保留玩家 ID、seer_credibility.evidence 加清洗+上限、speech 示例 p05→pXX、persona never-drop 决议记入 spec
+- Current phase: **rag-role-hardening** — 2026-06-18 (COMPLETE)
+- Active task: 按 plan `docs/superpowers/plans/2026-06-18-rag-role-hardening.md` 闭合 RAG 默认 runtime 路径（vector_store=None）的 role/phase 隔离缺口——提取共享 `role_phase_matches` 谓词 + `_filter_candidates` 加硬过滤 + knowledge_service 两处内联副本委托给谓词（消除三路漂移）
 - Task owner: Claude development session
 - Last updated: 2026-06-18
+- **本次新增 (rag-role-hardening)**: `retriever.py` 新增模块级 `role_phase_matches(query, meta)`（role 通配 `general`/`any`/`""`，phase 通配 `general`/`""`，AND 语义，单一真源）；`StrategyRetriever._filter_candidates` 加 `if not role_phase_matches(query, meta): continue` 硬过滤（默认 runtime 路径 `vector_store=None` 从此有 role/phase 隔离，pre-fix 跨角色案例可经软分泄漏进 live top-3）；`knowledge_service.py` 的 `_passes_live_metadata_filter` 与 `_vector_candidates` 内联复检两处副本委托给 `role_phase_matches`（消除三路通配约定漂移，纯重构无行为变化）。新增 `test_default_runtime_path_rejects_cross_role_case`（覆盖 `vector_store=None` 路径，pre-fix 现有测试只测 vector 路径）。`_score` 软分（0.15/0.05）未动（现仅在准入集内排序）。2 任务 TDD subagent-driven，spec+quality 双审。全量 3388 passed, 1 skipped（零回归）。
 - **本次新增 (prompt-sanitizer-fix)**: `prompt_builder.py` `_build_possible_worlds` 的 label/why/watch_for 与 `_build_simulation_predictions` 的 event/rationale/world_ids 从跨局脱敏器 `_clean_prompt_text`/`_clean_list_items`（会把本局 `p03` 替换成"历史玩家"，损坏本局推理信号）改用本局清理器 `_clean_current_game_token`（保留玩家 ID）；新增模块级 `_clean_current_game_list_items`（含 `isinstance(list)` 防护，id 保留）统一当前局 list 清理，possible_worlds why/watch_for 回填使用；`_build_seer_credibility` 的 `evidence` 从原始 join 改为 `_clean_current_game_token(e, max_chars=40)`（折叠换行+截断+跳空）；`_format_examples` 发言示例 2 处硬编码 `p05`→`pXX`（与 vote 示例占位符约定一致，防 LLM 误抄）；persona never-drop 与 spec `2026-06-12-prompt-balance-hardening-design.md:93` 冲突，记入该 spec 决议更新（保留 never-drop 行为，不改代码/测试）。5 任务 TDD subagent-driven，每任务 spec+quality 双审。全量 3387 passed, 1 skipped（零回归）。
 - **本次新增 (reflection-synthesis-upgrade)**: `schemas.py` `ReflectionEntryV2.prompt_visible_texts()` 移除 `mistake_patterns[].wrong_action`（承载 `review.py:108` 的 `实际 {actual}` 真相，audit-only，堵住 `_has_unsafe_truth_claim` 被 `auto_verified` 豁免的纵深洞）；`reflection.py` 新增 `_extract_llm_strengths`（regex 解析【保留的优点】段为 fact-free `preserved_strengths`，含真相 token 的条目丢弃 + ID scrub，上限 2），`synthesize` 与确定性 strengths 经 `_jaccard`≥0.6 去重合并（总上限 3，实现 spec Synthesis rule 1 的 strengths 半）；`corrected_from_llm` 否认 regex 加宽并收紧（去掉过宽的`我的判断都`前缀，避免匹配`我的判断都错了`这类错误自述，新增负面测试）。`tests/memory/test_reflection_v2.py` +6 测试。`reflection.py` 的 `ReflectionPreservedStrength` 无 `fact_basis` 字段（`extra="forbid"`），provenance 记在 docstring + `source.llm_self_review`。全量 3382 passed, 1 skipped（零回归）。
 - **本次新增 (monitoring-closure-fix)**: `regression_gate.py` `CandidateRegressionConfig` 加 `required_metrics`（默认空，向后兼容），缺失即追加 `required_metric_missing:{m}` 失败检查；`full_game_ablation.py` `_game_metrics` 从 `action_records` 算好人投狼准确率产出 `vote_quality`（无好人票时省略 key，避免 replay 路径误报 0）；新增 `evaluation/decision_helpers.py`（迁出 `decision_is_legal_from_trace`/`dialogue_leaked_from_trace`/`TARGET_REQUIRED_ACTIONS`，metrics.py 改私有别名 import 保持调用点不变），`trace_builder._decision_outcome` 用其填 `legal`/`leaked_hidden_info`，diagnostics 的 `illegal_action`/`hidden_info_leak` 从死代码复活；`feedback_report._PRIVATE_AUDIT_TOKENS` 移除 `werewolf`（公共 `werewolf_win_rate` 不再被误删，私有字段仍由 `_PRIVATE_AUDIT_KEYS` 键级过滤保护）。5 任务 TDD subagent-driven 执行，每任务 spec+quality 双审通过。`tests/evaluation tests/cognition tests/runtime` 1289 passed。
@@ -26,6 +27,34 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## rag-role-hardening — 2026-06-18 (已完成)
+
+**背景**: 六模块审查发现 RAG 默认 runtime 路径（`game_runner._build_default_rag_service` 产 `vector_store=None`）缺 role/phase 硬隔离——`StrategyRetriever._filter_candidates` 只过滤 visibility/ruleset/quality/source/case_type，无 role 门，跨角色案例（如 villager 查询命中 `role_perspective=werewolf` 的案例）可经 `_score` 软分挤进 live top-3；vector 路径靠 `_passes_live_metadata_filter` 兜底，但默认路径不经过它。role/phase 通配约定散落三处（`_passes_live_metadata_filter`、`_vector_candidates` 内联复检、`_score`），易漂移。plan `docs/superpowers/plans/2026-06-18-rag-role-hardening.md`。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| `retriever.py` `role_phase_matches`（新，模块级） | role 通配 `(query.role,"general","any","")`、phase 通配 `(query.phase,"general","")`、AND 语义；单一真源 |
+| `retriever.py` `_filter_candidates` | 加 `if not role_phase_matches(query, meta): continue` 硬过滤（默认 runtime 路径从此有 role/phase 隔离） |
+| `knowledge_service.py` `_passes_live_metadata_filter` | 内联 role_ok/phase_ok 改 `return role_phase_matches(query, meta)` |
+| `knowledge_service.py` `_vector_candidates` 内联复检 | 内联 role_ok/phase_ok 改 `if role_phase_matches(...)` 委托，`setdefault` 仍受谓词门控 |
+| `_score` 软分 | 未动（0.15 exact role / 0.05 general|any 现仅在准入集内排序，正确） |
+
+**验证**:
+- 每任务 TDD red→green，subagent-driven + spec/quality 双审（commit `66e789c`/`d3ae004`）。
+- 新增 `test_default_runtime_path_rejects_cross_role_case`（`vector_store=None` 路径，pre-fix 现有测试只覆盖 vector 路径，是审查盲区）。
+- `python -m pytest -q -o addopts=""` → **3388 passed, 1 skipped**（零回归，比 prompt-sanitizer-fix 的 3387 多 1 个新测试）。
+- `python -m compileall -q werewolf_agent` 干净。
+- None-hardening：schema 确认 `role_perspective`/`phase` 均 `str=""` 非 Optional，无需加 None 分支（reviewer 建议，按 schema 验证跳过）。
+
+**开放风险/局限**:
+- 行为变化是收紧的（只移除跨角色案例，不增加内容）；任何先前错误地依赖跨角色案例泄漏的查询现返回更少/不同 hits，但那本就是 bug。
+- `_vector_candidates` 回退循环存在预先存在的冗余双重调用（`_passes_live_metadata_filter` 已含 role_phase，循环内又显式调一次 `role_phase_matches`）——pre-fix 既有，无害（廉价谓词 + 防御 `_passes_live_metadata_filter` 未来改组成），留后续可选清理。
+- 通配约定现冻结于 `role_phase_matches` 单点；新增通配（如 `all`）一处改动三路生效。
+- vector 路径行为不变（Task 2 纯重构）；现有 vector 路径测试守护。
+- 无 RAG schema/DB/规则引擎改动。
 
 ## prompt-sanitizer-fix — 2026-06-18 (已完成)
 
