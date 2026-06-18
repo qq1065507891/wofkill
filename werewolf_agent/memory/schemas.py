@@ -331,10 +331,12 @@ class ReflectionEntryV2(BaseModel):
             *self.avoid_next_time,
         ]
         for pattern in self.mistake_patterns:
+            # wrong_action carries deterministic ground-truth (review.py:108
+            # writes "实际 {actual}"); it is audit-only, not prompt-visible
+            # (spec: prompt_card is the only player-prompt-facing summary).
             texts.extend([
                 pattern.category,
                 pattern.trigger,
-                pattern.wrong_action,
                 pattern.better_action,
             ])
         for strength in self.preserved_strengths:

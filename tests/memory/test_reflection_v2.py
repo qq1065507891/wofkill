@@ -219,3 +219,27 @@ def test_synthesizer_produces_one_v2_entry_with_auto_review_precedence() -> None
     assert entry.mistake_patterns
     assert all("p03" not in item for item in entry.prompt_visible_texts())
     assert any(p.corrected_from_llm for p in entry.mistake_patterns)
+
+
+def test_prompt_visible_texts_excludes_wrong_action_with_truth_token() -> None:
+    # wrong_action carries deterministic ground-truth ("实际预言家"); it must
+    # NOT be in prompt_visible_texts, so the quality gate's truth-claim scan
+    # is not bypassed by auto_verified.
+    entry = _v2_entry(
+        mistake_patterns=[
+            {
+                "category": "vote_mistake",
+                "trigger": "双预言家对跳",
+                "wrong_action": "误判 某玩家 为 狼人（实际 预言家）",
+                "better_action": "先核验警徽流",
+                "fact_basis": "auto_review",
+                "auto_verified": True,
+                "corrected_from_llm": False,
+            }
+        ],
+    )
+    visible = entry.prompt_visible_texts()
+    joined = "\n".join(visible)
+    # The truth-bearing wrong_action text must not appear in the prompt-visible set.
+    assert "实际 预言家" not in joined
+    assert "误判 某玩家 为 狼人" not in joined
