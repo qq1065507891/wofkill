@@ -379,6 +379,40 @@ def test_role_phase_fallback_is_and_not_or() -> None:
     )
 
 
+def test_default_runtime_path_rejects_cross_role_case() -> None:
+    """rag-role-hardening: with NO vector store (the default runtime path
+    from game_runner._build_default_rag_service), retrieve_live_hints must
+    still hard-filter by role/phase. Pre-fix, _filter_candidates had no
+    role gate, so a werewolf-perspective case could leak into a villager
+    query's live hits.
+    """
+    from werewolf_agent.rag.knowledge_service import RAGKnowledgeService
+
+    wolf_speech = _make_rag_entry(
+        entry_id="wolf_speech",
+        role_perspective="werewolf",
+        phase="speech",
+    )
+    villager_speech = _make_rag_entry(
+        entry_id="villager_speech",
+        role_perspective="villager",
+        phase="speech",
+    )
+    # No vector_store → default runtime path (_filter_candidates direct).
+    service = RAGKnowledgeService(
+        seed_provider=lambda: [wolf_speech, villager_speech],
+    )
+    hits = service.retrieve_live_hints(
+        RAGQuery(role="villager", phase="speech", max_results=5),
+    )
+    hit_ids = {h.entry_id for h in hits}
+    assert "villager_speech" in hit_ids
+    assert "wolf_speech" not in hit_ids, (
+        f"rag-role-hardening: werewolf-perspective case leaked into a "
+        f"villager live query on the default (no-vector) path; hits={hit_ids!r}"
+    )
+
+
 def test_role_phase_fallback_admits_general_wildcard() -> None:
     """R9: a ``role_perspective='general'`` entry must still be
     admitted by the role/phase AND check (it's the universal entry).

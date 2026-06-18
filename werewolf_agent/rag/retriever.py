@@ -31,6 +31,31 @@ from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 logger = logging.getLogger(__name__)
 
 
+def role_phase_matches(query: RAGQuery, meta: Any) -> bool:
+    """Hard role/phase gate shared by all RAG retrieval paths.
+
+    Single source of truth for the wildcard convention:
+    - role matches when ``meta.role_perspective`` equals ``query.role``,
+      or is a universal marker (``"general"`` / ``"any"`` / empty), or
+      when the query carries no role.
+    - phase matches when ``meta.phase`` equals ``query.phase``, or is
+      ``"general"`` / empty, or when the query carries no phase.
+
+    Both must hold (AND semantics) so a cross-role case cannot leak in
+    just because the phase happens to match. ``meta`` is a RAGMetadata
+    (duck-typed: needs ``role_perspective`` and ``phase`` attrs).
+    """
+    role_ok = (
+        not query.role
+        or meta.role_perspective in (query.role, "general", "any", "")
+    )
+    phase_ok = (
+        not query.phase
+        or meta.phase in (query.phase, "general", "")
+    )
+    return role_ok and phase_ok
+
+
 # ---------------------------------------------------------------------------
 # Reranker score normalization
 # ---------------------------------------------------------------------------
@@ -430,6 +455,11 @@ class StrategyRetriever:
             if query.case_types:
                 if meta.case_type not in query.case_types:
                     continue
+
+            # rag-role-hardening: role/phase hard gate so the default
+            # runtime path (vector_store=None) keeps role isolation.
+            if not role_phase_matches(query, meta):
+                continue
 
             results.append(entry)
         return results
