@@ -8,6 +8,7 @@ post-game: no runtime change, no audit payload growth.
 
 from __future__ import annotations
 
+import re as _re
 from typing import Any, Mapping
 
 from werewolf_agent.evaluation.feedback_schemas import ModuleExposure
@@ -125,3 +126,45 @@ def cited(decision, exposure: ModuleExposure, resolver: AttributionTextResolver)
         return False  # unresolved → engine marks UNSUPPORTED; not cited
     decision_text = f"{decision.reason or ''} {speech_from_decision(decision)}"
     return jaccard(decision_text, exp_text) >= _CITED_THRESHOLD
+
+
+_PLAYER_ID_RE = _re.compile(r"p\d{1,3}")
+_WOLF_ROLES = frozenset({"werewolf", "wolf"})
+
+
+def _reason_players(decision) -> set[str]:
+    if decision is None or not decision.reason:
+        return set()
+    return set(_PLAYER_ID_RE.findall(decision.reason))
+
+
+def aligned(
+    decision,
+    exposure: ModuleExposure,
+    faction: str,
+    resolver: AttributionTextResolver | None = None,
+) -> bool:
+    """Per-module direction rule: did the decision follow the exposure?"""
+    module = exposure.module
+    meta = exposure.metadata
+    target = decision.target_id if decision else None
+    mentioned = _reason_players(decision)
+    relevant_players = ({target} if target else set()) | mentioned
+
+    if module == "possible_worlds":
+        assignments = meta.get("key_assignments") or {}
+        wolves = {pid for pid, role in assignments.items() if role in _WOLF_ROLES}
+        return bool(relevant_players & wolves)
+    if module == "simulator":
+        affected = set(meta.get("affected_players") or [])
+        return bool(relevant_players & affected)
+    if module in ("rag", "reflection"):
+        if resolver is None:
+            return False
+        exp_text = exposure_representative_text(exposure, resolver)
+        if not exp_text:
+            return False
+        reason = decision.reason or "" if decision else ""
+        # the decision adopted a recommended action verb that the card also mentions
+        return any(verb in reason and verb in exp_text for verb in _ACTION_VERBS)
+    return False

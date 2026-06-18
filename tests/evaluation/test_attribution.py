@@ -103,3 +103,49 @@ def test_cited_false_when_no_overlap():
     resolver = AttributionTextResolver(rag_entries={"r1": {"title": "完全不同的内容"}})
     exposure = ModuleExposure(module="rag", item_id="r1")
     assert cited(decision, exposure, resolver) is False
+
+
+from werewolf_agent.evaluation.attribution import aligned
+
+
+def test_aligned_possible_worlds_target_in_wolf_assignments():
+    decision = DecisionSnapshot(action_type="vote", target_id="p03", reason="", raw={})
+    exposure = ModuleExposure(
+        module="possible_worlds", item_id="W",
+        metadata={"key_assignments": {"p03": "werewolf", "p07": "seer"}},
+    )
+    assert aligned(decision, exposure, "good") is True
+
+
+def test_aligned_possible_worlds_target_not_wolf_is_false():
+    decision = DecisionSnapshot(action_type="vote", target_id="p07", reason="", raw={})
+    exposure = ModuleExposure(
+        module="possible_worlds", item_id="W",
+        metadata={"key_assignments": {"p03": "werewolf", "p07": "seer"}},
+    )
+    assert aligned(decision, exposure, "good") is False
+
+
+def test_aligned_simulator_target_in_affected_players():
+    decision = DecisionSnapshot(action_type="vote", target_id="p03", reason="", raw={})
+    exposure = ModuleExposure(
+        module="simulator", item_id="evt",
+        metadata={"affected_players": ["p03", "p05"]},
+    )
+    assert aligned(decision, exposure, "good") is True
+
+
+def test_aligned_rag_adopts_recommended_action_verb():
+    decision = DecisionSnapshot(action_type="vote", reason="我先核验了警徽流再投", raw={})
+    resolver = AttributionTextResolver(rag_entries={"r1": {
+        "title": "x", "recommended_action": "核验警徽流再决定",
+    }})
+    exposure = ModuleExposure(module="rag", item_id="r1")
+    assert aligned(decision, exposure, "good", resolver) is True
+
+
+def test_aligned_rag_missing_resolver_text_is_false():
+    decision = DecisionSnapshot(action_type="vote", reason="核验", raw={})
+    resolver = AttributionTextResolver()  # no entries
+    exposure = ModuleExposure(module="rag", item_id="missing")
+    assert aligned(decision, exposure, "good", resolver) is False
