@@ -243,3 +243,65 @@ def test_prompt_visible_texts_excludes_wrong_action_with_truth_token() -> None:
     # The truth-bearing wrong_action text must not appear in the prompt-visible set.
     assert "实际 预言家" not in joined
     assert "误判 某玩家 为 狼人" not in joined
+
+
+def test_synthesize_structures_llm_preserved_strengths() -> None:
+    from werewolf_agent.memory.reflection import ReflectionSynthesizer
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    report = ReviewReport(
+        game_id="g1",
+        player_id="p01",
+        role="seer",
+        faction_won=True,
+    )
+    llm_review = (
+        "【投票错误】我 D2 站错边。\n"
+        "【保留的优点】本局做对的:\n"
+        "- N2 用解药救了警长,后续归票翻盘\n"
+        "- D3 提前质疑悍跳狼警徽流时间线,被采信\n"
+    )
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review=llm_review,
+        review_report=report,
+        faction="good",
+    )
+    behaviors = [s.behavior for s in entry.preserved_strengths]
+    # The LLM-articulated strengths are now structured (not just stashed in source).
+    assert any("解药救了警长" in b for b in behaviors)
+    assert any("警徽流" in b for b in behaviors)
+
+
+def test_synthesize_llm_strength_drops_truth_tokens() -> None:
+    from werewolf_agent.memory.reflection import ReflectionSynthesizer
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    report = ReviewReport(game_id="g1", player_id="p01", role="villager", faction_won=True)
+    llm_review = (
+        "【保留的优点】\n"
+        "- 某玩家实际是预言家我保住了他\n"
+        "- 我坚持证据优先的站边\n"
+    )
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review=llm_review,
+        review_report=report,
+        faction="good",
+    )
+    behaviors = [s.behavior for s in entry.preserved_strengths]
+    assert not any("实际" in b for b in behaviors)
+    assert any("证据优先" in b for b in behaviors)
+
+
+def test_synthesize_keeps_deterministic_strengths_when_no_llm_section() -> None:
+    from werewolf_agent.memory.reflection import ReflectionSynthesizer
+    from werewolf_agent.memory.schemas import ReviewReport
+
+    report = ReviewReport(game_id="g1", player_id="p01", role="seer", faction_won=True)
+    report.successful_strategies.append("角色判断准确率高，继续保持基于证据的推理方式")
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review="没有段落头的纯文本反思。",
+        review_report=report,
+        faction="good",
+    )
+    behaviors = [s.behavior for s in entry.preserved_strengths]
+    assert any("证据" in b for b in behaviors)

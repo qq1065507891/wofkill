@@ -34,6 +34,12 @@ _PLAYER_ID_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:p\d{1,3}|player[_-]?\d{1,3}|agent[_-]?\d{1,3})(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
+# Captures the 【保留的优点】 section body up to the next 【...】 header or end.
+_LLM_STRENGTH_SECTION_RE = re.compile(
+    r"【保留的优点】[】:：\s]*(.*?)(?=【[^】]+】|$)",
+    re.DOTALL,
+)
+_LLM_TRUTH_TOKENS = ("实际", "真实身份", "底牌", "查验结果", "死亡原因")
 _GENERIC_PHRASES = (
     "复盘失败对局，关注关键转折点的信息缺失",
     "关注关键转折点的信息缺失",
@@ -266,6 +272,12 @@ class ReflectionSynthesizer:
         )
         mistake_patterns = self._mistake_patterns(review_report, corrected)
         strengths = self._preserved_strengths(review_report)
+        for llm_strength in self._extract_llm_strengths(llm_self_review):
+            if any(_jaccard(llm_strength.behavior, s.behavior) >= 0.6 for s in strengths):
+                continue
+            strengths.append(llm_strength)
+            if len(strengths) >= 3:
+                break
         advice = [
             _scrub_ids(s)
             for s in review_report.improvement_suggestions[:3]
@@ -353,6 +365,43 @@ class ReflectionSynthesizer:
                 behavior=text,
                 reuse_condition="本局公开事实支持同类判断时",
             ))
+        return strengths
+
+    @staticmethod
+    def _extract_llm_strengths(llm_self_review: str) -> list[ReflectionPreservedStrength]:
+        """Parse the 【保留的优点】 section into fact-free preserved strengths.
+
+        Spec Synthesis rule 1: subjective review must become structured
+        strengths. Spec rule 7: LLM-only fact-bound claims (votes/roles/
+        deaths/checks) must not be promoted — so any bullet containing a
+        truth token is dropped. ``ReflectionPreservedStrength`` has no
+        ``fact_basis`` field, so LLM provenance is implicit (the section
+        source is recorded in ``source.llm_self_review``). Returns at
+        most 2 strengths.
+        """
+        match = _LLM_STRENGTH_SECTION_RE.search(str(llm_self_review or ""))
+        if not match:
+            return []
+        body = match.group(1)
+        strengths: list[ReflectionPreservedStrength] = []
+        for raw_line in body.splitlines():
+            stripped = raw_line.strip()
+            if not stripped.startswith(("-", "•", "*")):
+                # Only bullet lines are real strengths; the section
+                # preamble (e.g. "本局做对的:") is skipped.
+                continue
+            line = _scrub_ids(stripped).lstrip("-•*").strip()
+            if len(line) < 6:
+                continue
+            if any(token in line for token in _LLM_TRUTH_TOKENS):
+                continue
+            strengths.append(ReflectionPreservedStrength(
+                category="speech_quality" if any(k in line for k in ("发言", "质疑", "表达")) else "strategy",
+                behavior=line,
+                reuse_condition="本局公开事实支持同类判断时",
+            ))
+            if len(strengths) >= 2:
+                break
         return strengths
 
     @staticmethod
