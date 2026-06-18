@@ -5077,6 +5077,33 @@ class TestWorldModelPhase0PromptBoundary:
         assert "supporting_evidence" not in prompt
         assert "audit-only raw evidence" not in prompt
 
+    def test_possible_worlds_keeps_current_game_ids_in_why_and_watch_for(self):
+        ctx = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            possible_worlds={
+                "type": "possible_worlds",
+                "top_worlds": [
+                    {
+                        "label": "World A",
+                        "probability": 0.5,
+                        "key_assignments": {"p03": "werewolf"},
+                        "why": ["p03 vote pattern conflicts"],
+                        "watch_for": ["p03 defense target"],
+                    }
+                ],
+                "warning": "These are hypotheses from visible evidence, not ground truth.",
+            },
+        )
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        # Current-game IDs in why/watch_for must be PRESERVED (not scrubbed to 历史玩家).
+        assert "p03 vote pattern conflicts" in prompt
+        assert "p03 defense target" in prompt
+        assert "历史玩家 vote pattern conflicts" not in prompt
+
     def test_simulation_predictions_render_prompt_safe_cards(self):
         ctx = AgentContext(
             agent_id="p01",

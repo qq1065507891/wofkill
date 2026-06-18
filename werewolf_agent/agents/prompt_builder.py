@@ -739,7 +739,7 @@ class PlayerPromptBuilder:
         for idx, world in enumerate(worlds[:3], start=1):
             if not isinstance(world, dict):
                 continue
-            label = self._clean_prompt_text(
+            label = _clean_current_game_token(
                 world.get("label") or f"World {idx}",
                 max_chars=40,
             )
@@ -753,12 +753,16 @@ class PlayerPromptBuilder:
                 )
             else:
                 assignment_text = ""
-            why = self._clean_list_items(world.get("why"), limit=2, max_chars=80)
-            watch_for = self._clean_list_items(
-                world.get("watch_for"),
-                limit=2,
-                max_chars=80,
-            )
+            why = [
+                _clean_current_game_token(w, max_chars=80)
+                for w in (world.get("why") or [])[:2]
+                if str(w or "").strip()
+            ]
+            watch_for = [
+                _clean_current_game_token(w, max_chars=80)
+                for w in (world.get("watch_for") or [])[:2]
+                if str(w or "").strip()
+            ]
             line = f"- {label}: prob={probability:.2f}"
             if assignment_text:
                 line += f"; key={assignment_text}"
