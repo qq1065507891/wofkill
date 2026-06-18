@@ -4,10 +4,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **monitoring-closure-fix** — 2026-06-18 (COMPLETE)
-- Active task: 按 plan `docs/superpowers/plans/2026-06-18-monitoring-closure-fix.md` 闭合监控反馈环——回归门 `required_metrics` fail-closed、`full_game_ablation._game_metrics` 补产 `vote_quality`、提取 `decision_helpers.py` 断 `metrics↔trace_builder` 循环并让 `trace_builder._decision_outcome` 填 `DecisionOutcome.legal/leaked_hidden_info`（复活 illegal/leak 诊断）、`feedback_report` 移除过宽 `werewolf` token
+- Current phase: **reflection-synthesis-upgrade** — 2026-06-18 (COMPLETE)
+- Active task: 按 plan `docs/superpowers/plans/2026-06-18-reflection-synthesis-upgrade.md` 升级反思合成——`wrong_action` 移出 prompt-visible 安全扫描集、synthesizer 解析 LLM【保留的优点】为 `preserved_strengths`、加宽 `corrected_from_llm` 否认检测（并收紧避免匹配错误自述）
 - Task owner: Claude development session
 - Last updated: 2026-06-18
+- **本次新增 (reflection-synthesis-upgrade)**: `schemas.py` `ReflectionEntryV2.prompt_visible_texts()` 移除 `mistake_patterns[].wrong_action`（承载 `review.py:108` 的 `实际 {actual}` 真相，audit-only，堵住 `_has_unsafe_truth_claim` 被 `auto_verified` 豁免的纵深洞）；`reflection.py` 新增 `_extract_llm_strengths`（regex 解析【保留的优点】段为 fact-free `preserved_strengths`，含真相 token 的条目丢弃 + ID scrub，上限 2），`synthesize` 与确定性 strengths 经 `_jaccard`≥0.6 去重合并（总上限 3，实现 spec Synthesis rule 1 的 strengths 半）；`corrected_from_llm` 否认 regex 加宽并收紧（去掉过宽的`我的判断都`前缀，避免匹配`我的判断都错了`这类错误自述，新增负面测试）。`tests/memory/test_reflection_v2.py` +6 测试。`reflection.py` 的 `ReflectionPreservedStrength` 无 `fact_basis` 字段（`extra="forbid"`），provenance 记在 docstring + `source.llm_self_review`。全量 3382 passed, 1 skipped（零回归）。
 - **本次新增 (monitoring-closure-fix)**: `regression_gate.py` `CandidateRegressionConfig` 加 `required_metrics`（默认空，向后兼容），缺失即追加 `required_metric_missing:{m}` 失败检查；`full_game_ablation.py` `_game_metrics` 从 `action_records` 算好人投狼准确率产出 `vote_quality`（无好人票时省略 key，避免 replay 路径误报 0）；新增 `evaluation/decision_helpers.py`（迁出 `decision_is_legal_from_trace`/`dialogue_leaked_from_trace`/`TARGET_REQUIRED_ACTIONS`，metrics.py 改私有别名 import 保持调用点不变），`trace_builder._decision_outcome` 用其填 `legal`/`leaked_hidden_info`，diagnostics 的 `illegal_action`/`hidden_info_leak` 从死代码复活；`feedback_report._PRIVATE_AUDIT_TOKENS` 移除 `werewolf`（公共 `werewolf_win_rate` 不再被误删，私有字段仍由 `_PRIVATE_AUDIT_KEYS` 键级过滤保护）。5 任务 TDD subagent-driven 执行，每任务 spec+quality 双审通过。`tests/evaluation tests/cognition tests/runtime` 1289 passed。
 - **本次新增 (seer-claim-credibility)**: 新增 `cognition/claim_credibility.py`（SeerClaimCredibilityEngine + scoring/status/snapshot）；`belief.py` update 按 fact 顺序 observe+apply、`_apply_seer_claim`/`_apply_role_claim` 用 credibility、`_apply_vote` 用 running anchors；`cognition_state.py` 存 credibility engine per viewer；`schemas.py` AgentContext 加 seer_credibility；`runtime/context.py` build_agent_context 创建 engine 填充；`prompt_builder.py` 加 `_build_seer_credibility` section。8 条 acceptance 全达成，2123 tests passed，离线评估 good_false_sus 0.143→0.0
 - **本次新增 (llm-judge-regression-gate)**: 新增 `evaluation/llm_judge.py` 作为离线语义一致性 judge 接口，默认确定性检查身份一致性、阵营任务一致性、公开事实引用一致性；`regression_gate.py` 增加 `judge_consistency_rate_drop_tolerance` 与 `judge_consistency_rate` 高越好门，候选方案发言一致性下降超过容忍值会阻断。新增 5 条测试，`tests/evaluation/test_regression_gate.py tests/evaluation/test_llm_judge.py` 共 8 passed。
@@ -24,6 +25,33 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## reflection-synthesis-upgrade — 2026-06-18 (已完成)
+
+**背景**: 六模块审查发现反思合成三个问题。`ReflectionEntryV2.prompt_visible_texts()` 含 `mistake_patterns[].wrong_action`（承载 `review.py:108` 的 `实际 {actual}` 真相），而 `_has_unsafe_truth_claim` 在 `auto_verified=True` 时整体豁免——det 真相可能经此外溢（现行因 `_slim_reflection_hints` 渲染白名单不含 wrong_action 而未泄露，属纵深洞）。`ReflectionSynthesizer.synthesize` 的 mistake/strength 只来自 det `review_report`，LLM 自评（含模板强制要求【保留的优点】段）只塞 `source.llm_self_review` 从不结构化——spec Synthesis rule 1 未实现。`corrected_from_llm` 否认检测关键词过窄。plan `docs/superpowers/plans/2026-06-18-reflection-synthesis-upgrade.md`。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| `schemas.py` `prompt_visible_texts` | 移除 `pattern.wrong_action`（audit-only，保留 category/trigger/better_action）；`wrong_action` 字段保留供审计 |
+| `reflection.py` `_extract_llm_strengths`（新） | regex `_LLM_STRENGTH_SECTION_RE` 捕获【保留的优点】段，按 `-`/`•`/`*` bullet 解析，丢含 `_LLM_TRUTH_TOKENS` 的条目，`_scrub_ids` 脱敏，上限 2 |
+| `reflection.py` `synthesize` | det strengths 在先，LLM strengths 经 `_jaccard`≥0.6 去重追加，总上限 3（实现 spec rule 1 strengths 半） |
+| `reflection.py` `corrected` | 否认 regex 加宽（`没什么问题`/`判断都挺准(的)?`/`没(有)?失误`/`都对` 等）并收紧——去掉过宽 `我的判断都` 前缀（会误匹配 `我的判断都错了` 自述），新增负面测试 |
+
+**验证**:
+- 每任务 TDD red→green，subagent-driven + spec/quality 双审（commit `8f58472`/`ef0eb2b`/`595c1a5`→`6ccf6db`）。
+- Task 3 code-quality 首轮 NEEDS CHANGES（`我的判断都` 误匹配自述），implementer 收紧 + 负面测试后 APPROVED。
+- `python -m pytest -q -o addopts=""`（不指定 basetemp 规避复用权限）→ **3382 passed, 1 skipped**（零回归，比 monitoring-closure-fix 的 3376 多 6 个新测试）。
+- `python -m compileall -q werewolf_agent` 干净。
+- design §10.2 加结构化与 prompt 边界补充段（无规则改动）。
+
+**开放风险/局限**:
+- **LLM mistake 提取仍延后**：spec Synthesis rule 1 也要求结构化 *mistakes*，但 spec rule 7 禁止直接采用 LLM-only 的事相关断言（投票/角色/死亡/查验）——正确结构化需 det 校正/调和逻辑，超出本 plan。本 plan 交付安全且高价值的 strengths 半；mistake 半留后续 plan。
+- `evaluate_reflection_effectiveness` 仍无生产 caller（模块+测试存在但无离线评估管线调用），单独跟踪。
+- 混血儿 master 未知→通用模板仍是设计意图（spec §10.2 line 1112），不动。
+- `ReflectionPreservedStrength` 无 `fact_basis` 字段（`extra="forbid"`），LLM 来源 provenance 仅记在 docstring + `source.llm_self_review`；若未来要显式区分 det/LLM 来源需 schema bump（加列需用户批准）。
+- `corrected` regex 的 `都对` 子串仍可能在罕见自述（如"都对不上"）误匹配，但与预先存在的 `都正确` 同性质，非本任务范围。
 
 ## monitoring-closure-fix — 2026-06-18 (已完成)
 

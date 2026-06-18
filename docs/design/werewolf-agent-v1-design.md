@@ -1114,6 +1114,13 @@ RAG 不应只依赖人工大规模编写案例库，也不能只靠纯 LLM 自�
 
 不分角色的通用 prompt 会让反思质量下降,因为不同角色的"错误"维度完全不同(好人不会悍跳失败,狼人不会站错边)。
 
+**结构化与 prompt 边界补充**（2026-06-18，`reflection-synthesis-upgrade`）：
+
+- LLM 自评中【保留的优点】段由 `ReflectionSynthesizer._extract_llm_strengths` 解析为 `preserved_strengths`（fact-free，含真相 token 的条目丢弃，玩家 ID scrub），与确定性 `successful_strategies` 经 Jaccard 去重合并（总上限 3）。这是 spec `Synthesis` rule 1 的 strengths 部分（mistake 提取需 det 校正，留后续）。
+- `mistake_patterns[].wrong_action` 承载确定性真相（`review.py:108` 写 `实际 {actual}`），是审计字段，**不**属 prompt-visible；`prompt_card` 仍是唯一面向玩家 prompt 的摘要（spec `prompt_card` 仅 prompt-facing 约束）。
+- 混血儿 master 阵营未知时走通用模板仍是设计意图（见上），本次不动。
+- `corrected_from_llm` 否认检测关键词已扩宽（`没什么问题`/`判断都挺准`/`没(有)?失误`/`都对` 等），但收紧以避免匹配错误自述（如`我的判断都错了`）。
+
 **跨局检索与排序** (`context.py:_reflection_memory_hints`, 2026-06-09 增强):
 
 - 排序 key: `(-priority, -faction_won, neg_game_id, entry_id)`
