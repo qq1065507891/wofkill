@@ -3783,6 +3783,40 @@ def test_format_examples_non_seer_vote_keeps_pXX_example():
             )
 
 
+def test_format_examples_speech_uses_pXX_not_hardcoded_p05():
+    """Speech example must not hardcode ``p05`` — use ``pXX`` placeholder.
+
+    P1 (post-review-v2) follows the same contract as the vote example:
+    any concrete player ID in an example block may be copied verbatim
+    by the LLM into its current-game output. The speech example at
+    ``_format_examples`` (the default-branch ``示例输出（发言场景）``
+    block) previously hardcoded ``p05`` in both the ``speech`` text
+    and the ``pressure_target`` field. Both must become the ``pXX``
+    placeholder so the LLM substitutes the real current-game ID.
+    """
+    ctx = _make_full_action_ctx("villager")
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    idx = prompt.find("示例输出（发言场景）")
+    # The speech section ends before the vote section starts (or end of
+    # prompt if the vote section is absent). Slice just the speech block.
+    vote_idx = prompt.find("示例输出（投票场景）", idx if idx >= 0 else 0)
+    speech_section = prompt[idx:vote_idx] if idx >= 0 and vote_idx > idx else (
+        prompt[idx:] if idx >= 0 else ""
+    )
+    assert speech_section, "expected a speech example section in the prompt"
+    # The speech example must NOT hardcode p05; use pXX placeholder like
+    # the vote example.
+    assert "p05" not in speech_section, (
+        f"Speech example must not hardcode 'p05'; use 'pXX' placeholder "
+        f"so the LLM does not copy the example ID into its current-game "
+        f"output. Speech section: {speech_section!r}"
+    )
+    assert "pXX" in speech_section, (
+        f"Speech example must include the 'pXX' placeholder for player "
+        f"IDs. Speech section: {speech_section!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # P0-2 (defense): _build_salience_events must whitelist public fields only
 # ---------------------------------------------------------------------------

@@ -1710,12 +1710,15 @@ class PlayerPromptBuilder:
                 example_goal = "find_wolves"
                 example_view = _CLAIMED_VIEW_GOOD
             parts.append("示例输出（发言场景）：")
+            # P1 (post-review-v2): speech 段示例所有 player ID 一律改占位符
+            # pXX — 与 vote 段示例对齐。任何出现在示例里的 p0X 都可能被
+            # LLM 误抄到当前局输出。LLM 看到 pXX 后应替换为"本局真实玩家 ID"。
             parts.append('{"action_type": "speech", "target_id": null, '
-                         '"speech": "我觉得p05很可疑，昨晚他的发言前后矛盾。", '
+                         '"speech": "我觉得pXX很可疑，昨晚他的发言前后矛盾。", '
                          '"reason": "根据发言分析", "confidence": 0.7, '
                          f'"private_intent": {{"true_role": "{example_role}", '
                          f'"faction_goal": "{example_goal}", "claimed_view": "{example_view}", '
-                         '"pressure_target": "p05", "risk_flags": []}}')
+                         '"pressure_target": "pXX", "risk_flags": []}}')
             vote_example_goal = "confuse_good" if example_role == "werewolf" else "find_wolves"
             # P0-S7: check the input role, not example_role. The original
             # code checked example_role, which was hardcoded to "villager"
