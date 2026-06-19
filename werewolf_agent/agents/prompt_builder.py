@@ -420,11 +420,6 @@ class PlayerPromptBuilder:
         for spec in _USER_SECTION_SPECS
         if spec.drop_tier is _NEVER_DROP_TIER
     )
-    _GROUNDING_SECTIONS: frozenset[str] = frozenset(
-        spec.builder_name
-        for spec in _USER_SECTION_SPECS
-        if spec.public_record or spec.info_kind == "action_context"
-    )
     _LOW_VALUE_SECTIONS: frozenset[str] = frozenset(
         spec.builder_name
         for spec in _USER_SECTION_SPECS
@@ -481,11 +476,6 @@ class PlayerPromptBuilder:
         parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
         parts.append(("_build_learning_context", self._label_section("_build_learning_context", self._build_learning_context())))
         parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
-        # NEW-S04-A: skill_analysis_hints render path dropped. The
-        # structured skill_tactical_advice is the single source of
-        # truth (rendered inside strategy_directive's 【参考】 group).
-        # The opaque-dict dual render is gone. _build_skill_analysis_hints
-        # is no longer called from here.
         # P0-S6: retry hint must come AFTER task prompt and BEFORE the
         # output contract. Old order put retry BEFORE task, so the LLM
         # read "纠正提示..." and then got distracted by the task
@@ -1406,13 +1396,6 @@ class PlayerPromptBuilder:
         if omitted > 0:
             lines.append(f"- 其余 {omitted} 条技能战术建议已省略。")
         return "\n".join(lines)
-
-    def _build_skill_analysis_hints(self) -> str:
-        # NEW-S04-A: this method is dead code. The dual-render path
-        # was removed — skill_analysis_hints is no longer populated.
-        # Kept (no-op) only to avoid removing a public method on a
-        # shared class; remove in a follow-up cleanup if desired.
-        return ""
 
     def _build_persona(self) -> str:
         ctx = self.context
