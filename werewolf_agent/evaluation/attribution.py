@@ -16,7 +16,11 @@ from typing import Any, Mapping
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.cognition.world_state import build_world_state
 from werewolf_agent.cognition.visibility import VisibilityPolicy
-from werewolf_agent.evaluation.feedback_schemas import DecisionOutcome, ModuleExposure
+from werewolf_agent.evaluation.feedback_schemas import (
+    DecisionOutcome,
+    MetricSupport,
+    ModuleExposure,
+)
 from werewolf_agent.evaluation.llm_judge import judge_speech_consistency
 from werewolf_agent.evaluation.text_similarity import jaccard, tokenize
 
@@ -384,3 +388,52 @@ def judge_trace(trace, result):
         outcome_refs=new_refs,
     )
     return dataclasses.replace(trace, outcome=new_outcome)
+
+
+_COGNITION_MODULES = frozenset({"rag", "reflection", "possible_worlds", "simulator"})
+
+
+class AttributionEngine:
+    """Post-game attribution pass. Rebuilds frozen traces with cited/aligned/
+    harmful annotations and judged outcome scores."""
+
+    def __init__(self, text_resolver: AttributionTextResolver | None = None) -> None:
+        self._resolver = text_resolver or AttributionTextResolver()
+
+    def annotate(self, traces, result):
+        out = []
+        for trace in traces:
+            trace = judge_trace(trace, result)
+            new_exposures = []
+            for exposure in trace.module_exposures:
+                if exposure.module not in _COGNITION_MODULES:
+                    new_exposures.append(exposure)
+                    continue
+                new_exposures.append(self._annotate_exposure(exposure, trace))
+            out.append(dataclasses.replace(trace, module_exposures=new_exposures))
+        return out
+
+    def _annotate_exposure(self, exposure, trace):
+        exp_text = exposure_representative_text(exposure, self._resolver)
+        is_rag_reflection = exposure.module in ("rag", "reflection")
+        if is_rag_reflection and not exp_text:
+            # unresolved → UNSUPPORTED, excluded from harmful denominator
+            return dataclasses.replace(
+                exposure,
+                support=MetricSupport.UNSUPPORTED,
+                metadata={**exposure.metadata, "attribution_missing_text": True},
+            )
+        cited_flag = cited(trace.decision, exposure, self._resolver)
+        aligned_flag = aligned(trace.decision, exposure, trace.faction, self._resolver)
+        meta = dict(exposure.metadata)
+        if cited_flag and aligned_flag:
+            if trace_outcome_is_bad(trace):
+                meta["harmful_transfer"] = True
+            else:
+                meta["beneficial"] = True
+        return dataclasses.replace(
+            exposure,
+            cited_by_decision=cited_flag,
+            aligned_with_decision=aligned_flag,
+            metadata=meta,
+        )

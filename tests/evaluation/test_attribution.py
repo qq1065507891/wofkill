@@ -373,3 +373,65 @@ def test_judge_trace_lowers_score_when_wolf_self_id_without_prior_claim():
     assert "judge_consistency_scored" in judged.outcome.outcome_refs
     # identity_consistency issue fired → score < 1.0
     assert judged.outcome.local_quality_score < 1.0
+
+
+from werewolf_agent.evaluation.attribution import AttributionEngine
+from werewolf_agent.evaluation.feedback_schemas import MetricSupport
+
+
+def test_annotate_marks_unresolved_rag_exposure_unsupported():
+    resolver = AttributionTextResolver()  # no entries → r1 unresolved
+    exposure = ModuleExposure(module="rag", item_id="r1", prompt_visible=True)
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="villager",
+        faction="good", phase="speech", day_number=1,
+        decision=DecisionSnapshot(action_type="speech", reason="核验警徽流", raw={"speech": "核验"}),
+        outcome=DecisionOutcome(),
+        module_exposures=[exposure],
+    )
+    result = _result_with_claim([])
+    out = AttributionEngine(resolver).annotate([trace], result)
+    exp = out[0].module_exposures[0]
+    assert exp.support == MetricSupport.UNSUPPORTED
+    assert exp.metadata.get("attribution_missing_text") is True
+
+
+def test_annotate_sets_cited_aligned_harmful_on_matching_exposure():
+    resolver = AttributionTextResolver(rag_entries={"r1": {
+        "title": "核验警徽流", "recommended_action": "核验",
+    }})
+    exposure = ModuleExposure(module="rag", item_id="r1", prompt_visible=True)
+    # bad outcome + cited + aligned → harmful
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="villager",
+        faction="good", phase="day_vote", day_number=1,
+        decision=DecisionSnapshot(action_type="vote", target_id="p07", reason="核验后投p07"),
+        outcome=DecisionOutcome(target_faction="good", vote_hit_wolf=False),
+        module_exposures=[exposure],
+    )
+    result = _result_with_claim(
+        [],
+        player_roles={"p01": "villager", "p07": "villager"},
+        player_factions={"p01": "good", "p07": "good"},
+    )
+    out = AttributionEngine(resolver).annotate([trace], result)
+    exp = out[0].module_exposures[0]
+    assert exp.cited_by_decision is True
+    assert exp.aligned_with_decision is True
+    assert exp.metadata.get("harmful_transfer") is True
+    assert "judge_consistency_scored" in out[0].outcome.outcome_refs
+
+
+def test_annotate_returns_new_traces_does_not_mutate_input():
+    resolver = AttributionTextResolver()
+    trace = EvaluationTrace(
+        trace_id="t", game_id="g1", player_id="p01", role="villager",
+        faction="good", phase="speech", day_number=1,
+        decision=DecisionSnapshot(action_type="speech", reason="x", raw={}),
+        outcome=DecisionOutcome(),
+        module_exposures=[],
+    )
+    original_exposures = list(trace.module_exposures)
+    AttributionEngine(resolver).annotate([trace], _result_with_claim([]))
+    # input trace is frozen/unchanged
+    assert trace.module_exposures == original_exposures
