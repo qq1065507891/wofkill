@@ -42,42 +42,16 @@ from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
 from werewolf_agent.agents.planning import planning_envelope_to_action
 from werewolf_agent.agents.metrics_collector import MetricsCollector
 from werewolf_agent.agents.output_parser import (
-    repair_json_text as _repair_json_impl,
-    extract_json_object_candidates as _extract_json_impl,
-    extract_parameter_tag_action as _extract_param_impl,
-    normalize_action_data as _normalize_impl,
-    clean_enum_value as _clean_enum_impl,
-    clean_reason as _clean_reason_impl,
-    sanitize_optional_private_fields as _sanitize_impl,
-    action_from_data as _action_from_data_impl,
     parse_action as _parse_action_impl,
     extract_decision_data as _extract_decision_impl,
-    repair_vote_decision as _repair_vote_impl,
-    repair_target_decision as _repair_target_impl,
-    repair_speech_intent_decision as _repair_speech_impl,
     vote_choice_map as _vote_choice_map_impl,
-    target_from_vote_decision as _target_from_vote_impl,
-    choice_for_target as _choice_for_target_impl,
     vote_candidate_summary as _vote_summary_impl,
     target_candidate_summary as _target_summary_impl,
-    infer_speech_intent as _infer_intent_impl,
-    speech_target_from_decision as _speech_target_impl,
-    synthesize_intent_speech as _synthesize_impl,
-    ensure_speech_quality_components as _ensure_quality_impl,
-    speech_pressure_target as _pressure_target_impl,
-    speech_intent_reason as _intent_reason_impl,
-    infer_standing_with_seer as _infer_standing_impl,
-    infer_seer_stance as _infer_stance_impl,
-    infer_vote_basis as _infer_basis_impl,
-    default_not_voting_reason as _default_not_voting_impl,
 )
 from werewolf_agent.agents.tool_schema import (
     player_action_tool as _tool_impl,
-    vote_audit_tool_properties as _vote_audit_impl,
     speech_quality_error as _speech_quality_impl,
-    speech_quality_phase as _speech_phase_impl,
     vote_quality_error as _vote_quality_impl,
-    all_legal_actions_require_target as _all_target_impl,
 )
 from werewolf_agent.agents.trace_builder import (
     build_action_trace as _build_action_trace,
@@ -855,10 +829,6 @@ class PlayerAgent:
 
     # ── Delegated to output_parser.py ──
 
-    @staticmethod
-    def _repair_json_text(raw: str) -> str:
-        return _repair_json_impl(raw)
-
     def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
         return _parse_action_impl(text)
 
@@ -882,139 +852,14 @@ class PlayerAgent:
             return None, f"Planning envelope validation error: {exc}", None
         return action, None, audit
 
-    def _action_from_data(self, data: Any) -> tuple[PlayerAction | None, str | None]:
-        return _action_from_data_impl(data)
-
-    def _normalize_action_data(self, data: Any) -> Any:
-        return _normalize_impl(data)
-
-    def _extract_parameter_tag_action(self, text: str) -> dict[str, Any] | None:
-        return _extract_param_impl(text)
-
-    def _extract_decision_data(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
-        return _extract_decision_impl(text)
-
-    def _repair_vote_decision(
-        self,
-        data: dict[str, Any],
-        context: AgentContext,
-    ) -> dict[str, Any] | None:
-        return _repair_vote_impl(
-            data, context.legal_actions, context.legal_targets, context.salience_items,
-        )
-
-    def _repair_target_decision(
-        self,
-        data: dict[str, Any],
-        context: AgentContext,
-    ) -> dict[str, Any] | None:
-        return _repair_target_impl(
-            data, context.legal_actions, context.legal_targets, context.salience_items,
-        )
-
-    def _repair_speech_intent_decision(
-        self,
-        data: dict[str, Any],
-        context: AgentContext,
-    ) -> dict[str, Any]:
-        return _repair_speech_impl(
-            data,
-            context.agent_id,
-            context.own_role,
-            context.legal_targets,
-            context.salience_items,
-            context.visible_world_state,
-            context.recent_transcript,
-        )
-
     def _vote_choice_map(self, context: AgentContext) -> dict[str, str]:
         return _vote_choice_map_impl(context.legal_targets)
-
-    def _target_from_vote_decision(
-        self,
-        data: dict[str, Any],
-        choice_map: dict[str, str],
-        legal_targets: list[str],
-    ) -> str | None:
-        return _target_from_vote_impl(data, choice_map, legal_targets)
-
-    def _choice_for_target(self, choice_map: dict[str, str], target_id: str) -> str:
-        return _choice_for_target_impl(choice_map, target_id)
-
-    def _clean_reason(self, value: Any) -> str:
-        return _clean_reason_impl(value)
 
     def _vote_candidate_summary(self, context: AgentContext, target_id: str) -> str:
         return _vote_summary_impl(context.salience_items, target_id)
 
     def _target_candidate_summary(self, context: AgentContext, target_id: str) -> str:
         return _target_summary_impl(context.legal_actions, context.salience_items, target_id)
-
-    def _infer_speech_intent(self, data: dict[str, Any], context: AgentContext) -> str:
-        return _infer_intent_impl(data, context.legal_targets)
-
-    def _speech_target_from_decision(
-        self,
-        data: dict[str, Any],
-        legal_targets: list[str],
-    ) -> str | None:
-        return _speech_target_impl(data, legal_targets)
-
-    def _synthesize_intent_speech(
-        self,
-        intent: str,
-        target_id: str | None,
-        context: AgentContext,
-    ) -> str:
-        return _synthesize_impl(
-            intent, target_id,
-            context.salience_items, context.visible_world_state,
-            context.recent_transcript, context.legal_targets,
-        )
-
-    def _ensure_speech_quality_components(
-        self,
-        speech: str,
-        intent: str,
-        target_id: str | None,
-        context: AgentContext,
-    ) -> str:
-        return _ensure_quality_impl(
-            speech, intent, target_id,
-            context.own_role, context.agent_id, context.legal_targets,
-        )
-
-    def _speech_pressure_target(
-        self,
-        intent: str,
-        target_id: str | None,
-        context: AgentContext,
-    ) -> str | None:
-        return _pressure_target_impl(intent, target_id, context.legal_targets)
-
-    def _speech_intent_reason(self, intent: str, target_id: str | None) -> str:
-        return _intent_reason_impl(intent, target_id)
-
-    def _infer_standing_with_seer(self, context: AgentContext) -> str:
-        return _infer_standing_impl(context.salience_items)
-
-    def _infer_seer_stance(self, context: AgentContext, standing_with_seer: str) -> str:
-        return _infer_stance_impl(context.salience_items, standing_with_seer)
-
-    def _infer_vote_basis(self, *texts: str) -> str:
-        return _infer_basis_impl(*texts)
-
-    def _clean_enum_value(self, value: Any, allowed: set[str]) -> str | None:
-        return _clean_enum_impl(value, allowed)
-
-    def _default_not_voting_reason(self, context: AgentContext, target_id: str) -> str:
-        return _default_not_voting_impl(context.legal_targets, target_id)
-
-    def _extract_json_object_candidates(self, text: str) -> list[str]:
-        return _extract_json_impl(text)
-
-    def _sanitize_optional_private_fields(self, data: Any) -> Any:
-        return _sanitize_impl(data)
 
     # ── Delegated to tool_schema.py ──
 
@@ -1032,9 +877,6 @@ class PlayerAgent:
             output_mode,
         )
 
-    def _vote_audit_tool_properties(self) -> dict[str, Any]:
-        return _vote_audit_impl()
-
     def _speech_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:
         return _speech_quality_impl(
             context.task_type,
@@ -1044,9 +886,6 @@ class PlayerAgent:
             context.strategy_directive,
         )
 
-    def _speech_quality_phase(self, task_type: TaskType) -> str | None:
-        return _speech_phase_impl(task_type)
-
     def _vote_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:
         return _vote_quality_impl(
             context.task_type,
@@ -1055,9 +894,6 @@ class PlayerAgent:
             context.salience_items,
             context.recent_transcript,
         )
-
-    def _all_legal_actions_require_target(self, context: AgentContext) -> bool:
-        return _all_target_impl(context.legal_actions)
 
     # ── Remaining PlayerAgent methods ──
 
