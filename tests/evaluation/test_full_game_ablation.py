@@ -290,3 +290,86 @@ def test_event_order_replay_rejects_extra_records() -> None:
 
     assert report.pair_count == 0
     assert report.unsupported_metrics["replay"] == "event_order_length_mismatch"
+
+
+def test_enriched_metrics_emits_both_keys_with_resolver():
+    from werewolf_agent.evaluation.attribution import AttributionTextResolver
+    from werewolf_agent.evaluation.full_game_ablation import _enriched_metrics
+    result = _make_result_with_votes(
+        player_factions={"p01": "good", "p02": "werewolf"},
+        votes=[("p01", "p02")],
+        winning_faction="good",
+    )
+    result.event_log.append({
+        "type": "action_trace_audit",
+        "day_number": 1,
+        "payload": {
+            "player_id": "p01", "phase": "day_vote", "day_number": 1,
+            "action_trace": {
+                "final_action_type": "vote", "legal_actions": ["vote"],
+                "legal_targets": ["p02"],
+                "parsed_action": {"target_id": "p02", "reason": "投p02", "speech": ""},
+            },
+        },
+    })
+    metrics, unsupported = _enriched_metrics(result, AttributionTextResolver())
+    assert "judge_consistency_rate" in metrics
+    assert "harmful_transfer_rate" in metrics
+
+
+def test_enriched_metrics_omits_harmful_without_resolver():
+    from werewolf_agent.evaluation.full_game_ablation import _enriched_metrics
+    result = _make_result_with_votes(
+        player_factions={"p01": "good", "p02": "werewolf"},
+        votes=[("p01", "p02")],
+        winning_faction="good",
+    )
+    result.event_log.append({
+        "type": "action_trace_audit",
+        "payload": {
+            "player_id": "p01", "phase": "day_vote", "day_number": 1,
+            "action_trace": {
+                "final_action_type": "vote",
+                "parsed_action": {"target_id": "p02", "reason": "投p02"},
+            },
+        },
+    })
+    metrics, unsupported = _enriched_metrics(result, None)
+    assert "harmful_transfer_rate" not in metrics
+    assert unsupported.get("attribution") == "text_resolver_required"
+
+
+def test_enriched_metrics_replay_omits_both():
+    from werewolf_agent.evaluation.full_game_ablation import _enriched_metrics
+    result = GameResult(
+        game_id="g", initial_seed=0, ruleset_id="replay",
+        event_log=[], winning_faction="good",
+    )
+    metrics, unsupported = _enriched_metrics(result, None)
+    assert "harmful_transfer_rate" not in metrics
+    assert "judge_consistency_rate" not in metrics
+
+
+def test_runner_reports_attribution_unsupported_when_resolver_missing():
+    from werewolf_agent.evaluation.full_game_ablation import FullGameAblationRunner
+
+    def fake_runner(**kwargs):
+        result = _make_result_with_votes(
+            player_factions={"p01": "good", "p02": "werewolf"},
+            votes=[("p01", "p02")],
+            winning_faction="good",
+        )
+        result.event_log.append({
+            "type": "action_trace_audit",
+            "payload": {
+                "player_id": "p01", "phase": "day_vote", "day_number": 1,
+                "action_trace": {
+                    "final_action_type": "vote",
+                    "parsed_action": {"target_id": "p02", "reason": "投p02"},
+                },
+            },
+        })
+        return result
+
+    report = FullGameAblationRunner(game_runner_factory=fake_runner).run(_config(seed_set=[1]))
+    assert report.unsupported_metrics["attribution"] == "text_resolver_required"

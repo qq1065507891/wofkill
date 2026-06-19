@@ -7,6 +7,13 @@ from typing import Any, Callable, Literal
 
 from werewolf_agent.evaluation.schemas import GameResult
 from werewolf_agent.evaluation.replay import ReplayArtifact, ReplayMatcher
+from werewolf_agent.evaluation.attribution import (
+    AttributionEngine,
+    AttributionTextResolver,
+    harmful_rate,
+    mean_consistency,
+)
+from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
 
 AgentMode = Literal["deterministic_fake", "replay", "live_model"]
 ReplayPolicy = Literal[
@@ -70,9 +77,11 @@ class FullGameAblationRunner:
         game_runner_factory: Callable[..., GameResult] | None = None,
         *,
         replay_artifact: ReplayArtifact | None = None,
+        attribution_text_resolver: AttributionTextResolver | None = None,
     ) -> None:
         self._game_runner_factory = game_runner_factory
         self._replay_artifact = replay_artifact
+        self._attribution_text_resolver = attribution_text_resolver
 
     def run(self, config: FullGameAblationConfig) -> FullGameAblationReport:
         if config.agent_mode == "live_model" and self._replay_artifact is None:
@@ -96,6 +105,7 @@ class FullGameAblationRunner:
             )
 
         pairs: list[FullGameAblationPair] = []
+        unsupported_metrics: dict[str, str] = {}
         for seed in config.seed_set:
             baseline = self._run_game(
                 config,
@@ -109,12 +119,21 @@ class FullGameAblationRunner:
                 storage_namespace=config.ablated_storage_namespace,
                 removed_modules=config.removed_modules,
             )
+            baseline_metrics, baseline_unsupported = _enriched_metrics(
+                baseline, self._attribution_text_resolver,
+            )
+            ablated_metrics, ablated_unsupported = _enriched_metrics(
+                ablated, self._attribution_text_resolver,
+            )
+            _merge_unsupported_metrics(
+                unsupported_metrics, baseline_unsupported, ablated_unsupported,
+            )
             pairs.append(FullGameAblationPair(
                 seed=seed,
                 baseline_game_id=baseline.game_id,
                 ablated_game_id=ablated.game_id,
-                baseline_metrics=_game_metrics(baseline),
-                ablated_metrics=_game_metrics(ablated),
+                baseline_metrics=baseline_metrics,
+                ablated_metrics=ablated_metrics,
             ))
 
         return FullGameAblationReport(
@@ -124,7 +143,7 @@ class FullGameAblationRunner:
             removed_modules=list(config.removed_modules),
             pair_count=len(pairs),
             metric_deltas=_metric_deltas(pairs),
-            unsupported_metrics={},
+            unsupported_metrics=unsupported_metrics,
             pairs=pairs,
         )
 
@@ -164,6 +183,7 @@ class FullGameAblationRunner:
             )
         assert self._replay_artifact is not None
         pairs: list[FullGameAblationPair] = []
+        unsupported_metrics: dict[str, str] = {}
         records_by_trace = {record.trace_id: record for record in self._replay_artifact.records}
         for seed_offset, seed in enumerate(config.seed_set):
             if config.replay_match_key == "event_order":
@@ -181,12 +201,21 @@ class FullGameAblationRunner:
                 ablated_record,
                 game_id=f"{config.batch_id}:{seed}:ablated",
             )
+            baseline_metrics, baseline_unsupported = _enriched_metrics(
+                baseline, self._attribution_text_resolver,
+            )
+            ablated_metrics, ablated_unsupported = _enriched_metrics(
+                ablated, self._attribution_text_resolver,
+            )
+            _merge_unsupported_metrics(
+                unsupported_metrics, baseline_unsupported, ablated_unsupported,
+            )
             pairs.append(FullGameAblationPair(
                 seed=seed,
                 baseline_game_id=baseline.game_id,
                 ablated_game_id=ablated.game_id,
-                baseline_metrics=_game_metrics(baseline),
-                ablated_metrics=_game_metrics(ablated),
+                baseline_metrics=baseline_metrics,
+                ablated_metrics=ablated_metrics,
             ))
         return FullGameAblationReport(
             batch_id=config.batch_id,
@@ -195,7 +224,7 @@ class FullGameAblationRunner:
             removed_modules=list(config.removed_modules),
             pair_count=len(pairs),
             metric_deltas=_metric_deltas(pairs),
-            unsupported_metrics={},
+            unsupported_metrics=unsupported_metrics,
             pairs=pairs,
         )
 
@@ -271,6 +300,43 @@ def _game_metrics(result: GameResult) -> dict[str, float]:
     if vote_quality is not None:
         metrics["vote_quality"] = vote_quality
     return metrics
+
+
+def _enriched_metrics(
+    result: GameResult,
+    text_resolver: AttributionTextResolver | None,
+) -> tuple[dict[str, float], dict[str, str]]:
+    """``_game_metrics`` layered with attribution judge/harmful signals.
+
+    ``harmful_transfer_rate`` requires a resolver; without one it is omitted
+    and ``unsupported['attribution']`` is set so the gate's required-metrics
+    fail-closed governs. Replay-path sparse ``GameResult`` (no
+    ``action_trace_audit`` events) yields no traces -> both keys omitted.
+    """
+    metrics = _game_metrics(result)
+    unsupported: dict[str, str] = {}
+    traces = EvaluationTraceBuilder().build(result)
+    if not traces:
+        return metrics, unsupported
+    annotated = AttributionEngine(text_resolver).annotate(traces, result)
+    consistency = mean_consistency(annotated)
+    if consistency is not None:
+        metrics["judge_consistency_rate"] = consistency
+    if text_resolver is not None:
+        metrics["harmful_transfer_rate"] = harmful_rate(annotated)
+    else:
+        unsupported["attribution"] = "text_resolver_required"
+    return metrics, unsupported
+
+
+def _merge_unsupported_metrics(
+    target: dict[str, str],
+    *sources: dict[str, str],
+) -> None:
+    """Merge unsupported reasons from baseline/ablated result enrichment."""
+    for source in sources:
+        for key, reason in source.items():
+            target.setdefault(key, reason)
 
 
 def _metric_deltas(
