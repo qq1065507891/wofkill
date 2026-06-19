@@ -13,25 +13,16 @@ import logging
 import re
 from dataclasses import asdict
 from enum import Enum
-from html import unescape
 from typing import Any, Protocol
 
-from pydantic import ValidationError
-
 from werewolf_agent.agents.schemas import (
-    ActionTrace,
     ActionType,
     AgentContext,
     FallbackAction,
-    FactionGoal,
     OutputMode,
     PlayerAction,
-    PrivateIntent,
     RetryInfo,
-    RiskFlag,
-    SeerStance,
     TaskType,
-    VoteBasis,
 )
 from werewolf_agent.agents.parse_dispatch import (
     parse_choice_action as _parse_choice_action,
