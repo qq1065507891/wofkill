@@ -1030,7 +1030,6 @@ def build_agent_context(
     discussion_positions: dict[str, str] | None = None,
     decision_identity: DecisionIdentity | None = None,
     exposure_collector: ModuleExposureAuditCollector | None = None,
-    ablation_toggles: Any | None = None,
     decision_trace_sink: Any | None = None,
 ) -> AgentContext:
     """Build AgentContext for a player from current game state.
