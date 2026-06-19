@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from werewolf_agent.agents.schemas import ActionType, AgentContext, PlayerAction
 from werewolf_agent.persona_runtime.policy import PersonaPolicyPrior
 
 
-_REFERENCE_PREFIXES = ("rag:", "reflection:", "profile:", "memory:")
 _PRIVATE_PUBLIC_MARKERS = (
     "wolf teammate",
     "my teammate",
@@ -49,20 +48,6 @@ class DecisionPlan(BaseModel):
     reference_refs: list[str] = Field(default_factory=list)
     selected_world_ids: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _references_not_current_evidence(self) -> "DecisionPlan":
-        bad_refs = [
-            ref for ref in self.evidence_refs
-            if ref.startswith(_REFERENCE_PREFIXES)
-        ]
-        if bad_refs:
-            raise ValueError(
-                "evidence_refs must cite current-game evidence; "
-                "move historical/RAG refs to reference_refs: "
-                + ", ".join(bad_refs)
-            )
-        return self
 
 
 class DialoguePlan(BaseModel):

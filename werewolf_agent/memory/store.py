@@ -94,9 +94,6 @@ class MemoryStore:
     def add_relation(self, event: RelationEvent) -> None:
         self.relation_graph.add_event(event)
 
-    def add_relations(self, events: list[RelationEvent]) -> None:
-        self.relation_graph.add_events(events)
-
     def import_world_state(self, world_state: StructuredWorldState, day: int = 0) -> int:
         return self.relation_graph.import_from_world_state(world_state, day)
 
@@ -110,9 +107,6 @@ class MemoryStore:
 
     def reflections_by_player(self, player_id: str) -> list[ReflectionEntry]:
         return self.reflections.by_player(player_id)
-
-    def reflections_by_role(self, role: str) -> list[ReflectionEntry]:
-        return self.reflections.by_role(role)
 
     # --- Profiles ---
 

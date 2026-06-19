@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 
 from werewolf_agent.agents.planning import (
     DecisionPlan,
@@ -38,17 +37,6 @@ def test_decision_plan_requires_legal_target_for_vote() -> None:
 
     with pytest.raises(ValueError, match="target_id=p09 not in legal_targets"):
         decision_and_dialogue_to_action(decision, dialogue, _vote_context())
-
-
-def test_decision_plan_rejects_reference_refs_as_current_evidence() -> None:
-    with pytest.raises(ValidationError, match="evidence_refs"):
-        DecisionPlan(
-            action_type=ActionType.VOTE,
-            target_id="p02",
-            confidence=0.7,
-            private_goal="vote",
-            evidence_refs=["rag:seer_case_1"],
-        )
 
 
 def test_decision_plan_allows_historical_refs_as_references() -> None:

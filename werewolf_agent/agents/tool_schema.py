@@ -12,7 +12,6 @@ from typing import Any
 from werewolf_agent.agents.action_contract import (
     ActionContract,
     all_legal_actions_require_target as _contract_requires_target,
-    build_full_action_schema,
     vote_audit_properties,
 )
 from werewolf_agent.agents.schemas import (
@@ -30,14 +29,6 @@ def all_legal_actions_require_target(legal_actions: list[ActionType]) -> bool:
 
 def vote_audit_tool_properties() -> dict[str, Any]:
     return vote_audit_properties()
-
-
-def build_action_tool_schema(
-    task_type: TaskType,
-    action_values: list[str],
-    target_values: list[str | None],
-) -> dict[str, Any]:
-    return build_full_action_schema(task_type, action_values, target_values)
 
 
 def player_action_tool(

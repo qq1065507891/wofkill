@@ -87,12 +87,6 @@ class PublicEvidenceIndex:
     def vote_targets(self, voter: str) -> set[str]:
         return {v.target for v in self.votes if v.voter == voter and v.target}
 
-    def black_targets_by_claimant(self, claimant: str) -> set[str]:
-        return self._targets_by_claimant(self.checked_wolves, claimant)
-
-    def gold_targets_by_claimant(self, claimant: str) -> set[str]:
-        return self._targets_by_claimant(self.gold_water, claimant)
-
     def supports_reference(self, player_id: str, concept: str) -> bool:
         if concept == "black_check":
             return player_id in self.checked_wolves
@@ -163,14 +157,6 @@ class PublicEvidenceIndex:
             ]
             for key, refs in data.items()
             if isinstance(refs, list)
-        }
-
-    @staticmethod
-    def _targets_by_claimant(bucket: dict[str, list[EvidenceRef]], claimant: str) -> set[str]:
-        return {
-            target
-            for target, refs in bucket.items()
-            if any(ref.source_player == claimant for ref in refs)
         }
 
 

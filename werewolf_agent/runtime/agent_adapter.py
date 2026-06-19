@@ -18,8 +18,6 @@ from typing import Any, Protocol
 from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.schemas import (
     ActionType,
-    FallbackAction,
-    PlayerAction,
     TaskType,
 )
 from werewolf_agent.core.models import GameState
@@ -138,18 +136,6 @@ def _inject_vote_basis_hint(
     role = gs.players[player_id].role if player_id in gs.players else ""
     if role != "seer":
         strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
-
-
-def _action_result_to_dict(
-    action: PlayerAction | FallbackAction,
-) -> dict[str, Any]:
-    """Convert a PlayerAction or FallbackAction to runtime state fields."""
-    return {
-        "action_type": action.action_type.value,
-        "target_id": action.target_id,
-        "speech": getattr(action, "speech", ""),
-        "reason": getattr(action, "reason", ""),
-    }
 
 
 def _is_sheriff_silenced(gs: GameState, sheriff_id: str) -> bool:

@@ -59,9 +59,6 @@ class StructuredWorldState:
             if f.source_player == player_id or f.target_player == player_id
         ]
 
-    def facts_on_day(self, day: int) -> list[StructuredFact]:
-        return [f for f in self._facts if f.day == day]
-
 
 # ---------------------------------------------------------------------------
 # Event-to-fact extraction

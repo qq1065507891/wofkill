@@ -54,9 +54,6 @@ class CandidateMaterializer:
         self._live_namespace = live_namespace
         self._clock = clock or _utc_now
 
-    def materialize(self, candidate_id: str) -> CandidateMaterializationResult:
-        return self.materialize_draft(candidate_id)
-
     def materialize_draft(
         self,
         candidate_or_id: str | ImprovementCandidate,
@@ -109,15 +106,6 @@ class CandidateMaterializer:
             draft_namespace=draft_namespace,
             metadata={"draft": draft, "draft_id": draft_id},
         )
-
-    def apply_gate_result(
-        self,
-        candidate_id: str,
-        gate_report: CandidateRegressionReport,
-    ) -> CandidateMaterializationResult:
-        if gate_report.passed:
-            return self.promote(candidate_id, gate_report)
-        return self.rollback(candidate_id, "regression_gate_failed", gate_report)
 
     def rollback(
         self,

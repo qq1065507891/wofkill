@@ -213,14 +213,6 @@ def is_harmful(exposure: ModuleExposure, trace) -> bool:
     )
 
 
-def is_beneficial(exposure: ModuleExposure, trace) -> bool:
-    return bool(
-        exposure.cited_by_decision
-        and exposure.aligned_with_decision
-        and not trace_outcome_is_bad(trace)
-    )
-
-
 # ---------------------------------------------------------------------------
 # Judge producer — rebuild public_facts, derive public_claim, run judge
 # ---------------------------------------------------------------------------

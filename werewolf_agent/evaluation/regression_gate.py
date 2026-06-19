@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 
@@ -42,15 +42,6 @@ class GateCheck:
     metric: str = ""
     regression_amount: float = 0.0
     tolerance: float = 0.0
-
-    def to_json_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class GateResult:
-    passed: bool
-    blocked_reasons: list[str] = field(default_factory=list)
 
     def to_json_dict(self) -> dict[str, Any]:
         return asdict(self)

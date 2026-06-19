@@ -88,15 +88,3 @@ class MetricsCollector:
             ]
             candidates.sort(key=lambda p: (p.fallback_rate, p.sample_count), reverse=True)
             return candidates[:n]
-
-    def export_report(self) -> dict[str, Any]:
-        with self._lock:
-            return {
-                pid: {
-                    "sample_count": p.sample_count,
-                    "fallback_rate": p.fallback_rate,
-                    "error_code_counts": p.error_code_counts,
-                    "per_task_breakdown": p.per_task_breakdown,
-                }
-                for pid, p in self._profiles.items()
-            }

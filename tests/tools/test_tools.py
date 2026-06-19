@@ -17,8 +17,6 @@ from werewolf_agent.tools.local_tools import LocalToolExecutor
 from werewolf_agent.tools.mcp_registry import (
     MCPRegistry,
     MockMCPProvider,
-    ExternalHistoryProvider,
-    ExternalProfileProvider,
 )
 from werewolf_agent.tools.tool_logger import ToolCallLogger
 
@@ -576,21 +574,6 @@ class TestMCPRegistry:
         names = registry.provider_names()
         assert "a" in names
         assert "b" in names
-
-    def test_external_history_provider(self):
-        registry = MCPRegistry()
-        registry.register(ExternalHistoryProvider())
-        result = registry.call("external_history", "query_external_games", {"player_id": "p1"})
-        assert result.status == ToolStatus.SUCCESS
-        assert result.is_suggestion is True
-        assert "external_history" in result.source_annotation
-
-    def test_external_profile_provider(self):
-        registry = MCPRegistry()
-        registry.register(ExternalProfileProvider())
-        result = registry.call("external_profiles", "query_player_profile", {"player_id": "p1"})
-        assert result.status == ToolStatus.SUCCESS
-        assert result.is_suggestion is True
 
     def test_mcp_result_does_not_override_local(self):
         """MCP results are suggestions, not referee facts."""

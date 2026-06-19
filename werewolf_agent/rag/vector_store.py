@@ -568,23 +568,6 @@ class SiliconFlowVectorStore:
         self._embeddings[doc_id] = embedding
         self._total_docs += 1
 
-    def add_batch(self, items: list[tuple[str, str, dict[str, Any]]]) -> None:
-        """Batch-add documents with a single API call."""
-        if not items:
-            return
-        texts = [text for _, text, _ in items]
-        embeddings = self._client.embed(texts)
-        for (doc_id, text, metadata), embedding in zip(items, embeddings):
-            if doc_id in self._docs:
-                self.delete(doc_id)
-            self._docs[doc_id] = {
-                "doc_id": doc_id,
-                "text": text,
-                "metadata": metadata,
-            }
-            self._embeddings[doc_id] = embedding
-            self._total_docs += 1
-
     def query(self, query_text: str, top_k: int = 5) -> list[dict[str, Any]]:
         if not self._docs:
             return []

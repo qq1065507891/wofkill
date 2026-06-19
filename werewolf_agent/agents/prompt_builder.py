@@ -1919,12 +1919,6 @@ class PlayerPromptBuilder:
             speech_intent_tasks=_SPEECH_INTENT_TASKS,
         )
 
-    def _uses_choice_pipeline(self) -> bool:
-        return self._select_output_mode() == OutputMode.TARGET_CHOICE
-
-    def _uses_speech_intent_pipeline(self) -> bool:
-        return self._select_output_mode() == OutputMode.SPEECH_INTENT
-
     @staticmethod
     def _clean_prompt_text(
         value: Any,
@@ -1938,22 +1932,6 @@ class PlayerPromptBuilder:
         if len(text) <= max_chars:
             return text
         return text[: max(0, max_chars - 6)] + "…已截断"
-
-    @classmethod
-    def _clean_list_items(
-        cls,
-        value: Any,
-        *,
-        limit: int,
-        max_chars: int,
-    ) -> list[str]:
-        if not isinstance(value, list):
-            return []
-        return [
-            cls._clean_prompt_text(item, max_chars=max_chars)
-            for item in value[:limit]
-            if str(item or "").strip()
-        ]
 
     @staticmethod
     def _slim_numeric_params(value: Any) -> dict[str, float]:

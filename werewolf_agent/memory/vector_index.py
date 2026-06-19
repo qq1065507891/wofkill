@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from typing import Any, Iterable
+from typing import Any
 
 
 # Chinese + Latin word boundary. ASCII letters and digits are kept as
@@ -85,10 +85,6 @@ class BagOfWordsVectorIndex:
             self._idf = {}
             self._norms = {}
         self._docs[doc_id] = _tokenize(text)
-
-    def add_texts(self, items: Iterable[tuple[str, str]]) -> None:
-        for doc_id, text in items:
-            self.add_text(doc_id, text)
 
     def finalize(self) -> None:
         """Lock the index and precompute IDF + L2 norms."""
@@ -189,9 +185,6 @@ class BagOfWordsVectorIndex:
                     dot += w_q * (self._idf[term] * doc_tf[term])
             scores[doc_id] = dot / (q_norm * doc_norm)
         return scores
-
-    def document_ids(self) -> list[str]:
-        return list(self._docs.keys())
 
     def __len__(self) -> int:
         return len(self._docs)

@@ -33,7 +33,6 @@ from werewolf_agent.evaluation.schemas import (
     LeakageRecord,
     ReplayRecord,
 )
-from werewolf_agent.model_gateway.router import UsageRecord
 
 
 def run_offline_trace_ablation(
@@ -383,29 +382,6 @@ class BatchRunner:
         for result in self._results:
             if result.game_id == game_id:
                 result.cost_records.append(record)
-                break
-
-    def import_usage_records(
-        self,
-        game_id: str,
-        usage_records: list[UsageRecord],
-    ) -> None:
-        """Convert ModelRouter UsageRecords into CostRecords and attach."""
-        for result in self._results:
-            if result.game_id == game_id:
-                for ur in usage_records:
-                    result.cost_records.append(CostRecord(
-                        game_id=game_id,
-                        player_id=ur.agent_id,
-                        task_type=ur.task_type,
-                        provider=ur.provider,
-                        model=ur.model,
-                        prompt_tokens=ur.prompt_tokens,
-                        completion_tokens=ur.completion_tokens,
-                        latency_ms=ur.latency_ms,
-                        estimated_cost=ur.estimated_cost,
-                        fallback=ur.fallback_reason is not None,
-                    ))
                 break
 
     @staticmethod

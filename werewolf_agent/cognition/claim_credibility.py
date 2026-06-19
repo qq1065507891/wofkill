@@ -196,13 +196,6 @@ class SeerClaimCredibilityEngine:
             )
         return self._score_all()[claimant]
 
-    def line_for(self, claimant: str) -> SeerLine | None:
-        line = self._lines.get(claimant)
-        if line is None:
-            return None
-        line.credibility = self.score_for(claimant)
-        return line
-
     def prompt_summary(self, limit: int = 3) -> dict[str, Any]:
         scored = self._score_all()
         if not scored:
