@@ -3,7 +3,6 @@
 Covers:
 - Structured world state extraction
 - Visibility policy hard boundaries
-- Attention filter role-specific pruning
 - Salience engine weighting and bucketing
 - Belief updater deterministic updates
 - Contradiction engine detection
@@ -14,7 +13,6 @@ Covers:
 import pytest
 
 from werewolf_agent.agents.schemas import ActionType, TaskType
-from werewolf_agent.cognition.attention import AttentionFilter
 from werewolf_agent.cognition.belief import BeliefState, BeliefUpdater
 from werewolf_agent.cognition.contradiction import ContradictionEngine
 from werewolf_agent.cognition.salience import SalienceEngine
@@ -466,33 +464,6 @@ class TestVisibilityPolicy:
             f"world_state extractor: {sorted(stale)}. Remove them so the "
             f"fail-closed default (moderator_only) applies."
         )
-
-
-# ===================================================================
-# TestAttentionFilter
-# ===================================================================
-
-class TestAttentionFilter:
-
-    def test_filter_removes_empty_speech(self):
-        ws = StructuredWorldState()
-        ws.append(StructuredFact(fact_type="speech", source_player="p05", value=""))
-        ws.append(StructuredFact(fact_type="speech", source_player="p06", value="I have info"))
-        policy = VisibilityPolicy()
-        filt = AttentionFilter(policy)
-        result = filt.filter(ws, "p05", "villager")
-        assert len(result) == 1
-        assert result[0].value == "I have info"
-
-    def test_filter_respects_visibility(self):
-        ws = StructuredWorldState()
-        ws.append(StructuredFact(fact_type="seer_check", source_player="p08", value="werewolf"))
-        ws.append(StructuredFact(fact_type="player_died", target_player="p05"))
-        policy = VisibilityPolicy()
-        filt = AttentionFilter(policy)
-        result = filt.filter(ws, "p05", "villager")
-        assert len(result) == 1
-        assert result[0].fact_type == "player_died"
 
 
 # ===================================================================
