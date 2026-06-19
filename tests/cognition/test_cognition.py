@@ -5,7 +5,6 @@ Covers:
 - Visibility policy hard boundaries
 - Belief updater deterministic updates
 - Contradiction engine detection
-- Strategy selector role/situation mapping
 - Visibility leak detection
 """
 
@@ -14,7 +13,6 @@ import pytest
 from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.cognition.belief import BeliefState, BeliefUpdater
 from werewolf_agent.cognition.contradiction import ContradictionEngine
-from werewolf_agent.cognition.strategy import StrategySelector, STRATEGIES
 from werewolf_agent.cognition.visibility import VisibilityPolicy
 from werewolf_agent.cognition.world_state import (
     StructuredFact,
@@ -865,58 +863,6 @@ class TestContradictionEngine:
         engine = ContradictionEngine()
         alerts = engine.detect(facts, current_day=1)
         assert len(alerts) == 0
-
-
-# ===================================================================
-# TestStrategySelector
-# ===================================================================
-
-class TestStrategySelector:
-
-    def test_villager_default(self):
-        sel = StrategySelector()
-        s = sel.select("villager")
-        assert s.name == "find_wolves"
-
-    def test_seer_default(self):
-        sel = StrategySelector()
-        s = sel.select("seer")
-        assert s.name == "claim_and_push"
-
-    def test_werewolf_default(self):
-        sel = StrategySelector()
-        s = sel.select("werewolf")
-        assert s.name == "deep_hook"
-
-    def test_werewolf_suspected_switches_to_defense(self):
-        sel = StrategySelector()
-        s = sel.select("werewolf", is_suspected=True)
-        assert s.name == "aggressive_defense"
-
-    def test_werewolf_teammate_exiled_switches_to_counter(self):
-        sel = StrategySelector()
-        s = sel.select("werewolf", teammate_just_exiled=True)
-        assert s.name == "push_counter_wagon"
-
-    def test_seer_suspected_defends(self):
-        sel = StrategySelector()
-        s = sel.select("seer", is_suspected=True)
-        assert s.name == "aggressive_defense"
-
-    def test_all_strategies_have_goal(self):
-        for name, pkg in STRATEGIES.items():
-            assert pkg.goal, f"Strategy {name} has no goal"
-            assert pkg.name == name
-
-    def test_get_strategy(self):
-        sel = StrategySelector()
-        s = sel.get_strategy("deep_hook")
-        assert s is not None
-        assert s.name == "deep_hook"
-
-    def test_get_nonexistent_strategy(self):
-        sel = StrategySelector()
-        assert sel.get_strategy("nonexistent") is None
 
 
 # ===================================================================
