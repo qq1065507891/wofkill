@@ -4,10 +4,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **rag-role-hardening** — 2026-06-18 (COMPLETE)
-- Active task: 按 plan `docs/superpowers/plans/2026-06-18-rag-role-hardening.md` 闭合 RAG 默认 runtime 路径（vector_store=None）的 role/phase 隔离缺口——提取共享 `role_phase_matches` 谓词 + `_filter_candidates` 加硬过滤 + knowledge_service 两处内联副本委托给谓词（消除三路漂移）
+- Current phase: **attribution-engine** — 2026-06-19 (COMPLETE)
+- Active task: 按 spec `docs/superpowers/specs/2026-06-19-attribution-engine-design.md` + plan `docs/superpowers/plans/2026-06-19-attribution-engine.md` 建 post-game AttributionEngine（cited/aligned/harmful + judge producer）+ AttributionTextResolver + 2 metric producers 接 FullGameAblationRunner + gate 单侧 fail-closed 加固
 - Task owner: Claude development session
-- Last updated: 2026-06-18
+- Last updated: 2026-06-19
+- **本次新增 (attribution-engine)**: 新增 `evaluation/attribution.py`（AttributionEngine post-game pass + AttributionTextResolver + `cited`[Jaccard≥0.15]/`aligned`[4 认知模块方向规则]/`harmful`[cited∧aligned∧outcome 错误]/`beneficial` byproduct + judge producer[重建 public_facts + `derive_public_claim` + `judge_consistency_scored` sentinel]）+ `evaluation/text_similarity.py`（共享 tokenize/jaccard，memory.reflection re-import 别名）；`full_game_ablation.py` 加 `attribution_text_resolver` 构造参数 + `_enriched_metrics`（产 `harmful_transfer_rate` + `judge_consistency_rate`）+ `_merge_unsupported_metrics` 聚合进 `FullGameAblationReport.unsupported_metrics`（resolver 缺失→`unsupported["attribution"]="text_resolver_required"`）；`regression_gate.py` `required_metrics` 加固为单侧 fail-closed（任一侧缺失即阻断，reason `required_metric_missing:{metric}:{sides}`——扩展 monitoring-closure-fix 的 `:{m}` 格式）。harmful 写入 `exposure.metadata["harmful_transfer"]` 使现有 `_is_harmful_transfer`/feedback_metrics/gate consumer 零改生效；未解析 RAG/reflection 标 `MetricSupport.UNSUPPORTED` 排出 harmful 分母。11 任务 TDD subagent-driven，每任务 spec+quality 双审（Task 6 judge producer 首轮 NEEDS CHANGES：`_PHASE_ORDER` 不全→默认 -1 保守包含、`derive_public_claim` 结构化 claims 优先、judge 测试加 score<1.0 用例；implementer 修后 APPROVED；Task 6 还修了 plan 的 StructuredFact→json.dumps 崩溃，judge_trace 改用 asdict）。全量 3434 passed, 1 skipped（零回归，比 rag-role-hardening 的 3388 多 46 个新测试）。
 - **本次新增 (rag-role-hardening)**: `retriever.py` 新增模块级 `role_phase_matches(query, meta)`（role 通配 `general`/`any`/`""`，phase 通配 `general`/`""`，AND 语义，单一真源）；`StrategyRetriever._filter_candidates` 加 `if not role_phase_matches(query, meta): continue` 硬过滤（默认 runtime 路径 `vector_store=None` 从此有 role/phase 隔离，pre-fix 跨角色案例可经软分泄漏进 live top-3）；`knowledge_service.py` 的 `_passes_live_metadata_filter` 与 `_vector_candidates` 内联复检两处副本委托给 `role_phase_matches`（消除三路通配约定漂移，纯重构无行为变化）。新增 `test_default_runtime_path_rejects_cross_role_case`（覆盖 `vector_store=None` 路径，pre-fix 现有测试只测 vector 路径）。`_score` 软分（0.15/0.05）未动（现仅在准入集内排序）。2 任务 TDD subagent-driven，spec+quality 双审。全量 3388 passed, 1 skipped（零回归）。
 - **本次新增 (prompt-sanitizer-fix)**: `prompt_builder.py` `_build_possible_worlds` 的 label/why/watch_for 与 `_build_simulation_predictions` 的 event/rationale/world_ids 从跨局脱敏器 `_clean_prompt_text`/`_clean_list_items`（会把本局 `p03` 替换成"历史玩家"，损坏本局推理信号）改用本局清理器 `_clean_current_game_token`（保留玩家 ID）；新增模块级 `_clean_current_game_list_items`（含 `isinstance(list)` 防护，id 保留）统一当前局 list 清理，possible_worlds why/watch_for 回填使用；`_build_seer_credibility` 的 `evidence` 从原始 join 改为 `_clean_current_game_token(e, max_chars=40)`（折叠换行+截断+跳空）；`_format_examples` 发言示例 2 处硬编码 `p05`→`pXX`（与 vote 示例占位符约定一致，防 LLM 误抄）；persona never-drop 与 spec `2026-06-12-prompt-balance-hardening-design.md:93` 冲突，记入该 spec 决议更新（保留 never-drop 行为，不改代码/测试）。5 任务 TDD subagent-driven，每任务 spec+quality 双审。全量 3387 passed, 1 skipped（零回归）。
 - **本次新增 (reflection-synthesis-upgrade)**: `schemas.py` `ReflectionEntryV2.prompt_visible_texts()` 移除 `mistake_patterns[].wrong_action`（承载 `review.py:108` 的 `实际 {actual}` 真相，audit-only，堵住 `_has_unsafe_truth_claim` 被 `auto_verified` 豁免的纵深洞）；`reflection.py` 新增 `_extract_llm_strengths`（regex 解析【保留的优点】段为 fact-free `preserved_strengths`，含真相 token 的条目丢弃 + ID scrub，上限 2），`synthesize` 与确定性 strengths 经 `_jaccard`≥0.6 去重合并（总上限 3，实现 spec Synthesis rule 1 的 strengths 半）；`corrected_from_llm` 否认 regex 加宽并收紧（去掉过宽的`我的判断都`前缀，避免匹配`我的判断都错了`这类错误自述，新增负面测试）。`tests/memory/test_reflection_v2.py` +6 测试。`reflection.py` 的 `ReflectionPreservedStrength` 无 `fact_basis` 字段（`extra="forbid"`），provenance 记在 docstring + `source.llm_self_review`。全量 3382 passed, 1 skipped（零回归）。
@@ -27,6 +28,36 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## attribution-engine — 2026-06-19 (已完成)
+
+**背景**: 六模块审查发现监控反馈环的归因消费者（`cited_by_decision`/`aligned_with_decision`/`harmful_transfer`/`judge_consistency_rate`）全无 producer——字段/聚合/gate 检查都在但从不被填，`harmful_transfer_rate`/`judge_consistency_rate` 对 gate 是空转。monitoring-closure-fix 已补 `vote_quality` producer + `required_metrics` fail-closed + 复活 diagnostics，但 judge/harmful producer 明确推迟到本 plan（需 traces 管线 + 归因判定）。spec `docs/superpowers/specs/2026-06-19-attribution-engine-design.md`（brainstorming 5 决策：cited=Jaccard 文本匹配、范围=4 认知模块、harmful=cited∧aligned∧bad、时机=post-game、cited 统一 Jaccard）+ plan `docs/superpowers/plans/2026-06-19-attribution-engine.md`（11 任务，含 spec 修订：AttributionTextResolver 按 item_id 解析卡片文本+UNSUPPORTED、`_speech_from_decision` 读 raw、simulator 用 item_id、judge 0.0 sentinel、GameState 重建、runner resolver 参数、gate 单侧 fail-closed）。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| `evaluation/text_similarity.py`（新） | 共享 `tokenize`（`[a-z0-9_]+|[一-鿿]`）+ `jaccard`；`memory.reflection` 的 `_token_set`/`_jaccard` 改 re-import 别名（无循环：evaluation 不依赖 memory.reflection） |
+| `evaluation/attribution.py`（新） | `AttributionTextResolver`（rag 5 字段/reflection prompt_card 4 字段，未解析返 None）；`cited`（Jaccard≥0.15，`speech_from_decision` 读 `decision.raw`）；`aligned`（possible_worlds wolf-assignments / simulator affected_players / rag·reflection 动作词 `_ACTION_VERBS` 双侧匹配）；`trace_outcome_is_bad`+`is_harmful`+`is_beneficial`；`rebuild_visible_facts`（payload day + 同日 phase rank 前缀过滤→GameEvent→临时 GameState→`build_world_state`→`VisibilityPolicy`）+ `derive_public_claim`（结构化 claims 优先于文本 marker）+ `judge_trace`（`judge_speech_consistency` + `judge_consistency_scored` sentinel，visible_facts 经 `asdict` 转 dict 防 json.dumps 崩溃）；`AttributionEngine.annotate`（frozen `dataclasses.replace`，标 cited/aligned/harmful/beneficial/UNSUPPORTED + judge）；`harmful_rate`/`mean_consistency` |
+| `full_game_ablation.py` | `__init__` 加 `attribution_text_resolver`；`_enriched_metrics`（`_game_metrics` + traces + annotate → `harmful_transfer_rate`[需 resolver] + `judge_consistency_rate`）；`_merge_unsupported_metrics` 进 `FullGameAblationReport.unsupported_metrics`；run + _run_replay 接入；replay 稀疏 GameResult 无 traces→两 key 省略 |
+| `regression_gate.py` | `required_metrics` 加固：任一侧缺失即 fail-closed（reason `required_metric_missing:{metric}:{sides}`，扩展 monitoring-closure-fix 的 `:{m}`） |
+
+**验证**:
+- 11 任务 TDD red→green，subagent-driven + spec/quality 双审。
+- Task 6 judge producer 首轮 code-quality NEEDS CHANGES：`_PHASE_ORDER` 不全（runtime ~50 phase 只列 11）→未知 phase 默认 rank 999 错误排除同日事件；`derive_public_claim` text marker 覆盖结构化 claims；judge 测试锁平凡路径。implementer 修：默认 rank -1（保守包含）、结构化 claims 优先、加 score<1.0 测试（wolf 自爆无 prior claim→identity issue→0.6667）。还修了 plan 的 StructuredFact 不可 JSON 序列化崩溃（judge_trace 用 asdict）。Re-review APPROVED。
+- `python -m pytest -q -o addopts=""`（不指定 basetemp）→ **3434 passed, 1 skipped**（零回归，比 rag-role-hardening 的 3388 多 46 个新测试）。
+- `python -m compileall -q werewolf_agent` 干净。
+
+**开放风险/局限**:
+- **归因是相关性非因果**（spec `evaluation-feedback-loop-design.md:842`）：`harmful=cited∧aligned∧bad` 高精度但可能漏 half-followed cards；强因果需 live-agent ablation harness（out of scope）。
+- **`aligned` rag/reflection 动作词子串匹配的 fuzzy 性**：单字动词"先"/"列"可能子串误报（"先"∈"先生"）；tokenize 对中文双字动词失效故未采用 whole-token；`harmful` 三重约束（cited∧aligned∧bad）限制 blast radius；记为已知启发式局限。
+- **`skill`/`persona` 排除**（行为先验，归因语义未定义）。
+- **`beneficial` byproduct 存储**（`metadata["beneficial"]`）但未接 `reflection.query_live` 重排序（spec future downrank）。
+- **Resolver 生产 wiring**：测试用 fixture dict；生产需 store-backed resolver（`RAGRepository.get`/`ReflectionMemory.all_v2_entries`）接 game_runner/评估管线——后续。
+- **`memory.reflection`→`evaluation.text_similarity` 依赖**（memory→evaluation 边）：已验证无循环（evaluation 不依赖 memory.reflection）；若未来 evaluation 反向 import memory.reflection 则循环，届时移 text_similarity 到中立 `core/`。
+- **judge `public_claim`** 从先前公开角色声明推导；无声明时为 `""`（identity 维度仅对狼自爆触发）。
+- **`_PHASE_ORDER` 不全**：未知 phase 默认 -1（保守包含）；多余 fact 不产生 false judge issue，漏 fact 才会，故过度显示比错误隐藏安全。
+- 无 runtime/schema/DB/规则引擎改动；public_facts 仅 post-game 内存重建不进 audit payload。
 
 ## rag-role-hardening — 2026-06-18 (已完成)
 
