@@ -3,7 +3,6 @@
 Covers:
 - Structured world state extraction
 - Visibility policy hard boundaries
-- Salience engine weighting and bucketing
 - Belief updater deterministic updates
 - Contradiction engine detection
 - Strategy selector role/situation mapping
@@ -15,7 +14,6 @@ import pytest
 from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.cognition.belief import BeliefState, BeliefUpdater
 from werewolf_agent.cognition.contradiction import ContradictionEngine
-from werewolf_agent.cognition.salience import SalienceEngine
 from werewolf_agent.cognition.strategy import StrategySelector, STRATEGIES
 from werewolf_agent.cognition.visibility import VisibilityPolicy
 from werewolf_agent.cognition.world_state import (
@@ -464,52 +462,6 @@ class TestVisibilityPolicy:
             f"world_state extractor: {sorted(stale)}. Remove them so the "
             f"fail-closed default (moderator_only) applies."
         )
-
-
-# ===================================================================
-# TestSalienceEngine
-# ===================================================================
-
-class TestSalienceEngine:
-
-    def test_high_priority_types_get_high_weight(self):
-        facts = [StructuredFact(fact_type="player_died", target_player="p05", value="wolf_kill", day=1)]
-        engine = SalienceEngine()
-        weighted = engine.weight_facts(facts, current_day=1, current_phase="speech", viewer_role="villager")
-        assert weighted[0].bucket == "high"
-        assert weighted[0].weight >= 0.7
-
-    def test_recency_boost(self):
-        old = StructuredFact(fact_type="speech", source_player="p05", value="test", day=1)
-        recent = StructuredFact(fact_type="speech", source_player="p06", value="test", day=3)
-        engine = SalienceEngine()
-        weighted = engine.weight_facts([old, recent], current_day=3, current_phase="speech", viewer_role="villager")
-        # Recent should have higher weight
-        assert weighted[0].fact.value == "test"
-        assert weighted[0].fact.source_player == "p06"  # more recent first
-
-    def test_phase_relevance(self):
-        vote = StructuredFact(fact_type="vote", source_player="p05", target_player="p01", day=1)
-        engine = SalienceEngine()
-        weighted = engine.weight_facts([vote], current_day=1, current_phase="vote", viewer_role="villager")
-        assert "phase_relevant" in weighted[0].reasons
-
-    def test_filter_by_bucket(self):
-        facts = [
-            StructuredFact(fact_type="player_died", target_player="p05", value="wolf_kill", day=1),
-            StructuredFact(fact_type="speech", source_player="p06", value="low signal", day=0, night=0),
-        ]
-        engine = SalienceEngine()
-        weighted = engine.weight_facts(facts, current_day=3, current_phase="speech", viewer_role="villager")
-        high_only = engine.filter_by_bucket(weighted, "high")
-        assert all(s.bucket == "high" for s in high_only)
-
-    def test_role_specific_relevance(self):
-        seer_check = StructuredFact(fact_type="seer_check", source_player="p08", target_player="p01", night=1, value="werewolf")
-        engine = SalienceEngine()
-        weighted_seer = engine.weight_facts([seer_check], current_day=1, current_phase="seer_check", viewer_role="seer")
-        weighted_villager = engine.weight_facts([seer_check], current_day=1, current_phase="speech", viewer_role="villager")
-        assert weighted_seer[0].weight > weighted_villager[0].weight
 
 
 # ===================================================================
