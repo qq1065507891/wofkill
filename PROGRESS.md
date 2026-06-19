@@ -4,10 +4,11 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 
 ## Current Status
 
-- Current phase: **attribution-engine** — 2026-06-19 (COMPLETE)
-- Active task: 按 spec `docs/superpowers/specs/2026-06-19-attribution-engine-design.md` + plan `docs/superpowers/plans/2026-06-19-attribution-engine.md` 建 post-game AttributionEngine（cited/aligned/harmful + judge producer）+ AttributionTextResolver + 2 metric producers 接 FullGameAblationRunner + gate 单侧 fail-closed 加固
+- Current phase: **deadcode-cleanup** — 2026-06-19 (COMPLETE)
+- Active task: 按 plan `docs/superpowers/plans/2026-06-19-deadcode-cleanup.md` 删除六模块审查确认的死代码——cognition/attention.py/salience.py/strategy.py（被 build_agent_context/skills 取代）+ context.py 反思头 helpers（被 live_error_pattern 取代）+ prompt_builder _GROUNDING_SECTIONS/_build_skill_analysis_hints
 - Task owner: Claude development session
 - Last updated: 2026-06-19
+- **本次新增 (deadcode-cleanup)**: 删 `cognition/attention.py`（AttentionFilter 63 行）+ `cognition/salience.py`（SalienceEngine 173 行）+ `cognition/strategy.py`（StrategySelector 145 行）——均被 build_agent_context/skills 取代，生产零 importer（grep 验证），各删对应 test_cognition 测试类；删 `runtime/context.py` 的 `_REFLECTION_HEADER_CATEGORIES`/`_categorize_reflection_text`/`_compute_error_pattern`（96 行，被 reflection V2 `live_error_pattern` 取代）+ 唯一用户 `Counter` import + test_strategy_directives 5 测试；删 `agents/prompt_builder.py` 的 `_GROUNDING_SECTIONS`（frozenset 零引用）+ `_build_skill_analysis_hints`（返回 "" 无 caller）。5 删除任务 grep 验证 + compileall + 全量绿。保留 `evaluate_reflection_effectiveness`（spec 评估能力待接线）、`claim_credibility`/`public_evidence` snapshot（持久化机制待接线）、`_LOW_VALUE_SECTIONS`/`_uses_*_pipeline`（有测试锁留后续）。全量 3413 passed, 1 skipped（比 attribution-engine 3434 少 21 个删掉的死测试，零回归）。
 - **本次新增 (attribution-engine)**: 新增 `evaluation/attribution.py`（AttributionEngine post-game pass + AttributionTextResolver + `cited`[Jaccard≥0.15]/`aligned`[4 认知模块方向规则]/`harmful`[cited∧aligned∧outcome 错误]/`beneficial` byproduct + judge producer[重建 public_facts + `derive_public_claim` + `judge_consistency_scored` sentinel]）+ `evaluation/text_similarity.py`（共享 tokenize/jaccard，memory.reflection re-import 别名）；`full_game_ablation.py` 加 `attribution_text_resolver` 构造参数 + `_enriched_metrics`（产 `harmful_transfer_rate` + `judge_consistency_rate`）+ `_merge_unsupported_metrics` 聚合进 `FullGameAblationReport.unsupported_metrics`（resolver 缺失→`unsupported["attribution"]="text_resolver_required"`）；`regression_gate.py` `required_metrics` 加固为单侧 fail-closed（任一侧缺失即阻断，reason `required_metric_missing:{metric}:{sides}`——扩展 monitoring-closure-fix 的 `:{m}` 格式）。harmful 写入 `exposure.metadata["harmful_transfer"]` 使现有 `_is_harmful_transfer`/feedback_metrics/gate consumer 零改生效；未解析 RAG/reflection 标 `MetricSupport.UNSUPPORTED` 排出 harmful 分母。11 任务 TDD subagent-driven，每任务 spec+quality 双审（Task 6 judge producer 首轮 NEEDS CHANGES：`_PHASE_ORDER` 不全→默认 -1 保守包含、`derive_public_claim` 结构化 claims 优先、judge 测试加 score<1.0 用例；implementer 修后 APPROVED；Task 6 还修了 plan 的 StructuredFact→json.dumps 崩溃，judge_trace 改用 asdict）。全量 3434 passed, 1 skipped（零回归，比 rag-role-hardening 的 3388 多 46 个新测试）。
 - **本次新增 (rag-role-hardening)**: `retriever.py` 新增模块级 `role_phase_matches(query, meta)`（role 通配 `general`/`any`/`""`，phase 通配 `general`/`""`，AND 语义，单一真源）；`StrategyRetriever._filter_candidates` 加 `if not role_phase_matches(query, meta): continue` 硬过滤（默认 runtime 路径 `vector_store=None` 从此有 role/phase 隔离，pre-fix 跨角色案例可经软分泄漏进 live top-3）；`knowledge_service.py` 的 `_passes_live_metadata_filter` 与 `_vector_candidates` 内联复检两处副本委托给 `role_phase_matches`（消除三路通配约定漂移，纯重构无行为变化）。新增 `test_default_runtime_path_rejects_cross_role_case`（覆盖 `vector_store=None` 路径，pre-fix 现有测试只测 vector 路径）。`_score` 软分（0.15/0.05）未动（现仅在准入集内排序）。2 任务 TDD subagent-driven，spec+quality 双审。全量 3388 passed, 1 skipped（零回归）。
 - **本次新增 (prompt-sanitizer-fix)**: `prompt_builder.py` `_build_possible_worlds` 的 label/why/watch_for 与 `_build_simulation_predictions` 的 event/rationale/world_ids 从跨局脱敏器 `_clean_prompt_text`/`_clean_list_items`（会把本局 `p03` 替换成"历史玩家"，损坏本局推理信号）改用本局清理器 `_clean_current_game_token`（保留玩家 ID）；新增模块级 `_clean_current_game_list_items`（含 `isinstance(list)` 防护，id 保留）统一当前局 list 清理，possible_worlds why/watch_for 回填使用；`_build_seer_credibility` 的 `evidence` 从原始 join 改为 `_clean_current_game_token(e, max_chars=40)`（折叠换行+截断+跳空）；`_format_examples` 发言示例 2 处硬编码 `p05`→`pXX`（与 vote 示例占位符约定一致，防 LLM 误抄）；persona never-drop 与 spec `2026-06-12-prompt-balance-hardening-design.md:93` 冲突，记入该 spec 决议更新（保留 never-drop 行为，不改代码/测试）。5 任务 TDD subagent-driven，每任务 spec+quality 双审。全量 3387 passed, 1 skipped（零回归）。
@@ -28,6 +29,30 @@ This file is the control ledger for Claude/GLM development. Update it at the sta
 - **本次新增 (prompt-budget-and-internal-caps)**: `_USER_PROMPT_BUDGET_CHARS` 从 6,250 放宽到 20,000；`跨局学习参考` 改为错误模式/反思优先并内部裁剪低优先级 RAG；`skill_tactical_advice` 增加条数和单条长度上限；FULL_ACTION 示例目标改用当前合法 target。
 - **本次新增 (prompt-module-merge-hardening)**: 将 RAG/反思/画像/认知/错误模式合并为单一 `跨局学习参考` section；将 retry hint 与 strict output contract 合并为单一 `最终输出约束` section；同步 section registry、信息边界和相关测试。
 - **本次新增 (prompt-section-registry-hardening)**: 统一 user-prompt section 元数据，消除标签/预算/信息边界漂移；persona 改为行为化短行渲染；跨局学习上下文改为白名单瘦身；长 JSON 优先结构化摘要。
+
+## deadcode-cleanup — 2026-06-19 (已完成)
+
+**背景**: 六模块审查识别的死代码清理（生产零 caller，被新路径取代）。plan `docs/superpowers/plans/2026-06-19-deadcode-cleanup.md`。
+
+**改动**:
+
+| 项目 | 处理 |
+|---|---|
+| `cognition/attention.py` | 删除（AttentionFilter，被 build_agent_context 取代）+ TestAttentionFilter |
+| `cognition/salience.py` | 删除（SalienceEngine）+ TestSalienceEngine |
+| `cognition/strategy.py` | 删除（StrategySelector/STRATEGIES，被 skills 取代）+ TestStrategySelector；`runtime/strategy/`（live）未触 |
+| `runtime/context.py` | 删 `_REFLECTION_HEADER_CATEGORIES`/`_categorize_reflection_text`/`_compute_error_pattern`（被 live_error_pattern 取代）+ Counter import（唯一用户） |
+| `tests/runtime/test_strategy_directives.py` | 删 5 个 reflection-header 测试 |
+| `agents/prompt_builder.py` | 删 `_GROUNDING_SECTIONS`（零引用 frozenset）+ `_build_skill_analysis_hints`（返回 "" 无 caller） |
+
+**验证**: 每任务 grep 确认零生产 importer + compileall 干净 + 受影响测试套件绿。`python -m pytest -q -o addopts=""` → **3413 passed, 1 skipped**（比 attribution-engine 3434 少 21 个删掉的死测试，零回归）。compileall 干净。
+
+**保留（未接线基础设施，非 dead-by-replacement，删损失大）**:
+- `memory/reflection_effectiveness.py::evaluate_reflection_effectiveness`——spec 规划的评估能力，无管线 caller（PROGRESS 跟踪接线）。
+- `cognition/claim_credibility.py`+`public_evidence.py` 的 `snapshot`/`from_snapshot`——spec 设计的跨进程 resume 持久化，无生产 wiring。
+- `prompt_builder._LOW_VALUE_SECTIONS`/`_uses_choice_pipeline`/`_uses_speech_intent_pipeline`——有测试断言锁行为，删需协调改测试，留后续单独清理。
+
+**开放风险**: 纯删除无行为变化；每删除 grep 验证零生产 caller + compileall 抓残留 import。
 
 ## attribution-engine — 2026-06-19 (已完成)
 
