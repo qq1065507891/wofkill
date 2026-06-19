@@ -393,6 +393,35 @@ def judge_trace(trace, result):
 _COGNITION_MODULES = frozenset({"rag", "reflection", "possible_worlds", "simulator"})
 
 
+def harmful_rate(traces) -> float:
+    supported = 0
+    harmful = 0
+    for trace in traces:
+        for exposure in trace.module_exposures:
+            if exposure.module not in _COGNITION_MODULES:
+                continue
+            if exposure.support != MetricSupport.SUPPORTED:
+                continue
+            supported += 1
+            if exposure.metadata.get("harmful_transfer") is True:
+                harmful += 1
+    return harmful / supported if supported else 0.0
+
+
+def mean_consistency(traces) -> float | None:
+    scores = []
+    for trace in traces:
+        outcome = trace.outcome
+        if outcome is None or trace.decision is None:
+            continue
+        if _JUDGE_SENTINEL not in (outcome.outcome_refs or []):
+            continue
+        if not (speech_from_decision(trace.decision).strip() or (trace.decision.reason or "").strip()):
+            continue
+        scores.append(outcome.local_quality_score)
+    return sum(scores) / len(scores) if scores else None
+
+
 class AttributionEngine:
     """Post-game attribution pass. Rebuilds frozen traces with cited/aligned/
     harmful annotations and judged outcome scores."""

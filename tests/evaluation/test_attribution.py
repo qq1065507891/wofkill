@@ -435,3 +435,67 @@ def test_annotate_returns_new_traces_does_not_mutate_input():
     AttributionEngine(resolver).annotate([trace], _result_with_claim([]))
     # input trace is frozen/unchanged
     assert trace.module_exposures == original_exposures
+
+
+from werewolf_agent.evaluation.attribution import harmful_rate, mean_consistency
+
+
+def test_harmful_rate_excludes_unsupported_from_denominator():
+    traces = [
+        EvaluationTrace(
+            trace_id="t1", game_id="g", player_id="p", role="villager",
+            faction="good", phase="x",
+            decision=DecisionSnapshot(action_type="vote"),
+            outcome=DecisionOutcome(),
+            module_exposures=[
+                ModuleExposure(module="rag", item_id="a", support=MetricSupport.SUPPORTED,
+                               metadata={"harmful_transfer": True}),
+                ModuleExposure(module="rag", item_id="b", support=MetricSupport.UNSUPPORTED,
+                               metadata={"harmful_transfer": True}),
+            ],
+        ),
+    ]
+    # supported denominator = 1, harmful = 1 -> 1.0
+    assert harmful_rate(traces) == 1.0
+
+
+def test_harmful_rate_zero_when_no_supported():
+    assert harmful_rate([]) == 0.0
+
+
+def test_mean_consistency_uses_sentinel_not_score_filter():
+    traces = [
+        EvaluationTrace(
+            trace_id="t1", game_id="g", player_id="p", role="villager",
+            faction="good", phase="speech",
+            decision=DecisionSnapshot(action_type="speech", reason="x"),
+            outcome=DecisionOutcome(local_quality_score=0.0,
+                                    outcome_refs=["judge_consistency_scored"]),
+        ),
+        EvaluationTrace(
+            trace_id="t2", game_id="g", player_id="p", role="villager",
+            faction="good", phase="speech",
+            decision=DecisionSnapshot(action_type="speech", reason="y"),
+            outcome=DecisionOutcome(local_quality_score=0.8,
+                                    outcome_refs=["judge_consistency_scored"]),
+        ),
+        # not judged - no sentinel, excluded
+        EvaluationTrace(
+            trace_id="t3", game_id="g", player_id="p", role="villager",
+            faction="good", phase="speech",
+            decision=DecisionSnapshot(action_type="speech", reason="z"),
+            outcome=DecisionOutcome(local_quality_score=0.0, outcome_refs=[]),
+        ),
+    ]
+    # (0.0 + 0.8) / 2 = 0.4
+    assert mean_consistency(traces) == 0.4
+
+
+def test_mean_consistency_none_when_no_judged_traces():
+    traces = [EvaluationTrace(
+        trace_id="t", game_id="g", player_id="p", role="villager",
+        faction="good", phase="x",
+        decision=DecisionSnapshot(action_type="vote"),
+        outcome=DecisionOutcome(),
+    )]
+    assert mean_consistency(traces) is None
