@@ -17,10 +17,7 @@ import uuid
 from collections import Counter
 from typing import Any
 
-from werewolf_agent.evaluation.text_similarity import (
-    jaccard as _jaccard,
-    tokenize as _token_set,
-)
+from werewolf_agent.evaluation.text_similarity import jaccard as _jaccard
 from werewolf_agent.memory.schemas import (
     CrossGameQuery,
     ReflectionEntry,

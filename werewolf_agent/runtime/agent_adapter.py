@@ -58,8 +58,6 @@ from werewolf_agent.runtime.directives import (
 )
 from werewolf_agent.runtime.directives._shared import (
     build_sheriff_silent_directive as _build_sheriff_silent_directive,
-    collect_death_order as _collect_death_order,
-    collect_public_vote_history as _collect_public_vote_history,
 )
 
 logger = logging.getLogger(__name__)

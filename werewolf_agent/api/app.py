@@ -20,7 +20,6 @@ from werewolf_agent.api.permissions import PermissionChecker
 from werewolf_agent.api.schemas import CallerRole
 from werewolf_agent.customization.repository import InMemoryCustomizationRepository
 from werewolf_agent.runtime.executor import LocalRuntimeExecutor
-from werewolf_agent.storage.memory_store import InMemoryGameRepository
 
 logger = logging.getLogger(__name__)
 

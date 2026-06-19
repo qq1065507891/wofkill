@@ -12,10 +12,6 @@ from typing import Any
 
 from werewolf_agent.agents.schemas import (
     JudgeBroadcast,
-    JudgeVoteCallingInput,
-    JudgeSkillGuideInput,
-    JudgeTallyInput,
-    JudgeExileInput,
     TaskType,
 )
 from werewolf_agent.model_gateway.router import ModelRouter

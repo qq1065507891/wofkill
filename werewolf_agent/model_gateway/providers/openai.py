@@ -196,7 +196,6 @@ def _openai_chat_completions_url(base_url: str) -> str:
     - URL already ends in ``/chat/completions``: return as-is.
     """
     import re
-    from urllib.parse import urlparse
     normalized = base_url.rstrip("/")
     # Pass through if the URL is already a chat-completions URL.
     if normalized.endswith("/chat/completions"):
