@@ -184,3 +184,90 @@ def test_gate_required_metrics_default_empty_is_backward_compatible():
         prompt_safe=True,
     )
     assert report.passed is True
+
+
+def test_gate_accepts_metrics_emitted_by_enriched_producer():
+    from werewolf_agent.evaluation.attribution import AttributionTextResolver
+    from werewolf_agent.evaluation.full_game_ablation import _enriched_metrics
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig, RegressionGate,
+    )
+    from werewolf_agent.evaluation.schemas import ActionRecord, GameResult
+
+    result = GameResult(
+        game_id="g", initial_seed=0, ruleset_id="pre_witch_hunter_idiot_mixed",
+        player_roles={"p01": "villager", "p02": "werewolf"},
+        player_factions={"p01": "good", "p02": "werewolf"},
+        winning_faction="good",
+        action_records=[ActionRecord(player_id="p01", action_type="vote", target_id="p02")],
+        event_log=[{
+            "type": "action_trace_audit",
+            "payload": {
+                "player_id": "p01", "phase": "day_vote", "day_number": 1,
+                "action_trace": {
+                    "final_action_type": "vote",
+                    "parsed_action": {"target_id": "p02", "reason": "投p02", "speech": ""},
+                },
+            },
+        }],
+    )
+    metrics, unsupported = _enriched_metrics(result, AttributionTextResolver())
+    assert unsupported == {}
+    assert {"judge_consistency_rate", "harmful_transfer_rate"} <= set(metrics)
+
+    config = CandidateRegressionConfig(
+        candidate_id="c1",
+        required_metrics=("judge_consistency_rate", "harmful_transfer_rate"),
+    )
+    report = RegressionGate().evaluate(
+        config,
+        baseline_metrics=metrics,
+        candidate_metrics=metrics,
+        prompt_safe=True,
+    )
+    assert report.passed is True
+
+
+def test_gate_fails_closed_when_producer_silently_absent():
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig, RegressionGate,
+    )
+    config = CandidateRegressionConfig(
+        candidate_id="c1",
+        required_metrics=("judge_consistency_rate", "harmful_transfer_rate"),
+    )
+    report = RegressionGate().evaluate(
+        config,
+        baseline_metrics={"good_win_rate": 0.5},
+        candidate_metrics={"good_win_rate": 0.5},
+        prompt_safe=True,
+    )
+    assert report.passed is False
+    reasons = " ".join(report.blocked_reasons)
+    assert "judge_consistency_rate" in reasons
+    assert "harmful_transfer_rate" in reasons
+
+
+def test_gate_fails_closed_when_required_metric_missing_on_one_side():
+    from werewolf_agent.evaluation.regression_gate import (
+        CandidateRegressionConfig, RegressionGate,
+    )
+    config = CandidateRegressionConfig(
+        candidate_id="c1",
+        required_metrics=("judge_consistency_rate", "harmful_transfer_rate"),
+    )
+    report = RegressionGate().evaluate(
+        config,
+        baseline_metrics={
+            "good_win_rate": 0.5,
+            "judge_consistency_rate": 0.8,
+            "harmful_transfer_rate": 0.1,
+        },
+        candidate_metrics={
+            "good_win_rate": 0.5,
+            "judge_consistency_rate": 0.8,
+        },
+        prompt_safe=True,
+    )
+    assert report.passed is False
+    assert "required_metric_missing:harmful_transfer_rate:candidate" in report.blocked_reasons

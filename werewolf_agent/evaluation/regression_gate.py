@@ -172,12 +172,17 @@ class RegressionGate:
             checks.append(GateCheck(name="prompt_safety", passed=True))
 
         for required in config.required_metrics:
-            if required in baseline_metrics or required in candidate_metrics:
+            missing_sides = []
+            if required not in baseline_metrics:
+                missing_sides.append("baseline")
+            if required not in candidate_metrics:
+                missing_sides.append("candidate")
+            if not missing_sides:
                 continue
             checks.append(GateCheck(
                 name=f"required_{required}",
                 passed=False,
-                reason=f"required_metric_missing:{required}",
+                reason=f"required_metric_missing:{required}:{','.join(missing_sides)}",
                 metric=required,
             ))
 
