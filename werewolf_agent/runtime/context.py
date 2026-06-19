@@ -17,7 +17,6 @@ import json
 import logging
 import re
 import threading
-from collections import Counter
 from dataclasses import replace
 from typing import Any
 
@@ -577,101 +576,6 @@ def _reflection_memory_hints(reflections: list[Any], current_role: str, current_
                 "situation": ref.situation,
             })
     return hints
-
-
-# ---------------------------------------------------------------------------
-# Error pattern aggregation (reflect-cross-1)
-# ---------------------------------------------------------------------------
-
-# Section header → category mapping. Templates in agent_adapter.py emit
-# these headers; we parse them to derive error categories without an
-# extra LLM call.
-_REFLECTION_HEADER_CATEGORIES: dict[str, str] = {
-    "【投票错误】": "vote_mistake",
-    "【信息缺失】": "info_miss",
-    "【神职执行】": "role_execution",
-    "【悍跳分析】": "claim_failed",
-    "【暴露原因】": "exposure",
-    "【角色分工】": "role_execution",
-    "【保留的优点】": "preserved_strength",
-}
-
-
-def _categorize_reflection_text(text: str) -> list[str]:
-    """从反思文本中解析章节头,返回 category 列表。
-
-    Section header regex: ``【...】`` 出现在文本中即视为该类目命中。
-    同类目多次出现算 1 次 (去重),保证权重不被重复章节头放大。
-    """
-    if not text:
-        return []
-    cats: list[str] = []
-    seen: set[str] = set()
-    for header, cat in _REFLECTION_HEADER_CATEGORIES.items():
-        if header in text and cat not in seen:
-            cats.append(cat)
-            seen.add(cat)
-    return cats
-
-
-def _compute_error_pattern(
-    reflections: list[Any],
-    current_role: str,
-) -> dict[str, Any]:
-    """聚合某 player 跨局反思,提取 top 错误模式 + 保留优点。
-
-    返回 dict:
-      - top_mistakes: list[(category, count)] 前 2 类错误 (按频次)
-      - preserved_strength_count: int 含【保留的优点】段的反思数
-      - total_reflections: int
-      - same_role_reflections: int 与当前角色相同的反思数
-      - dominant_mistake_ratio: float 最高频错误 / 总错误数 (0~1)
-      - current_role: str
-
-    用途:作为 error_pattern_hint 注入 LLM prompt,让 LLM 看到
-    "你历史最常犯的错误是 X" 这种聚合信号,而不只是单条反思。
-    """
-    if not reflections:
-        return {
-            "top_mistakes": [],
-            "preserved_strength_count": 0,
-            "total_reflections": 0,
-            "same_role_reflections": 0,
-            "dominant_mistake_ratio": 0.0,
-            "current_role": current_role,
-        }
-
-    mistake_counter: Counter = Counter()
-    preserved_count = 0
-    same_role_reflections = 0
-
-    for r in reflections:
-        r_text = getattr(r, "text", "") or ""
-        cats = _categorize_reflection_text(r_text)
-        if "preserved_strength" in cats:
-            preserved_count += 1
-            cats.remove("preserved_strength")
-        if getattr(r, "role", "") == current_role:
-            same_role_reflections += 1
-        for c in cats:
-            mistake_counter[c] += 1
-
-    top_mistakes = mistake_counter.most_common(2)
-    total_mistakes = sum(mistake_counter.values())
-    dominant_ratio = (
-        round(mistake_counter.most_common(1)[0][1] / total_mistakes, 2)
-        if total_mistakes > 0 and mistake_counter
-        else 0.0
-    )
-
-    return {
-        "top_mistakes": top_mistakes,
-        "preserved_strength_count": preserved_count,
-        "total_reflections": len(reflections),
-        "same_role_reflections": same_role_reflections,
-        "dominant_mistake_ratio": dominant_ratio,
-        "current_role": current_role,
-    }
 
 
 def _evidence_id_ref(text: str) -> str:
