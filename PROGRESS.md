@@ -4247,3 +4247,45 @@ test_live_runtime.py -p no:cacheprovider -q`
 - 相关回归: `python -m pytest tests/skills tests/runtime/test_context.py tests/agents/test_prompt_builder.py tests/agents/test_player_agent.py -q ...` → 444 passed。
 - 编译: `python -m compileall -q werewolf_agent tests`。
 - 格式: `git diff --check`。
+
+
+## 1b Score 演算结论(Task 4)
+
+脚本:`scripts/analyze_reflection_score.py`。构造 5 种代表性 LLM self-review
+(覆盖数据库 51-609 字区间:乐观 226 字 / 典型 131 字 / 悲观 86 字 /
+无section 20 字泛化 / 无section+defectB 29 字),配 ReviewReport
+(error_analysis 为空模拟"确定性 review 未抓到"场景;最后一个场景注入
+确定性 mistake "误判9号为预言家，实际为狼人，最佳角色概率0.80" 模拟 defect B),
+跑真实 `ReflectionSynthesizer.synthesize` + `ReflectionQualityGate.evaluate`。
+
+| 场景 | 字数 | score | status | mistakes | strengths | card_len |
+|------|------|-------|--------|----------|-----------|----------|
+| 乐观 | 226 | 1.00 | approved | 3 | 3 | 131 |
+| 典型 | 131 | 1.00 | approved | 3 | 3 | 131 |
+| 悲观 | 86  | 1.00 | approved | 3 | 3 | 131 |
+| 无section | 20 | 0.75 | approved | 0 | 1 | 106 |
+| 无section+defB | 29 | 1.00 | approved | 1 | 1 | 119 |
+
+**结论**:
+
+1. **plan Risks 担忧的 0.55 卡点 / `short_prompt_card` 罚分在 1b 路径下不成立**。
+   `_prompt_card_content_len` 量的是 synthesizer 填充的固定模板字段
+   (theme+lesson+trigger_signals+recommended_action+misuse_risk),
+   与 LLM self-review 的 bullet 长短无关 —— 即便 LLM 只输出 20 字泛化一句话,
+   card_len 仍恒 >= 106(>= 80 阈值),不触发 -0.15。
+
+2. **1b 足以让高质量反思 approved>0**:五种场景全部 approved(最低 0.75)。
+   真正的 score 下限来自 `mistake_patterns` 是否为空:无 section 时 LLM
+   parser 抽不出 mistake,丢 +0.25,但仍靠其余 +项(0.75)过线。
+
+3. **defect B(确定性 mistake 注入)不是"稳定保障"所必需,而是"满分兜底"**:
+   无 section 场景下 defect B 把 score 从 0.75 拉到 1.00(补回 +0.25 mistake 项)。
+   但即便没有 defect B,1b 已能 approved>0。**defect B 优先级可降级**:
+   它提升的是 score 上限与 mistake_patterns 结构化质量,不是 approved 门槛的硬依赖。
+
+4. generic_text(-0.25)在 1b 路径不会误伤:`prompt_visible_texts` 不含
+   `source.llm_self_review`(source 是 audit-only),泛化套话停在 source 里,
+   不进入评分 blob。
+
+**改动文件**:`scripts/analyze_reflection_score.py`(新增分析脚本,不改生产逻辑)。
+**验证**:`python scripts/analyze_reflection_score.py` → 5 场景 score 全部 match 手算。
