@@ -278,6 +278,15 @@ class ReflectionSynthesizer:
             )
         )
         mistake_patterns = self._mistake_patterns(review_report, corrected)
+        # Deterministic mistake_patterns take precedence; LLM-extracted
+        # mistakes supplement them up to a total cap of 3, deduped by
+        # jaccard on wrong_action (mirrors the strengths merge below).
+        for llm_mistake in self._extract_llm_mistakes(llm_self_review, review_report.role):
+            if any(_jaccard(llm_mistake.wrong_action, m.wrong_action) >= 0.6 for m in mistake_patterns):
+                continue
+            mistake_patterns.append(llm_mistake)
+            if len(mistake_patterns) >= 3:
+                break
         strengths = self._preserved_strengths(review_report)
         for llm_strength in self._extract_llm_strengths(llm_self_review):
             if any(_jaccard(llm_strength.behavior, s.behavior) >= 0.6 for s in strengths):
@@ -423,11 +432,11 @@ class ReflectionSynthesizer:
         is always ``decision_mistake``. Returns at most 3 patterns.
 
         Safety: ``auto_verified`` is always False. Setting it True would
-        bypass the truth-token gate at ``_has_unsafe_truth_claim``
-        (reflection.py:214), so a bullet leaking a forbidden token would
-        reach the live prompt unchecked. ``corrected_from_llm`` is also
-        False — this flag means a *deterministic* review cleared the
-        mistake, which an LLM self-assessment cannot assert.
+        bypass the truth-token gate at ``_has_unsafe_truth_claim``, so a
+        bullet leaking a forbidden token would reach the live prompt
+        unchecked. ``corrected_from_llm`` is also False — this flag means
+        a *deterministic* review cleared the mistake, which an LLM
+        self-assessment cannot assert.
         """
         cls = ReflectionSynthesizer
         patterns: list[ReflectionMistakePattern] = []

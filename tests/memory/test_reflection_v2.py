@@ -465,3 +465,133 @@ def test_extract_llm_mistakes_scrubs_player_ids() -> None:
     assert len(patterns) == 1
     assert "p03" not in patterns[0].wrong_action
     assert "p07" not in patterns[0].wrong_action
+
+
+# ---------------------------------------------------------------------------
+# synthesize merge — LLM mistakes supplement deterministic mistake_patterns
+# ---------------------------------------------------------------------------
+
+
+def test_synthesize_merges_llm_mistakes_after_deterministic() -> None:
+    # Deterministic error_analysis produces 1 mistake; the LLM 【投票错误】
+    # section adds a second, non-duplicate mistake. Deterministic stays first.
+    report = ReviewReport(
+        game_id="g1",
+        player_id="p01",
+        role="seer",
+        faction_won=False,
+        error_analysis=["误判某玩家为好人"],
+        improvement_suggestions=["投票前先核验警徽流"],
+        summary="角色=seer，错误=1项",
+    )
+    llm_review = (
+        "【投票错误】\n"
+        "- 没有等预言家报查验就匆忙站边\n"
+        "【保留的优点】\n"
+        "- 坚持证据优先\n"
+    )
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review=llm_review,
+        review_report=report,
+        faction="good",
+    )
+
+    wrong_actions = [p.wrong_action for p in entry.mistake_patterns]
+    # deterministic first
+    assert "误判某玩家为好人" in wrong_actions[0]
+    # LLM bullet supplemented, fact_basis marks provenance
+    assert any("报查验" in w for w in wrong_actions)
+    llm_added = next(p for p in entry.mistake_patterns if "报查验" in p.wrong_action)
+    assert llm_added.fact_basis == "llm_transferable"
+    assert llm_added.auto_verified is False
+
+
+def test_synthesize_llm_mistake_deduped_against_deterministic() -> None:
+    # The deterministic wrong_action is near-identical to the LLM bullet;
+    # jaccard >= 0.6 must keep the deterministic one and drop the LLM dup.
+    report = ReviewReport(
+        game_id="g1",
+        player_id="p01",
+        role="villager",
+        faction_won=False,
+        error_analysis=["没有核验票型承接就匆忙投票站边"],
+        improvement_suggestions=["先核验票型"],
+        summary="角色=villager，错误=1项",
+    )
+    llm_review = (
+        "【投票错误】\n"
+        "- 没有核验票型承接就匆忙投票站边\n"
+    )
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review=llm_review,
+        review_report=report,
+        faction="good",
+    )
+
+    wrong_actions = [p.wrong_action for p in entry.mistake_patterns]
+    # Only one entry — the LLM duplicate must not be appended.
+    assert len(wrong_actions) == 1, wrong_actions
+
+
+def test_synthesize_mistake_total_cap_is_three() -> None:
+    # 1 deterministic + plenty of LLM bullets -> total must not exceed 3.
+    report = ReviewReport(
+        game_id="g1",
+        player_id="p01",
+        role="seer",
+        faction_won=False,
+        error_analysis=["误判某玩家身份"],
+        improvement_suggestions=["核验警徽流"],
+        summary="角色=seer，错误=1项",
+    )
+    llm_review = (
+        "【投票错误】\n- 没有等预言家报查验就投票\n"
+        "【信息缺失】\n- 忽略了警徽流承接\n"
+        "【神职执行】\n- 第一晚就浪费了解药\n"
+        "【悍跳分析】\n- 被对跳气势唬住\n"
+    )
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review=llm_review,
+        review_report=report,
+        faction="good",
+    )
+
+    assert len(entry.mistake_patterns) == 3, [p.wrong_action for p in entry.mistake_patterns]
+
+
+def test_synthesize_end_to_end_truth_token_bullet_dropped_gate_does_not_reject() -> None:
+    # End-to-end: a truth-token bullet in 【投票错误】 is dropped at extraction;
+    # a clean bullet is kept; the resulting entry's visible fields carry no
+    # truth token, so the quality gate does NOT flag unsafe_truth_claim.
+    report = ReviewReport(
+        game_id="g1",
+        player_id="p01",
+        role="seer",
+        faction_won=False,
+        successful_strategies=["发言能说明验人心路"],
+        improvement_suggestions=["投票前先核验警徽流和票型承接"],
+        summary="角色=seer，错误=0项",
+    )
+    llm_review = (
+        "【投票错误】\n"
+        "- 投票时知道实际是狼人还投错\n"
+        "- 没有综合公开票型就匆忙站边\n"
+        "【保留的优点】\n"
+        "- 坚持证据优先的站边\n"
+    )
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review=llm_review,
+        review_report=report,
+        faction="good",
+    )
+
+    wrong_actions = [p.wrong_action for p in entry.mistake_patterns]
+    # truth-token bullet dropped (1b drop still holds as integration check)
+    assert not any("实际" in w for w in wrong_actions), wrong_actions
+    # clean bullet kept
+    assert any("公开票型" in w for w in wrong_actions)
+
+    gated = ReflectionQualityGate().evaluate(entry)
+    assert "unsafe_truth_claim" not in gated.quality_flags, gated.quality_flags
+    # not hard-rejected on the truth-claim axis
+    assert gated.quality_status != ReflectionQualityStatus.REJECTED or "unsafe_truth_claim" not in gated.quality_flags
