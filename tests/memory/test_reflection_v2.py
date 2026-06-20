@@ -347,3 +347,121 @@ def test_synthesize_does_not_mark_corrected_for_error_confessions() -> None:
         assert entry.mistake_patterns[0].corrected_from_llm is False, (
             f"confession {confession!r} must not be treated as a denial"
         )
+
+
+# ---------------------------------------------------------------------------
+# _extract_llm_mistakes — parse the 6 LLM mistake sections
+# ---------------------------------------------------------------------------
+
+_FULL_SIX_SECTIONS = """【投票错误】
+- 没有等预言家报查验就投票
+【信息缺失】
+- 忽略了2号玩家警徽流打法的承接
+【神职执行】
+- 女巫第一晚就浪费了解药
+【悍跳分析】
+- 被对跳预言家的气势唬住没有核验时间线
+【暴露原因】
+- 发言时太早亮出神职身份导致被针对
+【角色分工】
+- 没有和狼队友对齐今晚的刀口目标
+"""
+
+
+def test_extract_llm_mistakes_parses_all_six_sections() -> None:
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(_FULL_SIX_SECTIONS, role="seer")
+    # The 6 sections yield 4 distinct categories, but cap=3 returns the
+    # first 3 (vote/info/role); decision_mistake sections come later and
+    # are truncated. Verify the first three categories in document order
+    # plus the cap.
+    assert [p.category for p in patterns] == [
+        "vote_mistake",
+        "info_miss",
+        "role_execution",
+    ], [p.category for p in patterns]
+    # at most 3 returned (cap)
+    assert len(patterns) == 3, len(patterns)
+
+
+def test_extract_llm_mistakes_category_mapping_per_header() -> None:
+    cases = {
+        "投票错误": "vote_mistake",
+        "信息缺失": "info_miss",
+        "神职执行": "role_execution",
+        "悍跳分析": "decision_mistake",
+        "暴露原因": "decision_mistake",
+        "角色分工": "decision_mistake",
+    }
+    for header, expected in cases.items():
+        review = f"【{header}】\n- 这是一个足够长的错误描述用于测试\n"
+        patterns = ReflectionSynthesizer._extract_llm_mistakes(review, role="seer")
+        assert patterns, f"header {header} yielded no patterns"
+        assert patterns[0].category == expected, (
+            f"header {header} -> {patterns[0].category}, want {expected}"
+        )
+
+
+def test_extract_llm_mistakes_auto_verified_always_false() -> None:
+    # CRITICAL safety constraint: LLM mistakes must never bypass the
+    # truth-token gate (reflection.py:214).
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(_FULL_SIX_SECTIONS, role="seer")
+    assert patterns, "expected patterns"
+    for p in patterns:
+        assert p.auto_verified is False
+        assert p.fact_basis == "llm_transferable"
+        assert p.corrected_from_llm is False
+
+
+def test_extract_llm_mistakes_drops_truth_token_bullets() -> None:
+    review = """【投票错误】
+- 投票时知道实际是狼人还投错
+- 没有综合公开票型就匆忙站边
+"""
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, role="seer")
+    assert len(patterns) == 1, [p.wrong_action for p in patterns]
+    assert "实际" not in patterns[0].wrong_action
+
+
+def test_extract_llm_mistakes_uses_role_default_advice_and_trigger() -> None:
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(_FULL_SIX_SECTIONS, role="seer")
+    assert patterns
+    for p in patterns:
+        assert p.better_action == "发言或投票前先核验验人时间线、警徽流和票型承接。", p.better_action
+        assert p.trigger  # non-empty
+
+
+def test_extract_llm_mistakes_empty_input_returns_empty() -> None:
+    assert ReflectionSynthesizer._extract_llm_mistakes("", role="seer") == []
+    assert ReflectionSynthesizer._extract_llm_mistakes("没有任何 section 的纯文本", role="seer") == []
+
+
+def test_extract_llm_mistakes_skips_preamble_non_bullet_lines() -> None:
+    review = """【投票错误】
+本局我做错的地方：
+- 第一天投票前没有听完所有发言就站边
+"""
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, role="villager")
+    assert len(patterns) == 1
+    assert "本局我做错" not in patterns[0].wrong_action
+
+
+def test_extract_llm_mistakes_accepts_bullet_markers() -> None:
+    for marker in ("-", "•", "*"):
+        review = f"【投票错误】\n{marker} 没有核验票型承接就匆忙投票站边\n"
+        patterns = ReflectionSynthesizer._extract_llm_mistakes(review, role="villager")
+        assert len(patterns) == 1, f"marker {marker!r} not parsed"
+
+
+def test_extract_llm_mistakes_short_bullet_dropped() -> None:
+    review = "【投票错误】\n- 投错\n- 没有听完所有发言就匆忙站边导致站错\n"
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, role="villager")
+    assert len(patterns) == 1
+    assert "投错" not in patterns[0].wrong_action
+
+
+def test_extract_llm_mistakes_scrubs_player_ids() -> None:
+    review = "【投票错误】\n- 没有核验p03的警徽流承接就站边p07\n"
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, role="villager")
+    assert len(patterns) == 1
+    assert "p03" not in patterns[0].wrong_action
+    assert "p07" not in patterns[0].wrong_action

@@ -40,6 +40,22 @@ _LLM_STRENGTH_SECTION_RE = re.compile(
     r"【保留的优点】[】:：\s]*(.*?)(?=【[^】]+】|$)",
     re.DOTALL,
 )
+# Captures each of the 6 mistake section headers + body up to the
+# next 【...】 header or end. The captured header drives category
+# mapping (not keyword heuristics), so a section like 【悍跳分析】
+# is always decision_mistake regardless of bullet wording.
+_LLM_MISTAKE_SECTION_RE = re.compile(
+    r"【(投票错误|信息缺失|神职执行|悍跳分析|暴露原因|角色分工)】[】:：\s]*(.*?)(?=【[^】]+】|$)",
+    re.DOTALL,
+)
+_LLM_MISTAKE_HEADER_CATEGORY = {
+    "投票错误": "vote_mistake",
+    "信息缺失": "info_miss",
+    "神职执行": "role_execution",
+    "悍跳分析": "decision_mistake",
+    "暴露原因": "decision_mistake",
+    "角色分工": "decision_mistake",
+}
 _LLM_TRUTH_TOKENS = ("实际", "真实身份", "底牌", "查验结果", "死亡原因")
 _GENERIC_PHRASES = (
     "复盘失败对局，关注关键转折点的信息缺失",
@@ -394,6 +410,56 @@ class ReflectionSynthesizer:
             if len(strengths) >= 2:
                 break
         return strengths
+
+    @staticmethod
+    def _extract_llm_mistakes(
+        llm_self_review: str, role: str
+    ) -> list[ReflectionMistakePattern]:
+        """Parse the 6 LLM mistake sections into fact-free mistake patterns.
+
+        Mirrors :meth:`_extract_llm_strengths`: bullet-only parsing, ID
+        scrubbing, truth-token drop, length floor. Category is driven by
+        the section header (not keyword heuristics) so e.g. 【悍跳分析】
+        is always ``decision_mistake``. Returns at most 3 patterns.
+
+        Safety: ``auto_verified`` is always False. Setting it True would
+        bypass the truth-token gate at ``_has_unsafe_truth_claim``
+        (reflection.py:214), so a bullet leaking a forbidden token would
+        reach the live prompt unchecked. ``corrected_from_llm`` is also
+        False — this flag means a *deterministic* review cleared the
+        mistake, which an LLM self-assessment cannot assert.
+        """
+        cls = ReflectionSynthesizer
+        patterns: list[ReflectionMistakePattern] = []
+        for match in _LLM_MISTAKE_SECTION_RE.finditer(str(llm_self_review or "")):
+            header = match.group(1)
+            body = match.group(2)
+            category = _LLM_MISTAKE_HEADER_CATEGORY[header]
+            for raw_line in body.splitlines():
+                stripped = raw_line.strip()
+                if not stripped.startswith(("-", "•", "*")):
+                    # Only bullet lines are real mistakes; section
+                    # preambles (e.g. "本局做错的:") are skipped.
+                    continue
+                line = _scrub_ids(stripped).lstrip("-•*").strip()
+                if len(line) < 6:
+                    continue
+                if any(token in line for token in _LLM_TRUTH_TOKENS):
+                    continue
+                patterns.append(ReflectionMistakePattern(
+                    category=category,
+                    trigger=cls._trigger_for_category(category, line),
+                    wrong_action=line,
+                    # LLM bullets describe what went wrong, not how to
+                    # improve — fall back to the role default advice.
+                    better_action=cls._default_advice(role),
+                    fact_basis="llm_transferable",
+                    auto_verified=False,
+                    corrected_from_llm=False,
+                ))
+                if len(patterns) >= 3:
+                    return patterns
+        return patterns
 
     @staticmethod
     def _category(text: str) -> str:
