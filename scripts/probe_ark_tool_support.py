@@ -1,4 +1,4 @@
-"""Probe Baidu Qianfan OpenAI-compatible tool-call behavior.
+"""Probe Ark (Volcengine) OpenAI-compatible tool-call behavior.
 
 This script makes small real API calls and reports whether each model returns
 OpenAI-style ``tool_calls`` or only plain text JSON. It never prints API keys.
@@ -23,18 +23,18 @@ if str(ROOT) not in sys.path:
 from werewolf_agent.model_gateway.providers import load_local_dotenv  # noqa: E402
 
 
-DEFAULT_MODELS = ["deepseek-v3.2", "minimax-m2.5", "glm-5", "kimi-k2.5"]
+DEFAULT_MODELS = ["minimax-m3", "deepseek-v4-flash", "deepseek-v4-pro", "minimax-m2.7"]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Probe whether Baidu OpenAI-compatible models return tool_calls.",
+        description="Probe whether Ark (Volcengine) OpenAI-compatible models return tool_calls.",
     )
     parser.add_argument(
         "--models",
         nargs="*",
         default=None,
-        help="Model names to probe. Defaults to Baidu model_profiles in config/models.yaml.",
+        help="Model names to probe. Defaults to Ark model_profiles in config/models.yaml.",
     )
     parser.add_argument(
         "--base-url",
@@ -66,7 +66,7 @@ def main() -> int:
         print("ERROR: OPENAI_BASE_URL is not set.")
         return 2
 
-    models = args.models or _baidu_models_from_config() or DEFAULT_MODELS
+    models = args.models or _ark_models_from_config() or DEFAULT_MODELS
     endpoint = _chat_completions_url(base_url)
 
     print(f"Endpoint: {endpoint}")
@@ -91,14 +91,14 @@ def main() -> int:
     return 0
 
 
-def _baidu_models_from_config() -> list[str]:
+def _ark_models_from_config() -> list[str]:
     path = ROOT / "config" / "models.yaml"
     if not path.exists():
         return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     models = []
     for profile_id, profile in (data.get("model_profiles") or {}).items():
-        if not str(profile_id).startswith("baidu_"):
+        if not str(profile_id).startswith("ark_"):
             continue
         if profile.get("provider") == "openai" and profile.get("model"):
             models.append(str(profile["model"]))

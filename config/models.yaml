@@ -1,11 +1,18 @@
 # V1 real-run model routing.
 # Provider/model names are configuration only. API keys stay in .env.
+#
+# Ark (Volcengine) OpenAI-compatible endpoint — set in .env:
+#   OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3
+#   OPENAI_API_KEY=<ark api key>
 
 model_profiles:
-  # --- Baidu Coding Plan models (OpenAI-compatible) ---
-  baidu_deepseek_v3:
+  # --- Ark (Volcengine) models (OpenAI-compatible) ---
+  # Models randomly assigned across the 4 player-routing llm_profiles
+  # (deepseek/minimax/glm/kimi) per request — names are routing labels,
+  # the `model:` field is the actual Ark model id.
+  ark_minimax_m3:
     provider: openai
-    model: deepseek-v3.2
+    model: minimax-m3
     temperature: 0.5
     max_tokens: 1024
     top_p: 0.9
@@ -15,9 +22,9 @@ model_profiles:
       mode: json_schema
       fallback_modes: [json_object, text_json]
 
-  baidu_minimax_m25:
+  ark_deepseek_v4_flash:
     provider: openai
-    model: minimax-m2.5
+    model: deepseek-v4-flash
     temperature: 0.5
     max_tokens: 1024
     top_p: 0.9
@@ -27,9 +34,9 @@ model_profiles:
       mode: json_schema
       fallback_modes: [json_object, text_json]
 
-  baidu_glm5:
+  ark_deepseek_v4_pro:
     provider: openai
-    model: glm-5
+    model: deepseek-v4-pro
     temperature: 0.5
     max_tokens: 1024
     top_p: 0.9
@@ -39,9 +46,9 @@ model_profiles:
       mode: json_schema
       fallback_modes: [json_object, text_json]
 
-  baidu_kimi_k25:
+  ark_minimax_m2_7:
     provider: openai
-    model: kimi-k2.5
+    model: minimax-m2.7
     temperature: 0.5
     max_tokens: 1024
     top_p: 0.9
@@ -89,35 +96,35 @@ model_profiles:
       fallback_modes: []
 
 llm_profiles:
-  # --- Baidu Coding Plan profiles ---
-  baidu_deepseek:
+  # --- Ark profiles (player routing; random model assignment) ---
+  ark_deepseek:
     default:
       provider: openai
-      model_profile: baidu_deepseek_v3
+      model_profile: ark_minimax_m3
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
 
-  baidu_minimax:
+  ark_minimax:
     default:
       provider: openai
-      model_profile: baidu_minimax_m25
+      model_profile: ark_deepseek_v4_flash
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
 
-  baidu_glm:
+  ark_glm:
     default:
       provider: openai
-      model_profile: baidu_glm5
+      model_profile: ark_deepseek_v4_pro
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
 
-  baidu_kimi:
+  ark_kimi:
     default:
       provider: openai
-      model_profile: baidu_kimi_k25
+      model_profile: ark_minimax_m2_7
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
@@ -230,37 +237,37 @@ llm_profiles:
 players:
   p01:
     persona_id: logic_leader
-    llm_profile: baidu_deepseek
+    llm_profile: ark_deepseek
   p02:
     persona_id: aggressive_bluffer
     llm_profile: minimax_default
   p03:
     persona_id: steady_sider
-    llm_profile: baidu_glm
+    llm_profile: ark_glm
   p04:
     persona_id: bold_pretender
     llm_profile: minimax_default
   p05:
     persona_id: deep_hooker
-    llm_profile: baidu_minimax
+    llm_profile: ark_minimax
   p06:
     persona_id: emotional_catalyst
     llm_profile: minimax_default
   p07:
     persona_id: chaos_joker
-    llm_profile: baidu_kimi
+    llm_profile: ark_kimi
   p08:
     persona_id: review_learner
     llm_profile: minimax_default
   p09:
     persona_id: quiet_observer
-    llm_profile: baidu_deepseek
+    llm_profile: ark_deepseek
   p10:
     persona_id: burst_visionary
     llm_profile: minimax_default
   p11:
     persona_id: structure_analyst
-    llm_profile: baidu_glm
+    llm_profile: ark_glm
   p12:
     persona_id: adaptive_gamer
     llm_profile: minimax_default
