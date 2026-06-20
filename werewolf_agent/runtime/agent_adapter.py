@@ -2557,6 +2557,27 @@ def agent_sheriff_election_speech(
     return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}
 
 
+_POST_GAME_KEEP = frozenset({"reflection_task", "game_outcome"})
+
+
+def _strip_in_game_directives(context):
+    """赛后反思:剥离赛内决策 directive,只留 allowlist。
+
+    `_agent_reflection` 调 `build_agent_context(TaskType.REFLECTION)` 拿到的
+    context.strategy_directive 仍装满赛内决策 directive(role_alerts /
+    skill_tactical_advice / witch_poison_deterrent / must_address_alerts 等),
+    反思指令 reflection_task 只是一个平级 key 被淹没,LLM 因此输出赛内决策
+    (刀人计划 / 发言分析)而非赛后反思。
+
+    此 helper 在 merge reflection_directive 之前清掉赛内 directive,最终
+    strategy_directive == {reflection_task, game_outcome}。幂等:若本就无赛内
+    directive 则为无害 no-op。
+    """
+    kept = {k: v for k, v in (context.strategy_directive or {}).items()
+            if k in _POST_GAME_KEEP}
+    return context.model_copy(update={"strategy_directive": kept})
+
+
 def _agent_reflection(
     state: dict[str, Any],
     engine: Any,
@@ -2608,6 +2629,7 @@ def _agent_reflection(
                 f"你的身份是 {player.role if player else '?'}。"
             ),
         }
+        context = _strip_in_game_directives(context)
         context = _merge_strategy_directive(context, reflection_directive)
 
         action, _retry_info = agent.act(context)
