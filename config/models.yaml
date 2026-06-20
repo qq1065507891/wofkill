@@ -19,8 +19,8 @@ model_profiles:
     timeout: 120
     allow_text_tool_fallback: true
     structured_output:
-      mode: json_schema
-      fallback_modes: [json_object, text_json]
+      mode: json_object
+      fallback_modes: [text_json]
 
   ark_deepseek_v4_flash:
     provider: openai
@@ -31,8 +31,8 @@ model_profiles:
     timeout: 120
     allow_text_tool_fallback: true
     structured_output:
-      mode: json_schema
-      fallback_modes: [json_object, text_json]
+      mode: json_object
+      fallback_modes: [text_json]
 
   ark_deepseek_v4_pro:
     provider: openai
@@ -43,8 +43,8 @@ model_profiles:
     timeout: 120
     allow_text_tool_fallback: true
     structured_output:
-      mode: json_schema
-      fallback_modes: [json_object, text_json]
+      mode: json_object
+      fallback_modes: [text_json]
 
   ark_minimax_m2_7:
     provider: openai
@@ -55,8 +55,8 @@ model_profiles:
     timeout: 120
     allow_text_tool_fallback: true
     structured_output:
-      mode: json_schema
-      fallback_modes: [json_object, text_json]
+      mode: json_object
+      fallback_modes: [text_json]
 
   # --- MiniMax (Anthropic-compatible) ---
   minimax_m27_default:
