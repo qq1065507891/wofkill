@@ -533,6 +533,42 @@ def test_synthesize_llm_mistake_deduped_against_deterministic() -> None:
     assert len(wrong_actions) == 1, wrong_actions
 
 
+def test_synthesize_loss_without_findings_does_not_trigger_generic_text() -> None:
+    """End-to-end regression: a game lost with no error_analysis, no
+    deceived_by, and no successful_strategies used to make
+    ``ReviewGenerator`` emit the generic
+    "复盘失败对局，关注关键转折点的信息缺失" suggestion. That flowed into
+    ``actionable_advice`` / ``recommended_action`` and tripped
+    ``generic_text`` (-0.25). After the fix, ``improvement_suggestions``
+    is empty, so the synthesizer falls back to the role-specific
+    ``_default_advice`` and the quality gate must NOT flag generic_text."""
+    from werewolf_agent.memory.reflection import _GENERIC_PHRASES
+    from werewolf_agent.memory.review import ReviewGenerator
+
+    review_report = ReviewGenerator().generate(
+        game_id="g415824166",
+        player_id="p01",
+        role="seer",
+        faction_won=False,
+        ground_truth={"p02": "villager"},
+    )
+    # No concrete finding → suggestions must be empty (no generic phrase).
+    assert review_report.improvement_suggestions == []
+
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review="",
+        review_report=review_report,
+        faction="good",
+    )
+    # advice / recommended_action must not carry any generic phrase.
+    for phrase in _GENERIC_PHRASES:
+        assert phrase not in " ".join(entry.actionable_advice)
+        assert phrase not in entry.prompt_card.recommended_action
+
+    gated = ReflectionQualityGate().evaluate(entry)
+    assert "generic_text" not in gated.quality_flags, gated.quality_flags
+
+
 def test_synthesize_mistake_total_cap_is_three() -> None:
     # 1 deterministic + plenty of LLM bullets -> total must not exceed 3.
     report = ReviewReport(

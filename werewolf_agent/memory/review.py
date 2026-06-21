@@ -234,10 +234,14 @@ class ReviewGenerator:
                 "检查发言者的站边一致性"
             )
 
-        if not report.faction_won:
-            report.improvement_suggestions.append(
-                "复盘失败对局，关注关键转折点的信息缺失"
-            )
+        # NOTE: do NOT append a generic "复盘失败对局，关注关键转折点的信息缺失"
+        # on a lost game. That phrase is a member of reflection's
+        # ``_GENERIC_PHRASES``; with no concrete finding it would be the
+        # only suggestion, flow into ``actionable_advice`` /
+        # ``recommended_action`` and trip the ``generic_text`` (-0.25)
+        # quality flag. With no concrete finding the list stays empty so
+        # ``ReflectionSynthesizer`` falls back to the role-specific
+        # ``_default_advice``.
 
         correct = sum(1 for j in report.key_judgments if j.judgment == "correct")
         total = len(report.key_judgments)

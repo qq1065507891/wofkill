@@ -770,7 +770,13 @@ class TestReviewGenerator:
         assert "p5" in report.deceived_by
 
     def test_improvement_suggestions(self):
+        # A concrete error (high-confidence misjudgment) must still
+        # produce a non-empty improvement_suggestions list. The generic
+        # loss-only fallback was removed, so we drive a real finding here.
         cm = self._setup_matrix()
+        entry = cm.get("p2")
+        entry.role_probabilities = {"werewolf": 0.8, "villager": 0.2}
+        entry.faction_read = "wolf_lean"
         gen = ReviewGenerator()
         report = gen.generate(
             game_id="g1", player_id="p1", role="seer",
@@ -779,6 +785,30 @@ class TestReviewGenerator:
             cognition_matrix=cm,
         )
         assert len(report.improvement_suggestions) > 0
+
+    def test_no_generic_default_suggestion_on_loss_without_findings(self):
+        """When a game is lost but there is no error_analysis, no
+        deceived_by, and no other concrete finding, ``_generate_suggestions``
+        must NOT emit the generic ``_GENERIC_PHRASES`` fallback. The
+        generic phrase ("复盘失败对局，关注关键转折点的信息缺失")
+        would later flow into ``actionable_advice`` /
+        ``recommended_action`` and trip ``generic_text`` (-0.25) in the
+        reflection quality gate. With no concrete finding the list
+        should stay empty so the synthesizer falls back to the
+        role-specific ``_default_advice``."""
+        from werewolf_agent.memory.reflection import _GENERIC_PHRASES
+
+        gen = ReviewGenerator()
+        # No cognition_matrix / relation_graph → no error_analysis,
+        # no deceived_by. Only the (now removed) generic loss branch
+        # could have produced a suggestion.
+        report = gen.generate(
+            game_id="g1", player_id="p1", role="seer",
+            faction_won=False,
+            ground_truth={"p2": "villager"},
+        )
+        for phrase in _GENERIC_PHRASES:
+            assert phrase not in report.improvement_suggestions
 
     def test_deceived_by_excludes_hybrid(self):
         """MEM-NEW-1: hybrid (wolf-aligned via master) must NOT be
