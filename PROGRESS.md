@@ -4292,3 +4292,41 @@ test_live_runtime.py -p no:cacheprovider -q`
 
 **改动文件**:`scripts/analyze_reflection_score.py`(新增分析脚本,不改生产逻辑)。
 **验证**:`python scripts/analyze_reflection_score.py` → 5 场景 score 全部 match 手算。
+
+## PR3: review `_generate_suggestions` default 不得是 `_GENERIC_PHRASES` 成员
+
+**根因(实证)**:`ReviewGenerator._generate_suggestions` 在 `faction_won=False`
+且无 `error_analysis` / `deceived_by` / `successful_strategies` 时,塞入固定短语
+"复盘失败对局，关注关键转折点的信息缺失"——该短语是 `reflection._GENERIC_PHRASES`
+成员。该短语成为 `improvement_suggestions` 唯一内容 → synthesize 的 `advice` 取
+`improvement_suggestions[:3]`(非空,fallback 不触发)→ `actionable_advice` /
+`recommended_action` 含该短语 → `ReflectionQualityGate._is_generic` 触发
+`generic_text` flag,score -0.25。实测(g_415824166 / g_850282163):22 条 score 卡 0.2
+均因 `generic_text`。
+
+**修复**(`werewolf_agent/memory/review.py`):删除 `_generate_suggestions` 里的
+`if not report.faction_won` generic 分支。无具体发现时 `improvement_suggestions`
+保持空列表 → synthesize 的 `advice` fallback 到 `_default_advice(role)`(角色特定
+非 generic 文案,如 seer → "发言或投票前先核验验人时间线、警徽流和票型承接。")→
+不触发 `generic_text`。
+
+**未改动**:`_default_advice`(已非 generic);有具体 `error_analysis` /
+`deceived_by` 时的建议生成分支(非 default 路径保留)。
+
+**改动文件**:
+- `werewolf_agent/memory/review.py`:删除 generic loss 分支 + 说明注释。
+- `tests/memory/test_memory.py`:
+  - 新增 `test_no_generic_default_suggestion_on_loss_without_findings`。
+  - 更新 `test_improvement_suggestions`:构造高 best_prob 误判驱动 `error_analysis`
+    分支(原测试靠被删的 generic 分支断言 len>0,现改用真实 finding)。
+- `tests/memory/test_reflection_v2.py`:新增
+  `test_synthesize_loss_without_findings_does_not_trigger_generic_text`(端到端:
+  ReviewGenerator → synthesize → QualityGate,断言 `generic_text` 不在 flags)。
+
+**验证**:
+`python -m pytest tests/memory/ -o addopts="" -q` → 191 passed。
+`python -m compileall -q werewolf_agent tests` → OK。`git diff --check` → OK。
+
+**自审**:`error_analysis` 分支文案("减少高置信度误判…")与 `deceived_by` 分支
+文案("注意被 N 名狼人引导投票…")都不是 `_GENERIC_PHRASES` 成员,有具体发现时
+仍正常返回具体建议。review 路径不再产出任何 `_GENERIC_PHRASES` 短语。
