@@ -6,6 +6,7 @@ from werewolf_agent.memory.reflection import (
     ReflectionMemory,
     ReflectionQualityGate,
     ReflectionSynthesizer,
+    _iter_section_items,
 )
 from werewolf_agent.memory.schemas import (
     CrossGameQuery,
@@ -436,13 +437,29 @@ def test_extract_llm_mistakes_empty_input_returns_empty() -> None:
 
 
 def test_extract_llm_mistakes_skips_preamble_non_bullet_lines() -> None:
+    # B1 rule: short colon-terminated preambles (len<=8) are filtered.
+    # "本局做错的：" is 7 chars, dropped; the real bullet still surfaces.
     review = """【投票错误】
-本局我做错的地方：
+本局做错的：
 - 第一天投票前没有听完所有发言就站边
 """
     patterns = ReflectionSynthesizer._extract_llm_mistakes(review, role="villager")
     assert len(patterns) == 1
-    assert "本局我做错" not in patterns[0].wrong_action
+    assert "本局做错" not in patterns[0].wrong_action
+
+
+def test_extract_llm_mistakes_long_preamble_yields_known_limitation() -> None:
+    """长 preamble(>8 字符冒号行)不被 B1 colon 规则过滤,会作为 item yield。
+
+    这是 plan Risk(:249)承认的 known limitation。本测试锁定该行为:
+    若未来收紧 B1(如 len<=12 或正则识别 "本局…的:" 前缀),需更新此断言。
+    """
+    review = "【投票错误】\n本局我做错的地方：\n- 第一天投票前没有听完所有发言就站边\n"
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, "villager")
+    # 长 preamble 被 yield (known) + 真实 bullet 也 yield
+    assert len(patterns) == 2
+    assert any("本局我做错" in p.wrong_action for p in patterns)  # preamble 泄漏(known)
+    assert any("第一天投票" in p.wrong_action for p in patterns)  # 真实 bullet
 
 
 def test_extract_llm_mistakes_accepts_bullet_markers() -> None:
@@ -631,3 +648,124 @@ def test_synthesize_end_to_end_truth_token_bullet_dropped_gate_does_not_reject()
     assert "unsafe_truth_claim" not in gated.quality_flags, gated.quality_flags
     # not hard-rejected on the truth-claim axis
     assert gated.quality_status != ReflectionQualityStatus.REJECTED or "unsafe_truth_claim" not in gated.quality_flags
+
+
+# --- parser format relaxation (numeric / prose / preamble) ---
+
+
+def test_iter_section_items_accepts_numeric_markers() -> None:
+    body = "1. 第一点内容足够长\n2. 第二点内容足够长\n"
+    items = list(_iter_section_items(body))
+    assert items == ["第一点内容足够长", "第二点内容足够长"]
+
+
+def test_iter_section_items_accepts_spaced_numeric_chinese_variants() -> None:
+    # regex requires whitespace after the marker (\s+); g_1600154180
+    # LLM output always emits "N. " with a space, so the variants are
+    # covered with trailing space here.
+    body = "1、 第一点内容足够长\n2) 第二点内容足够长\n"
+    items = list(_iter_section_items(body))
+    assert items == ["第一点内容足够长", "第二点内容足够长"]
+
+
+def test_iter_section_items_no_space_numeric_marker_leaves_residual() -> None:
+    """无空格数字编号(`1、text` / `1)text`)marker 不剥离(正则要求 ``\\s+``)。
+
+    Known limitation (plan Risk:250): residual `1、` / `1)` 留在 item 里。
+    当前 LLM 总带空格(`1. `),无线上风险;若未来模型 emit 无空格,
+    此测试锁定 visible-noise 行为(非 silent corruption)。
+    """
+    body = "1、无空格编号内容足够长\n2)无空格括号编号内容足够长\n"
+    items = list(_iter_section_items(body))
+    # marker 未剥离,residual 留在 item(known)
+    assert items == ["1、无空格编号内容足够长", "2)无空格括号编号内容足够长"]
+
+
+def test_iter_section_items_accepts_prose_lines() -> None:
+    body = "D1我投了某玩家，这是段落式反思内容。\n\nD2我又投了另一个玩家。"
+    items = list(_iter_section_items(body))
+    assert "D1我投了某玩家，这是段落式反思内容。" in items
+    assert len(items) == 2
+
+
+def test_iter_section_items_strips_bullet_and_numeric() -> None:
+    body = "- bullet 条目内容足够长\n1. numeric 条目内容足够长\n"
+    items = list(_iter_section_items(body))
+    assert items == ["bullet 条目内容足够长", "numeric 条目内容足够长"]
+
+
+def test_iter_section_items_drops_preamble_colon_line() -> None:
+    # B1 fix: "本局做对的:" is exactly 6 chars — must NOT become an item.
+    body = "本局做对的:\n- 实际优点内容足够长\n"
+    items = list(_iter_section_items(body))
+    assert items == ["实际优点内容足够长"]
+    assert all("本局做对的" not in i for i in items)
+
+
+def test_extract_llm_mistakes_parses_numeric_section() -> None:
+    review = "【投票错误】\n1. D1投了某玩家站错边，内容足够长\n2. D2跟票出错，内容足够长\n"
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, "villager")
+    assert len(patterns) == 2
+    assert all(p.fact_basis == "llm_transferable" and p.auto_verified is False for p in patterns)
+
+
+def test_extract_llm_mistakes_caps_at_three_numeric() -> None:
+    review = (
+        "【投票错误】\n"
+        "1. 错误一内容足够长\n2. 错误二内容足够长\n3. 错误三内容足够长\n"
+        "4. 错误四内容足够长\n5. 错误五内容足够长\n"
+    )
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, "villager")
+    assert len(patterns) == 3
+
+
+def test_extract_llm_mistakes_drops_truth_token_numeric() -> None:
+    review = "【投票错误】\n1. 误判某玩家为狼人，实际是预言家，内容足够长\n2. 真实错误内容足够长\n"
+    patterns = ReflectionSynthesizer._extract_llm_mistakes(review, "villager")
+    assert len(patterns) == 1
+    assert "实际" not in patterns[0].wrong_action
+
+
+def test_extract_llm_strengths_parses_numeric_section() -> None:
+    review = "【保留的优点】\n1. D1保持独立判断，内容足够长\n2. 质疑悍跳狼警徽流，内容足够长\n"
+    strengths = ReflectionSynthesizer._extract_llm_strengths(review)
+    assert len(strengths) == 2
+
+
+def test_extract_llm_strengths_drops_truth_token_numeric() -> None:
+    review = "【保留的优点】\n1. 查验结果正确使用了银水，内容足够长\n2. 真实优点内容足够长\n"
+    strengths = ReflectionSynthesizer._extract_llm_strengths(review)
+    assert len(strengths) == 1
+    assert "查验结果" not in strengths[0].behavior
+
+
+def test_synthesize_numeric_prose_review_reaches_approved() -> None:
+    # Shaped like g_1600154180 p02: prose 【投票错误】 + numeric
+    # 【信息缺失】 + numeric 【保留的优点】. Direct ReviewReport
+    # construction (no _make_review_report helper exists); error_analysis
+    # defaults to [] so the LLM path is the sole mistake source.
+    llm_review = """【投票错误】
+D1我投了某玩家，当时信了假预言家面，站错边害了好人，内容足够长。
+
+D2我投了某玩家，跟票出错，内容足够长。
+
+【信息缺失】
+1. 忽略了双预言家查验逻辑自洽性，内容足够长
+2. 没利用猎人开枪施压，内容足够长
+
+【保留的优点】
+1. D1没有急于站队保持独立判断，内容足够长
+2. 注意到某玩家投票轨迹异常，内容足够长
+"""
+    report = ReviewReport(
+        game_id="g1", player_id="p01", role="villager", faction_won=False,
+    )
+    assert report.error_analysis == []  # sanity: LLM path is the sole source
+    entry = ReflectionSynthesizer().synthesize(
+        llm_self_review=llm_review, review_report=report, faction="good"
+    )
+    gated = ReflectionQualityGate().evaluate(entry)
+    assert gated.mistake_patterns, "mistake_patterns must be non-empty from numeric/prose sections"
+    assert gated.preserved_strengths, "preserved_strengths must be non-empty"
+    assert gated.quality_status == ReflectionQualityStatus.APPROVED
+    assert gated.quality_score >= 0.85  # reviewer-confirmed reaches 1.0; lock high bar

@@ -57,6 +57,43 @@ _LLM_MISTAKE_HEADER_CATEGORY = {
     "角色分工": "decision_mistake",
 }
 _LLM_TRUTH_TOKENS = ("实际", "真实身份", "底牌", "查验结果", "死亡原因")
+# Accepts markdown bullets (-/•/*) and numeric markers (1./1、/1)) with
+# required trailing whitespace (verified g_1600154180 LLM output always
+# emits "1. " with a space; if a future model emits "1.text" the marker
+# won't strip and the residual prefix is visible noise, not silent corruption).
+_LEADING_ITEM_PREFIX_RE = re.compile(r"^\s*(?:[-•*]|\d+[.、)])\s+")
+
+
+def _iter_section_items(body: str, *, min_chars: int = 6):
+    """Yield cleaned content items from a reflection-section body.
+
+    Accepts markdown bullets (``-``/``•``/``*``), numeric markers
+    (``1.``/``1、``/``1)`` with trailing space), or plain prose lines.
+    Strips the leading marker. Skips blank lines, items shorter than
+    ``min_chars``, **and short colon-terminated list preambles** like
+    "本局做对的:" (section intros, not items — exactly 6 chars, so
+    ``len>=min_chars`` alone does NOT catch them; peer-review B1).
+
+    Why: real LLM reflection output uses numeric markers and prose
+    paragraphs, not markdown bullets; the previous
+    ``startswith(("-", "•", "*")`` gate dropped everything.
+    """
+    for raw in body.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        cleaned = _LEADING_ITEM_PREFIX_RE.sub("", stripped, count=1).strip()
+        if len(cleaned) < min_chars:
+            continue
+        # B1 fix: drop short colon-terminated list preambles
+        # ("本局做对的:" / "本局做错的:" / "下局改进:") — section intros,
+        # not items. Length guard (<=8) keeps real prose intact. Only
+        # colon terminators (full/half-width): "。" is a normal prose
+        # ender, not a preamble marker — including it would drop legit
+        # short prose sentences (e.g. "投票站错边了。").
+        if cleaned.endswith(("：", ":")) and len(cleaned) <= 8:
+            continue
+        yield cleaned
 _GENERIC_PHRASES = (
     "复盘失败对局，关注关键转折点的信息缺失",
     "关注关键转折点的信息缺失",
@@ -388,26 +425,19 @@ class ReflectionSynthesizer:
 
         Spec Synthesis rule 1: subjective review must become structured
         strengths. Spec rule 7: LLM-only fact-bound claims (votes/roles/
-        deaths/checks) must not be promoted — so any bullet containing a
-        truth token is dropped. ``ReflectionPreservedStrength`` has no
-        ``fact_basis`` field, so LLM provenance is implicit (the section
-        source is recorded in ``source.llm_self_review``). Returns at
-        most 2 strengths.
+        deaths/checks) must not be promoted — so any item (bullet/numeric/
+        prose via :func:`_iter_section_items`) containing a truth token is
+        dropped. ``ReflectionPreservedStrength`` has no ``fact_basis``
+        field, so LLM provenance is implicit (the section source is
+        recorded in ``source.llm_self_review``). Returns at most 2 strengths.
         """
         match = _LLM_STRENGTH_SECTION_RE.search(str(llm_self_review or ""))
         if not match:
             return []
         body = match.group(1)
         strengths: list[ReflectionPreservedStrength] = []
-        for raw_line in body.splitlines():
-            stripped = raw_line.strip()
-            if not stripped.startswith(("-", "•", "*")):
-                # Only bullet lines are real strengths; the section
-                # preamble (e.g. "本局做对的:") is skipped.
-                continue
-            line = _scrub_ids(stripped).lstrip("-•*").strip()
-            if len(line) < 6:
-                continue
+        for line in _iter_section_items(body):
+            line = _scrub_ids(line)
             if any(token in line for token in _LLM_TRUTH_TOKENS):
                 continue
             strengths.append(ReflectionPreservedStrength(
@@ -425,14 +455,15 @@ class ReflectionSynthesizer:
     ) -> list[ReflectionMistakePattern]:
         """Parse the 6 LLM mistake sections into fact-free mistake patterns.
 
-        Mirrors :meth:`_extract_llm_strengths`: bullet-only parsing, ID
+        Mirrors :meth:`_extract_llm_strengths`: section-item parsing
+        (bullet/numeric/prose via :func:`_iter_section_items`), ID
         scrubbing, truth-token drop, length floor. Category is driven by
         the section header (not keyword heuristics) so e.g. 【悍跳分析】
         is always ``decision_mistake``. Returns at most 3 patterns.
 
         Safety: ``auto_verified`` is always False. Setting it True would
-        bypass the truth-token gate at ``_has_unsafe_truth_claim``, so a
-        bullet leaking a forbidden token would reach the live prompt
+        bypass the truth-token gate at ``_has_unsafe_truth_claim``, so an
+        item leaking a forbidden token would reach the live prompt
         unchecked. ``corrected_from_llm`` is also False — this flag means
         a *deterministic* review cleared the mistake, which an LLM
         self-assessment cannot assert.
@@ -443,15 +474,8 @@ class ReflectionSynthesizer:
             header = match.group(1)
             body = match.group(2)
             category = _LLM_MISTAKE_HEADER_CATEGORY[header]
-            for raw_line in body.splitlines():
-                stripped = raw_line.strip()
-                if not stripped.startswith(("-", "•", "*")):
-                    # Only bullet lines are real mistakes; section
-                    # preambles (e.g. "本局做错的:") are skipped.
-                    continue
-                line = _scrub_ids(stripped).lstrip("-•*").strip()
-                if len(line) < 6:
-                    continue
+            for line in _iter_section_items(body):
+                line = _scrub_ids(line)
                 if any(token in line for token in _LLM_TRUTH_TOKENS):
                     continue
                 patterns.append(ReflectionMistakePattern(
