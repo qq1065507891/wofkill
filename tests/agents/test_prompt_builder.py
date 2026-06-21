@@ -5209,5 +5209,122 @@ class TestWorldModelPhase0PromptBoundary:
         ) == ["p03 vote pattern conflicts", "p04 defense"]
 
 
+# ---------------------------------------------------------------------------
+# reflection_task: must render as hard-directive PLAIN TEXT (not 参考 JSON)
+# ---------------------------------------------------------------------------
+
+
+def test_reflection_task_is_classified_as_hard_constraint():
+    """``reflection_task`` must sit in HARD_CONSTRAINT_KEYS.
+
+    Post-game reflection directive carries section headers (【投票错误】 /
+    【保留的优点】 / 【悍跳分析】) that the aggregation layer parses. If it
+    falls through to 【参考】 the LLM treats it as lowest-priority
+    background and emits in-game speech instead of sectioned reflection
+    (empirical: game g_415624166, 12/12 reflections lacked headers).
+    """
+    assert "reflection_task" in HARD_CONSTRAINT_KEYS
+    assert "reflection_task" not in SUGGESTION_KEYS
+    assert "reflection_task" not in REFERENCE_KEYS
+
+
+def test_reflection_task_renders_as_plain_text_under_hard_section():
+    """``reflection_task`` template must reach the LLM as plain readable
+    text under 【硬约束】, NOT as a JSON-escaped string value.
+
+    Pre-fix: ``reflection_task`` was unclassified -> fell through to
+    【参考】 -> ``_compact_json`` wrapped the whole section as
+    ``{"reflection_task":"你是村民...【投票错误】..."}``. The section
+    headers were buried inside a JSON string value, so the LLM saw a
+    background JSON field rather than top-level MUST text and ignored
+    the sectioning requirement.
+
+    Post-fix: a dedicated renderer emits the template verbatim as plain
+    text, so 【投票错误】 etc. appear as top-level readable lines in the
+    prompt, not as escaped content inside a JSON object.
+    """
+    template = (
+        "你是villager,本局好人阵营负。请按以下结构复盘:\n\n"
+        "【投票错误】本局你投过谁?有没有推错人?\n"
+        "- 具体指出哪一天的投票决策有误\n\n"
+        "【保留的优点】本局你做对了什么?必须列出 1-2 个策略。\n"
+    )
+    ctx = _make_ctx_with_directive(
+        {
+            "reflection_task": template,
+            "game_outcome": "胜利方是狼人阵营。你的身份是 villager。",
+        }
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    hard_idx = prompt.find("【硬约束】")
+    assert hard_idx >= 0, "reflection_task must appear under 【硬约束】"
+    hard_body = prompt[hard_idx:]
+
+    # The template's section headers must appear as plain top-level text
+    # in the hard section — the load-bearing requirement.
+    assert "【投票错误】" in hard_body, (
+        "reflection_task section header must be visible to the LLM as "
+        "plain text under 【硬约束】; got hard_body:\n" + hard_body
+    )
+    assert "【保留的优点】" in hard_body
+
+    # Negative: the bug was the template getting wrapped by _compact_json
+    # as a JSON string value. If the renderer still wraps it, we'd see
+    # the literal JSON envelope (key, colon, quoted value).
+    assert '{"reflection_task":' not in prompt.replace(" ", ""), (
+        "reflection_task must NOT be rendered as a JSON object with a "
+        "string value (must be plain text); got prompt:\n" + prompt
+    )
+
+    # Negative: the unescaped headers must NOT appear inside a JSON
+    # string. If _compact_json wrapped them, 【投票错误】 would be present
+    # only inside a quoted string. A cheap proxy: the standalone line
+    # form of the header must occur.
+    assert "\n【投票错误】" in prompt or "【投票错误】" in hard_body.replace(
+        '\\n', '\n'
+    )  # plain-text line form is what we want
+
+    # game_outcome stays rendered (may be JSON or plain text) but must
+    # be present somewhere in the prompt.
+    assert "胜利方是狼人阵营" in prompt
+
+    # 【参考】 must NOT carry the reflection template (no fall-through).
+    ref_idx = prompt.find("【参考】")
+    if ref_idx >= 0:
+        assert "【投票错误】" not in prompt[ref_idx:], (
+            "reflection_task must NOT bleed into 【参考】"
+        )
+
+
+def test_reflection_task_does_not_break_existing_speech_directive_grouping():
+    """Regression: promoting ``reflection_task`` to HARD_CONSTRAINT_KEYS
+    must not disturb the grouping of ordinary SPEECH directive keys.
+
+    A normal SPEECH context (vote_basis / witch_poison_deterrent /
+    must_address_alerts) must still land its keys under the same sections
+    as before the reflection_task change.
+    """
+    ctx = _make_ctx_with_directive(
+        {
+            "must_address_alerts": ["p07 accused me"],
+            "witch_poison_deterrent": "毒药留作对跳狼底牌。",
+            "vote_basis_hint": "p09 上轮跳预言家但警徽流断裂。",
+        }
+    )
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    hard_idx = prompt.find("【硬约束】")
+    assert hard_idx >= 0
+    hard_body = prompt[hard_idx:]
+    # Existing hard keys still group under 【硬约束】.
+    assert "must_address_alerts" in hard_body
+    assert "witch_poison_deterrent" in hard_body
+    assert "vote_basis_hint" in hard_body
+    # And the reflection template must NOT appear (not present in this
+    # SPEECH context at all).
+    assert "【投票错误】" not in prompt
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

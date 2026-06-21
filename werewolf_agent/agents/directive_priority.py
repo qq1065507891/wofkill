@@ -32,6 +32,13 @@ HARD_CONSTRAINT_KEYS: frozenset[str] = frozenset({
     "gold_water_duty",
     "unreported_checks",
     "my_check_history",
+    # PR1: post-game reflection directive. It carries role-family
+    # section headers (【投票错误】 / 【保留的优点】 / 【悍跳分析】) that
+    # the aggregation layer parses. Unclassified it fell through to
+    # 【参考】 and was rendered as a JSON string value, so the LLM saw
+    # a background field instead of MUST text and emitted in-game speech
+    # instead of sectioned reflection (game g_415624166, 12/12 no header).
+    "reflection_task",
 })
 
 SUGGESTION_KEYS: frozenset[str] = frozenset({

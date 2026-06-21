@@ -1312,18 +1312,41 @@ class PlayerPromptBuilder:
         for that key and render the remaining keys via ``_compact_json``.
         This avoids the raw JSON envelope the LLM would otherwise have
         to parse before reading the advice.
+
+        PR1: ``reflection_task`` is a free-form role-family reflection
+        template whose section headers (【投票错误】 / 【保留的优点】 / …)
+        downstream aggregation parses. Running it through
+        ``_compact_json`` wraps the whole section as a JSON object
+        ``{"reflection_task":"...【投票错误】...","game_outcome":"..."}``
+        so the headers end up as escaped content inside a JSON string
+        value — the LLM saw a background field, not MUST text, and
+        emitted in-game speech instead of sectioned reflection
+        (game g_415624166, 12/12 reflections lacked headers). When the
+        section contains a string ``reflection_task``, render that key
+        verbatim as plain text and render the rest via ``_compact_json``.
         """
         advice = section.get("skill_tactical_advice")
-        if not advice or not isinstance(advice, list):
-            return self._compact_json(section)
-        # Render the advice as a human-readable bullet list. Other keys
-        # in the section still go through _compact_json — only the
-        # structured advice is humanized.
-        bullets = self._render_skill_tactical_advice(advice)
-        rest = {k: v for k, v in section.items() if k != "skill_tactical_advice"}
-        if not rest:
-            return bullets
-        return bullets + "\n" + self._compact_json(rest)
+        if isinstance(advice, list) and advice:
+            # Render the advice as a human-readable bullet list. Other
+            # keys in the section still go through _compact_json — only
+            # the structured advice is humanized.
+            bullets = self._render_skill_tactical_advice(advice)
+            rest = {k: v for k, v in section.items() if k != "skill_tactical_advice"}
+            if not rest:
+                return bullets
+            return bullets + "\n" + self._compact_json(rest)
+
+        reflection_task = section.get("reflection_task")
+        if isinstance(reflection_task, str) and reflection_task:
+            # Render the template verbatim as plain text so its section
+            # headers are top-level readable lines, not a JSON string.
+            rest = {k: v for k, v in section.items() if k != "reflection_task"}
+            text = f"反思指令:\n{reflection_task.rstrip()}"
+            if not rest:
+                return text
+            return text + "\n" + self._compact_json(rest)
+
+        return self._compact_json(section)
 
     @staticmethod
     def _render_skill_tactical_advice(advice: list[Any]) -> str:
