@@ -1061,13 +1061,27 @@ def build_agent_context(
         player_id=player_id,
         wolf_team_plan=wolf_team_plan,
     )
+    # PR2: REFLECTION (post-game review) must NOT carry the live board.
+    # build_visible_player_state returns the in-progress view (alive
+    # players, current day/night, role-specific private fields), which
+    # makes the LLM act as an in-game analyst instead of a retrospective
+    # reviewer. Swap in a retrospective summary for REFLECTION only;
+    # SPEECH/VOTE/other task types keep the live board unchanged.
+    if task_type == TaskType.REFLECTION:
+        from werewolf_agent.runtime.visible_state import build_post_game_summary
+        visible = build_post_game_summary(gs, player_id)
     # MEM-NEW-8: build_private_memory now returns a tuple
     # ``(memory, caveat)`` — the caveat is no longer a meta key in
     # the memory dict, so no ``pop()`` is needed. The schema is
     # uniform: memory values are category lists, caveat is a
     # top-level string.
     private_memory, private_memory_caveat = build_private_memory(gs, player_id)
-    if private_memory:
+    # PR2: REFLECTION 仅抑制 visible_world_state 里的 private_memory 字段
+    # (避免 live 私有记忆污染回顾视角)。注意:private_memory_hints 仍传入
+    # AgentContext 并经 prompt_builder._build_private_memory_hints 渲染为
+    # 【辅助】section —— 这是已知旁路,反思时保留 viewer 自己的本局认知
+    # 作为回顾参考;是否清空留待后续设计决策(本 PR 聚焦 visible_world_state)。
+    if private_memory and task_type != TaskType.REFLECTION:
         visible["private_memory"] = private_memory
     private_memory_hints = private_memory or {}
 

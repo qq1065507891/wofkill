@@ -172,6 +172,103 @@ def _compact_public_ledger(
     return {key: value for key, value in ledger.items() if value}
 
 
+def build_post_game_summary(
+    game_state: GameState,
+    player_id: str,
+) -> dict[str, Any]:
+    """Build a *post-game review* visible-world-state for REFLECTION.
+
+    PR2: ``build_visible_player_state`` returns the live in-game board
+    (alive players, current day/night, role-specific private fields). That
+    is correct for SPEECH/VOTE but wrong for post-game reflection: the
+    LLM sees a "live analyst" board and writes in-game decisions instead
+    of a retrospective. This builder returns a *retrospective* summary:
+
+    - viewer's own role + faction + whether they survived to the end;
+    - the winning faction (``game_state.winning_faction``);
+    - the final death/exile order (public result only — no identities);
+    - viewer's own action timeline (extracted from ``game_state.events``:
+      their votes and, if the viewer is the seer, seer checks), chronological.
+      Witch poison / hunter shot / speech 暂未提取(事件 payload 缺 actor
+      归属,无法稳定判定是否为 viewer 自己的行动),留后续改进。
+
+    Visibility-safe: only public results + the viewer's OWN actions.
+    Never includes other players' private identities, wolf teammates, or
+    anyone else's private actions. Returns an empty dict if the viewer
+    is unknown.
+    """
+    viewer = game_state.players.get(player_id)
+    if viewer is None:
+        return {}
+
+    deaths = [
+        {
+            "player_id": d.player_id,
+            "reason": d.reason,
+            "timing": d.timing,
+            "batch": d.resolution_batch,
+        }
+        for d in game_state.deaths
+    ]
+
+    timeline = _extract_viewer_action_timeline(game_state, player_id)
+
+    return {
+        "game_phase": "post_game",
+        "winning_faction": game_state.winning_faction,
+        "viewer_role": viewer.role,
+        "viewer_faction": viewer.faction,
+        "viewer_survived": viewer.alive,
+        "deaths": deaths,
+        "my_action_timeline": timeline,
+    }
+
+
+def _extract_viewer_action_timeline(
+    game_state: GameState,
+    player_id: str,
+) -> list[dict[str, Any]]:
+    """Extract the viewer's OWN actions from events, chronological.
+
+    Only public/own-action event types are captured — this is the
+    retrospective 'what did I do' view, never another player's private
+    action. Returns events in the order they appear in
+    ``game_state.events`` (which is append-order = chronological).
+    """
+    timeline: list[dict[str, Any]] = []
+    viewer = game_state.players.get(player_id)
+    viewer_role = viewer.role if viewer else None
+    for e in game_state.events:
+        p = e.payload or {}
+        if e.type == "vote_resolved":
+            # votes is a list of {voter, target, reason}. Skip abstain /
+            # tie entries where target is None/empty — there is nothing
+            # actionable to record.
+            for vote in p.get("votes", []) or []:
+                if (isinstance(vote, dict)
+                        and vote.get("voter") == player_id
+                        and vote.get("target")):
+                    timeline.append({
+                        "kind": "vote",
+                        "day": p.get("day_number"),
+                        "target": vote.get("target"),
+                    })
+        elif e.type == "seer_check" and viewer_role == "seer":
+            # seer_check events carry NO seer_id (rule_engine H-5: omitted
+            # on purpose to avoid leaking seer identity). Mirror the live
+            # path (visible_state.py role=="seer" gate) — only the seer
+            # viewer collects check results. A non-seer viewer (villager /
+            # wolf) MUST NOT see another player's seer checks, or it leaks
+            # the checked player's true alignment.
+            timeline.append({
+                "kind": "seer_check",
+                "night": p.get("night_number"),
+                "target": p.get("target_id"),
+                "alignment": p.get("alignment"),
+            })
+    return timeline
+
+
 def build_public_summary(game_state: GameState) -> str:
     """Build a compact phase summary for contexts without event replay."""
     parts: list[str] = [TIMELINE_ORDER_NOTE]

@@ -3146,3 +3146,181 @@ def test_skill_illegal_target_filter_applies_to_all_render_paths() -> None:
     finally:
         from werewolf_agent.skills.werewolf_skills import push_vote_handler
         register_handler(SkillName.PUSH_VOTE)(push_vote_handler)
+
+
+# ---------------------------------------------------------------------------
+# PR2: REFLECTION context 的 visible_world_state 必须是赛后摘要(回顾视角),
+# 而非 live 局面。SPEECH/VOTE 保持原 visible 逻辑(回归)。
+# ---------------------------------------------------------------------------
+
+def _finished_gs_for_reflection() -> GameState:
+    """赛后 GameState:p02/p05 死亡,p01(本玩家)存活到结束,狼人胜。"""
+    from werewolf_agent.core.models import Death
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    players["p01"] = PlayerState(id="p01", role="seer", alive=True)
+    players["p02"] = PlayerState(id="p02", role="werewolf", alive=False)
+    players["p05"] = PlayerState(id="p05", role="villager", alive=False)
+    deaths = [
+        Death(player_id="p05", reason="exile", timing="day",
+              resolution_batch="d1"),
+        Death(player_id="p02", reason="wolf_kill", timing="night",
+              resolution_batch="n2"),
+    ]
+    events = [
+        GameEvent(type="seer_check", payload={
+            "target_id": "p03", "alignment": "werewolf", "night_number": 1}),
+        GameEvent(type="vote_resolved", payload={
+            "day_number": 1,
+            "votes": [{"voter": "p01", "target": "p05"}],
+            "exiled": "p05"}),
+        GameEvent(type="judge_broadcast", payload={"phase": "death_announce"}),
+    ]
+    return GameState(
+        game_id="reflection_post_game",
+        phase="finished",
+        day_number=2,
+        night_number=2,
+        players=players,
+        deaths=deaths,
+        events=events,
+        winning_faction="werewolf",
+    )
+
+
+def test_reflection_visible_is_post_game_summary_not_live():
+    from werewolf_agent.runtime.graph import _new_engine
+
+    gs = _finished_gs_for_reflection()
+    ctx = build_agent_context(
+        _new_engine(), gs, "p01", TaskType.REFLECTION,
+        legal_actions=[ActionType.SPEECH],
+    )
+    visible = ctx.visible_world_state
+
+    # 回顾视角:含胜负、自己存活结论、死亡顺序、自己行动时间线
+    assert visible.get("game_phase") == "post_game"
+    assert visible.get("winning_faction") == "werewolf"
+    assert visible.get("viewer_survived") is True
+    deaths = visible.get("deaths")
+    assert isinstance(deaths, list) and deaths, "赛后摘要必须含死亡顺序"
+    death_ids = [d.get("player_id") for d in deaths]
+    assert "p05" in death_ids and "p02" in death_ids
+    my_actions = visible.get("my_action_timeline")
+    assert isinstance(my_actions, list) and my_actions, "必须含自己的行动时间线"
+
+    # 进行时 live 字段必须不存在(回顾视角,非进行时)
+    for live_key in ("alive_players", "phase", "day", "night", "phase_label"):
+        assert live_key not in visible, (
+            f"REFLECTION visible 不得含 live 字段 {live_key!r}: {visible!r}"
+        )
+
+
+def test_reflection_visible_excludes_other_private_state():
+    """赛后摘要 visibility 安全:不含他人私身份/狼队信息。
+
+    边界:winning_faction 是公开结果;viewer 自己的 seer_check
+    结果是自己的私有信息——两者合法出现在摘要里。被排除的是
+    他人私身份(wolf_teammates / 他人 role / 别人的 check_results)。
+    """
+    from werewolf_agent.runtime.graph import _new_engine
+
+    gs = _finished_gs_for_reflection()
+    ctx = build_agent_context(
+        _new_engine(), gs, "p01", TaskType.REFLECTION,
+        legal_actions=[ActionType.SPEECH],
+    )
+    visible = ctx.visible_world_state
+    # 狼队信息(只有 werewolf 自己在 live 视角能看到)不得出现
+    assert "wolf_teammates" not in visible
+    assert "wolf_team_plan" not in visible
+    # 死亡顺序只含公开结果(player_id/reason/timing),不含 role 字段
+    for d in visible.get("deaths", []):
+        assert "role" not in d, f"死亡记录不得暴露身份: {d!r}"
+    # viewer 自己的 seer_check 是合法私有信息;但摘要不应混入 live
+    # role-specific 字段(antidote_available / master_id 等)。
+    for leak_key in ("antidote_available", "poison_available", "master_id"):
+        assert leak_key not in visible, (
+            f"赛后摘要不得含 live role-private 字段 {leak_key!r}"
+        )
+
+
+def test_speech_visible_is_unchanged_live_state():
+    """回归:SPEECH context 的 visible 仍是 live 局面。"""
+    from werewolf_agent.runtime.graph import _new_engine
+
+    gs = _finished_gs_for_reflection()
+    ctx = build_agent_context(
+        _new_engine(), gs, "p01", TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+    visible = ctx.visible_world_state
+    # live 字段仍在
+    assert "alive_players" in visible
+    assert "phase" in visible
+    # 赛后摘要专属字段不在 SPEECH context
+    assert "game_phase" not in visible
+    assert "my_action_timeline" not in visible
+
+
+def test_reflection_visible_non_seer_viewer_no_seer_check_leak():
+    """Critical: 非 seer viewer 不得拿到他人 seer_check 阵营信息。
+
+    seer_check 事件无 seer_id(rule_engine H-5 故意省略),所以
+    _extract_viewer_action_timeline 必须镜像 live 路径的 role 门控:
+    仅 viewer.role=='seer' 才收 check。否则村民/狼人会拿到别人
+    验出的真实阵营,泄漏被验玩家身份。
+    """
+    from werewolf_agent.core.models import Death
+    from werewolf_agent.runtime.graph import _new_engine
+
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+        for i in range(1, 13)
+    }
+    # viewer = p01 村民(非 seer);p07 是真预言家(他人在验人)
+    players["p01"] = PlayerState(id="p01", role="villager", alive=True)
+    players["p07"] = PlayerState(id="p07", role="seer", alive=True)
+    players["p03"] = PlayerState(id="p03", role="werewolf", alive=True)
+    # p07 验 p03=werewolf —— 这是 p07 的私有信息,p01 不该看到
+    events = [
+        GameEvent(type="seer_check", payload={
+            "target_id": "p03", "alignment": "werewolf", "night_number": 1}),
+        GameEvent(type="vote_resolved", payload={
+            "day_number": 1,
+            "votes": [{"voter": "p01", "target": "p02"}],
+            "exiled": None}),
+        GameEvent(type="judge_broadcast", payload={"phase": "death_announce"}),
+    ]
+    gs = GameState(
+        game_id="reflection_villager_leak_guard",
+        phase="finished",
+        day_number=1,
+        night_number=1,
+        players=players,
+        events=events,
+        winning_faction="werewolf",
+    )
+    ctx = build_agent_context(
+        _new_engine(), gs, "p01", TaskType.REFLECTION,
+        legal_actions=[ActionType.SPEECH],
+    )
+    timeline = ctx.visible_world_state.get("my_action_timeline", [])
+
+    # viewer 自己的 vote 合法保留
+    assert any(item.get("kind") == "vote" for item in timeline)
+    # 不得含任何 seer_check 条目(那是 p07 的私有验人)
+    seer_items = [item for item in timeline if item.get("kind") == "seer_check"]
+    assert seer_items == [], (
+        f"非 seer viewer 泄漏他人 seer_check: {seer_items!r}"
+    )
+    # 不得泄漏 p03 的真实阵营
+    blob = str(ctx.visible_world_state).lower()
+    # winning_faction=werewolf 合法出现;但 p03 的 alignment 不该经 seer_check 泄漏。
+    # 直接断言 timeline 里无任何 alignment/target 字段
+    for item in timeline:
+        assert "alignment" not in item, f"泄漏 alignment: {item!r}"
+        if item.get("kind") != "vote":
+            assert "target" not in item, f"泄漏 target: {item!r}"
