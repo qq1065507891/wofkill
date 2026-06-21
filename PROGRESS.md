@@ -4268,11 +4268,14 @@ test_live_runtime.py -p no:cacheprovider -q`
 
 **结论**:
 
-1. **plan Risks 担忧的 0.55 卡点 / `short_prompt_card` 罚分在 1b 路径下不成立**。
-   `_prompt_card_content_len` 量的是 synthesizer 填充的固定模板字段
-   (theme+lesson+trigger_signals+recommended_action+misuse_risk),
-   与 LLM self-review 的 bullet 长短无关 —— 即便 LLM 只输出 20 字泛化一句话,
-   card_len 仍恒 >= 106(>= 80 阈值),不触发 -0.15。
+1. **plan Risks 担忧的 0.55 卡点不成立**。`short_prompt_card`（<80）罚分仅在
+   "全 fallback"路径触发（patterns 空 + success 空 + improvement 空 + 非 seer/werewolf
+   使 `_default_advice` 最短），实测该路径 card_len=79 触发 -0.15，但该路径
+   mistakes/strengths 都空，score 天花板 0.55-0.60 < 0.70，本来就到不了 approved，
+   故该罚分不可能把一个本该 approved 的条目拉下 0.70。注：
+   `_prompt_card_content_len` 主要量模板字段（theme/lesson/trigger_signals/
+   recommended_action/misuse_risk），`decision_mistake` 类 trigger 取 bullet 原文
+   （text[:80]），但 patterns 非空时固定模板开销使 card_len 下限 ~92 > 80。
 
 2. **1b 足以让高质量反思 approved>0**:五种场景全部 approved(最低 0.75)。
    真正的 score 下限来自 `mistake_patterns` 是否为空:无 section 时 LLM

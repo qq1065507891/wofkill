@@ -1121,6 +1121,13 @@ RAG 不应只依赖人工大规模编写案例库，也不能只靠纯 LLM 自�
 - 混血儿 master 阵营未知时走通用模板仍是设计意图（见上），本次不动。
 - `corrected_from_llm` 否认检测关键词已扩宽（`没什么问题`/`判断都挺准`/`没(有)?失误`/`都对` 等），但收紧以避免匹配错误自述（如`我的判断都错了`）。
 
+**反思 context 裁剪 + LLM mistake 解析**（2026-06-21，`fix-reflection-memory-dead-chain`，补 2026-06-18 留的"mistake 提取后续"）:
+
+- `_agent_reflection` 在 `build_agent_context(REFLECTION)` 后用 allowlist `_POST_GAME_KEEP = {reflection_task, game_outcome}` 剥离赛内决策 directive（`role_alerts`/`skill_tactical_advice` 等），让赛后反思指令成为压倒性内容——修复 LLM 曾输出赛内决策噪声（狼人写"今晚刀X"、好人写"第N夜观察"）而非 section 化反思。
+- `ReflectionSynthesizer._extract_llm_mistakes` 解析 6 个 section（投票错误/信息缺失/神职执行/悍跳分析/暴露原因/角色分工）bullet 为 `ReflectionMistakePattern`，category 按 header 映射（不走关键词 `_category`）；镜像 `_extract_llm_strengths`。merge 进 `synthesize`：deterministic 优先、LLM 补充、Jaccard≥0.6 去重、总上限 3。
+- **安全约束**：LLM mistake 恒设 `auto_verified=False` + `fact_basis="llm_transferable"`。`auto_verified=True` 会令 `_has_unsafe_truth_claim` 直接返回 False，旁路 truth-token 防护；故 LLM mistake 必须为 False，与 deterministic mistake（`auto_verified=True`，因其 wrong_action 是确定性真相、audit-only）严格区分。truth-token bullet 经 per-bullet drop（`_LLM_TRUTH_TOKENS`）+ entry-level gate 双重过滤。
+- **score 结论**（`scripts/analyze_reflection_score.py` 5 场景演算）：1b 后全部 approved（最低 0.75）。`short_prompt_card`（<80）罚分仅在"全 fallback"路径（patterns/success/improvement 皆空 + 非 seer/werewolf）触发，但该路径 score 天花板本身 <0.70，不触及 approved 门槛。故 `fix-belief-cognition.md`（defect B）降级为满分兜底，非 approved 门槛硬依赖。
+
 **跨局检索与排序** (`context.py:_reflection_memory_hints`, 2026-06-09 增强):
 
 - 排序 key: `(-priority, -faction_won, neg_game_id, entry_id)`

@@ -229,8 +229,7 @@ class ReflectionQualityGate:
     def _has_unsafe_truth_claim(entry: ReflectionEntryV2, visible_blob: str) -> bool:
         if entry.prompt_card.auto_verified:
             return False
-        truth_tokens = ("实际", "真实身份", "底牌", "查验结果", "死亡原因")
-        return any(token in visible_blob for token in truth_tokens)
+        return any(token in visible_blob for token in _LLM_TRUTH_TOKENS)
 
     def _find_duplicate(self, entry: ReflectionEntryV2) -> ReflectionEntryV2 | None:
         key = self._duplicate_key(entry)
