@@ -203,7 +203,8 @@ def validate_public_speech(
     """
     context = context or {}
     intent = str(context.get("intent") or "")
-    required = _required_components(intent)
+    day = int(context.get("day_number") or 0)
+    required = _required_components(intent, phase=phase, day=day)
     if phase == "pk_speech":
         required.discard("stance")
 
@@ -306,7 +307,7 @@ def validate_public_speech(
     }
 
 
-def _required_components(intent: str) -> set[str]:
+def _required_components(intent: str, *, phase: str = "", day: int = 0) -> set[str]:
     by_intent = {
         "stand_with_seer": {"stance", "evidence"},
         "question_target": {"target_reference", "evidence"},
@@ -316,10 +317,19 @@ def _required_components(intent: str) -> set[str]:
         "respond_pressure": {"stance", "evidence"},
         "self_clear": {"stance", "evidence"},
     }
-    return set(by_intent.get(
-        intent,
-        {"stance", "suspicion_target", "vote_leaning", "evidence"},
-    ))
+    if intent and intent in by_intent:
+        required = set(by_intent[intent])
+    else:
+        required = {"stance", "suspicion_target", "vote_leaning", "evidence"}
+
+    # Per-phase relaxation: sheriff/PK speeches don't need vote_leaning
+    # (no vote yet); D1 speeches don't need strict evidence.
+    if phase in ("sheriff_speech", "pk_speech") or day <= 1:
+        required.discard("vote_leaning")
+    if day <= 1:
+        required.discard("evidence")
+
+    return required
 
 
 def build_speech_retry_hint(missing_fields: list[str]) -> str:

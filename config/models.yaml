@@ -237,7 +237,7 @@ llm_profiles:
 players:
   p01:
     persona_id: logic_leader
-    llm_profile: ark_deepseek
+    llm_profile: minimax_default
   p02:
     persona_id: aggressive_bluffer
     llm_profile: minimax_default
@@ -261,7 +261,7 @@ players:
     llm_profile: minimax_default
   p09:
     persona_id: quiet_observer
-    llm_profile: ark_deepseek
+    llm_profile: minimax_default
   p10:
     persona_id: burst_visionary
     llm_profile: minimax_default

@@ -560,9 +560,16 @@ class PlayerAgent:
                 # P3-7: indirect the hint — don't expose the full enum
                 # list (LLM was copying the hint verbatim into the
                 # action_type field, then the validator rejected it
-                # for the wrong reason).  Now point the LLM at the
-                # per-turn "最终输出协议" section which already
-                # enumerates the legal action_type and target_id.
+                # for the wrong reason).  Instead, describe WHAT the
+                # validator expects in the game's terms (role/action)
+                # and let "最终输出协议" carry the exact enum values.
+                # P4-10: if the error came from a speech_quality or
+                # vote_quality gate (different check), the generic
+                # "action_type 不在合法动作内" can mislead the LLM
+                # into changing its action when the real problem was
+                # the content.  Gate the hint: only expose the
+                # action-type hint when validation_error originates
+                # from the validator itself, not from downstream gates.
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=self.max_retries,
