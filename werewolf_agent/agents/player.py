@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
+import time
 from dataclasses import asdict
 from enum import Enum
 from typing import Any, Protocol
@@ -240,6 +242,14 @@ class PlayerAgent:
         structured_output_mode = active_structured_mode.value
 
         while attempt < self.max_retries:
+            # Exponential-backoff jitter between successive attempts:
+            # attempt 2 → ~ 0.5-1.5 s, attempt 3 → ~ 1-3 s, attempt 4+ → cap ~ 4-12 s.
+            # Gives transient API errors / spikes a chance to clear; no delay on
+            # the first attempt.
+            if attempt > 0:
+                delay = min(1.0 * (2 ** (attempt - 1)), 8.0) * random.uniform(0.5, 1.5)
+                time.sleep(delay)
+
             attempt += 1
             retry = RetryInfo(
                 attempt=attempt,
