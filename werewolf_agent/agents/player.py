@@ -930,7 +930,7 @@ class PlayerAgent:
                 safe_target = context.legal_targets[0]
 
         speech = ""
-        if safe_action == ActionType.SPEECH:
+        if safe_action == ActionType.SPEECH and context.task_type == TaskType.WOLF_DISCUSSION:
             speech = self._fallback_speech(context)
 
         # Build a generic fallback action. Reason is computed at the end once

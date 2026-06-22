@@ -1719,10 +1719,9 @@ class TestMandatoryVote:
         action, _ = agent.act(ctx)
 
         assert isinstance(action, FallbackAction)
-        # SPEECH fallback now produces template content instead of "未发表有效言论"
-        assert action.speech  # non-empty
-        assert "[p06" not in action.speech  # no longer uses bracket marker
-        assert "未发表有效言论" not in action.speech
+        assert action.speech == ""  # FALLBACK text hidden from other players
+        assert action.action_type == ActionType.SPEECH
+        assert action.reason
 
 
 class TestSpeechQualityAndWolfAssignments:
@@ -1781,8 +1780,7 @@ class TestSpeechQualityAndWolfAssignments:
 
         assert isinstance(action, FallbackAction)
         assert action.action_type == ActionType.SPEECH
-        assert action.speech  # non-empty template fallback
-        assert "未发表有效言论" not in action.speech
+        assert action.speech == ""  # FALLBACK speech excluded from public transcript
         assert action.reason
 
     def test_good_speech_fallback_varies_only_by_player_marker(self) -> None:
@@ -1806,12 +1804,8 @@ class TestSpeechQualityAndWolfAssignments:
             ctx.model_copy(update={"agent_id": "p02", "day_number": 3})
         )
 
-        assert first.speech != second.speech
-        # Both use template fallbacks with different content (varied by salt)
-        assert first.speech  # non-empty
-        assert second.speech  # non-empty
-        assert "未发表有效言论" not in first.speech
-        assert "未发表有效言论" not in second.speech
+        assert first.speech == ""  # FALLBACK excluded from public transcript
+        assert second.speech == ""  # both players get empty fallback speech
 
     def test_wolf_discussion_fallback_keeps_werewolf_private_perspective(self) -> None:
         router = ModelRouter(
