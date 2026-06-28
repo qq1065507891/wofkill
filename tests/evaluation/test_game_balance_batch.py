@@ -109,3 +109,304 @@ def test_balance_audit_counts_any_parse_failure():
     audit = compute_balance_audit(games)
 
     assert audit["schema_failure_rate"] == 1.0
+
+
+def test_balance_audit_counts_sheriff_and_power_role_guardrails():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [
+        {
+            "winning_faction": "werewolf",
+            "players": {
+                "p01": {"role": "werewolf"},
+                "p02": {"role": "seer"},
+                "p03": {"role": "villager"},
+                "p04": {"role": "hunter"},
+                "p05": {"role": "idiot"},
+            },
+            "events": [
+                {
+                    "type": "sheriff_elected",
+                    "payload": {"sheriff_id": "p01"},
+                },
+                {
+                    "type": "action_trace_audit",
+                    "payload": {
+                        "task_type": "sheriff_vote",
+                        "action_traces": {
+                            "p02": {"fallback_reason": "fallback: invalid target"},
+                            "p03": {},
+                        },
+                    },
+                },
+                {
+                    "type": "action_trace_audit",
+                    "payload": {
+                        "task_type": "speech",
+                        "action_trace": {
+                            "agent_id": "p04",
+                            "parse_error": "Could not parse JSON object",
+                        },
+                    },
+                },
+                {
+                    "type": "wolf_team_plan",
+                    "payload": {"night_number": 1, "evidence_quality": "weak"},
+                },
+                {
+                    "type": "wolf_kill_selected",
+                    "payload": {
+                        "night_number": 1,
+                        "target_id": "p03",
+                        "reason": "wolf_team_plan",
+                    },
+                },
+            ],
+            "deaths": [{"player_id": "p03", "reason": "hunter_shot"}],
+        },
+        {
+            "winning_faction": "good",
+            "players": {
+                "p01": {"role": "werewolf"},
+                "p02": {"role": "seer"},
+                "p03": {"role": "villager"},
+                "p04": {"role": "hunter"},
+                "p05": {"role": "idiot"},
+            },
+            "events": [
+                {
+                    "type": "sheriff_elected",
+                    "payload": {"sheriff_id": "p03"},
+                },
+                {
+                    "type": "action_trace_audit",
+                    "payload": {
+                        "task_type": "speech",
+                        "action_trace": {"agent_id": "p05"},
+                    },
+                },
+                {
+                    "type": "wolf_team_plan",
+                    "payload": {"night_number": 1, "evidence_quality": "strong"},
+                },
+                {
+                    "type": "wolf_kill_selected",
+                    "payload": {
+                        "night_number": 1,
+                        "target_id": "p03",
+                        "reason": "wolf_team_plan",
+                    },
+                },
+            ],
+            "deaths": [{"player_id": "p01", "reason": "hunter_shot"}],
+        },
+    ]
+
+    audit = compute_balance_audit(games)
+
+    assert audit["sheriff_werewolf_rate"] == 1 / 2
+    assert audit["sheriff_vote_fallback_rate"] == 1 / 2
+    assert audit["hunter_friendly_fire_rate"] == 1 / 2
+    assert audit["weak_plan_kill_rate"] == 1 / 2
+    assert audit["power_role_fallback_rate"] == 2 / 3
+
+
+def test_balance_audit_warns_on_recent_skew_guardrails():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [
+        {
+            "winning_faction": "werewolf",
+            "players": {
+                "p01": {"role": "werewolf"},
+                "p02": {"role": "seer"},
+                "p03": {"role": "villager"},
+            },
+            "events": [
+                {
+                    "type": "sheriff_elected",
+                    "payload": {"sheriff_id": "p01"},
+                },
+                {
+                    "type": "action_trace_audit",
+                    "payload": {
+                        "phase": "sheriff_vote",
+                        "action_trace": {
+                            "agent_id": "p02",
+                            "structured_failure_reason": "missing_tool_call",
+                        },
+                    },
+                },
+                {
+                    "type": "wolf_team_plan",
+                    "payload": {"night_number": 1, "evidence_quality": "none"},
+                },
+                {
+                    "type": "wolf_kill_selected",
+                    "payload": {
+                        "night_number": 1,
+                        "target_id": "p03",
+                        "reason": "wolf_team_plan",
+                    },
+                },
+            ],
+            "deaths": [{"player_id": "p03", "reason": "hunter_shot"}],
+        }
+        for _ in range(5)
+    ]
+
+    audit = compute_balance_audit(games)
+
+    assert "sheriff_werewolf_rate_high" in audit["warnings"]
+    assert "sheriff_vote_fallback_high" in audit["warnings"]
+    assert "hunter_friendly_fire_high" in audit["warnings"]
+    assert "weak_plan_kill_high" in audit["warnings"]
+
+
+def test_balance_audit_flags_sheriff_werewolf_and_d1_seer_exile():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = {
+        "winning_faction": "werewolf",
+        "players": {
+            "p01": {"role": "werewolf"},
+            "p02": {"role": "seer"},
+        },
+        "events": [
+            {"type": "sheriff_elected", "payload": {"sheriff_id": "p01"}},
+            {
+                "type": "vote_resolved",
+                "payload": {
+                    "day_number": 1,
+                    "exiled": "p02",
+                    "votes": [
+                        {"voter": "p01", "target": "p02", "reason": "x"},
+                    ],
+                },
+            },
+        ],
+        "deaths": [
+            {
+                "player_id": "p02",
+                "reason": "exile",
+                "resolution_batch": "day_1_vote",
+            }
+        ],
+    }
+
+    audit = compute_balance_audit([game])
+
+    assert audit["sheriff_werewolf_rate"] == 1.0
+    assert audit["d1_seer_exile_rate"] == 1.0
+    assert "sheriff_werewolf_rate_high" in audit["warnings"]
+
+
+def test_balance_audit_flags_sheriff_vote_and_power_role_fallbacks():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = {
+        "winning_faction": "good",
+        "players": {
+            "p01": {"role": "villager"},
+            "p02": {"role": "seer"},
+        },
+        "events": [
+            {
+                "type": "action_trace_audit",
+                "payload": {
+                    "player_id": "p01",
+                    "phase": "sheriff_vote",
+                    "task_type": "sheriff_vote",
+                    "action_trace": {
+                        "fallback_reason": "fallback: retries exhausted",
+                    },
+                },
+            },
+            {
+                "type": "action_trace_audit",
+                "payload": {
+                    "player_id": "p02",
+                    "phase": "night",
+                    "task_type": "night_action",
+                    "action_trace": {
+                        "parse_error": "Could not parse JSON object",
+                    },
+                },
+            },
+        ],
+        "deaths": [],
+    }
+
+    audit = compute_balance_audit([game])
+
+    assert audit["sheriff_vote_fallback_rate"] == 1.0
+    assert audit["power_role_fallback_rate"] == 1.0
+    assert "sheriff_vote_fallback_high" in audit["warnings"]
+
+
+def test_balance_audit_flags_hunter_friendly_fire():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = {
+        "winning_faction": "werewolf",
+        "players": {
+            "p01": {"role": "hunter"},
+            "p02": {"role": "witch"},
+            "p03": {"role": "werewolf"},
+        },
+        "events": [],
+        "deaths": [
+            {
+                "player_id": "p02",
+                "reason": "hunter_shot",
+                "source_player_id": "p01",
+            }
+        ],
+    }
+
+    audit = compute_balance_audit([game])
+
+    assert audit["hunter_friendly_fire_rate"] == 1.0
+    assert "hunter_friendly_fire_high" in audit["warnings"]
+
+
+def test_balance_audit_flags_weak_plan_kill_rate():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = {
+        "winning_faction": "werewolf",
+        "players": {
+            "p01": {"role": "werewolf"},
+            "p02": {"role": "villager"},
+        },
+        "events": [
+            {
+                "type": "wolf_team_plan",
+                "payload": {
+                    "night_number": 1,
+                    "night_kill_primary": "p02",
+                    "evidence_quality": "weak",
+                },
+            },
+            {
+                "type": "wolf_kill_selected",
+                "payload": {
+                    "night_number": 1,
+                    "target_id": "p02",
+                    "reason": "wolf_team_plan",
+                },
+            },
+        ],
+        "deaths": [
+            {
+                "player_id": "p02",
+                "reason": "wolf_kill",
+                "resolution_batch": "night_1",
+            }
+        ],
+    }
+
+    audit = compute_balance_audit([game])
+
+    assert audit["weak_plan_kill_rate"] == 1.0
+    assert "weak_plan_kill_high" in audit["warnings"]
