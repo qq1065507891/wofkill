@@ -3,6 +3,15 @@ from __future__ import annotations
 from werewolf_agent.agents.action_contract import ActionContract
 from werewolf_agent.agents.schemas import ActionType, OutputMode, TaskType
 
+_VOTE_AUDIT_FIELDS = (
+    "seer_stance",
+    "vote_basis",
+    "standing_with_seer",
+    "suspect_reason",
+    "not_voting_reason",
+    "private_reason",
+)
+
 
 def test_target_choice_vote_contract_matches_prompt_fields() -> None:
     contract = ActionContract.build(
@@ -65,3 +74,36 @@ def test_full_action_contract_preserves_legal_action_and_target_enums() -> None:
     ]
     assert schema["properties"]["target_id"]["enum"] == ["p07", None]
     assert contract.tool["input_schema"] == schema
+
+
+def test_sheriff_vote_full_action_contract_omits_exile_vote_audit_fields() -> None:
+    """Sheriff election voting can reuse TaskType.VOTE but is not exile voting."""
+    contract = ActionContract.build(
+        output_mode=OutputMode.FULL_ACTION,
+        task_type=TaskType.VOTE,
+        legal_actions=[ActionType.SHERIFF_VOTE, ActionType.NO_ACTION],
+        legal_targets=["p01", "p02"],
+    )
+
+    props = contract.json_schema["properties"]
+
+    assert props["action_type"]["enum"] == ["sheriff_vote", "no_action"]
+    for field in _VOTE_AUDIT_FIELDS:
+        assert field not in props
+        assert field not in contract.required_fields
+
+
+def test_sheriff_vote_choice_contract_omits_exile_vote_audit_fields() -> None:
+    """The choice pipeline must also keep sheriff votes separate from exile votes."""
+    contract = ActionContract.build(
+        output_mode=OutputMode.TARGET_CHOICE,
+        task_type=TaskType.VOTE,
+        legal_actions=[ActionType.SHERIFF_VOTE],
+        legal_targets=["p01", "p02"],
+    )
+
+    props = contract.json_schema["properties"]
+
+    assert contract.required_fields == ("choice", "reason", "confidence")
+    for field in _VOTE_AUDIT_FIELDS:
+        assert field not in props

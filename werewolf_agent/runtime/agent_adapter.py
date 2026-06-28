@@ -2157,9 +2157,8 @@ def agent_sheriff_vote(
     # Wolf strategy for sheriff voting
     strategy_directive = context.strategy_directive or {}
     voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
-    # M2-2: per-turn VOTE_BASIS_GUIDANCE (seer exempt). Moved out
-    # of the stable system prompt so night actions don't see it.
-    _inject_vote_basis_hint(strategy_directive, gs, voter_id)
+    # Sheriff voting is an election, not day exile voting; do not inject
+    # vote_basis/seer_stance guidance into this action contract.
     if voter_role == "werewolf":
         wolf_teammates = [
             pid for pid, p in gs.players.items()

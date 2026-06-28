@@ -504,6 +504,58 @@ def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypat
     assert all(event.payload["visibility"] == "moderator_only" for event in audits)
 
 
+def test_agent_sheriff_vote_does_not_inject_exile_vote_basis_hint() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_sheriff_vote
+
+    class CaptureAgent:
+        last_context: AgentContext | None = None
+
+        def act(self, context: AgentContext):
+            self.last_context = context
+            return (
+                PlayerAction(
+                    action_type=ActionType.SHERIFF_VOTE,
+                    target_id="p01",
+                    speech="",
+                    reason="best sheriff candidate",
+                    confidence=0.8,
+                ),
+                RetryInfo(),
+            )
+
+    class Registry:
+        def __init__(self) -> None:
+            self.agent = CaptureAgent()
+
+        def get_agent(self, player_id: str):
+            return self.agent
+
+    gs = GameState(
+        game_id="sheriff_vote_prompt_scope",
+        players={
+            "p01": PlayerState(id="p01", role="villager", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+        },
+        phase="sheriff_vote",
+        day_number=1,
+        sheriff_candidates=["p01"],
+    )
+    registry = Registry()
+
+    result = agent_sheriff_vote(
+        {"game_state": gs},
+        _new_engine(),
+        registry,
+        "p02",
+        ["p01"],
+    )
+
+    assert result["vote_target"] == "p01"
+    assert registry.agent.last_context is not None
+    directive = registry.agent.last_context.strategy_directive or {}
+    assert "vote_basis_hint" not in directive
+
+
 class TestSheriffElectionPK:
     def test_first_tie_triggers_pk_speech(self):
         """First sheriff vote tie should route to sheriff_pk_speech with tied candidates."""

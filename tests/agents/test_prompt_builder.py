@@ -5326,5 +5326,34 @@ def test_reflection_task_does_not_break_existing_speech_directive_grouping():
     assert "【投票错误】" not in prompt
 
 
+def test_sheriff_vote_prompt_omits_exile_vote_audit_fields():
+    """Runtime sheriff voting reuses TaskType.VOTE but must not ask for exile fields."""
+    ctx = AgentContext(
+        agent_id="p06",
+        task_type=TaskType.VOTE,
+        phase="sheriff_vote",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[ActionType.SHERIFF_VOTE, ActionType.NO_ACTION],
+        legal_targets=["p01", "p04"],
+        public_summary="Sheriff election vote",
+    )
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    assert "sheriff_vote" in prompt
+    assert "p01" in prompt
+    assert "p04" in prompt
+    for field in (
+        "seer_stance",
+        "vote_basis",
+        "standing_with_seer",
+        "suspect_reason",
+        "not_voting_reason",
+        "private_reason",
+    ):
+        assert field not in prompt
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -78,6 +78,8 @@ def build_full_action_schema(
     task_type: TaskType,
     action_values: list[str],
     target_values: list[str | None],
+    *,
+    include_vote_audit: bool = False,
 ) -> dict[str, Any]:
     target_schema: dict[str, Any] = {
         "type": ["string", "null"],
@@ -109,7 +111,7 @@ def build_full_action_schema(
         },
     }
     required = ["action_type", "target_id", "speech", "reason", "confidence"]
-    if task_type == TaskType.VOTE:
+    if include_vote_audit:
         properties.update(vote_audit_properties())
         required.extend([
             "seer_stance",
@@ -182,7 +184,14 @@ class ActionContract:
         legal_targets: list[str],
     ) -> "ActionContract":
         if output_mode == OutputMode.TARGET_CHOICE:
-            schema = _target_choice_schema(task_type, legal_targets)
+            schema = _target_choice_schema(
+                task_type,
+                legal_targets,
+                include_vote_audit=_is_exile_vote_contract(
+                    task_type,
+                    legal_actions,
+                ),
+            )
         elif output_mode == OutputMode.SPEECH_INTENT:
             schema = _speech_intent_schema(legal_targets)
         else:
@@ -199,6 +208,10 @@ class ActionContract:
                 task_type,
                 action_values,
                 target_values,
+                include_vote_audit=_is_exile_vote_contract(
+                    task_type,
+                    legal_actions,
+                ),
             )
         return cls(
             output_mode=output_mode,
@@ -222,6 +235,8 @@ class ActionContract:
 def _target_choice_schema(
     task_type: TaskType,
     legal_targets: list[str],
+    *,
+    include_vote_audit: bool = False,
 ) -> dict[str, Any]:
     letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:len(legal_targets)])
     properties: dict[str, Any] = {
@@ -238,7 +253,7 @@ def _target_choice_schema(
         },
     }
     required = ["choice", "reason"]
-    if task_type == TaskType.VOTE:
+    if include_vote_audit:
         properties.update(vote_audit_properties())
         required.extend([
             "seer_stance",
@@ -255,6 +270,13 @@ def _target_choice_schema(
         "properties": properties,
         "required": required,
     }
+
+
+def _is_exile_vote_contract(
+    task_type: TaskType,
+    legal_actions: list[ActionType],
+) -> bool:
+    return task_type == TaskType.VOTE and ActionType.VOTE in legal_actions
 
 
 def _speech_intent_schema(legal_targets: list[str]) -> dict[str, Any]:

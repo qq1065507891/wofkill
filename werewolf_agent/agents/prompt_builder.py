@@ -590,8 +590,8 @@ class PlayerPromptBuilder:
             lines.append(f"可选目标: {ctx.legal_targets}")
         # Mandatory vote hints
         output_mode = self._select_output_mode()
-        is_vote_context = ctx.task_type == TaskType.VOTE
-        if ctx.legal_actions and is_vote_context:
+        is_exile_vote_context = self._is_exile_vote_context()
+        if ctx.legal_actions and is_exile_vote_context:
             if ActionType.NO_ACTION not in ctx.legal_actions:
                 lines.append("重要：本轮投票必须选择一名玩家放逐，不能弃票！")
             if ctx.legal_actions == [ActionType.VOTE] and ctx.legal_targets:
@@ -1585,7 +1585,7 @@ class PlayerPromptBuilder:
         # NO_ACTION) 时路由到 FULL_ACTION 走 ``_format_examples``，
         # 隐私 guard 缺失，LLM 在 reason 字段会写入私视角表述
         # (g_3223805846 复现)。 与 _format_choice_prompt 路径对齐。
-        if ctx.task_type == TaskType.VOTE:
+        if self._is_exile_vote_context():
             parts.append(_VOTE_REASON_PRIVACY_GUARD)
         # P0-S7: claimed_view is documented as an identity-perspective
         # identifier (PrivateIntent schema), not a free-form Chinese
@@ -1700,6 +1700,21 @@ class PlayerPromptBuilder:
                 '"speech": "", '
                 f'"reason": "选择{example_target}作为我的主人", "confidence": 0.7}}'
             )
+        elif ActionType.SHERIFF_VOTE in ctx.legal_actions:
+            example_target = self._example_target()
+            parts.append("示例输出（警长投票场景）：")
+            parts.append(
+                f'{{"action_type": "sheriff_vote", "target_id": "{example_target}", '
+                '"speech": "", '
+                f'"reason": "选择{example_target}作为警长候选人", "confidence": 0.7}}'
+            )
+            if ActionType.NO_ACTION in ctx.legal_actions:
+                parts.append("示例输出（警长投票弃权场景）：")
+                parts.append(
+                    '{"action_type": "no_action", "target_id": null, '
+                    '"speech": "", '
+                    '"reason": "候选人信息不足，暂不投出警长票", "confidence": 0.5}'
+                )
         else:
             role = ctx.own_role or "villager"
             # P0-1: example_role now follows ctx.own_role so the example's
@@ -1813,7 +1828,7 @@ class PlayerPromptBuilder:
                 f"3. 最终输出字段：{output_fields}。",
                 "4. choice只能取上方候选枚举中的字母，不要直接编写target_id。",
             ]
-            if ctx.task_type == TaskType.VOTE:
+            if self._is_exile_vote_context():
                 lines.append(
                     f"5. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
                 )
@@ -1854,7 +1869,7 @@ class PlayerPromptBuilder:
             lines.append(f"5. action_type只能取：{legal_actions}。")
         if legal_targets:
             lines.append(f"6. target_id只能取这些玩家之一或null：{legal_targets}。")
-        if ctx.task_type == TaskType.VOTE:
+        if self._is_exile_vote_context():
             lines.append(
                 f"7. 投票还必须包含{'、'.join(_VOTE_AUDIT_FIELDS)}，理由字段不能写「未说明」。"
             )
@@ -1865,7 +1880,7 @@ class PlayerPromptBuilder:
 
     def _format_choice_prompt(self) -> str:
         ctx = self.context
-        is_vote = ctx.task_type == TaskType.VOTE
+        is_vote = self._is_exile_vote_context()
         header = "投票候选枚举" if is_vote else "目标候选枚举"
         choice_map = self._vote_choice_map()
         lines = [f"{header}（必须从中选择一个choice，不要直接编写target_id）："]
@@ -1941,6 +1956,10 @@ class PlayerPromptBuilder:
             task_type=ctx.task_type,
             speech_intent_tasks=_SPEECH_INTENT_TASKS,
         )
+
+    def _is_exile_vote_context(self) -> bool:
+        ctx = self.context
+        return ctx.task_type == TaskType.VOTE and ActionType.VOTE in ctx.legal_actions
 
     @staticmethod
     def _clean_prompt_text(

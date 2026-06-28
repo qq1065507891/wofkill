@@ -64,6 +64,15 @@ from werewolf_agent.persona_runtime.router import (
 
 logger = logging.getLogger(__name__)
 
+_SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS = (
+    "seer_stance",
+    "vote_basis",
+    "standing_with_seer",
+    "suspect_reason",
+    "not_voting_reason",
+    "private_reason",
+)
+
 
 class ActionValidator(Protocol):
     """Protocol for validating actions against RuleEngine legal sets."""
@@ -530,7 +539,7 @@ class PlayerAgent:
                     max_retries=self.max_retries,
                     error_code=structured_failure_reason,
                     error_message=parse_error,
-                    correction_hint=(
+                    correction_hint=self._parse_correction_hint(context, parse_error) or (
                         "只输出JSON，不要解释、不要Markdown代码块。必须包含action_type、target_id、speech、"
                         "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
                     ),
@@ -836,6 +845,35 @@ class PlayerAgent:
         return False, current_sig
 
     # ── Delegated to output_parser.py ──
+
+    def _parse_correction_hint(
+        self,
+        context: AgentContext,
+        parse_error: str,
+    ) -> str | None:
+        if not self._is_sheriff_vote_audit_field_error(context, parse_error):
+            return None
+        forbidden = ", ".join(_SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS)
+        allowed = "action_type, target_id, speech, reason, confidence"
+        return (
+            "sheriff_vote is sheriff election voting, not exile voting. "
+            f"Remove exile-vote audit fields: {forbidden}. "
+            f"Only keep these fields: {allowed}."
+        )
+
+    @staticmethod
+    def _is_sheriff_vote_audit_field_error(
+        context: AgentContext,
+        parse_error: str,
+    ) -> bool:
+        if ActionType.SHERIFF_VOTE not in context.legal_actions:
+            return False
+        if ActionType.VOTE in context.legal_actions:
+            return False
+        return any(
+            field in parse_error
+            for field in _SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS
+        )
 
     def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
         return _parse_action_impl(text)
