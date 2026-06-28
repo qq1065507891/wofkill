@@ -329,6 +329,7 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         )
         speech_text = state.get("speech_text", "")
         action_trace = None
+        seer_credibility_audit = None
         decision_identity = None
         exposure_collector = None
         if not speech_text:
@@ -354,6 +355,7 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                     return {"game_state": gs, "self_destruct_wolf_id": speaker_id}
                 speech_text = result.get("speech_text", "")
                 action_trace = result.get("action_trace")
+                seer_credibility_audit = result.get("seer_credibility_audit")
         player_role = gs.players[speaker_id].role if speaker_id in gs.players else "?"
         logger.debug(f"  [{_player_display(state, speaker_id)}({player_role})]: {speech_text if speech_text else '(未发言)'}")
         if not speech_text.strip():
@@ -374,6 +376,11 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
             "text": speech_text,
         }
         events = [GameEvent(type="speech", payload=payload)]
+        if seer_credibility_audit:
+            events.append(GameEvent(
+                type="seer_credibility_audit",
+                payload=seer_credibility_audit,
+            ))
         if action_trace:
             events.extend(_action_audit_events(
                 state=state,

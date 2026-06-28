@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 from dataclasses import replace
 
@@ -234,6 +235,75 @@ def test_day_speech_requires_speech_action_from_agent() -> None:
 
     assert result["speech_text"]
     assert agent.context.legal_actions == [ActionType.SPEECH]
+
+
+def test_day_speech_emits_moderator_only_seer_credibility_audit() -> None:
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="seer_credibility_audit",
+        players=players,
+        day_number=1,
+        phase="day",
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p01",
+                    "day_number": 1,
+                    "text": "p01 claims seer",
+                    "claims": [{"type": "role", "value": "seer"}],
+                },
+            ),
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "day_number": 1,
+                    "text": "p02 counterclaims seer",
+                    "claims": [{"type": "role", "value": "seer"}],
+                },
+            ),
+        ],
+    )
+
+    class Agent:
+        def act(self, context):
+            return PlayerAction(
+                action_type=ActionType.SPEECH,
+                speech="I will compare the public seer claims.",
+                reason="public seer claim comparison",
+            ), RetryInfo()
+
+    class Registry:
+        def __init__(self):
+            self.agent = Agent()
+
+        def get_agent(self, player_id):
+            return self.agent
+
+    result = free_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+        "speech_order": ["p03"],
+        "speech_index": 0,
+        "current_speaker_id": "p03",
+    })
+
+    audit_events = [
+        event
+        for event in result["game_state"].events
+        if event.type == "seer_credibility_audit"
+    ]
+    assert audit_events
+    payload = audit_events[-1].payload
+    assert payload["visibility"] == "moderator_only"
+    assert {line["claimant"] for line in payload["seer_lines"]} == {"p01", "p02"}
+    assert "hidden_role" not in json.dumps(payload, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

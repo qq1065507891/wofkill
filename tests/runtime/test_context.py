@@ -123,6 +123,53 @@ def test_hybrid_reflection_is_not_generic_good_faction_history() -> None:
     ]
 
 
+def test_build_agent_context_extracts_public_seer_credibility_lines() -> None:
+    from werewolf_agent.runtime.graph import _new_engine
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="seer_credibility_context",
+        phase="day",
+        day_number=1,
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p01",
+                    "day_number": 1,
+                    "text": "p01 claims seer",
+                    "claims": [{"type": "role", "value": "seer"}],
+                },
+            ),
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "day_number": 1,
+                    "text": "p02 counterclaims seer",
+                    "claims": [{"type": "role", "value": "seer"}],
+                },
+            ),
+        ],
+    )
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p03",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+
+    lines = ctx.seer_credibility["seer_lines"]
+    assert {line["claimant"] for line in lines} == {"p01", "p02"}
+
+
 def test_reflection_hints_tie_broken_by_game_id_descending() -> None:
     """Same role + faction priority; ties broken by game_id descending."""
     refs = [

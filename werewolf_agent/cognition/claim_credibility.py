@@ -207,6 +207,7 @@ class SeerClaimCredibilityEngine:
                     "claimant": c,
                     "status": cred.status,
                     "score": cred.score,
+                    "confidence": cred.confidence,
                     "checks": [
                         f"{chk.result}:{chk.target}"
                         for chk in self._lines[c].checks[:3]

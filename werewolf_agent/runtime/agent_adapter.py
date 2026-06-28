@@ -138,6 +138,40 @@ def _inject_vote_basis_hint(
         strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
 
 
+def _seer_credibility_audit_payload(
+    context: AgentContext,
+    day_number: int,
+) -> dict[str, Any] | None:
+    summary = context.seer_credibility or {}
+    lines = summary.get("seer_lines")
+    if not isinstance(lines, list) or not lines:
+        return None
+    safe_lines: list[dict[str, Any]] = []
+    for item in lines[:3]:
+        if not isinstance(item, dict):
+            continue
+        safe_lines.append({
+            key: item[key]
+            for key in (
+                "claimant",
+                "status",
+                "score",
+                "confidence",
+                "checks",
+                "evidence",
+                "penalties",
+            )
+            if key in item
+        })
+    if not safe_lines:
+        return None
+    return {
+        "day_number": day_number,
+        "visibility": "moderator_only",
+        "seer_lines": safe_lines,
+    }
+
+
 def _is_sheriff_silenced(gs: GameState, sheriff_id: str) -> bool:
     """Return True if the active sheriff is currently muted (cannot speak).
 
@@ -1362,7 +1396,15 @@ def agent_day_speech(
                 f"我会重点关注{target_hint}的站边和投票倾向。"
             )
 
-    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}
+    return {
+        "speech_text": speech_text,
+        "action_trace": _action_trace_payload(action),
+        "seer_credibility_audit": _seer_credibility_audit_payload(
+            context,
+            gs.day_number,
+        ),
+        "self_destruct": False,
+    }
 
 
 def agent_sheriff_pick_speech_order(
