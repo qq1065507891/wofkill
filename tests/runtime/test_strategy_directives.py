@@ -553,6 +553,29 @@ class TestHunterStrategyDirectives:
         assert "明确查杀" in directive
         assert "避免误伤好人" in directive
 
+    def test_public_good_claim_penalizes_hunter_shot_target(self) -> None:
+        """Public gold-water/protect claims should lower hunter shot value."""
+        events = [
+            GameEvent(type="speech", payload={
+                "speaker": "seer", "day_number": 1,
+                "text": "v1是金水，v1是好人，我保v1。",
+            }),
+            GameEvent(type="speech", payload={
+                "speaker": "w1", "day_number": 1,
+                "text": "v1有点可疑，但我没有硬证据。",
+            }),
+        ]
+        state, engine, registry = self._make_hunter_state(extra_events=events)
+        from werewolf_agent.runtime.agent_adapter import agent_hunter_shot
+        agent_hunter_shot(state, engine, registry, "hunter")
+        ctx = registry.agent.last_context
+        sv = ctx.strategy_directive["shot_value_assessment"]
+        v1_entry = next((t for t in sv["ranked_targets"] if t["target"] == "v1"), None)
+        assert v1_entry is not None
+        assert "protected_good_by_seer" in v1_entry["signals"]
+        assert v1_entry["value"] <= 0
+        assert sv["ranked_targets"][0]["target"] != "v1"
+
     def test_death_reason_passed_to_agent(self) -> None:
         """Death reason should be available in the strategy directive."""
         state, engine, registry = self._make_hunter_state(hunter_death_reason="exile")
@@ -1199,6 +1222,25 @@ class TestIdiotStrategyDirectives:
         directive = result["idiot_speech_directive"]
         assert "尚未翻牌" in directive
         assert "避免" in directive
+
+    def test_idiot_pre_reveal_warns_against_herd_push(self) -> None:
+        """Pre-reveal idiot should avoid becoming an easy herd exile."""
+        from werewolf_agent.runtime.agent_adapter import _build_idiot_day_speech_directive
+        players = {
+            "idiot": PlayerState(id="idiot", role="idiot", revealed_idiot=False),
+            "w1": PlayerState(id="w1", role="werewolf"),
+        }
+        gs = GameState(
+            game_id="idiot_pre_reveal_herd_test",
+            players=players,
+            phase="day",
+            day_number=2,
+        )
+        result = _build_idiot_day_speech_directive(gs, "idiot")
+        directive = result["idiot_speech_directive"]
+        assert "警长" in directive
+        assert "一边倒" in directive or "盲从" in directive
+        assert "免费" in directive or "不是收益" in directive
 
     def test_idiot_post_reveal_has_bold_strategy(self) -> None:
         """After reveal, idiot should be told to speak boldly."""
@@ -2015,6 +2057,16 @@ class TestWitchPoisonUnifiedDirective:
         # The directive text should mention urgency / 紧急.
         text = wp.get("text", "") + wp.get("advice", "")
         assert "紧急" in text or "urgency" in text.lower() or "不用毒药" in text
+
+    def test_low_alive_without_poison_candidates_still_requires_public_source(self) -> None:
+        """Low alive count must not override the no-evidence poison guard."""
+        gs = self._make_witch_gs(alive_count=6, poison_used=False)
+        directive = self._invoke_witch(gs)
+        wp = directive["witch_poison_strategy"]
+        text = wp.get("text", "") + " " + directive.get("witch_poison_candidates", "")
+        assert "怀疑度最高" not in text
+        assert "公开" in text
+        assert "no_action" in text or "不推荐" in text or "默认" in text
 
     def test_witch_poison_evidence_branch_mid_game(self) -> None:
         """Mid game (8-9 alive) with no urgency should land on

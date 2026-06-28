@@ -328,8 +328,10 @@ def agent_night_witch(
             branch = "urgency_under_X_alive"
             text = (
                 f"【紧急】场上仅存活{alive}人！你的毒药还没有使用！"
-                f"好人阵营已经没有犹豫的空间——选择你怀疑度最高的目标用毒。"
-                f"不用毒药很可能意味着好人永远失去主动权。"
+                f"好人阵营需要主动性，但用毒仍必须引用具体公开来源："
+                f"可信查杀、多人明确指控、强票型或身份逻辑破产。"
+                f"如果没有结构化候选或说不清公开证据，默认 no_action，"
+                f"不要凭印象误毒好人。"
             )
         elif alive <= 9:
             branch = "evidence_required_threshold"
@@ -378,7 +380,7 @@ def agent_night_witch(
             elif alive <= 7:
                 no_action_hint = (
                     f"【紧急但证据不足】存活 ≤ 7 但无结构化候选。"
-                    f"从你的怀疑中选最高度目标(可在 reason 中写'基于 X 的发言'说明依据)。"
+                    f"不推荐凭印象用毒；默认 no_action，除非 reason 能写清具体公开来源。"
                 )
             else:
                 no_action_hint = (

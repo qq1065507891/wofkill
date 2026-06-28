@@ -25,10 +25,17 @@ def evaluate_hunter_shot_target(
     if not legal_targets:
         return None
 
+    protected_good_sources = _public_good_protection_sources(gs, legal_targets)
     scores: dict[str, dict[str, Any]] = {}
     for pid in legal_targets:
         sig: list[str] = []
         value = 0
+
+        # Public gold-water / protection claims reduce shot value. This uses
+        # public speech/facts only; hidden roles are intentionally ignored.
+        for source in sorted(protected_good_sources.get(pid, set())):
+            sig.append(f"protected_good_by_{source}")
+            value -= 6
 
         # 公开查杀声明：狼人阵营是最强信号 (+10)
         # 使用 seer_check_claim 公开信息，不直接读取 seer_check 私有事件
@@ -146,3 +153,61 @@ def evaluate_hunter_shot_target(
         ),
         "shoot_advisory": advisory,
     }
+
+
+def _public_good_protection_sources(
+    gs: GameState,
+    legal_targets: list[str],
+) -> dict[str, set[str]]:
+    """Return public sources that have protected or gold-watered targets."""
+    legal = set(legal_targets)
+    sources: dict[str, set[str]] = {pid: set() for pid in legal_targets}
+
+    try:
+        from werewolf_agent.cognition.public_evidence import is_good_result
+        from werewolf_agent.cognition.world_state import build_world_state
+
+        ws = build_world_state(gs)
+        for fact in ws.facts_of_type("seer_check_claim"):
+            target = fact.target_player
+            source = fact.source_player
+            if (
+                target in legal
+                and source
+                and source != target
+                and is_good_result(str(fact.value or ""))
+            ):
+                sources.setdefault(target, set()).add(source)
+        for fact in ws.facts_of_type("claimed_good"):
+            target = fact.target_player
+            source = fact.source_player
+            if target in legal and source and source != target:
+                sources.setdefault(target, set()).add(source)
+    except Exception:
+        logger.warning("Failed to collect public good protection sources", exc_info=True)
+
+    for event in gs.events:
+        if event.type not in ("speech", "sheriff_speech"):
+            continue
+        text = str(event.payload.get("text", ""))
+        speaker = event.payload.get("speaker")
+        if not text or not speaker:
+            continue
+        for target in legal:
+            if speaker == target or target not in text:
+                continue
+            if _negates_good_protection(text, target):
+                continue
+            if "金水" in text or "好人" in text or f"保{target}" in text:
+                sources.setdefault(target, set()).add(str(speaker))
+    return sources
+
+
+def _negates_good_protection(text: str, target: str) -> bool:
+    negated_patterns = (
+        f"{target}不是好人",
+        f"{target}不是金水",
+        f"不保{target}",
+        f"{target}不保",
+    )
+    return any(pattern in text for pattern in negated_patterns)
