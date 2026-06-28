@@ -619,20 +619,19 @@ class TestWolfDirectiveLiveSeerClaimants:
 
 
 # ---------------------------------------------------------------------------
-# Issue 6 (Task B6): _planned_wolf_kill must validate primary alive;
-# if primary is unreachable, force backup selection regardless of evidence.
+# Issue 6 (Task B6): _planned_wolf_kill must validate selected targets;
+# stale or weak plans cannot turn into automatic kills without target evidence.
 # ---------------------------------------------------------------------------
 
 
 class TestPlannedWolfKillPrimaryAlive:
-    """P1-G3223805846-B6: wolf plan primary 必须存活，否则从 backup 选。
+    """P1-G3223805846-B6: wolf plan targets must be live and evidenced.
 
     背景：狼队讨论后形成 night_kill_primary + night_kill_backup 计划。
     但从狼队讨论到 wolf_consensus 执行击杀之间，primary 可能因白天投票
-    出局而死亡。旧逻辑仅依赖 _first_alive_target 跳过死人 primary，然后
-    用相同的 evidence 检查判断 backup；当 backup 没有证据且 quality 非
-    strong 时，函数错误返回 None，调用方跌回 _legacy_wolf_consensus 随机
-    选人。修复：当 primary 不可达时，强制使用 backup（绕过 evidence 校验）。
+    出局而死亡。修复：弱证据计划只能命中 evidence 中明确出现的目标；当
+    primary 不可达时，backup 也必须自己具备当前讨论证据，避免旧计划扩散成
+    自动落刀。
     """
 
     def _make_state(
@@ -671,8 +670,8 @@ class TestPlannedWolfKillPrimaryAlive:
             },
         }
 
-    def test_skips_dead_primary_picks_alive_backup(self) -> None:
-        """Primary 死亡时，强制使用 backup（即使 backup 无 evidence）。"""
+    def test_dead_primary_weak_backup_without_evidence_returns_none(self) -> None:
+        """Primary 死亡时，weak plan 不能强制使用无 evidence 的 backup。"""
         from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
 
         state = self._make_state(
@@ -684,10 +683,7 @@ class TestPlannedWolfKillPrimaryAlive:
             evidence_targets=[],   # backup 也没有 evidence
         )
         result = _planned_wolf_kill(state)
-        assert result is not None, "primary 死亡时应强制返回 backup"
-        assert result["wolf_kill_target_id"] == "p03", (
-            f"expected backup p03 (primary p07 dead), got {result['wolf_kill_target_id']}"
-        )
+        assert result is None
 
     def test_returns_alive_primary_when_present(self) -> None:
         """Primary 存活时优先使用 primary。"""
@@ -722,8 +718,8 @@ class TestPlannedWolfKillPrimaryAlive:
         result = _planned_wolf_kill(state)
         assert result is None, f"expected None when both dead, got {result}"
 
-    def test_dead_primary_with_evidence_only_for_primary_still_picks_backup(self) -> None:
-        """Primary 死亡、evidence 只列了 primary 时，函数不应死锁，应选 backup。"""
+    def test_dead_primary_with_evidence_only_for_primary_returns_none(self) -> None:
+        """Primary 死亡、evidence 只列 primary 时，不能借 backup 自动落刀。"""
         from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
 
         state = self._make_state(
@@ -735,5 +731,35 @@ class TestPlannedWolfKillPrimaryAlive:
             evidence_targets=["p07"],  # 只有死人 primary 在 evidence 里
         )
         result = _planned_wolf_kill(state)
-        assert result is not None, "primary 死亡时即使 evidence 不含 backup 也应返回 backup"
+        assert result is None
+
+    def test_dead_primary_picks_backup_with_matching_evidence(self) -> None:
+        """Primary 不可达时，backup 必须有自己的讨论证据才可落刀。"""
+        from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
+
+        state = self._make_state(
+            primary="p07",
+            backup="p03",
+            primary_alive=False,
+            backup_alive=True,
+            evidence_quality="weak",
+            evidence_targets=["p03"],
+        )
+        result = _planned_wolf_kill(state)
+        assert result is not None
         assert result["wolf_kill_target_id"] == "p03"
+
+    def test_strong_plan_with_illegal_primary_does_not_fallback_without_backup_evidence(self) -> None:
+        """Strong stale primary is not enough to authorize an unevidenced backup."""
+        from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
+
+        state = self._make_state(
+            primary="w1",  # illegal wolf target
+            backup="p03",
+            primary_alive=True,
+            backup_alive=True,
+            evidence_quality="strong",
+            evidence_targets=[],
+        )
+        result = _planned_wolf_kill(state)
+        assert result is None

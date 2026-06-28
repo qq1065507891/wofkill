@@ -688,22 +688,29 @@ def _first_alive_target(gs: GameState, player_id: str | None) -> str | None:
 def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     gs: GameState = state["game_state"]
     plan = state.get("wolf_team_plan") or {}
-    if plan.get("evidence_quality") == "none":
+    evidence_quality = plan.get("evidence_quality")
+    if evidence_quality == "none":
         return None
     evidence = plan.get("evidence_from_discussion") or []
-    # P1-G3223805846-B6: primary 必须存活；若 primary 不可达（死亡 / 是狼 /
-    # 缺失），强制走 backup 且绕过 evidence 校验 —— 狼队没有其他合法目标。
+    evidenced_targets = {
+        item.get("target")
+        for item in evidence
+        if isinstance(item, dict) and item.get("target")
+    }
+    # A stale/illegal primary must not authorize an unevidenced backup.
     primary_alive = _first_alive_target(gs, plan.get("night_kill_primary"))
-    force_backup = primary_alive is None
+    primary_unavailable = primary_alive is None
     for key in ("night_kill_primary", "night_kill_backup"):
         target = _first_alive_target(gs, plan.get(key))
         if target is None:
             continue
-        # primary 死亡时，backup 不再卡 evidence；其他情况保留原 evidence 校验。
-        if not (force_backup and key == "night_kill_backup"):
-            has_target_evidence = any(item.get("target") == target for item in evidence)
-            if not has_target_evidence and plan.get("evidence_quality") != "strong":
-                continue
+        has_target_evidence = target in evidenced_targets
+        if evidence_quality == "weak" and not has_target_evidence:
+            continue
+        if key == "night_kill_backup" and primary_unavailable and not has_target_evidence:
+            continue
+        if evidence_quality not in ("strong", "weak") and not has_target_evidence:
+            continue
         logger.debug(f"  [狼人决策] 按狼队计划击杀: {_player_display(state, target)}")
         event = GameEvent(
             type="wolf_kill_selected",
