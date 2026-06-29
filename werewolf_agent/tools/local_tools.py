@@ -388,11 +388,10 @@ class LocalToolExecutor:
     ) -> list[str]:
         """Compute legal actions based on player state and game phase."""
         actions: list[str] = []
-        if not player.alive and not player.revealed_idiot:
+        if not player.alive:
             return actions
 
         if player.revealed_idiot:
-            actions.append("speech")
             return actions
 
         actions.append("speech")

@@ -243,6 +243,28 @@ class TestLocalToolExecutor:
         result = executor.execute(call, state)
         assert result.data["legal_actions"] == []
 
+    def test_query_legal_actions_exiled_revealed_idiot(self):
+        executor = LocalToolExecutor()
+        state = _make_state(players={
+            "p1": PlayerState(
+                id="p1",
+                role="idiot",
+                alive=False,
+                revealed_idiot=True,
+                vote_enabled=False,
+            ),
+        })
+        call = ToolCall(
+            tool_name=InternalToolName.QUERY_LEGAL_ACTIONS.value,
+            source=ToolSource.LOCAL,
+            caller_id="p1",
+            params={"player_id": "p1"},
+        )
+
+        result = executor.execute(call, state)
+
+        assert result.data["legal_actions"] == []
+
     def test_query_legal_actions_not_found(self):
         executor = LocalToolExecutor()
         state = _make_state()

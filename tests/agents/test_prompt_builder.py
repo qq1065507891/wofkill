@@ -3326,6 +3326,10 @@ def test_other_roles_still_have_their_guides():
             f"Role guide for {role!r} must still be present after P1-S9 "
             f"villager addition. Expected phrase: {expected_phrase!r}"
         )
+        if role == "idiot":
+            assert "遗言" in system_prompt
+            assert "出局" in system_prompt
+            assert "免死" not in system_prompt
 
 
 # ---------------------------------------------------------------------------

@@ -60,10 +60,23 @@ class EventReducer:
 
         if etype == "idiot_revealed":
             pid = payload["player_id"]
-            return replace(
-                _apply_idiot_reveal(self._raw, state, pid),
-                events=state.events + [event],
-            )
+            player = state.players[pid]
+            new_state = _apply_idiot_reveal(self._raw, state, pid)
+            if player.alive and player.role == "idiot" and not player.revealed_idiot:
+                death = Death(
+                    player_id=pid,
+                    reason="exile",
+                    timing="day_vote",
+                    resolution_batch=payload.get("resolution_batch", f"day_{state.day_number}_vote"),
+                    can_leave_last_words=payload.get("can_leave_last_words", True),
+                    triggered_skills=list(payload.get("triggered_skills", [])),
+                )
+                return replace(
+                    new_state,
+                    deaths=state.deaths + [death],
+                    events=state.events + [event],
+                )
+            return replace(new_state, events=state.events + [event])
 
         if etype == "werewolf_self_destructed":
             pid = payload["player_id"]
@@ -107,19 +120,24 @@ class EventReducer:
             pid = payload["player_id"]
             player = state.players[pid]
             if player.alive and not player.exile_immune:
-                if player.role == "idiot" and not player.revealed_idiot:
-                    return replace(
-                        _apply_idiot_reveal(self._raw, state, pid),
-                        events=state.events + [event],
-                    )
+                is_idiot_reveal = player.role == "idiot" and not player.revealed_idiot
                 updated = replace(player, alive=False)
+                if is_idiot_reveal:
+                    after = self._raw["roles"]["idiot"]["abilities"]["state_after_reveal"]
+                    updated = replace(
+                        updated,
+                        revealed_idiot=after["revealed_idiot"],
+                        vote_enabled=not after["vote_disabled"],
+                        badge_eligible=not after["badge_ineligible"],
+                        exile_immune=after["exile_immune"],
+                    )
                 new_players = {**state.players, pid: updated}
                 death = Death(
                     player_id=pid,
                     reason="exile",
                     timing="day_vote",
                     resolution_batch=payload.get("resolution_batch", "day_vote"),
-                    can_leave_last_words=payload.get("can_leave_last_words"),
+                    can_leave_last_words=payload.get("can_leave_last_words", True),
                     triggered_skills=list(payload.get("triggered_skills", [])),
                 )
                 return replace(

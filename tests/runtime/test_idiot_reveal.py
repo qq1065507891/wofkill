@@ -2,7 +2,7 @@
 
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
-from werewolf_agent.runtime.graph import _new_engine, resolve_exile
+from werewolf_agent.runtime.graph import _new_engine, exile_last_words, resolve_exile
 
 
 def _build_idiot_exile_state() -> tuple[GameState, str, RuleEngine]:
@@ -36,13 +36,13 @@ def _build_idiot_exile_state() -> tuple[GameState, str, RuleEngine]:
 def test_exile_broadcast_after_idiot_check() -> None:
     """resolve_exile must run engine.resolve_exile FIRST, then publish
     the public broadcast. When the exiled player is an unrevealed idiot,
-    the engine reveals the idiot and the player stays alive — the public
+    the engine reveals the idiot and the player is out — the public
     broadcast must therefore say '亮出白痴身份' (idiot_revealed), NOT
-    '被放逐出局' (exile).
+    the normal '被放逐出局' (exile).
 
     Previously the exile broadcast fired before engine.resolve_exile,
-    so the public ledger would log '被放逐' even when the player
-    wasn't actually exiled (idiot revealed and stayed alive).
+    so the public ledger would log the wrong outcome for the special
+    idiot reveal path.
     """
     gs, exiled_id, engine = _build_idiot_exile_state()
 
@@ -58,13 +58,19 @@ def test_exile_broadcast_after_idiot_check() -> None:
     ]
     broadcast_phases = [b.get("phase") for b in broadcasts]
 
-    # The exiled idiot must STAY alive
-    assert new_state.players[exiled_id].alive is True, (
-        "Idiot reveal must keep the player alive"
+    # The exiled idiot must flip, prove good, then leave the game with
+    # normal exile last-words eligibility.
+    assert new_state.players[exiled_id].alive is False, (
+        "Idiot voted out must be out after revealing"
     )
     assert new_state.players[exiled_id].revealed_idiot is True
+    assert new_state.players[exiled_id].vote_enabled is False
+    assert new_state.deaths[-1].player_id == exiled_id
+    assert new_state.deaths[-1].reason == "exile"
+    assert new_state.deaths[-1].can_leave_last_words is True
 
-    # There must NOT be a phase=exile broadcast (player was not exiled)
+    # There must NOT be the normal phase=exile broadcast; the special
+    # reveal broadcast explains that the player flips and exits.
     assert "exile" not in broadcast_phases, (
         f"phase=exile broadcast should not fire when idiot reveals; "
         f"got broadcast phases: {broadcast_phases}"
@@ -74,6 +80,15 @@ def test_exile_broadcast_after_idiot_check() -> None:
         f"phase=idiot_revealed broadcast must fire when idiot reveals; "
         f"got broadcast phases: {broadcast_phases}"
     )
+    reveal_message = next(
+        b.get("message", "")
+        for b in broadcasts
+        if b.get("phase") == "idiot_revealed"
+    )
+    assert "证明" in reveal_message
+    assert "遗言" in reveal_message
+    assert "出局" in reveal_message
+    assert "不会被放逐" not in reveal_message
 
     # Ordering: idiot_revealed broadcast comes AFTER any vote_resolved
     # event but the exile broadcast should never have been emitted
@@ -82,6 +97,31 @@ def test_exile_broadcast_after_idiot_check() -> None:
     # The previous test (buggy behavior) had phase=exile appearing BEFORE
     # the engine resolved the exile. After the fix, the exile broadcast
     # is conditional on idiot_revealed NOT being in the events.
+
+
+def test_exiled_idiot_gets_last_words_broadcast() -> None:
+    """The idiot is still allowed to leave last words after being voted out."""
+    gs, exiled_id, engine = _build_idiot_exile_state()
+    resolved = resolve_exile({
+        "game_state": gs,
+        "engine": engine,
+    })["game_state"]
+
+    result = exile_last_words({
+        "game_state": resolved,
+        "engine": engine,
+    })
+
+    new_state = result["game_state"]
+    broadcasts = [
+        e.payload for e in new_state.events
+        if e.type == "judge_broadcast"
+    ]
+    assert any(
+        b.get("phase") == "exile_last_words"
+        and b.get("player_id", exiled_id) == exiled_id
+        for b in broadcasts
+    )
 
 
 def test_normal_exile_broadcasts_after_engine_resolves() -> None:

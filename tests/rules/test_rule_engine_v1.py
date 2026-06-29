@@ -38,11 +38,11 @@ def make_state(
         "idiot": PlayerState(
             id="idiot",
             role="idiot",
-            alive="idiot" not in dead,
+            alive=("idiot" not in dead and not revealed_idiot),
             revealed_idiot=revealed_idiot,
             vote_enabled=not revealed_idiot,
             badge_eligible=not revealed_idiot,
-            exile_immune=revealed_idiot,
+            exile_immune=False,
         ),
         "hybrid": PlayerState(id="hybrid", role="hybrid", alive="hybrid" not in dead),
     }
@@ -222,19 +222,24 @@ def test_hunter_shot_permission_depends_on_death_reason(
     assert engine.can_hunter_shoot(state, hunter_id="hunter", death_reason=death_reason) is expected_can_shoot
 
 
-def test_idiot_reveals_on_exile_and_does_not_die() -> None:
+def test_idiot_reveals_on_exile_and_exits_with_last_words() -> None:
     engine = make_engine()
     state = make_state()
 
     new_state, events = engine.resolve_exile(state, target_id="idiot")
     idiot = new_state.players["idiot"]
 
-    assert idiot.alive is True
+    assert idiot.alive is False
     assert idiot.revealed_idiot is True
     assert idiot.vote_enabled is False
     assert idiot.badge_eligible is False
-    assert idiot.exile_immune is True
+    assert idiot.exile_immune is False
+    assert new_state.deaths[-1].player_id == "idiot"
+    assert new_state.deaths[-1].reason == "exile"
+    assert new_state.deaths[-1].timing == "day_vote"
+    assert new_state.deaths[-1].can_leave_last_words is True
     assert any(event.type == "idiot_revealed" for event in events)
+    assert any(event.type == "player_exiled" for event in events)
 
 
 def test_revealed_idiot_cannot_be_exiled_again() -> None:
@@ -246,25 +251,19 @@ def test_revealed_idiot_cannot_be_exiled_again() -> None:
     assert "idiot" not in legal_targets
 
 
-def test_revealed_idiot_counts_as_god_alive_until_later_wolf_kill() -> None:
+def test_exiled_idiot_counts_as_god_out_immediately() -> None:
     engine = make_engine()
     state = make_state(
-        revealed_idiot=True,
         dead={"seer", "witch", "hunter"},
     )
 
-    assert engine.check_victory(state).winner is None
+    exiled_state, _ = engine.resolve_exile(state, target_id="idiot")
 
-    killed_state = engine.apply_death(
-        state,
-        Death(player_id="idiot", reason="wolf_kill", timing="night", resolution_batch="night_3"),
-    )
-
-    assert engine.check_victory(killed_state).winner == "werewolf"
-    assert engine.check_victory(killed_state).reason == "slaughter_gods"
+    assert engine.check_victory(exiled_state).winner == "werewolf"
+    assert engine.check_victory(exiled_state).reason == "slaughter_gods"
 
 
-def test_revealed_idiot_with_seat_id_counts_as_god_alive() -> None:
+def test_revealed_idiot_with_seat_id_counts_as_god_out() -> None:
     engine = make_engine()
     state = GameState(
         ruleset_id="pre_witch_hunter_idiot_mixed",
@@ -276,11 +275,11 @@ def test_revealed_idiot_with_seat_id_counts_as_god_alive() -> None:
             "p05": PlayerState(
                 id="p05",
                 role="idiot",
-                alive=True,
+                alive=False,
                 revealed_idiot=True,
                 vote_enabled=False,
                 badge_eligible=False,
-                exile_immune=True,
+                exile_immune=False,
             ),
             "p06": PlayerState(id="p06", role="villager", alive=True),
             "p07": PlayerState(id="p07", role="villager", alive=True),
@@ -288,7 +287,8 @@ def test_revealed_idiot_with_seat_id_counts_as_god_alive() -> None:
         },
     )
 
-    assert engine.check_victory(state).winner is None
+    assert engine.check_victory(state).winner == "werewolf"
+    assert engine.check_victory(state).reason == "slaughter_gods"
 
 
 def test_hybrid_good_master_requires_villagers_and_hybrid_out_for_villager_slaughter() -> None:
@@ -373,7 +373,7 @@ def test_revealed_idiot_exile_target_is_noop() -> None:
 
     new_state, events = engine.resolve_exile(state, target_id="idiot")
 
-    assert new_state.players["idiot"].alive is True
+    assert new_state.players["idiot"].alive is False
     assert events == []
 
 
@@ -405,15 +405,12 @@ def test_apply_death_records_required_death_fields() -> None:
     assert event.payload["triggered_skills"] == []
 
 
-def test_witch_poison_on_revealed_idiot_is_noop() -> None:
-    """Design doc §3.4: a revealed idiot stays alive even when targeted by
-    witch poison. apply_death must record the attempt as a noop (only emit
-    a player_died event for audit) but must not flip alive to False.
-
-    The revealed idiot is only ever killed by a later wolf_kill.
-    """
+def test_witch_poison_on_exiled_idiot_is_noop() -> None:
+    """An already-exiled idiot is out and cannot be killed again."""
     engine = make_engine()
-    state = make_state(revealed_idiot=True)
+    state, _ = engine.resolve_exile(make_state(), target_id="idiot")
+    deaths_before = len(state.deaths)
+    events_before = len(state.events)
 
     new_state = engine.apply_death(
         state,
@@ -425,23 +422,17 @@ def test_witch_poison_on_revealed_idiot_is_noop() -> None:
         ),
     )
 
-    assert new_state.players["idiot"].alive is True, (
-        "Revealed idiot must stay alive when poisoned by witch"
-    )
-    # The death event is still recorded for audit, but the player keeps living
-    assert any(
-        event.type == "player_died"
-        and event.payload.get("player_id") == "idiot"
-        and event.payload.get("reason") == "witch_poison"
-        for event in new_state.events
-    ), "Poison attempt on revealed idiot should still be recorded as event"
+    assert new_state.players["idiot"].alive is False
+    assert len(new_state.deaths) == deaths_before
+    assert len(new_state.events) == events_before
 
 
-def test_wolf_kill_on_revealed_idiot_kills() -> None:
-    """Counterpart test: revealed idiot is killed by wolf_kill (later
-    night). Confirms the noop logic only suppresses non-wolf_kill reasons."""
+def test_wolf_kill_on_exiled_idiot_is_noop() -> None:
+    """The voted-out idiot has already left play after last words."""
     engine = make_engine()
-    state = make_state(revealed_idiot=True)
+    state, _ = engine.resolve_exile(make_state(), target_id="idiot")
+    deaths_before = len(state.deaths)
+    events_before = len(state.events)
 
     new_state = engine.apply_death(
         state,
@@ -453,9 +444,9 @@ def test_wolf_kill_on_revealed_idiot_kills() -> None:
         ),
     )
 
-    assert new_state.players["idiot"].alive is False, (
-        "Revealed idiot must die when killed by wolves (later night)"
-    )
+    assert new_state.players["idiot"].alive is False
+    assert len(new_state.deaths) == deaths_before
+    assert len(new_state.events) == events_before
 
 
 def test_tearing_badge_removes_sheriff_for_rest_of_game() -> None:
@@ -901,8 +892,30 @@ def test_reduce_event_idiot_revealed() -> None:
     event = GameEvent(type="idiot_revealed", payload={"player_id": "idiot"})
     new_state = engine.reduce_event(state, event)
     assert new_state.players["idiot"].revealed_idiot is True
+    assert new_state.players["idiot"].alive is False
     assert new_state.players["idiot"].vote_enabled is False
-    assert new_state.players["idiot"].exile_immune is True
+    assert new_state.players["idiot"].exile_immune is False
+    assert len(new_state.deaths) == 1
+    assert new_state.deaths[0].player_id == "idiot"
+    assert new_state.deaths[0].reason == "exile"
+    assert new_state.deaths[0].can_leave_last_words is True
+
+
+def test_reduce_event_player_exiled_reveals_and_kills_idiot() -> None:
+    engine = make_engine()
+    state = make_state()
+    event = GameEvent(
+        type="player_exiled",
+        payload={"player_id": "idiot", "resolution_batch": "day_2_vote"},
+    )
+
+    new_state = engine.reduce_event(state, event)
+
+    assert new_state.players["idiot"].revealed_idiot is True
+    assert new_state.players["idiot"].alive is False
+    assert len(new_state.deaths) == 1
+    assert new_state.deaths[0].player_id == "idiot"
+    assert new_state.deaths[0].reason == "exile"
 
 
 def test_reduce_events_replays_night_sequence() -> None:

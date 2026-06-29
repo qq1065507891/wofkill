@@ -1203,7 +1203,7 @@ class TestVillagerStrategyDirectives:
         assert "w1" in directive
 
 class TestIdiotStrategyDirectives:
-    """Idiot strategy: pre-reveal caution, post-reveal boldness, vote bug fix."""
+    """Idiot strategy: pre-reveal caution, post-reveal exit, vote bug fix."""
 
     def test_idiot_pre_reveal_has_caution_strategy(self) -> None:
         """Before reveal, idiot should be cautioned to avoid being voted."""
@@ -1241,14 +1241,16 @@ class TestIdiotStrategyDirectives:
         assert "警长" in directive
         assert "一边倒" in directive or "盲从" in directive
         assert "免费" in directive or "不是收益" in directive
+        assert "遗言" in directive
+        assert "出局" in directive
 
-    def test_idiot_post_reveal_has_bold_strategy(self) -> None:
-        """After reveal, idiot should be told to speak boldly."""
+    def test_idiot_post_reveal_is_out_except_last_words(self) -> None:
+        """After reveal, idiot should not be told to keep speaking normally."""
         from werewolf_agent.runtime.agent_adapter import _build_idiot_day_speech_directive
         players = {
             "idiot": PlayerState(
                 id="idiot", role="idiot", revealed_idiot=True,
-                exile_immune=True, vote_enabled=False,
+                alive=False, exile_immune=False, vote_enabled=False,
             ),
             "w1": PlayerState(id="w1", role="werewolf"),
         }
@@ -1261,15 +1263,18 @@ class TestIdiotStrategyDirectives:
         result = _build_idiot_day_speech_directive(gs, "idiot")
         directive = result["idiot_speech_directive"]
         assert "已经翻牌" in directive
-        assert "大胆发言" in directive
-        assert "失去投票权" in directive
+        assert "遗言" in directive
+        assert "不能" in directive
+        assert "投票" in directive
+        assert "仍然存活" not in directive
+        assert "大胆发言" not in directive
 
-    def test_idiot_post_reveal_loses_vote_in_graph(self) -> None:
-        """Revealed idiot (vote_enabled=False) should be excluded from voters."""
+    def test_idiot_post_reveal_is_excluded_from_voters(self) -> None:
+        """Exiled revealed idiot should be excluded from voters."""
         players = {
             "idiot": PlayerState(
                 id="idiot", role="idiot", revealed_idiot=True,
-                exile_immune=True, vote_enabled=False,
+                alive=False, exile_immune=False, vote_enabled=False,
             ),
             "v1": PlayerState(id="v1", role="villager"),
             "w1": PlayerState(id="w1", role="werewolf"),
@@ -2707,7 +2712,7 @@ class TestWitchPoisonPublicSource:
         assert "结合目标价值和公开证据" in directive
 
 
-def test_idiot_directive_treats_reveal_as_survival_with_vote_cost():
+def test_idiot_directive_treats_reveal_as_last_words_then_exit():
     from werewolf_agent.runtime.directives.idiot import build_idiot_directive
 
     players = {
@@ -2718,7 +2723,9 @@ def test_idiot_directive_treats_reveal_as_survival_with_vote_cost():
     text = build_idiot_directive(
         GameState(players=players, day_number=1), "p01",
     )["idiot_speech_directive"]
-    assert "失去投票权" in text
+    assert "遗言" in text
+    assert "出局" in text
+    assert "不能再参与常规发言或投票" in text
     assert "自动有利" not in text
 
 

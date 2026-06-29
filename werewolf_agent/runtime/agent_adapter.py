@@ -1632,9 +1632,9 @@ def agent_pk_speech(
         )
     elif player_role == "idiot":
         pk_strategy["idiot_pk_caution"] = (
-            "你是白痴（未翻牌或已翻牌），PK发言：\n"
+            "你是白痴，PK发言：\n"
             "1) 翻牌前的白痴不要暴露身份，专注逻辑分析\n"
-            "2) 翻牌后的白痴可以大胆表达观点——你已免疫放逐"
+            "2) 如果被投出后翻牌，只能发表遗言，随后出局，不再参与后续PK"
         )
     elif player_role == "hybrid":
         # Hybrid PK: align with master if known

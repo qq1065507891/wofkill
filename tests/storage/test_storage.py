@@ -148,7 +148,7 @@ class TestGameCreateLoad:
             "w1": PlayerState(id="w1", role="werewolf", alive=False),
             "seer": PlayerState(id="seer", role="seer"),
             "witch": PlayerState(id="witch", role="witch"),
-            "idiot": PlayerState(id="idiot", role="idiot", revealed_idiot=True, vote_enabled=False),
+            "idiot": PlayerState(id="idiot", role="idiot", alive=False, revealed_idiot=True, vote_enabled=False),
         }
         gs = GameState(
             game_id="full_fields",
@@ -182,6 +182,7 @@ class TestGameCreateLoad:
         assert loaded.paused is True
         assert not loaded.players["w1"].alive
         assert loaded.players["idiot"].revealed_idiot is True
+        assert loaded.players["idiot"].alive is False
         assert loaded.players["idiot"].vote_enabled is False
 
 

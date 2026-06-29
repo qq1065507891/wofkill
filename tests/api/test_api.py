@@ -477,24 +477,24 @@ class TestInformationLeakPrevention:
         for p in data["players"]:
             assert "role" not in p or p.get("revealed_role") is None
 
-    def test_public_state_shows_revealed_living_idiot(self):
+    def test_public_state_shows_revealed_exiled_idiot(self):
         client, game_id = _make_client()
         state = client.app.state.games[game_id]
         state.players["p11"] = PlayerState(
             id="p11",
             role="idiot",
-            alive=True,
+            alive=False,
             revealed_idiot=True,
             vote_enabled=False,
             badge_eligible=False,
-            exile_immune=True,
+            exile_immune=False,
         )
 
         resp = client.get(f"/games/{game_id}/public-state")
         data = resp.json()
         idiot = next(p for p in data["players"] if p["player_id"] == "p11")
         assert idiot["revealed_role"] == "idiot"
-        assert idiot["alive"] is True
+        assert idiot["alive"] is False
 
     def test_private_state_no_other_private_intent(self):
         """Private state response must not contain other players' private_intent."""

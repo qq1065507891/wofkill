@@ -729,19 +729,21 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
             break
     if exiled_id is None:
         return {"game_state": gs}
-    # Resolve the exile FIRST so we know whether the player is actually
-    # exiled (idiot reveal voids the exile). Then publish a public broadcast
-    # that reflects the actual outcome.
+    # Resolve the exile FIRST so the public broadcast can reflect special
+    # role outcomes such as idiot reveal.
     gs, events = engine.resolve_exile(gs, target_id=exiled_id)
     gs = replace(gs, events=gs.events + events)
     exiled_role = gs.players.get(exiled_id, None)
     role_str = exiled_role.role if exiled_role else "?"
     idiot_revealed = any(ev.type == "idiot_revealed" for ev in events)
     if idiot_revealed:
-        logger.debug(f"  [白痴亮牌] {_player_display(state, exiled_id)} 是白痴，不会被放逐")
+        logger.debug(f"  [白痴亮牌] {_player_display(state, exiled_id)} 是白痴，翻牌后出局")
         gs, _ = _judge_broadcast(
             phase="idiot_revealed",
-            message=f"{_player_display(state, exiled_id)}亮出白痴身份，不会被放逐，但失去投票权",
+            message=(
+                f"{_player_display(state, exiled_id)}亮出白痴身份，证明为好人，"
+                "可发表遗言，随后出局"
+            ),
             gs=gs, day_number=gs.day_number,
             extra_payload={"player_id": exiled_id},
             visibility="public",
@@ -768,7 +770,6 @@ def exile_last_words(state: RuntimeState) -> dict[str, Any]:
             break
     if exiled_id is None:
         return {"game_state": gs}
-    # Idiot reveal: player stays alive, no last words needed
     player = gs.players.get(exiled_id)
     if player is None or player.alive:
         return {"game_state": gs}
@@ -777,6 +778,7 @@ def exile_last_words(state: RuntimeState) -> dict[str, Any]:
         phase="exile_last_words",
         message=f"请{_player_display(state, exiled_id)}发表遗言",
         gs=gs, day_number=gs.day_number,
+        extra_payload={"player_id": exiled_id},
         visibility="public",
     )
     logger.debug(f"  [遗言] 请{_player_display(state, exiled_id)}发表遗言")

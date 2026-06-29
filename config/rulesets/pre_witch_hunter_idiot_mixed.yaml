@@ -127,21 +127,21 @@ roles:
       order: 50
     abilities:
       reveal_only_on_death_reason: exile
-      reveal_prevents_exile_death: true
+      reveal_prevents_exile_death: false
       state_after_reveal:
-        alive: true
+        alive: false
         revealed_idiot: true
         vote_disabled: true
-        can_speak: true
+        can_speak: false
         badge_ineligible: true
-        exile_immune: true
+        exile_immune: false
       true_death_after_reveal:
-        required_for_god_slaughter: true
-        only_wolf_night_kill_counts: true
+        required_for_god_slaughter: false
+        only_wolf_night_kill_counts: false
     notes:
-      - 被白天放逐后可以翻牌自证身份。
-      - 翻牌后仍存活、可发言、失去投票权，不能成为警徽移交对象，不能再次被放逐。
-      - 翻牌后的白痴只有被狼人再次夜间击杀后才真正出局并计入神边出局。
+      - 被白天放逐后可以翻牌自证好人身份。
+      - 被放逐翻牌后可以发表遗言，随后出局，不能再参与常规发言或投票。
+      - 翻牌出局后不能成为警徽移交对象，并立即计入神边出局。
       - 被狼人击杀、女巫毒死或猎人带走时不触发翻牌。
 
   werewolf:
@@ -407,7 +407,7 @@ victory:
         hybrid_requirement: conditional_by_master_faction
       gods:
         requirement: all_gods_out
-        revealed_idiot_alive_counts_as_out: false
+        revealed_idiot_alive_counts_as_out: true
   hybrid:
     independent_third_party: false
     result_field: hybrid_result
