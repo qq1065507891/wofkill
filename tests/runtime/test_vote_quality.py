@@ -323,3 +323,52 @@ class TestVoteFallbackTarget:
         target = choose_vote_fallback_target(gs, "p01", ["p02", "p03", "p04"])
 
         assert target == "p03"
+
+    def test_vote_fallback_returns_none_when_evidence_is_required_but_absent(self):
+        from werewolf_agent.core.models import GameState, PlayerState
+        from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 5)
+        }
+        gs = GameState(game_id="g_vote_no_evidence", day_number=1, players=players)
+
+        target = choose_vote_fallback_target(
+            gs,
+            "p01",
+            ["p02", "p03", "p04"],
+            require_evidence=True,
+        )
+
+        assert target is None
+
+    def test_vote_fallback_uses_public_evidence_when_required(self):
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="villager", alive=True)
+            for i in range(1, 5)
+        }
+        gs = GameState(
+            game_id="g_vote_evidence_required",
+            day_number=1,
+            players=players,
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "p04",
+                    "day_number": 1,
+                    "text": "p03发言前后矛盾，逻辑不通，我今天会投p03。",
+                }),
+            ],
+        )
+
+        target = choose_vote_fallback_target(
+            gs,
+            "p01",
+            ["p02", "p03", "p04"],
+            require_evidence=True,
+        )
+
+        assert target == "p03"

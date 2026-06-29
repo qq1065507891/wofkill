@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from werewolf_agent.cognition.world_state import _has_self_seer_context
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.strategy._shared import (
     _NEGATION_RE,
@@ -228,13 +229,11 @@ def has_publicly_claimed_seer(gs: GameState, player_id: str) -> bool:
     the wolf kill priority list with players who explicitly denied
     the role.
     """
-    seer_keywords = ("预言家", "查杀", "金水", "验了", "查验")
     for e in gs.events:
         if e.type in ("sheriff_speech", "speech") and e.payload.get("speaker") == player_id:
             text = e.payload.get("text", "")
-            if not any(kw in text for kw in seer_keywords):
-                continue
             if _speech_is_negated(text):
                 continue
-            return True
+            if _has_self_seer_context(text):
+                return True
     return False

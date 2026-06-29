@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.core.models import GameState
+from werewolf_agent.cognition.world_state import _has_self_seer_context
 
 
 def public_seer_claimants(gs: GameState) -> set[str]:
@@ -12,8 +13,8 @@ def public_seer_claimants(gs: GameState) -> set[str]:
     seer_markers = (
         "我是预言家",
         "我跳预言家",
-        "认预言家",
-        "悍跳预言家",
+        "我认预言家",
+        "我悍跳预言家",
         "claim seer",
         "claimed seer",
         "i am the seer",
@@ -31,7 +32,7 @@ def public_seer_claimants(gs: GameState) -> set[str]:
                 break
         else:
             text = str(event.payload.get("text", "")).lower()
-            if any(marker in text for marker in seer_markers):
+            if any(marker in text for marker in seer_markers) or _has_self_seer_context(text):
                 claimants.add(speaker)
     return claimants
 

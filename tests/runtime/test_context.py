@@ -170,6 +170,61 @@ def test_build_agent_context_extracts_public_seer_credibility_lines() -> None:
     assert {line["claimant"] for line in lines} == {"p01", "p02"}
 
 
+def test_build_agent_context_ignores_third_party_seer_recaps() -> None:
+    from werewolf_agent.runtime.graph import _new_engine
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="seer", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+        "p09": PlayerState(id="p09", role="werewolf", alive=True),
+        "p11": PlayerState(id="p11", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="seer_credibility_recap_context",
+        phase="day",
+        day_number=2,
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "day_number": 1,
+                    "text": "我是预言家，昨晚查验p01是好人。",
+                },
+            ),
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p09",
+                    "day_number": 1,
+                    "text": "我是预言家，昨晚查验p05是狼人。",
+                },
+            ),
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p11",
+                    "day_number": 2,
+                    "text": "p02报p01金水，p09报p05查杀，我会继续对比两个预言家。",
+                },
+            ),
+        ],
+    )
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p03",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+
+    lines = ctx.seer_credibility["seer_lines"]
+    assert {line["claimant"] for line in lines} == {"p02", "p09"}
+
+
 def test_reflection_hints_tie_broken_by_game_id_descending() -> None:
     """Same role + faction priority; ties broken by game_id descending."""
     refs = [

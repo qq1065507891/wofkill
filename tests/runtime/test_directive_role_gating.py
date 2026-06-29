@@ -203,6 +203,39 @@ class TestNegationExcludedFromClaimedSeerD6:
             f"got signals: {v1_entry['signals']}"
         )
 
+    def test_third_party_recap_excluded_from_claimed_seer(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.runtime.strategy.seer import public_seer_claimants
+        from werewolf_agent.runtime.strategy.wolf import has_publicly_claimed_seer
+
+        players = {
+            "p01": PlayerState(id="p01", role="villager"),
+            "p02": PlayerState(id="p02", role="seer"),
+            "p09": PlayerState(id="p09", role="werewolf"),
+            "p11": PlayerState(id="p11", role="villager"),
+        }
+        gs = GameState(
+            game_id="third_party_seer_recap_test",
+            players=players,
+            phase="day",
+            day_number=2,
+            events=[
+                GameEvent(type="speech", payload={
+                    "speaker": "p02",
+                    "text": "我是预言家，昨晚查了p01是好人。",
+                    "day_number": 1,
+                }),
+                GameEvent(type="speech", payload={
+                    "speaker": "p11",
+                    "text": "p02报p01金水，p09悍跳预言家，我会继续对比。",
+                    "day_number": 2,
+                }),
+            ],
+        )
+
+        assert has_publicly_claimed_seer(gs, "p11") is False
+        assert public_seer_claimants(gs) == {"p02"}
+
     def test_affirmative_seer_claim_still_counts(self) -> None:
         """Sanity guard: an affirmative claim still triggers claimed_seer."""
         from werewolf_agent.core.models import GameEvent, GameState, PlayerState

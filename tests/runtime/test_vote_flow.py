@@ -477,6 +477,34 @@ def test_agent_day_vote_excludes_voter_from_legal_targets() -> None:
     assert result["vote_target"] == "p02"
     assert agent.context.legal_targets == ["p02", "p03"]
 
+
+def test_agent_day_vote_does_not_invent_fallback_target_without_evidence() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_day_vote
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="villager", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    gs = GameState(game_id="vote_no_evidence_fallback", players=players, day_number=1)
+
+    class Agent:
+        def act(self, context):
+            return FallbackAction(
+                action_type=ActionType.VOTE,
+                target_id=None,
+                reason="fallback: 结构化输出失败，无足够公开证据补票",
+            ), RetryInfo()
+
+    class Registry:
+        def get_agent(self, player_id):
+            return Agent()
+
+    result = agent_day_vote({"game_state": gs}, _new_engine(), Registry(), "p01")
+
+    assert result["vote_target"] is None
+
+
 def test_day_vote_announces_vote_collection_and_end() -> None:
     from werewolf_agent.runtime.graph import day_vote
 

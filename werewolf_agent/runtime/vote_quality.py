@@ -309,12 +309,16 @@ def choose_vote_fallback_target(
     gs: GameState,
     voter_id: str,
     legal_targets: list[str],
+    *,
+    require_evidence: bool = False,
 ) -> str | None:
     """Choose a deterministic fallback vote target from public evidence.
 
     This is used only after an agent failed to produce a valid vote. It avoids
     turning schema failures into a seat-order push by ranking legal targets by
     concrete current-day speech evidence, seer checks, and contradictions.
+    When ``require_evidence`` is true, return ``None`` instead of inventing a
+    target if every legal candidate has a zero evidence score.
     """
     candidates = [target for target in legal_targets if target != voter_id]
 
@@ -381,6 +385,9 @@ def choose_vote_fallback_target(
     if best_score > 0:
         best_targets = [target for target, score in scores.items() if score == best_score]
         return _stable_choice(gs, voter_id, best_targets)
+
+    if require_evidence:
+        return None
 
     return _stable_choice(gs, voter_id, candidates)
 

@@ -95,6 +95,8 @@ def _fallback_reason(action: FallbackAction) -> str:
     the actual ``vote_target`` is a different player (the LLM's choice may
     later override the fallback target in ``agent_day_vote``).
     """
+    if action.action_type == ActionType.VOTE and not action.target_id:
+        return "fallback: 结构化输出失败，无足够公开证据补票"
     return "fallback: 结构化输出失败，按当前可见线索选择默认目标"
 
 
@@ -960,27 +962,14 @@ class PlayerAgent:
             # For vote actions, exclude self and use evidence-based fallback
             if safe_action == ActionType.VOTE:
                 non_self = [t for t in context.legal_targets if t != context.agent_id]
-                if not non_self:
-                    # g_3223805846-B1: vote fallback must never yield a null
-                    # target. If legal_targets only contains self, fall back
-                    # to the first legal target — better to vote anyone than
-                    # to skip the vote and let the engine treat us as abstain.
-                    safe_target = context.legal_targets[0] if context.legal_targets else None
+                fb = (
+                    context.strategy_directive.get("_vote_fallback_target")
+                    if context.strategy_directive else None
+                )
+                if fb and fb in non_self:
+                    safe_target = fb
                 else:
-                    # P4 (post-review-v2): the previous _most_suspect_target
-                    # read here is dead code — no producer populates that
-                    # key (grep returns zero hits outside this consumer
-                    # and a stale test).  Drop the branch and let
-                    # _vote_fallback_target (when present) drive the
-                    # choice, otherwise fall through to non_self[0].
-                    fb = (
-                        context.strategy_directive.get("_vote_fallback_target")
-                        if context.strategy_directive else None
-                    )
-                    if fb and fb in non_self:
-                        safe_target = fb
-                    else:
-                        safe_target = non_self[0]
+                    safe_target = self._fallback_vote_target_from_context(context, non_self)
             else:
                 safe_target = context.legal_targets[0]
 
@@ -999,6 +988,25 @@ class PlayerAgent:
         )
         fallback = fallback.model_copy(update={"reason": _fallback_reason(fallback)})
         return fallback
+
+    def _fallback_vote_target_from_context(
+        self,
+        context: AgentContext,
+        candidates: list[str],
+    ) -> str | None:
+        for item in context.salience_items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type") or item.get("event")
+            target = item.get("target") or item.get("target_id")
+            result = str(item.get("result") or item.get("alignment") or "").lower()
+            if (
+                item_type == "seer_claim"
+                and target in candidates
+                and ("wolf" in result or "狼" in result or "查杀" in result)
+            ):
+                return target
+        return None
 
     def _context_clues(self, context: AgentContext) -> str:
         clues: list[str] = []

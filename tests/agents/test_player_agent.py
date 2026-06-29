@@ -1078,12 +1078,12 @@ class TestPlayerAgentRetryFallback:
         action, retry = agent.act(self._make_context())
         assert isinstance(action, FallbackAction)
 
-    def test_fallback_uses_first_legal_action(self) -> None:
+    def test_fallback_vote_without_evidence_has_no_target(self) -> None:
         agent = self._make_agent("bad json")
         action, _ = agent.act(self._make_context())
         assert isinstance(action, FallbackAction)
         assert action.action_type == ActionType.VOTE
-        assert action.target_id == "p07"
+        assert action.target_id is None
 
     def test_empty_response_triggers_retry(self) -> None:
         agent = self._make_agent("")
@@ -1578,7 +1578,7 @@ class TestMandatoryVote:
         return PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
 
     def test_fallback_vote_only_with_legal_targets(self) -> None:
-        """When legal actions are [VOTE] only, fallback picks first legal target."""
+        """When no evidence target exists, fallback does not invent a vote target."""
         agent = self._make_agent("bad json")
         ctx = AgentContext(
             agent_id="p01",
@@ -1592,7 +1592,7 @@ class TestMandatoryVote:
         action, _ = agent.act(ctx)
         assert isinstance(action, FallbackAction)
         assert action.action_type == ActionType.VOTE
-        assert action.target_id == "p05"
+        assert action.target_id is None
 
     def test_mandatory_vote_prompt_contains_pressure(self) -> None:
         """User prompt mentions mandatory voting when NO_ACTION not available (s10: dynamic)."""
@@ -3385,22 +3385,12 @@ class TestMissingToolCallHintAdaptsToTextFallback:
 
 
 # ---------------------------------------------------------------------------
-# g_3223805846-B1: vote fallback target must never be null
+# g_3223805846-B1 follow-up: vote fallback must not invent a target
 # ---------------------------------------------------------------------------
 
 
-class TestVoteFallbackNotNull:
-    """P1-G3223805846-1: vote fallback must pick a non-null target from
-    legal_targets.
-
-    P4 (post-review-v2): the prior "prefer _most_suspect_target" assertion
-    is removed — that key has no producer (grep returns zero hits outside
-    the consumer in player.py), so the path is dead code.  The
-    ``_vote_fallback_target`` key still drives the choice when present,
-    otherwise the fallback falls through to ``non_self[0]``.  See
-    ``TestMostSuspectTargetResolution`` for the explicit dead-path
-    regression.
-    """
+class TestVoteFallbackTargetGate:
+    """Vote fallback should use evidence-backed targets, not seat order."""
 
     def _make_agent(self) -> PlayerAgent:
         router = ModelRouter(
@@ -3411,7 +3401,7 @@ class TestVoteFallbackNotNull:
         )
         return PlayerAgent(agent_id="p08", model_router=router, max_retries=1)
 
-    def test_fallback_vote_never_returns_null_target(self) -> None:
+    def test_fallback_vote_returns_no_target_without_evidence_target(self) -> None:
         ctx = AgentContext(
             agent_id="p08",
             task_type=TaskType.VOTE,
@@ -3422,9 +3412,20 @@ class TestVoteFallbackNotNull:
         agent = self._make_agent()
         fb = agent._fallback_action(ctx)
         assert isinstance(fb, FallbackAction)
-        assert fb.target_id is not None, "vote fallback must pick a target"
-        assert fb.target_id in ctx.legal_targets
-        assert fb.target_id != ctx.agent_id, "vote fallback must not pick self"
+        assert fb.target_id is None
+
+    def test_fallback_vote_uses_evidence_target_when_present(self) -> None:
+        ctx = AgentContext(
+            agent_id="p08",
+            task_type=TaskType.VOTE,
+            legal_actions=[ActionType.VOTE],
+            legal_targets=["p02", "p03", "p05", "p07"],
+            strategy_directive={"_vote_fallback_target": "p05"},
+        )
+        agent = self._make_agent()
+        fb = agent._fallback_action(ctx)
+        assert isinstance(fb, FallbackAction)
+        assert fb.target_id == "p05"
 
 
 # ---------------------------------------------------------------------------
@@ -3513,7 +3514,5 @@ class TestMostSuspectTargetResolution:
         )
         agent = PlayerAgent(agent_id="p08", model_router=None)
         fb = agent._fallback_action(ctx)
-        # _most_suspect_target 路径已删除，fallthrough 到 non_self[0] = p02
-        assert fb.target_id == "p02", (
-            f"_most_suspect_target still consumed (no producer exists): got {fb.target_id}, want p02"
-        )
+        # _most_suspect_target 路径已删除，且不再 fallthrough 到座位顺序目标。
+        assert fb.target_id is None

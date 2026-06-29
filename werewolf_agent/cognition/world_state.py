@@ -268,7 +268,7 @@ def _extract_speech(event: GameEvent, state: GameState) -> list[StructuredFact]:
 def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[StructuredFact]:
     facts: list[StructuredFact] = []
     role_patterns = {
-        "seer": ("我是预言家", "我跳预言家", "认预言家", "悍跳预言家"),
+        "seer": ("我是预言家", "我跳预言家", "我认预言家", "我悍跳预言家"),
         "witch": ("我是女巫", "我认女巫"),
         "hunter": ("我是猎人", "我认猎人"),
         "villager": ("我是村民", "我是民", "我认民"),
@@ -284,17 +284,19 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
             ))
 
     # --- H-6: 先收集 seer_check_claim 匹配的 span，避免后续重复匹配 ---
+    self_seer_context = _has_self_seer_context(text)
     seer_spans: list[tuple[int, int]] = []
     for match in re.finditer(r"(?:查验|验了?|验人)\s*(p\d{2})\s*(?:是|为)?\s*(狼人|查杀|狼|wolf)", text):
-        facts.append(StructuredFact(
-            fact_type="seer_check_claim",
-            source_player=speaker,
-            target_player=match.group(1),
-            value="wolf",
-            day=day,
-            metadata={"claim_type": "seer_wolf_check"},
-        ))
-        seer_spans.append(match.span())
+        if self_seer_context and not _is_third_party_seer_report(text, match.start()):
+            facts.append(StructuredFact(
+                fact_type="seer_check_claim",
+                source_player=speaker,
+                target_player=match.group(1),
+                value="wolf",
+                day=day,
+                metadata={"claim_type": "seer_wolf_check"},
+            ))
+            seer_spans.append(match.span())
 
     for match in re.finditer(r"(查验|验了|验人)?\s*(p\d{2})\s*(是|为)?\s*(狼人|查杀)", text):
         # 跳过已被 seer_check_claim 覆盖的区间
@@ -341,18 +343,42 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
     if not gold_match:
         gold_match = re.findall(r"给\s*(p\d{2})\s*(?:发)?金水", text)
     for target in gold_match:
-        facts.append(StructuredFact(
-            fact_type="seer_check_claim",
-            source_player=speaker,
-            target_player=target,
-            day=day,
-            night=0,
-            phase="",
-            value="good",
-            metadata={"claim_type": "gold_claim"},
-        ))
+        match_start = text.find(target)
+        if self_seer_context and not _is_third_party_seer_report(text, match_start):
+            facts.append(StructuredFact(
+                fact_type="seer_check_claim",
+                source_player=speaker,
+                target_player=target,
+                day=day,
+                night=0,
+                phase="",
+                value="good",
+                metadata={"claim_type": "gold_claim"},
+            ))
 
     return facts
+
+
+def _has_self_seer_context(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    if any(
+        pattern in compact
+        for pattern in ("我是预言家", "我跳预言家", "我认预言家", "我悍跳预言家")
+    ):
+        return True
+    return bool(
+        re.search(
+            r"(?:我|昨晚|今晚|夜里|第[0-9一二三四五六七八九十]+夜).{0,8}(?:查验|查了?|验了?|验人)",
+            compact,
+        )
+    )
+
+
+def _is_third_party_seer_report(text: str, span_start: int) -> bool:
+    if span_start < 0:
+        return False
+    prefix = re.sub(r"\s+", "", text[max(0, span_start - 16):span_start])
+    return bool(re.search(r"p\d{2}.{0,8}(?:报|说|称|讲|表示|给|发|验|查)$", prefix))
 
 
 def _extract_vote(event: GameEvent, state: GameState) -> list[StructuredFact]:

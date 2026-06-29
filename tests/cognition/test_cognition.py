@@ -904,6 +904,35 @@ class TestSeerClaimContractExtraction:
         assert len(gold_claims) >= 1
         assert gold_claims[0].target_player == "p05"
 
+    def test_third_party_seer_recap_does_not_create_speaker_seer_line(self):
+        """Retelling another player's checks must not become the speaker's seer claim."""
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p11",
+            text="p02报p01金水，p09报p05查杀，我会对比两个预言家。",
+            day=2,
+        )
+
+        assert not [
+            c for c in claims
+            if c.fact_type == "seer_check_claim" and c.source_player == "p11"
+        ]
+
+    def test_third_party_fake_seer_label_does_not_claim_role_for_speaker(self):
+        from werewolf_agent.cognition.world_state import _infer_claims_from_text
+
+        claims = _infer_claims_from_text(
+            speaker="p11",
+            text="p09悍跳预言家，p01金水这条线我不完全信。",
+            day=2,
+        )
+
+        assert not [
+            c for c in claims
+            if c.fact_type == "claimed_role" and c.value == "seer"
+        ]
+
 
 class TestSeerClaimCommitment:
     """Seer claim commitments persist and detect later contradictions."""

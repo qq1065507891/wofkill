@@ -1854,7 +1854,12 @@ def agent_day_vote(
     if non_self_legal:
         try:
             from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
-            fb = choose_vote_fallback_target(gs, voter_id, non_self_legal)
+            fb = choose_vote_fallback_target(
+                gs,
+                voter_id,
+                non_self_legal,
+                require_evidence=True,
+            )
             if fb:
                 strategy_directive["_vote_fallback_target"] = fb
         except Exception:
@@ -1879,7 +1884,12 @@ def agent_day_vote(
     # Fallback: if agent returned wrong action type but has legal targets,
     # pick an evidence-aware target rather than abstaining silently.
     if target is None and legal_targets:
-        target = choose_vote_fallback_target(gs, voter_id, legal_targets)
+        target = choose_vote_fallback_target(
+            gs,
+            voter_id,
+            legal_targets,
+            require_evidence=True,
+        )
     speech = getattr(action, "speech", "") or ""
     reason = getattr(action, "reason", "") or ""
     trace = getattr(action, "trace", None)
