@@ -158,6 +158,33 @@ class TestParseChoiceAction:
         assert action.target_id == "p09"
         assert choice_data is not None
 
+    def test_choice_output_recovers_from_truncated_json(self):
+        ctx = self._make_context(legal_targets=["p07", "p08", "p11"])
+        text = '{"choice":"C","reason":"p11发言前后矛盾'
+
+        action, parse_error, choice_data = parse_choice_action(text, ctx)
+
+        assert parse_error is None
+        assert action is not None
+        assert action.action_type == ActionType.VOTE
+        assert action.target_id == "p11"
+        assert choice_data is not None
+
+    def test_sheriff_vote_target_recovers_from_truncated_json(self):
+        ctx = self._make_context(
+            legal_actions=[ActionType.SHERIFF_VOTE, ActionType.NO_ACTION],
+            legal_targets=["p09", "p12"],
+        )
+        text = '{"action_type":"sheriff_vote","target_id":"p12","reason":"p12更适合拿警徽'
+
+        action, parse_error, choice_data = parse_choice_action(text, ctx)
+
+        assert parse_error is None
+        assert action is not None
+        assert action.action_type == ActionType.SHERIFF_VOTE
+        assert action.target_id == "p12"
+        assert choice_data is not None
+
 
 class TestParseSpeechIntentAction:
     def _make_context(
