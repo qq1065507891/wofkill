@@ -84,6 +84,10 @@ class GenerateResult:
     raw_error: str | None = None
 
 
+class EmptyModelResponseError(RuntimeError):
+    """Provider returned successfully but with no model text."""
+
+
 # ---------------------------------------------------------------------------
 # Provider protocol — pluggable backend
 # ---------------------------------------------------------------------------
@@ -446,6 +450,7 @@ class ModelRouter:
 
         primary_error: Exception | None = None
         fallback_error: Exception | None = None
+        last_empty_result: GenerateResult | None = None
 
         max_retries = getattr(config, "retry_count", 2) or 0
         for attempt in range(max_retries + 1):
@@ -471,6 +476,17 @@ class ModelRouter:
                 result.allow_text_tool_fallback = config.allow_text_tool_fallback
                 result.structured_output_mode = active_mode.value
                 _normalize_tool_metadata(result, effective_tool_choice)
+                if not result.text:
+                    last_empty_result = result
+                    primary_error = EmptyModelResponseError("empty_response")
+                    logger.warning(
+                        "Model generation returned empty text for agent=%s task=%s provider=%s model=%s",
+                        agent_id,
+                        task_type,
+                        config.provider,
+                        config.model,
+                    )
+                    break
                 if result.usage:
                     usage = UsageRecord(
                         agent_id=agent_id,
@@ -545,6 +561,17 @@ class ModelRouter:
                     result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
                     result.structured_output_mode = fb_mode.value
                     _normalize_tool_metadata(result, fb_effective_tool_choice)
+                    if not result.text:
+                        last_empty_result = result
+                        fallback_error = EmptyModelResponseError("empty_response")
+                        logger.warning(
+                            "Fallback model generation returned empty text for agent=%s task=%s provider=%s model=%s",
+                            agent_id,
+                            task_type,
+                            fb_config.provider,
+                            fb_config.model,
+                        )
+                        break
                     if result.usage:
                         usage = UsageRecord(
                             agent_id=agent_id,
@@ -605,13 +632,18 @@ class ModelRouter:
         # ``provider_error`` rather than the silent ``unknown`` fallback.
         return GenerateResult(
             text="",
-            provider=config.provider,
-            model=config.model,
+            provider=last_empty_result.provider if last_empty_result else config.provider,
+            model=last_empty_result.model if last_empty_result else config.model,
+            usage=last_empty_result.usage if last_empty_result else None,
             http_status=_http_status_from_exception(primary_error)
             or _http_status_from_exception(fallback_error),
             raw_error=_raw_error_from_exception(primary_error)
             or _raw_error_from_exception(fallback_error),
-            structured_output_mode=active_mode.value,
+            structured_output_mode=(
+                last_empty_result.structured_output_mode
+                if last_empty_result
+                else active_mode.value
+            ),
         )
 
     def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:

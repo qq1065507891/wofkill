@@ -291,6 +291,42 @@ class ProtocolSequenceProvider:
         )
 
 
+class EmptyThenJsonObjectProvider:
+    def __init__(self) -> None:
+        self.modes: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return "empty_then_json_object"
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        self.modes.append(config.structured_output_mode)
+        if config.structured_output_mode == "json_object":
+            text = (
+                '{"intent":"question_target","target_id":"p02",'
+                '"speech":"我是好人阵营。p02上一轮站边没有说明依据，'
+                '我质疑他的逻辑。今天我倾向投p02，请他回应票型变化。",'
+                '"reason":"质疑p02站边和票型","confidence":0.7}'
+            )
+        else:
+            text = ""
+        return GenerateResult(
+            text=text,
+            provider=self.name,
+            model=config.model,
+            structured_output_mode=config.structured_output_mode,
+            text_fallback_used=config.structured_output_mode != "native_tool",
+            usage=UsageRecord(
+                agent_id="",
+                task_type="",
+                provider=self.name,
+                model=config.model,
+                structured_output_mode=config.structured_output_mode,
+                latency_ms=500,
+            ),
+        )
+
+
 class AlwaysInvalidProtocolProvider:
     def __init__(self) -> None:
         self.modes: list[str] = []
@@ -2207,6 +2243,50 @@ class TestStructuredOutputMetadata:
         assert action.trace is not None
         assert action.trace.structured_output_mode == "json_object"
         assert action.trace.structured_failure_stage is None
+
+    def test_empty_response_advances_mode_before_repeat_short_circuit(self):
+        provider = EmptyThenJsonObjectProvider()
+        router = ModelRouter(
+            model_profiles={
+                "model": {
+                    "provider": provider.name,
+                    "model": "test",
+                    "allow_text_tool_fallback": True,
+                    "structured_output": {
+                        "mode": "json_schema",
+                        "fallback_modes": ["json_object", "text_json"],
+                    },
+                },
+            },
+            llm_profiles={
+                "profile": {
+                    "default": {
+                        "provider": provider.name,
+                        "model_profile": "model",
+                    },
+                },
+            },
+            player_assignments={"p01": "profile"},
+            providers={provider.name: provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            phase="day",
+            day_number=1,
+            own_role="villager",
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=["p02"],
+        )
+
+        action, retry_info = agent.act(context)
+
+        assert isinstance(action, PlayerAction)
+        assert provider.modes == ["json_schema", "json_object"]
+        assert retry_info.early_exit_reason is None
+        assert action.trace is not None
+        assert action.trace.structured_output_mode == "json_object"
 
     def test_repeat_error_does_not_skip_untried_protocol_modes(self):
         provider = AlwaysInvalidProtocolProvider()

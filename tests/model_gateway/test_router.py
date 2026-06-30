@@ -8,6 +8,61 @@ def _mock_provider(name: str = "anthropic"):
     return MockProvider(name=name)
 
 
+class _EmptyTextProvider:
+    def __init__(self, name: str = "primary") -> None:
+        self._name = name
+        self.calls = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        from werewolf_agent.model_gateway.router import GenerateResult, UsageRecord
+
+        self.calls += 1
+        return GenerateResult(
+            text="",
+            provider=self.name,
+            model=config.model,
+            usage=UsageRecord(
+                agent_id="",
+                task_type="",
+                provider=self.name,
+                model=config.model,
+                latency_ms=500,
+            ),
+        )
+
+
+class _StaticTextProvider:
+    def __init__(self, text: str, name: str = "fallback") -> None:
+        self._text = text
+        self._name = name
+        self.calls = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        from werewolf_agent.model_gateway.router import GenerateResult, UsageRecord
+
+        self.calls += 1
+        return GenerateResult(
+            text=self._text,
+            provider=self.name,
+            model=config.model,
+            usage=UsageRecord(
+                agent_id="",
+                task_type="",
+                provider=self.name,
+                model=config.model,
+                latency_ms=500,
+            ),
+        )
+
+
 def _make_router(*, providers: dict | None = None):
     from werewolf_agent.model_gateway.router import ModelRouter
     profiles = providers or {}
@@ -144,6 +199,56 @@ class TestGenerateWithMockProvider:
         usage = router.get_usage_log()
         assert len(usage) == 1
         assert usage[0].agent_id == "p01"
+
+    def test_empty_primary_response_tries_fallback_provider(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _EmptyTextProvider("primary")
+        fallback = _StaticTextProvider(
+            '{"action_type":"speech","target_id":null,'
+            '"speech":"fallback ok","reason":"fallback","confidence":0.7}',
+            "fallback",
+        )
+        router = ModelRouter(
+            model_profiles={
+                "primary_model": {
+                    "provider": "primary",
+                    "model": "primary-model",
+                    "retry_count": 0,
+                },
+                "fallback_model": {
+                    "provider": "fallback",
+                    "model": "fallback-model",
+                    "retry_count": 0,
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "primary",
+                        "model_profile": "primary_model",
+                    },
+                    "fallback": {
+                        "provider": "fallback",
+                        "model_profile": "fallback_model",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+            providers={"primary": primary, "fallback": fallback},
+        )
+
+        result = router.generate(
+            agent_id="p01",
+            task_type="speech",
+            prompt="hello",
+            jitter_seconds=(0, 0),
+        )
+
+        assert result.provider == "fallback"
+        assert "fallback ok" in result.text
+        assert primary.calls == 1
+        assert fallback.calls == 1
 
     def test_probe_tool_call_support_detects_mock(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
@@ -386,7 +491,7 @@ class TestFormatException:
 class TestHttpStatusFromExceptionAccuracy:
     """N1 (post-review-v2): traceback 里的年份/端口不应被误抓为 HTTP 状态码。
 
-    修复前: 正则 ``\b([1-5]\d{2})\b`` 会从 ``"Failed at line 2024"`` 或
+    修复前: 正则 ``\\b([1-5]\\d{2})\\b`` 会从 ``"Failed at line 2024"`` 或
     ``"localhost:8080"`` 之类的字符串里抓到 808 当成 HTTP 状态码, 影响
     失败归因。
     修复后: 优先读 ``exc.status_code`` / ``exc.response.status_code``;

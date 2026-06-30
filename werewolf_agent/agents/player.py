@@ -340,7 +340,7 @@ class PlayerAgent:
 
             if not result.text:
                 failure_reason = self._latest_generation_failure_reason()
-                if failure_reason:
+                if failure_reason and "empty_response" not in failure_reason:
                     if "NotImplementedError" in failure_reason:
                         structured_failure_reason = "structured_output_unsupported"
                         structured_failure_stage = StructuredFailureStage.PROTOCOL.value
@@ -448,6 +448,10 @@ class PlayerAgent:
                 )
                 structured_failure_reason = "empty_response"
                 structured_failure_stage = StructuredFailureStage.PROTOCOL.value
+                active_structured_mode = structured_policy.next_mode(
+                    active_structured_mode,
+                    structured_failure_reason,
+                )
                 should_short_circuit, last_error_signature = self._check_repeat_error_signature(
                     retry, raw_text, attempt, last_error_signature,
                     structured_output_mode=structured_output_mode,
