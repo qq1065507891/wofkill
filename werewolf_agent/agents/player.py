@@ -932,6 +932,7 @@ class PlayerAgent:
             context.recent_transcript,
             context.public_summary,
             context.strategy_directive,
+            context.day_number,
         )
 
     def _vote_quality_error(self, context: AgentContext, action: PlayerAction) -> str | None:

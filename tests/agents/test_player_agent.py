@@ -1858,7 +1858,7 @@ class TestSpeechQualityAndWolfAssignments:
         assert "只输出JSON" in retry.correction_hint
         assert "action_type" in retry.correction_hint
 
-    def test_sheriff_vote_extra_vote_audit_fields_get_targeted_retry_hint(self) -> None:
+    def test_sheriff_vote_extra_vote_audit_fields_are_repaired(self) -> None:
         raw = json.dumps({
             "action_type": "sheriff_vote",
             "target_id": "p04",
@@ -1886,15 +1886,11 @@ class TestSpeechQualityAndWolfAssignments:
             legal_targets=["p04", "p05"],
         )
 
-        _action, retry = agent.act(ctx)
+        action, retry = agent.act(ctx)
 
-        assert retry.error_code == "schema_validation"
-        assert "sheriff_vote" in retry.correction_hint
-        assert "exile-vote audit fields" in retry.correction_hint
-        for field in ("seer_stance", "vote_basis", "private_reason"):
-            assert field in retry.correction_hint
-        for field in ("action_type", "target_id", "speech", "reason", "confidence"):
-            assert field in retry.correction_hint
+        assert retry.error_code is None
+        assert action.action_type == ActionType.SHERIFF_VOTE
+        assert action.target_id == "p04"
 
     def test_prompt_requires_public_record_grounding(self) -> None:
         router = ModelRouter(

@@ -188,6 +188,28 @@ def extract_speech_quality(text: str, phase: str = "") -> dict[str, Any]:
     }
 
 
+def _has_multi_entity_reference(text: str) -> bool:
+    player_ids = set(re.findall(r"p\d{2}", text))
+    if len(player_ids) >= 2:
+        return True
+
+    for match in re.finditer(r"(?:名单|包含|包括|上警|候选).{0,16}?[：:，,]?\s*([^。；;]+)", text):
+        segment = match.group(1)
+        parts = [
+            part.strip()
+            for part in re.split(r"[、,，/]", segment)
+            if part.strip()
+        ]
+        named = [
+            part for part in parts
+            if part not in {"我", "自己", "大家", "其中"}
+            and re.search(r"[\u4e00-\u9fff]{2,4}", part)
+        ]
+        if len(named) >= 2:
+            return True
+    return False
+
+
 def validate_public_speech(
     text: str,
     phase: str = "",
@@ -203,7 +225,8 @@ def validate_public_speech(
     """
     context = context or {}
     intent = str(context.get("intent") or "")
-    day = int(context.get("day_number") or 0)
+    day_value = context.get("day_number")
+    day = int(day_value) if day_value is not None else 2
     required = _required_components(intent, phase=phase, day=day)
     if phase == "pk_speech":
         required.discard("stance")
@@ -254,7 +277,7 @@ def validate_public_speech(
             missing.append("target_reference")
         elif not target_id and not mentioned_players:
             missing.append("target_reference")
-    if "multi_entity" in required and len(mentioned_players) < 2:
+    if "multi_entity" in required and not _has_multi_entity_reference(text):
         missing.append("multi_entity")
 
     # High-pressure phases have additional requirements

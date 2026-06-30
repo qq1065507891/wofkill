@@ -56,6 +56,16 @@ class TestSelectOutputMode:
         )
         assert mode == OutputMode.FULL_ACTION
 
+    def test_target_action_plus_no_action_returns_target_choice(self):
+        mode = select_output_mode(
+            legal_actions=[ActionType.SHERIFF_VOTE, ActionType.NO_ACTION],
+            legal_targets=["p09", "p12"],
+            task_type=TaskType.VOTE,
+            speech_intent_tasks={TaskType.SPEECH},
+        )
+
+        assert mode == OutputMode.TARGET_CHOICE
+
     def test_mixed_actions_returns_full_action(self):
         mode = select_output_mode(
             legal_actions=[ActionType.VOTE, ActionType.SPEECH],
@@ -125,6 +135,28 @@ class TestParseChoiceAction:
         action, parse_error, choice_data = parse_choice_action(text, ctx)
         assert action is None
         assert parse_error is not None
+
+    def test_sheriff_vote_choice_repairs_exile_vote_shape(self):
+        ctx = self._make_context(
+            legal_actions=[ActionType.SHERIFF_VOTE, ActionType.NO_ACTION],
+            legal_targets=["p09", "p12"],
+        )
+        text = (
+            '{"action_type":"vote","target_id":"p09","speech":"",'
+            '"reason":"p09发言更完整，适合拿警徽。",'
+            '"seer_stance":"undecided","vote_basis":"speech_logic",'
+            '"suspect_reason":"p12逻辑不完整",'
+            '"not_voting_reason":"p12没有明确验人",'
+            '"private_reason":"警长票选择p09","confidence":0.6}'
+        )
+
+        action, parse_error, choice_data = parse_choice_action(text, ctx)
+
+        assert parse_error is None
+        assert action is not None
+        assert action.action_type == ActionType.SHERIFF_VOTE
+        assert action.target_id == "p09"
+        assert choice_data is not None
 
 
 class TestParseSpeechIntentAction:

@@ -998,6 +998,13 @@ def repair_speech_intent_decision(
     }
 
 
+def _target_choice_action(legal_actions: list[ActionType]) -> ActionType | None:
+    for action in legal_actions:
+        if action in CHOICE_TARGET_ACTIONS:
+            return action
+    return None
+
+
 def parse_choice_action(
     text: str,
     legal_actions: list[ActionType],
@@ -1010,7 +1017,11 @@ def parse_choice_action(
     if "choice" not in data and "target_id" not in data:
         return None, "Choice output must include choice or target_id", data
 
-    if legal_actions == [ActionType.VOTE]:
+    target_action = _target_choice_action(legal_actions)
+    if target_action is None:
+        return None, "No target-required action available for choice output", data
+
+    if target_action == ActionType.VOTE:
         repaired = repair_vote_decision(data, legal_actions, legal_targets, salience_items)
     else:
         repaired = repair_target_decision(data, legal_actions, legal_targets, salience_items)
@@ -1021,9 +1032,9 @@ def parse_choice_action(
     # ``extra="forbid"`` on every variant, passing them to e.g.
     # WolfKillPlayerAction is now a parse error — so we only attach
     # them when the action is actually a vote.
-    if legal_actions == [ActionType.VOTE]:
+    if target_action == ActionType.VOTE:
         action = PlayerAction(
-            action_type=legal_actions[0],
+            action_type=target_action,
             target_id=repaired["target_id"],
             speech="",
             reason=repaired["reason"],
@@ -1037,7 +1048,7 @@ def parse_choice_action(
         )
     else:
         action = PlayerAction(
-            action_type=legal_actions[0],
+            action_type=target_action,
             target_id=repaired["target_id"],
             speech="",
             reason=repaired["reason"],
@@ -1082,9 +1093,14 @@ def parse_speech_intent_action(
 
 
 def uses_choice_pipeline(legal_actions: list[ActionType], legal_targets: list[str]) -> bool:
+    target_actions = [action for action in legal_actions if action in CHOICE_TARGET_ACTIONS]
+    non_target_actions = [action for action in legal_actions if action not in CHOICE_TARGET_ACTIONS]
+    if len(legal_actions) == 1:
+        return legal_actions[0] in CHOICE_TARGET_ACTIONS and bool(legal_targets)
     return (
-        len(legal_actions) == 1
-        and legal_actions[0] in CHOICE_TARGET_ACTIONS
+        len(target_actions) == 1
+        and target_actions[0] == ActionType.SHERIFF_VOTE
+        and set(non_target_actions).issubset({ActionType.NO_ACTION})
         and bool(legal_targets)
     )
 

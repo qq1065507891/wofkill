@@ -156,6 +156,7 @@ def speech_quality_error(
     recent_transcript: list[dict[str, Any]],
     public_summary: str,
     strategy_directive: dict[str, Any] | None,
+    day_number: int | None = None,
 ) -> str | None:
     quality_phase = speech_quality_phase(task_type)
     if quality_phase is None or action.action_type != ActionType.SPEECH:
@@ -172,6 +173,7 @@ def speech_quality_error(
                 "recent_transcript": list(recent_transcript),
                 "public_summary": public_summary,
                 "must_address_alerts": (strategy_directive or {}).get("must_address_alerts", []),
+                "day_number": day_number,
             },
         )
     except Exception:

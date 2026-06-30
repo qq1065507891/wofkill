@@ -99,6 +99,22 @@ class TestIntentAwareSpeechRequirements:
 
         assert result["valid"] is True
 
+    def test_info_synthesis_accepts_chinese_name_list_as_multi_entity(self):
+        speech = (
+            "警上六人报名，这个结构值得关注。当前已知信息："
+            "上警名单包含我、陈思远、赵猛、周烈、沈墨、陆无声、郑铭，共六人。"
+            "我会观察谁在回应质疑时出现前后矛盾，谁的站边理由经不起推敲。"
+        )
+
+        result = validate_public_speech(
+            speech,
+            phase="sheriff_speech",
+            context={"intent": "info_synthesis"},
+        )
+
+        assert result["valid"] is True
+        assert "multi_entity" not in result["missing_fields"]
+
     def test_push_vote_still_requires_vote_leaning(self):
         speech = "p03的发言前后矛盾，我会继续关注。"
 
