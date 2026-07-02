@@ -33,6 +33,10 @@ def test_balance_audit_counts_schema_failures_and_weak_wolf_plan_kills():
                 },
             },
             {
+                "type": "wolf_team_plan_fallback",
+                "payload": {"night_number": 1},
+            },
+            {
                 "type": "wolf_team_plan",
                 "payload": {
                     "night_number": 1,
@@ -55,9 +59,13 @@ def test_balance_audit_counts_schema_failures_and_weak_wolf_plan_kills():
     audit = compute_balance_audit(games)
 
     assert audit["fallback_action_rate"] == 1.0
+    assert audit["wolf_team_plan_fallback_rate"] == 1.0
+    assert audit["wolf_team_plan_fallback_count"] == 1
+    assert audit["wolf_team_plan_count"] == 1
     assert audit["schema_failure_rate"] == 1.0
     assert audit["weak_wolf_plan_kill_count"] == 1
     assert "weak_wolf_plan_kills_present" in audit["warnings"]
+    assert "wolf_team_plan_fallback_high" in audit["warnings"]
 
 
 def test_load_game_logs_reads_json_files(tmp_path):

@@ -691,6 +691,8 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     evidence_quality = plan.get("evidence_quality")
     if evidence_quality == "none":
         return None
+    if plan.get("consensus_method") == "fallback" and evidence_quality != "strong":
+        return None
     evidence = plan.get("evidence_from_discussion") or []
     evidenced_targets = {
         item.get("target")

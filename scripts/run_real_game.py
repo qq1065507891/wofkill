@@ -247,16 +247,18 @@ def print_quality_audit(runner: GameRunner) -> None:
 
     # Structured output metadata
     traces = [e for e in gs.events if e.type == "action_trace_audit"]
-    fallback_count = sum(
+    action_fallback_count = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("fallback_reason")
     )
+    wolf_plan_fallback_count = sum(1 for e in gs.events if e.type == "wolf_team_plan_fallback")
     structured_fail = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("structured_failure_reason")
     )
     print(f"  Action traces:       {len(traces)}")
-    print(f"  Fallbacks:           {fallback_count}")
+    print(f"  Fallbacks:           {action_fallback_count}")
+    print(f"  Wolf plan fallbacks: {wolf_plan_fallback_count}")
     print(f"  Structured failures: {structured_fail}")
 
     # Contradiction alerts
@@ -308,16 +310,23 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     """Compute structured quality metrics for a completed game."""
     gs = runner.state
     traces = [e for e in gs.events if e.type == "action_trace_audit"]
-    fallback_count = sum(
+    action_fallback_count = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("fallback_reason")
+    )
+    wolf_plan_fallback_count = sum(1 for e in gs.events if e.type == "wolf_team_plan_fallback")
+    wolf_plan_attempts = max(
+        sum(1 for e in gs.events if e.type == "wolf_team_plan"),
+        wolf_plan_fallback_count,
     )
     structured_fail = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("structured_failure_reason")
     )
     total = len(traces)
-    fallback_rate = fallback_count / total if total > 0 else 0.0
+    total_quality_events = total + wolf_plan_attempts
+    fallback_count = action_fallback_count + wolf_plan_fallback_count
+    fallback_rate = fallback_count / total_quality_events if total_quality_events > 0 else 0.0
     speeches = [e for e in gs.events if e.type == "speech"]
     non_empty_speeches = sum(1 for e in speeches if e.payload.get("text", "").strip())
     speech_rate = non_empty_speeches / len(speeches) if speeches else 0.0
@@ -327,8 +336,12 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     return {
         "fallback_rate": round(fallback_rate, 3),
         "fallback_count": fallback_count,
+        "action_fallback_count": action_fallback_count,
+        "wolf_team_plan_fallback_count": wolf_plan_fallback_count,
         "structured_fail_count": structured_fail,
         "total_action_traces": total,
+        "total_wolf_team_plans": wolf_plan_attempts,
+        "total_quality_events": total_quality_events,
         "speech_count": len(speeches),
         "non_empty_speech_count": non_empty_speeches,
         "speech_fill_rate": round(speech_rate, 3),
@@ -338,18 +351,68 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     }
 
 
+def _faction_for_player(gs, player_id: str | None) -> str | None:
+    if not player_id:
+        return None
+    player = gs.players.get(player_id)
+    if player is None:
+        return None
+    if player.faction in ("good", "werewolf"):
+        return player.faction
+    if player.role == "werewolf":
+        return "werewolf"
+    if player.role in {"villager", "seer", "witch", "hunter", "idiot"}:
+        return "good"
+    return None
+
+
+def _final_hybrid_fields(gs) -> dict[str, str | None]:
+    """Export final hybrid fields even when the runner state is stale."""
+    fields = {
+        "hybrid_master_id": gs.hybrid_master_id,
+        "hybrid_master_faction": gs.hybrid_master_faction,
+        "hybrid_result": gs.hybrid_result,
+    }
+    winner = gs.winning_faction
+
+    for event in reversed(gs.events):
+        if event.type != "victory":
+            continue
+        payload = event.payload or {}
+        winner = winner or payload.get("winner") or payload.get("winning_faction")
+        for key in fields:
+            if fields[key] is None:
+                fields[key] = payload.get(key)
+        break
+
+    if fields["hybrid_master_id"] is None:
+        for event in reversed(gs.events):
+            if event.type != "hybrid_master_chosen":
+                continue
+            payload = event.payload or {}
+            fields["hybrid_master_id"] = payload.get("master_id")
+            break
+
+    if fields["hybrid_master_faction"] is None:
+        fields["hybrid_master_faction"] = _faction_for_player(gs, fields["hybrid_master_id"])
+    if fields["hybrid_result"] is None and fields["hybrid_master_faction"] and winner:
+        fields["hybrid_result"] = "win" if fields["hybrid_master_faction"] == winner else "lose"
+
+    return fields
+
+
 def save_game_log(runner: GameRunner, elapsed: float) -> Path:
     gs = runner.state
     quality = compute_game_quality_score(runner)
-    is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_action_traces"] > 5
+    is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_quality_events"] > 5
 
     if is_low_quality:
         low_q_dir = ROOT / "low_quality_games"
         low_q_dir.mkdir(exist_ok=True)
         log_path = low_q_dir / f"game_{runner.game_id}.json"
         logger.warning(
-            "Low quality game (fallback_rate=%.1f%%, %d traces) — saved to %s",
-            quality["fallback_rate"] * 100, quality["total_action_traces"], log_path,
+            "Low quality game (fallback_rate=%.1f%%, %d quality events) — saved to %s",
+            quality["fallback_rate"] * 100, quality["total_quality_events"], log_path,
         )
     else:
         log_path = ROOT / f"game_{runner.game_id}.json"
@@ -360,6 +423,7 @@ def save_game_log(runner: GameRunner, elapsed: float) -> Path:
         "phase": gs.phase,
         "day_number": gs.day_number,
         "night_number": gs.night_number,
+        **_final_hybrid_fields(gs),
         "players": {pid: {"role": p.role, "alive": p.alive} for pid, p in gs.players.items()},
         "deaths": [
             {

@@ -22,6 +22,10 @@ def test_recent_balance_report_includes_new_guardrails(tmp_path):
                 },
             },
             {
+                "type": "wolf_team_plan_fallback",
+                "payload": {"night_number": 1},
+            },
+            {
                 "type": "wolf_team_plan",
                 "payload": {"night_number": 1, "evidence_quality": "weak"},
             },
@@ -43,5 +47,6 @@ def test_recent_balance_report_includes_new_guardrails(tmp_path):
 
     assert report["sheriff_werewolf_rate"] == 1.0
     assert report["sheriff_vote_fallback_rate"] == 1.0
+    assert report["wolf_team_plan_fallback_rate"] == 1.0
     assert report["weak_plan_kill_rate"] == 1.0
     assert "hunter_friendly_fire_rate" in report

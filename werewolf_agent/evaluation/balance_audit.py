@@ -35,6 +35,8 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         1 for trace in action_traces
         if trace.get("parse_error") or trace.get("structured_failure_reason")
     )
+    wolf_plan_fallback_count = sum(_wolf_plan_fallback_count(game) for game in games)
+    wolf_plan_count = sum(_wolf_plan_attempt_count(game) for game in games)
 
     weak_wolf_plan_kill_count = sum(_weak_wolf_plan_kills(game) for game in games)
     vote_concentrations = [_vote_concentration(event) for game in games for event in game.get("events", []) if event.get("type") == "vote_resolved"]
@@ -43,6 +45,10 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     wolf_win_rate = wolf_wins / game_count if game_count else 0.0
     good_win_rate = good_wins / game_count if game_count else 0.0
     fallback_action_rate = fallback_count / len(action_traces) if action_traces else 0.0
+    wolf_team_plan_fallback_rate = (
+        wolf_plan_fallback_count / wolf_plan_count
+        if wolf_plan_count else 0.0
+    )
     schema_failure_rate = schema_failures / len(action_traces) if action_traces else 0.0
     seer_day1_exile_rate = _seer_day1_exile_rate(games)
     witch_night1_death_rate = _witch_night1_death_rate(games)
@@ -60,6 +66,8 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         warnings.append("wolf_win_rate_high")
     if schema_failure_rate > 0.05:
         warnings.append("schema_failure_high")
+    if wolf_team_plan_fallback_rate > 0.5:
+        warnings.append("wolf_team_plan_fallback_high")
     if game_count >= 10 and seer_day1_exile_rate > 0.35:
         warnings.append("seer_day1_exile_high")
     if weak_wolf_plan_kill_count:
@@ -78,6 +86,9 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         "wolf_win_rate": wolf_win_rate,
         "good_win_rate": good_win_rate,
         "fallback_action_rate": fallback_action_rate,
+        "wolf_team_plan_fallback_rate": wolf_team_plan_fallback_rate,
+        "wolf_team_plan_fallback_count": wolf_plan_fallback_count,
+        "wolf_team_plan_count": wolf_plan_count,
         "schema_failure_rate": schema_failure_rate,
         "seer_day1_exile_rate": seer_day1_exile_rate,
         "d1_seer_exile_rate": seer_day1_exile_rate,
@@ -120,6 +131,15 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
                             "task": _trace_task(payload, item, event.get("type")),
                             "game": game,
                         }
+
+
+def _wolf_plan_fallback_count(game: dict[str, Any]) -> int:
+    return sum(1 for event in game.get("events", []) if event.get("type") == "wolf_team_plan_fallback")
+
+
+def _wolf_plan_attempt_count(game: dict[str, Any]) -> int:
+    plan_count = sum(1 for event in game.get("events", []) if event.get("type") == "wolf_team_plan")
+    return max(plan_count, _wolf_plan_fallback_count(game))
 
 
 def _trace_actor(payload: dict[str, Any], trace: dict[str, Any]) -> Any:

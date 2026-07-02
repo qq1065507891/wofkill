@@ -70,6 +70,12 @@ class TestAntiHerdForGoodSide:
             f"Prompt: {prompt!r}"
         )
 
+    def test_good_side_warning_protects_possible_power_roles(self):
+        ctx = _make_vote_ctx("villager")
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        assert "机械抗推可能神职" in prompt
+        assert "预言家、女巫、猎人、白痴" in prompt
+
 
 # ---------------------------------------------------------------------------
 # K6.2: anti-herd text does NOT appear for wolves; wolf-specific text does

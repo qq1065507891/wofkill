@@ -643,6 +643,7 @@ class TestPlannedWolfKillPrimaryAlive:
         backup_alive: bool,
         evidence_quality: str = "strong",
         evidence_targets: list[str] | None = None,
+        consensus_method: str = "llm",
     ) -> dict[str, Any]:
         """Build a minimal RuntimeState for _planned_wolf_kill.
 
@@ -667,6 +668,7 @@ class TestPlannedWolfKillPrimaryAlive:
                 "night_kill_backup": backup,
                 "evidence_quality": evidence_quality,
                 "evidence_from_discussion": evidence,
+                "consensus_method": consensus_method,
             },
         }
 
@@ -681,6 +683,22 @@ class TestPlannedWolfKillPrimaryAlive:
             backup_alive=True,     # backup 还活着
             evidence_quality="weak",
             evidence_targets=[],   # backup 也没有 evidence
+        )
+        result = _planned_wolf_kill(state)
+        assert result is None
+
+    def test_fallback_plan_with_weak_evidence_returns_none(self) -> None:
+        """Fallback wolf-team plans need strong evidence before authorizing a kill."""
+        from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
+
+        state = self._make_state(
+            primary="p07",
+            backup="p03",
+            primary_alive=True,
+            backup_alive=True,
+            evidence_quality="weak",
+            evidence_targets=["p07"],
+            consensus_method="fallback",
         )
         result = _planned_wolf_kill(state)
         assert result is None

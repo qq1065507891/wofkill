@@ -82,3 +82,62 @@ def test_save_game_log_exports_complete_death_fields(tmp_path, monkeypatch) -> N
             "triggered_skills": ["hunter_shot"],
         },
     ]
+
+
+def test_quality_score_counts_wolf_team_plan_fallbacks() -> None:
+    from scripts import run_real_game
+
+    gs = GameState(
+        game_id="g_quality_wolf_plan",
+        events=[
+            GameEvent(
+                type="action_trace_audit",
+                payload={"action_trace": {"fallback_reason": "empty_response"}},
+            ),
+            GameEvent(type="wolf_team_plan_fallback", payload={"night_number": 1}),
+            GameEvent(type="wolf_team_plan", payload={"night_number": 1}),
+        ],
+    )
+    runner = SimpleNamespace(state=gs, step_count=3)
+
+    quality = run_real_game.compute_game_quality_score(runner)
+
+    assert quality["action_fallback_count"] == 1
+    assert quality["wolf_team_plan_fallback_count"] == 1
+    assert quality["fallback_count"] == 2
+    assert quality["total_wolf_team_plans"] == 1
+    assert quality["total_quality_events"] == 2
+    assert quality["fallback_rate"] == 1.0
+
+
+def test_save_game_log_exports_hybrid_fields_from_victory_event(tmp_path, monkeypatch) -> None:
+    from scripts import run_real_game
+
+    gs = GameState(
+        game_id="g_hybrid_export",
+        players={
+            "p01": PlayerState(id="p01", role="werewolf", alive=True),
+            "p12": PlayerState(id="p12", role="hybrid", alive=True),
+        },
+        winning_faction="werewolf",
+        events=[
+            GameEvent(
+                type="victory",
+                payload={
+                    "winner": "werewolf",
+                    "hybrid_master_id": "p01",
+                    "hybrid_master_faction": "werewolf",
+                    "hybrid_result": "win",
+                },
+            ),
+        ],
+    )
+    runner = SimpleNamespace(game_id="g_hybrid_export", state=gs, step_count=1)
+    monkeypatch.setattr(run_real_game, "ROOT", tmp_path)
+
+    path = run_real_game.save_game_log(runner, elapsed=1.2)
+    data = json.loads(path.read_text(encoding="utf-8"))
+
+    assert data["hybrid_master_id"] == "p01"
+    assert data["hybrid_master_faction"] == "werewolf"
+    assert data["hybrid_result"] == "win"

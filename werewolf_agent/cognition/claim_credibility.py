@@ -18,9 +18,11 @@ from werewolf_agent.cognition.world_state import StructuredFact
 
 _BASE_SCORE = 0.50
 _DELTAS = {
-    "first_seer_claim": 0.05,
+    "first_seer_claim": 0.03,
     "has_check": 0.08,
     "no_dup_target": 0.05,
+    "duplicate_target": -0.12,
+    "no_check": -0.08,
     "vote_follows_black": 0.10,
     "no_attack_gold": 0.05,
     "badge_flow": 0.05,
@@ -126,10 +128,14 @@ class SeerClaimCredibilityEngine:
         if line.checks:
             score += _DELTAS["has_check"]
             evidence.append("has_check")
-            targets = [c.target for c in line.checks]
-            if len(set(targets)) == len(targets):
+            targets = [c.target for c in line.checks if c.target]
+            has_duplicate_targets = len(set(targets)) < len(targets)
+            if targets and not has_duplicate_targets and len(targets) == len(line.checks):
                 score += _DELTAS["no_dup_target"]
                 evidence.append("no_dup_target")
+            elif has_duplicate_targets:
+                score += _DELTAS["duplicate_target"]
+                penalties.append("duplicate_target")
         if line.badge_flow:
             score += _DELTAS["badge_flow"]
             evidence.append("badge_flow")
@@ -158,9 +164,12 @@ class SeerClaimCredibilityEngine:
         if len(self._lines) > 1:
             score += _DELTAS["multi_claimants"]
             penalties.append("multi_claimants")
+            if not line.checks:
+                score += _DELTAS["no_check"]
+                penalties.append("no_check")
 
         score = max(0.0, min(1.0, score))
-        confidence = min(1.0, 0.25 + 0.15 * len(evidence))
+        confidence = max(0.0, min(1.0, 0.25 + 0.15 * len(evidence) - 0.05 * len(penalties)))
         return score, confidence, evidence, penalties
 
     def _score_all(self) -> dict[str, ClaimCredibility]:

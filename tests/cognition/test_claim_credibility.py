@@ -26,7 +26,7 @@ def test_single_seer_claimant_base_plus_first_bonus():
     eng.observe(_seer_claim("p08"))
     c = eng.score_for("p08")
     assert c.claimed_role == "seer"
-    assert round(c.score, 3) == 0.55  # 0.50 base + 0.05 first claim
+    assert round(c.score, 3) == 0.53  # 0.50 base + 0.03 first claim
     assert c.status == "uncontested"
 
 
@@ -34,8 +34,8 @@ def test_multiple_claimants_each_penalized_and_contested():
     eng = SeerClaimCredibilityEngine()
     eng.observe(_seer_claim("p08"))
     eng.observe(_seer_claim("p01"))
-    assert round(eng.score_for("p08").score, 3) == 0.40  # 0.50+0.05-0.15
-    assert round(eng.score_for("p01").score, 3) == 0.35  # 0.50-0.15
+    assert round(eng.score_for("p08").score, 3) == 0.30  # 0.50+0.03-0.15-0.08
+    assert round(eng.score_for("p01").score, 3) == 0.27  # 0.50-0.15-0.08
     assert eng.score_for("p08").status == "contested"
     assert eng.score_for("p01").status == "contested"
 
@@ -44,8 +44,8 @@ def test_check_claim_bonus():
     eng = SeerClaimCredibilityEngine()
     eng.observe(_seer_claim("p08"))
     eng.observe(_check("p08", "p01", "wolf"))
-    # 0.50 + 0.05(first) + 0.08(has_check) + 0.05(no_dup) = 0.68
-    assert round(eng.score_for("p08").score, 3) == 0.68
+    # 0.50 + 0.03(first) + 0.08(has_check) + 0.05(no_dup) = 0.66
+    assert round(eng.score_for("p08").score, 3) == 0.66
 
 
 def test_vote_follows_own_black_check_supported():
@@ -53,8 +53,8 @@ def test_vote_follows_own_black_check_supported():
     eng.observe(_seer_claim("p08"))
     eng.observe(_check("p08", "p01", "wolf"))
     eng.observe(_vote("p08", "p01"))
-    # 0.50+0.05+0.08+0.05+0.10 = 0.78
-    assert round(eng.score_for("p08").score, 3) == 0.78
+    # 0.50+0.03+0.08+0.05+0.10 = 0.76
+    assert round(eng.score_for("p08").score, 3) == 0.76
     assert eng.score_for("p08").status == "supported"
 
 
@@ -63,8 +63,8 @@ def test_vote_against_own_black_check_penalty():
     eng.observe(_seer_claim("p08"))
     eng.observe(_check("p08", "p01", "wolf"))
     eng.observe(_vote("p08", "p02"))  # votes away from own black check
-    # 0.50+0.05+0.08+0.05-0.15 = 0.53
-    assert round(eng.score_for("p08").score, 3) == 0.53
+    # 0.50+0.03+0.08+0.05-0.15 = 0.51
+    assert round(eng.score_for("p08").score, 3) == 0.51
 
 
 def test_vote_against_own_gold_water_penalty():
@@ -101,8 +101,30 @@ def test_badge_flow_bonus():
         fact_type="badge_flow_claim", source_player="p08", target_player="p05",
         day=1, value="badge_flow", metadata={"badge_flow_order": ["p05", "p07"]},
     ))
-    # 0.50 + 0.05(first) + 0.05(badge) = 0.60
-    assert round(eng.score_for("p08").score, 3) == 0.60
+    # 0.50 + 0.03(first) + 0.05(badge) = 0.58
+    assert round(eng.score_for("p08").score, 3) == 0.58
+
+
+def test_duplicate_check_targets_are_penalized():
+    eng = SeerClaimCredibilityEngine()
+    eng.observe(_seer_claim("p10"))
+    eng.observe(_check("p10", "p03", "good", day=1))
+    eng.observe(_check("p10", "p03", "good", day=2))
+    cred = eng.score_for("p10")
+    assert "duplicate_target" in cred.penalties
+    assert "no_dup_target" not in cred.evidence
+    assert round(cred.score, 3) == 0.49
+
+
+def test_no_check_first_claim_does_not_beat_later_claim_with_check():
+    eng = SeerClaimCredibilityEngine()
+    eng.observe(_seer_claim("p02"))
+    eng.observe(_seer_claim("p03"))
+    eng.observe(_check("p03", "p07", "wolf"))
+    first = eng.score_for("p02")
+    checked = eng.score_for("p03")
+    assert "no_check" in first.penalties
+    assert checked.score > first.score
 
 
 def test_snapshot_round_trip():
