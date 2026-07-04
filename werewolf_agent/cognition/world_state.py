@@ -272,7 +272,6 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
         "witch": ("我是女巫", "我认女巫"),
         "hunter": ("我是猎人", "我认猎人"),
         "villager": ("我是村民", "我是民", "我认民"),
-        "werewolf": ("我是狼人", "我这狼队视角", "我们狼队", "狼队视角"),
     }
     for role, patterns in role_patterns.items():
         if any(pattern in text for pattern in patterns):
@@ -282,6 +281,13 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
                 value=role,
                 day=day,
             ))
+    if _has_explicit_wolf_self_claim(text):
+        facts.append(StructuredFact(
+            fact_type="claimed_role",
+            source_player=speaker,
+            value="werewolf",
+            day=day,
+        ))
 
     # --- H-6: 先收集 seer_check_claim 匹配的 span，避免后续重复匹配 ---
     self_seer_context = _has_self_seer_context(text)
@@ -357,6 +363,12 @@ def _infer_claims_from_text(*, speaker: str, text: str, day: int) -> list[Struct
             ))
 
     return facts
+
+
+def _has_explicit_wolf_self_claim(text: str) -> bool:
+    if re.search(r"我(?:是|认)(?:狼人|狼)(?:$|[，。！？；、,\s])", text):
+        return True
+    return bool(re.search(r"我(?:要)?自爆(?:$|[，。！？；、,\s])", text))
 
 
 def _has_self_seer_context(text: str) -> bool:
@@ -452,7 +464,7 @@ def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
     # E2 (post-review-v2): seer_check 走特殊路径，seer_id 在 dispatch 入口预计算
     if event.type == "seer_check":
         seer_id = next(
-            (pid for pid, p in state.players.items() if p.role == "seer" and p.alive),
+            (pid for pid, p in state.players.items() if p.role == "seer"),
             "?",
         )
         return _extract_seer_check(event, seer_id)

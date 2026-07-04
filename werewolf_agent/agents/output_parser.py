@@ -654,7 +654,7 @@ def vote_candidate_summary(
             clues.append(f"{target_id}关联死亡事件")
     if clues:
         return "；".join(clues[:2])
-    return f"{target_id}是当前合法投票候选，需要基于发言、票型和站边继续施压"
+    return f"{target_id}当前缺少可引用的具体公开证据，需补充发言、票型或站边中的具体疑点"
 
 
 def target_candidate_summary(

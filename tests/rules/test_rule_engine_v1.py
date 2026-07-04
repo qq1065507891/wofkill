@@ -475,6 +475,22 @@ def test_second_tie_creates_no_exile_and_enters_night() -> None:
     assert result.reason == "second_tie_no_exile"
 
 
+def test_revote_ignores_votes_outside_pk_candidates() -> None:
+    engine = make_engine()
+    state = make_state()
+
+    result = engine.resolve_vote(
+        state,
+        votes={"v1": "w1", "v2": "w1", "seer": "w1"},
+        revote=True,
+        pk_candidates=["w2", "v3"],
+    )
+
+    assert result.exiled_player_id is None
+    assert result.next_phase == "night"
+    assert result.reason == "second_tie_no_exile"
+
+
 def test_dead_or_vote_disabled_players_do_not_count_in_exile_vote() -> None:
     engine = make_engine()
     state = make_state(dead={"v1"}, revealed_idiot=True)
@@ -707,11 +723,10 @@ def test_resolve_night_antidote_saves_wolf_kill_target() -> None:
 def test_resolve_night_antidote_cannot_save_witch_herself() -> None:
     engine = make_engine()
     state = make_state(hybrid_master_faction=None)
-    new_state, _ = engine.resolve_night(
-        state, night_number=1, wolf_kill_target_id="witch", use_antidote=True,
-    )
-    assert new_state.players["witch"].alive is False
-    assert new_state.antidote_used is False
+    with pytest.raises(ValueError, match="witch_cannot_self_save"):
+        engine.resolve_night(
+            state, night_number=1, wolf_kill_target_id="witch", use_antidote=True,
+        )
 
 
 def test_resolve_night_double_death_wolf_and_poison() -> None:
@@ -728,14 +743,10 @@ def test_resolve_night_double_death_wolf_and_poison() -> None:
 def test_resolve_night_cannot_use_antidote_and_poison_same_night() -> None:
     engine = make_engine()
     state = make_state(hybrid_master_faction=None)
-    new_state, _ = engine.resolve_night(
-        state, night_number=1, wolf_kill_target_id="v1", use_antidote=True, poison_target_id="v2",
-    )
-    # antidote saves v1, poison is blocked because use_antidote=True
-    assert new_state.players["v1"].alive is True
-    assert new_state.players["v2"].alive is True
-    assert new_state.antidote_used is True
-    assert new_state.poison_used is False
+    with pytest.raises(ValueError, match="witch_cannot_use_both_potions_same_night"):
+        engine.resolve_night(
+            state, night_number=1, wolf_kill_target_id="v1", use_antidote=True, poison_target_id="v2",
+        )
 
 
 def test_resolve_night_peace_night_no_wolf_kill() -> None:
@@ -1153,13 +1164,13 @@ def test_sheriff_weight_uses_ruleset_field() -> None:
     # 旧: 3+2 = 5 for w1, 2 for w2 → w1 (5 vs 2)
     # 新: 4+3 = 7 for w1, 3 for w2 → w1 (7 vs 3)
     # 比例相同，结果相同 -- 但 tally 绝对值不同
-    # 由于 VoteResult 不暴露 tally，我们只能验证 config 字段被读取
-    # 简化：使用 inspect 验证代码确实从 game_rules.base_vote_weight 读取
+    # 由于 VoteResult 不暴露 tally，我们验证共享的 vote_weight helper
+    # 确实从 game_rules.base_vote_weight 读取。
     import inspect as _inspect
     from werewolf_agent.engine import rule_engine
-    src = _inspect.getsource(rule_engine.RuleEngine.resolve_vote)
+    src = _inspect.getsource(rule_engine.RuleEngine.base_vote_weight)
     assert "game_rules" in src, (
-        f"resolve_vote should read base_vote_weight from ruleset.game_rules, "
+        f"base_vote_weight should read from ruleset.game_rules, "
         f"but source does not reference 'game_rules':\n{src[:800]}"
     )
     # 并验证测试用临时 ruleset 也能解析
@@ -1171,6 +1182,8 @@ def test_sheriff_weight_uses_ruleset_field() -> None:
         revote=False,
     )
     assert result.exiled_player_id == "w1"
+    assert engine.vote_weight(state, "seer") == 4
+    assert engine.vote_weight(state, "v1") == 3
 
 
 def test_base_vote_weight_default_back_compat() -> None:

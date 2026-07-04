@@ -279,6 +279,26 @@ def test_session_token_on_private_state_endpoint():
     assert resp.status_code == 200
 
 
+def test_player_agent_query_param_auth_rejected_outside_local_mode():
+    """Non-local deployments must not trust bare caller_id for player_agent."""
+    from fastapi import HTTPException
+    from werewolf_agent.api.auth import AuthConfig, AuthManager
+    from werewolf_agent.api.routes.games import _resolve_caller_role
+    from werewolf_agent.api.schemas import CallerRole
+
+    auth = AuthManager(AuthConfig(mode="production", secret_key="test-secret"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        _resolve_caller_role(
+            {},
+            "p01",
+            CallerRole.PLAYER_AGENT,
+            auth_manager=auth,
+        )
+
+    assert exc_info.value.status_code == 403
+
+
 def test_invalid_session_token_rejected():
     from fastapi.testclient import TestClient
 

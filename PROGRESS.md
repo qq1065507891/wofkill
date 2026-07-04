@@ -4331,3 +4331,127 @@ test_live_runtime.py -p no:cacheprovider -q`
 **自审**:`error_analysis` 分支文案("减少高置信度误判…")与 `deceived_by` 分支
 文案("注意被 N 名狼人引导投票…")都不是 `_GENERIC_PHRASES` 成员,有具体发现时
 仍正常返回具体建议。review 路径不再产出任何 `_GENERIC_PHRASES` 短语。
+
+## 2026-07-04 recent game balance / public-fact guardrails
+
+**触发**: 用户要求分析 2026-07-01 之后的对局并按问题修复。7 局日志显示
+狼人 6 胜 1 负、D1 预言家出局 4/7、狼队计划 fallback 26/30、投票理由
+大量出现"当前合法投票候选..."模板,且出现无公开支撑的"p01 已自认狼人"、
+"p12 声称知道刀口"等公开事实污染。
+
+**本次修复**:
+- `werewolf_agent/evaluation/balance_audit.py`
+  - 小样本(>=3 局)也触发 `wolf_win_rate_high` /
+    `seer_day1_exile_high`,避免 7 局 85.7% 狼胜率不报警。
+  - `witch_night1_death_rate` 修正为只统计 `resolution_batch=night_1`
+    的女巫狼刀死亡;保留旧口径为 `witch_wolf_kill_death_rate`。
+  - 新增 `template_vote_reason_count/rate`,统计"当前合法投票候选...继续施压"
+    模板票,并触发 `template_vote_reason_high`。
+  - 新增 `unsupported_public_fact_claim_count`,检测投票/发言中没有前置公开
+    发言支撑的角色自认/夜间刀口知情转述,并触发
+    `unsupported_public_fact_claims_present`。
+- `werewolf_agent/runtime/vote_quality.py`
+  - 精确拒绝"当前合法投票候选...继续施压"这类候选枚举模板理由,提示
+    "候选不是证据"并要求改写为查验/对跳/警徽流/票型/具体发言依据。
+- `werewolf_agent/agents/prompt_builder.py`
+  - 投票 choice prompt 明确写入"候选枚举不是公开证据"。
+  - 无 salience 的候选摘要改成"暂无该候选的公开证据摘要",避免把候选身份
+    变成可复制的投票理由模板。
+
+**新增/更新测试**:
+- `tests/evaluation/test_game_balance_batch.py`
+  - 小样本偏狼/预言家 D1 出局 warning。
+  - 女巫 N1 死亡率与任意夜女巫狼刀死亡率分离。
+  - 模板票与无支撑公开事实声明计数。
+- `tests/runtime/test_vote_quality.py`
+  - 模板候选理由被 `vote_quality` 拒绝。
+- `tests/agents/test_prompt_builder.py`
+  - vote choice prompt 不再把合法候选摘要渲染成证据模板。
+
+**验证**:
+- RED: 新增测试先失败于缺少 warning/指标、女巫 N1 口径错误、模板票未拒绝、
+  prompt 仍含"当前合法投票候选..."。
+- GREEN:
+  `python -m pytest tests/scripts/test_analyze_recent_balance.py tests/evaluation/test_game_balance_batch.py tests/runtime/test_vote_quality.py tests/agents/test_prompt_builder.py -q -o addopts=""`
+  → 201 passed。
+- `python scripts/analyze_recent_balance.py game_g_963871548.json game_g_3342247372.json game_g_1584021446.json game_g_410414594.json game_g_178354553.json game_g_4070334141.json game_g_1166976475.json`
+  → 新增 warnings 包含 `wolf_win_rate_high`, `seer_day1_exile_high`,
+  `template_vote_reason_high`, `unsupported_public_fact_claims_present`;
+  `template_vote_reason_count=51`, `unsupported_public_fact_claim_count=17`。
+- `git diff --check` → clean。
+
+## 2026-07-04 review batch 1: parser / cognition / private memory / PK revote
+
+**触发**: 用户要求分两批修复深入审查发现的问题。第一批覆盖 1-4:
+投票 repair 模板残留、"狼队视角"误抽成自认狼人、private_memory 吸收
+他人公开发言、RuleEngine 复票不强制 PK 候选。
+
+**本批修复**:
+- `werewolf_agent/agents/output_parser.py`
+  - `vote_candidate_summary` 无 salience fallback 不再输出
+    "当前合法投票候选..."模板,改为提示缺少可引用公开证据并要求补具体疑点。
+- `werewolf_agent/cognition/world_state.py`
+  - `claimed_role=werewolf` 仅来自明确一人称自认/自爆;删除
+    "我这狼队视角/我们狼队/狼队视角"作为角色自认触发词。
+- `werewolf_agent/runtime/private_memory.py`
+  - `_add_own_speech_notes` 在传入 `player_id` 时只处理该玩家自己的公开
+    发言;他人的公开发言继续走 public ledger / transcript,不再进入私有记忆。
+- `werewolf_agent/engine/rule_engine.py`
+  - `resolve_vote(revote=True, pk_candidates=...)` 在规则引擎层把合法目标
+    收窄到 PK 候选,防止脚本/回放/HITL 绕过 adapter 后票出非 PK 目标。
+
+**新增/更新测试**:
+- `tests/agents/test_output_parser.py`
+  - `repair_vote_decision` 不再产生合法候选模板理由。
+- `tests/cognition/test_cognition.py`
+  - "狼队视角"不产生狼人自认;明确"我是狼人"仍产生自认。
+- `tests/runtime/test_private_memory_sanitize.py`,
+  `tests/runtime/test_visible_state.py`, `tests/runtime/test_context.py`
+  - private_memory 只保留本人发言/本人私有轨迹,忽略他人公开发言关键词笔记。
+- `tests/rules/test_rule_engine_v1.py`
+  - 复票中投给非 PK 目标的票被 RuleEngine 忽略。
+
+**验证**:
+- RED: 目标测试先失败于四个旧行为。
+- GREEN:
+  `python -m pytest tests/agents/test_output_parser.py tests/cognition/test_cognition.py tests/runtime/test_private_memory_sanitize.py tests/runtime/test_visible_state.py tests/runtime/test_context.py tests/rules/test_rule_engine_v1.py -q`
+  → 343 passed。
+
+## 2026-07-04 review batch 2: witch / seer source / vote weights / API auth
+
+**触发**: 第一批完成后继续修复剩余 5-8:女巫主夜晚结算非法动作静默吞掉、
+预言家死亡后历史查验 source 丢失、runtime 投票审计权重与 RuleEngine 权重漂移、
+非 local 部署中 player_agent 仅靠 caller_id 冒充。
+
+**本批修复**:
+- `werewolf_agent/engine/rule_engine.py`
+  - `resolve_night` 在应用死亡前调用 `resolve_witch_action`;同夜解药+毒药、
+    女巫非法自救、药水已用/目标非法等输入直接抛出明确 `ValueError`。
+  - 新增 `base_vote_weight/sheriff_vote_weight/vote_weight` 共享 helper;
+    `resolve_vote` 和 runtime 审计使用同一套 3/2 基础票权计算。
+- `werewolf_agent/cognition/world_state.py`
+  - `extract_facts(seer_check)` 解析 source 时不再要求预言家仍然存活;
+    历史查验在预言家死亡后仍归属唯一预言家。
+- `werewolf_agent/runtime/nodes/day.py`
+  - `_broadcast_vote_details` 与 `vote_resolved` payload 的 `weighted_tally`,
+    `vote_weights`, `sheriff_vote_weight` 改用 RuleEngine 票权 helper。
+- `werewolf_agent/api/routes/games.py`
+  - 非 `local` auth 模式下,`player_agent` 不再接受裸 query-param
+    `caller_id/caller_role`,必须通过 session token 解析身份。
+
+**新增/更新测试**:
+- `tests/rules/test_rule_engine_v1.py`
+  - `resolve_night` 非法女巫自救/同夜双药抛错。
+  - RuleEngine 票权 helper 从 `game_rules.base_vote_weight` 读取。
+- `tests/cognition/test_cognition.py`
+  - 预言家死亡后,历史 `seer_check` 仍保留 `source_player=p08`。
+- `tests/runtime/test_vote_flow.py`
+  - runtime 投票审计记录实际 3/2 票权,死人/禁票者仍不计入。
+- `tests/api/test_auth.py`
+  - 非 local 模式下裸 `player_agent` query-param auth 被拒绝。
+
+**验证**:
+- RED: 第二批目标测试先失败于旧行为。
+- GREEN:
+  `python -m pytest tests/agents/test_output_parser.py tests/cognition/test_cognition.py tests/runtime/test_private_memory_sanitize.py tests/runtime/test_visible_state.py tests/runtime/test_context.py tests/rules/test_rule_engine_v1.py tests/runtime/test_vote_flow.py tests/runtime/test_witch_flow.py tests/runtime/test_night_flow.py tests/api/test_auth.py tests/api/test_api.py tests/api/test_views.py tests/api/test_caller_role_warn.py`
+  → 507 passed。

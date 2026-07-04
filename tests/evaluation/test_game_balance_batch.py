@@ -418,3 +418,116 @@ def test_balance_audit_flags_weak_plan_kill_rate():
 
     assert audit["weak_plan_kill_rate"] == 1.0
     assert "weak_plan_kill_high" in audit["warnings"]
+
+
+def test_balance_audit_warns_on_recent_small_sample_skew():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [
+        {
+            "winning_faction": "werewolf",
+            "players": {"p01": {"role": "seer"}},
+            "events": [
+                {
+                    "type": "vote_resolved",
+                    "payload": {"day_number": 1, "exiled": "p01", "votes": []},
+                }
+            ],
+            "deaths": [{"player_id": "p01", "reason": "exile"}],
+        }
+        for _ in range(4)
+    ]
+
+    audit = compute_balance_audit(games)
+
+    assert audit["wolf_win_rate"] == 1.0
+    assert audit["d1_seer_exile_rate"] == 1.0
+    assert "wolf_win_rate_high" in audit["warnings"]
+    assert "seer_day1_exile_high" in audit["warnings"]
+
+
+def test_balance_audit_counts_only_night1_witch_wolf_kill_deaths():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [
+        {
+            "winning_faction": "werewolf",
+            "players": {"p01": {"role": "witch"}},
+            "events": [],
+            "deaths": [
+                {
+                    "player_id": "p01",
+                    "reason": "wolf_kill",
+                    "resolution_batch": "night_2",
+                }
+            ],
+        },
+        {
+            "winning_faction": "good",
+            "players": {"p01": {"role": "witch"}},
+            "events": [],
+            "deaths": [
+                {
+                    "player_id": "p01",
+                    "reason": "wolf_kill",
+                    "resolution_batch": "night_1",
+                }
+            ],
+        },
+    ]
+
+    audit = compute_balance_audit(games)
+
+    assert audit["witch_night1_death_rate"] == 1 / 2
+    assert audit["witch_wolf_kill_death_rate"] == 1.0
+
+
+def test_balance_audit_counts_template_vote_reasons_and_public_fact_hallucinations():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = {
+        "winning_faction": "werewolf",
+        "players": {
+            "p01": {"role": "werewolf"},
+            "p02": {"role": "seer"},
+            "p03": {"role": "villager"},
+        },
+        "events": [
+            {
+                "type": "speech",
+                "payload": {
+                    "speaker": "p01",
+                    "day_number": 1,
+                    "text": "p02报我查杀，但这个逻辑不成立。",
+                },
+            },
+            {
+                "type": "vote_resolved",
+                "payload": {
+                    "day_number": 1,
+                    "exiled": "p02",
+                    "votes": [
+                        {
+                            "voter": "p01",
+                            "target": "p02",
+                            "reason": "p02是当前合法投票候选，需要基于发言、票型和站边继续施压",
+                        },
+                        {
+                            "voter": "p03",
+                            "target": "p02",
+                            "reason": "p01已自认狼人，p02查杀形成印证。",
+                        },
+                    ],
+                },
+            },
+        ],
+        "deaths": [],
+    }
+
+    audit = compute_balance_audit([game])
+
+    assert audit["template_vote_reason_count"] == 1
+    assert audit["template_vote_reason_rate"] == 1 / 2
+    assert audit["unsupported_public_fact_claim_count"] == 1
+    assert "template_vote_reason_high" in audit["warnings"]
+    assert "unsupported_public_fact_claims_present" in audit["warnings"]

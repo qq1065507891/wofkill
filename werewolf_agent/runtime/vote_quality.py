@@ -26,6 +26,10 @@ VOTE_BASIS_VALUES = {
 }
 SEER_STANCE_VALUES = {"trust", "distrust", "undecided", "no_claim"}
 _UNEXPLAINED_VALUES = {"", "未说明", "无", "没有", "none", "null", "n/a"}
+_TEMPLATE_REASON_MARKERS = (
+    "当前合法投票候选",
+    "继续施压",
+)
 
 # Public alias used by other modules for retry hints (matches Pydantic enum).
 VALID_VOTE_BASIS_VALUES = frozenset(VOTE_BASIS_VALUES)
@@ -194,6 +198,17 @@ def validate_structured_vote_action(
                     f"有效 seer_stance: {sorted(VALID_SEER_STANCE_VALUES)}。"
                 ),
             }
+        if _is_template_candidate_reason(str(action.get(field_name) or "")):
+            return {
+                "valid": False,
+                "error_code": "vote_quality",
+                "missing_field": field_name,
+                "detected_bases": [],
+                "hint": (
+                    "候选不是证据；投票理由不能复制候选枚举模板。"
+                    "请引用具体公开事实：查验/对跳/警徽流/票型/具体发言。"
+                ),
+            }
 
     # Normalize empty seer_stance to "no_claim" (the neutral default).
     raw_seer_stance = _string_value(action.get("seer_stance"))
@@ -248,6 +263,10 @@ def _string_value(value: Any) -> str:
     if isinstance(value, Enum):
         return str(value.value).strip()
     return str(value or "").strip()
+
+
+def _is_template_candidate_reason(reason: str) -> bool:
+    return all(marker in reason for marker in _TEMPLATE_REASON_MARKERS)
 
 
 def build_day_discussion_summary(

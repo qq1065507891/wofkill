@@ -1774,8 +1774,8 @@ def _make_mem02_player(id: str, role: str, alive: bool = True) -> Any:
 
 
 def test_private_memory_caveat_reaches_prompt() -> None:
-    """MEM-02: a public speech containing '逻辑漏洞' must produce a
-    logic_flaw entry, which in turn causes build_private_memory to
+    """MEM-02: the viewer's own public speech containing '逻辑漏洞'
+    must produce a logic_flaw entry, which in turn causes build_private_memory to
     emit `_llm_aware_hint`. build_agent_context plumbs that onto
     AgentContext.private_memory_caveat, and the prompt builder must
     surface it as a line in the rendered user prompt."""
@@ -1786,9 +1786,9 @@ def test_private_memory_caveat_reaches_prompt() -> None:
     from werewolf_agent.runtime.context import build_agent_context
     from werewolf_agent.runtime.private_memory import _LLM_AWARE_HINT
 
-    # Build a minimal GameState where p02 (a different player) publicly
-    # claims p03 has a logic flaw. This must produce a logic_flaw in
-    # p01's private memory, which in turn triggers the caveat.
+    # Build a minimal GameState where p01 publicly claims p03 has a
+    # logic flaw. Own public speech may become private memory; other
+    # players' public speeches must not.
     players = {
         "p01": _make_mem02_player("p01", "seer"),
         "p02": _make_mem02_player("p02", "villager"),
@@ -1805,7 +1805,7 @@ def test_private_memory_caveat_reaches_prompt() -> None:
             GameEvent(
                 type="speech",
                 payload={
-                    "speaker": "p02",
+                    "speaker": "p01",
                     "text": "p03 发言有明显的逻辑漏洞，没解释清楚",
                     "day_number": 1,
                     "visibility": "public",

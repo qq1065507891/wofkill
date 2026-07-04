@@ -547,10 +547,20 @@ def _broadcast_vote_details(
     # Build vote tally for structured judge announcement
     tally: dict[str, float] = {}
     vote_lines = []
+    engine = state.get("engine")
+    sheriff_vote_weight = (
+        engine.sheriff_vote_weight()
+        if isinstance(engine, RuleEngine)
+        else 1.5
+    )
     for voter_id, target_id in votes.items():
-        weight = 1.5 if voter_id == sheriff_id else 1.0
+        weight = (
+            engine.vote_weight(gs, voter_id)
+            if isinstance(engine, RuleEngine)
+            else (1.5 if voter_id == sheriff_id else 1.0)
+        )
         tally[target_id] = tally.get(target_id, 0.0) + weight
-        weight_label = " (警长1.5票)" if voter_id == sheriff_id else ""
+        weight_label = f" (警长{sheriff_vote_weight}票)" if voter_id == sheriff_id else ""
         vote_lines.append(
             f"{_player_display(state, voter_id)}{weight_label} 投票给 {_player_display(state, target_id)}"
         )
@@ -571,7 +581,7 @@ def _broadcast_vote_details(
             "tally": tally,
             "player_names": player_names,
             "sheriff_id": sheriff_id,
-            "sheriff_weight": 1.5,
+            "sheriff_weight": sheriff_vote_weight,
         },
     )
     return gs
@@ -598,12 +608,13 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
     )
     # Log vote tally with weighted counts (read from ruleset config)
     sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
-    sheriff_weight = float(engine.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
+    base_vote_weight = engine.base_vote_weight()
+    sheriff_vote_weight = engine.sheriff_vote_weight()
     weighted_tally: dict[str, float] = {}
     vote_weights: dict[str, float] = {}
     if votes:
         for voter_id, target_id in votes.items():
-            weight = sheriff_weight if voter_id == sheriff_id else 1.0
+            weight = engine.vote_weight(gs, voter_id)
             vote_weights[voter_id] = weight
             weighted_tally[target_id] = weighted_tally.get(target_id, 0) + weight
         tally_items = sorted(weighted_tally.items(), key=lambda x: -x[1])
@@ -653,7 +664,7 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         "reason": result.reason,
         "day_number": gs.day_number,
         "sheriff_id": sheriff_id,
-        "sheriff_vote_weight": 1.5 if sheriff_id else 1.0,
+        "sheriff_vote_weight": sheriff_vote_weight if sheriff_id else base_vote_weight,
         "weighted_tally": weighted_tally,
         "vote_weights": vote_weights,
         "votes": [

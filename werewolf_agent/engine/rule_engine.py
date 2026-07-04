@@ -284,6 +284,23 @@ class RuleEngine:
         antidote_used = state.antidote_used
         poison_used = state.poison_used
         batch = f"night_{night_number}"
+        witch_id = next(
+            (pid for pid, p in state.players.items() if p.role == "witch" and p.alive),
+            None,
+        )
+        if use_antidote or poison_target_id is not None:
+            if witch_id is None:
+                raise ValueError("witch_not_available")
+            witch_result = self.resolve_witch_action(
+                state,
+                witch_id=witch_id,
+                night_number=night_number,
+                wolf_kill_target_id=wolf_kill_target_id,
+                use_antidote=use_antidote,
+                poison_target_id=poison_target_id,
+            )
+            if not witch_result.accepted:
+                raise ValueError(witch_result.error_code or "witch_action_invalid")
 
         # 1. Wolf kill
         saved_by_antidote = False
@@ -297,10 +314,6 @@ class RuleEngine:
             )
             # 2. Witch antidote
             if use_antidote and not antidote_used:
-                witch_id = next(
-                    (pid for pid, p in state.players.items() if p.role == "witch" and p.alive),
-                    None,
-                )
                 witch_cfg = self.ruleset.raw["roles"]["witch"]
                 antidote_cfg = witch_cfg["abilities"].get("antidote", {})
                 can_self_save = antidote_cfg.get("can_self_save", False)
@@ -464,6 +477,18 @@ class RuleEngine:
 
     # -- Vote --
 
+    def base_vote_weight(self) -> int:
+        return int(self.ruleset.raw.get("game_rules", {}).get("base_vote_weight", 2))
+
+    def sheriff_vote_weight(self) -> int:
+        sheriff_weight = float(self.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
+        return round(sheriff_weight * self.base_vote_weight())
+
+    def vote_weight(self, state: GameState, voter_id: str) -> int:
+        if voter_id == state.sheriff_id and state.sheriff_badge_state == "active":
+            return self.sheriff_vote_weight()
+        return self.base_vote_weight()
+
     def resolve_vote(
         self,
         state: GameState,
@@ -476,6 +501,8 @@ class RuleEngine:
     ) -> VoteResult:
         tally: dict[str, int] = {}
         legal_targets = set(self.legal_exile_targets(state))
+        if revote and pk_candidates:
+            legal_targets &= set(pk_candidates)
         vote_cfg = self.ruleset.raw["day_flow"]["vote"]
         for voter_id, target_id in votes.items():
             voter = state.players.get(voter_id)
@@ -485,11 +512,7 @@ class RuleEngine:
                 continue
             if target_id not in legal_targets:
                 continue
-            sheriff_weight = float(self.ruleset.raw.get("sheriff", {}).get("vote_weight", 1.5))
-            base_weight = int(self.ruleset.raw.get("game_rules", {}).get("base_vote_weight", 2))
-            weight = round(sheriff_weight * base_weight) if (
-                voter_id == state.sheriff_id and state.sheriff_badge_state == "active"
-            ) else base_weight
+            weight = self.vote_weight(state, voter_id)
             tally[target_id] = tally.get(target_id, 0) + weight
 
         cfg = self.ruleset.raw["day_flow"]["vote"]

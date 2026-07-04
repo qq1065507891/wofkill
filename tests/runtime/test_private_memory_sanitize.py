@@ -629,8 +629,8 @@ def test_speech_point_sanitized_against_cross_speaker_first_person():
     from werewolf_agent.core.models import GameState
     from werewolf_agent.runtime.private_memory import build_private_memory
 
-    # p02 is a different player; p01 is building its own private memory.
-    # p02's speech contains the leaky "我验出 p05 是预言家" phrase AND
+    # p01 is building private memory from its own public speech.
+    # The speech contains the leaky "我验出 p05 是预言家" phrase AND
     # a "逻辑漏洞" marker so it lands in logic_flaws.
     gs = GameState(
         game_id="g_test_mem01",
@@ -642,7 +642,7 @@ def test_speech_point_sanitized_against_cross_speaker_first_person():
         events=[
             _make_speech_event_for_player(
                 "我验出 p05 是预言家，他的逻辑漏洞很明显",
-                speaker="p02",
+                speaker="p01",
                 day=1,
             ),
         ],
@@ -688,7 +688,7 @@ def test_speech_point_keeps_legitimate_content():
         events=[
             _make_speech_event_for_player(
                 "p05 发言合理",
-                speaker="p02",
+                speaker="p01",
                 day=1,
             ),
         ],
@@ -712,6 +712,38 @@ def test_speech_point_keeps_legitimate_content():
         f"sanitization verbatim; got valid_points: "
         f"{memory['valid_points']!r}"
     )
+
+
+def test_build_private_memory_ignores_other_players_public_speech_notes():
+    """Private memory should not treat another player's public speech
+    keyword matches as the viewer's own notes."""
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    gs = GameState(
+        game_id="g_test_mem_cross_speaker",
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        day_number=1,
+        night_number=1,
+        phase="day",
+        players={},
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "他这里有逻辑漏洞，我站边p03。",
+                    "day_number": 1,
+                    "visibility": "public",
+                },
+            ),
+        ],
+    )
+
+    memory, caveat = build_private_memory(gs, "p01")
+
+    assert memory == {}
+    assert caveat == ""
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +775,7 @@ def test_build_private_memory_includes_caveat_when_logic_flaws_nonempty():
         events=[
             _make_speech_event_for_player(
                 "p05 发言有逻辑漏洞",
-                speaker="p02",
+                speaker="p01",
                 day=1,
             ),
         ],
@@ -836,7 +868,7 @@ def test_private_memory_caveat_is_separate_field():
         events=[
             _make_speech_event_for_player(
                 "p05 发言有逻辑漏洞",
-                speaker="p02",
+                speaker="p01",
                 day=1,
             ),
         ],

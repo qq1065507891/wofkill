@@ -77,6 +77,22 @@ def test_vote_repair_replaces_reason_that_attacks_a_different_target() -> None:
     assert "p12" not in repaired["private_reason"]
 
 
+def test_vote_repair_does_not_emit_legal_candidate_template() -> None:
+    repaired = repair_vote_decision(
+        {"choice": "A", "confidence": 0.6},
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p02"],
+        salience_items=[],
+    )
+
+    assert repaired is not None
+    assert repaired["target_id"] == "p02"
+    banned = "当前合法投票候选"
+    assert banned not in repaired["reason"]
+    assert banned not in repaired["suspect_reason"]
+    assert banned not in repaired["private_reason"]
+
+
 def test_speech_intent_is_preserved_on_player_action() -> None:
     from werewolf_agent.agents.output_parser import parse_speech_intent_action
 

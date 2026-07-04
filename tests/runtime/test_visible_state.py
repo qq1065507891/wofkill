@@ -160,7 +160,7 @@ def test_agent_context_includes_only_viewers_private_memory() -> None:
     assert "private_memory" not in str(p01_context.visible_world_state["public_ledger"])
 
 
-def test_agent_context_private_memory_keeps_heard_public_speech_points() -> None:
+def test_agent_context_private_memory_ignores_other_players_public_speech_points() -> None:
     engine = RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml")
     gs = GameState(
         game_id="heard_public_points",
@@ -187,9 +187,9 @@ def test_agent_context_private_memory_keeps_heard_public_speech_points() -> None
 
     context = build_agent_context(engine, gs, "p01", TaskType.SPEECH)
 
-    memory = context.visible_world_state["private_memory"]
-    assert "p03的逻辑漏洞是没有解释警徽流" in str(memory)
-    assert "p04这一点说得合理" in str(memory)
+    memory = context.visible_world_state.get("private_memory", {})
+    assert "p03的逻辑漏洞是没有解释警徽流" not in str(memory)
+    assert "p04这一点说得合理" not in str(memory)
     assert "完整原文唯一标记XYZ" not in context.public_summary
     assert "完整原文唯一标记XYZ" not in str(memory)
     assert "秘密狼队逻辑漏洞" not in str(memory)

@@ -119,6 +119,27 @@ class TestVoteBasisValidator:
         assert result["valid"] is True
         assert result["detected_bases"] == ["seer_check"]
 
+    def test_structured_vote_rejects_template_candidate_reason(self):
+        action = {
+            "action_type": "vote",
+            "target_id": "p07",
+            "reason": "p07是当前合法投票候选，需要基于发言、票型和站边继续施压",
+            "speech": "",
+            "seer_stance": "undecided",
+            "vote_basis": "fallback",
+            "standing_with_seer": "",
+            "suspect_reason": "p07是当前合法投票候选，需要基于发言、票型和站边继续施压",
+            "not_voting_reason": "其他人证据更弱",
+            "private_reason": "保守跟票",
+        }
+
+        result = validate_structured_vote_action(action)
+
+        assert result["valid"] is False
+        assert result["error_code"] == "vote_quality"
+        assert result["missing_field"] == "reason"
+        assert "候选不是证据" in result["hint"]
+
 
 class TestExtractVoteBasis:
     """Extract the type of logic basis from a vote reason."""

@@ -1886,6 +1886,11 @@ class PlayerPromptBuilder:
         header = "投票候选枚举" if is_vote else "目标候选枚举"
         choice_map = self._vote_choice_map()
         lines = [f"{header}（必须从中选择一个choice，不要直接编写target_id）："]
+        if is_vote:
+            lines.append(
+                "候选枚举不是公开证据；摘要只用于识别候选，不能复制成 vote reason。"
+                "reason 必须引用当前局公开事实：查验、对跳、警徽流、票型或具体发言。"
+            )
         for choice, target_id in choice_map.items():
             summary = (
                 self._vote_candidate_summary(target_id)
@@ -2080,7 +2085,10 @@ class PlayerPromptBuilder:
                 clues.append(f"{target_id}关联死亡事件")
         if clues:
             return "；".join(clues[:2])
-        return f"{target_id}是当前合法投票候选，需要基于发言、票型和站边继续施压"
+        return (
+            "暂无该候选的公开证据摘要；如选择该目标，必须另引公开发言、"
+            "票型、查验或警徽流，不得把候选身份当作证据"
+        )
 
     def _target_candidate_summary(self, target_id: str) -> str:
         ctx = self.context

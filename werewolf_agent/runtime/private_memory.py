@@ -481,6 +481,8 @@ def _add_own_speech_notes(
 ) -> None:
     """提取发言中的逻辑漏洞、合理点、站边记录。"""
     speaker = event.payload.get("speaker", "")
+    if player_id and speaker != player_id:
+        return
     # 跳过私密频道发言（如狼队频道），只处理公开发言
     visibility = event.payload.get("visibility", "")
     if visibility == "werewolf_team_only" and player_id and speaker != player_id:

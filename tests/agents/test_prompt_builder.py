@@ -5359,5 +5359,26 @@ def test_sheriff_vote_prompt_omits_exile_vote_audit_fields():
         assert field not in prompt
 
 
+def test_vote_choice_prompt_does_not_turn_candidate_status_into_evidence():
+    ctx = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        day_number=1,
+        own_role="villager",
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p02", "p03"],
+        public_summary="D1 vote",
+        salience_items=[],
+        strategy_directive={},
+    )
+
+    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+
+    assert "当前合法投票候选，需要基于发言、票型和站边继续施压" not in prompt
+    assert "候选枚举不是公开证据" in prompt
+    assert "暂无该候选的公开证据摘要" in prompt
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

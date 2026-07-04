@@ -840,19 +840,47 @@ class TestContradictionEngine:
             for f in facts
         )
 
-    def test_self_exposed_wolf_speech_creates_high_priority_claim_conflict(self):
+    def test_wolf_perspective_phrase_does_not_create_self_claim(self):
         from werewolf_agent.core.models import GameEvent, GameState
         from werewolf_agent.cognition.world_state import extract_facts
 
         facts = extract_facts(
             GameEvent(
                 type="speech",
-                payload={"speaker": "p02", "day_number": 1, "text": "我这狼队视角看p08像预言家。"},
+                payload={
+                    "speaker": "p02",
+                    "day_number": 1,
+                    "text": "\u6211\u8fd9\u72fc\u961f\u89c6\u89d2\u770bp08\u50cf\u9884\u8a00\u5bb6\u3002",
+                },
             ),
             GameState(),
         )
 
-        assert any(f.fact_type == "claimed_role" and f.value == "werewolf" for f in facts)
+        assert not any(
+            f.fact_type == "claimed_role" and f.value == "werewolf"
+            for f in facts
+        )
+
+    def test_explicit_wolf_self_claim_still_creates_role_claim(self):
+        from werewolf_agent.core.models import GameEvent, GameState
+        from werewolf_agent.cognition.world_state import extract_facts
+
+        facts = extract_facts(
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "day_number": 1,
+                    "text": "\u6211\u662f\u72fc\u4eba\u3002",
+                },
+            ),
+            GameState(),
+        )
+
+        assert any(
+            f.fact_type == "claimed_role" and f.value == "werewolf"
+            for f in facts
+        )
 
     def test_no_false_positives(self):
         facts = [
@@ -1141,3 +1169,26 @@ class TestExtractorSeerCheckSignature:
         assert facts[0].source_player == "p08", (
             f"extract_facts did not resolve seer_id to p08: {facts[0].source_player}"
         )
+
+    def test_extract_facts_seer_check_keeps_source_after_seer_death(self):
+        """Historical seer_check facts still belong to the single seer
+        after that seer dies later in the game."""
+        from dataclasses import replace
+        from werewolf_agent.cognition.world_state import extract_facts
+
+        state = _make_state()
+        state = replace(
+            state,
+            players={
+                **state.players,
+                "p08": replace(state.players["p08"], alive=False),
+            },
+        )
+        event = GameEvent(
+            type="seer_check",
+            payload={"target_id": "p01", "alignment": "werewolf", "night_number": 1},
+        )
+
+        facts = extract_facts(event, state)
+
+        assert facts[0].source_player == "p08"

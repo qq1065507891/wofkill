@@ -296,9 +296,9 @@ def test_resolve_vote_records_sheriff_weighted_tally() -> None:
 
     vote_event = next(event for event in result["game_state"].events if event.type == "vote_resolved")
     assert vote_event.payload["sheriff_id"] == "p01"
-    assert vote_event.payload["sheriff_vote_weight"] == 1.5
-    assert vote_event.payload["weighted_tally"] == {"p03": 1.5, "p02": 1.0}
-    assert vote_event.payload["vote_weights"] == {"p01": 1.5, "p02": 1.0}
+    assert vote_event.payload["sheriff_vote_weight"] == 3
+    assert vote_event.payload["weighted_tally"] == {"p03": 3, "p02": 2}
+    assert vote_event.payload["vote_weights"] == {"p01": 3, "p02": 2}
 
 def test_resolve_vote_first_tie_emits_pk_broadcast() -> None:
     from werewolf_agent.runtime.graph import resolve_vote
@@ -569,7 +569,7 @@ class TestDeadVoterFiltered:
         )
 
         # p11 的票不应计入 weighted_tally
-        assert vote_event.payload["weighted_tally"] == {"p02": 1.0}, (
+        assert vote_event.payload["weighted_tally"] == {"p02": 2}, (
             f"dead voter inflated weighted_tally: {vote_event.payload['weighted_tally']}"
         )
 
@@ -609,7 +609,7 @@ class TestDeadVoterFiltered:
         assert "p05" not in voters_in_payload, (
             f"vote-disabled voter p05 leaked into payload: {vote_event.payload['votes']}"
         )
-        assert vote_event.payload["weighted_tally"] == {"p02": 1.0}
+        assert vote_event.payload["weighted_tally"] == {"p02": 2}
 
     def test_dead_vote_filter_does_not_change_exile_choice(self) -> None:
         """dead vote 被过滤后，tally result 与 engine.resolve_vote 一致（不死人票计入）。"""

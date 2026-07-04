@@ -693,6 +693,15 @@ def _resolve_caller_role(
             )
             return requested_role
         raise HTTPException(403, "Elevated caller role is not authorized")
+    if (
+        requested_role == CallerRole.PLAYER_AGENT
+        and auth_manager is not None
+        and auth_manager.config.mode != "local"
+    ):
+        raise HTTPException(
+            403,
+            "Player agent role requires session_token outside local auth mode",
+        )
     return requested_role
 
 
