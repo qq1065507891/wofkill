@@ -7,11 +7,8 @@ from typing import Any
 from werewolf_agent.cognition.world_state import _has_self_seer_context
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.strategy._shared import (
-    _NEGATION_RE,
-    _NEGATION_WORDS,
     speech_is_negated as _speech_is_negated,
 )
-from werewolf_agent.runtime.strategy.seer import public_seer_claimants
 
 logger = logging.getLogger(__name__)
 

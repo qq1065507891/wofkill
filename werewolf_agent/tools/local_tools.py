@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.core.models import GameState, PlayerState
 from werewolf_agent.tools.schemas import (
     InternalToolName,
     ToolCall,

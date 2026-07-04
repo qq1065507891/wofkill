@@ -6,7 +6,7 @@ Provides attack vectors and defense alerts — never directly generates speech.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from werewolf_agent.cognition.world_state import StructuredFact

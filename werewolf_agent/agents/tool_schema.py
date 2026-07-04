@@ -18,7 +18,9 @@ from werewolf_agent.agents.schemas import (
     ActionType,
     OutputMode,
     PlayerAction,
+    SeerStance,
     TaskType,
+    VoteBasis,
 )
 
 logger = logging.getLogger(__name__)

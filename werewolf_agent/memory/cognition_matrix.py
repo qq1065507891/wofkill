@@ -13,9 +13,9 @@ that survives across turns and can be serialized to JSON.
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any
 
-from werewolf_agent.cognition.belief import BeliefState, PlayerBelief
+from werewolf_agent.cognition.belief import BeliefState
 from werewolf_agent.memory.schemas import CognitionMatrixEntry, EvidenceItem
 
 

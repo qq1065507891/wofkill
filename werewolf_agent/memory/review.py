@@ -13,16 +13,12 @@ Review results feed into ReflectionMemory (unstructured) and ProfileStore (delta
 
 from __future__ import annotations
 
-from typing import Any
 
-from werewolf_agent.cognition.belief import BeliefState
 from werewolf_agent.memory.cognition_matrix import CognitionMatrix
 from werewolf_agent.memory.relation_graph import RelationGraph
 from werewolf_agent.memory.relation_scoring import score_relation_event
 from werewolf_agent.memory.schemas import (
     CognitionMatrixEntry,
-    PlayerProfile,
-    RelationEvent,
     RelationType,
     ReviewJudgment,
     ReviewReport,

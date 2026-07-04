@@ -22,7 +22,7 @@ from werewolf_agent.evaluation.feedback_schemas import (
     ModuleExposure,
 )
 from werewolf_agent.evaluation.llm_judge import judge_speech_consistency
-from werewolf_agent.evaluation.text_similarity import jaccard, tokenize
+from werewolf_agent.evaluation.text_similarity import jaccard
 
 
 _RAG_TEXT_FIELDS = (

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 from dataclasses import replace
 from typing import Any
 
@@ -11,7 +10,6 @@ from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     agent_sheriff_election_speech,
     agent_sheriff_endorse,
-    agent_sheriff_pick_speech_order,
     agent_sheriff_register,
     agent_sheriff_vote,
     agent_sheriff_withdraw,
@@ -27,21 +25,15 @@ from werewolf_agent.runtime.nodes._shared import (
     logger,
     RuntimeState,
     _action_audit_events,
-    _action_trace_event,
-    _agent_timeout,
     _allocate_decision_identity,
-    _call_agent,
     _dispatch_agent,
     _judge_broadcast,
-    _jb,
     _ensure_day_incremented,
     _player_display,
-    _timer_expired,
     AGENT_TIMEOUTS,
     _stable_seed,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.timeline import phase_label
 
 
 def sheriff_first_day_entry(state: RuntimeState) -> dict[str, Any]:
@@ -67,8 +59,6 @@ def sheriff_first_day_entry(state: RuntimeState) -> dict[str, Any]:
 def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
     """Judge announces sheriff election; each alive player chooses to register or not."""
     gs: GameState = state["game_state"]
-    engine: RuleEngine = state["engine"]
-    registry = state.get("agent_registry")
 
     gs, _ = _judge_broadcast(
         phase="sheriff_election",
@@ -241,7 +231,6 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
     """Off-sheriff players vote for sheriff. Announces result."""
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
-    registry = state.get("agent_registry")
     candidates = list(gs.sheriff_candidates or [])
 
     # No candidates -> no sheriff
@@ -423,7 +412,6 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     registry = state.get("agent_registry")
     candidates = list(gs.sheriff_candidates or state.get("sheriff_candidates", []))
-    events: list[GameEvent] = []
     if not candidates:
         gs = replace(gs, events=gs.events + [GameEvent(type="sheriff_speech", payload={})])
         return {"game_state": gs}
@@ -562,7 +550,6 @@ def sheriff_endorse(state: RuntimeState) -> dict[str, Any]:
 
     if result:
         endorse_target = result.get("endorse_target", "")
-        private_reason = result.get("private_reason", "")
         action_trace = result.get("action_trace")
 
         # Private audit: sheriff's internal reasoning (moderator only)

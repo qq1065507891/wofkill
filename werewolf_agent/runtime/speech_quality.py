@@ -385,9 +385,7 @@ def fallback_speech_with_basis(context: dict[str, Any]) -> str:
 
     Used when retries fail. Always names targets and uses available evidence.
     """
-    own_id = context.get("own_id", "unknown")
     candidates = context.get("suspicion_candidates", [])
-    day = context.get("day", 1)
 
     target = candidates[0] if candidates else "未知"
     reason = "发言信息不足以排除嫌疑"

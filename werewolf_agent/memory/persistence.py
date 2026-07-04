@@ -6,13 +6,16 @@ ProfileStore, and MemoryStore. Returns JSON-serializable dicts.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from werewolf_agent.memory.cognition_matrix import CognitionMatrix
 from werewolf_agent.memory.relation_graph import RelationGraph
 from werewolf_agent.memory.reflection import ReflectionMemory
 from werewolf_agent.memory.profile import ProfileStore
 from werewolf_agent.memory.schemas import ReflectionEntry, PlayerProfile
+
+if TYPE_CHECKING:
+    from werewolf_agent.memory.store import MemoryStore
 
 
 # ---------------------------------------------------------------------------

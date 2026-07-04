@@ -18,13 +18,13 @@ from typing import Any, Protocol
 from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.schemas import (
     ActionType,
+    AgentContext,
     TaskType,
 )
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.vote_quality import choose_vote_fallback_target
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import phase_label
 
@@ -38,7 +38,7 @@ from werewolf_agent.runtime.context import (
     _get_persona_task_style,
     _action_trace_payload,
     _merge_strategy_directive,
-    _inject_skill_output,
+    _inject_skill_output as _inject_skill_output,
 )
 
 # Backward-compatible re-exports from runtime.directives package.
@@ -50,7 +50,6 @@ from werewolf_agent.runtime.directives import (
     build_villager_directive as _build_villager_day_speech_directive,
     build_witch_directive as _build_witch_day_speech_directive,
     build_wolf_day_directive as _build_wolf_day_speech_directive,
-    build_wolf_directive,  # back-compat shim (M3-3)
     build_wolf_night_directive as _build_wolf_night_directive,
     build_wolf_vote_directive as _build_wolf_vote_strategy,
 )
@@ -98,7 +97,6 @@ class SimpleAgentRegistry:
 from werewolf_agent.runtime.strategy import (
     estimate_witch_save_value as _estimate_witch_save_value,
     evaluate_seer_check_value as _evaluate_seer_check_value,
-    evaluate_death_cause_claims as _evaluate_death_cause_claims,
     evaluate_wolf_kill_target as _evaluate_wolf_kill_target,
     get_wolf_role_assignment as _get_wolf_role_assignment,
     has_publicly_claimed_seer as _has_publicly_claimed_seer,
@@ -1044,10 +1042,6 @@ def agent_wolf_discussion(
         if p.alive and p.role == "werewolf" and pid != wolf_id
     ]
     teammate_speeches = [s for s in prev_speeches if s["wolf_id"] != wolf_id]
-    transcript_lines = []
-    for s in teammate_speeches[-12:]:  # Last 12 teammate speeches
-        transcript_lines.append(f"[第{s['round']}轮 {s['wolf_id']}]: {s['text']}")
-    teammate_transcript = "\n".join(transcript_lines)
 
     # Build discussion instruction based on round and teammate content
     has_teammate_input = bool(teammate_speeches)

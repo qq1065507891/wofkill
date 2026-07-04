@@ -9,7 +9,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import random
-import time
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -244,7 +243,6 @@ class BatchRunner:
 
             # Day phase: simple exile
             day_number += 1
-            alive_players = [pid for pid, p in state.players.items() if p.alive]
             exile_targets = self._engine.legal_exile_targets(state)
             if exile_targets:
                 # Use deterministic evidence-based fallback for reproducible metrics

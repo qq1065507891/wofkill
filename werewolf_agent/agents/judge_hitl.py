@@ -364,7 +364,6 @@ class JudgeHITLInterface:
         alive = [pid for pid, p in gs.players.items() if p.alive]
         lines = [f"存活玩家 ({len(alive)}人):"]
         for pid in alive:
-            p = gs.players[pid]
             lines.append(f"  {pid} - 存活" + (" (警长)" if pid == gs.sheriff_id else ""))
         return {"response": "\n".join(lines)}
 

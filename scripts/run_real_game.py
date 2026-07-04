@@ -186,7 +186,6 @@ def print_pace_report(runner: GameRunner) -> None:
 def print_quality_audit(runner: GameRunner) -> None:
     """Audit game output against the new quality modules."""
     from werewolf_agent.runtime.speech_quality import validate_public_speech
-    from werewolf_agent.runtime.vote_quality import validate_vote_reason
     gs = runner.state
     _sep("QUALITY AUDIT")
 
@@ -208,7 +207,6 @@ def print_quality_audit(runner: GameRunner) -> None:
     print(f"  Speeches: {total_speeches} total, {ok_speeches} ok, {filler_count} filler, {short_count} empty")
 
     # Vote quality
-    vote_events = [e for e in gs.events if e.type == "vote_resolved"]
     votes_with_basis = 0
     votes_without_basis = 0
     # Check vote action traces for basis
@@ -550,7 +548,7 @@ def main() -> None:
     n_agents = len(runner._agent_registry._agents) if runner._agent_registry else 0
     print(f"  Agents:  {n_agents}")
 
-    final_state = runner.run(max_steps=args.max_steps)
+    runner.run(max_steps=args.max_steps)
     elapsed = time.monotonic() - start
 
     print(f"\n  Finished in {elapsed:.1f}s ({runner.step_count} steps)")

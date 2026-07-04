@@ -12,7 +12,6 @@ from typing import Any
 
 from werewolf_agent.agents.schemas import (
     JudgeBroadcast,
-    TaskType,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
 from werewolf_agent.persona_runtime.judge_router import (

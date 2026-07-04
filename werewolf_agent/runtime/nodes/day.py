@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import re
-import uuid
 from dataclasses import replace
 from typing import Any
 
-from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState, VictoryResult
+from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     agent_day_speech, agent_day_vote, agent_exile_last_words,
@@ -17,9 +15,7 @@ from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     _action_audit_events,
     _action_trace_event,
-    _agent_timeout,
     _allocate_decision_identity,
-    _call_agent,
     _dispatch_agent,
     _judge_broadcast,
     _jb,
@@ -438,7 +434,6 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
         and state.get("exile_vote_revote") == state.get("revote", False)
     )
     existing_votes = state.get("exile_votes", {}) if same_vote_window else {}
-    registry = state.get("agent_registry")
     is_revote = state.get("revote", False)
     if is_revote:
         logger.debug(f"\n  --- PK重新投票 ---")
@@ -455,7 +450,6 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
     sheriff_id = gs.sheriff_id if gs.sheriff_badge_state == "active" else None
     if not existing_votes:
         for idx, pid in enumerate(eligible_voter_ids, start=1):
-            player = gs.players[pid]
             # Per-voter judge broadcast (唱票)
             voter_name = _player_display(state, pid)
             gs, _ = _jb(

@@ -16,7 +16,7 @@ from pathlib import Path
 from dataclasses import dataclass, replace
 from typing import Any, Iterator
 
-from werewolf_agent.core.models import GameState, GameEvent
+from werewolf_agent.core.models import GameState
 from werewolf_agent.customization.ruleset_registry import RulesetRegistry
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.graph import RuntimeState, build_game_graph

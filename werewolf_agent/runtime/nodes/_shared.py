@@ -2,46 +2,21 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import random
-import re
 import time
-import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypedDict
 
 from werewolf_agent.core.models import (
-    Death,
     GameEvent,
     GameState,
-    PlayerState,
-    VictoryResult,
 )
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.agent_adapter import (
-    AgentRegistry,
-    agent_badge_decision,
-    agent_day_vote,
-    agent_exile_last_words,
-    agent_hunter_shot,
-    agent_hybrid_choose_master,
-    agent_night_seer,
-    agent_night_witch,
-    agent_pk_speech,
-    agent_sheriff_election_speech,
-    agent_sheriff_pick_speech_order,
-    agent_sheriff_register,
-    agent_sheriff_vote,
-    agent_sheriff_withdraw,
-    agent_wolf_consensus,
-    agent_wolf_discussion,
-)
 from werewolf_agent.runtime.timers import timed_call
-from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS as AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import detect_timeline_confusion, phase_label
 
 RULESET_PATH = str(Path(__file__).resolve().parent.parent.parent.parent / "config" / "rulesets" / "pre_witch_hunter_idiot_mixed.yaml")

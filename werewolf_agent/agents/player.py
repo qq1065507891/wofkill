@@ -14,7 +14,6 @@ import random
 import re
 import time
 from dataclasses import asdict
-from enum import Enum
 from typing import Any, Protocol
 
 from werewolf_agent.agents.schemas import (

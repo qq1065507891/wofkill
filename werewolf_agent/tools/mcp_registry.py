@@ -13,7 +13,6 @@ from typing import Any
 from werewolf_agent.tools.schemas import (
     MCPProvider,
     ToolCall,
-    ToolCallLogEntry,
     ToolResult,
     ToolSource,
     ToolStatus,

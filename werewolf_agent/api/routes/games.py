@@ -13,7 +13,7 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from werewolf_agent.api.auth import AuthManager
@@ -42,7 +42,7 @@ from werewolf_agent.api.views import (
     build_timeline,
     build_world_model_audit,
 )
-from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 from werewolf_agent.runtime.world_model_audit import extract_world_model_audits_from_events
 

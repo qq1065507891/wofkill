@@ -8,6 +8,7 @@ back to static output for backward compatibility.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from werewolf_agent.skills.schemas import (
@@ -60,7 +61,7 @@ def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return meta, body.strip()
 
 
-def _load_manifests(root: "Path | None" = None) -> list[SkillDefinition]:
+def _load_manifests(root: Path | None = None) -> list[SkillDefinition]:
     """Load skill metadata from SKILL.md files under skill directories.
 
     Each skill directory contains a SKILL.md with YAML frontmatter
@@ -73,8 +74,6 @@ def _load_manifests(root: "Path | None" = None) -> list[SkillDefinition]:
     (it defaults to this module's parent directory); tests pass a
     `tmp_path` to load fixtures in isolation.
     """
-    from pathlib import Path
-
     if root is None:
         root = Path(__file__).resolve().parent
     result: list[SkillDefinition] = []
@@ -619,12 +618,6 @@ def bold_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     if len(wolves) <= 2:
         risks.append(f"存活狼人仅{len(wolves)}人，悍跳失败代价极高")
 
-    # Suggest a fake check target (alive non-wolf player)
-    fake_target = None
-    non_wolves = _alive_non_wolves(gs)
-    if non_wolves and seer_count <= 1:
-        fake_target = non_wolves[0]
-
     return SkillOutput(
         skill_name=skill.name.value,
         speech_structure=speech,
@@ -873,7 +866,6 @@ def push_vote_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     bs = inp.belief_state
 
     top_suspects = _belief_top_suspects(bs, count=3)
-    day = gs.day_number
 
     if not top_suspects:
         if is_vote_task:
@@ -1099,7 +1091,6 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
         )
     # dynamic analysis
     ws = inp.world_state
-    bs = inp.belief_state
 
     wolves = _alive_wolves(gs)
     exposed = _wolf_teammates_exposed(ws, wolves)
@@ -1149,9 +1140,6 @@ def deep_hook_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutput:
     if day > 3:
         risks.append("已过Day 3，倒钩需更加谨慎——好人的分析会越来越细")
         conf = max(0.4, conf - 0.1)
-
-    # Suggest a target to attack (exposed teammate if applicable)
-    hook_target = exposed[0]["teammate"] if exposed else None
 
     return SkillOutput(
         skill_name=skill.name.value,

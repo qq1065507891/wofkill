@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import re
 from dataclasses import replace
 from typing import Any
@@ -17,17 +16,12 @@ from werewolf_agent.runtime.agent_adapter import (
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     _action_audit_events,
-    _action_trace_event,
-    _agent_timeout,
     _allocate_decision_identity,
-    _call_agent,
     _dispatch_agent,
     _ensure_runtime_audit_state,
     _judge_broadcast,
     _jb,
     _player_display,
-    _sheriff_died_this_batch,
-    _timer_expired,
     logger,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector

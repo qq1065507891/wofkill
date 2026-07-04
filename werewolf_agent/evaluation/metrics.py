@@ -15,18 +15,12 @@ import re
 from typing import Any
 
 from werewolf_agent.evaluation.schemas import (
-    ActionRecord,
     ActionVerdict,
     BatchConfig,
     CostMetrics,
-    CostRecord,
-    ExperimentDimension,
     FactionMetrics,
     GameResult,
     GrowthPoint,
-    LeaderboardEntry,
-    LeaderboardReport,
-    LeakageRecord,
     MetricProvenance,
     MetricsSnapshot,
     PlayerMetrics,
@@ -37,7 +31,6 @@ from werewolf_agent.evaluation.schemas import (
     WorldModelMetrics,
 )
 from werewolf_agent.evaluation.decision_helpers import (
-    TARGET_REQUIRED_ACTIONS as _TARGET_REQUIRED_ACTIONS,
     decision_is_legal_from_trace as _decision_is_legal_from_trace,
     dialogue_leaked_from_trace as _dialogue_leaked_from_trace,
 )

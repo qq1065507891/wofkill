@@ -12,7 +12,7 @@ import threading
 from dataclasses import asdict
 from typing import Any
 
-from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.storage.sqlite_store import _deserialize_game_state, _serialize_game_state
 
 

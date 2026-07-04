@@ -11,7 +11,6 @@ Design doc §12.1 permission boundaries:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from werewolf_agent.api.schemas import (
     AuditEvent,

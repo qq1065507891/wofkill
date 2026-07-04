@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from werewolf_agent.cognition.world_state import StructuredFact, StructuredWorldState
-from werewolf_agent.core.models import GameState
 
 
 # ---------------------------------------------------------------------------

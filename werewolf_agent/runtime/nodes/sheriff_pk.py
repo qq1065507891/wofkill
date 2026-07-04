@@ -14,7 +14,6 @@ from werewolf_agent.runtime.nodes._shared import (
     logger,
     RuntimeState,
     _action_audit_events,
-    _action_trace_event,
     _allocate_decision_identity,
     _dispatch_agent,
     _judge_broadcast,

@@ -13,7 +13,6 @@ This module owns:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import threading
@@ -35,7 +34,7 @@ from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.skills.registry import SkillRegistry
-from werewolf_agent.skills.schemas import SkillAdviceFrame, SkillInput, SkillName
+from werewolf_agent.skills.schemas import SkillAdviceFrame, SkillInput
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
     current_phase_label,
@@ -43,23 +42,10 @@ from werewolf_agent.runtime.timeline import (
 )
 
 # Backward-compatible re-exports from runtime.directives package.
-from werewolf_agent.runtime.directives import (
-    build_hunter_directive as _build_hunter_day_speech_directive,
-    build_hybrid_directive as _build_hybrid_day_speech_directive,
-    build_idiot_directive as _build_idiot_day_speech_directive,
-    build_seer_directive as _build_seer_day_speech_directive,
-    build_villager_directive as _build_villager_day_speech_directive,
-    build_wolf_day_directive as _build_wolf_day_speech_directive,
-)
 # Backward-compatible re-exports from runtime.strategy (Task 2 extraction).
 from werewolf_agent.runtime.strategy import (
-    estimate_witch_save_value as _estimate_witch_save_value,
     build_witch_pressure_targets as _build_witch_pressure_targets,
-    evaluate_seer_check_value as _evaluate_seer_check_value,
     evaluate_death_cause_claims as _evaluate_death_cause_claims,
-    evaluate_wolf_kill_target as _evaluate_wolf_kill_target,
-    get_wolf_role_assignment as _get_wolf_role_assignment,
-    has_publicly_claimed_seer as _has_publicly_claimed_seer,
 )
 
 logger = logging.getLogger(__name__)
@@ -762,8 +748,6 @@ def _inject_skill_output(
     # wolf-role skip into the handler (bold_claim, deep_hook,
     # swing_vote) — context.py must not re-implement it. The variable
     # was computed but never read, so it is removed entirely.
-
-    parts: list[str] = []
 
     # P1-K3: do NOT drop on `confidence < 0.4`. Low-confidence output is
     # often negative-signal advice ("don't do X", "avoid Y") that is

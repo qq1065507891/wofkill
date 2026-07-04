@@ -12,7 +12,6 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 # 合法的角色值，用于校验 token 中的角色声明
 _VALID_ROLES = {"player_agent", "spectator", "moderator", "debugger"}

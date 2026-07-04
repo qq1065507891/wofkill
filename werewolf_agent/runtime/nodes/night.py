@@ -2,42 +2,33 @@
 
 from __future__ import annotations
 
-import random
 import time
-import uuid
 from dataclasses import replace
 from typing import Any
 
-from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState, VictoryResult
+from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     agent_night_seer, agent_night_witch, agent_hybrid_choose_master,
     agent_wolf_consensus, agent_wolf_discussion,
 )
 from werewolf_agent.runtime.nodes._shared import (
-    RULESET_PATH,
     logger,
     RuntimeState,
     _action_audit_events,
-    _alive_non_wolves,
     _alive_wolves,
-    _call_agent,
     _dispatch_agent,
     _find_role,
     _judge_broadcast,
     _jb,
     _hitl_checkpoint,
-    _new_engine,
     _ensure_runtime_audit_state,
     _player_display,
     _player_ids,
     _stable_seed,
     _timer_expired,
-    _agent_timeout,
-    _action_trace_event,
     _allocate_decision_identity,
     AGENT_TIMEOUTS,
-    timed_call,
     _force_wolf_kill,
     _planned_wolf_kill,
     _build_wolf_team_plan,
@@ -623,7 +614,6 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
         gs = replace(gs, events=gs.events + [GameEvent(type="wolf_discussion", payload={})])
         return {"game_state": gs}
 
-    engine: RuleEngine = state["engine"]
     wolves = _alive_wolves(gs)
     events: list[GameEvent] = []
     round_count = 3 if gs.night_number == 1 else 2

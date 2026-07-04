@@ -19,9 +19,7 @@ from werewolf_agent.runtime.context import build_agent_context
 from werewolf_agent.runtime.agent_adapter import _agent_reflection
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
-    _action_trace_event,
     _dispatch_agent,
-    _judge_broadcast,
     _player_display,
 )
 
@@ -268,7 +266,6 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
     ReflectionMemory for future-game retrieval.
     """
     gs: GameState = state["game_state"]
-    engine: RuleEngine = state["engine"]
 
     # Build per-player reflection via agent calls when registry is available
     reflection_entries: list[dict[str, Any]] = []

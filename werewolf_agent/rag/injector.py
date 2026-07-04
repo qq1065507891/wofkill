@@ -14,7 +14,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from werewolf_agent.agents.schemas import AgentContext
 from werewolf_agent.rag.schemas import (
     RAGHit,
     RAGQuery,
