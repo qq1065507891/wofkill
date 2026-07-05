@@ -1,7 +1,10 @@
-"""Evaluation schemas: structured types for metrics, batch runs, and reports.
-
-Design doc §14 defines all evaluation metrics and experiment dimensions.
-Every game result is replayable from initial_seed + ruleset_snapshot + event_log.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：定义§14评估指标和实验维度的结构化类型，每局结果可从initial_seed + ruleset_snapshot + event_log回放
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

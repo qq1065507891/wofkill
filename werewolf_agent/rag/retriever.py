@@ -1,12 +1,10 @@
-"""Strategy Retriever: search and rank RAG entries by query.
-
-Priority order (design doc §9.2):
-1. Same ruleset + phase + role, external high-end cases
-2. External tactics (transferable patterns)
-3. Project history + review (error correction)
-4. Generic speech templates (avoid homogenization)
-
-Results are ranked by relevance score and filtered by quality/visibility.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：按查询检索和排序 RAG 条目，结合向量相似度、关键词匹配和质量过滤。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

@@ -1,15 +1,10 @@
-"""Shared strategy helpers.
-
-P-U2: Single source of truth for negation detection used by both
-``strategy.wolf`` and ``strategy.hunter``. Previously the two
-modules each declared their own ``_NEGATION_WORDS`` / ``_NEGATION_RE``
-/ ``_speech_is_negated``, with two subtle drift risks:
-- The character classes were free to diverge silently.
-- Each module's regex re-built the alternation at import time.
-
-A single ``speech_is_negated(text) -> bool`` helper replaces all of
-that. The context keywords are a superset of what wolf and hunter
-needed individually, so the union does not regress either caller.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：策略共享辅助函数——否定检测的单一来源（P-U2），供 wolf 和 hunter 模块共用。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
 

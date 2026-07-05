@@ -1,8 +1,10 @@
-"""MCP transport adapter boundary.
-
-Real MCP clients can be wrapped by ``TransportMCPProvider`` so the rest of the
-codebase continues to consume the existing MCPProvider contract. Transport
-failures are converted into ToolResult errors by the adapter/registry boundary.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：MCP 传输适配器边界——将真实 MCP 客户端封装为 MCPProvider 契约，传输失败转为 ToolResult 错误。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

@@ -1,17 +1,10 @@
-"""HTTP LLM providers for ModelRouter.
-
-API keys are read from environment variables or an untracked .env file.
-The router still depends only on the LLMProvider protocol; provider SDKs are
-not required for the V1 runtime.
-
-Sub-modules:
-- base: _BaseHttpProvider, ProviderConfigError, PROVIDER_DOTENV_KEYS
-- env: get_env, load_local_dotenv, _ENV_OVERRIDES
-- anthropic: AnthropicProvider + response parsers
-- openai: OpenAIProvider + shared OpenAI-compatible generation
-- glm: GLMProvider
-- minimax: MiniMaxProvider
-- factory: create_provider_from_env
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：LLM Provider 子包，统一导出 Anthropic/OpenAI/GLM/MiniMax 各厂商实现
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from werewolf_agent.model_gateway.providers.anthropic import (

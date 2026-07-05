@@ -1,7 +1,10 @@
-"""Judge persona router — resolves judge tone/style profiles for broadcasts.
-
-Layer 3: Follows PersonaRouter pattern (YAML loading, profile resolution) but
-specialized for judge-specific dimensions and broadcast styles.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：法官人设路由器——解析法官语调/风格档案，用于广播播报。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

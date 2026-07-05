@@ -1,9 +1,10 @@
-"""MCP Registry: external tool provider registration and dispatch.
-
-Design doc §11.2 MCP positioning principles:
-- Highly coupled local rule queries, state R/W, game progression do NOT go through MCP.
-- MCP layer only provides external tool capabilities, does NOT own game state truth.
-- All external MCP results must be annotated with source and treated as suggestions.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：MCP 注册表——外部工具提供者注册与调度，仅提供外部工具能力，不拥有游戏状态真理（设计文档 §11.2）。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

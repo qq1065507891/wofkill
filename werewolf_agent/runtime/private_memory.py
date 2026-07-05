@@ -1,4 +1,16 @@
-"""Per-player private memory derived from that player's own cognition."""
+﻿# -*- coding: utf-8 -*-
+"""
+根据玩家自身认知生成和清洗私有记忆。
+
+作者: Mike
+创建日期: 2025-01-15
+修改日期: 2026-07-05
+
+使用示例:
+    >>> from werewolf_agent.runtime.private_memory import build_private_memory
+    >>> build_private_memory(...)
+"""
+
 
 from __future__ import annotations
 

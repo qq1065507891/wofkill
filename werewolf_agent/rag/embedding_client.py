@@ -1,7 +1,10 @@
-"""SiliconFlow embedding API client.
-
-Provides real semantic embeddings via BAAI/bge-large-zh-v1.5.
-API key read from SILICONFLOW_API_KEY env var, loaded from .env if present.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：调用 SiliconFlow 嵌入 API 获取语义向量，后端为 BAAI/bge-large-zh-v1.5。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

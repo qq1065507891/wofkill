@@ -1,7 +1,11 @@
-"""Structured output schemas for agent actions.
+﻿# -*- coding: utf-8 -*-
+"""Agent 动作的结构化输出 Schema 定义：枚举、Pydantic 模型和联合类型，约束所有玩家和法官输出。
 
-All player and judge outputs must pass through these schemas.
-Enums constrain legal actions and targets per RuleEngine rules.
+**功能描述**：定义 ActionType / TaskType / OutputMode 等枚举以及 PlayerAction / AgentContext 等核心数据模型。
+**作者**：Mike
+**创建日期**：2025-01-15
+**修改日期**：2026-07-05
+**使用示例**：内部模块，无对外接口
 """
 
 from __future__ import annotations

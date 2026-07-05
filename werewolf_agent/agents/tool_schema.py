@@ -1,7 +1,10 @@
-"""Standalone tool schema generation functions extracted from PlayerAgent.
-
-These functions generate JSON schema definitions for the
-submit_player_action tool and related quality checks.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：为 LLM function calling 生成符合 OpenAI tool 格式的 JSON Schema，以及发言/投票质量错误提示。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

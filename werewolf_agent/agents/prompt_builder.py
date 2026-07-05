@@ -1,11 +1,14 @@
-"""Player prompt builder: s10 pipeline architecture.
+﻿# -*- coding: utf-8 -*-
+"""
+构建玩家提示词，将稳定规则和动态上下文分别写入对应消息。
 
-Assembles system and user prompts from clearly separated sources.
-Follows s10: system_prompt = stable sections, user_prompt = dynamic sections.
+作者: Mike
+创建日期: 2025-01-15
+修改日期: 2026-07-05
 
-Boundary: === DYNAMIC_BOUNDARY === marks where stable rules end and
-per-turn context begins.  Stable sections go in the system prompt;
-dynamic sections go in the user message (effectively a "system reminder").
+使用示例:
+    >>> from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    >>> PlayerPromptBuilder(...)
 """
 
 from __future__ import annotations
@@ -22,6 +25,13 @@ from werewolf_agent.agents.directive_priority import (
     SUGGESTION_KEYS,
 )
 from werewolf_agent.agents.parse_dispatch import select_output_mode
+from werewolf_agent.agents.prompt_formatting import (
+    clean_prompt_text,
+    compact_json,
+    structured_json_summary,
+    summarize_json_value,
+    truncate_text,
+)
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
@@ -1974,13 +1984,7 @@ class PlayerPromptBuilder:
         *,
         max_chars: int = _MAX_PERSONA_LINE_CHARS,
     ) -> str:
-        text = str(value or "").strip()
-        text = _PLAYER_ID_RE.sub("历史玩家", text)
-        text = text.replace("\r", " ").replace("\n", " ")
-        text = re.sub(r"\s+", " ", text)
-        if len(text) <= max_chars:
-            return text
-        return text[: max(0, max_chars - 6)] + "…已截断"
+        return clean_prompt_text(value, max_chars=max_chars)
 
     @staticmethod
     def _slim_numeric_params(value: Any) -> dict[str, float]:
@@ -2115,114 +2119,15 @@ class PlayerPromptBuilder:
     # ── Utility ──
 
     def _compact_json(self, value: Any) -> str:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        if len(text) <= _MAX_JSON_CONTEXT_CHARS:
-            return text
-
-        structured = self._structured_json_summary(value)
-        if structured is not None:
-            structured_text = json.dumps(
-                structured,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            if len(structured_text) <= _MAX_JSON_CONTEXT_CHARS:
-                return structured_text
-
-        prefix = text[: _MAX_JSON_CONTEXT_CHARS // 3]
-        suffix = text[-(_MAX_JSON_CONTEXT_CHARS // 3):]
-        while True:
-            rendered = json.dumps(
-                {
-                    "truncated": True,
-                    "original_type": type(value).__name__,
-                    "original_length": len(text),
-                    "omitted_middle": True,
-                    "content_prefix": prefix,
-                    "content_suffix": suffix,
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            if len(rendered) <= _MAX_JSON_CONTEXT_CHARS or (not prefix and not suffix):
-                return rendered
-            overflow = len(rendered) - _MAX_JSON_CONTEXT_CHARS
-            trim_prefix = min(len(prefix), overflow // 2 + 8)
-            trim_suffix = min(len(suffix), overflow - trim_prefix + 8)
-            prefix = prefix[: max(0, len(prefix) - trim_prefix)]
-            suffix = suffix[min(len(suffix), trim_suffix):]
+        return compact_json(value)
 
     @staticmethod
     def _structured_json_summary(value: Any) -> dict[str, Any] | None:
-        if isinstance(value, dict):
-            items = list(value.items())
-            if not items:
-                return None
-            head_count = min(6, len(items))
-            tail_count = min(4, max(0, len(items) - head_count))
-            head = {
-                key: PlayerPromptBuilder._summarize_json_value(val)
-                for key, val in items[:head_count]
-            }
-            tail_items = items[-tail_count:] if tail_count else []
-            tail = {
-                key: PlayerPromptBuilder._summarize_json_value(val)
-                for key, val in tail_items
-            }
-            return {
-                "truncated": True,
-                "original_type": "dict",
-                "original_length": len(items),
-                "omitted_middle": len(items) > head_count + tail_count,
-                "head": head,
-                "tail": tail,
-            }
-        if isinstance(value, list):
-            if not value:
-                return None
-            head_count = min(4, len(value))
-            tail_count = min(3, max(0, len(value) - head_count))
-            return {
-                "truncated": True,
-                "original_type": "list",
-                "original_length": len(value),
-                "omitted_middle": len(value) > head_count + tail_count,
-                "head": [
-                    PlayerPromptBuilder._summarize_json_value(item)
-                    for item in value[:head_count]
-                ],
-                "tail": [
-                    PlayerPromptBuilder._summarize_json_value(item)
-                    for item in (value[-tail_count:] if tail_count else [])
-                ],
-            }
-        return None
+        return structured_json_summary(value)
 
     @staticmethod
     def _summarize_json_value(value: Any) -> Any:
-        if isinstance(value, str):
-            return PlayerPromptBuilder._clean_prompt_text(
-                value,
-                max_chars=_MAX_LEARNING_TEXT_CHARS,
-            )
-        if isinstance(value, (int, float, bool)) or value is None:
-            return value
-        if isinstance(value, list):
-            return [
-                PlayerPromptBuilder._summarize_json_value(item)
-                for item in value[:3]
-            ]
-        if isinstance(value, dict):
-            slim: dict[str, Any] = {}
-            for idx, (key, val) in enumerate(value.items()):
-                if idx >= 5:
-                    break
-                slim[str(key)] = PlayerPromptBuilder._summarize_json_value(val)
-            return slim
-        return PlayerPromptBuilder._clean_prompt_text(
-            value,
-            max_chars=_MAX_LEARNING_TEXT_CHARS,
-        )
+        return summarize_json_value(value)
 
     @staticmethod
     def _truncate_text(
@@ -2232,35 +2137,12 @@ class PlayerPromptBuilder:
         marker: str = "...（已截断）",
         prefer_sentence_boundary: bool = True,
     ) -> str:
-        # D4-8 (P2): two improvements on top of the P2-4 marker:
-        #   1. Use the Chinese-parenthetical marker ``（已截断）`` (the
-        #      default ``marker``) to distinguish prose truncation
-        #      (here, default callers) from JSON truncation (P2-4
-        #      used ``<已截断>`` in _compact_json, which still passes
-        #      that marker explicitly). The LLM can now tell the two
-        #      truncation contexts apart.
-        #   2. Prefer a sentence-boundary cut (`.`/`。`/`!`/`?`/`！`/`？`
-        #      plus newline) within the last ~10% of the budget so the
-        #      LLM sees a clean stop rather than a mid-word break.
-        #      JSON callers (which pass ``prefer_sentence_boundary=False``)
-        #      bypass this: JSON has no sentences and the cut must
-        #      land somewhere, not on a punctuation character that
-        #      might be inside a string literal.
-        if len(text) <= max_chars:
-            return text
-        if prefer_sentence_boundary:
-            slack = max(1, max_chars // 10)
-            search_start = max_chars - slack
-            best_cut = text.rfind("\n", search_start, max_chars)
-            if best_cut < search_start:
-                # No newline in slack window; try sentence-end punctuation.
-                for ch in ".。!！?？":
-                    idx = text.rfind(ch, search_start, max_chars)
-                    if idx > best_cut:
-                        best_cut = idx
-            if best_cut >= search_start:
-                return text[: best_cut + 1] + marker
-        return text[:max_chars] + marker
+        return truncate_text(
+            text,
+            max_chars,
+            marker=marker,
+            prefer_sentence_boundary=prefer_sentence_boundary,
+        )
 
 
 # P0-2 (defense): explicit field whitelist for salience items. The

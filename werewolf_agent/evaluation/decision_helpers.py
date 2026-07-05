@@ -1,8 +1,10 @@
-"""Decision-legality and dialogue-leak helpers.
-
-Extracted from ``metrics.py`` so both ``metrics`` and ``trace_builder`` can
-share them without the ``metrics -> trace_builder`` import cycle. These are
-pure functions over an ``action_trace`` audit dict; they read no game state.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：从metrics.py抽离的纯函数，检测action_trace审计字典中的决策合法性与会话信息泄露，供metrics和trace_builder共享避免循环导入
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

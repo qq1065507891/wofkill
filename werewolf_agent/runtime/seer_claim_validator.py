@@ -1,17 +1,19 @@
+﻿# -*- coding: utf-8 -*-
 """Validate that public seer claims respect the 1-check-per-night rule.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 In g_3528592081, fake Seer p08 publicly claimed "I checked p04 and p09 last
 night (N1)" — but the Seer rule allows only 1 check per night. This module
 detects such rule-violation leaks in public speeches.
-
 Two helpers are exposed:
-
 - :func:`extract_seer_claims` — regex extractor returning per-claim
-  ``{night, target_id}`` records (night may be ``None`` if the speech
-  omits the night number).
+``{night, target_id}`` records (night may be ``None`` if the speech
+omits the night number).
 - :func:`validate_seer_claim` — returns an error string when a speech
-  violates the 1-check-per-night rule or claims impossible future / pre-game
-  nights; returns ``None`` when the speech is clean.
+violates the 1-check-per-night rule or claims impossible future / pre-game
+nights; returns ``None`` when the speech is clean.
 """
 
 from __future__ import annotations

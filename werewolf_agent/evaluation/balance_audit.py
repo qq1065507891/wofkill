@@ -1,7 +1,10 @@
-"""Batch balance audit helpers for saved game logs.
-
-The functions here are intentionally pure: they consume saved JSON-style game
-dicts and never call model providers or mutate game state.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：消费已保存的JSON格式对局字典，纯函数实现，不调用模型提供方也不变更对局状态
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

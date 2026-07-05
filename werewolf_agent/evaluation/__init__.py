@@ -1,9 +1,8 @@
-"""Evaluation and benchmark tooling.
-
-Design doc §14: evaluation system for batch games, metrics aggregation,
-model/persona/RAG strategy comparisons, leakage rate, illegal action rate,
-cost/latency statistics, growth curves, and leaderboard JSON reports.
-
-Evaluation is replayable from initial_seed + ruleset_snapshot + event_log.
-Evaluation never mutates rule truth.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：批量对局评估、指标聚合、模型/角色/RAG策略对比、排行榜JSON报告
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """

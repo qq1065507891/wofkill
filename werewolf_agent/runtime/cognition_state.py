@@ -1,5 +1,9 @@
+﻿# -*- coding: utf-8 -*-
 """Live in-game cognition state for player agents.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 This module keeps per-viewer cognition matrices alive across turns. It is
 separate from cross-game memory: the manager owns current-game belief updates,
 while restored memory remains historical learning context.

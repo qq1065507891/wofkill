@@ -1,7 +1,10 @@
-"""API view functions: build responses filtered by view mode.
-
-Each view function takes a GameState and view mode, and returns
-only the data that the caller is authorized to see.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：API 视图构建函数，根据调用者视图模式过滤 GameState 数据后组装响应模型。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：from werewolf_agent.api.views import build_public_state, build_timeline
 """
 
 from __future__ import annotations

@@ -1,8 +1,10 @@
-"""Player profiles: ability scores with growth tracking.
-
-Design doc §10: player profile tracks logic ability, deception ability,
-leadership, credibility, learning speed, and risk preference.
-Profiles are updated after each game's review.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：玩家画像模块，追踪各玩家的能力评分与对局历史
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

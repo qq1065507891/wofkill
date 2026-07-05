@@ -1,12 +1,10 @@
-"""Vector store abstraction for RAG semantic retrieval.
-
-Design doc §13: V1 can use local/heuristic retrieval first, then upgrade
-to Qdrant/pgvector. This module provides the interface boundary.
-
-Two implementations:
-- LocalVectorStore: TF-IDF-like heuristic scoring (no numpy required)
-- EmbeddingVectorStore: Hash-based embedding with cosine similarity (numpy)
-- AutoVectorStore: selects best available implementation at runtime
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：向量存储抽象层，提供 Local/Embedding/Auto 三种实现，屏蔽后端细节。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

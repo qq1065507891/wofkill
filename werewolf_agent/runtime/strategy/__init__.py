@@ -1,6 +1,10 @@
-"""Strategy and evaluation functions extracted from agent_adapter.
-
-Pure deterministic scoring helpers — no LLM calls, no side effects.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：策略评估函数包——从 agent_adapter 提取的纯确定性评分辅助函数，无 LLM 调用或副作用。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
 

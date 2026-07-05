@@ -1,4 +1,11 @@
-"""Bounded next-event simulation from possible-world hypotheses."""
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：基于可能世界集合，生成紧凑的启发式预测（夜间刀杀压力、投票压力等），
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
+"""
 
 from __future__ import annotations
 

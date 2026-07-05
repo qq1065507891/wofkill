@@ -1,8 +1,10 @@
-"""Skill schemas: structured types for werewolf agent skills.
-
-Design doc §11.1: skills are abstracted gameplay capabilities.
-Each skill takes role, phase, situation, persona, and experience as input,
-and returns recommended action, speech structure, risk alerts, and confidence.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：技能数据模式模块，定义技能输入/输出、技能定义及枚举类型
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

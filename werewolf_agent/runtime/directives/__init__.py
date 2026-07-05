@@ -1,5 +1,9 @@
+﻿# -*- coding: utf-8 -*-
 """Role-specific speech directive builders for day-phase agent prompts.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 Each module in this package contains directive functions for one role,
 producing structured prompt content that guides the LLM agent's day-phase
 speech behavior.  Shared helper utilities live in ``_shared.py``.

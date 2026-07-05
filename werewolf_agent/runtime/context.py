@@ -1,14 +1,30 @@
-"""Agent context builder: converts GameState into AgentContext for PlayerAgent.
-
-Extracted from agent_adapter.py to decompose the god object.
-This module owns:
-- Persona style hints and profiles
-- RAG hint injection
-- Cross-game memory hints (profile, reflection, cognition matrix)
-- Skill output injection and tool definitions
-- Strategy directive merging
-- The main build_agent_context() function
+﻿# -*- coding: utf-8 -*-
 """
+把 GameState 组装成 PlayerAgent 决策所需的 AgentContext。
+
+作者: Mike
+创建日期: 2025-01-15
+修改日期: 2026-07-05
+
+使用示例:
+    >>> from werewolf_agent.runtime.context import build_agent_context
+    >>> build_agent_context(...)
+"""
+
+
+# 将 GameState 转换为 PlayerAgent 可用的 AgentContext。
+# 作者: Mike
+# 创建日期: 2025-01-15
+# 修改日期: 2026-07-05
+# 使用示例: 内部模块，无对外接口
+# 从 agent_adapter.py 拆出，用于降低大型适配器的职责复杂度。
+# 本模块负责：
+# - 人设风格提示与画像。
+# - RAG 提示注入。
+# - 跨局记忆提示，包括画像、反思和认知矩阵。
+# - 技能输出注入与工具定义。
+# - 策略指令合并。
+# - build_agent_context() 主入口。
 
 from __future__ import annotations
 
@@ -32,14 +48,13 @@ from werewolf_agent.agents.directive_priority import (
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+from werewolf_agent.runtime.context_public_summary import (
+    build_public_summary,
+    build_recent_transcript,
+)
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.skills.registry import SkillRegistry
 from werewolf_agent.skills.schemas import SkillAdviceFrame, SkillInput
-from werewolf_agent.runtime.timeline import (
-    TIMELINE_ORDER_NOTE,
-    current_phase_label,
-    phase_label,
-)
 
 # Backward-compatible re-exports from runtime.directives package.
 # Backward-compatible re-exports from runtime.strategy (Task 2 extraction).
@@ -1108,163 +1123,8 @@ def build_agent_context(
         if pressure_targets:
             visible["poison_pressure_targets"] = pressure_targets
 
-    # Build recent transcript: speeches + votes (up to 12 items for pattern analysis)
-    transcript: list[dict[str, Any]] = []
-    for e in reversed(gs.events):
-        if e.type in ("speech", "sheriff_speech"):
-            if len(transcript) < 10:
-                transcript.insert(0, {
-                    "speaker": e.payload.get("speaker", ""),
-                    "text": e.payload.get("text", ""),
-                    "type": e.type,
-                })
-        elif e.type == "vote_resolved" and len(transcript) < 12:
-            votes_detail = e.payload.get("votes", [])
-            if votes_detail:
-                voter_lines = {v.get("voter", "?"): v.get("target", "弃票") for v in votes_detail}
-                transcript.insert(0, {
-                    "type": "vote_record",
-                    "day": e.payload.get("day_number", "?"),
-                    "result": e.payload.get("exiled") or "无人出局",
-                    "votes": voter_lines,
-                })
-
-    # ── Build public summary (A: enriched events, B: smart truncation) ──
-    # Priority: 1=critical(death/vote/seer), 2=secondary(PK/sheriff_no), 3=low(separators)
-    SUMMARY_BUDGET = 2500
-
-    summary_items: list[tuple[int, str]] = []
-
-    for e in gs.events:
-        if e.type == "day_announce":
-            day = e.payload.get("day", "?")
-            try:
-                day_label = phase_label("day", int(day))
-            except (TypeError, ValueError):
-                day_label = f"D{day}"
-            summary_items.append((3, f"\n===== {day_label} ====="))
-
-        elif e.type == "judge_broadcast" and e.payload.get("visibility") == "public":
-            phase = e.payload.get("phase", "")
-            msg = e.payload.get("message", "")
-            if phase == "death_announce":
-                summary_items.append((1, f"[死讯] {msg}"))
-            elif phase == "exile":
-                summary_items.append((1, f"[法官] {msg}"))
-            elif phase == "sheriff_elected":
-                summary_items.append((1, f"[警长] {msg}"))
-            elif phase == "sheriff_registered":
-                summary_items.append((1, f"[上警] {msg}"))
-            elif phase in ("vote_tie_pk", "vote_second_tie"):
-                summary_items.append((2, f"[法官] {msg}"))
-            elif phase == "sheriff_no_election":
-                summary_items.append((2, f"[警长] {msg}"))
-
-        elif e.type == "vote_resolved":
-            exiled = e.payload.get("exiled")
-            reason = e.payload.get("reason", "")
-            tied = e.payload.get("tied", [])
-            weighted = e.payload.get("weighted_tally", {})
-            day = e.payload.get("day_number", "?")
-            votes_detail = e.payload.get("votes", [])
-            if exiled:
-                if weighted:
-                    tally_str = "、".join(
-                        f"{pid}={int(w)}票" for pid, w in
-                        sorted(weighted.items(), key=lambda x: -x[1])[:5]
-                    )
-                    summary_items.append((1, f"[放逐] D{day} {exiled}被放逐 ({tally_str})"))
-                else:
-                    summary_items.append((1, f"[放逐] D{day} {exiled}被放逐"))
-                # Per-voter breakdown for pattern analysis
-                if votes_detail:
-                    voter_lines = []
-                    for v in votes_detail:
-                        voter = v.get("voter", "?")
-                        target = v.get("target", "弃票") if v.get("target") else "弃票"
-                        voter_lines.append(f"{voter}→{target}")
-                    summary_items.append((1, f"[投票] D{day}: {'，'.join(voter_lines)}"))
-            elif reason == "second_tie_no_exile":
-                summary_items.append((1, "[放逐] 二次平票，无人出局"))
-                if votes_detail:
-                    voter_lines = []
-                    for v in votes_detail:
-                        voter = v.get("voter", "?")
-                        target = v.get("target", "弃票") if v.get("target") else "弃票"
-                        voter_lines.append(f"{voter}→{target}")
-                    summary_items.append((1, f"[投票] D{day}: {'，'.join(voter_lines)}"))
-            elif tied:
-                summary_items.append((2, f"[放逐] 平票PK: {', '.join(tied)}"))
-                if votes_detail:
-                    voter_lines = []
-                    for v in votes_detail:
-                        voter = v.get("voter", "?")
-                        target = v.get("target", "弃票") if v.get("target") else "弃票"
-                        voter_lines.append(f"{voter}→{target}")
-                    summary_items.append((1, f"[投票] D{day}: {'，'.join(voter_lines)}"))
-
-        elif e.type == "idiot_revealed":
-            summary_items.append((1, f"[白痴] {e.payload.get('player_id', '?')} 亮牌"))
-
-        elif e.type == "hunter_shot_public":
-            hunter = e.payload.get("hunter_id", "?")
-            target = e.payload.get("target_id", "?")
-            summary_items.append((1, f"[枪声] 猎人{hunter}带走了{target}"))
-
-        elif e.type in ("speech", "sheriff_speech"):
-            text = str(e.payload.get("text", ""))
-            speaker = e.payload.get("speaker", "")
-            # Mark silent/no-content speeches explicitly to prevent LLM hallucination
-            if "未发表有效言论" in text or not text.strip():
-                summary_items.append((3, f"[沉默] {speaker} 未发表任何有效言论"))
-                continue
-            # Extract public seer check claims from speech
-            if any(kw in text for kw in ("验了", "查验", "查杀", "金水")):
-                m = re.search(r'(?:第?(\d)夜|N(\d)).*?验[了过]?\s*(p\d+).*?(狼人|查杀|好人|金水)', text)
-                if m:
-                    night = m.group(1) or m.group(2)
-                    target = m.group(3)
-                    result_raw = m.group(4)
-                    result_cn = {"狼人": "狼人", "查杀": "狼人", "好人": "好人", "金水": "好人"}.get(result_raw, result_raw)
-                    summary_items.append((1, f"[验人] {speaker} 报 N{night} {target}={result_cn}"))
-            # Extract death cause claims (poison / wolf-kill / saved)
-            for pattern, label in [
-                (r'(?:我|女巫).{0,4}(?:毒[杀了死]|撒毒).{0,4}(p\d+)', '自称毒杀'),
-                (r'(p\d+).{0,6}(?:是|被)(?:女巫)?毒[杀了死]', '被指毒杀'),
-                (r'(?:狼[刀杀人]|狼人[刀杀]).{0,4}(p\d+)|(p\d+).{0,4}(?:是|被)狼[刀杀了]', '被指狼刀'),
-                (r'(?:我|女巫).{0,4}(?:救[了过]|用解药).{0,4}(p\d+)', '自称救了'),
-                (r'(p\d+).{0,4}(?:是)?银水', '被指银水'),
-            ]:
-                for m in re.finditer(pattern, text):
-                    target = m.group(1) or m.group(2)
-                    if target:
-                        summary_items.append((2, f"[死因] {speaker} 称 {target}{label}"))
-                        break  # one claim per pattern per speech
-
-    # ── Smart truncation by priority (B) ──
-    total = sum(len(t) for _, t in summary_items)
-    if total > SUMMARY_BUDGET:
-        for drop_priority in (3, 2, 1):
-            if total <= SUMMARY_BUDGET:
-                break
-            for i, (pri, text) in enumerate(summary_items):
-                if pri == drop_priority and text:
-                    total -= len(text)
-                    summary_items[i] = (pri, "")
-                    if total <= SUMMARY_BUDGET:
-                        break
-        summary_items = [(p, t) for p, t in summary_items if t]
-
-    public_summary = "\n".join(text for _, text in summary_items)
-    if public_summary:
-        public_summary = f"{TIMELINE_ORDER_NOTE}\n{public_summary}"
-    else:
-        current_label = current_phase_label(
-            gs.phase, day_number=gs.day_number, night_number=gs.night_number
-        )
-        public_summary = TIMELINE_ORDER_NOTE
-        if current_label:
-            public_summary = f"{public_summary}\n当前时间点：{current_label}"
+    transcript = build_recent_transcript(gs)
+    public_summary = build_public_summary(gs)
 
     # ── Player's own speech summary (from LLM or deterministic fallback) ──
     own_summary = (discussion_positions or {}).get(player_id, "")

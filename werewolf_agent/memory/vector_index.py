@@ -1,14 +1,10 @@
-"""Bag-of-words vector index for reflection memory.
-
-Design doc §10.2: 经验段落进入长期**向量**记忆. This module provides a
-lightweight, dependency-free bag-of-words cosine similarity index. We
-deliberately avoid heavy embedding libraries (numpy, sentence-transformers)
-to keep the test environment minimal; the index is pluggable — callers may
-swap in a real embedding-backed implementation later.
-
-The index is **opt-in**: ``ReflectionMemory.query`` only consults it when
-the caller passes one in. Without an index, the exact-match fallback
-behaves identically to the pre-P0-M6 implementation.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：轻量级词袋向量索引——为反思记忆提供无依赖的余弦相似度检索，可插拔替换为真实嵌入后端。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

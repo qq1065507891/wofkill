@@ -1,10 +1,10 @@
-"""Shared text-similarity helpers for evaluation and memory.
-
-Same token regex as the original ``memory.reflection._token_set``:
-ASCII word chars OR single CJK characters. Kept here (not in memory) so
-``evaluation.attribution`` and ``memory.reflection`` share one source without
-a brittle private-helper import. Verified import-cycle-free: ``evaluation``
-imports nothing from ``memory.reflection``.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：提供token化正则（ASCII单词字符/单个CJK字符），供evaluation.attribution和memory.reflection共享，避免循环导入
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

@@ -1,23 +1,10 @@
-"""RAG prompt renderer — slim rendering of hits for live-player prompts.
-
-P0-G1: The full ``hits_to_context_items()`` payload (relevance, source,
-quality, visibility, display annotation, etc.) belongs in the audit log
-where the moderator needs to know *why* a hit surfaced, NOT in the live
-LLM prompt where it only burns context window.
-
-P0-G2: Slim rendering strips the audit-only metadata from the live prompt
-so the LLM sees only what a player can reason about: the case's title
-and prompt-safe V2 tactical frame. Legacy summary/key_decisions,
-relevance score, quality grade, source type, visibility boundary, and
-display annotation stay in the audit log on ``RAGInjector.audit_log()``
-and ``RAGHit`` itself.
-
-P1-G5: 3 RAG hits may be near-duplicates (same tactic, different
-framing). The slim path now runs ``dedup_hits_by_similarity`` before
-rendering so the LLM never sees two hits covering the same idea.
-
-The slim renderer is deliberately a tiny pure function so it can be unit
-tested without spinning up the retriever, injector, or any IO.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：将 RAG 命中精简渲染为实时玩家 prompt 片段，剥离审计/元数据字段。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

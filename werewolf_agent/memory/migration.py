@@ -1,8 +1,10 @@
-"""Reflection Memory V2 migration helpers.
-
-Pure helpers live here so migration behavior can be tested without a database.
-The CLI in ``scripts/migrate_reflection_memory_v2.py`` wires these helpers to a
-repository implementation.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：Reflection Memory V2 迁移辅助函数，无数据库依赖，可独立测试
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

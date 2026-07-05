@@ -1,9 +1,10 @@
-"""Unified RAG knowledge service.
-
-The service keeps curated seed knowledge usable in every deployment mode:
-in-memory local runs, SQLite/PostgreSQL storage, and pgvector-backed recall.
-Runtime callers should depend on this service instead of knowing whether the
-knowledge came from code seeds, repository storage, or vector search.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：统一 RAG 知识服务，屏蔽种子数据、持久化、向量检索等底层差异。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

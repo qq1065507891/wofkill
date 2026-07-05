@@ -1,11 +1,10 @@
-"""API permission enforcement: view mode checks and audit logging.
-
-Design doc §12.1 permission boundaries:
-- public-state, timeline default to public events only
-- private-state requires moderator/debugger or the player_agent's own permission
-- replay and evaluation support public, player_view, moderator_full
-- During live play, moderator_full is forbidden for player agents
-- All unauthorized access attempts logged as audit events
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：API 权限执行器，基于调用者角色与视图模式进行访问控制，拒绝操作自动写入审计日志。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：checker = PermissionChecker(); allowed = checker.check(caller_id, role, view, game_id)
 """
 
 from __future__ import annotations

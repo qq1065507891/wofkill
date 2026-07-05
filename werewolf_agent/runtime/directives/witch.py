@@ -1,5 +1,9 @@
+﻿# -*- coding: utf-8 -*-
 """Witch day-speech directive builder.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 D-1: extracted from agent_adapter's hard-coded ``witch_speech_constraint``
 block.  D-7: now consults ``evaluate_death_cause_claims`` so the witch's
 day-speech guidance is informed by her private knowledge of what poison /

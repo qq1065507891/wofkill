@@ -1,5 +1,9 @@
+﻿# -*- coding: utf-8 -*-
 """Wolf night discussion strategy: evidence-based consensus and plan building.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 Wolves discuss targets and role assignments through multi-round private
 discussion. The consensus is derived from discussion evidence, not seat order.
 """

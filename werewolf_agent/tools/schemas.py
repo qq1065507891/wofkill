@@ -1,7 +1,10 @@
-"""Tool schemas: structured types for tool calls, results, and logging.
-
-Design doc §11.2: internal tools query local state (no RPC/MCP).
-External MCP results are annotated with source and treated as suggestions.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：工具 schema——工具调用、结果和日志的结构化类型（设计文档 §11.2）。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

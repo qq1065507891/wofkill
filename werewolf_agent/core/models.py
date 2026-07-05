@@ -1,3 +1,11 @@
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：所有游戏状态的不可变数据容器，frozen dataclass + __post_init__ 防御性拷贝，零外部依赖。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

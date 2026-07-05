@@ -1,4 +1,10 @@
-"""Shared helper utilities used by multiple role directive builders."""
+﻿# -*- coding: utf-8 -*-
+"""Shared helper utilities used by multiple role directive builders.
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
+"""
 
 from __future__ import annotations
 

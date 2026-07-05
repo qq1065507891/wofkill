@@ -1,9 +1,10 @@
-"""ActionTrace construction helper extracted from PlayerAgent.
-
-Builds the ``ActionTrace`` audit object that records every attempt the
-LLM makes — raw text, parsed payload, retry metadata, fallback flags,
-structured-output failure reasons, and so on. Pulled out of player.py
-so the retry loop stays focused on orchestration.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

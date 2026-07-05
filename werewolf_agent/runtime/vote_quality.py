@@ -1,5 +1,9 @@
+﻿# -*- coding: utf-8 -*-
 """Vote quality validation: require evidence-based voting.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 Every vote must cite a concrete logic basis. Basis types:
 seer_check, counterclaim, badge_flow, contradiction, vote_tally,
 stance_reversal, pk_speech, speech_quote.

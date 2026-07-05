@@ -1,1 +1,8 @@
-"""Persona runtime: persona routing, dynamic behavior parameters, expression strategies."""
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：Persona runtime 包——人设路由、动态行为参数与表达策略。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
+"""

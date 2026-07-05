@@ -1,8 +1,10 @@
-"""Memory schemas: structured types for short-term, long-term, and review memory.
-
-Design doc §10: short-term uses JSON cognition matrix (not vectors).
-Vote chains, claims, attack/defense relations stay as structured data.
-Vector storage is reserved for unstructured reflections only.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：记忆数据模式模块，定义所有记忆子系统使用的结构化类型（dataclass/pydantic model）
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

@@ -1,7 +1,10 @@
-"""Optional LangSmith exporter for feedback reports.
-
-The module intentionally avoids importing LangSmith at import time so local
-evaluation and tests do not require external tracing dependencies.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：将反馈报告导出至LangSmith，导入时避免引入外部追踪依赖
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

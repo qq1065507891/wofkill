@@ -87,6 +87,13 @@ Reflection / cross-game memory is owned by the LLM prompt layer, NOT the `RuleEn
 
 Claude may use GLM-5.1 through the user's configured environment. Do not hardcode API keys or vendor-specific credentials. Keep provider/model choices in configuration and snapshots, not in core rules.
 
+## File Modification Discipline
+
+- When modifying a file, the module docstring (and class/function docstrings where applicable) must be updated to reflect the changes.
+- The **修改日期** field in the module docstring must be updated to the current date for any non-trivial change.
+- If the file lacks a docstring, add one following the template in the global rules (功能描述 / 作者 / 创建日期 / 修改日期 / 使用示例).
+- Do not silently edit a file and leave stale documentation behind.
+
 ## Verification Before Done
 
 Before claiming a task is complete:

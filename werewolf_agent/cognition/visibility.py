@@ -1,18 +1,12 @@
-"""Visibility Policy: compute per-fact visibility by viewer role.
+﻿# -*- coding: utf-8 -*-
+"""可见性策略：按观察者角色计算每个事实的可见性。
 
-This is the HARD BOUNDARY of the cognition pipeline. No downstream module
-may expand visibility beyond what this policy computes. Every private
-information leak must be traceable to a policy rule here.
-
-Visibility levels:
-- public: visible to all players
-- wolf_team: visible only to werewolves (wolf discussion, night kill target)
-- seer_private: visible only to seer (check results)
-- witch_private: visible only to witch (wolf kill target, potion inventory)
-- hybrid_private: visible only to hybrid (master id)
-- hunter_private: visible only to hunter (shoot status)
-- idiot_private: visible only to idiot (reveal status)
-- moderator_only: never visible to any player agent
+功能描述：认知管道的硬边界。任何下游模块不得超越此策略计算的可见性范围。
+每条私密信息泄露必须可追溯至此处的策略规则。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

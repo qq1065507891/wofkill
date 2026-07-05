@@ -1,8 +1,10 @@
-"""MiniMax Anthropic-compatible provider.
-
-MiniMax exposes an Anthropic-compatible API but does NOT reliably
-support tool_choice. When tool_choice is specified, MiniMax may
-return plain text instead of a tool_use block.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：MiniMax Anthropic 兼容 Provider，注意该厂商不完全支持 tool_choice
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

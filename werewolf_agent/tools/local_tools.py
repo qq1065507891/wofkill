@@ -1,8 +1,10 @@
-"""Local LangGraph tools: internal rule/state queries per design doc §11.2.
-
-These tools are highly coupled to local game state and rule engine.
-They do NOT go through MCP — no RPC, no protocol conversion.
-All results are deterministic and authoritative for game state.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：本地 LangGraph 工具——高耦合的内部规则/状态查询（设计文档 §11.2），不走 MCP。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

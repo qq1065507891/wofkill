@@ -1,5 +1,9 @@
+﻿# -*- coding: utf-8 -*-
 """Local runtime execution coordination.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 This module owns process-local scheduling concerns: per-game locks,
 background thread state, and execution status. It does not adjudicate rules
 or mutate game truth directly; all game changes still flow through GameRunner.

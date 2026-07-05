@@ -1,8 +1,10 @@
-"""Tool call logger: records all tool invocations for observability.
-
-Every tool call (local and MCP) is logged with caller, parameters,
-result, duration, and source annotation. Logs are queryable for audit
-and experiment analysis.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：工具调用日志——记录所有工具调用（本地和 MCP），含调用者/参数/结果/耗时/来源标注。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

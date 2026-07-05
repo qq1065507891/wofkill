@@ -1,9 +1,10 @@
-"""Semantic consistency judge for player actions.
-
-The live game still uses deterministic validators for retries. This module is
-for offline evaluation and regression gates: it checks whether a speech/action
-stays consistent with the visible context before a future LLM-backed judge is
-plugged in behind the same interface.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：离线评估与回归门控中，检查玩家行为（发言/行动）是否与可见上下文保持一致
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

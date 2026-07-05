@@ -1,12 +1,10 @@
-"""Belief Updater: maintain role probabilities, faction leans, trust.
-
-Updates beliefs using deterministic code logic — not LLM. The belief state
-is an agent's subjective view of the game, never the ground truth.
-
-Seer claims flow through a credibility engine (claim_credibility) so a
-contested or low-credibility black check cannot directly set wolf_lean.
-Facts are processed in order (observe + apply) so a later claim does not
-reinterpret an earlier vote.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：信念更新器，基于确定性代码逻辑（非 LLM）维护玩家角色概率、
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

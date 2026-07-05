@@ -1,10 +1,10 @@
-"""Judge HITL (Human-in-the-Loop) Interface — Layer 4.
-
-The judge becomes the sole entry point for human-system dialogue:
-pause/resume/inspect/inject — all through the judge.
-
-All HITL interactions are recorded as GameEvent(type="judge_hitl_interaction")
-for full audit trail and replay compatibility.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：管理游戏暂停-恢复生命周期，解析人工命令，执行受保护字段边界校验，记录所有交互为审计事件。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

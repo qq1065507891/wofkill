@@ -1,4 +1,11 @@
-"""Safe YAML validators for uploaded customization templates."""
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：上传定制化模板的安全 YAML 校验器，含注入检测。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
+"""
 
 from __future__ import annotations
 

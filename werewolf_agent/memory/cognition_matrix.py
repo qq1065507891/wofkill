@@ -1,14 +1,10 @@
-"""Short-term cognition matrix: per-player JSON-serializable state.
-
-Each agent maintains a cognition matrix during a game with:
-- role_probabilities per other player
-- faction_read (good_lean / wolf_lean / unknown)
-- trust score [0..1]
-- key_evidence list of EvidenceItem (structured references to events)
-- open_questions list
-
-The matrix syncs from BeliefUpdater output but is the persisted form
-that survives across turns and can be serialized to JSON.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：短期认知矩阵——管理每局游戏中各玩家对其他玩家的角色概率、阵营判断和信任度。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

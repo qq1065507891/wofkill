@@ -16,3 +16,4 @@ game_g_*.json
 game_stdout.log
 game_output.log
 tmp_analysis/
+.codegraph/

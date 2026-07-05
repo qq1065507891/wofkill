@@ -1,12 +1,10 @@
-"""Structured relation graph: queryable event table with typed predicates.
-
-Design doc §10: vote chains, claims, attack/defense logic must stay as
-structured data, not vectors. This module stores them as a lightweight
-queryable event table.
-
-Predicates: spoke_against(A, B, day), voted(A, B, round),
-claimed_role(A, role, day), defended(A, B, day),
-night_result_claimed(A, target, result).
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：结构化关系图谱——以带类型谓词的可查询事件表存储投票链、身份声明和攻防关系（设计文档 §10）。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

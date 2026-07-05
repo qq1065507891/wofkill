@@ -1,8 +1,10 @@
-"""Persona Router: resolves persona runtime config per agent, task, and context.
-
-Persona Router decides "who this player acts like right now" — personality,
-expression strategy, and dynamic behavior adjustments. It does NOT affect
-RuleEngine legal actions or game state.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：人设路由器——按玩家、任务和上下文解析运行时人设配置。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

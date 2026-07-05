@@ -1,7 +1,10 @@
-"""Role state monitor — detects critical role-specific situations.
-
-Design doc: proactive detection of SEER_UNDER_PRESSURE, WITCH_POISON_UNUSED,
-HUNTER_MAY_DIE_SOON, and HYBRID_MASTER_DEAD states.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：主动检测预言家受压、女巫毒药未用、猎人即将死亡、混血儿主人死亡
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

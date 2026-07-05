@@ -1,9 +1,10 @@
-"""Player Agent: schema-constrained output with illegal-output retry/fallback.
-
-Player agents propose actions, reasons, and speech. They MUST NOT:
-- Mutate GameState directly
-- See moderator_full or other players' private state
-- Bypass RuleEngine legal action sets
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：玩家 Agent 主循环——提议动作但不直接修改 GameState，无法查看 moderator_full 或其他玩家私有状态。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
@@ -14,8 +15,12 @@ import random
 import re
 import time
 from dataclasses import asdict
-from typing import Any, Protocol
+from typing import Any
 
+from werewolf_agent.agents.action_validation import (
+    ActionValidator,
+    DefaultActionValidator,
+)
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
@@ -71,19 +76,6 @@ _SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS = (
     "not_voting_reason",
     "private_reason",
 )
-
-
-class ActionValidator(Protocol):
-    """Protocol for validating actions against RuleEngine legal sets."""
-
-    def validate(
-        self,
-        action_type: ActionType,
-        target_id: str | None,
-        legal_actions: list[ActionType],
-        legal_targets: list[str],
-    ) -> tuple[bool, str | None]:
-        ...
 
 
 def _fallback_reason(action: FallbackAction) -> str:
@@ -142,41 +134,6 @@ def _categorize_failure_category(
         http_status=http_status,
         raw_error=raw_error,
     )
-
-
-class DefaultActionValidator:
-    """Validates agent output against RuleEngine-provided legal sets."""
-
-    _TARGET_REQUIRED_ACTIONS = {
-        ActionType.VOTE,
-        ActionType.WOLF_KILL,
-        ActionType.USE_POISON,
-        ActionType.CHECK_ALIGNMENT,
-        ActionType.CHOOSE_MASTER,
-        ActionType.HUNTER_SHOT,
-        ActionType.BADGE_TRANSFER,
-        ActionType.SHERIFF_VOTE,
-    }
-
-    def validate(
-        self,
-        action_type: ActionType,
-        target_id: str | None,
-        legal_actions: list[ActionType],
-        legal_targets: list[str],
-    ) -> tuple[bool, str | None]:
-        if legal_actions and action_type not in legal_actions:
-            return False, f"action_type={action_type.value} not in legal_actions"
-        if (
-            target_id is not None
-            and action_type in self._TARGET_REQUIRED_ACTIONS
-            and legal_actions
-            and not legal_targets
-        ):
-            return False, f"no legal_targets provided for action_type={action_type.value}"
-        if target_id is not None and legal_targets and target_id not in legal_targets:
-            return False, f"target_id={target_id} not in legal_targets"
-        return True, None
 
 
 class PlayerAgent:

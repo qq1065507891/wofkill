@@ -1,8 +1,10 @@
-"""Repository interface for game persistence.
-
-Design doc §13: V1 uses SQLite or local files as development substitutes.
-Interface boundary follows production design: games, events, deaths,
-model usage, evaluation results, and config snapshots.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：游戏持久化仓库接口——games/events/deaths/model_usage/evaluations/config_snapshots（设计文档 §13）。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

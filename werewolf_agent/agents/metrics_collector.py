@@ -1,12 +1,10 @@
-"""Per-player failure profile metrics.
-
-Each player has a fixed model + persona (their "brain"). This module
-aggregates per-attempt failure data so developers can identify which
-players' prompts need tuning — NOT to switch models (the brain is
-immutable), but to refine the persona's prompt template.
-
-Memory-only: not persisted across sessions. Used for offline prompt
-tuning and for surfacing failure hotspots in audit reports.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：线程安全的按玩家维度聚合 fallback 率、错误码分布及任务类型细分，辅助开发者识别 prompt 调优热点。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

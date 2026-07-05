@@ -1,8 +1,10 @@
-"""Judge Agent: broadcasts phases, translates RuleEngine results, never adjudicates.
-
-The judge is the human-facing interface for game flow. It calls RuleEngine
-deterministically and translates results to natural language broadcasts.
-It MUST NOT directly decide game outcomes.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：法官作为面向人类的游戏流程接口，调用 RuleEngine 确定性结果并翻译为自然语言播报。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

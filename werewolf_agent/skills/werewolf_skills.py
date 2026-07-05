@@ -1,20 +1,29 @@
+﻿# -*- coding: utf-8 -*-
 """Werewolf skill definitions: 12 core gameplay skills per design doc §11.1.
 
 Each skill provides a deterministic, game-state-aware tactical suggestion.
 When game_state is provided, handlers analyze real signals and produce
 actionable Chinese-language advice. When game_state is None, handlers fall
 back to static output for backward compatibility.
+
+功能描述：狼人杀12项核心技能定义与处理函数，每个技能提供基于局势的动态战术建议
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Callable
 
+from werewolf_agent.skills.manifest_loader import (
+    load_manifests as _load_manifests,
+    parse_skill_frontmatter as _parse_skill_frontmatter,
+)
 from werewolf_agent.skills.schemas import (
     SkillAdviceFrame,
     SkillDefinition,
-    SkillFaction,
     SkillInput,
     SkillName,
     SkillOutput,
@@ -39,78 +48,6 @@ def register_handler(name: SkillName):
 def get_handler(name: SkillName) -> Callable | None:
     """Look up a registered skill handler by name."""
     return _SKILL_HANDLERS.get(name)
-
-
-# ---------------------------------------------------------------------------
-# 12 core werewolf skills
-# ---------------------------------------------------------------------------
-
-def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """P-SK1: 解析 YAML frontmatter + 保留剩余 markdown body。
-
-    Returns (meta_dict, body_str). body 是 frontmatter 之后剩余的 markdown
-    散文，用于在 prompt 中以"## 技能说明"段注入。SKILL.md 若没有
-    frontmatter，body 等于原始文本（strip 后）。
-    """
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text.strip()
-    yaml_block, body = parts[1], parts[2]
-    import yaml
-    meta = yaml.safe_load(yaml_block) or {}
-    return meta, body.strip()
-
-
-def _load_manifests(root: Path | None = None) -> list[SkillDefinition]:
-    """Load skill metadata from SKILL.md files under skill directories.
-
-    Each skill directory contains a SKILL.md with YAML frontmatter
-    (name, description, applicable roles/phases, faction, tags) plus an
-    optional markdown body that captures prose guidance. The dynamic
-    analysis logic lives in Python handlers — frontmatter is the
-    manifest; body is the LLM-facing skill description.
-
-    The `root` parameter is a test seam: production callers omit it
-    (it defaults to this module's parent directory); tests pass a
-    `tmp_path` to load fixtures in isolation.
-    """
-    if root is None:
-        root = Path(__file__).resolve().parent
-    result: list[SkillDefinition] = []
-    for skill_dir in sorted(root.iterdir()):
-        if not skill_dir.is_dir() or skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
-            continue
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.exists():
-            continue
-        data, body = _parse_skill_frontmatter(skill_md.read_text(encoding="utf-8"))
-        if not data:
-            continue
-        try:
-            result.append(SkillDefinition(
-                name=SkillName(data["name"]),
-                display_name=data.get("display_name", ""),
-                description=data.get("description", ""),
-                applicable_roles=data.get("applicable_roles", []),
-                applicable_phases=data.get("applicable_phases", []),
-                # S-01: precise task-type filter (P0-K2). Frontmatter
-                # may declare `applies_to_task_types: [speech, ...]`
-                # to scope the skill to specific task types instead
-                # of cramming them into `applicable_phases`.
-                applies_to_task_types=data.get("applies_to_task_types", []),
-                faction=SkillFaction(data.get("faction", "common")),
-                tags=data.get("tags", []),
-                # P-SK1: SKILL.md 正文 — 散文形式的技能说明，在
-                # dispatch_for_role 处被注入到 prompt 的"## 技能说明"段。
-                # markdown-driven skills 的实际"驱动"由此字段承载。
-                body=body,
-            ))
-        except (KeyError, ValueError) as exc:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Failed to load skill %s: %s", skill_dir.name, exc,
-            )
-    return result
 
 
 SKILL_DEFINITIONS: list[SkillDefinition] = _load_manifests()

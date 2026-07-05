@@ -1,11 +1,10 @@
-"""Long-term reflection memory: post-game unstructured experience storage.
-
-Design doc §10: unstructured reflections (e.g. "last time I trusted
-emotional speech and got misaligned") go into long-term memory.
-Vote chains, claims, and attack/defense logic stay structured in RelationGraph.
-
-This module stores reflections with tag-based retrieval. Vector search
-is a future extension — current implementation uses exact tag/role matching.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：长期反思记忆——存储赛后非结构化经验，支持标签检索与向量检索（设计文档 §10）。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

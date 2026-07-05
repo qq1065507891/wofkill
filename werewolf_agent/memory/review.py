@@ -1,14 +1,10 @@
-"""Post-game review generation: per-player analysis and ability delta computation.
-
-Design doc §10.2: after each game, every player generates:
-- key judgments (correct/incorrect)
-- error analysis
-- successful strategies
-- deception analysis (who deceived them)
-- improvement suggestions
-- ability parameter changes
-
-Review results feed into ReflectionMemory (unstructured) and ProfileStore (deltas).
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：赛后复盘生成——分析每局玩家的判断准确性、被欺骗情况及能力变化（设计文档 §10.2）。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

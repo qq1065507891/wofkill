@@ -1,7 +1,10 @@
-"""Local development authentication for the Werewolf Agent API.
-
-Uses HMAC-signed session tokens. Default mode is "local" which maps
-known caller IDs to roles without any external auth service.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：本地开发鉴权管理器，基于 HMAC 签名会话令牌，默认 local 模式映射内置 caller 到角色。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：auth = AuthManager(); token = auth.create_session("mod1", "moderator")
 """
 
 from __future__ import annotations

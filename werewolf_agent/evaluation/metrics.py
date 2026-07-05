@@ -1,12 +1,10 @@
-"""Metrics aggregator: computes all §14 metrics from game results.
-
-Metrics categories:
-- Faction metrics: good/werewolf win rates
-- Player/role metrics: per-player and per-role win rates
-- Quality metrics: anti-push, lie detection, vote accuracy, skill quality
-- Safety metrics: leakage rate, illegal action rate
-- Cost/latency metrics: per-game, per-player, per-provider
-- Growth curves: metric evolution across games
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：计算阵营/玩家/角色/质量/安全/成本延迟/增长曲线等全维度指标
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

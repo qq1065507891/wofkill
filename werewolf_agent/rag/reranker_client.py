@@ -1,7 +1,10 @@
-"""SiliconFlow reranker API client.
-
-Provides BAAI/bge-reranker-v2-m3 reranking over retrieved documents.
-API key read from SILICONFLOW_API_KEY env var, loaded from .env if present.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：调用 SiliconFlow 重排序 API，对检索文档进行语义相关性排序。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

@@ -1,9 +1,12 @@
+﻿# -*- coding: utf-8 -*-
 """GameRunner: orchestrates a full game by wiring LangGraph + RuleEngine + agents.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 GameRunner is the top-level orchestrator that connects the LangGraph runtime graph,
 RuleEngine, AgentRegistry, and persistence into a runnable game flow. It supports
 both full-game execution (run()) and step-by-step execution (run_step()).
-
 Step-by-step execution keeps the LangGraph stream generator alive between calls.
 Each run_step() reads one node output from the stream, then returns.
 """

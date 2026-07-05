@@ -1,8 +1,10 @@
-"""PostgreSQL-backed game repository.
-
-Uses JSONB storage for the current V1 game-state contract while keeping the
-same repository interface as SQLite/InMemory. This is intended for Docker
-Compose local production runs with the pgvector PostgreSQL image.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：PostgreSQL 游戏仓库——JSONB 存储，与 SQLite/InMemory 接口一致，供 Docker Compose 本地生产用。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

@@ -1,8 +1,11 @@
+﻿# -*- coding: utf-8 -*-
 """Deterministic stable-seed helper.
-
+    作者: Mike
+    创建日期: 2025-01-15
+    修改日期: 2026-07-05
+    使用示例: 内部模块，无对外接口
 P-U3: Single source of truth shared by both
 ``runtime.sheriff_policy`` and ``runtime.nodes._shared``.
-
 Lives in a leaf module (no ``__init__.py`` siblings) so importers
 do not trigger the
 ``sheriff_policy → nodes.__init__ → day → sheriff_policy`` circular

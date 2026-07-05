@@ -1,8 +1,10 @@
-"""Structured World State: convert GameEvents to typed structured facts.
-
-Each fact is a frozen dataclass with a known schema. The fact list is the
-foundation for all downstream cognition modules — visibility, salience,
-belief updates, contradiction detection, and context assembly.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：每个事实是带已知模式的冻结 dataclass。事实列表是所有下游认知模块
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

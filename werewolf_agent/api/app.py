@@ -1,8 +1,10 @@
-"""FastAPI app: API endpoints with permission enforcement.
-
-Route handlers are split across:
-- api/routes/games.py — game CRUD, state queries, auth, dashboard
-- api/routes/customization.py — templates, validation, save, marketplace
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：FastAPI 应用工厂，集成存储、鉴权、权限检查与路由挂载。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：app = create_app(repository=repo, auth_manager=auth)
 """
 
 from __future__ import annotations

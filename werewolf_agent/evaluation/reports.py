@@ -1,8 +1,10 @@
-"""Leaderboard report generator: JSON reports, experiment comparisons, growth curves.
-
-Design doc §14: standardized benchmark with leaderboard JSON reports.
-Dimensions include werewolf win rate, good win rate, anti-push rate,
-lie detection rate, stance accuracy, illegal action rate, avg cost, avg latency.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：按§14标准生成排行榜JSON报告，含狼人胜率、好人胜率、反推率、谎言检测率、立场准确率、非法行动率、平均成本、平均延迟等维度
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

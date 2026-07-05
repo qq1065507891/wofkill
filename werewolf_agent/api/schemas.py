@@ -1,11 +1,10 @@
-"""API schemas: request/response models with view mode classification.
-
-Design doc §12.1: three view modes — public, player_view, moderator_full.
-During live play, player agents must never receive moderator_full.
-
-All Request models enforce ``extra='forbid'`` + ``strict=True`` so
-unknown fields and silent type coercion are rejected with 422.
-Response models keep the default permissive config (extra='ignore').
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：API 数据模型（Pydantic），定义请求/响应结构、视图模式枚举与审计事件模型。
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：from werewolf_agent.api.schemas import CreateGameRequest, ViewMode
 """
 
 from __future__ import annotations

@@ -1,9 +1,10 @@
-"""Post-game attribution engine for evaluation feedback traces.
-
-Annotates cognition-module exposures (rag / reflection / possible_worlds /
-simulator) with cited_by_decision / aligned_with_decision / harmful_transfer,
-and runs the consistency judge per trace with rebuilt public_facts. Pure
-post-game: no runtime change, no audit payload growth.
+﻿# -*- coding: utf-8 -*-
+"""
+功能描述：**：标注认知模块暴露（rag/reflection/possible_worlds/simulator）的决策引用、一致性对齐及有害迁移，按轨迹运行一致性裁判
+作者：Mike
+创建日期：2025-01-15
+修改日期：2026-07-05
+使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations

@@ -1,8 +1,14 @@
-"""Standalone output parsing functions extracted from PlayerAgent.
+﻿# -*- coding: utf-8 -*-
+"""
+处理 LLM 原始输出到 PlayerAction 的解析、归一化和修复链路。
 
-These functions handle JSON repair, extraction, normalization, and
-action parsing for player agent LLM output. They are pure functions
-(without self) that operate on explicit inputs.
+作者: Mike
+创建日期: 2025-01-15
+修改日期: 2026-07-05
+
+使用示例:
+    >>> from werewolf_agent.agents.output_parser import parse_action
+    >>> parse_action(raw_text)
 """
 
 from __future__ import annotations
@@ -15,6 +21,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from werewolf_agent.agents.json_repair import (
+    extract_json_object_candidates,
+    repair_json_text,
+)
 from werewolf_agent.agents.schemas import (
     ActionType,
     FactionGoal,
@@ -47,207 +57,6 @@ SPEECH_INTENTS = {
     "info_synthesis": "整合多人发言要点，提出综合判断",
     "anti_herd_call": "指出跟票风险，提醒大家独立判断",
 }
-
-
-_MOJIBAKE_REPLACEMENT_CHAR = "��"  # U+FFFD
-
-
-def _try_latin1_roundtrip(text: str) -> str | None:
-    """Attempt to recover a double-encoded UTF-8 string via latin-1 round-trip.
-
-    When an originally-UTF-8 byte sequence is mistakenly decoded as
-    latin-1 and then re-encoded as UTF-8, every non-ASCII byte
-    becomes a 2-3 byte sequence. Decoding the mojibake as latin-1
-    recovers the intermediate 1-byte-per-char string, which then
-    re-encodes back to the original UTF-8.
-
-    Returns the recovered text, or ``None`` if the round-trip would
-    produce invalid characters (e.g. U+FFFD can't round-trip through
-    latin-1 since latin-1 only covers 0x00-0xFF) or produces the
-    same text (no change means no mojibake detected).
-    """
-    try:
-        roundtripped = text.encode("latin-1").decode("utf-8")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return None
-    if roundtripped == text:
-        return None
-    return roundtripped
-
-
-def _try_repair_mojibake(text: str) -> str | None:
-    """Try common mojibake recovery strategies. Returns repaired text or None.
-
-    Two strategies (game-trace g_3528592081 Action 50 — p10's LLM
-    output had `��` (U+FFFD) where JSON quotes should be):
-
-    1. **Latin-1 round-trip**: When the original UTF-8 was decoded
-       as latin-1 and re-encoded as UTF-8. The intermediate chars
-       all sit in the 0x00-0xFF range, so latin-1 round-trip
-       recovers the original. This handles the classic
-       "double-encoded" case even without U+FFFD markers.
-
-    2. **U+FFFD → " replacement**: When U+FFFD is present (the
-       bytes were simply replaced with the replacement char during
-       a decode failure), replace each occurrence with `"` (the
-       most common cause: mojibaked JSON key delimiters). The
-       subsequent unquoted-key repair handles the rest.
-    """
-    # Strategy 1: latin-1 round-trip. Works for double-encoded UTF-8
-    # even when no U+FFFD is present.
-    if _MOJIBAKE_REPLACEMENT_CHAR not in text:
-        return _try_latin1_roundtrip(text)
-    # Strategy 2: U+FFFD present. Try round-trip first (in case
-    # mixed mojibake), fall back to literal `"` replacement.
-    roundtripped = _try_latin1_roundtrip(text)
-    if roundtripped is not None and _MOJIBAKE_REPLACEMENT_CHAR not in roundtripped:
-        return roundtripped
-    return text.replace(_MOJIBAKE_REPLACEMENT_CHAR, '"')
-
-
-def repair_json_text(raw: str) -> str:
-    """Apply common JSON repairs for LLM output quirks.
-
-    Handles: trailing commas, single-quoted strings, unquoted keys,
-    JS-style comments, NaN/Infinity literals, BOM, mojibake (U+FFFD
-    replacement chars adjacent to JSON delimiters, and latin-1
-    double-encoded UTF-8).
-    """
-    import re as _re
-
-    text = raw.strip()
-    # Remove BOM and zero-width characters
-    text = text.replace("﻿", "").replace("​", "")
-    # Remove // line comments and /* block comments */
-    text = _re.sub(r"//[^\n]*", "", text)
-    text = _re.sub(r"/\*.*?\*/", "", text, flags=_re.DOTALL)
-    # Replace NaN / Infinity with null
-    text = _re.sub(r"\bNaN\b", "null", text)
-    text = _re.sub(r"\bInfinity\b|\binf\b", "null", text, flags=_re.IGNORECASE)
-    # P0-R3: handle mojibake'd Chinese text. Game trace
-    # g_3528592081 Action 50 shows LLM output with `��` (U+FFFD)
-    # where JSON quotes should be. Also handles latin-1
-    # double-encoded UTF-8 (e.g. `{"ä¸¥å¾":"value"}` form).
-    mojibake_repaired = _try_repair_mojibake(text)
-    if mojibake_repaired is not None:
-        text = mojibake_repaired
-    # Fix single-quoted strings → double-quoted (naive but covers common cases)
-    # Only outside already-double-quoted strings
-    text = _re.sub(r"(?<!\\)'([^']*?)'", r'"\1"', text)
-    # Fix unquoted keys: word followed by :
-    text = _re.sub(
-        r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:',
-        r'\1"\2":',
-        text,
-    )
-    # Remove trailing commas before } or ]
-    text = _re.sub(r",\s*([}\]])", r"\1", text)
-    # Collapse multiple consecutive commas
-    text = _re.sub(r",\s*,", ",", text)
-    return text
-
-
-def extract_json_object_candidates(text: str) -> list[str]:
-    """Extract balanced JSON object candidates from mixed model text.
-
-    D4-7 (P2): an LLM thought chain typically contains
-    ``{"analysis": "..."}`` / ``{"thinking": "..."}`` blocks. The old
-    implementation returned ALL balanced JSON objects when none had
-    ``action_type``, so the thought chain was treated as an action
-    candidate. We now require the first key to be a known
-    ``ActionType`` value OR the object to carry an ``action_type``
-    field. If no candidate passes, raise ``no_action_type_found`` so
-    the caller can take its "no valid action" path (empty list would
-    be ambiguous with "no JSON at all" — the explicit error makes the
-    intent clear to the caller and to the audit log).
-    """
-    candidates: list[str] = []
-    start: int | None = None
-    depth = 0
-    in_string = False
-    escape = False
-
-    for idx, ch in enumerate(text):
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-
-        if ch == '"':
-            in_string = True
-            continue
-        if ch == "{":
-            if depth == 0:
-                start = idx
-            depth += 1
-            continue
-        if ch == "}" and depth > 0:
-            depth -= 1
-            if depth == 0 and start is not None:
-                candidates.append(text[start:idx + 1])
-                start = None
-
-    # Known ActionType string values — used to recognize the
-    # terse-format action envelope `{"vote": {...}}` where the
-    # action_type doubles as the first key.
-    _known_action_types = {t.value for t in ActionType}
-    # Match the first key of an object (double-quoted, single-quoted,
-    # or unquoted). We deliberately accept the unquoted form because
-    # the LLM sometimes omits quotes and the JSON-repair layer is
-    # expected to fix that downstream.
-    _first_key_re = re.compile(
-        r"""^\s*\{\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_][A-Za-z0-9_]*))\s*:"""
-    )
-
-    def _looks_like_action(candidate: str) -> bool:
-        # Standard action_type discriminator (string or single-quoted).
-        if '"action_type"' in candidate or "'action_type'" in candidate:
-            return True
-        # Choice-pipeline envelope: ``{"choice": "A", "reason": ...}`` —
-        # the choice pipeline (see parse_choice_action) uses ``choice``
-        # as the discriminator letter (A→target, B→target, etc.). The
-        # key is the same role as ``action_type`` in the
-        # action-pipeline format, so we accept it here.
-        if '"choice"' in candidate or "'choice'" in candidate:
-            return True
-        # Speech-intent-pipeline envelope:
-        # ``{"intent": "stand_with_seer", "speech": ...}`` — the speech
-        # intent pipeline (see parse_speech_intent_action) uses
-        # ``intent`` as the discriminator. Same role as action_type
-        # in the action-pipeline format.
-        if '"intent"' in candidate or "'intent'" in candidate:
-            return True
-        # Terse action-as-first-key envelope: ``{"vote": ...}`` where
-        # the LLM uses the action_type value as the first key.
-        m = _first_key_re.match(candidate)
-        if m is None:
-            return False
-        first_key = m.group(1) or m.group(2) or m.group(3)
-        return first_key in _known_action_types
-
-    action_candidates = [c for c in candidates if _looks_like_action(c)]
-    if not action_candidates:
-        # D4-7 (P2): do NOT fall back to all balanced JSON. The
-        # thought chain would re-enter the action pipeline as a
-        # candidate. Surface a clear error so the caller can route
-        # to its "no valid action" path. We only raise when we
-        # actually found balanced JSON — ``[]`` candidates means the
-        # text has no JSON at all, which is a different "no JSON
-        # found" case the caller already handles.
-        if not candidates:
-            return []
-        raise ValueError(
-            "no_action_type_found: extract_json_object_candidates found "
-            f"{len(candidates)} balanced JSON object(s) but none carried an "
-            f"action_type discriminator (first-key form, or "
-            f"action_type field). Refusing to fall back to non-action JSON."
-        )
-    return action_candidates
-
 
 def extract_parameter_tag_action(text: str) -> dict[str, Any] | None:
     """Extract MiniMax-style <parameter name="...">value</parameter> tool payloads."""
