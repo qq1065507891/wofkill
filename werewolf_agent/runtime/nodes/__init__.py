@@ -46,6 +46,7 @@ from werewolf_agent.runtime.nodes.night import (
     first_night_hybrid_master,
     resolve_night,
     wolf_discussion,
+    wolf_team_plan_node,
     wolf_consensus,
 )
 
@@ -132,6 +133,7 @@ __all__ = [
     "first_night_hybrid_master",
     "resolve_night",
     "wolf_discussion",
+    "wolf_team_plan_node",
     "wolf_consensus",
     # day
     "announce_deaths",
