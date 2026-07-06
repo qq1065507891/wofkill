@@ -11,8 +11,9 @@ RuleEngine 低风险 helper 拆分后的兼容测试。
 
 from __future__ import annotations
 
-from werewolf_agent.core.models import GameState, PlayerState
+from werewolf_agent.core.models import Death, GameState, PlayerState
 from werewolf_agent.engine import (
+    rule_death,
     rule_flow,
     rule_exile,
     rule_last_words,
@@ -41,6 +42,8 @@ def test_rule_engine_low_risk_helpers_are_available() -> None:
     assert callable(rule_exile.legal_exile_targets)
     assert callable(rule_exile.resolve_exile)
     assert callable(rule_exile.resolve_self_destruct)
+    assert callable(rule_death.apply_death)
+    assert callable(rule_death.validate_alive_target)
 
 
 def test_rule_engine_keeps_old_path_behavior_for_split_helpers() -> None:
@@ -287,3 +290,46 @@ def test_exile_split_preserves_rule_engine_apply_death_override_point() -> None:
     engine.resolve_self_destruct(state, wolf_id="wolf", day_number=1)
 
     assert engine.apply_death_calls == 2
+
+
+def test_death_split_preserves_rule_engine_last_words_and_hunter_override_points() -> None:
+    class CustomDeathEngine(RuleEngine):
+        def can_leave_last_words(
+            self,
+            *,
+            death_reason: str,
+            timing: str,
+            night_number: int,
+        ) -> bool:
+            return False
+
+        def can_hunter_shoot(
+            self,
+            state: GameState,
+            *,
+            hunter_id: str,
+            death_reason: str,
+        ) -> bool:
+            return False
+
+    engine = CustomDeathEngine.from_yaml(RULESET_PATH)
+    state = GameState(
+        players={
+            "hunter": PlayerState(id="hunter", role="hunter", alive=True),
+        },
+    )
+
+    new_state = engine.apply_death(
+        state,
+        Death(
+            player_id="hunter",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_1",
+        ),
+    )
+
+    assert new_state.deaths[-1].can_leave_last_words is False
+    assert new_state.deaths[-1].triggered_skills == []
+    assert new_state.events[-1].payload["can_leave_last_words"] is False
+    assert new_state.events[-1].payload["triggered_skills"] == []

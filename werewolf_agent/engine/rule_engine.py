@@ -28,6 +28,7 @@ from werewolf_agent.core.models import (
     VictoryResult,
 )
 from werewolf_agent.engine import (
+    rule_death,
     rule_exile,
     rule_flow,
     rule_last_words,
@@ -170,50 +171,12 @@ class RuleEngine:
     # -- Death --
 
     def apply_death(self, state: GameState, death: Death) -> GameState:
-        target = state.players[death.player_id]
-        if not target.alive:
-            return state
-        can_leave_last_words = death.can_leave_last_words
-        if can_leave_last_words is None:
-            night_number = state.night_number
-            if night_number == 0 and death.resolution_batch.startswith("night_"):
-                try:
-                    night_number = int(death.resolution_batch.removeprefix("night_"))
-                except ValueError:
-                    night_number = state.night_number
-            can_leave_last_words = self.can_leave_last_words(
-                death_reason=death.reason,
-                timing=death.timing,
-                night_number=night_number,
-            )
-        triggered_skills = list(death.triggered_skills)
-        if target.role == "hunter" and self.can_hunter_shoot(
+        return rule_death.apply_death(
             state,
-            hunter_id=death.player_id,
-            death_reason=death.reason,
-        ):
-            triggered_skills.append("hunter_shot")
-        recorded_death = replace(
             death,
-            can_leave_last_words=can_leave_last_words,
-            triggered_skills=triggered_skills,
+            can_leave_last_words_fn=self.can_leave_last_words,
+            can_hunter_shoot_fn=self.can_hunter_shoot,
         )
-        updated = replace(target, alive=False)
-        new_players = {**state.players, death.player_id: updated}
-        new_deaths = state.deaths + [recorded_death]
-        new_events = state.events + [GameEvent(
-            type="player_died",
-            payload={
-                "player_id": recorded_death.player_id,
-                "reason": recorded_death.reason,
-                "timing": recorded_death.timing,
-                "resolution_batch": recorded_death.resolution_batch,
-                "source_player_id": recorded_death.source_player_id,
-                "can_leave_last_words": recorded_death.can_leave_last_words,
-                "triggered_skills": recorded_death.triggered_skills,
-            },
-        )]
-        return replace(state, players=new_players, deaths=new_deaths, events=new_events)
 
     # -- Night resolution --
 
@@ -472,8 +435,4 @@ class RuleEngine:
         return self._reducer.reduce_events(state, events)
 
     def _validate_alive_target(self, state: GameState, target_id: str, label: str) -> None:
-        target = state.players.get(target_id)
-        if target is None:
-            raise ValueError(f"{label}_not_found: {target_id}")
-        if not target.alive:
-            raise ValueError(f"{label}_not_alive: {target_id}")
+        rule_death.validate_alive_target(state, target_id, label)
