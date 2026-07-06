@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：玩家 Agent 主循环——提议动作但不直接修改 GameState，无法查看 moderator_full 或其他玩家私有状态。
+功能描述：**：玩家 Agent 主循环与兼容 facade，提议动作但不直接修改 GameState。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-06
 使用示例：内部模块，无对外接口
 """
 
@@ -34,6 +34,20 @@ from werewolf_agent.agents.parse_dispatch import (
     parse_choice_action as _parse_choice_action,
     parse_speech_intent_action as _parse_speech_intent_action,
     select_output_mode as _select_output_mode,
+)
+from werewolf_agent.agents.player_failures import (
+    categorize_failure_category as _categorize_failure_category,
+    fallback_reason as _fallback_reason,
+)
+from werewolf_agent.agents.player_generation import (
+    generate_player_response as _generate_player_response,
+    latest_generation_failure_reason as _latest_generation_failure_reason,
+)
+from werewolf_agent.agents.player_latency import latency_from_result as _latency_from_result
+from werewolf_agent.agents.player_retry import (
+    build_fallback_action as _build_fallback_action,
+    check_repeat_error_signature as _check_repeat_error_signature,
+    fallback_vote_target_from_context as _fallback_vote_target_from_context,
 )
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
 from werewolf_agent.agents.planning import planning_envelope_to_action
@@ -76,65 +90,6 @@ _SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS = (
     "not_voting_reason",
     "private_reason",
 )
-
-
-def _fallback_reason(action: FallbackAction) -> str:
-    """Return a fallback reason that does NOT embed the target_id.
-
-    The caller is responsible for substituting the actual target into the
-    log display. This prevents the audit trail from showing "chose p07" while
-    the actual ``vote_target`` is a different player (the LLM's choice may
-    later override the fallback target in ``agent_day_vote``).
-    """
-    if action.action_type == ActionType.VOTE and not action.target_id:
-        return "fallback: 结构化输出失败，无足够公开证据补票"
-    return "fallback: 结构化输出失败，按当前可见线索选择默认目标"
-
-
-def _latency_from_result(result: Any) -> int:
-    """Best-effort latency extraction from a GenerateResult.
-
-    Returns 0 when usage metadata is unavailable (e.g. the router returned
-    an empty GenerateResult after primary+fallback failures). The
-    categorizer treats 0 as "no signal" so it will not falsely report
-    ``timeout``.
-    """
-    usage = getattr(result, "usage", None)
-    if usage is None:
-        return 0
-    return int(getattr(usage, "latency_ms", 0) or 0)
-
-
-def _categorize_failure_category(
-    *,
-    latency_ms: int,
-    raw_error: str | None,
-    http_status: int = 0,
-) -> str | None:
-    """Bridge from player-side signals to the failure_category string.
-
-    Imported lazily so that importing player.py does not require the
-    model_gateway.providers package (some test harnesses mock the
-    router). When the categorizer is unavailable we conservatively
-    return None — the field in RetryInfo will simply be unset.
-
-    R3-MG-2: ``http_status`` is plumbed through from ``GenerateResult``
-    so 4xx/5xx responses classify as ``provider_error`` rather than
-    silently falling through to ``unknown``.
-    """
-    try:
-        from werewolf_agent.model_gateway.providers.base import (
-            categorize_empty_response,
-        )
-    except ImportError:
-        return None
-    return categorize_empty_response(
-        response_text="",
-        latency_ms=latency_ms,
-        http_status=http_status,
-        raw_error=raw_error,
-    )
-
 
 class PlayerAgent:
     """Schema-constrained player agent with retry and fallback.
@@ -237,7 +192,8 @@ class PlayerAgent:
             # Generate LLM output
             prompt = self._build_prompt(context, retry)
             try:
-                result = self.model_router.generate(
+                result = _generate_player_response(
+                    self.model_router,
                     agent_id=self.agent_id,
                     task_type=context.task_type.value,
                     prompt=prompt,
@@ -760,16 +716,7 @@ class PlayerAgent:
             collector.record_persona(identity, context.persona_snapshot)
 
     def _latest_generation_failure_reason(self) -> str | None:
-        get_usage_log = getattr(self.model_router, "get_usage_log", None)
-        if get_usage_log is None:
-            return None
-        usage_log = get_usage_log()
-        if not usage_log:
-            return None
-        last_record = usage_log[-1]
-        if last_record.success or not last_record.fallback_reason:
-            return None
-        return str(last_record.fallback_reason)
+        return _latest_generation_failure_reason(self.model_router)
 
     def _check_repeat_error_signature(
         self,
@@ -780,31 +727,13 @@ class PlayerAgent:
         *,
         structured_output_mode: str = "",
     ) -> tuple[bool, tuple[str, str, str] | None]:
-        """Pipeline-optimization Task 1: detect repeated retry failures.
-
-        When two consecutive attempts in the same structured-output mode
-        produce the same ``(error_code, mode, raw_text[:50])`` signature,
-        the LLM is almost certainly stuck. A protocol change gets its own
-        attempt even when the returned text is identical.
-
-        Skill-tool nudges (where ``retry.error_code`` is ``None``) bypass the
-        check so the existing skill-skip retry budget is preserved.
-        """
-        if retry.error_code is None:
-            return False, last_signature
-        raw_text_snippet = (raw_text or "")[:50]
-        current_sig = (
-            retry.error_code,
-            structured_output_mode,
-            raw_text_snippet,
+        return _check_repeat_error_signature(
+            retry,
+            raw_text,
+            attempt,
+            last_signature,
+            structured_output_mode=structured_output_mode,
         )
-        if last_signature is not None and last_signature == current_sig:
-            retry.early_exit_reason = (
-                f"repeat_error_signature: {retry.error_code} on attempts "
-                f"{attempt - 1} and {attempt}"
-            )
-            return True, current_sig
-        return False, current_sig
 
     # ── Delegated to output_parser.py ──
 
@@ -907,67 +836,18 @@ class PlayerAgent:
     # ── Remaining PlayerAgent methods ──
 
     def _fallback_action(self, context: AgentContext) -> FallbackAction:
-        """Compute a safe fallback action from legal sets."""
-        if context.legal_actions:
-            safe_action = context.legal_actions[0]
-        else:
-            safe_action = ActionType.NO_ACTION
-
-        safe_target = None
-        if safe_action in {
-            ActionType.VOTE, ActionType.WOLF_KILL, ActionType.USE_POISON,
-            ActionType.CHECK_ALIGNMENT, ActionType.CHOOSE_MASTER,
-            ActionType.HUNTER_SHOT, ActionType.BADGE_TRANSFER,
-            ActionType.SHERIFF_VOTE,
-        } and context.legal_targets:
-            # For vote actions, exclude self and use evidence-based fallback
-            if safe_action == ActionType.VOTE:
-                non_self = [t for t in context.legal_targets if t != context.agent_id]
-                fb = (
-                    context.strategy_directive.get("_vote_fallback_target")
-                    if context.strategy_directive else None
-                )
-                if fb and fb in non_self:
-                    safe_target = fb
-                else:
-                    safe_target = self._fallback_vote_target_from_context(context, non_self)
-            else:
-                safe_target = context.legal_targets[0]
-
-        speech = ""
-        if safe_action == ActionType.SPEECH and context.task_type == TaskType.WOLF_DISCUSSION:
-            speech = self._fallback_speech(context)
-
-        # Build a generic fallback action. Reason is computed at the end once
-        # we have the full FallbackAction (which is target-aware) so that the
-        # reason string never embeds the target_id.
-        fallback = FallbackAction(
-            action_type=safe_action,
-            target_id=safe_target,
-            speech=speech,
-            reason="",
+        return _build_fallback_action(
+            context,
+            fallback_reason=_fallback_reason,
+            fallback_speech=self._fallback_speech,
         )
-        fallback = fallback.model_copy(update={"reason": _fallback_reason(fallback)})
-        return fallback
 
     def _fallback_vote_target_from_context(
         self,
         context: AgentContext,
         candidates: list[str],
     ) -> str | None:
-        for item in context.salience_items:
-            if not isinstance(item, dict):
-                continue
-            item_type = item.get("type") or item.get("event")
-            target = item.get("target") or item.get("target_id")
-            result = str(item.get("result") or item.get("alignment") or "").lower()
-            if (
-                item_type == "seer_claim"
-                and target in candidates
-                and ("wolf" in result or "狼" in result or "查杀" in result)
-            ):
-                return target
-        return None
+        return _fallback_vote_target_from_context(context, candidates)
 
     def _context_clues(self, context: AgentContext) -> str:
         clues: list[str] = []
