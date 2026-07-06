@@ -31,6 +31,7 @@ from werewolf_agent.engine import (
     rule_flow,
     rule_last_words,
     rule_special_roles,
+    rule_visibility,
     rule_vote,
 )
 from werewolf_agent.engine.event_reducer import EventReducer, _apply_idiot_reveal
@@ -505,14 +506,14 @@ class RuleEngine:
         player_id: str,
         private_intent: dict[str, Any],
     ) -> GameState:
-        return rule_special_roles.record_private_intent(
+        return rule_visibility.record_private_intent(
             state,
             player_id=player_id,
             private_intent=private_intent,
         )
 
     def build_visible_context(self, state: GameState, *, viewer_id: str, view_mode: str) -> VisibleContext:
-        return rule_special_roles.build_visible_context(
+        return rule_visibility.build_visible_context(
             self.ruleset.raw,
             state,
             viewer_id=viewer_id,

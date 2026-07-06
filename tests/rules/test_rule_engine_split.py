@@ -12,7 +12,13 @@ RuleEngine 低风险 helper 拆分后的兼容测试。
 from __future__ import annotations
 
 from werewolf_agent.core.models import GameState, PlayerState
-from werewolf_agent.engine import rule_flow, rule_last_words, rule_special_roles, rule_vote
+from werewolf_agent.engine import (
+    rule_flow,
+    rule_last_words,
+    rule_special_roles,
+    rule_visibility,
+    rule_vote,
+)
 from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
 
 
@@ -27,6 +33,8 @@ def test_rule_engine_low_risk_helpers_are_available() -> None:
     assert callable(rule_vote.vote_weight)
     assert callable(rule_vote.resolve_vote)
     assert callable(rule_last_words.can_leave_last_words)
+    assert callable(rule_visibility.record_private_intent)
+    assert callable(rule_visibility.build_visible_context)
 
 
 def test_rule_engine_keeps_old_path_behavior_for_split_helpers() -> None:
@@ -161,3 +169,34 @@ def test_last_words_helper_preserves_death_reason_precedence() -> None:
         timing="day_vote",
         night_number=2,
     ) is True
+
+
+def test_visibility_helper_preserves_player_view_boundaries() -> None:
+    engine = RuleEngine.from_yaml(RULESET_PATH)
+    state = GameState(
+        players={
+            "seer": PlayerState(id="seer", role="seer", alive=True),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+        },
+    )
+    state = engine.record_private_intent(
+        state,
+        player_id="wolf",
+        private_intent={"true_role": "werewolf"},
+    )
+    state = rule_visibility.record_private_intent(
+        state,
+        player_id="seer",
+        private_intent={"target": "wolf"},
+    )
+
+    context = engine.build_visible_context(
+        state,
+        viewer_id="seer",
+        view_mode="player_view",
+    )
+
+    assert "public_state" in context.visible_sections
+    assert "seer.private_intent" in context.visible_sections
+    assert "wolf.private_intent" not in context.visible_sections
+    assert "moderator_full" not in context.visible_sections
