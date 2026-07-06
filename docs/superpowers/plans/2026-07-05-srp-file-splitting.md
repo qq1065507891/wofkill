@@ -10,6 +10,50 @@
 
 ---
 
+## 执行状态快照
+
+更新日期: 2026-07-06
+
+已完成并提交:
+
+- [x] Task 1: `a559c01 refactor: split agent adapter support modules`
+- [x] Task 2: `a81b690 refactor: split runtime context builders`
+- [x] Task 3: `2fa1be7 refactor: split night runtime nodes`
+- [x] Task 4: `1461247 refactor: split player prompt builder`
+- [x] Task 5: `692fde1 refactor: split werewolf skill handlers`
+- [x] Task 6: `894fbbe refactor: split agent output parser`
+- [x] Task 7: `8d5d848 refactor: split player agent pipeline`
+- [x] Task 8: `daabb0d refactor: split reflection memory modules`
+- [x] Task 9: `5da36bf refactor: split day runtime nodes`
+- [x] Task 10: `7ec7de7 refactor: split game route helpers`
+- [x] Task 11.2: `74fb02a refactor: split evaluation metrics`
+- [x] Task 11.3: `9dd826f refactor: split model gateway router`
+- [x] Task 11.4: `6d7946f refactor: split shared runtime node helpers`
+- [x] Task 11.5: `c833c19 refactor: split game runner responsibilities`
+- [x] Task 11.6: `dcb6a5f` 至 `57ecb4b`，按职责拆分 `RuleEngine`
+- [x] Task 11.7: `7c834c2 refactor: split sheriff runtime nodes`
+
+仍未完成:
+
+- [ ] Task 11.8: 拆 `werewolf_agent/rag/retriever.py` 和 `werewolf_agent/rag/vector_store.py`
+- [ ] Task 12: 拆对应超大测试文件
+- [ ] Task 13: 最终全量验证、清理 `.tmp`、同步 CodeGraph
+- [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
+
+下一轮候选池:
+
+- `werewolf_agent/runtime/agent_adapter.py`，1662 行，已拆第一轮 support modules，但仍是最大文件。
+- `werewolf_agent/agents/prompt_builder.py`，1361 行，已拆渲染 helper，需复核是否还能进一步压缩 coordinator。
+- `werewolf_agent/agents/player.py`，1037 行，已拆 pipeline helper，需复核 `PlayerAgent` 生命周期边界。
+- `werewolf_agent/skills/good_skill_handlers.py`，933 行，下一轮可按好人技能职责继续拆。
+- `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，778 行，下一轮可按讨论、计划、共识拆分。
+- `werewolf_agent/agents/schemas.py`，759 行，候选为 action/prompt/trace schema 分组。
+- `werewolf_agent/evaluation/metrics.py`，742 行，已拆第一轮 metric helper，需判断是否保留聚合 facade。
+- `werewolf_agent/api/routes/games.py`，697 行，已拆 route helper，需判断 route declaration 是否还过重。
+- `werewolf_agent/model_gateway/router.py`，651 行，已拆 provider/retry/usage helper，需判断 router 是否仍承担过多。
+- `werewolf_agent/rag/retriever.py`，621 行，原计划未完成候选。
+- `werewolf_agent/rag/vector_store.py`，618 行，原计划未完成候选。
+
 ## 拆分原则
 
 - 原文件先作为 facade 保留，公共导入路径不变，避免一次性破坏调用方。
@@ -22,20 +66,20 @@
 
 ## 总体执行顺序
 
-1. 稳定基线和工作区边界。
-2. 继续拆 `werewolf_agent/runtime/agent_adapter.py`。
-3. 拆 `werewolf_agent/runtime/context.py`。
-4. 拆 `werewolf_agent/runtime/nodes/night.py`。
-5. 拆 `werewolf_agent/agents/prompt_builder.py`。
-6. 拆 `werewolf_agent/skills/werewolf_skills.py`。
-7. 拆 `werewolf_agent/agents/output_parser.py`。
-8. 拆 `werewolf_agent/agents/player.py`。
-9. 拆 `werewolf_agent/memory/reflection.py`。
-10. 拆 `werewolf_agent/runtime/nodes/day.py`。
-11. 拆 `werewolf_agent/api/routes/games.py`。
-12. 拆第二批 600 行以上但风险较低的模块。
-13. 拆对应超大测试文件。
-14. 最终全量验证、提交、CodeGraph 同步。
+- [x] 稳定基线和工作区边界。
+- [x] 继续拆 `werewolf_agent/runtime/agent_adapter.py`。
+- [x] 拆 `werewolf_agent/runtime/context.py`。
+- [x] 拆 `werewolf_agent/runtime/nodes/night.py`。
+- [x] 拆 `werewolf_agent/agents/prompt_builder.py`。
+- [x] 拆 `werewolf_agent/skills/werewolf_skills.py`。
+- [x] 拆 `werewolf_agent/agents/output_parser.py`。
+- [x] 拆 `werewolf_agent/agents/player.py`。
+- [x] 拆 `werewolf_agent/memory/reflection.py`。
+- [x] 拆 `werewolf_agent/runtime/nodes/day.py`。
+- [x] 拆 `werewolf_agent/api/routes/games.py`。
+- [ ] 拆第二批 600 行以上但风险较低的模块。当前已完成大部分，RAG retrieval/storage 未完成。
+- [ ] 拆对应超大测试文件。
+- [ ] 最终全量验证、提交、CodeGraph 同步。
 
 ---
 
@@ -110,27 +154,27 @@ Expected: optional docs commit; skip if the user wants implementation commits on
 - Test: `tests/runtime/test_agent_reflection_support.py`
 - Existing tests: `tests/runtime/test_witch_flow.py`, `tests/runtime/test_night_flow.py`, `tests/runtime/test_day_discussion.py`, `tests/runtime/test_vote_flow.py`, `tests/runtime/test_pk_flow.py`, `tests/runtime/test_sheriff_flow.py`, `tests/runtime/test_hunter_flow.py`
 
-- [ ] **Step 1: Write characterization tests for registry behavior**
+- [x] **Step 1: Write characterization tests for registry behavior**
 
 Test `AgentRegistry` and `SimpleAgentRegistry` import from the old module and new module. Verify the same agent lookup behavior.
 
-- [ ] **Step 2: Move registry types**
+- [x] **Step 2: Move registry types**
 
 Move `AgentRegistry` and `SimpleAgentRegistry` into `agent_registry.py`. In `agent_adapter.py`, import and re-export them.
 
-- [ ] **Step 3: Move audit helper functions**
+- [x] **Step 3: Move audit helper functions**
 
 Move `_audit_context_kwargs`, `_seer_credibility_audit_payload`, `_is_sheriff_silenced`, and vote-basis hint helpers into `agent_action_audit.py`.
 
-- [ ] **Step 4: Move wolf kill support**
+- [x] **Step 4: Move wolf kill support**
 
 Move `_build_wolf_kill_directive` and `_single_wolf_vote` into `wolf_kill_support.py`. Keep public compatibility imports in `agent_adapter.py`.
 
-- [ ] **Step 5: Move reflection support**
+- [x] **Step 5: Move reflection support**
 
 Move `_strip_in_game_directives` and `_agent_reflection` into `agent_reflection_support.py`.
 
-- [ ] **Step 6: Run focused runtime adapter tests**
+- [x] **Step 6: Run focused runtime adapter tests**
 
 Run:
 
@@ -140,7 +184,7 @@ python -m pytest -n 0 --basetemp .tmp tests/runtime/test_agent_registry.py tests
 
 Expected: all selected tests pass.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run:
 
@@ -171,39 +215,39 @@ git commit -m "refactor: split agent adapter support modules"
 - Test: `tests/runtime/test_context_strategy_directives.py`
 - Existing tests: `tests/runtime/test_context.py`, `tests/runtime/test_strategy_directives.py`
 
-- [ ] **Step 1: Write characterization tests for compatibility imports**
+- [x] **Step 1: Write characterization tests for compatibility imports**
 
 Verify `build_agent_context` and `_inject_skill_output` remain importable from `werewolf_agent.runtime.context`.
 
-- [ ] **Step 2: Move persona helpers**
+- [x] **Step 2: Move persona helpers**
 
 Move `_load_persona_profile`, `_get_persona_speech_style`, and `_get_persona_task_style` into `context_persona.py`.
 
-- [ ] **Step 3: Move RAG helpers**
+- [x] **Step 3: Move RAG helpers**
 
 Move `_rag_phase_for_task`, `_normalize_legal_actions_to_tags`, `_inject_seed_rag_hints`, `_extract_suspects`, `_extract_trusts`, `_extract_role_claim`, `_extract_vote_intent`, and `_first_sentence` into `context_rag.py`.
 
-- [ ] **Step 4: Move memory and cognition hints**
+- [x] **Step 4: Move memory and cognition hints**
 
 Move `_profile_memory_hint`, `_reflection_memory_hints`, `_evidence_id_ref`, and `_cognition_matrix_hint` into `context_memory_hints.py`.
 
-- [ ] **Step 5: Move skill advice conversion**
+- [x] **Step 5: Move skill advice conversion**
 
 Move `_skill_output_to_advice_frame`, `_skill_advice_frame_to_prompt_dict`, and `_inject_skill_output` into `context_skill_advice.py`; re-export `_inject_skill_output` from `context.py`.
 
-- [ ] **Step 6: Move strategy directive merging**
+- [x] **Step 6: Move strategy directive merging**
 
 Move `_merge_strategy_directive`, `_directive_size`, and `_cap_strategy_directive` into `context_strategy_directives.py`.
 
-- [ ] **Step 7: Move action trace payload construction**
+- [x] **Step 7: Move action trace payload construction**
 
 Move `_action_trace_payload` and direct payload helpers into `context_action_trace.py`.
 
-- [ ] **Step 8: Keep `context.py` as orchestration facade**
+- [x] **Step 8: Keep `context.py` as orchestration facade**
 
 Leave `build_agent_context` in `context.py`, but make dependencies explicit through imports.
 
-- [ ] **Step 9: Run focused context tests**
+- [x] **Step 9: Run focused context tests**
 
 Run:
 
@@ -213,7 +257,7 @@ python -m pytest -n 0 --basetemp .tmp tests/runtime/test_context.py tests/runtim
 
 Expected: all selected tests pass.
 
-- [ ] **Step 10: Verify and commit**
+- [x] **Step 10: Verify and commit**
 
 Run compileall, touched-file ruff, `git diff --check`, then commit:
 
@@ -237,31 +281,31 @@ git commit -m "refactor: split runtime context builders"
 - Test: `tests/runtime/test_wolf_night_nodes.py`
 - Existing tests: `tests/runtime/test_night_flow.py`, `tests/runtime/test_witch_flow.py`, `tests/runtime/test_wolf_flow.py`
 
-- [ ] **Step 1: Characterize public imports from `night.py`**
+- [x] **Step 1: Characterize public imports from `night.py`**
 
 Verify existing imports for `enter_night`, `night_witch`, `night_seer`, `resolve_night`, `wolf_discussion`, `wolf_team_plan_node`, and `wolf_consensus` still work.
 
-- [ ] **Step 2: Move night entry and simple status nodes**
+- [x] **Step 2: Move night entry and simple status nodes**
 
 Move `enter_night`, `night_hunter_idiot_status`, and shared entry helpers to `night_entry.py`.
 
-- [ ] **Step 3: Move specialist night actions**
+- [x] **Step 3: Move specialist night actions**
 
 Move `night_witch`, `night_seer`, and `first_night_hybrid_master` to `night_specialists.py`.
 
-- [ ] **Step 4: Move night resolution**
+- [x] **Step 4: Move night resolution**
 
 Move `resolve_night` and death/victory-related night resolution helpers to `night_resolution.py`.
 
-- [ ] **Step 5: Move wolf night planning and consensus**
+- [x] **Step 5: Move wolf night planning and consensus**
 
 Move `_legacy_wolf_consensus`, `wolf_discussion`, `_build_fallback_wolf_team_plan`, `wolf_team_plan_node`, and `wolf_consensus` to `wolf_night_nodes.py`.
 
-- [ ] **Step 6: Convert `night.py` into explicit facade**
+- [x] **Step 6: Convert `night.py` into explicit facade**
 
 Import and re-export all public node functions. Avoid wildcard imports.
 
-- [ ] **Step 7: Run focused night tests**
+- [x] **Step 7: Run focused night tests**
 
 Run:
 
@@ -271,7 +315,7 @@ python -m pytest -n 0 --basetemp .tmp tests/runtime/test_night_entry.py tests/ru
 
 Expected: all selected tests pass.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 Commit message:
 
@@ -296,35 +340,35 @@ git commit -m "refactor: split night runtime nodes"
 - Test: `tests/agents/test_prompt_strategy.py`
 - Existing tests: `tests/agents/test_prompt_builder.py`, `tests/agents/test_prompt_formatting.py`
 
-- [ ] **Step 1: Characterize final prompt output**
+- [x] **Step 1: Characterize final prompt output**
 
 Add focused snapshots or exact string assertions for system prompt, user prompt, persona hints, memory hints, and strategy directives.
 
-- [ ] **Step 2: Move section model and section rendering**
+- [x] **Step 2: Move section model and section rendering**
 
 Move `_SectionSpec`, section ordering, section formatting, and common section assembly helpers into `prompt_sections.py`.
 
-- [ ] **Step 3: Move persona prompt rendering**
+- [x] **Step 3: Move persona prompt rendering**
 
 Move persona style and persona text rendering into `prompt_persona.py`.
 
-- [ ] **Step 4: Move memory prompt rendering**
+- [x] **Step 4: Move memory prompt rendering**
 
 Move profile/reflection/cognition memory prompt rendering into `prompt_memory.py`.
 
-- [ ] **Step 5: Move strategy and directive prompt rendering**
+- [x] **Step 5: Move strategy and directive prompt rendering**
 
 Move strategy directive rendering into `prompt_strategy.py`.
 
-- [ ] **Step 6: Move salience helpers**
+- [x] **Step 6: Move salience helpers**
 
 Move `_slim_salience_item` and salience-specific formatting into `prompt_salience.py`.
 
-- [ ] **Step 7: Keep `PlayerPromptBuilder` as a small facade**
+- [x] **Step 7: Keep `PlayerPromptBuilder` as a small facade**
 
 `PlayerPromptBuilder` should coordinate inputs and call focused renderers. It should not own low-level formatting logic.
 
-- [ ] **Step 8: Run focused prompt tests**
+- [x] **Step 8: Run focused prompt tests**
 
 Run:
 
@@ -334,7 +378,7 @@ python -m pytest -n 0 --basetemp .tmp tests/agents/test_prompt_builder.py tests/
 
 Expected: all selected tests pass.
 
-- [ ] **Step 9: Verify and commit**
+- [x] **Step 9: Verify and commit**
 
 Commit message:
 
@@ -360,35 +404,35 @@ git commit -m "refactor: split player prompt builder"
 - Test: `tests/skills/test_wolf_skill_handlers.py`
 - Existing tests: `tests/skills/test_werewolf_skills.py`, `tests/skills/test_skill_manifest_loader.py`, `tests/skills/test_registry.py`
 
-- [ ] **Step 1: Characterize `apply_skill` behavior**
+- [x] **Step 1: Characterize `apply_skill` behavior**
 
 Add tests for unchanged output for at least one good skill, one wolf skill, and one review correction skill.
 
-- [ ] **Step 2: Move advice frame helpers**
+- [x] **Step 2: Move advice frame helpers**
 
 Move `_cap_prompt_injectable`, `_advice_frame`, `_push_vote_advice_frame`, `_counter_claim_advice_frame`, `_hide_identity_advice_frame`, `_generic_skill_advice_frame`, and `_ensure_skill_advice_frame` into `advice_frames.py`.
 
-- [ ] **Step 3: Move skill context extraction**
+- [x] **Step 3: Move skill context extraction**
 
 Move `_count_seer_claimants`, `_get_seer_claimants`, `_alive_wolves`, `_alive_non_wolves`, `_vote_targets_for_player`, `_seer_checks_on_target`, `_alerts_for_player`, `_belief_top_suspects`, and `_wolf_teammates_exposed` into `skill_context.py`.
 
-- [ ] **Step 4: Move good-side handlers**
+- [x] **Step 4: Move good-side handlers**
 
 Move `bold_claim_handler`, `counter_claim_handler`, `push_vote_handler`, `swing_vote_handler`, `find_power_handler`, `protect_power_handler`, `resist_push_handler`, and `last_words_handler` into `good_skill_handlers.py` where appropriate.
 
-- [ ] **Step 5: Move wolf-side handlers**
+- [x] **Step 5: Move wolf-side handlers**
 
 Move `deep_hook_handler`, `hide_identity_handler`, and `wolf_pit_handler` into `wolf_skill_handlers.py`.
 
-- [ ] **Step 6: Move review correction handlers**
+- [x] **Step 6: Move review correction handlers**
 
 Move `review_correction_handler`, `_review_correction_wolf`, and `_review_correction_good` into `review_skill_handlers.py`.
 
-- [ ] **Step 7: Move handler registry**
+- [x] **Step 7: Move handler registry**
 
 Move `register_handler`, `get_handler`, and default handler registration into `skill_handler_registry.py`. Keep `apply_skill` as the public facade in `werewolf_skills.py`.
 
-- [ ] **Step 8: Run focused skill tests**
+- [x] **Step 8: Run focused skill tests**
 
 Run:
 
@@ -398,7 +442,7 @@ python -m pytest -n 0 --basetemp .tmp tests/skills/test_werewolf_skills.py tests
 
 Expected: all selected tests pass.
 
-- [ ] **Step 9: Verify and commit**
+- [x] **Step 9: Verify and commit**
 
 Commit message:
 
@@ -423,35 +467,35 @@ git commit -m "refactor: split werewolf skill handlers"
 - Test: `tests/agents/test_speech_intent_parser.py`
 - Existing tests: `tests/agents/test_output_parser.py`, `tests/agents/test_parse_dispatch.py`
 
-- [ ] **Step 1: Characterize `parse_action` and public helper imports**
+- [x] **Step 1: Characterize `parse_action` and public helper imports**
 
 Verify imports from `output_parser.py` continue to work.
 
-- [ ] **Step 2: Move raw extraction helpers**
+- [x] **Step 2: Move raw extraction helpers**
 
 Move `extract_parameter_tag_action`, `extract_partial_decision_data`, and `extract_decision_data` into `action_data_extraction.py`.
 
-- [ ] **Step 3: Move normalization helpers**
+- [x] **Step 3: Move normalization helpers**
 
 Move `normalize_action_data`, `_normalize_typos`, `clean_enum_value`, `clean_reason`, and optional-private-field sanitizers into `action_normalization.py`.
 
-- [ ] **Step 4: Move repair helpers**
+- [x] **Step 4: Move repair helpers**
 
 Move vote, target, and speech repair helpers into `action_repair.py`.
 
-- [ ] **Step 5: Move speech intent helpers**
+- [x] **Step 5: Move speech intent helpers**
 
 Move `infer_speech_intent`, seer stance inference, vote basis inference, and speech pressure helpers into `speech_intent_parser.py`.
 
-- [ ] **Step 6: Move choice pipeline helpers**
+- [x] **Step 6: Move choice pipeline helpers**
 
 Move `parse_choice_action`, `parse_speech_intent_action`, `uses_choice_pipeline`, and `uses_speech_intent_pipeline` into `choice_pipeline.py`.
 
-- [ ] **Step 7: Keep `output_parser.py` as parser facade**
+- [x] **Step 7: Keep `output_parser.py` as parser facade**
 
 `parse_action` remains the main entry point and delegates to focused modules.
 
-- [ ] **Step 8: Run focused parser tests**
+- [x] **Step 8: Run focused parser tests**
 
 Run:
 
@@ -461,7 +505,7 @@ python -m pytest -n 0 --basetemp .tmp tests/agents/test_output_parser.py tests/a
 
 Expected: all selected tests pass.
 
-- [ ] **Step 9: Verify and commit**
+- [x] **Step 9: Verify and commit**
 
 Commit message:
 
@@ -484,31 +528,31 @@ git commit -m "refactor: split agent output parser"
 - Test: `tests/agents/test_player_generation.py`
 - Existing tests: `tests/agents/test_player_agent.py`, `tests/integration/test_live_runtime.py`, `tests/integration/test_live_game_flow.py`
 
-- [ ] **Step 1: Characterize `PlayerAgent.act` behavior**
+- [x] **Step 1: Characterize `PlayerAgent.act` behavior**
 
 Add tests for success path, provider failure fallback, invalid action retry, and latency recording if not already covered.
 
-- [ ] **Step 2: Move failure classification**
+- [x] **Step 2: Move failure classification**
 
 Move `_fallback_reason`, `_categorize_failure_category`, and related failure metadata into `player_failures.py`.
 
-- [ ] **Step 3: Move latency helpers**
+- [x] **Step 3: Move latency helpers**
 
 Move `_latency_from_result` and timing extraction helpers into `player_latency.py`.
 
-- [ ] **Step 4: Move provider generation wrapper**
+- [x] **Step 4: Move provider generation wrapper**
 
 Move model call orchestration into `player_generation.py`, keeping dependencies explicit.
 
-- [ ] **Step 5: Move retry/fallback pipeline helpers**
+- [x] **Step 5: Move retry/fallback pipeline helpers**
 
 Move retry decision and fallback construction logic into `player_retry.py`.
 
-- [ ] **Step 6: Keep `PlayerAgent` as coordinator**
+- [x] **Step 6: Keep `PlayerAgent` as coordinator**
 
 `player.py` should own public class lifecycle and high-level `act`, not low-level failure parsing or prompt/generation plumbing.
 
-- [ ] **Step 7: Run focused player tests**
+- [x] **Step 7: Run focused player tests**
 
 Run:
 
@@ -518,7 +562,7 @@ python -m pytest -n 0 --basetemp .tmp tests/agents/test_player_agent.py tests/ag
 
 Expected: all selected tests pass.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 Commit message:
 
@@ -541,31 +585,31 @@ git commit -m "refactor: split player agent pipeline"
 - Test: `tests/memory/test_reflection_synthesis.py`
 - Existing tests: `tests/memory/test_reflection_v2.py`, `tests/memory/test_memory.py`
 
-- [ ] **Step 1: Characterize public reflection classes**
+- [x] **Step 1: Characterize public reflection classes**
 
 Verify `ReflectionQualityGate`, `ReflectionSynthesizer`, and `ReflectionMemory` are still importable from `reflection.py`.
 
-- [ ] **Step 2: Move text sanitization**
+- [x] **Step 2: Move text sanitization**
 
 Move `_iter_section_items`, `_scrub_ids`, and `_cap_source_text` into `reflection_sanitization.py`.
 
-- [ ] **Step 3: Move quality gate**
+- [x] **Step 3: Move quality gate**
 
 Move `ReflectionQualityGate` and quality scoring helpers into `reflection_quality.py`.
 
-- [ ] **Step 4: Move synthesizer**
+- [x] **Step 4: Move synthesizer**
 
 Move `ReflectionSynthesizer` into `reflection_synthesis.py`.
 
-- [ ] **Step 5: Move storage wrapper**
+- [x] **Step 5: Move storage wrapper**
 
 Move `ReflectionMemory` into `reflection_repository.py`.
 
-- [ ] **Step 6: Keep `reflection.py` as compatibility facade**
+- [x] **Step 6: Keep `reflection.py` as compatibility facade**
 
 Explicitly import and re-export public classes and helpers still used by callers.
 
-- [ ] **Step 7: Run focused memory tests**
+- [x] **Step 7: Run focused memory tests**
 
 Run:
 
@@ -575,7 +619,7 @@ python -m pytest -n 0 --basetemp .tmp tests/memory/test_reflection_v2.py tests/m
 
 Expected: all selected tests pass.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 Commit message:
 
@@ -597,31 +641,31 @@ git commit -m "refactor: split reflection memory modules"
 - Test: `tests/runtime/test_day_vote_nodes.py`
 - Existing tests: `tests/runtime/test_day_discussion.py`, `tests/runtime/test_vote_flow.py`, `tests/runtime/test_pk_flow.py`
 
-- [ ] **Step 1: Characterize public imports from `day.py`**
+- [x] **Step 1: Characterize public imports from `day.py`**
 
 Verify public node functions remain importable.
 
-- [ ] **Step 2: Move death announcement and last words**
+- [x] **Step 2: Move death announcement and last words**
 
 Move `_death_reason_label`, `announce_deaths`, `announce_deaths_with_badge_loss`, `night_death_last_words`, and `exile_last_words` into `day_deaths.py`.
 
-- [ ] **Step 3: Move discussion node**
+- [x] **Step 3: Move discussion node**
 
 Move `free_discussion` into `day_discussion.py`.
 
-- [ ] **Step 4: Move vote and exile nodes**
+- [x] **Step 4: Move vote and exile nodes**
 
 Move `day_vote`, `_broadcast_vote_details`, `resolve_vote`, and `resolve_exile` into `day_vote.py`.
 
-- [ ] **Step 5: Move game finish**
+- [x] **Step 5: Move game finish**
 
 Move `check_victory` and `finish_game` into `day_finish.py`.
 
-- [ ] **Step 6: Keep `day.py` as explicit facade**
+- [x] **Step 6: Keep `day.py` as explicit facade**
 
 Re-export public node functions without wildcard imports.
 
-- [ ] **Step 7: Run focused day tests**
+- [x] **Step 7: Run focused day tests**
 
 Run:
 
@@ -631,7 +675,7 @@ python -m pytest -n 0 --basetemp .tmp tests/runtime/test_day_discussion.py tests
 
 Expected: all selected tests pass.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 Commit message:
 
@@ -653,31 +697,31 @@ git commit -m "refactor: split day runtime nodes"
 - Test: `tests/api/test_game_persistence_helpers.py`
 - Existing tests: `tests/api/test_api.py`, `tests/api/test_auth.py`, `tests/api/test_views.py`, `tests/api/test_pause_resume_lock.py`
 
-- [ ] **Step 1: Characterize route registration**
+- [x] **Step 1: Characterize route registration**
 
 Verify `create_game_router` exposes the same routes before and after refactor.
 
-- [ ] **Step 2: Move auth helpers**
+- [x] **Step 2: Move auth helpers**
 
 Move `_resolve_caller_role`, `_enforce_moderator_only`, and `_enforce_create_game_auth` into `game_auth.py`.
 
-- [ ] **Step 3: Move persistence helpers**
+- [x] **Step 3: Move persistence helpers**
 
 Move `_get_game` and `_persist` into `game_persistence.py`.
 
-- [ ] **Step 4: Move cognition view helpers**
+- [x] **Step 4: Move cognition view helpers**
 
 Move `_build_cognition_data_for_viewer` and `_build_locked_config_snapshot` into `game_cognition_views.py`.
 
-- [ ] **Step 5: Move public share helpers**
+- [x] **Step 5: Move public share helpers**
 
 Move `_event_is_public_for_share` and `_pick_public_mvp_candidate` into `game_public_share.py`.
 
-- [ ] **Step 6: Keep `games.py` as route declaration module**
+- [x] **Step 6: Keep `games.py` as route declaration module**
 
 `games.py` should define routes and dependency wiring only.
 
-- [ ] **Step 7: Run focused API tests**
+- [x] **Step 7: Run focused API tests**
 
 Run:
 
@@ -687,7 +731,7 @@ python -m pytest -n 0 --basetemp .tmp tests/api/test_api.py tests/api/test_auth.
 
 Expected: all selected tests pass.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 Commit message:
 
@@ -710,7 +754,7 @@ git commit -m "refactor: split game route helpers"
 - Modify: `werewolf_agent/rag/vector_store.py`
 - Test: matching focused tests under `tests/evaluation`, `tests/runtime`, `tests/rules`, `tests/rag`
 
-- [ ] **Step 1: Re-rank these files after Tasks 1-10**
+- [x] **Step 1: Re-rank these files after Tasks 1-10**
 
 Run:
 
@@ -727,27 +771,27 @@ $rows | Where-Object { $_.Lines -ge 600 } | Sort-Object Lines -Descending
 
 Expected: updated candidate list.
 
-- [ ] **Step 2: Split `metrics.py`**
+- [x] **Step 2: Split `metrics.py`**
 
 Create `evaluation/claim_metrics.py`, `evaluation/pace_metrics.py`, and `evaluation/world_model_metrics.py`; keep `MetricsAggregator` facade.
 
-- [ ] **Step 3: Split `model_gateway/router.py`**
+- [x] **Step 3: Split `model_gateway/router.py`**
 
 Create `model_gateway/provider_call.py`, `model_gateway/retry_policy.py`, and `model_gateway/usage_records.py`; keep `ModelRouter` facade.
 
-- [ ] **Step 4: Split `runtime/nodes/_shared.py`**
+- [x] **Step 4: Split `runtime/nodes/_shared.py`**
 
 Create `runtime/nodes/runtime_state.py`, `runtime/nodes/action_audit.py`, and `runtime/nodes/node_helpers.py`; preserve compatibility imports for shared node helpers.
 
-- [ ] **Step 5: Split `runtime/game_runner.py`**
+- [x] **Step 5: Split `runtime/game_runner.py`**
 
 Create `runtime/game_runner_config.py`, `runtime/game_runner_setup.py`, and `runtime/game_runner_execution.py`; keep `GameRunner` facade.
 
-- [ ] **Step 6: Split `engine/rule_engine.py` only after rule tests are stable**
+- [x] **Step 6: Split `engine/rule_engine.py` only after rule tests are stable**
 
-Create `engine/action_legality.py`, `engine/night_resolution.py`, and `engine/victory_conditions.py`; keep `RuleEngine` facade.
+Create focused helpers including `rule_flow.py`, `rule_special_roles.py`, `rule_vote.py`, `rule_last_words.py`, `rule_visibility.py`, `rule_victory.py`, `rule_exile.py`, `rule_death.py`, and `rule_night.py`; keep `RuleEngine` facade.
 
-- [ ] **Step 7: Split `runtime/nodes/sheriff.py`**
+- [x] **Step 7: Split `runtime/nodes/sheriff.py`**
 
 Create `sheriff_registration_node.py`, `sheriff_vote_node.py`, and `sheriff_speech_node.py`; keep `sheriff.py` facade.
 
