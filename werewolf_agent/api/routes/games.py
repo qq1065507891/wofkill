@@ -1,30 +1,40 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：游戏 CRUD、状态查询、鉴权登录、仪表盘与审计端点的 API 路由。
+功能描述：游戏 CRUD、状态查询、鉴权登录、仪表盘与审计端点的 API 路由声明。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-06
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
-import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 import uuid
-
-logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from werewolf_agent.api.auth import AuthManager
 from werewolf_agent.api.permissions import PermissionChecker, PermissionDenied
+from werewolf_agent.api.routes.game_auth import (
+    _enforce_create_game_auth_with_resolver,
+    _enforce_moderator_only_with_resolver,
+    _resolve_caller_role,
+)
+from werewolf_agent.api.routes.game_cognition_views import (
+    _build_cognition_data_for_viewer,
+    _build_locked_config_snapshot,
+)
+from werewolf_agent.api.routes.game_persistence import _get_game, _persist
+from werewolf_agent.api.routes.game_public_share import (
+    _event_is_public_for_share,
+    _pick_public_mvp_candidate,
+)
 from werewolf_agent.api.schemas import (
     CallerRole,
     CognitiveDiffResponse,
@@ -52,6 +62,42 @@ from werewolf_agent.api.views import (
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 from werewolf_agent.runtime.world_model_audit import extract_world_model_audits_from_events
+
+
+def _enforce_moderator_only(
+    req: GameActionRequest,
+    auth_manager: AuthManager,
+    checker: PermissionChecker,
+    authorized_callers: dict[str, CallerRole],
+    game_id: str,
+    endpoint: str,
+) -> None:
+    """兼容旧入口：允许调用方 patch games._resolve_caller_role。"""
+    _enforce_moderator_only_with_resolver(
+        req,
+        auth_manager,
+        checker,
+        authorized_callers,
+        game_id,
+        endpoint,
+        resolve_caller_role=_resolve_caller_role,
+    )
+
+
+def _enforce_create_game_auth(
+    req: CreateGameRequest,
+    auth_manager: AuthManager,
+    checker: PermissionChecker,
+    authorized_callers: dict[str, CallerRole],
+) -> None:
+    """兼容旧入口：允许调用方 patch games._resolve_caller_role。"""
+    _enforce_create_game_auth_with_resolver(
+        req,
+        auth_manager,
+        checker,
+        authorized_callers,
+        resolve_caller_role=_resolve_caller_role,
+    )
 
 
 def create_game_router(
@@ -649,262 +695,3 @@ def create_game_router(
         )
 
     return router
-
-
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
-
-def _get_game(games: dict[str, GameState], game_id: str) -> GameState:
-    state = games.get(game_id)
-    if state is None:
-        raise HTTPException(404, f"Game {game_id} not found")
-    return state
-
-
-def _persist(state: GameState, games: dict, lock: Any, repo: Any) -> None:
-    with lock:
-        games[state.game_id] = state
-    if repo is not None:
-        repo.save_game(state)
-
-
-def _resolve_caller_role(
-    authorized_callers: dict[str, CallerRole],
-    caller_id: str,
-    requested_role: CallerRole,
-    session_token: str = "",
-    auth_manager: AuthManager | None = None,
-) -> CallerRole:
-    if session_token and auth_manager is not None:
-        validated_role = auth_manager.validate_session(session_token)
-        if validated_role is not None:
-            try:
-                return CallerRole(validated_role)
-            except ValueError:
-                pass
-        raise HTTPException(403, "Invalid or expired session token")
-    if requested_role in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
-        if caller_id and authorized_callers.get(caller_id) == requested_role:
-            # NEW-P2-5: only log a warning for elevated legacy auth.
-            # Non-elevated callers (player_agent, spectator) using
-            # query-param auth is the documented dev path and not
-            # security-relevant; the old log was noise.
-            logger.warning(
-                "Legacy query-param auth for elevated role without "
-                "session_token: caller_id=%s, caller_role=%s — no "
-                "cryptographic verification performed",
-                caller_id,
-                requested_role.value,
-            )
-            return requested_role
-        raise HTTPException(403, "Elevated caller role is not authorized")
-    if (
-        requested_role == CallerRole.PLAYER_AGENT
-        and auth_manager is not None
-        and auth_manager.config.mode != "local"
-    ):
-        raise HTTPException(
-            403,
-            "Player agent role requires session_token outside local auth mode",
-        )
-    return requested_role
-
-
-def _enforce_moderator_only(
-    req: GameActionRequest,
-    auth_manager: AuthManager,
-    checker: PermissionChecker,
-    authorized_callers: dict[str, CallerRole],
-    game_id: str,
-    endpoint: str,
-) -> None:
-    """Restrict a game-control endpoint to MODERATOR/DEBUGGER callers.
-
-    Resolves the role via session_token OR the authorized_callers registry,
-    and rejects anything else with 403. Records denials in the audit log.
-    """
-    caller_role = _resolve_caller_role(
-        authorized_callers,
-        req.caller_id,
-        req.caller_role,
-        session_token=req.session_token,
-        auth_manager=auth_manager,
-    )
-    if caller_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
-        try:
-            checker.check(
-                caller_id=req.caller_id,
-                caller_role=caller_role,
-                requested_view=ViewMode.MODERATOR_FULL,
-                game_id=game_id,
-                endpoint=endpoint,
-                game_active=True,
-            )
-        except PermissionDenied as e:
-            raise HTTPException(403, detail=e.reason)
-        raise HTTPException(403, "Game control endpoints require moderator or debugger role")
-    if endpoint == "start" and not req.caller_id:
-        raise HTTPException(403, "start_game requires a non-empty caller_id")
-
-
-def _enforce_create_game_auth(
-    req: CreateGameRequest,
-    auth_manager: AuthManager,
-    checker: PermissionChecker,
-    authorized_callers: dict[str, CallerRole],
-) -> None:
-    """Require a non-empty caller_id and MODERATOR role for create_game.
-
-    Closing the unauthenticated DoS vector: a caller without a verified
-    moderator role cannot create a new game session.
-    """
-    if not req.caller_id:
-        raise HTTPException(403, "create_game requires a non-empty caller_id")
-    caller_role = _resolve_caller_role(
-        authorized_callers,
-        req.caller_id,
-        req.caller_role,
-        session_token=req.session_token,
-        auth_manager=auth_manager,
-    )
-    if caller_role != CallerRole.MODERATOR:
-        try:
-            checker.check(
-                caller_id=req.caller_id,
-                caller_role=caller_role,
-                requested_view=ViewMode.MODERATOR_FULL,
-                endpoint="create-game",
-            )
-        except PermissionDenied as e:
-            raise HTTPException(403, detail=e.reason)
-        raise HTTPException(403, "create_game requires moderator role")
-
-
-def _build_cognition_data_for_viewer(
-    state: GameState, viewer_id: str,
-) -> dict[str, dict[str, Any]]:
-    """NEW-P1-5: build real belief data for the cognitive-diff view.
-
-    Uses the belief updater to initialize a uniform belief state from
-    the current game state, then collapses each player's
-    ``role_probabilities`` into ``{guessed_role, guessed_confidence,
-    faction_read, trust}`` for the view layer.
-    """
-    try:
-        from werewolf_agent.cognition.belief import BeliefUpdater
-        from werewolf_agent.cognition.world_state import build_world_state
-        from werewolf_agent.cognition.visibility import VisibilityPolicy
-    except Exception:
-        return {}
-
-    try:
-        world_state = build_world_state(state)
-    except Exception:
-        return {}
-
-    role_names = [
-        "villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid",
-    ]
-    updater = BeliefUpdater(all_role_names=role_names)
-    belief_state = updater.initialize(list(state.players.keys()), viewer_id)
-
-    # Apply visibility filter so the belief state reflects what the
-    # viewer could realistically infer.
-    try:
-        viewer_role = state.players[viewer_id].role if viewer_id in state.players else "villager"
-        vis_policy = VisibilityPolicy()
-        visible_facts = vis_policy.filter_visible_facts(world_state, viewer_id, viewer_role)
-        belief_state = updater.update(belief_state, visible_facts, state.day_number)
-    except Exception:
-        # Fall back to uniform beliefs on visibility errors.
-        pass
-
-    cognition_data: dict[str, dict[str, Any]] = {}
-    for pid, b in belief_state.beliefs.items():
-        guessed_role, guessed_confidence = b.top_role_guess()
-        faction_read = b.faction_lean if b.faction_lean != "unknown" else "unknown"
-        cognition_data[pid] = {
-            "guessed_role": guessed_role,
-            "guessed_confidence": float(guessed_confidence),
-            "faction_read": faction_read,
-            "trust": float(b.trust),
-            "key_evidence": list(b.open_questions),
-            "belief_changes": [],
-        }
-    return cognition_data
-
-
-def _build_locked_config_snapshot(req: CreateGameRequest, project_root: Path) -> dict:
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", req.ruleset_id):
-        raise HTTPException(400, f"Invalid ruleset_id: {req.ruleset_id}")
-    if not re.fullmatch(r"[a-zA-Z0-9_-]+", req.profile_pack_id):
-        raise HTTPException(400, f"Invalid profile_pack_id: {req.profile_pack_id}")
-    seed = req.seed if req.seed is not None else 0
-    ruleset_path = project_root / "config" / "rulesets" / f"{req.ruleset_id}.yaml"
-    ruleset_content = ruleset_path.read_text(encoding="utf-8") if ruleset_path.exists() else req.ruleset_id
-    return {
-        "ruleset_id": req.ruleset_id,
-        "ruleset_version": "runtime-current",
-        "ruleset_hash": hashlib.sha256(ruleset_content.encode("utf-8")).hexdigest(),
-        "profile_pack_id": req.profile_pack_id,
-        "profile_pack_version": "runtime-current",
-        "profile_pack_hash": hashlib.sha256((
-            (project_root / "config" / "persona_packs" / f"{req.profile_pack_id}.yaml")
-            .read_text(encoding="utf-8")
-            if (project_root / "config" / "persona_packs" / f"{req.profile_pack_id}.yaml").exists()
-            else req.profile_pack_id
-        ).encode("utf-8")).hexdigest(),
-        "model_config_hash": "",
-        "persona_adapter_version": 1,
-        "rag_config_hash": "",
-        "engine_version": "1.0",
-        "random_seed": seed,
-        "agent_behavior_seed": seed,
-        "speech_order_seed": seed,
-        "experience_mode": req.experience_mode,
-        "human_seat": req.human_seat,
-        "share_code": req.share_code,
-    }
-
-
-def _event_is_public_for_share(event: GameEvent) -> bool:
-    visibility = event.payload.get("visibility") if isinstance(event.payload, dict) else None
-    if visibility in {"moderator_only", "werewolf_team_only", "witch_private", "seer_private", "hybrid_only"}:
-        return False
-    private_types = {
-        "private_intent_recorded",
-        "witch_decision_audit",
-        "rag_injection_audit",
-        "seer_check",
-        "hybrid_master_chosen",
-        "wolf_discussion",
-    }
-    return event.type not in private_types
-
-
-def _pick_public_mvp_candidate(state: GameState) -> str | None:
-    """NEW-P2-11: pick a public-safe MVP candidate.
-
-    The old implementation just sorted by player id, which meant the
-    "MVP" was whoever happened to be ``p01`` — almost always a
-    villager, but for the wrong reason, and broken if ``p01`` happened
-    to be a wolf.
-
-    The fix prefers an alive good-faction player in deterministic
-    id order. If no good player is alive, fall back to any alive
-    player; if none, fall back to the lowest-id player overall.
-    """
-    good_roles = {"villager", "seer", "witch", "hunter", "idiot"}
-    alive_good = sorted(
-        pid for pid, player in state.players.items()
-        if player.alive and player.role in good_roles
-    )
-    if alive_good:
-        return alive_good[0]
-    alive_ids = sorted(pid for pid, player in state.players.items() if player.alive)
-    if alive_ids:
-        return alive_ids[0]
-    all_ids = sorted(state.players)
-    return all_ids[0] if all_ids else None
