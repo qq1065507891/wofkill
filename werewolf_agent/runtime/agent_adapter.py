@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-05
+修改日期: 2026-07-06
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_adapter import agent_day_speech
@@ -15,12 +15,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+from typing import Any
 
-from werewolf_agent.agents.player import PlayerAgent
 from werewolf_agent.agents.schemas import (
     ActionType,
-    AgentContext,
     TaskType,
 )
 from werewolf_agent.core.models import GameState
@@ -96,7 +94,7 @@ from werewolf_agent.runtime.seer_night_directives import (
     build_seer_legal_targets,
     build_seer_night_strategy_directive,
 )
-from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS as AGENT_TIMEOUTS  # noqa: F401
 from werewolf_agent.runtime.wolf_team_plan_support import (
     build_prior_plan_summary,
     build_wolf_role_definitions,
@@ -146,12 +144,28 @@ from werewolf_agent.runtime.directives import (
     build_villager_directive as _build_villager_day_speech_directive,
     build_witch_directive as _build_witch_day_speech_directive,
     build_wolf_day_directive as _build_wolf_day_speech_directive,
-    build_wolf_night_directive as _build_wolf_night_directive,
+    build_wolf_night_directive as _build_wolf_night_directive,  # noqa: F401
     build_wolf_vote_directive as _build_wolf_vote_strategy,
 )
 from werewolf_agent.runtime.directives._shared import (
     build_sheriff_silent_directive as _build_sheriff_silent_directive,
 )
+from werewolf_agent.runtime.agent_action_audit import (
+    VOTE_BASIS_GUIDANCE,  # noqa: F401
+    _audit_context_kwargs,
+    _inject_vote_basis_hint,
+    _is_sheriff_silenced,
+    _seer_credibility_audit_payload,
+)
+from werewolf_agent.runtime.agent_reflection_support import (
+    _agent_reflection,  # noqa: F401
+    _strip_in_game_directives,  # noqa: F401
+)
+from werewolf_agent.runtime.agent_registry import AgentRegistry, SimpleAgentRegistry  # noqa: F401
+from werewolf_agent.runtime.wolf_kill_support import (
+    _build_wolf_kill_directive,
+    _single_wolf_vote,
+)  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -161,138 +175,15 @@ _GOOD_REFLECTION_TEMPLATE = GOOD_REFLECTION_TEMPLATE
 _WOLF_REFLECTION_TEMPLATE = WOLF_REFLECTION_TEMPLATE
 
 
-def _audit_context_kwargs(
-    decision_identity: DecisionIdentity | None,
-    exposure_collector: ModuleExposureAuditCollector | None,
-    decision_trace_sink: Any | None = None,
-) -> dict[str, Any]:
-    if decision_identity is None or exposure_collector is None:
-        return {}
-    return {
-        "decision_identity": decision_identity,
-        "exposure_collector": exposure_collector,
-        "decision_trace_sink": decision_trace_sink,
-    }
-
-
-class AgentRegistry(Protocol):
-    """Maps player_id to PlayerAgent. Return None for scripted fallback."""
-
-    def get_agent(self, player_id: str) -> PlayerAgent | None: ...
-
-
-class SimpleAgentRegistry:
-    """Concrete registry: maps player_id -> PlayerAgent."""
-
-    def __init__(self, agents: dict[str, PlayerAgent] | None = None) -> None:
-        self._agents: dict[str, PlayerAgent] = agents or {}
-
-    def register(self, player_id: str, agent: PlayerAgent) -> None:
-        self._agents[player_id] = agent
-
-    def get_agent(self, player_id: str) -> PlayerAgent | None:
-        return self._agents.get(player_id)
-
-
 # -- Backward-compatible re-exports from runtime.strategy (Task 2 extraction) --
 from werewolf_agent.runtime.strategy import (
     estimate_witch_save_value as _estimate_witch_save_value,
     evaluate_seer_check_value as _evaluate_seer_check_value,
-    evaluate_wolf_kill_target as _evaluate_wolf_kill_target,
+    evaluate_wolf_kill_target as _evaluate_wolf_kill_target,  # noqa: F401
     get_wolf_role_assignment as _get_wolf_role_assignment,
     has_publicly_claimed_seer as _has_publicly_claimed_seer,
 )
 from werewolf_agent.runtime.strategy.seer import public_seer_claimants as _public_seer_claimants  # noqa: F401
-
-
-# M2-2: single-source guidance for vote/speech actions. Moved out
-# of system prompt's role_guide (which is stable across turns and
-# doesn't know task_type) to per-turn strategy_directive injection.
-# Same wording as before (preserves LLM behavior for vote/speech).
-# Seer is exempt (uses seer_check for own checks).
-VOTE_BASIS_GUIDANCE = (
-    "【投票时 vote_basis 选用 speech_logic / vote_pattern / "
-    "seer_siding，不要用 seer_check。】"
-)
-
-
-def _inject_vote_basis_hint(
-    strategy_directive: dict[str, Any],
-    gs: GameState,
-    player_id: str,
-) -> None:
-    """M2-2: per-turn VOTE_BASIS_GUIDANCE injection (seer exempt).
-
-    Seer legitimately uses seer_check (its own checks); the
-    guidance "vote_basis 选用 speech_logic / vote_pattern /
-    seer_siding, 不要用 seer_check" doesn't apply to it.
-    Hybrid also gets the guidance — it has no own-check ability.
-
-    Mutates ``strategy_directive`` in place. Centralized so the
-    seer-exempt rule is defined once and the prompt-tier
-    registry (HARD_CONSTRAINT_KEYS) only needs to know the key.
-    """
-    role = gs.players[player_id].role if player_id in gs.players else ""
-    if role != "seer":
-        strategy_directive["vote_basis_hint"] = VOTE_BASIS_GUIDANCE
-
-
-def _seer_credibility_audit_payload(
-    context: AgentContext,
-    day_number: int,
-) -> dict[str, Any] | None:
-    summary = context.seer_credibility or {}
-    lines = summary.get("seer_lines")
-    if not isinstance(lines, list) or not lines:
-        return None
-    safe_lines: list[dict[str, Any]] = []
-    for item in lines[:3]:
-        if not isinstance(item, dict):
-            continue
-        safe_lines.append({
-            key: item[key]
-            for key in (
-                "claimant",
-                "status",
-                "score",
-                "confidence",
-                "checks",
-                "evidence",
-                "penalties",
-            )
-            if key in item
-        })
-    if not safe_lines:
-        return None
-    return {
-        "day_number": day_number,
-        "visibility": "moderator_only",
-        "seer_lines": safe_lines,
-    }
-
-
-def _is_sheriff_silenced(gs: GameState, sheriff_id: str) -> bool:
-    """Return True if the active sheriff is currently muted (cannot speak).
-
-    P1-D4: a sheriff may hold the active badge but still be unable to
-    speak — e.g., a witch poison mute or a self-destruct that lands the
-    badge but freezes the day-speech action.  The pre-fix code only
-    checked ``sheriff_id == speaker_id and sheriff_badge_state ==
-    "active"`` and rendered a 归票 directive unconditionally, which
-    contradicted the silence condition.
-
-    The check is forward-compatible:
-    - Looks for a ``sheriff_silenced`` event targeting this sheriff
-      (e.g., emitted by a future skill resolver).
-    - Falls back to badge states ``"silenced"`` / ``"frozen"`` if a
-      caller sets them explicitly.
-    """
-    for ev in gs.events:
-        if ev.type == "sheriff_silenced" and ev.payload.get("sheriff_id") == sheriff_id:
-            return True
-    if gs.sheriff_badge_state in {"silenced", "frozen"}:
-        return True
-    return False
 
 
 def agent_night_witch(
@@ -683,158 +574,6 @@ def agent_wolf_consensus(
             "action_traces": action_traces,
             "action_decision_identities": action_decision_identities,
             "action_exposure_collectors": action_exposure_collectors}
-
-
-def _build_wolf_kill_directive(
-    gs: GameState,
-    *,
-    wolf_id: str,
-    plan: dict[str, Any] | None,
-) -> str:
-    """Build a kill-priority directive for the wolf kill/discussion prompts.
-
-    If any non-wolf player has publicly claimed Seer (using
-    ``has_publicly_claimed_seer``), the directive explicitly names them as the
-    highest-priority kill target. Otherwise it falls back to the top-3 ranked
-    targets from ``evaluate_wolf_kill_target`` so wolves still get concrete
-    suggestions rather than a generic "kill the biggest threat" prompt.
-    """
-    from werewolf_agent.runtime.strategy.wolf import (
-        evaluate_wolf_kill_target,
-        has_publicly_claimed_seer,
-    )
-
-    parts: list[str] = []
-
-    # Highest priority: anyone who has publicly claimed Seer (or any seer-flavored
-    # keyword) must be explicitly named. We do not filter by ``role == "seer"``
-    # because a fake-Seer jump also reveals that player as a top threat.
-    claimed_seers: list[str] = []
-    for pid, p in gs.players.items():
-        if p.alive and p.role != "werewolf" and has_publicly_claimed_seer(gs, pid):
-            claimed_seers.append(pid)
-
-    if claimed_seers:
-        names = ", ".join(claimed_seers)
-        parts.append(
-            f"高优先级击杀目标: {names} —— 该玩家已公开跳预言家，"
-            "对狼队威胁最大，必须作为今晚的首选击杀目标。"
-        )
-
-    # Secondary: the wolf team plan's primary target (if set)
-    if plan and plan.get("night_kill_primary"):
-        primary = plan["night_kill_primary"]
-        if primary in gs.players and gs.players[primary].alive:
-            if primary not in claimed_seers:
-                parts.append(
-                    f"狼队讨论主目标: {primary}（备选: {plan.get('night_kill_backup') or '无'}）"
-                )
-
-    # Tertiary: top scoring candidates from evaluate_wolf_kill_target
-    if not parts or len(claimed_seers) == 0:
-        # No claimed Seer — show top-3 ranked by threat score
-        scores = evaluate_wolf_kill_target(gs, wolf_id, [
-            pid for pid, p in gs.players.items() if p.alive and p.role != "werewolf"
-        ])
-        if scores and scores.get("ranked_targets"):
-            for entry in scores["ranked_targets"][:3]:
-                parts.append(
-                    f"击杀候选: {entry['target']}（威胁分={entry['value']}，"
-                    f"信号: {', '.join(entry.get('signals', [])) or '无'}）"
-                )
-
-    if not parts:
-        return "无明显优先目标，按战术需要自由选择击杀对象。"
-
-    return "\n".join(parts)
-
-
-def _single_wolf_vote(
-    state: dict[str, Any],
-    engine: RuleEngine,
-    registry: AgentRegistry,
-    wolf_id: str,
-    *,
-    decision_identity: DecisionIdentity | None = None,
-    exposure_collector: ModuleExposureAuditCollector | None = None,
-    decision_trace_sink: Any | None = None,
-) -> dict[str, Any] | None:
-    """Get a single wolf's kill/no_kill vote.
-
-    Each wolf gets an individual timeout.  Unknown action types are treated
-    as wolf_no_kill (the agent chose something unexpected) rather than
-    silently swallowed as None which would distort consensus.
-    """
-    gs: GameState = state["game_state"]
-    agent = registry.get_agent(wolf_id)
-    if agent is None:
-        return None
-
-    legal_targets = [pid for pid, p in gs.players.items() if p.alive and p.role != "werewolf"]
-
-    # Kill target value assessment
-    kill_assessment = _evaluate_wolf_kill_target(gs, wolf_id, legal_targets)
-    wolf_plan = state.get("wolf_team_plan")
-    # M3-3: build the night directive (kill/no_kill prompt) from the
-    # shared module so day and night directives don't drift apart.
-    strategy_directive: dict[str, Any] = _build_wolf_night_directive(
-        gs, wolf_id, wolf_plan,
-    )
-    # Task 3 (Issue 4): explicitly name the claimed Seer as the top kill target
-    # so all wolves converge on the same high-priority player.  Lives
-    # here (not in directives/wolf.py) to avoid a circular import —
-    # ``_build_wolf_kill_directive`` itself is defined in this module.
-    strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
-        gs, wolf_id=wolf_id, plan=wolf_plan,
-    )
-    if kill_assessment:
-        strategy_directive["kill_value_assessment"] = kill_assessment
-    if wolf_plan and wolf_plan.get("night_kill_primary"):
-        strategy_directive["wolf_plan_target"] = (
-            f"狼队讨论确定的主目标: {wolf_plan['night_kill_primary']}"
-            + (f"，备选: {wolf_plan['night_kill_backup']}" if wolf_plan.get("night_kill_backup") else "")
-        )
-
-    context = build_agent_context(
-        engine, gs, wolf_id, TaskType.WOLF_DISCUSSION,
-        legal_actions=[ActionType.WOLF_KILL, ActionType.WOLF_NO_KILL],
-        legal_targets=legal_targets,
-        wolf_team_plan=wolf_plan,
-        rag_service=state.get("rag_service"),
-        restored_memory=state.get("restored_memory"),
-        cognition_state_manager=state.get("cognition_state_manager"),
-        **_audit_context_kwargs(decision_identity, exposure_collector, decision_trace_sink),
-    )
-    context = _merge_strategy_directive(context, strategy_directive)
-
-    timeout = float(state.get("wolf_vote_timeout") or AGENT_TIMEOUTS.wolf_consensus)
-    if timeout > 0:
-        from werewolf_agent.runtime.timers import timed_call
-        action_result = timed_call(agent.act, context, timeout=timeout, fallback=None)
-    else:
-        try:
-            action_result = agent.act(context)
-        except Exception as exc:
-            logger.warning("Wolf vote failed for %s: %s: %s", wolf_id, type(exc).__name__, exc)
-            action_result = None
-
-    if action_result is None:
-        # Timeout or exception — count as no_kill (strategy: skip this vote)
-        return {"wolf_action": "no_kill", "wolf_kill_target_id": None}
-
-    action, retry_info = action_result
-    action_trace = _action_trace_payload(action)
-
-    if action.action_type == ActionType.WOLF_NO_KILL:
-        return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
-    if action.action_type == ActionType.WOLF_KILL and action.target_id:
-        # Validate target is alive and not a wolf teammate
-        target_player = gs.players.get(action.target_id)
-        if target_player and target_player.alive and target_player.role != "werewolf":
-            return {"wolf_action": "kill", "wolf_kill_target_id": action.target_id, "action_trace": action_trace}
-        return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
-    # Unknown action type — treat as no_kill rather than silently returning None
-    return {"wolf_action": "no_kill", "wolf_kill_target_id": None, "action_trace": action_trace}
 
 
 def agent_wolf_discussion(
@@ -1921,91 +1660,3 @@ def agent_sheriff_election_speech(
             )
 
     return {"speech_text": speech_text, "action_trace": _action_trace_payload(action), "self_destruct": False}
-
-
-_POST_GAME_KEEP = frozenset({"reflection_task", "game_outcome"})
-
-
-def _strip_in_game_directives(context):
-    """赛后反思:剥离赛内决策 directive,只留 allowlist。
-
-    `_agent_reflection` 调 `build_agent_context(TaskType.REFLECTION)` 拿到的
-    context.strategy_directive 仍装满赛内决策 directive(role_alerts /
-    skill_tactical_advice / witch_poison_deterrent / must_address_alerts 等),
-    反思指令 reflection_task 只是一个平级 key 被淹没,LLM 因此输出赛内决策
-    (刀人计划 / 发言分析)而非赛后反思。
-
-    此 helper 在 merge reflection_directive 之前清掉赛内 directive,最终
-    strategy_directive == {reflection_task, game_outcome}。幂等:若本就无赛内
-    directive 则为无害 no-op。
-    """
-    kept = {k: v for k, v in (context.strategy_directive or {}).items()
-            if k in _POST_GAME_KEEP}
-    return context.model_copy(update={"strategy_directive": kept})
-
-
-def _agent_reflection(
-    state: dict[str, Any],
-    engine: Any,
-    registry: Any,
-    player_id: str,
-) -> dict[str, Any]:
-    """Post-game reflection: each player reviews their performance.
-
-    Design doc §10.2: generates key judgments, mistakes, successful
-    strategies, deception experienced, and improvement suggestions.
-
-    Per [[feedback-reflection-role-specific]]: the reflection prompt must
-    branch on role family (good / wolf / hybrid-defer) instead of a
-    single generic prompt. Each branch asks role-specific questions and
-    mandates a "保留的优点" section so cross-game learning preserves
-    what worked, not just what failed.
-    """
-    agent = registry.get_agent(player_id)
-    if agent is None:
-        return {}
-
-    gs: GameState = state["game_state"]
-    player = gs.players.get(player_id)
-    winner = gs.winning_faction or "?"
-
-    try:
-        # P0-RF1: pass TaskType.REFLECTION so speech_quality_phase
-        # returns None and skips the public-speech 4-field check.
-        # Reflection text is post-game review and has no stance /
-        # suspicion_target / vote_leaning / evidence fields. Using
-        # TaskType.SPEECH here triggered a retry loop that surfaced
-        # as 8/12 reflection failures in the post-merge game trace.
-        context = build_agent_context(
-            engine, gs, player_id, TaskType.REFLECTION,
-            legal_actions=[ActionType.SPEECH],
-            restored_memory=state.get("restored_memory"),
-            cognition_state_manager=state.get("cognition_state_manager"),
-        )
-        reflection_task = build_reflection_prompt(
-            player=player,
-            winner=winner,
-            hybrid_master_faction=gs.hybrid_master_faction,
-        )
-        reflection_directive = {
-            "reflection_task": reflection_task,
-            "game_outcome": (
-                f"胜利方是{'好人' if winner == 'good' else '狼人'}阵营。"
-                f"你{'存活到' if (player and player.alive) else '在'}游戏结束。"
-                f"你的身份是 {player.role if player else '?'}。"
-            ),
-        }
-        context = _strip_in_game_directives(context)
-        context = _merge_strategy_directive(context, reflection_directive)
-
-        action, _retry_info = agent.act(context)
-        # P0-RF2: scrub raw p\d+ tokens from the LLM-written reflection
-        # before it lands in graph state and gets persisted to
-        # ReflectionMemory. The template's 1-line PII hint is a
-        # best-effort prompt; this post-processing is the authoritative
-        # guard against cross-game ID leakage.
-        from werewolf_agent.memory.store import _scrub_player_ids
-        return {"reflection_text": _scrub_player_ids(getattr(action, "speech", "") or "")}
-    except Exception:
-        logger.warning("Reflection failed for %s", player_id, exc_info=True)
-        return {"reflection_text": ""}
