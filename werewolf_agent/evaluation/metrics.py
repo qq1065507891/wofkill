@@ -1,17 +1,18 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：计算阵营/玩家/角色/质量/安全/成本延迟/增长曲线等全维度指标
+功能描述：聚合阵营/玩家/角色/质量/安全/成本延迟/增长曲线等全维度指标。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-06
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
+from werewolf_agent.evaluation.claim_metrics import _CLAIM_ROLE_MAP, _extract_claim_events
+from werewolf_agent.evaluation.pace_metrics import compute_pace_metrics
 from werewolf_agent.evaluation.schemas import (
     ActionVerdict,
     BatchConfig,
@@ -26,53 +27,41 @@ from werewolf_agent.evaluation.schemas import (
     ReplayRecord,
     RoleMetrics,
     SafetyMetrics,
-    WorldModelMetrics,
 )
-from werewolf_agent.evaluation.decision_helpers import (
-    decision_is_legal_from_trace as _decision_is_legal_from_trace,
-    dialogue_leaked_from_trace as _dialogue_leaked_from_trace,
+from werewolf_agent.evaluation.world_model_metrics import (
+    _action_trace_from_event,
+    _avg,
+    _belief_scores_from_audit,
+    _bool_rate,
+    _bounded_float,
+    _collect_world_model_audit_samples,
+    _decision_is_legal_from_trace,
+    _dialogue_leaked_from_trace,
+    _normalize_role,
+    _possible_world_hit_from_audit,
+    _rate_from_counts,
+    compute_world_model_metrics,
 )
-from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
-from werewolf_agent.evaluation.world_model_eval import compute_world_model_rank_metrics
-
-_CLAIM_ROLE_MAP = {
-    "预言家": "seer",
-    "女巫": "witch",
-    "猎人": "hunter",
-    "白痴": "idiot",
-    "村民": "villager",
-    "平民": "villager",
-    "混血儿": "hybrid",
-    "狼人": "werewolf",
-}
 
 
-def _extract_claim_events(event_log: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    claims: list[dict[str, Any]] = []
-    for event in event_log:
-        event_type = event.get("type")
-        payload = event.get("payload") or {}
-        if event_type == "claim_role":
-            claims.append(event)
-            continue
-        if event_type not in ("speech", "sheriff_speech", "pk_speech", "tie_pk_speech"):
-            continue
-        text = str(payload.get("text") or event.get("text") or "")
-        speaker = str(payload.get("speaker") or event.get("player_id") or "")
-        match = re.search(
-            r"(?:我是|我跳|我认)\s*(预言家|女巫|猎人|白痴|村民|平民|混血儿|狼人)",
-            text,
-        )
-        if not match or not speaker:
-            continue
-        claims.append({
-            "type": "claim_role",
-            "payload": {
-                "player_id": speaker,
-                "claimed_role": _CLAIM_ROLE_MAP[match.group(1)],
-            },
-        })
-    return claims
+__all__ = [
+    "MetricsAggregator",
+    "compute_pace_metrics",
+    "compute_world_model_metrics",
+    "_CLAIM_ROLE_MAP",
+    "_action_trace_from_event",
+    "_avg",
+    "_belief_scores_from_audit",
+    "_bool_rate",
+    "_bounded_float",
+    "_collect_world_model_audit_samples",
+    "_decision_is_legal_from_trace",
+    "_dialogue_leaked_from_trace",
+    "_extract_claim_events",
+    "_normalize_role",
+    "_possible_world_hit_from_audit",
+    "_rate_from_counts",
+]
 
 
 class MetricsAggregator:
@@ -583,84 +572,7 @@ class MetricsAggregator:
     # -----------------------------------------------------------------------
 
     def _compute_world_model_metrics(self, snap: MetricsSnapshot) -> None:
-        belief_scores: list[float] = []
-        possible_world_hits: list[bool] = []
-        simulation_hits: list[bool] = []
-        decision_legal: list[bool] = []
-        dialogue_leaks: list[bool] = []
-
-        for result in self._results:
-            for review in result.reviews:
-                audit = review.get("world_model_audit") if isinstance(review, dict) else None
-                if not isinstance(audit, dict):
-                    continue
-                _collect_world_model_audit_samples(
-                    audit,
-                    player_roles=result.player_roles,
-                    belief_scores=belief_scores,
-                    possible_world_hits=possible_world_hits,
-                    simulation_hits=simulation_hits,
-                    decision_legal=decision_legal,
-                    dialogue_leaks=dialogue_leaks,
-                )
-            for event in result.event_log:
-                trace = _action_trace_from_event(event)
-                if not trace:
-                    continue
-                audit = trace.get("world_model_audit")
-                if isinstance(audit, dict):
-                    _collect_world_model_audit_samples(
-                        audit,
-                        player_roles=result.player_roles,
-                        belief_scores=belief_scores,
-                        possible_world_hits=possible_world_hits,
-                        simulation_hits=simulation_hits,
-                        decision_legal=decision_legal,
-                        dialogue_leaks=dialogue_leaks,
-                    )
-                legal = _decision_is_legal_from_trace(trace)
-                if legal is not None:
-                    decision_legal.append(legal)
-                leaked = _dialogue_leaked_from_trace(trace)
-                if leaked is not None:
-                    dialogue_leaks.append(leaked)
-
-        rank_supported = 0
-        rank_unsupported = 0
-        rank_top1_hits = 0.0
-        rank_top3_hits = 0.0
-        rank_sum = 0.0
-        rank_overconfident = 0.0
-        for result in self._results:
-            rank_metrics = compute_world_model_rank_metrics(
-                result,
-                EvaluationTraceBuilder().build(result, exposure_audits=[]),
-            )
-            rank_supported += rank_metrics.supported_count
-            rank_unsupported += rank_metrics.unsupported_count
-            rank_top1_hits += rank_metrics.true_world_top1_rate * rank_metrics.supported_count
-            rank_top3_hits += rank_metrics.true_world_top3_rate * rank_metrics.supported_count
-            rank_sum += rank_metrics.avg_true_world_rank * rank_metrics.supported_count
-            rank_overconfident += (
-                rank_metrics.overconfidence_rate * rank_metrics.supported_count
-            )
-
-        snap.world_model_metrics = WorldModelMetrics(
-            belief_calibration=_avg(belief_scores),
-            possible_world_topk_hit_rate=_bool_rate(possible_world_hits),
-            simulator_prediction_hit_rate=_bool_rate(simulation_hits),
-            decision_legality_rate=_bool_rate(decision_legal),
-            dialogue_leakage_rate=_bool_rate(dialogue_leaks),
-            true_world_top1_rate=_rate_from_counts(rank_top1_hits, rank_supported),
-            true_world_top3_rate=_rate_from_counts(rank_top3_hits, rank_supported),
-            avg_true_world_rank=_rate_from_counts(rank_sum, rank_supported),
-            world_rank_overconfidence_rate=_rate_from_counts(
-                rank_overconfident,
-                rank_supported,
-            ),
-            world_rank_supported_count=rank_supported,
-            world_rank_unsupported_count=rank_unsupported,
-        )
+        compute_world_model_metrics(snap, self._results)
 
     # -----------------------------------------------------------------------
     # Cost / latency metrics
@@ -828,235 +740,3 @@ class MetricsAggregator:
         _add("avg_latency_ms", float(cm_a.avg_latency_ms), float(cm_b.avg_latency_ms))
 
         return comparisons
-
-
-# ---------------------------------------------------------------------------
-# Game pace metrics (from event log / GameState)
-# ---------------------------------------------------------------------------
-
-
-def compute_pace_metrics(
-    events: list[dict[str, Any]],
-    *,
-    deaths: list[dict[str, Any]] | None = None,
-    finish_night: int | None = None,
-) -> dict[str, Any]:
-    """Compute game pace metrics from event log.
-
-    Returns dict with:
-    - day_exile_rate: fraction of days that produced an exile
-    - max_consecutive_no_exile_days: longest streak of no-exile days
-    - second_tie_count: number of second_tie_no_exile events
-    - stale_vote_reuse_count: days where votes were identical to a previous day
-    - finish_night_number: night the game ended
-    - pace_target_met: bool
-    """
-    vote_events = [
-        e for e in events if e.get("type") == "vote_resolved"
-    ]
-
-    total_vote_days = len(vote_events)
-    exile_days = sum(
-        1 for e in vote_events
-        if e.get("payload", {}).get("exiled") is not None
-    )
-    second_tie_count = sum(
-        1 for e in vote_events
-        if e.get("payload", {}).get("reason") == "second_tie_no_exile"
-    )
-
-    day_exile_rate = exile_days / total_vote_days if total_vote_days > 0 else 0.0
-
-    # Consecutive no-exile streak
-    max_streak = 0
-    current_streak = 0
-    for e in vote_events:
-        if e.get("payload", {}).get("exiled") is None:
-            current_streak += 1
-            max_streak = max(max_streak, current_streak)
-        else:
-            current_streak = 0
-
-    # Stale vote reuse: check if exile_votes on different days are identical
-    stale_count = 0
-    seen_votes: list[dict] = []
-    for e in events:
-        if e.get("type") == "vote_resolved":
-            votes_snapshot = e.get("payload", {}).get("votes", {})
-            if votes_snapshot:
-                for prev in seen_votes:
-                    if votes_snapshot == prev:
-                        stale_count += 1
-                        break
-                seen_votes.append(votes_snapshot)
-
-    # Pace target
-    pace_target_met = (
-        (finish_night is not None and finish_night <= 8)
-        and max_streak <= 1
-        and stale_count == 0
-        and (total_vote_days < 3 or day_exile_rate >= 0.5)
-    )
-
-    return {
-        "day_exile_rate": round(day_exile_rate, 3),
-        "max_consecutive_no_exile_days": max_streak,
-        "second_tie_count": second_tie_count,
-        "stale_vote_reuse_count": stale_count,
-        "finish_night_number": finish_night,
-        "pace_target_met": pace_target_met,
-    }
-
-
-def _collect_world_model_audit_samples(
-    audit: dict[str, Any],
-    *,
-    player_roles: dict[str, str],
-    belief_scores: list[float],
-    possible_world_hits: list[bool],
-    simulation_hits: list[bool],
-    decision_legal: list[bool],
-    dialogue_leaks: list[bool],
-) -> None:
-    for sample in audit.get("belief_calibration_samples", []) or []:
-        if not isinstance(sample, dict):
-            continue
-        predicted = _bounded_float(sample.get("predicted"))
-        actual = 1.0 if bool(sample.get("actual")) else 0.0
-        belief_scores.append(1.0 - abs(predicted - actual))
-    belief_scores.extend(_belief_scores_from_audit(audit, player_roles))
-
-    possible_world_hits.extend(
-        bool(item.get("hit"))
-        for item in audit.get("possible_world_checks", []) or []
-        if isinstance(item, dict)
-    )
-    world_hit = _possible_world_hit_from_audit(audit, player_roles)
-    if world_hit is not None:
-        possible_world_hits.append(world_hit)
-
-    simulation_hits.extend(
-        bool(item.get("hit"))
-        for item in audit.get("simulation_checks", []) or []
-        if isinstance(item, dict)
-    )
-    decision_legal.extend(
-        bool(item.get("legal"))
-        for item in audit.get("decision_legality_checks", []) or []
-        if isinstance(item, dict)
-    )
-    dialogue_leaks.extend(
-        bool(item.get("leaked"))
-        for item in audit.get("dialogue_leak_checks", []) or []
-        if isinstance(item, dict)
-    )
-
-
-def _belief_scores_from_audit(
-    audit: dict[str, Any],
-    player_roles: dict[str, str],
-) -> list[float]:
-    belief = audit.get("belief")
-    if not isinstance(belief, dict) or not player_roles:
-        return []
-    scores: list[float] = []
-    for group in ("my_suspects", "my_trusted"):
-        for item in belief.get(group, []) or []:
-            if not isinstance(item, dict):
-                continue
-            player_id = str(item.get("player") or "")
-            guessed_role = _normalize_role(item.get("top_role_guess"))
-            if not player_id or not guessed_role or player_id not in player_roles:
-                continue
-            predicted = _bounded_float(item.get("top_role_prob"))
-            actual = 1.0 if _normalize_role(player_roles[player_id]) == guessed_role else 0.0
-            scores.append(1.0 - abs(predicted - actual))
-    for player_id, role_probs in belief.items():
-        if player_id in {"my_suspects", "my_trusted"}:
-            continue
-        if not isinstance(role_probs, dict) or player_id not in player_roles:
-            continue
-        for role, predicted in role_probs.items():
-            normalized = _normalize_role(role)
-            if not normalized:
-                continue
-            actual = 1.0 if _normalize_role(player_roles[player_id]) == normalized else 0.0
-            scores.append(1.0 - abs(_bounded_float(predicted) - actual))
-    return scores
-
-
-def _possible_world_hit_from_audit(
-    audit: dict[str, Any],
-    player_roles: dict[str, str],
-) -> bool | None:
-    possible_worlds = audit.get("possible_worlds")
-    if isinstance(possible_worlds, dict):
-        worlds = possible_worlds.get("top_worlds")
-    else:
-        worlds = possible_worlds
-    if not isinstance(worlds, list) or not player_roles:
-        return None
-    saw_assignments = False
-    for world in worlds:
-        if not isinstance(world, dict):
-            continue
-        assignments = world.get("key_assignments")
-        if not isinstance(assignments, dict) or not assignments:
-            continue
-        comparable = {
-            str(pid): _normalize_role(role)
-            for pid, role in assignments.items()
-            if str(pid) in player_roles
-        }
-        if not comparable:
-            continue
-        saw_assignments = True
-        if all(_normalize_role(player_roles[pid]) == role for pid, role in comparable.items()):
-            return True
-    return False if saw_assignments else None
-
-
-def _action_trace_from_event(event: Any) -> dict[str, Any] | None:
-    if isinstance(event, dict):
-        event_type = event.get("type")
-        payload = event.get("payload") or {}
-    else:
-        event_type = getattr(event, "type", None)
-        payload = getattr(event, "payload", {}) or {}
-    if event_type != "action_trace_audit" or not isinstance(payload, dict):
-        return None
-    trace = payload.get("action_trace")
-    return trace if isinstance(trace, dict) else None
-
-
-def _normalize_role(value: Any) -> str:
-    role = str(value or "").strip().lower()
-    if role in {"wolf", "werewolves"}:
-        return "werewolf"
-    return role
-
-
-def _avg(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    return sum(values) / len(values)
-
-
-def _bool_rate(values: list[bool]) -> float:
-    if not values:
-        return 0.0
-    return sum(1 for value in values if value) / len(values)
-
-
-def _rate_from_counts(numerator: float, denominator: int) -> float:
-    if denominator <= 0:
-        return 0.0
-    return numerator / denominator
-
-
-def _bounded_float(value: Any) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(1.0, parsed))
