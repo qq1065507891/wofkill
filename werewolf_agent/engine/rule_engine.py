@@ -3,7 +3,7 @@
 功能描述：RuleEngine 是整个游戏的核心判决器，从 YAML 规则集加载配置，提供 assign_roles、resolve_night、
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-06
 使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
@@ -29,6 +29,7 @@ from werewolf_agent.core.models import (
     VoteResult,
     VictoryResult,
 )
+from werewolf_agent.engine import rule_flow, rule_special_roles
 from werewolf_agent.engine.event_reducer import EventReducer, _apply_idiot_reveal
 from werewolf_agent.engine.sheriff import SheriffRules
 
@@ -49,8 +50,8 @@ class Ruleset:
 
 class RuleEngine:
     def __init__(self, ruleset: Ruleset) -> None:
-        self.ruleset = ruleset
-        raw = ruleset.raw if isinstance(ruleset, Ruleset) else ruleset
+        self.ruleset = ruleset if isinstance(ruleset, Ruleset) else Ruleset(raw=ruleset)
+        raw = self.ruleset.raw
         self._sheriff = SheriffRules(raw)
         self._reducer = EventReducer(raw)
 
@@ -61,44 +62,32 @@ class RuleEngine:
         return cls(Ruleset(raw=data))
 
     def role_count(self, role: str) -> int:
-        return int(self.ruleset.raw["roles"][role]["count"])
+        return rule_flow.role_count(self.ruleset.raw, role)
 
     def assign_roles(
         self, player_ids: list[str], *, seed: int | None = None
     ) -> dict[str, PlayerState]:
-        if len(player_ids) != self.ruleset.player_count:
-            raise ValueError(
-                f"Expected {self.ruleset.player_count} players, got {len(player_ids)}"
-            )
-        role_list: list[str] = []
-        for role, cfg in self.ruleset.raw["roles"].items():
-            role_list.extend([role] * int(cfg["count"]))
-        rng = random.Random(seed)
-        shuffled_roles = list(role_list)
-        rng.shuffle(shuffled_roles)
-        return {
-            pid: PlayerState(id=pid, role=role)
-            for pid, role in zip(player_ids, shuffled_roles)
-        }
+        return rule_flow.assign_roles(
+            self.ruleset.raw,
+            player_ids,
+            player_count=self.ruleset.player_count,
+            seed=seed,
+        )
 
     def night_order(self) -> list[str]:
-        return [item["node"] for item in self.ruleset.raw["night_flow"]["order"]]
+        return rule_flow.night_order(self.ruleset.raw)
 
     def day_flow(self, day_number: int) -> list[str]:
-        if day_number != 1:
-            return [
-                node
-                for node in self.ruleset.raw["day_flow"]["standard_order"]
-                if node != "first_day_sheriff_election"
-            ]
-        return list(self.ruleset.raw["day_flow"]["standard_order"])
+        return rule_flow.day_flow(self.ruleset.raw, day_number)
 
     # -- Seer --
 
     def check_alignment(self, state: GameState, *, target_id: str) -> AlignmentResult:
-        target = state.players[target_id]
-        seer_result = self.ruleset.raw["roles"][target.role].get("seer_result", "good")
-        return AlignmentResult(alignment=seer_result, role=None)
+        return rule_special_roles.check_alignment(
+            self.ruleset.raw,
+            state,
+            target_id=target_id,
+        )
 
     def _apply_idiot_reveal(self, state: GameState, player_id: str) -> GameState:
         """Apply idiot reveal state transitions. Delegates to engine-level helper."""
@@ -109,24 +98,12 @@ class RuleEngine:
     def choose_master(
         self, state: GameState, *, hybrid_id: str, master_id: str
     ) -> tuple[GameState, GameEvent]:
-        if state.hybrid_master_id is not None:
-            raise ValueError("Hybrid has already chosen a master")
-        if not state.players[master_id].alive:
-            raise ValueError("Hybrid cannot choose a dead player as master")
-        master = state.players[master_id]
-        master_faction = self.ruleset.raw["roles"][master.role]["faction"]
-        if master_faction == "special_bound_to_master":
-            raise ValueError("Hybrid cannot choose another hybrid as master")
-        new_state = replace(
+        return rule_special_roles.choose_master(
+            self.ruleset.raw,
             state,
-            hybrid_master_id=master_id,
-            hybrid_master_faction=master_faction,
+            hybrid_id=hybrid_id,
+            master_id=master_id,
         )
-        event = GameEvent(
-            type="hybrid_master_chosen",
-            payload={"hybrid_id": hybrid_id, "master_id": master_id},
-        )
-        return new_state, event
 
     # -- Witch --
 
@@ -138,21 +115,13 @@ class RuleEngine:
         night_number: int,
         wolf_kill_target_id: str | None,
     ) -> list[Action]:
-        actions: list[Action] = [Action(type="no_action")]
-        witch_cfg = self.ruleset.raw["roles"]["witch"]["abilities"]
-        if (
-            wolf_kill_target_id is not None
-            and not state.antidote_used
-            and witch_cfg["antidote"]["can_save_wolf_kill_target"]
-        ):
-            can_self_save = witch_cfg["antidote"].get("can_self_save", False)
-            can_save_first_night = witch_cfg["antidote"].get("can_self_save_first_night", False)
-            can_save_self = can_self_save or (can_save_first_night and night_number == 1)
-            if wolf_kill_target_id != witch_id or can_save_self:
-                actions.append(Action(type="use_antidote", target_id=wolf_kill_target_id))
-        if not state.poison_used:
-            actions.append(Action(type="use_poison"))
-        return actions
+        return rule_special_roles.legal_witch_actions(
+            self.ruleset.raw,
+            state,
+            witch_id=witch_id,
+            night_number=night_number,
+            wolf_kill_target_id=wolf_kill_target_id,
+        )
 
     def resolve_witch_action(
         self,
@@ -165,37 +134,24 @@ class RuleEngine:
         poison_target_id: str | None,
         antidote_target_id: str | None = None,
     ) -> RuleResult:
-        witch_cfg = self.ruleset.raw["roles"]["witch"]["abilities"]
-        if use_antidote and wolf_kill_target_id is None:
-            return RuleResult(accepted=False, error_code="witch_no_wolf_kill_target")
-        if use_antidote and wolf_kill_target_id not in state.players:
-            return RuleResult(accepted=False, error_code="witch_wolf_kill_target_not_found")
-        if use_antidote and not state.players[wolf_kill_target_id].alive:
-            return RuleResult(accepted=False, error_code="witch_wolf_kill_target_not_alive")
-        if use_antidote and antidote_target_id is not None and antidote_target_id != wolf_kill_target_id:
-            return RuleResult(accepted=False, error_code="witch_antidote_target_mismatch")
-        if use_antidote and state.antidote_used:
-            return RuleResult(accepted=False, error_code="witch_antidote_already_used")
-        if poison_target_id is not None and poison_target_id not in state.players:
-            return RuleResult(accepted=False, error_code="witch_poison_target_not_found")
-        if poison_target_id is not None and not state.players[poison_target_id].alive:
-            return RuleResult(accepted=False, error_code="witch_poison_target_not_alive")
-        if poison_target_id is not None and state.poison_used:
-            return RuleResult(accepted=False, error_code="witch_poison_already_used")
-        if not witch_cfg["use_both_potions_same_night"] and use_antidote and poison_target_id is not None:
-            return RuleResult(accepted=False, error_code="witch_cannot_use_both_potions_same_night")
-        can_self_save = witch_cfg["antidote"].get("can_self_save", False)
-        can_save_first_night = witch_cfg["antidote"].get("can_self_save_first_night", False)
-        can_save_self = can_self_save or (can_save_first_night and night_number == 1)
-        if use_antidote and wolf_kill_target_id == witch_id and not can_save_self:
-            return RuleResult(accepted=False, error_code="witch_cannot_self_save")
-        return RuleResult(accepted=True)
+        return rule_special_roles.resolve_witch_action(
+            self.ruleset.raw,
+            state,
+            witch_id=witch_id,
+            night_number=night_number,
+            wolf_kill_target_id=wolf_kill_target_id,
+            use_antidote=use_antidote,
+            poison_target_id=poison_target_id,
+            antidote_target_id=antidote_target_id,
+        )
 
     # -- Hunter --
 
     def can_hunter_shoot(self, state: GameState, *, hunter_id: str, death_reason: str) -> bool:
-        hunter_cfg = self.ruleset.raw["roles"]["hunter"]["abilities"]
-        return death_reason in hunter_cfg["can_shoot_on_death_reasons"]
+        return rule_special_roles.can_hunter_shoot(
+            self.ruleset.raw,
+            death_reason,
+        )
 
     # -- Exile / Idiot --
 
@@ -627,28 +583,19 @@ class RuleEngine:
         player_id: str,
         private_intent: dict[str, Any],
     ) -> GameState:
-        new_intents = {**state.private_intents, player_id: private_intent}
-        return replace(state, private_intents=new_intents)
+        return rule_special_roles.record_private_intent(
+            state,
+            player_id=player_id,
+            private_intent=private_intent,
+        )
 
     def build_visible_context(self, state: GameState, *, viewer_id: str, view_mode: str) -> VisibleContext:
-        forbidden = set(self.ruleset.raw["information_visibility"]["forbidden_for_player_agents"])
-        sections: set[str] = set()
-        if view_mode == "player_view":
-            sections.add("public_state")
-            sections.add("own_private_state")
-            if viewer_id in state.private_intents:
-                sections.add(f"{viewer_id}.private_intent")
-            # 角色级可见性：根据 viewer 角色添加对应私有区域
-            viewer = state.players.get(viewer_id)
-            if viewer:
-                role_private = self.ruleset.raw["information_visibility"].get("private", {})
-                role_sections = role_private.get(viewer.role, [])
-                sections.update(role_sections)
-            sections -= forbidden
-        elif view_mode == "moderator_full":
-            sections.add("moderator_full")
-            sections.add("all_private_states")
-        return VisibleContext(view_mode=view_mode, visible_sections=sections)
+        return rule_special_roles.build_visible_context(
+            self.ruleset.raw,
+            state,
+            viewer_id=viewer_id,
+            view_mode=view_mode,
+        )
 
     # -- Event reducer (delegates to EventReducer) --
 
