@@ -12,7 +12,7 @@ RuleEngine 低风险 helper 拆分后的兼容测试。
 from __future__ import annotations
 
 from werewolf_agent.core.models import GameState, PlayerState
-from werewolf_agent.engine import rule_flow, rule_special_roles, rule_vote
+from werewolf_agent.engine import rule_flow, rule_last_words, rule_special_roles, rule_vote
 from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
 
 
@@ -26,6 +26,7 @@ def test_rule_engine_low_risk_helpers_are_available() -> None:
     assert callable(rule_special_roles.resolve_witch_action)
     assert callable(rule_vote.vote_weight)
     assert callable(rule_vote.resolve_vote)
+    assert callable(rule_last_words.can_leave_last_words)
 
 
 def test_rule_engine_keeps_old_path_behavior_for_split_helpers() -> None:
@@ -144,3 +145,19 @@ def test_vote_split_preserves_rule_engine_instance_override_points() -> None:
     )
 
     assert result.exiled_player_id == "w2"
+
+
+def test_last_words_helper_preserves_death_reason_precedence() -> None:
+    engine = RuleEngine.from_yaml(RULESET_PATH)
+
+    assert engine.can_leave_last_words(
+        death_reason="hunter_shot",
+        timing="night",
+        night_number=1,
+    ) is False
+    assert rule_last_words.can_leave_last_words(
+        engine.ruleset.raw,
+        death_reason="exile",
+        timing="day_vote",
+        night_number=2,
+    ) is True

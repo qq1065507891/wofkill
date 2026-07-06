@@ -27,7 +27,12 @@ from werewolf_agent.core.models import (
     VoteResult,
     VictoryResult,
 )
-from werewolf_agent.engine import rule_flow, rule_special_roles, rule_vote
+from werewolf_agent.engine import (
+    rule_flow,
+    rule_last_words,
+    rule_special_roles,
+    rule_vote,
+)
 from werewolf_agent.engine.event_reducer import EventReducer, _apply_idiot_reveal
 from werewolf_agent.engine.sheriff import SheriffRules
 
@@ -484,21 +489,12 @@ class RuleEngine:
     # -- Last Words --
 
     def can_leave_last_words(self, *, death_reason: str, timing: str, night_number: int) -> bool:
-        lw = self.ruleset.raw["last_words"]
-        # Check death_reason branches FIRST so a night-timing hunter shot
-        # (hunter wolf-killed then shoots back same night) does not get
-        # misclassified as a normal first_night_death.
-        if death_reason == "exile" and timing == "day_vote":
-            return lw["day_exile"]
-        if death_reason == "hunter_shot":
-            return lw["hunter_shot_target"]
-        if death_reason == "self_destruct":
-            return lw["self_destruct"]
-        if timing == "night":
-            if night_number == 1:
-                return lw["first_night_death"]
-            return lw["later_night_death"]
-        return False
+        return rule_last_words.can_leave_last_words(
+            self.ruleset.raw,
+            death_reason=death_reason,
+            timing=timing,
+            night_number=night_number,
+        )
 
     # -- Visibility --
 
