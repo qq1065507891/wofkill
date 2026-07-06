@@ -1,150 +1,69 @@
 ﻿# -*- coding: utf-8 -*-
 """
-    功能描述：模型路由器网关，agent 调用 LLM 的统一入口，支持 fallback、重试与用量追踪
+    功能描述：模型路由器网关 facade，负责配置解析、provider 路由、fallback 和用量追踪协调。
     作者：Mike
     创建日期：2025-01-15
-    修改日期：2026-07-05
+    修改日期：2026-07-06
     使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
 import logging
-import inspect
 import random
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import yaml
 
+from werewolf_agent.model_gateway.provider_call import (
+    _call_provider_generate,
+    _normalize_tool_metadata,
+)
+from werewolf_agent.model_gateway.retry_policy import (
+    _failure_reason,
+    _format_exception,
+    _http_status_from_exception,
+    _is_retryable_exception,
+    _raw_error_from_exception,
+)
 from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
     StructuredOutputPolicy,
     resolve_structured_output_mode,
 )
+from werewolf_agent.model_gateway.usage_records import (
+    EmptyModelResponseError,
+    GenerateResult,
+    LLMProvider,
+    MockProvider,
+    ModelConfig,
+    UsageRecord,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Data models
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class ModelConfig:
-    """Resolved model configuration for one call."""
-    provider: str
-    model: str
-    temperature: float = 0.5
-    max_tokens: int = 1024
-    top_p: float = 0.9
-    timeout: int = 30
-    allow_text_tool_fallback: bool = False
-    retry_count: int = 2
-    structured_output_mode: str = "auto"
-    structured_output_fallback_modes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class UsageRecord:
-    """Single model call usage record."""
-    agent_id: str
-    task_type: str
-    provider: str
-    model: str
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    latency_ms: int = 0
-    estimated_cost: float = 0.0
-    fallback_reason: str | None = None
-    success: bool = True
-    structured_output_mode: str = ""
-
-
-@dataclass
-class GenerateResult:
-    """Result from a model generation call."""
-    text: str
-    provider: str
-    model: str
-    usage: UsageRecord | None = None
-    tool_call_required: bool = False
-    tool_call_received: bool = False
-    tool_call_name: str = ""
-    text_fallback_used: bool = False
-    structured_failure_reason: str | None = None
-    allow_text_tool_fallback: bool = False
-    structured_output_mode: str = ""
-    # R3-MG-2: surface raw HTTP status / error string from the provider so
-    # the failure categorizer can attribute 4xx/5xx to ``provider_error``
-    # instead of falling through to ``unknown``. Defaults preserve the
-    # pre-R3-MG-2 behavior for callers that do not populate them.
-    http_status: int = 0
-    raw_error: str | None = None
-
-
-class EmptyModelResponseError(RuntimeError):
-    """Provider returned successfully but with no model text."""
-
-
-# ---------------------------------------------------------------------------
-# Provider protocol — pluggable backend
-# ---------------------------------------------------------------------------
-
-class LLMProvider(Protocol):
-    """Protocol for LLM providers. Implementations wrap specific SDKs."""
-
-    @property
-    def name(self) -> str: ...
-
-    def generate(
-        self,
-        prompt: str,
-        config: ModelConfig,
-        system_prompt: str | None = None,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: dict[str, Any] | None = None,
-    ) -> GenerateResult: ...
-
-
-class MockProvider:
-    """Mock provider for testing — returns deterministic placeholder text."""
-
-    def __init__(self, name: str = "mock") -> None:
-        self._name = name
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def generate(
-        self,
-        prompt: str,
-        config: ModelConfig,
-        system_prompt: str | None = None,
-        tools: list[dict[str, Any]] | None = None,
-        tool_choice: dict[str, Any] | None = None,
-    ) -> GenerateResult:
-        start = time.monotonic()
-        text = f"[{self._name}:{config.model}] mock response"
-        latency = int((time.monotonic() - start) * 1000)
-        return GenerateResult(
-            text=text,
-            provider=self._name,
-            model=config.model,
-            usage=UsageRecord(
-                agent_id="",
-                task_type="",
-                provider=self._name,
-                model=config.model,
-                prompt_tokens=len(prompt.split()),
-                completion_tokens=len(text.split()),
-                latency_ms=latency,
-            ),
-        )
+__all__ = [
+    "EmptyModelResponseError",
+    "GenerateResult",
+    "LLMProvider",
+    "MockProvider",
+    "ModelConfig",
+    "ModelRouter",
+    "UsageRecord",
+    "_call_provider_generate",
+    "_failure_reason",
+    "_format_exception",
+    "_http_status_from_exception",
+    "_is_retryable_exception",
+    "_normalize_tool_metadata",
+    "_raw_error_from_exception",
+    "_retry_delay_for_exception",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -726,169 +645,7 @@ class ModelRouter:
             "player_assignments": dict(self._player_assignments),
         }
 
-
-def _format_exception(exc: BaseException | None) -> str:
-    if exc is None:
-        return "unknown"
-    message = str(exc)
-    if message:
-        return f"{type(exc).__name__}: {message}"
-    return type(exc).__name__
-
-
-def _http_status_from_exception(exc: BaseException | None) -> int:
-    """R3-MG-2: best-effort HTTP status extraction from an exception.
-
-    Returns 0 when the exception does not carry an HTTP status (e.g. a
-    bare ``RuntimeError`` from a SDK or a connection-refused ``OSError``).
-
-    P-N1 (post-review-v2): the legacy fallback regex ``\\b([1-5]\\d{2})\\b``
-    was too eager — it matched any 3-digit number in the traceback
-    (years like ``2024``, ports like ``8080`` from ``localhost:8080``,
-    line numbers) and reported them as HTTP statuses. The new fallback
-    requires an explicit ``HTTP NNN`` (or ``HTTP/1.1 NNN``) prefix.
-    The ``status_code`` / ``response.status_code`` paths are tried
-    first, so real HTTP exceptions are still classified correctly.
-    """
-    if exc is None:
-        return 0
-    # httpx.HTTPStatusError and httpx.HTTPError variants expose .response
-    try:
-        import httpx
-        if isinstance(exc, httpx.HTTPStatusError):
-            return int(getattr(exc.response, "status_code", 0) or 0)
-        response = getattr(exc, "response", None)
-        if response is not None:
-            return int(getattr(response, "status_code", 0) or 0)
-    except ImportError:
-        pass
-    # Generic: prefer an explicit ``status_code`` attribute (e.g.
-    # requests.HTTPError, anthropic.APIStatusError).
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int) and 100 <= status_code <= 599:
-        return status_code
-    code = getattr(exc, "code", None)
-    if isinstance(code, int) and 100 <= code <= 599:
-        return code
-    # Fallback: require an "HTTP NNN" prefix so we don't pick up
-    # arbitrary 3-digit numbers from traceback text.
-    import re
-    m = re.search(r"HTTP[/\d.\s]*?\b([1-5]\d{2})\b", str(exc))
-    if m:
-        return int(m.group(1))
-    return 0
-
-
-def _raw_error_from_exception(exc: BaseException | None) -> str | None:
-    """R3-MG-2: best-effort raw error string from an exception."""
-    if exc is None:
-        return None
-    message = str(exc)
-    return message or None
-
-
-def _failure_reason(
-    primary_error: BaseException | None,
-    fallback_error: BaseException | None,
-) -> str:
-    reason = f"primary_failed:{_format_exception(primary_error)}"
-    if fallback_error is not None:
-        reason += f"; fallback_failed:{_format_exception(fallback_error)}"
-    return reason
-
-
-def _call_provider_generate(
-    provider: LLMProvider,
-    prompt: str,
-    config: ModelConfig,
-    system_prompt: str | None,
-    *,
-    tools: list[dict[str, Any]] | None,
-    tool_choice: dict[str, Any] | None,
-) -> GenerateResult:
-    signature = inspect.signature(provider.generate)
-    if "tools" in signature.parameters:
-        return provider.generate(
-            prompt,
-            config,
-            system_prompt,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
-    return provider.generate(prompt, config, system_prompt)
-
-
-def _normalize_tool_metadata(
-    result: GenerateResult,
-    tool_choice: dict[str, Any] | str | None,
-) -> None:
-    if not tool_choice:
-        return
-    # If tool_choice is "auto", LLM may freely choose text-only response
-    tc_type = tool_choice if isinstance(tool_choice, str) else tool_choice.get("type", "")
-    if tc_type == "auto":
-        return
-    # If provider already signaled text fallback is acceptable, don't
-    # override it — some providers (MiniMax, certain Baidu models) cannot
-    # reliably produce tool_use blocks even when tool_choice is sent.
-    if result.allow_text_tool_fallback and result.text:
-        result.tool_call_required = True
-        if not result.tool_call_name:
-            result.tool_call_name = str(tool_choice.get("name") or "") if isinstance(tool_choice, dict) else ""
-        result.text_fallback_used = True
-        return
-    result.tool_call_required = True
-    if not result.tool_call_name:
-        result.tool_call_name = str(tool_choice.get("name") or "") if isinstance(tool_choice, dict) else ""
-    if not result.tool_call_received:
-        result.text_fallback_used = bool(result.text)
-        if result.structured_failure_reason is None:
-            result.structured_failure_reason = "missing_tool_call"
-
-
-def _is_retryable_exception(exc: Exception) -> bool:
-    """Check if an exception is transient and worth retrying."""
-    exc_str = type(exc).__name__.lower()
-    if "connect" in exc_str or "timeout" in exc_str:
-        return True
-    # httpx exceptions
-    try:
-        import httpx
-        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException)):
-            return True
-        if isinstance(exc, httpx.HTTPStatusError):
-            return exc.response.status_code >= 500 or exc.response.status_code == 429
-    except ImportError:
-        pass
-    # Generic checks via string matching for provider-agnostic errors
-    msg = str(exc).lower()
-    if "429" in msg or "too many requests" in msg:
-        return True
-    if "503" in msg or "service unavailable" in msg:
-        return True
-    if "529" in msg or "overloaded" in msg:
-        return True
-    return False
-
-
 def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
-    """Exponential backoff with jitter and 429 Retry-After support.
+    from werewolf_agent.model_gateway.retry_policy import _retry_delay_for_exception as _impl
 
-    Base delay = 2^attempt seconds, capped at 60 s, with +-25 % random
-    jitter to spread out concurrent retries and avoid thundering-herd
-    rate-limiting.
-    """
-    base = 2.0
-    # Check for Retry-After header on 429
-    try:
-        import httpx
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
-            retry_after = exc.response.headers.get("retry-after")
-            if retry_after:
-                return min(float(retry_after), 30.0)
-    except (ImportError, ValueError, TypeError):
-        pass
-    # Exponential backoff with jitter: 1.0/2.0/4.0/8.0/... capped at 60 s
-    raw = min(base ** attempt, 60.0)
-    jitter = raw * random.uniform(-0.25, 0.25)
-    return max(0.5, raw + jitter)
+    return _impl(exc, attempt, uniform=random.uniform)
