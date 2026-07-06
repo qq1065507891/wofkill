@@ -52,7 +52,15 @@ def _agent_reflection(
     winner = gs.winning_faction or "?"
 
     try:
-        context = build_agent_context(
+        try:
+            from werewolf_agent.runtime import agent_adapter as adapter_mod
+            build_context = getattr(adapter_mod, "build_agent_context", build_agent_context)
+            merge_directive = getattr(adapter_mod, "_merge_strategy_directive", _merge_strategy_directive)
+        except Exception:
+            build_context = build_agent_context
+            merge_directive = _merge_strategy_directive
+
+        context = build_context(
             engine, gs, player_id, TaskType.REFLECTION,
             legal_actions=[ActionType.SPEECH],
             restored_memory=state.get("restored_memory"),
@@ -72,7 +80,7 @@ def _agent_reflection(
             ),
         }
         context = _strip_in_game_directives(context)
-        context = _merge_strategy_directive(context, reflection_directive)
+        context = merge_directive(context, reflection_directive)
 
         action, _retry_info = agent.act(context)
         from werewolf_agent.memory.store import _scrub_player_ids
