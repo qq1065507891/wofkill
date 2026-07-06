@@ -16,6 +16,7 @@ from werewolf_agent.engine import (
     rule_flow,
     rule_last_words,
     rule_special_roles,
+    rule_victory,
     rule_visibility,
     rule_vote,
 )
@@ -35,6 +36,7 @@ def test_rule_engine_low_risk_helpers_are_available() -> None:
     assert callable(rule_last_words.can_leave_last_words)
     assert callable(rule_visibility.record_private_intent)
     assert callable(rule_visibility.build_visible_context)
+    assert callable(rule_victory.check_victory)
 
 
 def test_rule_engine_keeps_old_path_behavior_for_split_helpers() -> None:
@@ -200,3 +202,30 @@ def test_visibility_helper_preserves_player_view_boundaries() -> None:
     assert "seer.private_intent" in context.visible_sections
     assert "wolf.private_intent" not in context.visible_sections
     assert "moderator_full" not in context.visible_sections
+
+
+def test_victory_helper_preserves_hybrid_slaughter_rules() -> None:
+    engine = RuleEngine.from_yaml(RULESET_PATH)
+    state = GameState(
+        hybrid_master_faction="good",
+        players={
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "v1": PlayerState(id="v1", role="villager", alive=False),
+            "hybrid": PlayerState(id="hybrid", role="hybrid", alive=True),
+            "seer": PlayerState(id="seer", role="seer", alive=True),
+        },
+    )
+    hybrid_out_state = GameState(
+        hybrid_master_faction="good",
+        players={
+            **state.players,
+            "hybrid": PlayerState(id="hybrid", role="hybrid", alive=False),
+        },
+    )
+
+    pending = engine.check_victory(state)
+    won = rule_victory.check_victory(engine.ruleset.raw, hybrid_out_state)
+
+    assert pending.winner is None
+    assert won.winner == "werewolf"
+    assert won.reason == "slaughter_villagers"
