@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 构建玩家提示词，将稳定规则和动态上下文分别写入对应消息。
 
@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from typing import Any
 
 from werewolf_agent.agents.action_contract import ActionContract
@@ -32,6 +31,33 @@ from werewolf_agent.agents.prompt_formatting import (
     summarize_json_value,
     truncate_text,
 )
+from werewolf_agent.agents.prompt_memory import (
+    REFLECTION_CARD_BUDGET,
+    PromptMemoryMixin,
+    _MAX_LEARNING_CONTEXT_CHARS,
+    _MAX_LEARNING_TEXT_CHARS,
+    _MAX_RAG_TEXT_CHARS,
+)
+from werewolf_agent.agents.prompt_persona import PromptPersonaMixin
+from werewolf_agent.agents.prompt_salience import (
+    PromptSalienceMixin,
+    _MAX_SALIENCE_ITEMS,
+    _SALIENCE_PRIVATE_KEYS,
+    _SALIENCE_PUBLIC_FIELDS,
+    _slim_salience_item,
+)
+from werewolf_agent.agents.prompt_sections import (
+    PromptSectionMixin,
+    _NEVER_DROP_TIER,
+    _SectionSpec,
+    _USER_PROMPT_BUDGET_CHARS,
+)
+from werewolf_agent.agents.prompt_strategy import (
+    PromptStrategyMixin,
+    _MAX_SKILL_TACTICAL_ADVICE_CHARS,
+    _MAX_SKILL_TACTICAL_ADVICE_ITEMS,
+    _STRATEGY_GROUP_ORDER,
+)
 from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
@@ -39,7 +65,6 @@ from werewolf_agent.agents.schemas import (
     RetryInfo,
     TaskType,
 )
-from werewolf_agent.persona_runtime.router import sanitize_persona_snapshot
 
 # P2-4: role name mapping was previously duplicated as
 # ``_ROLE_NAMES`` here AND ``_ROLE_LABEL_CN`` in
@@ -49,12 +74,26 @@ from werewolf_agent.persona_runtime.router import sanitize_persona_snapshot
 # from private_memory; the duplicate here is deleted.
 from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES  # noqa: E402
 
-# M4-1 (2026-06-09): single source of truth for the reflection-hint
-# budget.  Imported from ``runtime.context`` so the prompt builder and
-# the hint-generation helper cannot drift.  Previously this was a
-# closure constant inside ``_reflection_memory_hints`` while the
-# prompt builder hard-coded ``[:5]``, silently dropping 3 hints.
-from werewolf_agent.runtime.context import REFLECTION_CARD_BUDGET  # noqa: E402
+__all__ = [
+    "PlayerPromptBuilder",
+    "HARD_CONSTRAINT_KEYS",
+    "REFERENCE_KEYS",
+    "REFLECTION_CARD_BUDGET",
+    "SUGGESTION_KEYS",
+    "_MAX_LEARNING_CONTEXT_CHARS",
+    "_MAX_LEARNING_TEXT_CHARS",
+    "_MAX_RAG_TEXT_CHARS",
+    "_MAX_SALIENCE_ITEMS",
+    "_MAX_SKILL_TACTICAL_ADVICE_CHARS",
+    "_MAX_SKILL_TACTICAL_ADVICE_ITEMS",
+    "_NEVER_DROP_TIER",
+    "_SALIENCE_PRIVATE_KEYS",
+    "_SALIENCE_PUBLIC_FIELDS",
+    "_SectionSpec",
+    "_STRATEGY_GROUP_ORDER",
+    "_USER_PROMPT_BUDGET_CHARS",
+    "_slim_salience_item",
+]
 
 # M2-3 (2026-06-09): single source of truth for the output schema
 # field set.  Both ``_build_output_contract`` (system prompt) and
@@ -113,17 +152,7 @@ _MAX_JSON_CONTEXT_CHARS = 1800
 _MAX_PUBLIC_SUMMARY_CHARS = 700
 _MAX_TRANSCRIPT_ITEMS = 4
 _MAX_TRANSCRIPT_TEXT_CHARS = 220
-_MAX_SALIENCE_ITEMS = 3
 _MAX_PERSONA_LINE_CHARS = 180
-_MAX_LEARNING_TEXT_CHARS = 160
-_MAX_RAG_TEXT_CHARS = 220
-_MAX_LEARNING_CONTEXT_CHARS = 3_600
-_MAX_SKILL_TACTICAL_ADVICE_ITEMS = 3
-_MAX_SKILL_TACTICAL_ADVICE_CHARS = 180
-_PLAYER_ID_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:p\d{1,3}|player[_-]?\d{1,3}|agent[_-]?\d{1,3})(?![A-Za-z0-9_])",
-    re.IGNORECASE,
-)
 # P0-G3223805846-8: vote 阶段的 ``reason`` 字段是公开发言可见的（对所有
 # 玩家公开），禁止任何私视角表述。游戏轨迹 g_3223805846 观察到 LLM 把
 # ``我作为预言家`` / ``狼队 N1 刀了 p0X`` 等私有意图写入 ``reason`` 字段，
@@ -138,11 +167,6 @@ _VOTE_REASON_PRIVACY_GUARD = (
     "如果你要表达'我作为预言家认为'，应改写为"
     "'X 报出的查验有 Y 漏洞，因此'\n"
 )
-# P1-5: global user-prompt budget. The cap follows each section's
-# ``drop_tier`` in ``_USER_SECTION_SPECS``; never-drop sections remain.
-_USER_PROMPT_BUDGET_CHARS = 20_000
-
-
 def _safe_float(value: Any, *, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -178,25 +202,9 @@ def _clean_current_game_list_items(
     ]
 
 
-@dataclass(frozen=True)
-class _SectionSpec:
-    """Single source of truth for user-prompt section metadata."""
-
-    builder_name: str
-    label: str
-    display_name: str
-    info_kind: str
-    drop_tier: int | None
-    public_record: bool = False
 
 
-_NEVER_DROP_TIER: int | None = None
 
-_STRATEGY_GROUP_ORDER: tuple[frozenset[str], str, str] = (
-    (HARD_CONSTRAINT_KEYS, "【硬约束】", "以下指令必须遵守（MUST）："),
-    (SUGGESTION_KEYS, "【建议】", "以下指令为建议（SHOULD），偏离时需有充分理由："),
-    (REFERENCE_KEYS, "【参考】", "以下为背景信息（REFERENCE），仅供决策参考："),
-)
 
 # P1-G3223805846-4: 头部硬约束强调 JSON 顶层字段必须使用 ``action_type``。
 # 游戏回放 g_3223805846 显示 LLM 在示例区之后仍输出 ``{"intent": "..."}``,
@@ -214,7 +222,13 @@ _ACTION_TYPE_GUARD = (
 )
 
 
-class PlayerPromptBuilder:
+class PlayerPromptBuilder(
+    PromptSectionMixin,
+    PromptSalienceMixin,
+    PromptMemoryMixin,
+    PromptStrategyMixin,
+    PromptPersonaMixin,
+):
     """Assembles player prompts as a pipeline of independently-built sections.
 
     Per s10:
@@ -400,60 +414,6 @@ class PlayerPromptBuilder:
     #  User prompt: per-turn dynamic context (system reminder)
     # ═══════════════════════════════════════════════════════════════
 
-    # Section-level metadata drives both prompt labels and budget
-    # trimming. The visible label tells the LLM what kind of content
-    # follows; ``drop_tier`` tells the trimmer what can disappear under
-    # pressure. Keeping both in one table prevents drift such as a
-    # section being labeled "optional" while also being never-dropped.
-    _USER_SECTION_SPECS: tuple[_SectionSpec, ...] = (
-        _SectionSpec("_build_phase_context", "【辅助】", "阶段上下文", "action_context", _NEVER_DROP_TIER),
-        _SectionSpec("_build_public_summary", "【场上记录】", "当前局公开事实", "public_record", _NEVER_DROP_TIER, True),
-        _SectionSpec("_build_visible_state", "【辅助】", "可见世界状态", "public_record", _NEVER_DROP_TIER, True),
-        _SectionSpec("_build_salience_events", "【辅助】", "关键事件", "public_record", _NEVER_DROP_TIER, True),
-        _SectionSpec("_build_recent_transcript", "【场上记录】", "近期发言", "public_record", _NEVER_DROP_TIER, True),
-        _SectionSpec("_build_persona", "【人格】", "人格设定", "style", _NEVER_DROP_TIER),
-        _SectionSpec("_build_belief_state", "【辅助】", "我的判断", "private_reasoning", 2),
-        _SectionSpec("_build_contradiction_alerts", "【辅助】", "公开矛盾点", "private_reasoning", 2),
-        _SectionSpec("_build_seer_credibility", "【辅助】", "预言家线可信度", "private_reasoning", 2),
-        _SectionSpec("_build_possible_worlds", "【辅助】", "可能世界假设", "private_reasoning", 2),
-        _SectionSpec("_build_simulation_predictions", "【辅助】", "未来预测", "private_reasoning", 2),
-        _SectionSpec("_build_private_memory_hints", "【辅助】", "本局·私有记忆", "private_memory", 1),
-        _SectionSpec("_build_learning_context", "【参考】", "跨局学习参考", "cross_game_reference", 0),
-        _SectionSpec("_build_strategy_directive", "【策略指令】", "策略指令", "directive", _NEVER_DROP_TIER),
-        _SectionSpec("_build_final_output_guard", "【硬约束】", "最终输出约束", "output_constraint", _NEVER_DROP_TIER),
-    )
-    _SECTION_SPEC_BY_NAME: dict[str, _SectionSpec] = {
-        spec.builder_name: spec for spec in _USER_SECTION_SPECS
-    }
-    _NEVER_DROP: frozenset[str] = frozenset(
-        spec.builder_name
-        for spec in _USER_SECTION_SPECS
-        if spec.drop_tier is _NEVER_DROP_TIER
-    )
-    _LOW_VALUE_SECTIONS: frozenset[str] = frozenset(
-        spec.builder_name
-        for spec in _USER_SECTION_SPECS
-        if spec.drop_tier == 0
-    )
-    _SECTION_PRIORITIES: dict[str, str] = {
-        spec.builder_name: spec.label
-        for spec in _USER_SECTION_SPECS
-    }
-
-    def _label_section(self, builder_name: str, body: str) -> str:
-        """Prepend the priority label to a section's body.
-
-        P1-S3: Empty bodies are returned unchanged so the section
-        just disappears from the prompt (preserving the existing
-        `for p in parts if p` filter behavior).
-        """
-        if not body:
-            return body
-        label = self._SECTION_PRIORITIES.get(builder_name, "")
-        if not label:
-            return body
-        return f"{label} {body}"
-
     def build_user_prompt(self, retry: RetryInfo) -> str:
         # P1-5: build the full prompt first, then enforce the global
         # token budget by dropping sections with the lowest ``drop_tier``.
@@ -497,99 +457,6 @@ class PlayerPromptBuilder:
         parts.append(("_build_final_output_guard", self._label_section("_build_final_output_guard", self._build_final_output_guard(retry))))
         return self._enforce_budget(parts)
 
-    def _enforce_budget(
-        self,
-        parts: list[tuple[str, str]],
-    ) -> str:
-        """Join parts with blank-line separator, then trim if over budget.
-
-        P1-5: when the joined prompt exceeds ``_USER_PROMPT_BUDGET_CHARS``,
-        drop sections by ``_USER_SECTION_SPECS.drop_tier`` until it fits.
-        Sections with ``drop_tier is None``, the boundary marker, and the
-        task prompt are never dropped.
-
-        Implementation note (carries over from prior fix): ``drop_indices``
-        here is the EXCLUSION set — indices still in the set are EXCLUDED
-        from the joined prompt. The loop iterates the droppable list in
-        priority order (lowest priority first) and removes (drops) one
-        section at a time, shrinking the joined. The loop exits as soon
-        as the joined fits under the budget.
-        """
-        # Fast path: the full prompt is already under budget.
-        full_joined = "\n\n".join(p for _, p in parts if p)
-        if len(full_joined) <= _USER_PROMPT_BUDGET_CHARS:
-            return full_joined
-        # Build the drop order from the section registry. Sections
-        # absent from the registry or marked never-drop are skipped.
-        droppable: list[tuple[int, int]] = []
-        for idx, (name, _) in enumerate(parts):
-            if not name:
-                continue
-            spec = self._SECTION_SPEC_BY_NAME.get(name)
-            if spec is None or spec.drop_tier is None:
-                continue
-            droppable.append((spec.drop_tier, idx))
-        # Sort by tier first, then keep original order within a tier
-        # (stable sort). Note: this means within a tier, sections
-        # earlier in the parts list (e.g. phase_context, belief_state)
-        # are dropped before later ones (e.g. retry_hint, output
-        # contract). That's the opposite of "drop from the end"
-        # but it's deterministic and predictable.
-        droppable.sort(key=lambda x: x[0])
-        # AUDIT-2-02 (corrected for G-R4-15): maintain a running total
-        # of the joined length and update it O(1) per drop instead of
-        # re-joining the full prompt on every iteration. ``drop_indices``
-        # here is the INCLUSION set — indices in the set are KEPT in
-        # the joined prompt, indices not in the set are dropped. We
-        # start with drop_indices = set() (nothing kept, full prompt
-        # would just be empty) — no wait, that doesn't match either.
-        #
-        # Re-deriving from scratch: the full_joined is len(13548)
-        # in the test scenario. We want to drop sections until total
-        # fits under budget (6250). So drop_indices is the set of
-        # indices we have DROPPED so far. We start with all parts
-        # included (drop_indices = set()) and ADD to drop_indices
-        # as we drop. ``joined = total`` starts at full_joined and
-        # decreases.
-        total = len(full_joined)
-        dropped: set[int] = set()
-        # Walk droppable in stable tier+order; DROP each section
-        # whose label is in the matching tier, until the budget
-        # is satisfied or droppable is exhausted. The 硬约束
-        # filter is applied up-front so they never appear here.
-        for tier, idx in droppable:
-            if total <= _USER_PROMPT_BUDGET_CHARS:
-                break
-            if idx in dropped:
-                continue
-            # Only drop if the section still maps to the same tier.
-            spec = self._SECTION_SPEC_BY_NAME.get(parts[idx][0])
-            if spec is None or spec.drop_tier != tier:
-                continue
-            # Mark as dropped and update running total: SUBTRACT
-            # the body + 2 chars (one separator for the part that
-            # just left the joined string). Empty body means the
-            # section was already filtered out of the joined, so
-            # the only effect is on dropped; the running total is
-            # unchanged.
-            body = parts[idx][1]
-            if body:
-                dropped.add(idx)
-                total -= len(body) + 2
-            else:
-                # Empty body contributes nothing to joined; we
-                # still mark it as "processed" so we don't try to
-                # drop it again on a future iteration (the
-                # ``idx in dropped`` guard handles this).
-                dropped.add(idx)
-        # AUDIT-2-02: reconstruct the joined string ONCE in O(N)
-        # from the (post-drop) ``dropped`` set. The previous
-        # implementation re-joined the whole prompt on every
-        # iteration — O(N²) for tight budgets.
-        active = [
-            p for i, (_, p) in enumerate(parts) if i not in dropped and p
-        ]
-        return "\n\n".join(active)
 
     def _build_phase_context(self) -> str:
         ctx = self.context
@@ -870,602 +737,20 @@ class PlayerPromptBuilder:
             return ""
         return "可见状态: " + self._compact_json(visible)
 
-    def _build_private_memory_hints(self) -> str:
-        ctx = self.context
-        # P0-M7: read only from private_memory_hints. The previous code
-        # also fell back to ctx.visible_world_state.get("private_memory"),
-        # which caused duplicate injection if both fields were populated
-        # and risked surfacing stale data from an older code path.
-        memory = ctx.private_memory_hints
-        if not memory:
-            return ""
-        # P0-M1: prepend a "本局·第N轮·私有记忆" label so the LLM cannot
-        # confuse this section with cross-game reflection memory or
-        # with public speech.
-        day_label = f"第{ctx.day_number}轮" if ctx.day_number else "首轮"
-        # MEM-02: emit the P1-M10 caveat BEFORE the JSON payload so
-        # the LLM sees the warning in the same paragraph as the
-        # keyword-signal categories. Omitted when logic_flaws /
-        # valid_points are both empty (caveat would be noise).
-        caveat = ctx.private_memory_caveat or ""
-        # Phase-1 audit: wrap the caveat in ``---`` markers so the
-        # LLM cannot mistake the warning for a JSON key or treat it
-        # as a hint payload entry.  Without the marker, the LLM has
-        # been observed to fold caveat text into the JSON dict
-        # (e.g. parsing "私有记忆" as a key).
-        if caveat:
-            caveat_block = f"---\n{caveat}\n---\n"
-        else:
-            caveat_block = ""
-        return (
-            f"【本局·{day_label}·私有记忆】以下只代表你在本局形成的观察、站边和私有思考，"
-            "不是公开记录。"
-            "【严禁】在公开发言中复述以下任何角色身份信息或暗示你从私有记忆中获知的身份。"
-            "你在公开发言中只能使用公开可见的信息。\n"
-            + caveat_block
-            + self._compact_json(memory)
-        )
 
-    def _build_salience_events(self) -> str:
-        ctx = self.context
-        if not ctx.salience_items:
-            return ""
-        # P0-2 (defense in depth): explicitly whitelist public fields
-        # so a future change that leaks a private key (seer_result,
-        # witch_target, wolf_team, private_intent, moderator_full) into
-        # ctx.salience_items cannot end up in the player-visible prompt.
-        # The runtime (runtime/context.py:build_agent_context) does not
-        # currently populate these, but the renderer should still
-        # enforce the boundary.
-        slimmed = [_slim_salience_item(item) for item in ctx.salience_items[:_MAX_SALIENCE_ITEMS]]
-        slimmed = [item for item in slimmed if item is not None]
-        if not slimmed:
-            return ""
-        return "关键事件: " + self._compact_json(slimmed)
 
-    def _build_rag_hints(self) -> str:
-        ctx = self.context
-        if not ctx.rag_hints:
-            return ""
-        # P0-G2 defense in depth: even if a non-production code path
-        # leaks full audit items into ``ctx.rag_hints``, the live prompt
-        # must only see title plus prompt-safe V2 tactical frame fields.
-        # Audit data (summary, key_decisions, relevance, quality, source,
-        # visibility, display annotation) belongs in the audit log, not
-        # the LLM context window.
-        #
-        # G-R4-10: explicit ``type == "rag_hit"`` filter so a future
-        # code path (or a test, or a manual debug call) that injects
-        # auxiliary metadata (salience events, profile snapshots,
-        # etc.) into ``ctx.rag_hints`` cannot leak into the prompt.
-        # The previous code at runtime/context.py:231 used
-        # ``if item.get("type") != "rag_hit"`` to *retain* non-rag
-        # items, which is brittle — a stray non-rag item persists
-        # across turns and the renderer would happily process it.
-        # The prompt-side filter is explicit, defensive, and matches
-        # the slim renderer's expectation that every line carries
-        # the ``rag_hit`` discriminator.
-        rag_only = [
-            item for item in ctx.rag_hints
-            if isinstance(item, dict) and item.get("type") == "rag_hit"
-        ]
-        if not rag_only:
-            return ""
-        # P2-6: cap on total hits uses the shared live-prompt
-        # constant from rag.prompt_renderer (one source of truth for
-        # the 3 retriever / slim-renderer / prompt-builder caps).
-        from werewolf_agent.rag.prompt_renderer import RAG_LIVE_PROMPT_CAP
-        slim_items = self._slim_rag_hint_items(rag_only[:RAG_LIVE_PROMPT_CAP])
-        # P0-G3: hard-constraint prefix MUST come before the case
-        # payload. Without this the LLM has been observed to parrot
-        # case-specific player IDs (e.g., p04 / p09 in seed cases) as
-        # if they were this game's player IDs, which is information
-        # leakage and tactical error.
-        # P2-11: extended the head warning to cover TACTIC reuse in
-        # addition to player-ID reuse.  Pre-fix the warning only
-        # flagged ID leakage, but the LLM was also observed to
-        # wholesale-copy case tactics (e.g. "case used anti-herd and
-        # won, so do anti-herd this game") regardless of local
-        # context.  Add explicit anti-tactic-reuse framing.
-        warning = (
-            "⚠️ RAG 案例中的玩家 ID 与战术选择仅供启发；"
-            "本局的玩家 ID、票型、遗言均与案例无关；"
-            "不得直接套用案例中具体玩家的动作、票型或决策链。\n"
-        )
-        case_cards = self._render_rag_hint_cards(slim_items)
-        # R19: a tail reminder after the case cards re-anchors the
-        # model at the end of the section. The head warning only sets the
-        # "do not parrot" frame at the start; without a tail the
-        # LLM can still walk the section and treat the cards as a
-        # hard assertion rather than reference material. Tail text
-        # matches the head framing so the LLM sees a consistent
-        # "this is reference only" message before it generates.
-        tail = "（以上案例仅供参考，不得作为本局事实或硬性指令。）"
-        if "…已截断" in case_cards:
-            tail = tail + "（部分字段已截断，案例未完整呈现。）"
-        return (
-            "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
-            + warning
-            + case_cards
-            + "\n"
-            + tail
-        )
 
-    def _build_learning_context(self) -> str:
-        header = (
-            "跨局学习参考: 以下内容只是历史经验与自我校准，"
-            "不代表本局任何玩家真实身份。"
-        )
-        parts: list[tuple[str, int, str]] = []
-        error_pattern = self._build_error_pattern_hint()
-        if error_pattern:
-            parts.append(("error_pattern", 4, error_pattern))
-        reflection = self._build_reflection_memory_hints()
-        if reflection:
-            parts.append(("reflection", 3, reflection))
-        profile = self._build_profile_memory_hint()
-        if profile:
-            parts.append(("profile", 2, profile))
-        cognition = self._build_cognition_matrix_hint()
-        if cognition:
-            parts.append(("cognition", 1, cognition))
-        rag = self._build_rag_hints()
-        if rag:
-            parts.append(("rag", 0, rag))
-        if not parts:
-            return ""
 
-        active = list(parts)
 
-        def render(items: list[tuple[str, int, str]]) -> str:
-            return header + "\n\n" + "\n\n".join(text for _, _, text in items)
 
-        while active and len(render(active)) > _MAX_LEARNING_CONTEXT_CHARS:
-            lowest_priority = min(priority for _, priority, _ in active)
-            for idx in range(len(active) - 1, -1, -1):
-                if active[idx][1] == lowest_priority:
-                    del active[idx]
-                    break
 
-        return render(active) if active else ""
 
-    @staticmethod
-    def _slim_rag_hint_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Drop audit-only fields from RAG hint items in the live prompt.
 
-        Mirrors :func:`werewolf_agent.rag.prompt_renderer.hits_to_prompt_lines`
-        but operates on already-rendered dicts (so it works even when
-        ``ctx.rag_hints`` was populated by a test or a non-default
-        code path that bypassed :class:`RAGKnowledgeService`).
 
-        RAG V2 prompt shape is title plus prompt-safe tactical frame
-        fields. Legacy dicts are routed through the shared tactical
-        helper, which supplies a conservative fallback frame without
-        exposing raw ``summary`` / ``key_decisions`` fields here.
-        """
-        from werewolf_agent.rag.tactical_text import prompt_safe_tactical_frame_dict
 
-        slim: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            frame = prompt_safe_tactical_frame_dict(item)
-            slim.append({
-                "title": PlayerPromptBuilder._clean_prompt_text(
-                    item.get("title", ""),
-                    max_chars=_MAX_LEARNING_TEXT_CHARS,
-                ),
-                "situation_signature": PlayerPromptBuilder._clean_prompt_text(
-                    frame["situation_signature"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-                "transferable_lesson": PlayerPromptBuilder._clean_prompt_text(
-                    frame["transferable_lesson"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-                "applicability": [
-                    PlayerPromptBuilder._clean_prompt_text(
-                        value,
-                        max_chars=_MAX_RAG_TEXT_CHARS,
-                    )
-                    for value in frame["applicability"]
-                ],
-                "counter_signals": [
-                    PlayerPromptBuilder._clean_prompt_text(
-                        value,
-                        max_chars=_MAX_RAG_TEXT_CHARS,
-                    )
-                    for value in frame["counter_signals"]
-                ],
-                "recommended_use": PlayerPromptBuilder._clean_prompt_text(
-                    frame["recommended_use"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-                "misuse_risk": PlayerPromptBuilder._clean_prompt_text(
-                    frame["misuse_risk"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-            })
-        return slim
 
-    @staticmethod
-    def _render_rag_hint_cards(items: list[dict[str, Any]]) -> str:
-        """Render prompt-safe RAG items as readable low-priority cards."""
-        def join_values(value: Any, *, fallback: str) -> str:
-            if isinstance(value, list):
-                text = "；".join(str(part).strip() for part in value if str(part).strip())
-                return text or fallback
-            text = str(value or "").strip()
-            return text or fallback
 
-        cards: list[str] = []
-        for idx, item in enumerate(items, start=1):
-            title = str(item.get("title") or "未命名案例")
-            cards.append(
-                f"案例 {idx}：{title}\n"
-                f"- 适用局面：{join_values(item.get('situation_signature'), fallback='缺少局面描述。')}\n"
-                f"- 可迁移原则：{join_values(item.get('transferable_lesson'), fallback='仅作为谨慎参考。')}\n"
-                f"- 适用条件：{join_values(item.get('applicability'), fallback='仅当本局公开事实与案例局面相似时参考。')}\n"
-                f"- 不适用信号：{join_values(item.get('counter_signals'), fallback='若当前局面不匹配则不要套用。')}\n"
-                f"- 本局参考方式：{join_values(item.get('recommended_use'), fallback='作为参考，不作为直接指令。')}\n"
-                f"- 误用风险：{join_values(item.get('misuse_risk'), fallback='过度套用可能误导判断。')}"
-            )
 
-        return "\n\n".join(cards)
-
-    def _build_reflection_memory_hints(self) -> str:
-        ctx = self.context
-        if not ctx.reflection_memory_hints:
-            return ""
-        hints = self._slim_reflection_hints(
-            ctx.reflection_memory_hints[:REFLECTION_CARD_BUDGET]
-        )
-        if not hints:
-            return ""
-        if any("recommended_action" in hint or "trigger_signals" in hint for hint in hints):
-            return (
-                "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
-                "历史玩家 ID、身份真相和决策链不得映射到本局玩家。\n"
-                + self._render_reflection_hint_cards(hints)
-            )
-        return (
-            "跨局反思记忆: 以下是你过往对局后的经验总结，不代表本局任何玩家真实身份。\n"
-            "历史玩家 ID、身份真相和决策链不得映射到本局玩家。\n"
-            + self._compact_json(hints)
-        )
-
-    @staticmethod
-    def _render_reflection_hint_cards(hints: list[dict[str, Any]]) -> str:
-        def join_values(value: Any, *, fallback: str) -> str:
-            if isinstance(value, list):
-                text = "；".join(str(part).strip() for part in value if str(part).strip())
-                return text or fallback
-            text = str(value or "").strip()
-            return text or fallback
-
-        cards: list[str] = []
-        for idx, hint in enumerate(hints, start=1):
-            title = join_values(hint.get("theme"), fallback="历史反思")
-            cards.append(
-                f"\n\n反思 {idx}: {title}\n"
-                f"- 触发信号: {join_values(hint.get('trigger_signals'), fallback='仅当本局公开事实相似时参考。')}\n"
-                f"- 历史教训: {join_values(hint.get('lesson') or hint.get('summary') or hint.get('text'), fallback='历史经验仅供参考。')}\n"
-                f"- 本局做法: {join_values(hint.get('recommended_action') or hint.get('actionable_advice'), fallback='先核验本局公开证据，再决定是否采用。')}\n"
-                f"- 误用风险: {join_values(hint.get('misuse_risk'), fallback='不要把历史经验直接映射到本局玩家身份。')}"
-            )
-        return "".join(cards)
-
-    def _build_error_pattern_hint(self) -> str:
-        """reflect-cross-1: 跨局错误模式聚合,顶部强提示 LLM 自我修正。
-
-        当 LLM 拿到"你历史最常犯的错误是 X"这种聚合信号,比单条反思更
-        容易驱动行为改变。同时"保留优点 N 次"提醒 LLM 不要只学错误。
-        """
-        ctx = self.context
-        ep = ctx.error_pattern_hint
-        if not ep or ep.get("total_reflections", 0) == 0:
-            return ""
-        parts: list[str] = ["【跨局错误模式(基于你过往反思)】"]
-        top = ep.get("top_mistakes") or []
-        if top:
-            mistake_strs = [
-                f"{self._normalize_error_category(cat)}({count}次)"
-                for cat, count in top
-            ]
-            parts.append(f"你最常犯的 2 类错误: {'、'.join(mistake_strs)}。")
-        strengths = [
-            self._clean_prompt_text(label, max_chars=40)
-            for label in (ep.get("preserved_strength_labels") or [])
-            if str(label or "").strip()
-        ][:2]
-        preserved = ep.get("preserved_strength_count", 0)
-        if strengths:
-            parts.append(f"可复用优点: {'、'.join(strengths)}。")
-        elif preserved:
-            parts.append(f"过去 {preserved} 局反思中出现过可保留优点,本局先核验再复用。")
-        same = ep.get("same_role_reflections", 0)
-        if same:
-            parts.append(
-                f"其中 {same} 局你拿过当前角色({ep.get('current_role', '?')}),"
-                f"历史经验对当前角色特别相关。"
-            )
-        return "\n".join(parts)
-
-    def _build_profile_memory_hint(self) -> str:
-        ctx = self.context
-        if not ctx.profile_memory_hint:
-            return ""
-        allowed_fields = (
-            "games_played",
-            "current_role",
-            "current_role_games",
-            "current_role_win_rate_pct",
-            "win_rate_confidence",
-            "summary",
-        )
-        live_hint = {}
-        for key in allowed_fields:
-            if key not in ctx.profile_memory_hint:
-                continue
-            value = ctx.profile_memory_hint[key]
-            if isinstance(value, str):
-                value = self._clean_prompt_text(
-                    value,
-                    max_chars=_MAX_LEARNING_TEXT_CHARS,
-                )
-            live_hint[key] = value
-        if not live_hint:
-            return ""
-        return (
-            "历史角色经验: 以下仅是样本量与当前角色经历，不代表本局能力高低。\n"
-            + self._compact_json(live_hint)
-        )
-
-    def _build_cognition_matrix_hint(self) -> str:
-        ctx = self.context
-        if not ctx.cognition_matrix_hint:
-            return ""
-        suspects = ctx.cognition_matrix_hint.get("suspects")
-        trusted = ctx.cognition_matrix_hint.get("trusted")
-        if suspects is None and trusted is None:
-            suspects = [
-                value for value in ctx.cognition_matrix_hint.values()
-                if isinstance(value, dict)
-                and (
-                    value.get("faction_lean") in {"wolf", "wolf_lean", "werewolf"}
-                    or float(value.get("trust", 0.5) or 0.5) < 0.4
-                )
-            ]
-            trusted = [
-                value for value in ctx.cognition_matrix_hint.values()
-                if isinstance(value, dict)
-                and (
-                    value.get("faction_lean") in {"good", "good_lean", "villager"}
-                    or float(value.get("trust", 0.5) or 0.5) > 0.6
-                )
-            ]
-        suspects = suspects or []
-        trusted = trusted or []
-        live_hint = {
-            "tracked_suspect_count": len(suspects),
-            "tracked_trusted_count": len(trusted),
-            "open_question_count": sum(
-                len(item.get("open_questions") or [])
-                for item in list(suspects) + list(trusted)
-                if isinstance(item, dict)
-            ),
-            "evidence_anchor_count": sum(
-                len(item.get("key_evidence") or [])
-                for item in list(suspects) + list(trusted)
-                if isinstance(item, dict)
-            ),
-            "calibration_warning": "只复核证据充分性，不复用历史玩家名单。",
-        }
-        return (
-            "认知校准摘要: 历史矩阵只用于提醒你重新核验判断，不提供本局嫌疑名单。\n"
-            + self._compact_json(live_hint)
-        )
-
-    def _build_strategy_directive(self) -> str:
-        """Render strategy_directive split into 3 priority sections.
-
-        P0-S5: LLM previously saw a single flat JSON block with 20+ keys
-        and no priority signal — had to guess hard vs soft. Now keys are
-        grouped into 【硬约束】 (MUST), 【建议】 (SHOULD), 【参考】
-        (REFERENCE). Unknown keys fall through to 参考 for forward-compat.
-
-        NEW-R4-P1-1: ``skill_tactical_advice`` is a structured list of
-        ``[{skill, advice, confidence}, ...]`` (S-07 contract). Running
-        the whole section through ``_compact_json`` wraps it in a
-        ``{"skill_tactical_advice":[{...}, ...]}`` JSON envelope that
-        the LLM has to parse before reading the advice — wasted tokens
-        and a parse-failure surface. We render that key with a
-        dedicated human-readable bullet renderer:
-        ``- [skill_name/confidence] advice_text``.
-        """
-        ctx = self.context
-        if not ctx.strategy_directive:
-            return ""
-
-        grouped: dict[str, dict[str, Any]] = {
-            header: {} for _, header, _ in _STRATEGY_GROUP_ORDER
-        }
-        reference_fallback_idx = next(
-            i for i, (keys, header, _) in enumerate(_STRATEGY_GROUP_ORDER)
-            if header == "【参考】"
-        )
-        reference_header = _STRATEGY_GROUP_ORDER[reference_fallback_idx][1]
-
-        for key, value in ctx.strategy_directive.items():
-            placed = False
-            for i, (keys, header, _) in enumerate(_STRATEGY_GROUP_ORDER):
-                if key in keys:
-                    grouped[header][key] = value
-                    placed = True
-                    break
-            if not placed:
-                grouped[reference_header][key] = value
-
-        parts: list[str] = ["本轮策略指令:"]
-        for keys_set, header, label in _STRATEGY_GROUP_ORDER:
-            section = grouped[header]
-            if not section:
-                continue
-            parts.append(
-                f"{header} {label}\n" + self._render_strategy_section(section)
-            )
-        return "\n\n".join(parts)
-
-    def _render_strategy_section(self, section: dict[str, Any]) -> str:
-        """Render a single strategy_directive section.
-
-        NEW-R4-P1-1: if the section contains ``skill_tactical_advice``
-        (a structured list per S-07), use a dedicated bullet renderer
-        for that key and render the remaining keys via ``_compact_json``.
-        This avoids the raw JSON envelope the LLM would otherwise have
-        to parse before reading the advice.
-
-        PR1: ``reflection_task`` is a free-form role-family reflection
-        template whose section headers (【投票错误】 / 【保留的优点】 / …)
-        downstream aggregation parses. Running it through
-        ``_compact_json`` wraps the whole section as a JSON object
-        ``{"reflection_task":"...【投票错误】...","game_outcome":"..."}``
-        so the headers end up as escaped content inside a JSON string
-        value — the LLM saw a background field, not MUST text, and
-        emitted in-game speech instead of sectioned reflection
-        (game g_415624166, 12/12 reflections lacked headers). When the
-        section contains a string ``reflection_task``, render that key
-        verbatim as plain text and render the rest via ``_compact_json``.
-        """
-        advice = section.get("skill_tactical_advice")
-        if isinstance(advice, list) and advice:
-            # Render the advice as a human-readable bullet list. Other
-            # keys in the section still go through _compact_json — only
-            # the structured advice is humanized.
-            bullets = self._render_skill_tactical_advice(advice)
-            rest = {k: v for k, v in section.items() if k != "skill_tactical_advice"}
-            if not rest:
-                return bullets
-            return bullets + "\n" + self._compact_json(rest)
-
-        reflection_task = section.get("reflection_task")
-        if isinstance(reflection_task, str) and reflection_task:
-            # Render the template verbatim as plain text so its section
-            # headers are top-level readable lines, not a JSON string.
-            rest = {k: v for k, v in section.items() if k != "reflection_task"}
-            text = f"反思指令:\n{reflection_task.rstrip()}"
-            if not rest:
-                return text
-            return text + "\n" + self._compact_json(rest)
-
-        return self._compact_json(section)
-
-    @staticmethod
-    def _render_skill_tactical_advice(advice: list[Any]) -> str:
-        """Render the S-07 ``skill_tactical_advice`` list as bullets.
-
-        Format: ``- [skill_name/confidence] advice_text`` (one per line).
-        Entries that are not dicts or that lack the expected keys are
-        rendered defensively via ``json.dumps`` so a single bad entry
-        doesn't break the whole list.
-
-        NEW-R4-P1-1: bypasses ``_compact_json`` so the LLM sees plain
-        text rather than a JSON envelope.
-        """
-        lines: list[str] = ["技能战术建议:"]
-        rendered = advice[:_MAX_SKILL_TACTICAL_ADVICE_ITEMS]
-        for entry in rendered:
-            if not isinstance(entry, dict):
-                text = PlayerPromptBuilder._clean_prompt_text(
-                    json.dumps(entry, ensure_ascii=False),
-                    max_chars=_MAX_SKILL_TACTICAL_ADVICE_CHARS,
-                )
-                lines.append(f"- {text}")
-                continue
-            skill = PlayerPromptBuilder._clean_prompt_text(
-                entry.get("skill", ""),
-                max_chars=40,
-            )
-            conf = entry.get("confidence", "")
-            text = PlayerPromptBuilder._clean_prompt_text(
-                entry.get("advice", ""),
-                max_chars=_MAX_SKILL_TACTICAL_ADVICE_CHARS,
-            )
-            try:
-                conf_str = f"{float(conf):.2f}"
-            except (TypeError, ValueError):
-                conf_str = str(conf)
-            frame_lines = [f"- [{skill}/{conf_str}] {text}"]
-            situation = PlayerPromptBuilder._clean_prompt_text(
-                entry.get("situation_signature", ""),
-                max_chars=120,
-            )
-            recommended_use = PlayerPromptBuilder._clean_prompt_text(
-                entry.get("recommended_use", ""),
-                max_chars=_MAX_SKILL_TACTICAL_ADVICE_CHARS,
-            )
-            risk_alerts = [
-                PlayerPromptBuilder._clean_prompt_text(item, max_chars=100)
-                for item in list(entry.get("risk_alerts") or [])[:2]
-            ]
-            counter_signals = [
-                PlayerPromptBuilder._clean_prompt_text(item, max_chars=100)
-                for item in list(entry.get("counter_signals") or [])[:2]
-            ]
-            forbidden_use = PlayerPromptBuilder._clean_prompt_text(
-                entry.get("forbidden_use", ""),
-                max_chars=120,
-            )
-            if situation:
-                frame_lines.append(f"  适用局面：{situation}")
-            if recommended_use:
-                frame_lines.append(f"  本轮建议：{recommended_use}")
-            if risk_alerts:
-                frame_lines.append(f"  风险：{'；'.join(risk_alerts)}")
-            if counter_signals:
-                frame_lines.append(f"  不适用信号：{'；'.join(counter_signals)}")
-            if forbidden_use:
-                frame_lines.append(f"  禁止套用：{forbidden_use}")
-            lines.extend(frame_lines)
-        omitted = len(advice) - len(rendered)
-        if omitted > 0:
-            lines.append(f"- 其余 {omitted} 条技能战术建议已省略。")
-        return "\n".join(lines)
-
-    def _build_persona(self) -> str:
-        ctx = self.context
-        if not ctx.persona_snapshot:
-            return ""
-        sanitized_snapshot = sanitize_persona_snapshot(
-            ctx.persona_snapshot,
-            own_role=ctx.own_role or "",
-            task_type=ctx.task_type.value,
-        )
-        lines = ["人格设定:"]
-        text_fields = (
-            ("personality", "人格核心"),
-            ("speech_style", "表达风格"),
-            ("task_style", "任务风格"),
-            ("tone", "语气"),
-        )
-        for key, label in text_fields:
-            value = sanitized_snapshot.get(key)
-            if value:
-                lines.append(f"- {label}: {self._clean_prompt_text(value)}")
-        effective = self._slim_numeric_params(
-            sanitized_snapshot.get("effective_params")
-        )
-        if effective:
-            lines.append(f"- 稳定倾向: {self._compact_json(effective)}")
-        adjustments = self._slim_numeric_params(
-            sanitized_snapshot.get("dynamic_adjustments")
-        )
-        if adjustments:
-            lines.append(f"- 本轮调整: {self._compact_json(adjustments)}")
-        if len(lines) == 1:
-            return ""
-        lines.append("注意: 人格只影响表达和决策风格，不代表身份信息、公开事实或固定战术。")
-        return "\n".join(lines)
 
     def _build_recent_transcript(self) -> str:
         ctx = self.context
@@ -1986,77 +1271,8 @@ class PlayerPromptBuilder:
     ) -> str:
         return clean_prompt_text(value, max_chars=max_chars)
 
-    @staticmethod
-    def _slim_numeric_params(value: Any) -> dict[str, float]:
-        if not isinstance(value, dict):
-            return {}
-        slim: dict[str, float] = {}
-        for key, raw in value.items():
-            if key == "deception_skill" or key.endswith("_rank"):
-                continue
-            if not isinstance(raw, (int, float)):
-                continue
-            slim[str(key)] = round(float(raw), 2)
-        return slim
 
-    @classmethod
-    def _slim_reflection_hints(cls, hints: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        allowed_fields = (
-            "role",
-            "result",
-            "theme",
-            "summary",
-            "text",
-            "lesson",
-            "trigger_signals",
-            "recommended_action",
-            "misuse_risk",
-            "actionable_advice",
-        )
-        slimmed: list[dict[str, Any]] = []
-        for item in hints:
-            if not isinstance(item, dict):
-                continue
-            slim: dict[str, Any] = {}
-            for key in allowed_fields:
-                if key not in item:
-                    continue
-                value = item[key]
-                if isinstance(value, str):
-                    value = cls._clean_prompt_text(
-                        value,
-                        max_chars=_MAX_LEARNING_TEXT_CHARS,
-                    )
-                elif isinstance(value, list):
-                    value = [
-                        cls._clean_prompt_text(
-                            part,
-                            max_chars=_MAX_LEARNING_TEXT_CHARS,
-                        )
-                        for part in value
-                        if str(part or "").strip()
-                    ][:4]
-                slim[key] = value
-            if slim:
-                slimmed.append(slim)
-        return slimmed
 
-    @staticmethod
-    def _normalize_error_category(category: Any) -> str:
-        raw = str(category or "").strip().lower()
-        mapping = {
-            "vote_mistake": "投票错误",
-            "info_miss": "漏读信息",
-            "role_execution": "角色执行",
-            "speech_quality": "发言质量",
-            "format_error": "格式错误",
-            "parse_error": "格式错误",
-        }
-        if raw in mapping:
-            return mapping[raw]
-        cleaned = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]+", "", raw)
-        cleaned = _PLAYER_ID_RE.sub("历史玩家", cleaned)
-        return cleaned[:24] or "other"
 
     # ── Choice/target helpers ──
 
@@ -2143,52 +1359,3 @@ class PlayerPromptBuilder:
             marker=marker,
             prefer_sentence_boundary=prefer_sentence_boundary,
         )
-
-
-# P0-2 (defense): explicit field whitelist for salience items. The
-# runtime currently does not populate private keys into salience_items,
-# but the renderer should enforce the boundary so a future change
-# cannot leak `seer_result`, `witch_target`, `wolf_team`, etc. into
-# the player-visible prompt.
-# D4-1: ``speaker`` / ``result`` / ``alignment`` are explicitly public
-# fields. A seer_claim event's whole point is to broadcast who claimed
-# what, so speaker (who) / result (claimed outcome) / alignment
-# (claimed faction) are public-by-construction. The private
-# ``seer_result`` (the raw check result the Seer actually saw) is
-# distinct and stays in _SALIENCE_PRIVATE_KEYS.
-_SALIENCE_PUBLIC_FIELDS: frozenset[str] = frozenset({
-    "weight", "bucket", "fact_type", "source", "target", "value",
-    "day", "phase", "event_type",
-    "speaker", "result", "alignment",
-    # Phase-1 audit: ``id`` and ``summary`` are public event identity
-    # and human-readable description.  ``id`` is the dedup key used by
-    # downstream cognition stages; ``summary`` is the only narrative
-    # content the LLM sees for a salience event.  Without these the
-    # LLM has no way to track which salience event is which across
-    # turns (slim dropped everything except numeric weight).
-    "id", "summary",
-})
-_SALIENCE_PRIVATE_KEYS: frozenset[str] = frozenset({
-    "seer_result", "witch_target", "wolf_team",
-    "private_intent", "moderator_full",
-})
-
-
-def _slim_salience_item(item: Any) -> dict[str, Any] | None:
-    """Return a salience item with only public fields, or None if it
-    contains any private key.
-
-    P0-2 (defense): explicit whitelist of public salience fields. Any
-    item carrying a private key (seer_result, witch_target, wolf_team,
-    private_intent, moderator_full) is dropped entirely. The runtime
-    is not expected to populate these, but the renderer must enforce
-    the boundary so a future change cannot leak through.
-    """
-    if not isinstance(item, dict):
-        return None
-    # If the item contains any private key, drop it entirely.
-    if any(key in item for key in _SALIENCE_PRIVATE_KEYS):
-        return None
-    # Otherwise project to the public-field whitelist. Keep only known
-    # public fields so future field additions don't silently leak.
-    return {k: v for k, v in item.items() if k in _SALIENCE_PUBLIC_FIELDS}
