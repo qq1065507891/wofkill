@@ -14,6 +14,7 @@ from __future__ import annotations
 from werewolf_agent.core.models import GameState, PlayerState
 from werewolf_agent.engine import (
     rule_flow,
+    rule_exile,
     rule_last_words,
     rule_special_roles,
     rule_victory,
@@ -37,6 +38,9 @@ def test_rule_engine_low_risk_helpers_are_available() -> None:
     assert callable(rule_visibility.record_private_intent)
     assert callable(rule_visibility.build_visible_context)
     assert callable(rule_victory.check_victory)
+    assert callable(rule_exile.legal_exile_targets)
+    assert callable(rule_exile.resolve_exile)
+    assert callable(rule_exile.resolve_self_destruct)
 
 
 def test_rule_engine_keeps_old_path_behavior_for_split_helpers() -> None:
@@ -229,3 +233,57 @@ def test_victory_helper_preserves_hybrid_slaughter_rules() -> None:
     assert pending.winner is None
     assert won.winner == "werewolf"
     assert won.reason == "slaughter_villagers"
+
+
+def test_exile_helper_preserves_idiot_reveal_and_self_destruct_flow() -> None:
+    engine = RuleEngine.from_yaml(RULESET_PATH)
+    state = GameState(
+        day_number=2,
+        players={
+            "idiot": PlayerState(id="idiot", role="idiot", alive=True),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "v1": PlayerState(id="v1", role="villager", alive=True),
+        },
+    )
+
+    exiled_state, exile_events = engine.resolve_exile(state, target_id="idiot")
+    self_destruct_state, self_destruct_events = engine.resolve_self_destruct(
+        state,
+        wolf_id="wolf",
+        day_number=2,
+    )
+
+    assert exiled_state.players["idiot"].revealed_idiot is True
+    assert exiled_state.players["idiot"].alive is False
+    assert [event.type for event in exile_events] == ["idiot_revealed", "player_exiled"]
+    assert exile_events[-1].payload == {
+        "player_id": "idiot",
+        "resolution_batch": "day_2_vote",
+    }
+    assert self_destruct_state.players["wolf"].alive is False
+    assert self_destruct_events[-1].type == "werewolf_self_destructed"
+    assert self_destruct_events[-1].payload == {"player_id": "wolf", "day_number": 2}
+
+
+def test_exile_split_preserves_rule_engine_apply_death_override_point() -> None:
+    class CustomExileEngine(RuleEngine):
+        def __init__(self, ruleset: Ruleset) -> None:
+            super().__init__(ruleset)
+            self.apply_death_calls = 0
+
+        def apply_death(self, state: GameState, death):
+            self.apply_death_calls += 1
+            return super().apply_death(state, death)
+
+    engine = CustomExileEngine.from_yaml(RULESET_PATH)
+    state = GameState(
+        players={
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "v1": PlayerState(id="v1", role="villager", alive=True),
+        },
+    )
+
+    engine.resolve_exile(state, target_id="v1")
+    engine.resolve_self_destruct(state, wolf_id="wolf", day_number=1)
+
+    assert engine.apply_death_calls == 2

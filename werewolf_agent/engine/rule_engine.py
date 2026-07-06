@@ -28,6 +28,7 @@ from werewolf_agent.core.models import (
     VictoryResult,
 )
 from werewolf_agent.engine import (
+    rule_exile,
     rule_flow,
     rule_last_words,
     rule_special_roles,
@@ -156,32 +157,15 @@ class RuleEngine:
     # -- Exile / Idiot --
 
     def legal_exile_targets(self, state: GameState) -> list[str]:
-        return [
-            pid for pid, p in state.players.items()
-            if p.alive and not p.exile_immune
-        ]
+        return rule_exile.legal_exile_targets(state)
 
     def resolve_exile(self, state: GameState, *, target_id: str) -> tuple[GameState, list[GameEvent]]:
-        target = state.players[target_id]
-        events: list[GameEvent] = []
-        if not target.alive or target.exile_immune:
-            return state, events
-
-        death = Death(
-            player_id=target_id,
-            reason="exile",
-            timing="day_vote",
-            resolution_batch=f"day_{state.day_number}_vote",
+        return rule_exile.resolve_exile(
+            state,
+            target_id=target_id,
+            apply_death_fn=self.apply_death,
+            apply_idiot_reveal_fn=self._apply_idiot_reveal,
         )
-        new_state = self.apply_death(state, death)
-        if target.role == "idiot" and not target.revealed_idiot:
-            new_state = self._apply_idiot_reveal(new_state, target_id)
-            events.append(GameEvent(type="idiot_revealed", payload={"player_id": target_id}))
-        events.append(GameEvent(
-            type="player_exiled",
-            payload={"player_id": target_id, "resolution_batch": death.resolution_batch},
-        ))
-        return new_state, events
 
     # -- Death --
 
@@ -349,21 +333,12 @@ class RuleEngine:
     def resolve_self_destruct(
         self, state: GameState, *, wolf_id: str, day_number: int
     ) -> tuple[GameState, list[GameEvent]]:
-        wolf = state.players[wolf_id]
-        if not wolf.alive or wolf.role != "werewolf":
-            return state, []
-        death = Death(
-            player_id=wolf_id,
-            reason="self_destruct",
-            timing="day_discussion",
-            resolution_batch=f"day_{day_number}_self_destruct",
+        return rule_exile.resolve_self_destruct(
+            state,
+            wolf_id=wolf_id,
+            day_number=day_number,
+            apply_death_fn=self.apply_death,
         )
-        new_state = self.apply_death(state, death)
-        event = GameEvent(
-            type="werewolf_self_destructed",
-            payload={"player_id": wolf_id, "day_number": day_number},
-        )
-        return new_state, [event]
 
     # -- Victory --
 
