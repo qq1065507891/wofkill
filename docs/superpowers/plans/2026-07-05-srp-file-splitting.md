@@ -37,7 +37,8 @@
 
 - [ ] Task 11.8: 拆 `werewolf_agent/rag/retriever.py` 和 `werewolf_agent/rag/vector_store.py`
 - [ ] Task 12: 拆对应超大测试文件
-- [ ] Task 13: 最终全量验证、清理 `.tmp`、同步 CodeGraph
+- [ ] Task 13: 当前批次最终全量验证、清理 `.tmp`、同步 CodeGraph
+- [ ] Task 14-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 下一轮候选池:
@@ -79,7 +80,8 @@
 - [x] 拆 `werewolf_agent/api/routes/games.py`。
 - [ ] 拆第二批 600 行以上但风险较低的模块。当前已完成大部分，RAG retrieval/storage 未完成。
 - [ ] 拆对应超大测试文件。
-- [ ] 最终全量验证、提交、CodeGraph 同步。
+- [ ] 当前批次最终全量验证、提交、CodeGraph 同步。
+- [ ] 下一轮候选模块进入正式拆分计划。
 
 ---
 
@@ -865,7 +867,7 @@ git commit -m "test: split oversized characterization suites"
 
 ---
 
-### Task 13: Final Verification And CodeGraph Sync
+### Task 13: Current Batch Final Verification And CodeGraph Sync
 
 **Files:**
 - All changed production and test files.
@@ -950,6 +952,413 @@ git log --oneline -n 10
 ```
 
 Expected: only intended changes committed; unrelated user changes remain untouched.
+
+---
+
+### Task 14: Split RAG Retrieval And Vector Storage
+
+**Files:**
+- Modify: `werewolf_agent/rag/retriever.py`
+- Modify: `werewolf_agent/rag/vector_store.py`
+- Candidate create: `werewolf_agent/rag/query_processing.py`
+- Candidate create: `werewolf_agent/rag/retrieval_ranking.py`
+- Candidate create: `werewolf_agent/rag/local_vector_store.py`
+- Candidate create: `werewolf_agent/rag/embedding_vector_store.py`
+- Test: `tests/rag/test_rag.py`
+- Test: `tests/rag/test_retrieval_eval.py`
+- Test: `tests/rag/test_clients.py`
+- Candidate test: `tests/rag/test_query_processing.py`
+- Candidate test: `tests/rag/test_vector_store_split.py`
+
+- [ ] **Step 1: Inspect current RAG boundaries with CodeGraph**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/rag/retriever.py werewolf_agent/rag/vector_store.py responsibilities callers tests"
+```
+
+Expected: identify tokenization/query preparation, ranking, local storage, embedding storage, and provider-specific branches.
+
+- [ ] **Step 2: Characterize public imports and retrieval output**
+
+Add or update tests proving existing imports from `retriever.py` and `vector_store.py` still work, and that representative query results keep the same order and metadata.
+
+- [ ] **Step 3: Move query processing**
+
+Move query normalization, tokenization, filters, and lightweight scoring helpers into `query_processing.py`; re-export compatibility helpers where tests or callers rely on them.
+
+- [ ] **Step 4: Move retrieval ranking**
+
+Move ranking, dedupe, score combination, and result shaping into `retrieval_ranking.py`.
+
+- [ ] **Step 5: Move vector store implementations**
+
+Move local in-memory/file-backed behavior into `local_vector_store.py`; move embedding-backed/provider-specific behavior into `embedding_vector_store.py`.
+
+- [ ] **Step 6: Keep original modules as facades**
+
+`retriever.py` should coordinate retrieval flow. `vector_store.py` should expose stable public store classes and delegate implementation details.
+
+- [ ] **Step 7: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/rag/test_rag.py tests/rag/test_retrieval_eval.py tests/rag/test_clients.py tests/rag/test_query_processing.py tests/rag/test_vector_store_split.py -q
+python -m compileall -q werewolf_agent/rag
+python -m ruff check werewolf_agent/rag tests/rag --select F401,F841
+git diff --check
+git commit -m "refactor: split rag retrieval storage"
+```
+
+Expected: focused RAG tests pass; no import or syntax regressions.
+
+---
+
+### Task 15: Revisit Agent Adapter Facade
+
+**Files:**
+- Modify: `werewolf_agent/runtime/agent_adapter.py`
+- Candidate create: `werewolf_agent/runtime/agent_dispatch.py`
+- Candidate create: `werewolf_agent/runtime/agent_decision_contract.py`
+- Candidate create: `werewolf_agent/runtime/agent_action_pipeline.py`
+- Test: `tests/runtime/test_agent_adapter.py`
+- Test: `tests/runtime/test_agent_registry.py`
+- Test: `tests/runtime/test_agent_action_audit.py`
+- Test: `tests/runtime/test_agent_reflection_support.py`
+
+- [ ] **Step 1: Inspect remaining responsibilities**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/runtime/agent_adapter.py remaining responsibilities dispatch decision contract action pipeline"
+```
+
+Expected: identify whether the file is a true facade or still owns dispatch, decision validation, and action orchestration.
+
+- [ ] **Step 2: Characterize facade compatibility**
+
+Verify old imports for `AgentRegistry`, `SimpleAgentRegistry`, `_call_agent`, and action adapter helpers remain stable.
+
+- [ ] **Step 3: Split only if responsibilities remain mixed**
+
+Move dispatch-only behavior into `agent_dispatch.py`, action contract normalization into `agent_decision_contract.py`, and multi-step action orchestration into `agent_action_pipeline.py`.
+
+- [ ] **Step 4: Keep `agent_adapter.py` as compatibility entry**
+
+Leave public import paths intact; avoid changing runtime graph callers unless required for explicit dependencies.
+
+- [ ] **Step 5: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/runtime/test_agent_adapter.py tests/runtime/test_agent_registry.py tests/runtime/test_agent_action_audit.py tests/runtime/test_agent_reflection_support.py -q
+python -m compileall -q werewolf_agent/runtime
+python -m ruff check werewolf_agent/runtime/agent_adapter.py werewolf_agent/runtime/agent_dispatch.py werewolf_agent/runtime/agent_decision_contract.py werewolf_agent/runtime/agent_action_pipeline.py --select F401,F841
+git diff --check
+git commit -m "refactor: split remaining agent adapter pipeline"
+```
+
+Expected: either a smaller facade commit or a documented decision that no additional split is justified.
+
+---
+
+### Task 16: Revisit Prompt Builder And Player Agent
+
+**Files:**
+- Modify: `werewolf_agent/agents/prompt_builder.py`
+- Modify: `werewolf_agent/agents/player.py`
+- Candidate create: `werewolf_agent/agents/prompt_composer.py`
+- Candidate create: `werewolf_agent/agents/player_action_flow.py`
+- Candidate create: `werewolf_agent/agents/player_result_mapping.py`
+- Test: `tests/agents/test_prompt_builder.py`
+- Test: `tests/agents/test_prompt_sections.py`
+- Test: `tests/agents/test_player_agent.py`
+- Test: `tests/agents/test_player_generation.py`
+
+- [ ] **Step 1: Re-rank remaining agent files**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/agents/prompt_builder.py werewolf_agent/agents/player.py remaining responsibilities facade coordinator"
+```
+
+Expected: distinguish high-level orchestration from leftover formatting, provider call, retry, and result mapping details.
+
+- [ ] **Step 2: Split prompt composition if still mixed**
+
+Move prompt assembly orchestration into `prompt_composer.py` only if `prompt_builder.py` still mixes section rendering with prompt lifecycle decisions.
+
+- [ ] **Step 3: Split player action flow if still mixed**
+
+Move action flow coordination into `player_action_flow.py`; move response/result mapping into `player_result_mapping.py` if `player.py` still owns those details.
+
+- [ ] **Step 4: Preserve public classes**
+
+Keep `PlayerPromptBuilder` importable from `prompt_builder.py` and `PlayerAgent` importable from `player.py`.
+
+- [ ] **Step 5: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/agents/test_prompt_builder.py tests/agents/test_prompt_sections.py tests/agents/test_prompt_persona.py tests/agents/test_prompt_memory.py tests/agents/test_prompt_strategy.py tests/agents/test_player_agent.py tests/agents/test_player_generation.py -q
+python -m compileall -q werewolf_agent/agents
+python -m ruff check werewolf_agent/agents/prompt_builder.py werewolf_agent/agents/player.py --select F401,F841
+git diff --check
+git commit -m "refactor: slim agent prompt and player facades"
+```
+
+Expected: public prompt/player behavior unchanged.
+
+---
+
+### Task 17: Split Large Role-Specific Runtime Helpers
+
+**Files:**
+- Modify: `werewolf_agent/skills/good_skill_handlers.py`
+- Modify: `werewolf_agent/runtime/nodes/wolf_night_nodes.py`
+- Candidate create: `werewolf_agent/skills/good_claim_handlers.py`
+- Candidate create: `werewolf_agent/skills/good_vote_handlers.py`
+- Candidate create: `werewolf_agent/skills/good_power_handlers.py`
+- Candidate create: `werewolf_agent/runtime/nodes/wolf_discussion.py`
+- Candidate create: `werewolf_agent/runtime/nodes/wolf_consensus.py`
+- Test: `tests/skills/test_good_skill_handlers.py`
+- Test: `tests/runtime/test_wolf_night_nodes.py`
+- Test: `tests/runtime/test_wolf_flow.py`
+
+- [ ] **Step 1: Inspect role helper cohesion**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/skills/good_skill_handlers.py werewolf_agent/runtime/nodes/wolf_night_nodes.py role-specific helper responsibilities"
+```
+
+Expected: identify claim, vote, power-role, wolf discussion, and wolf consensus boundaries.
+
+- [ ] **Step 2: Split good-side skill handlers by intent**
+
+Move claim/counter-claim handlers into `good_claim_handlers.py`, vote pressure handlers into `good_vote_handlers.py`, and power-role protection/search handlers into `good_power_handlers.py`.
+
+- [ ] **Step 3: Split wolf night nodes by phase**
+
+Move discussion/planning helpers into `wolf_discussion.py`; move consensus and fallback target resolution into `wolf_consensus.py`.
+
+- [ ] **Step 4: Preserve compatibility registries and node imports**
+
+Keep existing skill handler registration and node imports working through the old modules.
+
+- [ ] **Step 5: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/skills/test_good_skill_handlers.py tests/skills/test_werewolf_skills.py tests/runtime/test_wolf_night_nodes.py tests/runtime/test_wolf_flow.py -q
+python -m compileall -q werewolf_agent/skills werewolf_agent/runtime/nodes
+python -m ruff check werewolf_agent/skills/good_skill_handlers.py werewolf_agent/runtime/nodes/wolf_night_nodes.py --select F401,F841
+git diff --check
+git commit -m "refactor: split role-specific helper modules"
+```
+
+Expected: handler registry and night graph behavior unchanged.
+
+---
+
+### Task 18: Split Agent Schema Definitions
+
+**Files:**
+- Modify: `werewolf_agent/agents/schemas.py`
+- Candidate create: `werewolf_agent/agents/action_schemas.py`
+- Candidate create: `werewolf_agent/agents/prompt_schemas.py`
+- Candidate create: `werewolf_agent/agents/trace_schemas.py`
+- Test: `tests/agents/test_schemas.py`
+- Test: `tests/agents/test_action_contract.py`
+- Test: `tests/agents/test_trace_builder.py`
+
+- [ ] **Step 1: Inspect schema callers**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/agents/schemas.py classes imports action prompt trace schema callers"
+```
+
+Expected: map each schema group and public import path before moving definitions.
+
+- [ ] **Step 2: Move action schemas**
+
+Move action input/output and validation contract models into `action_schemas.py`.
+
+- [ ] **Step 3: Move prompt schemas**
+
+Move prompt construction and prompt section data models into `prompt_schemas.py`.
+
+- [ ] **Step 4: Move trace schemas**
+
+Move decision trace and audit-facing agent schemas into `trace_schemas.py`.
+
+- [ ] **Step 5: Keep `schemas.py` as public facade**
+
+Re-export old public schema names from `schemas.py` to avoid breaking existing callers.
+
+- [ ] **Step 6: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/agents/test_schemas.py tests/agents/test_action_contract.py tests/agents/test_trace_builder.py -q
+python -m compileall -q werewolf_agent/agents
+python -m ruff check werewolf_agent/agents/schemas.py werewolf_agent/agents/action_schemas.py werewolf_agent/agents/prompt_schemas.py werewolf_agent/agents/trace_schemas.py --select F401,F841
+git diff --check
+git commit -m "refactor: split agent schema groups"
+```
+
+Expected: all schema imports and serialization behavior remain stable.
+
+---
+
+### Task 19: Second-Pass Evaluation Metrics Facade
+
+**Files:**
+- Modify: `werewolf_agent/evaluation/metrics.py`
+- Candidate create: `werewolf_agent/evaluation/metric_aggregation.py`
+- Candidate create: `werewolf_agent/evaluation/metric_reporting.py`
+- Test: `tests/evaluation/test_feedback_metrics.py`
+- Test: `tests/evaluation/test_metrics_split_helpers.py`
+- Test: `tests/evaluation/test_remaining_metrics.py`
+
+- [ ] **Step 1: Inspect remaining metric responsibilities**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/evaluation/metrics.py remaining responsibilities aggregator reporting callers"
+```
+
+Expected: decide whether `metrics.py` is an acceptable facade or still mixes aggregation and report formatting.
+
+- [ ] **Step 2: Move aggregation helpers if needed**
+
+Move cross-metric aggregation and denominator handling into `metric_aggregation.py`.
+
+- [ ] **Step 3: Move reporting helpers if needed**
+
+Move display/report shaping helpers into `metric_reporting.py`.
+
+- [ ] **Step 4: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/evaluation/test_feedback_metrics.py tests/evaluation/test_metrics_split_helpers.py tests/evaluation/test_remaining_metrics.py -q
+python -m compileall -q werewolf_agent/evaluation
+python -m ruff check werewolf_agent/evaluation/metrics.py werewolf_agent/evaluation/metric_aggregation.py werewolf_agent/evaluation/metric_reporting.py --select F401,F841
+git diff --check
+git commit -m "refactor: slim evaluation metrics facade"
+```
+
+Expected: metric values and report payloads remain unchanged.
+
+---
+
+### Task 20: Second-Pass Game Route Facade
+
+**Files:**
+- Modify: `werewolf_agent/api/routes/games.py`
+- Candidate create: `werewolf_agent/api/routes/game_lifecycle.py`
+- Candidate create: `werewolf_agent/api/routes/game_commands.py`
+- Candidate create: `werewolf_agent/api/routes/game_snapshots.py`
+- Test: `tests/api/test_api.py`
+- Test: `tests/api/test_routes.py`
+- Test: `tests/api/test_pause_resume_lock.py`
+- Test: `tests/api/test_game_auth_helpers.py`
+
+- [ ] **Step 1: Inspect route declaration density**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/api/routes/games.py route declarations lifecycle commands snapshots dependencies"
+```
+
+Expected: determine whether route declaration itself should split by lifecycle, command, and snapshot endpoints.
+
+- [ ] **Step 2: Split route groups only if registration remains clear**
+
+Move lifecycle endpoints into `game_lifecycle.py`, command/pause/resume endpoints into `game_commands.py`, and snapshot/share view endpoints into `game_snapshots.py`.
+
+- [ ] **Step 3: Keep router factory stable**
+
+Keep `create_game_router` and any public route registration API stable from `games.py`.
+
+- [ ] **Step 4: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/api/test_api.py tests/api/test_routes.py tests/api/test_pause_resume_lock.py tests/api/test_game_auth_helpers.py tests/api/test_game_persistence_helpers.py -q
+python -m compileall -q werewolf_agent/api
+python -m ruff check werewolf_agent/api/routes/games.py werewolf_agent/api/routes/game_lifecycle.py werewolf_agent/api/routes/game_commands.py werewolf_agent/api/routes/game_snapshots.py --select F401,F841
+git diff --check
+git commit -m "refactor: split game route declarations"
+```
+
+Expected: route table and auth behavior stay unchanged.
+
+---
+
+### Task 21: Second-Pass Model Router Facade
+
+**Files:**
+- Modify: `werewolf_agent/model_gateway/router.py`
+- Candidate create: `werewolf_agent/model_gateway/router_config.py`
+- Candidate create: `werewolf_agent/model_gateway/router_selection.py`
+- Candidate create: `werewolf_agent/model_gateway/router_errors.py`
+- Test: `tests/model_gateway/test_router.py`
+- Test: `tests/model_gateway/test_router_split_helpers.py`
+- Test: `tests/model_gateway/test_empty_response.py`
+- Test: `tests/model_gateway/test_providers.py`
+
+- [ ] **Step 1: Inspect router responsibilities**
+
+Run:
+
+```powershell
+codegraph.cmd explore "werewolf_agent/model_gateway/router.py remaining responsibilities config selection errors provider calls"
+```
+
+Expected: distinguish stable router orchestration from config parsing, provider selection, and error/fallback mapping.
+
+- [ ] **Step 2: Move config helpers if needed**
+
+Move profile/config parsing helpers into `router_config.py`.
+
+- [ ] **Step 3: Move provider selection if needed**
+
+Move provider selection and routing policy helpers into `router_selection.py`.
+
+- [ ] **Step 4: Move error mapping if needed**
+
+Move empty-response, retry exhaustion, and fallback error mapping into `router_errors.py`.
+
+- [ ] **Step 5: Verify and commit**
+
+Run:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/model_gateway/test_router.py tests/model_gateway/test_router_split_helpers.py tests/model_gateway/test_empty_response.py tests/model_gateway/test_providers.py -q
+python -m compileall -q werewolf_agent/model_gateway
+python -m ruff check werewolf_agent/model_gateway/router.py werewolf_agent/model_gateway/router_config.py werewolf_agent/model_gateway/router_selection.py werewolf_agent/model_gateway/router_errors.py --select F401,F841
+git diff --check
+git commit -m "refactor: slim model gateway router facade"
+```
+
+Expected: provider routing, retries, and empty-response fallback behavior unchanged.
 
 ---
 
