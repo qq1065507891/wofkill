@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,7 @@ from werewolf_agent.engine import (
     rule_exile,
     rule_flow,
     rule_last_words,
+    rule_night,
     rule_special_roles,
     rule_victory,
     rule_visibility,
@@ -190,106 +191,19 @@ class RuleEngine:
         poison_target_id: str | None = None,
         seer_target_id: str | None = None,
     ) -> tuple[GameState, list[GameEvent]]:
-        events: list[GameEvent] = []
-        deaths: list[Death] = []
-        antidote_used = state.antidote_used
-        poison_used = state.poison_used
-        batch = f"night_{night_number}"
-        witch_id = next(
-            (pid for pid, p in state.players.items() if p.role == "witch" and p.alive),
-            None,
+        return rule_night.resolve_night(
+            self.ruleset.raw,
+            state,
+            night_number=night_number,
+            wolf_kill_target_id=wolf_kill_target_id,
+            resolve_witch_action_fn=self.resolve_witch_action,
+            validate_alive_target_fn=self._validate_alive_target,
+            check_alignment_fn=self.check_alignment,
+            apply_death_fn=self.apply_death,
+            use_antidote=use_antidote,
+            poison_target_id=poison_target_id,
+            seer_target_id=seer_target_id,
         )
-        if use_antidote or poison_target_id is not None:
-            if witch_id is None:
-                raise ValueError("witch_not_available")
-            witch_result = self.resolve_witch_action(
-                state,
-                witch_id=witch_id,
-                night_number=night_number,
-                wolf_kill_target_id=wolf_kill_target_id,
-                use_antidote=use_antidote,
-                poison_target_id=poison_target_id,
-            )
-            if not witch_result.accepted:
-                raise ValueError(witch_result.error_code or "witch_action_invalid")
-
-        # 1. Wolf kill
-        saved_by_antidote = False
-        if wolf_kill_target_id is not None:
-            self._validate_alive_target(state, wolf_kill_target_id, "wolf_kill_target")
-            wolf_death = Death(
-                player_id=wolf_kill_target_id,
-                reason="wolf_kill",
-                timing="night",
-                resolution_batch=batch,
-            )
-            # 2. Witch antidote
-            if use_antidote and not antidote_used:
-                witch_cfg = self.ruleset.raw["roles"]["witch"]
-                antidote_cfg = witch_cfg["abilities"].get("antidote", {})
-                can_self_save = antidote_cfg.get("can_self_save", False)
-                can_save_first_night = antidote_cfg.get("can_self_save_first_night", False)
-                can_save = (
-                    wolf_kill_target_id != witch_id
-                    or can_self_save
-                    or (can_save_first_night and night_number == 1)
-                )
-                if witch_id is not None and can_save:
-                    saved_by_antidote = True
-                    antidote_used = True
-                    events.append(GameEvent(
-                        type="witch_antidote_used",
-                        payload={"target_id": wolf_kill_target_id, "visibility": "witch_private"},
-                    ))
-            if not saved_by_antidote:
-                deaths.append(wolf_death)
-
-        # 3. Witch poison
-        witch_cfg = self.ruleset.raw["roles"]["witch"]["abilities"]
-        use_both = witch_cfg.get("use_both_potions_same_night", False)
-        if poison_target_id is not None and not poison_used:
-            if not saved_by_antidote or use_both:
-                self._validate_alive_target(state, poison_target_id, "poison_target")
-                poison_used = True
-                deaths.append(Death(
-                    player_id=poison_target_id,
-                    reason="witch_poison",
-                    timing="night",
-                    resolution_batch=batch,
-                ))
-                events.append(GameEvent(
-                    type="witch_poison_used",
-                    payload={"target_id": poison_target_id, "visibility": "witch_private"},
-                ))
-
-        # 4. Seer check (before apply_death so event appears before player_died)
-        if seer_target_id is not None:
-            seer_id = next(
-                (pid for pid, p in state.players.items() if p.role == "seer" and p.alive),
-                None,
-            )
-            if seer_id is not None:
-                alignment_result = self.check_alignment(state, target_id=seer_target_id)
-                # seer_id intentionally omitted from event payload (H-5)
-                # to prevent leaking seer identity through event records.
-                events.append(GameEvent(
-                    type="seer_check",
-                    payload={
-                        "target_id": seer_target_id,
-                        "alignment": alignment_result.alignment,
-                        "night_number": night_number,
-                        "visibility": "seer_only",
-                    },
-                ))
-
-        # Apply deaths
-        new_state = state
-        for death in deaths:
-            new_state = self.apply_death(new_state, death)
-
-        new_state = replace(new_state, antidote_used=antidote_used, poison_used=poison_used)
-
-        return new_state, events
 
     # -- Self-destruct (wolf day action) --
 

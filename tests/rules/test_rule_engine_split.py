@@ -11,12 +11,13 @@ RuleEngine 低风险 helper 拆分后的兼容测试。
 
 from __future__ import annotations
 
-from werewolf_agent.core.models import Death, GameState, PlayerState
+from werewolf_agent.core.models import AlignmentResult, Death, GameState, PlayerState, RuleResult
 from werewolf_agent.engine import (
     rule_death,
     rule_flow,
     rule_exile,
     rule_last_words,
+    rule_night,
     rule_special_roles,
     rule_victory,
     rule_visibility,
@@ -44,6 +45,7 @@ def test_rule_engine_low_risk_helpers_are_available() -> None:
     assert callable(rule_exile.resolve_self_destruct)
     assert callable(rule_death.apply_death)
     assert callable(rule_death.validate_alive_target)
+    assert callable(rule_night.resolve_night)
 
 
 def test_rule_engine_keeps_old_path_behavior_for_split_helpers() -> None:
@@ -333,3 +335,56 @@ def test_death_split_preserves_rule_engine_last_words_and_hunter_override_points
     assert new_state.deaths[-1].triggered_skills == []
     assert new_state.events[-1].payload["can_leave_last_words"] is False
     assert new_state.events[-1].payload["triggered_skills"] == []
+
+
+def test_night_split_preserves_rule_engine_override_points() -> None:
+    class CustomNightEngine(RuleEngine):
+        def __init__(self, ruleset: Ruleset) -> None:
+            super().__init__(ruleset)
+            self.witch_checks = 0
+            self.alignment_checks = 0
+            self.apply_death_calls = 0
+
+        def resolve_witch_action(self, *args, **kwargs) -> RuleResult:
+            self.witch_checks += 1
+            return RuleResult(accepted=True)
+
+        def check_alignment(self, state: GameState, *, target_id: str) -> AlignmentResult:
+            self.alignment_checks += 1
+            return AlignmentResult(alignment="custom_alignment", role=None)
+
+        def apply_death(self, state: GameState, death: Death) -> GameState:
+            self.apply_death_calls += 1
+            return super().apply_death(state, death)
+
+    engine = CustomNightEngine.from_yaml(RULESET_PATH)
+    state = GameState(
+        players={
+            "witch": PlayerState(id="witch", role="witch", alive=True),
+            "seer": PlayerState(id="seer", role="seer", alive=True),
+            "wolf": PlayerState(id="wolf", role="werewolf", alive=True),
+            "v1": PlayerState(id="v1", role="villager", alive=True),
+        },
+    )
+
+    saved_state, events = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id="v1",
+        use_antidote=True,
+        seer_target_id="wolf",
+    )
+    killed_state, _ = engine.resolve_night(
+        state,
+        night_number=1,
+        wolf_kill_target_id="v1",
+    )
+
+    assert engine.witch_checks == 1
+    assert engine.alignment_checks == 1
+    assert engine.apply_death_calls == 1
+    assert saved_state.players["v1"].alive is True
+    assert killed_state.players["v1"].alive is False
+    assert [event.payload["alignment"] for event in events if event.type == "seer_check"] == [
+        "custom_alignment"
+    ]
