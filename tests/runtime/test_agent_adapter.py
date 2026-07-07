@@ -27,13 +27,40 @@ class TestSheriffPickSpeechOrderContract:
         # 旧实现含 model_copy(update={"legal_actions": [...]}) 或类似
         # 排除注释中提及（去掉所有以 # 开头的行）
         code_lines = [
-            line for line in fn_src.splitlines()
+            line
+            for line in fn_src.splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         ]
         code_only = "\n".join(code_lines)
         assert "model_copy" not in code_only or "legal_actions" not in code_only, (
             f"agent_sheriff_pick_speech_order still mutates legal_actions via model_copy:\n{fn_src}"
         )
+
+
+class TestAgentActionPipelineSplit:
+    """Task 15: agent_adapter 应退化为 action pipeline 的兼容 facade。"""
+
+    def test_action_pipeline_exports_are_compatibility_imports(self) -> None:
+        from werewolf_agent.runtime import agent_action_pipeline
+
+        assert agent_adapter.agent_day_vote is agent_action_pipeline.agent_day_vote
+        assert agent_adapter.agent_day_speech is agent_action_pipeline.agent_day_speech
+        assert (
+            agent_adapter.agent_night_witch is agent_action_pipeline.agent_night_witch
+        )
+        assert agent_adapter.agent_sheriff_election_speech is (
+            agent_action_pipeline.agent_sheriff_election_speech
+        )
+
+    def test_facade_patch_propagates_to_action_pipeline(self, monkeypatch) -> None:
+        from werewolf_agent.runtime import agent_action_pipeline
+
+        def fake_build_context(*args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        monkeypatch.setattr(agent_adapter, "build_agent_context", fake_build_context)
+
+        assert agent_action_pipeline.build_agent_context is fake_build_context
 
 
 class TestKillValueAssessmentAdapterContract:
@@ -53,6 +80,7 @@ class TestKillValueAssessmentAdapterContract:
         """
         # 清空 cache 拿到基线
         from werewolf_agent.runtime.strategy import wolf as wolf_strategy
+
         wolf_strategy.clear_kill_value_cache()
 
         from werewolf_agent.core.models import GameState, PlayerState
@@ -70,8 +98,9 @@ class TestKillValueAssessmentAdapterContract:
             night_number=1,
             players=players,
         )
-        legal = [pid for pid, p in gs.players.items()
-                 if p.alive and p.role != "werewolf"]
+        legal = [
+            pid for pid, p in gs.players.items() if p.alive and p.role != "werewolf"
+        ]
 
         # 经由 agent_adapter 的 re-export 调一次
         agent_adapter._evaluate_wolf_kill_target(gs, "p01", legal)
@@ -108,10 +137,17 @@ class TestKillValueAssessmentAdapterContract:
         (或经由 _evaluate_wolf_kill_target 的 re-export) — 不能用本地副本
         或 inline 实现绕开 cache.
         """
-        adapter_src = inspect.getsource(agent_adapter)
+        from werewolf_agent.runtime import wolf_kill_support
+
+        assert agent_adapter._build_wolf_kill_directive is (
+            wolf_kill_support._build_wolf_kill_directive
+        )
+        assert agent_adapter._single_wolf_vote is wolf_kill_support._single_wolf_vote
+
+        support_src = inspect.getsource(wolf_kill_support)
         # 必须至少有 2 处引用 evaluate_wolf_kill_target (导入 + 实际调用)
-        refs = adapter_src.count("evaluate_wolf_kill_target")
+        refs = support_src.count("evaluate_wolf_kill_target")
         assert refs >= 2, (
-            f"agent_adapter should import + call evaluate_wolf_kill_target "
+            f"wolf_kill_support should import + call evaluate_wolf_kill_target "
             f"in at least 2 places (directive + single_wolf_vote), got {refs}"
         )

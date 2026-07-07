@@ -37,7 +37,7 @@
 
 仍未完成:
 
-- [ ] Task 15-21: 下一轮候选模块正式拆分计划
+- [ ] Task 16-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 不执行项:
@@ -51,7 +51,6 @@
 
 下一轮候选池:
 
-- `werewolf_agent/runtime/agent_adapter.py`，1662 行，已拆第一轮 support modules，但仍是最大文件。
 - `werewolf_agent/agents/prompt_builder.py`，1361 行，已拆渲染 helper，需复核是否还能进一步压缩 coordinator。
 - `werewolf_agent/agents/player.py`，1037 行，已拆 pipeline helper，需复核 `PlayerAgent` 生命周期边界。
 - `werewolf_agent/skills/good_skill_handlers.py`，933 行，下一轮可按好人技能职责继续拆。
@@ -64,6 +63,7 @@
 已完成候选:
 
 - `werewolf_agent/rag/retriever.py` / `werewolf_agent/rag/vector_store.py`，Task 11.8 / Task 14 已拆分为 `query_processing.py`、`retrieval_ranking.py`、`local_vector_store.py`、`embedding_vector_store.py`，旧模块保留兼容 facade。
+- `werewolf_agent/runtime/agent_adapter.py`，Task 15 已拆分为 `agent_action_pipeline.py`，旧模块保留兼容 facade；`agent_dispatch.py` / `agent_decision_contract.py` 本轮未创建，因为未识别出足够独立的清晰边界。
 
 ## 拆分原则
 
@@ -1044,15 +1044,15 @@ Expected: focused RAG tests pass; no import or syntax regressions.
 
 **Files:**
 - Modify: `werewolf_agent/runtime/agent_adapter.py`
-- Candidate create: `werewolf_agent/runtime/agent_dispatch.py`
-- Candidate create: `werewolf_agent/runtime/agent_decision_contract.py`
-- Candidate create: `werewolf_agent/runtime/agent_action_pipeline.py`
+- Candidate not created: `werewolf_agent/runtime/agent_dispatch.py`
+- Candidate not created: `werewolf_agent/runtime/agent_decision_contract.py`
+- Create: `werewolf_agent/runtime/agent_action_pipeline.py`
 - Test: `tests/runtime/test_agent_adapter.py`
 - Test: `tests/runtime/test_agent_registry.py`
 - Test: `tests/runtime/test_agent_action_audit.py`
 - Test: `tests/runtime/test_agent_reflection_support.py`
 
-- [ ] **Step 1: Inspect remaining responsibilities**
+- [x] **Step 1: Inspect remaining responsibilities**
 
 Run:
 
@@ -1062,31 +1062,53 @@ codegraph.cmd explore "werewolf_agent/runtime/agent_adapter.py remaining respons
 
 Expected: identify whether the file is a true facade or still owns dispatch, decision validation, and action orchestration.
 
-- [ ] **Step 2: Characterize facade compatibility**
+- [x] 2026-07-07 result: `agent_adapter.py` still owned the runtime action adapter pipeline (`agent_night_*`, wolf discussion/consensus, day speech/vote, sheriff actions, hybrid/last-words/badge/hunter paths). No clean standalone dispatch or decision-contract boundary was identified in this pass.
+
+- [x] **Step 2: Characterize facade compatibility**
 
 Verify old imports for `AgentRegistry`, `SimpleAgentRegistry`, `_call_agent`, and action adapter helpers remain stable.
 
-- [ ] **Step 3: Split only if responsibilities remain mixed**
+- [x] 2026-07-07 result: added characterization tests for facade-to-pipeline identity and adapter monkeypatch propagation; kept wolf kill helper compatibility through `wolf_kill_support` re-exports.
+
+- [x] **Step 3: Split only if responsibilities remain mixed**
 
 Move dispatch-only behavior into `agent_dispatch.py`, action contract normalization into `agent_decision_contract.py`, and multi-step action orchestration into `agent_action_pipeline.py`.
 
-- [ ] **Step 4: Keep `agent_adapter.py` as compatibility entry**
+- [x] 2026-07-07 result: moved the concrete multi-step action orchestration into `agent_action_pipeline.py`; did not create `agent_dispatch.py` or `agent_decision_contract.py` because doing so would have produced speculative/empty modules.
+
+- [x] **Step 4: Keep `agent_adapter.py` as compatibility entry**
 
 Leave public import paths intact; avoid changing runtime graph callers unless required for explicit dependencies.
 
-- [ ] **Step 5: Verify and commit**
+- [x] 2026-07-07 result: `agent_adapter.py` now re-exports the old symbols from `agent_action_pipeline.py`, delegates unknown compatibility symbols via `__getattr__`, and propagates facade monkeypatches back into the pipeline module.
+
+- [x] **Step 5: Verify and commit**
 
 Run:
 
 ```powershell
 python -m pytest -n 0 --basetemp .tmp tests/runtime/test_agent_adapter.py tests/runtime/test_agent_registry.py tests/runtime/test_agent_action_audit.py tests/runtime/test_agent_reflection_support.py -q
 python -m compileall -q werewolf_agent/runtime
-python -m ruff check werewolf_agent/runtime/agent_adapter.py werewolf_agent/runtime/agent_dispatch.py werewolf_agent/runtime/agent_decision_contract.py werewolf_agent/runtime/agent_action_pipeline.py --select F401,F841
+python -m ruff check werewolf_agent/runtime/agent_adapter.py werewolf_agent/runtime/agent_action_pipeline.py tests/runtime/test_agent_adapter.py --select F401,F841
 git diff --check
-git commit -m "refactor: split remaining agent adapter pipeline"
+git commit -m "refactor: split agent adapter action pipeline"
 ```
 
 Expected: either a smaller facade commit or a documented decision that no additional split is justified.
+
+2026-07-07 verification:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/runtime/test_agent_adapter.py -q
+python -m pytest -n 0 --basetemp .tmp tests/runtime/test_agent_adapter.py tests/runtime/test_agent_registry.py tests/runtime/test_agent_action_audit.py tests/runtime/test_agent_reflection_support.py -q
+python -m pytest -n 0 --basetemp .tmp tests/runtime/test_agent_adapter.py tests/runtime/test_witch_flow.py tests/runtime/test_night_flow.py tests/runtime/test_day_discussion.py tests/runtime/test_vote_flow.py tests/runtime/test_pk_flow.py tests/runtime/test_sheriff_flow.py tests/runtime/test_hunter_flow.py tests/runtime/test_strategy_directives.py -q
+python -m compileall -q werewolf_agent/runtime
+python -m ruff check werewolf_agent/runtime/agent_adapter.py werewolf_agent/runtime/agent_action_pipeline.py tests/runtime/test_agent_adapter.py --select F401,F841
+git diff --check
+compatibility import probe for 28 `agent_adapter` symbols
+```
+
+All listed commands returned exit code 0; broad runtime impact set covered 254 tests; compatibility probe reported `OK 28 agent_adapter compatibility names`.
 
 ---
 
