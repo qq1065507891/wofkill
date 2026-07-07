@@ -89,6 +89,25 @@ class TestAgentActionPipelineSplit:
                 agent_wolf_actions, export_name
             )
 
+    def test_special_action_exports_are_compatibility_imports(self) -> None:
+        from werewolf_agent.runtime import agent_action_pipeline, agent_special_actions
+
+        special_exports = (
+            "agent_night_witch",
+            "agent_night_seer",
+            "agent_hybrid_choose_master",
+            "agent_badge_decision",
+            "agent_hunter_shot",
+        )
+
+        for export_name in special_exports:
+            assert getattr(agent_action_pipeline, export_name) is getattr(
+                agent_special_actions, export_name
+            )
+            assert getattr(agent_adapter, export_name) is getattr(
+                agent_special_actions, export_name
+            )
+
     def test_facade_patch_propagates_to_action_pipeline(self, monkeypatch) -> None:
         from werewolf_agent.runtime import (
             agent_action_pipeline,
