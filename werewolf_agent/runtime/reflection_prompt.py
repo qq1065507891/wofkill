@@ -1,17 +1,10 @@
 # -*- coding: utf-8 -*-
-# 旧自动文件头已合并到下方模块文档字符串。
-# 模块: reflection_prompt
-# 作者: Mike
-# 创建日期: 2025-01-15
-# 修改日期: 2026-07-05
-
-
 """
 按角色阵营生成赛后复盘提示词。
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-05
+修改日期: 2026-07-07
 
 使用示例:
     >>> from werewolf_agent.runtime.reflection_prompt import build_reflection_prompt

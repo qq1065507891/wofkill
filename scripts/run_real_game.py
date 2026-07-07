@@ -1,9 +1,12 @@
-"""Run a real 12-player werewolf game with LLM agents.
+# -*- coding: utf-8 -*-
+"""
+运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
-Usage:
-    python scripts/run_real_game.py [--seed 42] [--max-steps 500] [--timeout 120]
+作者: Project contributors
+修改日期: 2026-07-07
 
-Requires .env with ANTHROPIC_API_KEY (or GLM_API_KEY) configured.
+使用示例:
+    python scripts/run_real_game.py --seed 42 --max-steps 500
 """
 
 from __future__ import annotations
@@ -31,14 +34,13 @@ logging.basicConfig(
         logging.FileHandler(ROOT / "game_stdout.log", encoding="utf-8"),
     ],
 )
-# Game-step detail: graph module at DEBUG so role assignments, night actions,
-# speeches, votes, etc. are all visible. Suppress noisy httpx.
+# 打开游戏步骤细节，便于观察身份分配、夜晚行动、发言和投票；压低 httpx 噪声。
 logging.getLogger("werewolf_agent.runtime.nodes").setLevel(logging.DEBUG)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("real_game")
 
 
-# ── helpers ──────────────────────────────────────────────────────────────
+# ── 辅助函数 ─────────────────────────────────────────────────────────────
 
 def _format_api_key_status(api_key: str) -> str:
     return "configured" if api_key else "missing"
@@ -57,7 +59,7 @@ def _role_of(runner: GameRunner, pid: str) -> str:
     return p.role if p else "?"
 
 
-# ── summary ──────────────────────────────────────────────────────────────
+# ── 游戏摘要 ─────────────────────────────────────────────────────────────
 
 def print_game_summary(runner: GameRunner) -> None:
     gs = runner.state
@@ -85,7 +87,7 @@ def print_game_summary(runner: GameRunner) -> None:
     print(f"  Antidote used:  {gs.antidote_used}")
     print(f"  Poison used:    {gs.poison_used}")
 
-    # Last 30 events
+    # 最近 30 个事件
     print(f"\n  Events ({len(gs.events)} total, last 30):")
     for ev in gs.events[-30:]:
         vis = ev.payload.get("visibility", "public") if ev.payload else ""

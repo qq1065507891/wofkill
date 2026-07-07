@@ -1,21 +1,13 @@
-"""离线 belief 对比: P0/P1 belief 改动对「狼/好人区分度」的影响。
+# -*- coding: utf-8 -*-
+"""
+离线对比 belief 改动对狼人与好人区分度的影响。
 
-直接在 belief 层度量 (不经过 possible_worlds——12 人下 worlds 的 max_candidates=500
-远小于 ~83 万组合, 枚举截断主导, 不反映 belief 质量):
+作者: Project contributors
+修改日期: 2026-07-07
 
-  trust_sep           = avg(真好人 trust) - avg(真狼 trust);   越高 = 越能区分
-  wolf_suspect_recall = 真狼被标 suspect 的比例;              越高 = 抓狼越准
-  good_false_suspect  = 真好人被误标 suspect 的比例;          越低 = 误伤越少
-
-suspect 定义: faction_lean=='wolf_lean' or trust<0.35
-
-baseline (P0/P1 前) vs treatment (当前) 对比:
-  # treatment
-  python scripts/offline_belief_worlds_compare.py
-  # baseline
-  git stash push werewolf_agent/cognition/belief.py
-  python scripts/offline_belief_worlds_compare.py
-  git stash pop
+使用示例:
+    >>> import scripts.offline_belief_worlds_compare
+    >>> scripts.offline_belief_worlds_compare.ALL_PLAYERS
 """
 from __future__ import annotations
 

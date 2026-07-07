@@ -1,13 +1,12 @@
-"""Verify Ark text_json mode works: no response_format, model returns parseable JSON.
+# -*- coding: utf-8 -*-
+"""
+验证 Ark text_json 模式能返回可解析 JSON。
 
-This mirrors what the openai provider sends under structured_output.mode=text_json
-(openai.py: no response_format branch matches, so the payload is plain messages).
-Run after switching ark profiles to text_json to confirm the 400 is gone.
+作者: Project contributors
+修改日期: 2026-07-07
 
-Usage:
-    python scripts/verify_ark_text_json.py
-    python scripts/verify_ark_text_json.py --model minimax-m2.7
-    python scripts/verify_ark_text_json.py --all   # probe all 4 ark models
+使用示例:
+    python scripts/verify_ark_text_json.py --all
 """
 
 from __future__ import annotations

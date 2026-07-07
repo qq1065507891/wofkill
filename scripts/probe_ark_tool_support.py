@@ -1,7 +1,12 @@
-"""Probe Ark (Volcengine) OpenAI-compatible tool-call behavior.
+# -*- coding: utf-8 -*-
+"""
+探测 Ark OpenAI 兼容接口的工具调用返回行为。
 
-This script makes small real API calls and reports whether each model returns
-OpenAI-style ``tool_calls`` or only plain text JSON. It never prints API keys.
+作者: Project contributors
+修改日期: 2026-07-07
+
+使用示例:
+    python scripts/probe_ark_tool_support.py --only auto
 """
 
 from __future__ import annotations

@@ -1,4 +1,13 @@
-"""Analyze recent saved game logs with balance guardrails."""
+# -*- coding: utf-8 -*-
+"""
+分析近期保存的游戏日志并输出平衡性审计报告。
+
+作者: Project contributors
+修改日期: 2026-07-07
+
+使用示例:
+    python scripts/analyze_recent_balance.py game.json
+"""
 
 from __future__ import annotations
 

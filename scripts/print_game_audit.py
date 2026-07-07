@@ -1,16 +1,12 @@
-"""Render a saved game JSON as a detailed audit report.
+# -*- coding: utf-8 -*-
+"""
+将保存的游戏 JSON 渲染为便于人工检查的详细审计报告。
 
-The report expands player action traces so a human can inspect what the model
-actually returned, which action was used, and whether fallback logic intervened.
+作者: Project contributors
+修改日期: 2026-07-07
 
-Includes structured sections for:
-  - Judge timeline broadcasts
-  - Public speeches
-  - Wolf private chat
-  - Wolf plan evidence
-  - Votes and vote basis
-  - Witch/seer/hunter private actions
-  - Fallback/retry summary
+使用示例:
+    python scripts/print_game_audit.py game.json
 """
 
 from __future__ import annotations

@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+"""
+迁移并清理 Reflection Memory V2 的历史快照边界数据。
+
+作者: Project contributors
+修改日期: 2026-07-07
+
+使用示例:
+    python scripts/migrate_reflection_memory_v2.py --backend postgres
+"""
+
 from __future__ import annotations
 
 import argparse

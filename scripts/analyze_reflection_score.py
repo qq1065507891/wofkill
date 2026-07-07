@@ -1,9 +1,13 @@
-"""Task 4 分析脚本:演算 1b(allowlist + parser + merge)注入 LLM mistakes 后,
-ReflectionQualityGate 能否把高质量反思推过 approved(>=0.70)。
+# -*- coding: utf-8 -*-
+"""
+分析 ReflectionQualityGate 对模拟复盘内容的评分结果。
 
-不调用 LLM,不写库,不改生产逻辑。只构造代表性 LLM self-review(模拟
-真实输出,字数覆盖数据库 g_1416328333 的 51-609 字区间) + ReviewReport,
-跑真实 ReflectionSynthesizer + ReflectionQualityGate,输出 score 分解表。
+作者: Project contributors
+修改日期: 2026-07-07
+
+使用示例:
+    >>> import scripts.analyze_reflection_score
+    >>> scripts.analyze_reflection_score.PLUS_ITEMS
 """
 
 from __future__ import annotations

@@ -1,11 +1,12 @@
-"""Clear all persistent game memory from PostgreSQL.
+# -*- coding: utf-8 -*-
+"""
+清空 PostgreSQL 中的游戏、RAG 和记忆快照持久化数据。
 
-Usage:
-    python scripts/clear_memory.py
-    python scripts/clear_memory.py --yes  # skip confirmation
+作者: Project contributors
+修改日期: 2026-07-07
 
-Connects to the same database as run_real_game.py and truncates all
-game, RAG, and memory snapshot tables.
+使用示例:
+    python scripts/clear_memory.py --yes
 """
 
 from __future__ import annotations

@@ -1,17 +1,10 @@
 # -*- coding: utf-8 -*-
-# 旧自动文件头已合并到下方模块文档字符串。
-# 模块: context_public_summary
-# 作者: Mike
-# 创建日期: 2025-01-15
-# 修改日期: 2026-07-05
-
-
 """
 为玩家上下文构建公开时间线摘要和近期发言记录。
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-05
+修改日期: 2026-07-07
 
 使用示例:
     >>> from werewolf_agent.runtime.context_public_summary import build_public_summary

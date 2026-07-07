@@ -1,10 +1,12 @@
-"""Run one real-game-style PlayerAgent call through the configured model router.
+# -*- coding: utf-8 -*-
+"""
+通过真实游戏路由执行一次 PlayerAgent 调用探针。
 
-This is a minimal live probe for the same path used by real games:
-ModelRouter.from_yaml(..., register_env_providers=True) -> PlayerAgent.act().
-It calls the configured model for one player/task and prints whether the result
-was a real PlayerAction or a fallback. API keys are loaded from .env but never
-printed.
+作者: Project contributors
+修改日期: 2026-07-07
+
+使用示例:
+    python scripts/probe_real_game_baidu_action.py --task sheriff_registration
 """
 
 from __future__ import annotations
