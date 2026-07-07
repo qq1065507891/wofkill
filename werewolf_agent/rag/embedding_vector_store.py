@@ -89,10 +89,14 @@ class EmbeddingVectorStore:
         except ImportError:
             pass
 
+    def _text_to_embedding(self, text: str) -> list[float]:
+        """返回当前实现使用的 embedding，供兼容 shim 覆盖。"""
+        return _text_to_embedding(text, self._dim)
+
     def add(self, doc_id: str, text: str, metadata: dict[str, Any]) -> None:
         if doc_id in self._docs:
             self.delete(doc_id)
-        embedding = _text_to_embedding(text, self._dim)
+        embedding = self._text_to_embedding(text)
         self._docs[doc_id] = {
             "doc_id": doc_id,
             "text": text,
@@ -104,7 +108,7 @@ class EmbeddingVectorStore:
     def query(self, query_text: str, top_k: int = 5) -> list[dict[str, Any]]:
         if not self._docs:
             return []
-        query_emb = _text_to_embedding(query_text, self._dim)
+        query_emb = self._text_to_embedding(query_text)
         scored: list[tuple[float, str]] = []
         for doc_id, doc_emb in self._embeddings.items():
             score = self._cosine_similarity(query_emb, doc_emb)

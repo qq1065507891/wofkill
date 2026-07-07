@@ -17,7 +17,7 @@ def test_local_vector_store_reexport_preserves_basic_query_behavior() -> None:
     from werewolf_agent.rag.local_vector_store import LocalVectorStore as SplitLocalVectorStore
     from werewolf_agent.rag.vector_store import LocalVectorStore as LegacyLocalVectorStore
 
-    assert LegacyLocalVectorStore is SplitLocalVectorStore
+    assert issubclass(LegacyLocalVectorStore, SplitLocalVectorStore)
 
     store = SplitLocalVectorStore()
     store.add("doc1", "预言家 查验 策略", {"role": "seer"})
@@ -40,7 +40,7 @@ def test_embedding_vector_store_reexport_preserves_hash_embedding_behavior() -> 
         _text_to_embedding as legacy_text_to_embedding,
     )
 
-    assert LegacyEmbeddingVectorStore is SplitEmbeddingVectorStore
+    assert issubclass(LegacyEmbeddingVectorStore, SplitEmbeddingVectorStore)
     assert legacy_text_to_embedding is split_text_to_embedding
 
     emb1 = split_text_to_embedding("预言家查验狼人")
@@ -58,3 +58,40 @@ def test_embedding_vector_store_reexport_preserves_hash_embedding_behavior() -> 
 
     assert results
     assert results[0]["doc_id"] == "seer"
+
+
+def test_legacy_vector_store_tokenize_monkeypatch_reaches_local_store(
+    monkeypatch,
+) -> None:
+    import werewolf_agent.rag.vector_store as vector_store
+
+    monkeypatch.setattr(vector_store, "_tokenize", lambda text: ["patched"])
+
+    store = vector_store.LocalVectorStore()
+    store.add("doc1", "alpha", {"source": "patched"})
+    results = store.query("beta", top_k=1)
+
+    assert results
+    assert results[0]["doc_id"] == "doc1"
+
+
+def test_legacy_vector_store_embedding_monkeypatch_reaches_embedding_store(
+    monkeypatch,
+) -> None:
+    import werewolf_agent.rag.vector_store as vector_store
+
+    calls: list[tuple[str, int]] = []
+
+    def fake_embedding(text: str, dim: int = 128) -> list[float]:
+        calls.append((text, dim))
+        return [1.0] + [0.0] * (dim - 1)
+
+    monkeypatch.setattr(vector_store, "_text_to_embedding", fake_embedding)
+
+    store = vector_store.EmbeddingVectorStore(dim=4)
+    store.add("doc1", "alpha", {})
+    results = store.query("beta", top_k=1)
+
+    assert results
+    assert results[0]["doc_id"] == "doc1"
+    assert calls == [("alpha", 4), ("beta", 4)]

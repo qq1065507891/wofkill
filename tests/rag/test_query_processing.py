@@ -58,3 +58,27 @@ def test_role_phase_matches_new_module_matches_legacy_retriever_export() -> None
     assert legacy_match(query, matching) == new_match(query, matching)
     assert new_match(query, mismatching) is False
     assert legacy_match(query, mismatching) == new_match(query, mismatching)
+
+
+def test_legacy_retriever_quality_order_rebind_affects_priority() -> None:
+    import werewolf_agent.rag.retriever as retriever
+
+    original = retriever._QUALITY_ORDER
+    try:
+        retriever._QUALITY_ORDER = {}
+
+        assert retriever._quality_priority(QualityGrade.PRO_MATCH, entry_id="q") == 0
+    finally:
+        retriever._QUALITY_ORDER = original
+
+
+def test_legacy_retriever_case_type_priority_rebind_affects_priority() -> None:
+    import werewolf_agent.rag.retriever as retriever
+
+    original = retriever._CASE_TYPE_PRIORITY
+    try:
+        retriever._CASE_TYPE_PRIORITY = {}
+
+        assert retriever._case_type_priority(CaseType.ROLE_STRATEGY, entry_id="c") == 0
+    finally:
+        retriever._CASE_TYPE_PRIORITY = original

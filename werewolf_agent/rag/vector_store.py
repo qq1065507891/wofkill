@@ -18,9 +18,9 @@ from werewolf_agent.rag.embedding_vector_store import (
     _EMBEDDING_DIM,
     _hash_ngram,
     _text_to_embedding,
-    EmbeddingVectorStore,
+    EmbeddingVectorStore as _SplitEmbeddingVectorStore,
 )
-from werewolf_agent.rag.local_vector_store import LocalVectorStore
+from werewolf_agent.rag.local_vector_store import LocalVectorStore as _SplitLocalVectorStore
 from werewolf_agent.rag.query_processing import _tokenize
 
 
@@ -40,6 +40,24 @@ class VectorStore(Protocol):
     def query(self, query_text: str, top_k: int = 5) -> list[dict[str, Any]]: ...
     def delete(self, doc_id: str) -> None: ...
     def count(self) -> int: ...
+
+
+class LocalVectorStore(_SplitLocalVectorStore):
+    """旧 ``vector_store`` 导入路径的兼容子类。"""
+
+    def _tokenize(self, text: str) -> list[str]:
+        # 通过旧模块全局名查找，保留 monkeypatch.setattr(vector_store, "_tokenize", ...)
+        # 对 LocalVectorStore.add/query 的历史影响。
+        return _tokenize(text)
+
+
+class EmbeddingVectorStore(_SplitEmbeddingVectorStore):
+    """旧 ``vector_store`` 导入路径的兼容子类。"""
+
+    def _text_to_embedding(self, text: str) -> list[float]:
+        # 通过旧模块全局名查找，保留 monkeypatch.setattr(vector_store, "_text_to_embedding", ...)
+        # 对 EmbeddingVectorStore.add/query 的历史影响。
+        return _text_to_embedding(text, self._dim)
 
 
 # ---------------------------------------------------------------------------

@@ -34,10 +34,14 @@ class LocalVectorStore:
         self._doc_freq: dict[str, int] = {}
         self._total_docs = 0
 
+    def _tokenize(self, text: str) -> list[str]:
+        """返回当前实现使用的 tokenizer，供兼容 shim 覆盖。"""
+        return _tokenize(text)
+
     def add(self, doc_id: str, text: str, metadata: dict[str, Any]) -> None:
         if doc_id in self._docs:
             self.delete(doc_id)
-        tokens = _tokenize(text)
+        tokens = self._tokenize(text)
         tf: dict[str, float] = {}
         for t in tokens:
             tf[t] = tf.get(t, 0) + 1
@@ -59,7 +63,7 @@ class LocalVectorStore:
     def query(self, query_text: str, top_k: int = 5) -> list[dict[str, Any]]:
         if not self._docs:
             return []
-        query_tokens = set(_tokenize(query_text))
+        query_tokens = set(self._tokenize(query_text))
         if not query_tokens:
             return []
 

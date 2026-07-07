@@ -11,19 +11,21 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
+from werewolf_agent.rag import retrieval_ranking as _ranking
 from werewolf_agent.rag.retrieval_ranking import (
     _CASE_TYPE_PRIORITY,
     _DISPLAY_CASE_TYPE_LABELS,
     _DISPLAY_QUALITY_LABELS,
     _DISPLAY_SOURCE_LABELS,
     _QUALITY_ORDER,
-    _case_type_priority,
-    _quality_priority,
     _sigmoid,
     role_phase_matches,
 )
 from werewolf_agent.rag.schemas import (
+    CaseType,
+    QualityGrade,
     RAGEntry,
     RAGHit,
     RAGQuery,
@@ -33,6 +35,24 @@ from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
 
 logger = logging.getLogger(__name__)
+
+
+def _quality_priority(grade: QualityGrade, *, entry_id: str = "") -> int:
+    """旧 retriever 路径的 priority 兼容入口。"""
+    return _ranking.quality_priority_from_order(
+        grade,
+        _QUALITY_ORDER,
+        entry_id=entry_id,
+    )
+
+
+def _case_type_priority(case_type: CaseType, *, entry_id: str = "") -> int:
+    """旧 retriever 路径的 priority 兼容入口。"""
+    return _ranking.case_type_priority_from_order(
+        case_type,
+        _CASE_TYPE_PRIORITY,
+        entry_id=entry_id,
+    )
 
 
 def _tokenize_situation(situation: str) -> set[str]:

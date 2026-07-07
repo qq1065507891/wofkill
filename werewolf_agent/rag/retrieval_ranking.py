@@ -71,7 +71,17 @@ _QUALITY_ORDER: dict[QualityGrade, int] = {
 
 def _quality_priority(grade: QualityGrade, *, entry_id: str = "") -> int:
     """Return the priority for a QualityGrade, warning on missing."""
-    priority = _QUALITY_ORDER.get(grade)
+    return quality_priority_from_order(grade, _QUALITY_ORDER, entry_id=entry_id)
+
+
+def quality_priority_from_order(
+    grade: QualityGrade,
+    order: dict[QualityGrade, int],
+    *,
+    entry_id: str = "",
+) -> int:
+    """按给定映射计算 QualityGrade 优先级，供旧模块兼容入口复用。"""
+    priority = order.get(grade)
     if priority is None:
         logger.warning(
             "RAG entry '%s' has quality_grade='%s' which is "
@@ -95,7 +105,21 @@ _CASE_TYPE_PRIORITY: dict[CaseType, int] = {
 
 def _case_type_priority(case_type: CaseType, *, entry_id: str = "") -> int:
     """Return the priority for a CaseType, warning on missing."""
-    priority = _CASE_TYPE_PRIORITY.get(case_type)
+    return case_type_priority_from_order(
+        case_type,
+        _CASE_TYPE_PRIORITY,
+        entry_id=entry_id,
+    )
+
+
+def case_type_priority_from_order(
+    case_type: CaseType,
+    order: dict[CaseType, int],
+    *,
+    entry_id: str = "",
+) -> int:
+    """按给定映射计算 CaseType 优先级，供旧模块兼容入口复用。"""
+    priority = order.get(case_type)
     if priority is None:
         logger.warning(
             "RAG entry '%s' has case_type='%s' which is "
