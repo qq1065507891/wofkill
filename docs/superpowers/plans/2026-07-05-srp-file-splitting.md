@@ -1209,9 +1209,11 @@ codegraph.cmd explore "werewolf_agent/skills/good_skill_handlers.py werewolf_age
 
 Expected: identify claim, vote, power-role, wolf discussion, and wolf consensus boundaries.
 
-- [ ] **Step 2: Split good-side skill handlers by intent**
+- [x] **Step 2: Split good-side skill handlers by intent**
 
 Move claim/counter-claim handlers into `good_claim_handlers.py`, vote pressure handlers into `good_vote_handlers.py`, and power-role protection/search handlers into `good_power_handlers.py`.
+
+2026-07-07 result: split `good_skill_handlers.py` into `good_claim_handlers.py`, `good_vote_handlers.py`, and `good_power_handlers.py`; kept `good_skill_handlers.py` as a compatibility facade so existing `werewolf_skills` imports and handler registration remain stable.
 
 - [ ] **Step 3: Split wolf night nodes by phase**
 
@@ -1234,6 +1236,18 @@ git commit -m "refactor: split role-specific helper modules"
 ```
 
 Expected: handler registry and night graph behavior unchanged.
+
+2026-07-07 partial verification for Step 2:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/skills/test_good_skill_handlers.py -q
+python -m pytest -n 0 --basetemp .tmp tests/skills/test_good_skill_handlers.py tests/skills/test_werewolf_skills.py -q
+python -m compileall -q werewolf_agent/skills
+python -m ruff check werewolf_agent/skills/good_skill_handlers.py werewolf_agent/skills/good_claim_handlers.py werewolf_agent/skills/good_vote_handlers.py werewolf_agent/skills/good_power_handlers.py --select F401,F841
+git diff --check
+```
+
+All listed Step 2 commands returned exit code 0. Task 17 remains open for wolf night node splitting.
 
 ---
 
