@@ -37,7 +37,7 @@
 
 仍未完成:
 
-- [ ] Task 18-21: 下一轮候选模块正式拆分计划
+- [ ] Task 19-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 不执行项:
@@ -51,7 +51,6 @@
 
 下一轮候选池:
 
-- `werewolf_agent/agents/schemas.py`，759 行，候选为 action/prompt/trace schema 分组。
 - `werewolf_agent/evaluation/metrics.py`，742 行，已拆第一轮 metric helper，需判断是否保留聚合 facade。
 - `werewolf_agent/api/routes/games.py`，697 行，已拆 route helper，需判断 route declaration 是否还过重。
 - `werewolf_agent/model_gateway/router.py`，651 行，已拆 provider/retry/usage helper，需判断 router 是否仍承担过多。
@@ -62,6 +61,7 @@
 - `werewolf_agent/runtime/agent_adapter.py`，Task 15 已拆分为 `agent_action_pipeline.py`，旧模块保留兼容 facade；`agent_dispatch.py` / `agent_decision_contract.py` 本轮未创建，因为未识别出足够独立的清晰边界。
 - `werewolf_agent/agents/prompt_builder.py` / `werewolf_agent/agents/player.py`，Task 16 已拆分为 `prompt_composer.py` 和 `player_action_flow.py`；`player_result_mapping.py` 本轮未创建，因为成功/失败映射仍紧贴 action flow 的 retry 状态。
 - `werewolf_agent/skills/good_skill_handlers.py` / `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，Task 17 已拆分为 `good_claim_handlers.py`、`good_vote_handlers.py`、`good_power_handlers.py`、`wolf_discussion.py`、`wolf_consensus.py`，旧模块保留兼容 facade。
+- `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
 
 ## 拆分原则
 
@@ -1277,7 +1277,7 @@ All listed final Task 17 commands returned exit code 0.
 - Test: `tests/agents/test_action_contract.py`
 - Test: `tests/agents/test_trace_builder.py`
 
-- [ ] **Step 1: Inspect schema callers**
+- [x] **Step 1: Inspect schema callers**
 
 Run:
 
@@ -1287,23 +1287,33 @@ codegraph.cmd explore "werewolf_agent/agents/schemas.py classes imports action p
 
 Expected: map each schema group and public import path before moving definitions.
 
-- [ ] **Step 2: Move action schemas**
+2026-07-07 result: CodeGraph and AST inspection mapped action, prompt, and trace schema groups; baseline schema tests passed before moving definitions.
+
+- [x] **Step 2: Move action schemas**
 
 Move action input/output and validation contract models into `action_schemas.py`.
 
-- [ ] **Step 3: Move prompt schemas**
+2026-07-07 result: moved action enum/model variants, `JudgeBroadcast`, `FallbackAction`, and `WolfTeamPlan` into `action_schemas.py`.
+
+- [x] **Step 3: Move prompt schemas**
 
 Move prompt construction and prompt section data models into `prompt_schemas.py`.
 
-- [ ] **Step 4: Move trace schemas**
+2026-07-07 result: moved `TaskType`, `OutputMode`, and `AgentContext` into `prompt_schemas.py`.
+
+- [x] **Step 4: Move trace schemas**
 
 Move decision trace and audit-facing agent schemas into `trace_schemas.py`.
 
-- [ ] **Step 5: Keep `schemas.py` as public facade**
+2026-07-07 result: moved `ActionTrace`, `PrivateIntent`, `FactionGoal`, `RiskFlag`, and `RetryInfo` into `trace_schemas.py`.
+
+- [x] **Step 5: Keep `schemas.py` as public facade**
 
 Re-export old public schema names from `schemas.py` to avoid breaking existing callers.
 
-- [ ] **Step 6: Verify and commit**
+2026-07-07 result: `schemas.py` now re-exports old public names from the split modules; `tests/agents/test_schemas.py` covers new module import identity without splitting the test directory.
+
+- [x] **Step 6: Verify and commit**
 
 Run:
 
@@ -1316,6 +1326,17 @@ git commit -m "refactor: split agent schema groups"
 ```
 
 Expected: all schema imports and serialization behavior remain stable.
+
+2026-07-07 final verification:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/agents/test_schemas.py tests/agents/test_action_contract.py tests/agents/test_trace_builder.py -q
+python -m compileall -q werewolf_agent/agents
+python -m ruff check werewolf_agent/agents/schemas.py werewolf_agent/agents/action_schemas.py werewolf_agent/agents/prompt_schemas.py werewolf_agent/agents/trace_schemas.py --select F401,F841
+git diff --check
+```
+
+All listed Task 18 commands returned exit code 0.
 
 ---
 

@@ -10,6 +10,8 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 from pydantic import ValidationError
 
@@ -42,6 +44,20 @@ from werewolf_agent.agents.player import (
 # ---------------------------------------------------------------------------
 # Schema validation tests
 # ---------------------------------------------------------------------------
+
+
+def test_schema_groups_remain_compatibly_importable() -> None:
+    action_schemas = importlib.import_module("werewolf_agent.agents.action_schemas")
+    prompt_schemas = importlib.import_module("werewolf_agent.agents.prompt_schemas")
+    trace_schemas = importlib.import_module("werewolf_agent.agents.trace_schemas")
+
+    assert action_schemas.ActionType is ActionType
+    assert action_schemas.PlayerAction is PlayerAction
+    assert action_schemas.JudgeBroadcast is JudgeBroadcast
+    assert prompt_schemas.AgentContext is AgentContext
+    assert prompt_schemas.TaskType is TaskType
+    assert trace_schemas.ActionTrace is ActionTrace
+    assert trace_schemas.PrivateIntent is PrivateIntent
 
 
 class TestPlayerActionSchema:
