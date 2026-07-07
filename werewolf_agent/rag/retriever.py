@@ -1,204 +1,38 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：按查询检索和排序 RAG 条目，结合向量相似度、关键词匹配和质量过滤。
+功能描述：按查询检索和排序 RAG 条目，协调过滤、排序 helper 与命中结果构造。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-07
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import re
-from typing import Any
 
+from werewolf_agent.rag.retrieval_ranking import (
+    _CASE_TYPE_PRIORITY,
+    _DISPLAY_CASE_TYPE_LABELS,
+    _DISPLAY_QUALITY_LABELS,
+    _DISPLAY_SOURCE_LABELS,
+    _QUALITY_ORDER,
+    _case_type_priority,
+    _quality_priority,
+    _sigmoid,
+    role_phase_matches,
+)
 from werewolf_agent.rag.schemas import (
-    CaseType,
-    QualityGrade,
     RAGEntry,
     RAGHit,
     RAGQuery,
-    SourceType,
     VisibilityBoundary,
 )
 from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
 
 logger = logging.getLogger(__name__)
-
-
-def role_phase_matches(query: RAGQuery, meta: Any) -> bool:
-    """Hard role/phase gate shared by all RAG retrieval paths.
-
-    Single source of truth for the wildcard convention:
-    - role matches when ``meta.role_perspective`` equals ``query.role``,
-      or is a universal marker (``"general"`` / ``"any"`` / empty), or
-      when the query carries no role.
-    - phase matches when ``meta.phase`` equals ``query.phase``, or is
-      ``"general"`` / empty, or when the query carries no phase.
-
-    Both must hold (AND semantics) so a cross-role case cannot leak in
-    just because the phase happens to match. ``meta`` is a RAGMetadata
-    (duck-typed: needs ``role_perspective`` and ``phase`` attrs).
-    """
-    role_ok = (
-        not query.role
-        or meta.role_perspective in (query.role, "general", "any", "")
-    )
-    phase_ok = (
-        not query.phase
-        or meta.phase in (query.phase, "general", "")
-    )
-    return role_ok and phase_ok
-
-
-# ---------------------------------------------------------------------------
-# Reranker score normalization
-# ---------------------------------------------------------------------------
-#
-# R5: BGE-reranker-v2-m3 emits raw logits, which can be negative when the
-# document is judged irrelevant. The merge formula
-# ``(rerank + rule) / 2`` then pumped a negative number into
-# ``RAGHit.relevance_score`` (pydantic ``Field(ge=0.0)``), crashing the
-# live path. Sigmoid maps any real number into (0, 1) cleanly:
-#   - very negative → near 0   (effectively ignored)
-#   - 0             → 0.5      (neutral)
-#   - very positive → near 1   (strong endorsement)
-# After merging, we also clamp to [0,1] as a belt-and-suspenders guard
-# in case some other component sneaks an out-of-range value through.
-
-
-def _sigmoid(x: float) -> float:
-    """Numerically-stable sigmoid that survives both extreme tails."""
-    if x >= 0:
-        z = math.exp(-x)
-        return 1.0 / (1.0 + z)
-    z = math.exp(x)
-    return z / (1.0 + z)
-
-
-# ---------------------------------------------------------------------------
-# Quality grade ordering (higher = better)
-# ---------------------------------------------------------------------------
-
-_QUALITY_ORDER: dict[QualityGrade, int] = {
-    QualityGrade.PRO_MATCH: 6,
-    QualityGrade.EXPERT_REVIEW: 5,
-    QualityGrade.HIGH_RANK_GAME: 4,
-    QualityGrade.RULE_DERIVED_SEED: 3,
-    QualityGrade.COMMUNITY_CASE: 2,
-    QualityGrade.SELF_PLAY_CANDIDATE: 1,
-    QualityGrade.UNREVIEWED: 0,
-}
-
-
-def _quality_priority(grade: QualityGrade, *, entry_id: str = "") -> int:
-    """Return the priority for a QualityGrade, warning on missing.
-
-    R20: previously ``_QUALITY_ORDER.get(missing_grade, 0)`` silently
-    returned 0 when a new ``QualityGrade`` enum value was added
-    without wiring its priority. That made every such entry get
-    filtered out by ``quality_min`` with no log line — operators
-    had no way to notice the gap.
-
-    Now: if the grade is missing from the mapping, emit a WARNING
-    identifying the entry and the grade, then fall through to the
-    lowest priority (0). The behavior of treating the missing
-    grade as 0 is preserved for backward compatibility; the
-    warning is the only new operator-visible signal.
-    """
-    priority = _QUALITY_ORDER.get(grade)
-    if priority is None:
-        logger.warning(
-            "RAG entry '%s' has quality_grade='%s' which is "
-            "unregistered in _QUALITY_ORDER; treating as lowest "
-            "priority (0). Add it to _QUALITY_ORDER in retriever.py.",
-            entry_id, grade.value if hasattr(grade, "value") else grade,
-        )
-        return 0
-    return priority
-
-# Retrieval priority by case type (design doc §9.2)
-_CASE_TYPE_PRIORITY: dict[CaseType, int] = {
-    CaseType.EXTERNAL_HIGH_END_CASE: 4,
-    CaseType.EXTERNAL_TACTICS: 3,
-    CaseType.PROJECT_HISTORY: 2,
-    CaseType.PROJECT_REVIEW: 2,
-    CaseType.ROLE_STRATEGY: 1,
-    CaseType.SPEECH_TEMPLATE: 0,
-}
-
-
-def _case_type_priority(case_type: CaseType, *, entry_id: str = "") -> int:
-    """Return the priority for a CaseType, warning on missing.
-
-    N7: ``_CASE_TYPE_PRIORITY.get(missing_case_type, 0)`` silently
-    returned 0 when a new ``CaseType`` enum value was added without
-    wiring its priority. That made the sort key and the rule-based
-    score treat the new case_type as the lowest priority, and the
-    drop was invisible to operators.
-
-    Now: if the case_type is missing from the mapping, emit a
-    WARNING identifying the entry and the case_type, then fall
-    through to 0 (treat as lowest). The behavior is preserved for
-    backward compatibility; the warning is the new operator signal.
-    """
-    priority = _CASE_TYPE_PRIORITY.get(case_type)
-    if priority is None:
-        logger.warning(
-            "RAG entry '%s' has case_type='%s' which is "
-            "unregistered in _CASE_TYPE_PRIORITY; treating as "
-            "lowest priority (0). Add it to _CASE_TYPE_PRIORITY "
-            "in retriever.py.",
-            entry_id,
-            case_type.value if hasattr(case_type, "value") else case_type,
-        )
-        return 0
-    return priority
-
-
-# P1-G8: human-readable display labels for the RAG hit's
-# ``display_annotation`` field. The raw enum values stay on
-# RAGHit.source_type / RAGHit.quality_grade for the audit log; the
-# annotation is the moderator-facing one-liner and must read like
-# a sentence, not a snake_case dump. Chinese-first per the project
-# locale; English for the term that has a widely-recognized English
-# rendering (e.g. 实战 / 公开赛 / 高段位赛).
-_DISPLAY_SOURCE_LABELS: dict[SourceType, str] = {
-    SourceType.PUBLIC_TOURNAMENT: "公开赛",
-    SourceType.PUBLIC_REVIEW: "公开复盘",
-    SourceType.EXPERT_COMMENTARY: "专家解说",
-    SourceType.TRAINING_SESSION: "训练赛",
-    SourceType.SELF_PLAY: "实战",
-    SourceType.RULE_DERIVED: "规则推导",
-    SourceType.MANUAL_ENTRY: "人工录入",
-}
-
-_DISPLAY_QUALITY_LABELS: dict[QualityGrade, str] = {
-    QualityGrade.PRO_MATCH: "职业级",
-    QualityGrade.EXPERT_REVIEW: "专家审核",
-    QualityGrade.HIGH_RANK_GAME: "高段位赛",
-    QualityGrade.RULE_DERIVED_SEED: "规则种子",
-    QualityGrade.COMMUNITY_CASE: "社区案例",
-    QualityGrade.SELF_PLAY_CANDIDATE: "实战候选",
-    QualityGrade.UNREVIEWED: "未审核",
-}
-
-# R17: human-readable case_type label set for the hit annotation.
-# ``source|quality|case_type`` lets a moderator see at a glance
-# whether the hit is an external high-end case, a tactic, project
-# history, a speech template, or a role strategy — not just the
-# source + quality pair. Chinese-first per the project locale.
-_DISPLAY_CASE_TYPE_LABELS: dict[CaseType, str] = {
-    CaseType.EXTERNAL_HIGH_END_CASE: "高端案例",
-    CaseType.EXTERNAL_TACTICS: "战术",
-    CaseType.PROJECT_HISTORY: "历史",
-    CaseType.PROJECT_REVIEW: "复盘",
-    CaseType.ROLE_STRATEGY: "角色策略",
-    CaseType.SPEECH_TEMPLATE: "模板",
-}
 
 
 def _tokenize_situation(situation: str) -> set[str]:
