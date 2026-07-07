@@ -72,8 +72,29 @@ class TestAgentActionPipelineSplit:
                 agent_sheriff_actions, export_name
             )
 
+    def test_wolf_action_exports_are_compatibility_imports(self) -> None:
+        from werewolf_agent.runtime import agent_action_pipeline, agent_wolf_actions
+
+        wolf_exports = (
+            "agent_wolf_team_plan",
+            "agent_wolf_consensus",
+            "agent_wolf_discussion",
+        )
+
+        for export_name in wolf_exports:
+            assert getattr(agent_action_pipeline, export_name) is getattr(
+                agent_wolf_actions, export_name
+            )
+            assert getattr(agent_adapter, export_name) is getattr(
+                agent_wolf_actions, export_name
+            )
+
     def test_facade_patch_propagates_to_action_pipeline(self, monkeypatch) -> None:
-        from werewolf_agent.runtime import agent_action_pipeline, agent_sheriff_actions
+        from werewolf_agent.runtime import (
+            agent_action_pipeline,
+            agent_sheriff_actions,
+            agent_wolf_actions,
+        )
 
         def fake_build_context(*args, **kwargs):  # noqa: ANN002, ANN003
             return None
@@ -82,6 +103,7 @@ class TestAgentActionPipelineSplit:
 
         assert agent_action_pipeline.build_agent_context is fake_build_context
         assert agent_sheriff_actions.build_agent_context is fake_build_context
+        assert agent_wolf_actions.build_agent_context is fake_build_context
 
 
 class TestKillValueAssessmentAdapterContract:
