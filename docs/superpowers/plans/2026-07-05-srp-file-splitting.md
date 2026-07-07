@@ -37,8 +37,7 @@
 
 仍未完成:
 
-- [ ] Task 21: 下一轮候选模块正式拆分计划
-- [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
+- 无。
 
 不执行项:
 
@@ -51,7 +50,7 @@
 
 下一轮候选池:
 
-- `werewolf_agent/model_gateway/router.py`，651 行，已拆 provider/retry/usage helper，需判断 router 是否仍承担过多。
+- 当前计划内候选已处理完毕。后续新增候选需基于新的行数和职责扫描另起计划。
 
 已完成候选:
 
@@ -62,6 +61,8 @@
 - `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
 - `werewolf_agent/evaluation/metrics.py`，Task 19 已拆分为 `metric_aggregation.py` 和 `metric_reporting.py`，旧模块保留兼容 facade。
 - `werewolf_agent/api/routes/games.py`，Task 20 已拆分为 `game_lifecycle.py`、`game_commands.py` 和 `game_snapshots.py`，旧模块保留 `create_game_router` 与 helper 兼容 facade。
+- `werewolf_agent/model_gateway/router.py`，Task 21 已拆分为 `router_config.py`、`router_selection.py` 和 `router_errors.py`，旧模块保留 `ModelRouter` 与 helper 兼容 facade。
+- `werewolf_agent/engine/rule_engine.py`，RuleEngine 收尾已拆分 `ruleset_loader.py`，旧模块保留 `Ruleset` 与 `RuleEngine.from_yaml` 兼容入口。
 
 ## 拆分原则
 
@@ -89,7 +90,7 @@
 - [x] 拆第二批 600 行以上但风险较低的模块。RAG retrieval/storage 已完成 facade 拆分。
 - [x] 不拆对应超大测试文件（2026-07-07 用户决策：`tests/` 目录保持现状）。
 - [x] 当前批次最终全量验证、提交、CodeGraph 同步。
-- [ ] 下一轮候选模块进入正式拆分计划。
+- [x] 下一轮候选模块进入正式拆分计划。
 
 ---
 
@@ -1480,7 +1481,7 @@ All listed sandbox-safe Task 20 commands returned exit code 0; the focused pytes
 - Test: `tests/model_gateway/test_empty_response.py`
 - Test: `tests/model_gateway/test_providers.py`
 
-- [ ] **Step 1: Inspect router responsibilities**
+- [x] **Step 1: Inspect router responsibilities**
 
 Run:
 
@@ -1490,19 +1491,27 @@ codegraph.cmd explore "werewolf_agent/model_gateway/router.py remaining responsi
 
 Expected: distinguish stable router orchestration from config parsing, provider selection, and error/fallback mapping.
 
-- [ ] **Step 2: Move config helpers if needed**
+2026-07-07 result: `router.py` still owned config validation and configured provider collection, provider/model selection, fallback model resolution, usage recording, and empty-result construction.
+
+- [x] **Step 2: Move config helpers if needed**
 
 Move profile/config parsing helpers into `router_config.py`.
 
-- [ ] **Step 3: Move provider selection if needed**
+2026-07-07 result: moved `_validate_config` and `_configured_provider_names` into `router_config.py`; `ModelRouter._validate_config()` and `_configured_provider_names()` now delegate while old helper imports remain available from `router.py`.
+
+- [x] **Step 3: Move provider selection if needed**
 
 Move provider selection and routing policy helpers into `router_selection.py`.
 
-- [ ] **Step 4: Move error mapping if needed**
+2026-07-07 result: moved `_resolve_config` and `_resolve_fallback_model` into `router_selection.py`; `ModelRouter.resolve_config()` and `_resolve_fallback_model()` keep the old method signatures.
+
+- [x] **Step 4: Move error mapping if needed**
 
 Move empty-response, retry exhaustion, and fallback error mapping into `router_errors.py`.
 
-- [ ] **Step 5: Verify and commit**
+2026-07-07 result: moved `_record_success_usage`, `_record_failure_usage`, and `_empty_result` into `router_errors.py`; `ModelRouter.generate()` still owns provider call orchestration and delegates record/result construction.
+
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -1515,6 +1524,22 @@ git commit -m "refactor: slim model gateway router facade"
 ```
 
 Expected: provider routing, retries, and empty-response fallback behavior unchanged.
+
+2026-07-07 verification in the managed sandbox:
+
+```powershell
+python -c "... router split import identity probe ..."
+python -c "... manual router behavior suite ..."
+python -c "... ruleset loader compatibility probe ..."
+python -c "... rule engine behavior probe ..."
+$env:PYTHONPYCACHEPREFIX='E:\NLP\agent\wofkill\.tmp\srp-task21-pycache'; python -m compileall -q werewolf_agent/model_gateway
+$env:PYTHONPYCACHEPREFIX='E:\NLP\agent\wofkill\.tmp\srp-task21-pycache'; python -m compileall -q werewolf_agent/engine/rule_engine.py werewolf_agent/engine/ruleset_loader.py tests/rules/test_rule_engine_split.py
+$env:RUFF_CACHE_DIR='E:\NLP\agent\wofkill\.tmp\srp-task21-ruff'; python -m ruff check werewolf_agent/model_gateway/router.py werewolf_agent/model_gateway/router_config.py werewolf_agent/model_gateway/router_selection.py werewolf_agent/model_gateway/router_errors.py tests/model_gateway/test_router_split_helpers.py --select F401,F841
+$env:RUFF_CACHE_DIR='E:\NLP\agent\wofkill\.tmp\srp-task21-ruff'; python -m ruff check werewolf_agent/engine/rule_engine.py werewolf_agent/engine/ruleset_loader.py tests/rules/test_rule_engine_split.py --select F401,F841
+git diff --check
+```
+
+All listed commands returned exit code 0. Direct RED checks first failed for missing `router_config` and missing `ruleset_loader`, then passed after the split. In this managed sandbox, pytest printed all selected `test_router_split_helpers.py` tests as passed (`....... [100%]`) but the pytest process did not reach normal session finish before timeout, so the final gate used direct behavior probes plus compileall, Ruff, import compatibility, and `git diff --check`.
 
 ---
 

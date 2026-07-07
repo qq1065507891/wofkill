@@ -3,16 +3,13 @@
 功能描述：RuleEngine 是整个游戏的核心判决器，从 YAML 规则集加载配置，提供 assign_roles、resolve_night、
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-06
+修改日期：2026-07-07
 使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 from werewolf_agent.core.models import (
     Action,
@@ -39,16 +36,8 @@ from werewolf_agent.engine import (
     rule_vote,
 )
 from werewolf_agent.engine.event_reducer import EventReducer, _apply_idiot_reveal
+from werewolf_agent.engine.ruleset_loader import Ruleset, load_ruleset_from_yaml
 from werewolf_agent.engine.sheriff import SheriffRules
-
-
-@dataclass(frozen=True)
-class Ruleset:
-    raw: dict[str, Any]
-
-    @property
-    def player_count(self) -> int:
-        return int(self.raw["player_count"])
 
 
 class RuleEngine:
@@ -60,9 +49,7 @@ class RuleEngine:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "RuleEngine":
-        ruleset_path = Path(path)
-        data = yaml.safe_load(ruleset_path.read_text(encoding="utf-8"))
-        return cls(Ruleset(raw=data))
+        return cls(load_ruleset_from_yaml(path))
 
     def role_count(self, role: str) -> int:
         return rule_flow.role_count(self.ruleset.raw, role)

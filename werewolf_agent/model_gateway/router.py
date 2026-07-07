@@ -30,6 +30,19 @@ from werewolf_agent.model_gateway.retry_policy import (
     _is_retryable_exception,
     _raw_error_from_exception,
 )
+from werewolf_agent.model_gateway.router_config import (
+    _configured_provider_names,
+    _validate_config,
+)
+from werewolf_agent.model_gateway.router_errors import (
+    _empty_result,
+    _record_failure_usage,
+    _record_success_usage,
+)
+from werewolf_agent.model_gateway.router_selection import (
+    _resolve_config,
+    _resolve_fallback_model,
+)
 from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
     StructuredOutputPolicy,
@@ -62,7 +75,14 @@ __all__ = [
     "_is_retryable_exception",
     "_normalize_tool_metadata",
     "_raw_error_from_exception",
+    "_configured_provider_names",
+    "_empty_result",
+    "_record_failure_usage",
+    "_record_success_usage",
+    "_resolve_config",
+    "_resolve_fallback_model",
     "_retry_delay_for_exception",
+    "_validate_config",
 ]
 
 
@@ -124,76 +144,11 @@ class ModelRouter:
         Catches typos at load time rather than at first LLM call. Raises
         ``ProviderConfigError`` for any dangling reference.
         """
-        from werewolf_agent.model_gateway.providers.base import (
-            ProviderConfigError,
+        _validate_config(
+            model_profiles=self._model_profiles,
+            llm_profiles=self._llm_profiles,
+            player_assignments=self._player_assignments,
         )
-
-        # 1. Every players[id].llm_profile ref must exist in llm_profiles.
-        for pid, profile_id in self._player_assignments.items():
-            if profile_id not in self._llm_profiles:
-                raise ProviderConfigError(
-                    f"player {pid!r} references unknown llm_profile {profile_id!r}"
-                )
-
-        # 2. Every llm_profile entry (default / tasks / fallback) that
-        #    names a model_profile must point at a real model_profile.
-        for profile_id, profile in self._llm_profiles.items():
-            for block_name in ("default", "fallback"):
-                block = profile.get(block_name) or {}
-                if not block:
-                    continue
-                mp_id = block.get("model_profile")
-                if mp_id and mp_id not in self._model_profiles:
-                    raise ProviderConfigError(
-                        f"llm_profile {profile_id!r}.{block_name} "
-                        f"references unknown model_profile {mp_id!r}"
-                    )
-            for task_type, task_cfg in (profile.get("tasks") or {}).items():
-                mp_id = task_cfg.get("model_profile")
-                if mp_id and mp_id not in self._model_profiles:
-                    raise ProviderConfigError(
-                        f"llm_profile {profile_id!r}.tasks.{task_type} "
-                        f"references unknown model_profile {mp_id!r}"
-                    )
-
-        # 3. Every provider name must be one the factory can build
-        #    (so an unknown name fails at config load, not first LLM call).
-        from werewolf_agent.model_gateway.providers.factory import (
-            create_provider_from_env,
-        )
-
-        known_providers: set[str] = set()
-        for cfg in self._model_profiles.values():
-            pname = cfg.get("provider")
-            if pname:
-                known_providers.add(str(pname))
-        for profile in self._llm_profiles.values():
-            for block_name in ("default", "fallback"):
-                block = profile.get(block_name) or {}
-                pname = block.get("provider")
-                if pname:
-                    known_providers.add(str(pname))
-            for task_cfg in (profile.get("tasks") or {}).values():
-                pname = task_cfg.get("provider")
-                if pname:
-                    known_providers.add(str(pname))
-        for pname in known_providers:
-            # 'create_provider_from_env' returns None when the API key is
-            # missing but does not validate the provider name. We probe
-            # the factory's known list via its module rather than the
-            # import side-effects.
-            try:
-                if pname.lower() not in {
-                    "anthropic", "openai", "glm", "minimax", "mock",
-                }:
-                    raise ProviderConfigError(
-                        f"provider {pname!r} is not registered "
-                        "(known: anthropic, openai, glm, minimax, mock)"
-                    )
-            except ProviderConfigError:
-                raise
-            # Touch factory for import-side-effect parity.
-            _ = create_provider_from_env
 
     def register_provider(self, provider: LLMProvider) -> None:
         self._providers[provider.name] = provider
@@ -289,47 +244,13 @@ class ModelRouter:
         self, agent_id: str, task_type: str
     ) -> tuple[ModelConfig, str | None]:
         """Resolve model config for agent+task. Returns (config, fallback_provider_name)."""
-        llm_profile_id = self._player_assignments.get(agent_id, "")
-        llm_profile = self._llm_profiles.get(llm_profile_id, {})
-
-        # Try task-specific first, then default
-        task_cfg = llm_profile.get("tasks", {}).get(task_type)
-        default_cfg = llm_profile.get("default", {})
-        source = task_cfg or default_cfg
-
-        if not source:
-            return ModelConfig(provider="mock", model="mock"), "mock"
-
-        provider_name = source.get("provider", "mock")
-        model_profile_id = source.get("model_profile", "")
-        model_profile = self._model_profiles.get(model_profile_id, {})
-        structured_policy = StructuredOutputPolicy.from_model_profile(
-            provider=provider_name,
-            model_profile=model_profile,
+        return _resolve_config(
+            model_profiles=self._model_profiles,
+            llm_profiles=self._llm_profiles,
+            player_assignments=self._player_assignments,
+            agent_id=agent_id,
+            task_type=task_type,
         )
-
-        config = ModelConfig(
-            provider=provider_name,
-            model=model_profile.get("model", model_profile_id),
-            temperature=model_profile.get("temperature", 0.5),
-            max_tokens=model_profile.get("max_tokens", 1024),
-            top_p=model_profile.get("top_p", 0.9),
-            timeout=model_profile.get("timeout", 30),
-            allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
-            retry_count=int(model_profile.get("retry_count", 2)),
-            structured_output_mode=structured_policy.primary_mode.value,
-            structured_output_fallback_modes=tuple(
-                mode.value for mode in structured_policy.fallback_modes
-            ),
-        )
-
-        # Fallback config
-        fallback_cfg = llm_profile.get("fallback")
-        fallback_provider = None
-        if fallback_cfg:
-            fallback_provider = fallback_cfg.get("provider")
-
-        return config, fallback_provider
 
     def resolve_structured_output_policy(
         self,
@@ -409,21 +330,14 @@ class ModelRouter:
                     )
                     break
                 if result.usage:
-                    usage = UsageRecord(
+                    _record_success_usage(
+                        usage_log=self._usage_log,
+                        usage_lock=self._usage_lock,
                         agent_id=agent_id,
                         task_type=task_type,
-                        provider=result.provider,
-                        model=result.model,
-                        prompt_tokens=result.usage.prompt_tokens,
-                        completion_tokens=result.usage.completion_tokens,
-                        latency_ms=result.usage.latency_ms,
-                        success=True,
+                        result=result,
                         structured_output_mode=active_mode.value,
                     )
-                    with self._usage_lock:
-                        self._usage_log.append(usage)
-                        if len(self._usage_log) > 10000:
-                            self._usage_log = self._usage_log[-5000:]
                 return result
             except Exception as exc:
                 primary_error = exc
@@ -494,22 +408,15 @@ class ModelRouter:
                         )
                         break
                     if result.usage:
-                        usage = UsageRecord(
+                        _record_success_usage(
+                            usage_log=self._usage_log,
+                            usage_lock=self._usage_lock,
                             agent_id=agent_id,
                             task_type=task_type,
-                            provider=result.provider,
-                            model=result.model,
-                            prompt_tokens=result.usage.prompt_tokens,
-                            completion_tokens=result.usage.completion_tokens,
-                            latency_ms=result.usage.latency_ms,
+                            result=result,
                             fallback_reason=f"primary_failed:{_format_exception(primary_error)}",
-                            success=True,
                             structured_output_mode=fb_mode.value,
                         )
-                        with self._usage_lock:
-                            self._usage_log.append(usage)
-                            if len(self._usage_log) > 10000:
-                                self._usage_log = self._usage_log[-5000:]
                     return result
                 except Exception as exc:
                     fallback_error = exc
@@ -536,99 +443,37 @@ class ModelRouter:
 
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
-        with self._usage_lock:
-            self._usage_log.append(UsageRecord(
-                agent_id=agent_id,
-                task_type=task_type,
-                provider=config.provider,
-                model=config.model,
-                fallback_reason=failure_reason,
-                success=False,
-                structured_output_mode=active_mode.value,
-            ))
-            if len(self._usage_log) > 10000:
-                self._usage_log = self._usage_log[-5000:]
+        _record_failure_usage(
+            usage_log=self._usage_log,
+            usage_lock=self._usage_lock,
+            agent_id=agent_id,
+            task_type=task_type,
+            provider=config.provider,
+            model=config.model,
+            fallback_reason=failure_reason,
+            structured_output_mode=active_mode.value,
+        )
         # R3-MG-2: surface the HTTP status / raw error from the most recent
         # exception so the categorizer can attribute 4xx/5xx to
         # ``provider_error`` rather than the silent ``unknown`` fallback.
-        return GenerateResult(
-            text="",
-            provider=last_empty_result.provider if last_empty_result else config.provider,
-            model=last_empty_result.model if last_empty_result else config.model,
-            usage=last_empty_result.usage if last_empty_result else None,
-            http_status=_http_status_from_exception(primary_error)
-            or _http_status_from_exception(fallback_error),
-            raw_error=_raw_error_from_exception(primary_error)
-            or _raw_error_from_exception(fallback_error),
-            structured_output_mode=(
-                last_empty_result.structured_output_mode
-                if last_empty_result
-                else active_mode.value
-            ),
+        return _empty_result(
+            config_provider=config.provider,
+            config_model=config.model,
+            active_mode=active_mode.value,
+            primary_error=primary_error,
+            fallback_error=fallback_error,
+            last_empty_result=last_empty_result,
         )
 
     def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:
-        llm_profile = self._llm_profiles.get(llm_profile_id, {})
-        fallback_cfg = llm_profile.get("fallback", {})
-        if not fallback_cfg:
-            return None
-        model_profile_id = fallback_cfg.get("model_profile", "")
-        # R3-MG-7: a fallback that references a missing model_profile
-        # used to silently return ModelConfig(model="") at first
-        # fallback invocation, which the LLM call would then explode
-        # against. Raise at config load time instead.
-        if not model_profile_id:
-            from werewolf_agent.model_gateway.providers.base import (
-                ProviderConfigError,
-            )
-            raise ProviderConfigError(
-                f"llm_profile {llm_profile_id!r}.fallback has no model_profile"
-            )
-        if model_profile_id not in self._model_profiles:
-            from werewolf_agent.model_gateway.providers.base import (
-                ProviderConfigError,
-            )
-            raise ProviderConfigError(
-                f"llm_profile {llm_profile_id!r}.fallback references "
-                f"unknown model_profile {model_profile_id!r}"
-            )
-        model_profile = self._model_profiles.get(model_profile_id, {})
-        structured_policy = StructuredOutputPolicy.from_model_profile(
-            provider=fallback_cfg.get("provider", "mock"),
-            model_profile=model_profile,
-        )
-        return ModelConfig(
-            provider=fallback_cfg.get("provider", "mock"),
-            model=model_profile.get("model", model_profile_id),
-            temperature=model_profile.get("temperature", 0.3),
-            max_tokens=model_profile.get("max_tokens", 256),
-            top_p=model_profile.get("top_p", 0.9),
-            timeout=model_profile.get("timeout", 10),
-            allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
-            retry_count=int(model_profile.get("retry_count", 1)),
-            structured_output_mode=structured_policy.primary_mode.value,
-            structured_output_fallback_modes=tuple(
-                mode.value for mode in structured_policy.fallback_modes
-            ),
+        return _resolve_fallback_model(
+            model_profiles=self._model_profiles,
+            llm_profiles=self._llm_profiles,
+            llm_profile_id=llm_profile_id,
         )
 
     def _configured_provider_names(self) -> set[str]:
-        providers: set[str] = {
-            str(cfg.get("provider", ""))
-            for cfg in self._model_profiles.values()
-            if cfg.get("provider")
-        }
-        for llm_profile in self._llm_profiles.values():
-            default_cfg = llm_profile.get("default", {})
-            if default_cfg.get("provider"):
-                providers.add(str(default_cfg["provider"]))
-            for task_cfg in llm_profile.get("tasks", {}).values():
-                if task_cfg.get("provider"):
-                    providers.add(str(task_cfg["provider"]))
-            fallback_cfg = llm_profile.get("fallback", {})
-            if fallback_cfg.get("provider"):
-                providers.add(str(fallback_cfg["provider"]))
-        return providers
+        return _configured_provider_names(self._model_profiles, self._llm_profiles)
 
     def get_usage_log(self) -> list[UsageRecord]:
         with self._usage_lock:

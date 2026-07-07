@@ -14,6 +14,9 @@ from __future__ import annotations
 from werewolf_agent.model_gateway import provider_call
 from werewolf_agent.model_gateway import retry_policy
 from werewolf_agent.model_gateway import router
+from werewolf_agent.model_gateway import router_config
+from werewolf_agent.model_gateway import router_errors
+from werewolf_agent.model_gateway import router_selection
 from werewolf_agent.model_gateway import usage_records
 
 
@@ -45,3 +48,19 @@ def test_retry_delay_facade_uses_router_random_for_compatibility(monkeypatch) ->
     delay = router._retry_delay_for_exception(RuntimeError("test"), 2)
 
     assert delay == 5.0
+
+
+def test_config_helpers_are_reexported_from_router_facade() -> None:
+    assert router._validate_config is router_config._validate_config
+    assert router._configured_provider_names is router_config._configured_provider_names
+
+
+def test_selection_helpers_are_reexported_from_router_facade() -> None:
+    assert router._resolve_config is router_selection._resolve_config
+    assert router._resolve_fallback_model is router_selection._resolve_fallback_model
+
+
+def test_error_helpers_are_reexported_from_router_facade() -> None:
+    assert router._record_success_usage is router_errors._record_success_usage
+    assert router._record_failure_usage is router_errors._record_failure_usage
+    assert router._empty_result is router_errors._empty_result

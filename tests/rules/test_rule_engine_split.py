@@ -24,6 +24,10 @@ from werewolf_agent.engine import (
     rule_vote,
 )
 from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
+from werewolf_agent.engine.ruleset_loader import (
+    Ruleset as LoaderRuleset,
+    load_ruleset_from_yaml,
+)
 
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
@@ -67,6 +71,14 @@ def test_rule_engine_split_helpers_accept_ruleset_or_raw_dict() -> None:
     wrapped_engine = RuleEngine(Ruleset(raw=engine.ruleset.raw))
 
     assert raw_engine.night_order() == wrapped_engine.night_order()
+
+
+def test_ruleset_loader_is_split_but_old_import_stays_compatible() -> None:
+    loaded = load_ruleset_from_yaml(RULESET_PATH)
+
+    assert Ruleset is LoaderRuleset
+    assert isinstance(loaded, Ruleset)
+    assert RuleEngine.from_yaml(RULESET_PATH).ruleset == loaded
 
 
 def test_special_role_helpers_preserve_seer_and_witch_behavior() -> None:
