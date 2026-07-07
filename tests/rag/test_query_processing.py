@@ -16,6 +16,7 @@ from werewolf_agent.rag.schemas import (
     CaseMetadata,
     CaseType,
     QualityGrade,
+    RAGEntry,
     RAGQuery,
     ReviewStatus,
     SourceMetadata,
@@ -82,3 +83,53 @@ def test_legacy_retriever_case_type_priority_rebind_affects_priority() -> None:
         assert retriever._case_type_priority(CaseType.ROLE_STRATEGY, entry_id="c") == 0
     finally:
         retriever._CASE_TYPE_PRIORITY = original
+
+
+def test_strategy_retriever_uses_retrieval_ranking_helper(monkeypatch) -> None:
+    from werewolf_agent.rag import retrieval_ranking
+    from werewolf_agent.rag.retriever import StrategyRetriever
+
+    calls: list[dict[str, object]] = []
+
+    def fake_retrieve_ranked_hits(**kwargs):
+        calls.append(kwargs)
+        return ["sentinel"]
+
+    monkeypatch.setattr(
+        retrieval_ranking,
+        "retrieve_ranked_hits",
+        fake_retrieve_ranked_hits,
+    )
+
+    retriever = StrategyRetriever()
+    result = retriever.retrieve(RAGQuery(role="seer", phase="speech"))
+
+    assert result == ["sentinel"]
+    assert calls
+    assert callable(calls[0]["merged_score_fn"])
+    assert callable(calls[0]["entry_to_hit_fn"])
+
+
+def test_strategy_retriever_score_monkeypatch_still_controls_ranking(
+    monkeypatch,
+) -> None:
+    from werewolf_agent.rag.retriever import StrategyRetriever
+
+    def make_entry(entry_id: str) -> RAGEntry:
+        return RAGEntry(
+            schema_version=1,
+            entry_id=entry_id,
+            title=entry_id,
+            summary="summary",
+            metadata=_make_meta(role="seer", phase="speech"),
+        )
+
+    def patched_score(self, entry: RAGEntry, query: RAGQuery) -> float:
+        return {"low": 0.1, "high": 0.9}[entry.entry_id]
+
+    monkeypatch.setattr(StrategyRetriever, "_score", patched_score)
+
+    retriever = StrategyRetriever([make_entry("low"), make_entry("high")])
+    hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=2))
+
+    assert [hit.entry_id for hit in hits] == ["high", "low"]

@@ -95,3 +95,47 @@ def test_legacy_vector_store_embedding_monkeypatch_reaches_embedding_store(
     assert results
     assert results[0]["doc_id"] == "doc1"
     assert calls == [("alpha", 4), ("beta", 4)]
+
+
+def test_provider_vector_stores_live_in_split_module() -> None:
+    from werewolf_agent.rag import embedding_vector_store, vector_store
+
+    assert issubclass(vector_store.PgVectorStore, embedding_vector_store.PgVectorStore)
+    assert issubclass(
+        vector_store.SiliconFlowVectorStore,
+        embedding_vector_store.SiliconFlowVectorStore,
+    )
+    assert vector_store._to_pgvector_literal is embedding_vector_store._to_pgvector_literal
+    assert vector_store._to_pgvector_literal([1.0, -0.5]) == "[1.00000000,-0.50000000]"
+
+
+def test_legacy_pgvector_uses_vector_store_embedding_monkeypatch(
+    monkeypatch,
+) -> None:
+    import sys
+    from unittest.mock import MagicMock
+
+    import werewolf_agent.rag.vector_store as vector_store
+
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.execute.return_value = mock_cursor
+    mock_cursor.fetchall.return_value = []
+
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+    monkeypatch.setitem(sys.modules, "psycopg", mock_psycopg)
+
+    calls: list[tuple[str, int]] = []
+
+    def fake_embedding(text: str, dim: int = 128) -> list[float]:
+        calls.append((text, dim))
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(vector_store, "_text_to_embedding", fake_embedding)
+
+    store = vector_store.PgVectorStore("postgresql://test/db", initialize=False)
+    store.add("doc1", "alpha", {})
+    store.query("beta")
+
+    assert calls[-2:] == [("alpha", 128), ("beta", 128)]

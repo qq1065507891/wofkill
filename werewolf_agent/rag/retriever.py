@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from werewolf_agent.rag import retrieval_ranking as _ranking
@@ -29,12 +28,25 @@ from werewolf_agent.rag.schemas import (
     RAGEntry,
     RAGHit,
     RAGQuery,
-    VisibilityBoundary,
 )
-from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "StrategyRetriever",
+    "create_retriever",
+    "role_phase_matches",
+    "_CASE_TYPE_PRIORITY",
+    "_DISPLAY_CASE_TYPE_LABELS",
+    "_DISPLAY_QUALITY_LABELS",
+    "_DISPLAY_SOURCE_LABELS",
+    "_QUALITY_ORDER",
+    "_case_type_priority",
+    "_quality_priority",
+    "_sigmoid",
+    "_tokenize_situation",
+]
 
 
 def _quality_priority(grade: QualityGrade, *, entry_id: str = "") -> int:
@@ -56,52 +68,8 @@ def _case_type_priority(case_type: CaseType, *, entry_id: str = "") -> int:
 
 
 def _tokenize_situation(situation: str) -> set[str]:
-    """P1-G7: turn a key=value situation blob into a token set.
-
-    The new format (``"role=seer phase=day task=speech actions=['vote']"``)
-    is noisy: the raw whitespace split would emit tokens like
-    ``"actions=['vote']"`` that never match any tag. Splitting on
-    ``=`` first, then stripping list/quote noise from the value side,
-    yields a clean token set that the tag-overlap scorer can use.
-
-    Backward compatible: legacy space-joined situations (e.g. the
-    string ``"抗推预言家"``) still tokenize correctly because there
-    is no ``=`` in them and the value side just becomes the whole
-    word.
-
-    R7: the no-``=`` branch (chunks like ``'speech']`` produced when
-    the situation is ``actions=['vote', 'speech']``) used to add the
-    chunk verbatim, leaving the trailing ``']`` glued to ``speech``.
-    We now run the same strip-list-syntax step on every chunk so
-    both ``vote`` and ``speech`` are recovered cleanly.
-    """
-    if not situation:
-        return set()
-    tokens: set[str] = set()
-    for chunk in situation.split():
-        if "=" not in chunk:
-            # R7: even when there is no ``=`` the chunk may still
-            # carry list/quote noise (e.g. ``'speech']`` from a
-            # Python-style actions list). Run it through the same
-            # strip pass so ``speech`` is recoverable.
-            value = chunk
-        else:
-            key, _, value = chunk.partition("=")
-            # Drop the key (e.g. "role", "actions") — only the value
-            # tokens are useful for tag overlap. We still keep the key
-            # when the value is empty (e.g. "actions=") so the
-            # token set is non-empty.
-            if not value.strip():
-                tokens.add(key.lower())
-                continue
-        # Strip list / set / dict syntax around the value. We split
-        # on common delimiters and quote chars; the leftover pieces
-        # are individual tokens (e.g. "vote", "speech", "12").
-        for piece in re.split(r"[\[\]\(\)\{\},'\"\s]+", value):
-            piece = piece.strip().lower()
-            if piece:
-                tokens.add(piece)
-    return tokens
+    """旧 retriever 路径的 situation tokenizer 兼容入口。"""
+    return _ranking._tokenize_situation(situation)
 
 
 # ---------------------------------------------------------------------------
@@ -162,222 +130,39 @@ class StrategyRetriever:
         ``merge_vector_score``. Entries without a vector score keep
         their rule-based score scaled down by ``(1 - weight)``.
         """
-        candidates = self._filter_candidates(query)
-        scored = [
-            (self._merged_score(entry, query), entry)
-            for entry in candidates
-        ]
-        # R12: case_type is a first-class sort key — strictly above
-        # quality — so an EXTERNAL_HIGH_END_CASE outranks a
-        # SPEECH_TEMPLATE regardless of the quality gap. The previous
-        # additive scoring (case_type * 0.075 + quality / 20) let
-        # a high-quality template tie or beat a low-quality external
-        # case, and Python's stable sort then preserved insertion
-        # order — meaning the case_type priority effectively didn't
-        # dominate the final ranking. The new sort is
-        # (case_type_priority desc, quality desc, rule_score desc),
-        # so case_type wins first, then quality, then the rest of
-        # the rule-based signal.
-        scored.sort(
-            key=lambda x: (
-                _case_type_priority(
-                    x[1].metadata.case_type, entry_id=x[1].entry_id,
-                ),
-                # N3: route the quality sort key through
-                # ``_quality_priority`` so a missing grade emits a
-                # WARNING (matching the asymmetry fix in N2 for the
-                # query filter and in R20 for the entry score). The
-                # old ``_QUALITY_ORDER.get(grade, 0)`` was a silent
-                # no-op; behavior was identical (both default to 0)
-                # but operators had no signal of the gap.
-                _quality_priority(
-                    x[1].metadata.quality_grade, entry_id=x[1].entry_id,
-                ),
-                x[0],
-            ),
-            reverse=True,
+        return _ranking.retrieve_ranked_hits(
+            entries=list(self._entries.values()),
+            query=query,
+            reranker=self._reranker,
+            filter_candidates_fn=self._filter_candidates,
+            merged_score_fn=self._merged_score,
+            entry_to_hit_fn=self._entry_to_hit,
+            case_type_priority_fn=_case_type_priority,
+            quality_priority_fn=_quality_priority,
         )
-
-        if self._reranker and scored:
-            # Take a wider pool for reranking
-            rerank_pool_size = min(len(scored), query.max_results * 3)
-            rerank_pool = scored[:rerank_pool_size]
-            query_text = self._build_rerank_query(query)
-
-            # Rerank by semantic relevance. V2 entries score on
-            # tactical-frame retrieval text; legacy entries use the
-            # helper's title/summary/key-decision fallback. The helper
-            # enforces the shared 1500-char reranker budget.
-            reranked = self._reranker.rerank_hits(
-                query=query_text,
-                documents=[
-                    {
-                        "score": s,
-                        "entry": e,
-                        "text": build_rag_retrieval_text(e, max_chars=1500),
-                    }
-                    for s, e in rerank_pool
-                ],
-                text_key="text",
-                top_n=query.max_results,
-            )
-            results: list[RAGHit] = []
-            for doc in reranked:
-                entry = doc["entry"]
-                # R5: sigmoid-normalize the raw reranker logit before
-                # merging so a negative score (which BGE emits for
-                # judged-irrelevant docs) doesn't push the combined
-                # score below 0 and crash RAGHit pydantic validation.
-                raw_rerank = float(doc.get("rerank_score", 0.0))
-                normalized_rerank = _sigmoid(raw_rerank)
-                rule_score = float(doc.get("score", 0.0))
-                combined_score = (normalized_rerank + rule_score) / 2.0
-                # Belt and suspenders: clamp to [0,1] even though
-                # sigmoid already lives in (0,1) and rule_score lives
-                # in [0,1] — a future tweak to either side could
-                # break the invariant without this guard.
-                combined_score = max(0.0, min(1.0, combined_score))
-                hit = self._entry_to_hit(entry, round(combined_score, 3), query)
-                results.append(hit)
-            return results
-
-        results = []
-        for score, entry in scored[:query.max_results]:
-            hit = self._entry_to_hit(entry, score, query)
-            results.append(hit)
-        return results
 
     def _build_rerank_query(self, query: RAGQuery) -> str:
         """Build a semantic query string for the reranker."""
-        parts = []
-        if query.role:
-            parts.append(f"角色:{query.role}")
-        if query.phase:
-            parts.append(f"阶段:{query.phase}")
-        if query.situation:
-            parts.append(query.situation)
-        if query.persona_style:
-            parts.append(f"风格:{query.persona_style}")
-        return " ".join(parts) if parts else "通用策略检索"
+        return _ranking.build_rerank_query(query)
 
     def _filter_candidates(self, query: RAGQuery) -> list[RAGEntry]:
         """Filter entries by hard criteria."""
-        results: list[RAGEntry] = []
-        for entry in self._entries.values():
-            meta = entry.metadata
-
-            # Visibility: god-view only if explicitly requested
-            if meta.visibility_boundary == VisibilityBoundary.GOD_VIEW:
-                if not query.include_god_view:
-                    continue
-
-            # Ruleset filter
-            if query.ruleset_id and meta.ruleset_id:
-                if meta.ruleset_id != query.ruleset_id:
-                    continue
-
-            # Quality minimum
-            if query.quality_min:
-                # R20: route the ENTRY's grade through _quality_priority
-                # so a missing entry's grade emits a WARNING instead of
-                # silently falling through to 0.
-                entry_priority = _quality_priority(
-                    meta.quality_grade, entry_id=entry.entry_id,
-                )
-                # N2: route the QUERY's quality_min through the same
-                # helper. The old ``_QUALITY_ORDER.get(query.quality_min,
-                # 0)`` silently returned 0 for a missing grade, which
-                # made the entire filter a no-op and dropped every
-                # entry (or admitted every entry, depending on the
-                # comparison direction) with no operator-visible
-                # signal. The treat-as-lowest behavior is preserved;
-                # the warning is the new operator signal.
-                min_priority = _quality_priority(
-                    query.quality_min, entry_id=f"query:{query.quality_min.value}",
-                )
-                if entry_priority < min_priority:
-                    continue
-
-            # Source type filter
-            if query.source_types:
-                if meta.source.source_type not in query.source_types:
-                    continue
-
-            # Case type filter
-            if query.case_types:
-                if meta.case_type not in query.case_types:
-                    continue
-
-            # rag-role-hardening: role/phase hard gate so the default
-            # runtime path (vector_store=None) keeps role isolation.
-            if not role_phase_matches(query, meta):
-                continue
-
-            results.append(entry)
-        return results
+        return _ranking.filter_candidates(
+            list(self._entries.values()),
+            query,
+            quality_priority_fn=_quality_priority,
+            role_phase_matches_fn=role_phase_matches,
+        )
 
     def _score(self, entry: RAGEntry, query: RAGQuery) -> float:
         """Compute relevance score [0..1] for an entry."""
-        score = 0.0
-        meta = entry.metadata
-
-        # Case type priority (0.0–0.3)
-        # N7: route through ``_case_type_priority`` so a missing
-        # case_type logs a WARNING rather than silently defaulting
-        # to 0.
-        score += _case_type_priority(
-            meta.case_type, entry_id=entry.entry_id,
-        ) * 0.075
-
-        # Quality grade bonus (0.0–0.3)
-        # R20: route through _quality_priority so a missing grade
-        # logs a WARNING rather than silently defaulting to 0.
-        score += _quality_priority(
-            meta.quality_grade, entry_id=entry.entry_id,
-        ) / 20.0
-
-        # Role match (0.15)
-        # G-R4-02: ``role_perspective='any'`` is the universal-
-        # perspective marker used by the ``基础常识`` seed family
-        # (金水 / 银水 / 对跳判断 / 警徽票权重, etc.). It must
-        # receive the same wildcard bonus as ``'general'`` so
-        # universal-knowledge seeds rank at parity with the
-        # existing universal seeds rather than being demoted
-        # below role-specific entries regardless of relevance.
-        # G-R4-11: P2 polish — test now locks the contract that
-        # ``_score`` treats ``'any'`` as a wildcard (matches
-        # ``'general'``). The rule-based score had asymmetric
-        # behavior with ``_vector_candidates`` (which dropped
-        # ``'any'`` entirely) before G-R4-02; this regression
-        # test guards against future drift.
-        if query.role and meta.role_perspective:
-            if query.role == meta.role_perspective:
-                score += 0.15
-            elif meta.role_perspective in ("general", "any"):
-                score += 0.05
-
-        # Phase match (0.1)
-        if query.phase and meta.phase:
-            if query.phase == meta.phase:
-                score += 0.1
-            elif meta.phase == "general":
-                score += 0.03
-
-        # Tag overlap (0.1)
-        if query.situation:
-            # P1-G7: situation is a key=value blob (e.g.
-            # "role=seer phase=day task=speech actions=['vote']").
-            # Tokenize on '=' to recover the value tokens that the
-            # rule-based scorer can match against the entry's tag
-            # list. We keep both keys and values, but strip the
-            # list-bracket/list-comma noise around action values.
-            situation_words = _tokenize_situation(query.situation)
-            tag_words = set(" ".join(meta.tags).lower().split())
-            overlap = len(situation_words & tag_words)
-            if overlap > 0:
-                score += min(0.1, overlap * 0.03)
-
-        return min(score, 1.0)
+        return _ranking.score_entry(
+            entry,
+            query,
+            case_type_priority_fn=_case_type_priority,
+            quality_priority_fn=_quality_priority,
+            tokenize_situation_fn=_tokenize_situation,
+        )
 
     def _merged_score(self, entry: RAGEntry, query: RAGQuery) -> float:
         """Combine the rule-based score with the optional vector score.
@@ -396,59 +181,16 @@ class StrategyRetriever:
         ``max(rule, vec)`` is the strongest signal the system
         can attest to, which is the contract we want.
         """
-        rule = self._score(entry, query)
-        if not self._vector_scores or entry.entry_id not in self._vector_scores:
-            return rule
-        vec = max(0.0, min(1.0, float(self._vector_scores[entry.entry_id])))
-        merged = max(rule, vec)
-        return max(0.0, min(1.0, merged))
+        return _ranking.merged_score(
+            entry,
+            query,
+            vector_scores=self._vector_scores,
+            score_fn=self._score,
+        )
 
     def _entry_to_hit(self, entry: RAGEntry, score: float, query: RAGQuery) -> RAGHit:
         """Convert an entry to a retrieval hit with display annotation."""
-        meta = entry.metadata
-        allowed_in_live = meta.visibility_boundary in (
-            VisibilityBoundary.PUBLIC_ONLY,
-            VisibilityBoundary.PLAYER_PERSPECTIVE,
-        )
-
-        # Build display annotation
-        # P1-G8: human-readable labels instead of raw enum values
-        # like "[public_tournament|self_play_candidate]". The raw
-        # values are still on RAGHit.source_type / RAGHit.quality_grade
-        # for the audit log; this annotation is the moderator-facing
-        # one-liner and must read like a phrase.
-        # R17: case_type is appended as a third pipe-delimited slot
-        # so the moderator can tell external-high-end cases apart
-        # from tactics / history / templates at a glance.
-        source_label = _DISPLAY_SOURCE_LABELS.get(
-            meta.source.source_type, meta.source.source_type.value,
-        )
-        quality_label = _DISPLAY_QUALITY_LABELS.get(
-            meta.quality_grade, meta.quality_grade.value,
-        )
-        case_type_label = _DISPLAY_CASE_TYPE_LABELS.get(
-            meta.case_type, meta.case_type.value,
-        )
-        annotation = f"[{source_label}|{quality_label}|{case_type_label}]"
-
-        return RAGHit(
-            entry_id=entry.entry_id,
-            title=entry.title,
-            summary=entry.summary[:800],
-            tactical_frame=entry.tactical_frame,
-            relevance_score=round(score, 3),
-            quality_grade=meta.quality_grade,
-            source_type=meta.source.source_type,
-            visibility_boundary=meta.visibility_boundary,
-            case_type=meta.case_type,
-            role_perspective=meta.role_perspective,
-            phase=meta.phase,
-            key_decisions=entry.key_decisions[:5],  # R4: audit 5 / prompt 3 is intentional — prompt_renderer caps at 3 for the live LLM, but the audit JSON keeps the full 5 for review.
-            short_quotes=entry.short_quotes,
-            tags=meta.tags,
-            allowed_in_live_context=allowed_in_live,
-            display_annotation=annotation,
-        )
+        return _ranking.entry_to_hit(entry, score, query)
 
 
 def create_retriever(

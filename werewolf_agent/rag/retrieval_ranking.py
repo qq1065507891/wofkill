@@ -15,9 +15,20 @@ from __future__ import annotations
 
 import logging
 import math
+import re
+from collections.abc import Callable
 from typing import Any
 
-from werewolf_agent.rag.schemas import CaseType, QualityGrade, RAGQuery, SourceType
+from werewolf_agent.rag.schemas import (
+    CaseType,
+    QualityGrade,
+    RAGEntry,
+    RAGHit,
+    RAGQuery,
+    SourceType,
+    VisibilityBoundary,
+)
+from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
 
 # 保持历史 logger 名称，避免拆分后运维日志筛选和旧测试漂移。
@@ -131,6 +142,254 @@ def case_type_priority_from_order(
         )
         return 0
     return priority
+
+
+def _tokenize_situation(situation: str) -> set[str]:
+    """将 key=value 风格的 situation 文本拆成可用于 tag overlap 的 token。"""
+    if not situation:
+        return set()
+    tokens: set[str] = set()
+    for chunk in situation.split():
+        if "=" not in chunk:
+            value = chunk
+        else:
+            key, _, value = chunk.partition("=")
+            if not value.strip():
+                tokens.add(key.lower())
+                continue
+        for piece in re.split(r"[\[\]\(\)\{\},'\"\s]+", value):
+            piece = piece.strip().lower()
+            if piece:
+                tokens.add(piece)
+    return tokens
+
+
+def build_rerank_query(query: RAGQuery) -> str:
+    """Build a semantic query string for the reranker."""
+    parts = []
+    if query.role:
+        parts.append(f"角色:{query.role}")
+    if query.phase:
+        parts.append(f"阶段:{query.phase}")
+    if query.situation:
+        parts.append(query.situation)
+    if query.persona_style:
+        parts.append(f"风格:{query.persona_style}")
+    return " ".join(parts) if parts else "通用策略检索"
+
+
+def filter_candidates(
+    entries: list[RAGEntry],
+    query: RAGQuery,
+    *,
+    quality_priority_fn: Callable[[QualityGrade], int],
+    role_phase_matches_fn: Callable[[RAGQuery, Any], bool] = role_phase_matches,
+) -> list[RAGEntry]:
+    """Filter entries by hard criteria."""
+    results: list[RAGEntry] = []
+    for entry in entries:
+        meta = entry.metadata
+
+        if meta.visibility_boundary == VisibilityBoundary.GOD_VIEW:
+            if not query.include_god_view:
+                continue
+
+        if query.ruleset_id and meta.ruleset_id:
+            if meta.ruleset_id != query.ruleset_id:
+                continue
+
+        if query.quality_min:
+            entry_priority = quality_priority_fn(
+                meta.quality_grade,
+                entry_id=entry.entry_id,
+            )
+            min_priority = quality_priority_fn(
+                query.quality_min,
+                entry_id=f"query:{query.quality_min.value}",
+            )
+            if entry_priority < min_priority:
+                continue
+
+        if query.source_types:
+            if meta.source.source_type not in query.source_types:
+                continue
+
+        if query.case_types:
+            if meta.case_type not in query.case_types:
+                continue
+
+        if not role_phase_matches_fn(query, meta):
+            continue
+
+        results.append(entry)
+    return results
+
+
+def score_entry(
+    entry: RAGEntry,
+    query: RAGQuery,
+    *,
+    case_type_priority_fn: Callable[[CaseType], int],
+    quality_priority_fn: Callable[[QualityGrade], int],
+    tokenize_situation_fn: Callable[[str], set[str]] = _tokenize_situation,
+) -> float:
+    """Compute relevance score [0..1] for an entry."""
+    score = 0.0
+    meta = entry.metadata
+
+    score += case_type_priority_fn(
+        meta.case_type,
+        entry_id=entry.entry_id,
+    ) * 0.075
+
+    score += quality_priority_fn(
+        meta.quality_grade,
+        entry_id=entry.entry_id,
+    ) / 20.0
+
+    if query.role and meta.role_perspective:
+        if query.role == meta.role_perspective:
+            score += 0.15
+        elif meta.role_perspective in ("general", "any"):
+            score += 0.05
+
+    if query.phase and meta.phase:
+        if query.phase == meta.phase:
+            score += 0.1
+        elif meta.phase == "general":
+            score += 0.03
+
+    if query.situation:
+        situation_words = tokenize_situation_fn(query.situation)
+        tag_words = set(" ".join(meta.tags).lower().split())
+        overlap = len(situation_words & tag_words)
+        if overlap > 0:
+            score += min(0.1, overlap * 0.03)
+
+    return min(score, 1.0)
+
+
+def merged_score(
+    entry: RAGEntry,
+    query: RAGQuery,
+    *,
+    vector_scores: dict[str, float],
+    score_fn: Callable[[RAGEntry, RAGQuery], float],
+) -> float:
+    """Combine the rule-based score with the optional vector score."""
+    rule = score_fn(entry, query)
+    if not vector_scores or entry.entry_id not in vector_scores:
+        return rule
+    vec = max(0.0, min(1.0, float(vector_scores[entry.entry_id])))
+    return max(0.0, min(1.0, max(rule, vec)))
+
+
+def entry_to_hit(entry: RAGEntry, score: float, query: RAGQuery) -> RAGHit:
+    """Convert an entry to a retrieval hit with display annotation."""
+    meta = entry.metadata
+    allowed_in_live = meta.visibility_boundary in (
+        VisibilityBoundary.PUBLIC_ONLY,
+        VisibilityBoundary.PLAYER_PERSPECTIVE,
+    )
+
+    source_label = _DISPLAY_SOURCE_LABELS.get(
+        meta.source.source_type,
+        meta.source.source_type.value,
+    )
+    quality_label = _DISPLAY_QUALITY_LABELS.get(
+        meta.quality_grade,
+        meta.quality_grade.value,
+    )
+    case_type_label = _DISPLAY_CASE_TYPE_LABELS.get(
+        meta.case_type,
+        meta.case_type.value,
+    )
+    annotation = f"[{source_label}|{quality_label}|{case_type_label}]"
+
+    return RAGHit(
+        entry_id=entry.entry_id,
+        title=entry.title,
+        summary=entry.summary[:800],
+        tactical_frame=entry.tactical_frame,
+        relevance_score=round(score, 3),
+        quality_grade=meta.quality_grade,
+        source_type=meta.source.source_type,
+        visibility_boundary=meta.visibility_boundary,
+        case_type=meta.case_type,
+        role_perspective=meta.role_perspective,
+        phase=meta.phase,
+        key_decisions=entry.key_decisions[:5],
+        short_quotes=entry.short_quotes,
+        tags=meta.tags,
+        allowed_in_live_context=allowed_in_live,
+        display_annotation=annotation,
+    )
+
+
+def retrieve_ranked_hits(
+    *,
+    entries: list[RAGEntry],
+    query: RAGQuery,
+    reranker: Any,
+    filter_candidates_fn: Callable[[RAGQuery], list[RAGEntry]],
+    merged_score_fn: Callable[[RAGEntry, RAGQuery], float],
+    entry_to_hit_fn: Callable[[RAGEntry, float, RAGQuery], RAGHit],
+    case_type_priority_fn: Callable[[CaseType], int],
+    quality_priority_fn: Callable[[QualityGrade], int],
+) -> list[RAGHit]:
+    """Retrieve, sort, optionally rerank, and shape final RAG hits."""
+    candidates = filter_candidates_fn(query)
+    scored = [
+        (merged_score_fn(entry, query), entry)
+        for entry in candidates
+    ]
+    scored.sort(
+        key=lambda x: (
+            case_type_priority_fn(
+                x[1].metadata.case_type,
+                entry_id=x[1].entry_id,
+            ),
+            quality_priority_fn(
+                x[1].metadata.quality_grade,
+                entry_id=x[1].entry_id,
+            ),
+            x[0],
+        ),
+        reverse=True,
+    )
+
+    if reranker and scored:
+        rerank_pool_size = min(len(scored), query.max_results * 3)
+        rerank_pool = scored[:rerank_pool_size]
+        query_text = build_rerank_query(query)
+        reranked = reranker.rerank_hits(
+            query=query_text,
+            documents=[
+                {
+                    "score": score,
+                    "entry": entry,
+                    "text": build_rag_retrieval_text(entry, max_chars=1500),
+                }
+                for score, entry in rerank_pool
+            ],
+            text_key="text",
+            top_n=query.max_results,
+        )
+        results: list[RAGHit] = []
+        for doc in reranked:
+            entry = doc["entry"]
+            raw_rerank = float(doc.get("rerank_score", 0.0))
+            normalized_rerank = _sigmoid(raw_rerank)
+            rule_score = float(doc.get("score", 0.0))
+            combined_score = (normalized_rerank + rule_score) / 2.0
+            combined_score = max(0.0, min(1.0, combined_score))
+            results.append(entry_to_hit_fn(entry, round(combined_score, 3), query))
+        return results
+
+    return [
+        entry_to_hit_fn(entry, score, query)
+        for score, entry in scored[:query.max_results]
+    ]
 
 
 _DISPLAY_SOURCE_LABELS: dict[SourceType, str] = {
