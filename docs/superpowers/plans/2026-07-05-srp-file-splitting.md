@@ -37,7 +37,7 @@
 
 仍未完成:
 
-- [ ] Task 17-21: 下一轮候选模块正式拆分计划
+- [ ] Task 18-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 不执行项:
@@ -51,8 +51,6 @@
 
 下一轮候选池:
 
-- `werewolf_agent/skills/good_skill_handlers.py`，933 行，下一轮可按好人技能职责继续拆。
-- `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，778 行，下一轮可按讨论、计划、共识拆分。
 - `werewolf_agent/agents/schemas.py`，759 行，候选为 action/prompt/trace schema 分组。
 - `werewolf_agent/evaluation/metrics.py`，742 行，已拆第一轮 metric helper，需判断是否保留聚合 facade。
 - `werewolf_agent/api/routes/games.py`，697 行，已拆 route helper，需判断 route declaration 是否还过重。
@@ -63,6 +61,7 @@
 - `werewolf_agent/rag/retriever.py` / `werewolf_agent/rag/vector_store.py`，Task 11.8 / Task 14 已拆分为 `query_processing.py`、`retrieval_ranking.py`、`local_vector_store.py`、`embedding_vector_store.py`，旧模块保留兼容 facade。
 - `werewolf_agent/runtime/agent_adapter.py`，Task 15 已拆分为 `agent_action_pipeline.py`，旧模块保留兼容 facade；`agent_dispatch.py` / `agent_decision_contract.py` 本轮未创建，因为未识别出足够独立的清晰边界。
 - `werewolf_agent/agents/prompt_builder.py` / `werewolf_agent/agents/player.py`，Task 16 已拆分为 `prompt_composer.py` 和 `player_action_flow.py`；`player_result_mapping.py` 本轮未创建，因为成功/失败映射仍紧贴 action flow 的 retry 状态。
+- `werewolf_agent/skills/good_skill_handlers.py` / `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，Task 17 已拆分为 `good_claim_handlers.py`、`good_vote_handlers.py`、`good_power_handlers.py`、`wolf_discussion.py`、`wolf_consensus.py`，旧模块保留兼容 facade。
 
 ## 拆分原则
 
@@ -1215,22 +1214,26 @@ Move claim/counter-claim handlers into `good_claim_handlers.py`, vote pressure h
 
 2026-07-07 result: split `good_skill_handlers.py` into `good_claim_handlers.py`, `good_vote_handlers.py`, and `good_power_handlers.py`; kept `good_skill_handlers.py` as a compatibility facade so existing `werewolf_skills` imports and handler registration remain stable.
 
-- [ ] **Step 3: Split wolf night nodes by phase**
+- [x] **Step 3: Split wolf night nodes by phase**
 
 Move discussion/planning helpers into `wolf_discussion.py`; move consensus and fallback target resolution into `wolf_consensus.py`.
 
-- [ ] **Step 4: Preserve compatibility registries and node imports**
+2026-07-07 result: split `wolf_discussion`, `_build_fallback_wolf_team_plan`, and `wolf_team_plan_node` into `wolf_discussion.py`; split `_legacy_wolf_consensus` and `wolf_consensus` into `wolf_consensus.py`; kept `wolf_night_nodes.py` as a compatibility facade.
+
+- [x] **Step 4: Preserve compatibility registries and node imports**
 
 Keep existing skill handler registration and node imports working through the old modules.
 
-- [ ] **Step 5: Verify and commit**
+2026-07-07 result: old imports through `runtime.nodes.night` and `runtime.nodes.wolf_night_nodes` remain stable; compatibility test also covers old `night.py` monkeypatch paths for agent dispatch.
+
+- [x] **Step 5: Verify and commit**
 
 Run:
 
 ```powershell
 python -m pytest -n 0 --basetemp .tmp tests/skills/test_good_skill_handlers.py tests/skills/test_werewolf_skills.py tests/runtime/test_wolf_night_nodes.py tests/runtime/test_wolf_flow.py -q
 python -m compileall -q werewolf_agent/skills werewolf_agent/runtime/nodes
-python -m ruff check werewolf_agent/skills/good_skill_handlers.py werewolf_agent/runtime/nodes/wolf_night_nodes.py --select F401,F841
+python -m ruff check werewolf_agent/skills/good_skill_handlers.py werewolf_agent/skills/good_claim_handlers.py werewolf_agent/skills/good_vote_handlers.py werewolf_agent/skills/good_power_handlers.py werewolf_agent/runtime/nodes/wolf_night_nodes.py werewolf_agent/runtime/nodes/wolf_discussion.py werewolf_agent/runtime/nodes/wolf_consensus.py --select F401,F841
 git diff --check
 git commit -m "refactor: split role-specific helper modules"
 ```
@@ -1247,7 +1250,19 @@ python -m ruff check werewolf_agent/skills/good_skill_handlers.py werewolf_agent
 git diff --check
 ```
 
-All listed Step 2 commands returned exit code 0. Task 17 remains open for wolf night node splitting.
+All listed Step 2 commands returned exit code 0.
+
+2026-07-07 final verification:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/runtime/test_wolf_night_nodes.py -q
+python -m pytest -n 0 --basetemp .tmp tests/skills/test_good_skill_handlers.py tests/skills/test_werewolf_skills.py tests/runtime/test_wolf_night_nodes.py tests/runtime/test_wolf_flow.py -q
+python -m compileall -q werewolf_agent/skills werewolf_agent/runtime/nodes
+python -m ruff check werewolf_agent/skills/good_skill_handlers.py werewolf_agent/skills/good_claim_handlers.py werewolf_agent/skills/good_vote_handlers.py werewolf_agent/skills/good_power_handlers.py werewolf_agent/runtime/nodes/wolf_night_nodes.py werewolf_agent/runtime/nodes/wolf_discussion.py werewolf_agent/runtime/nodes/wolf_consensus.py --select F401,F841
+git diff --check
+```
+
+All listed final Task 17 commands returned exit code 0.
 
 ---
 

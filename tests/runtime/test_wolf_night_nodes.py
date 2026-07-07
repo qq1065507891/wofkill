@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 from werewolf_agent.core.models import GameState, PlayerState
@@ -30,6 +31,22 @@ def test_wolf_night_nodes_remain_compatibly_importable() -> None:
     assert night._build_fallback_wolf_team_plan is wolf_night_nodes._build_fallback_wolf_team_plan
     assert night.wolf_team_plan_node is wolf_night_nodes.wolf_team_plan_node
     assert night.wolf_consensus is wolf_night_nodes.wolf_consensus
+
+
+def test_wolf_night_node_groups_are_importable() -> None:
+    from werewolf_agent.runtime.nodes import wolf_night_nodes
+
+    wolf_discussion = importlib.import_module("werewolf_agent.runtime.nodes.wolf_discussion")
+    wolf_consensus = importlib.import_module("werewolf_agent.runtime.nodes.wolf_consensus")
+
+    assert wolf_discussion.wolf_discussion is wolf_night_nodes.wolf_discussion
+    assert (
+        wolf_discussion._build_fallback_wolf_team_plan
+        is wolf_night_nodes._build_fallback_wolf_team_plan
+    )
+    assert wolf_discussion.wolf_team_plan_node is wolf_night_nodes.wolf_team_plan_node
+    assert wolf_consensus._legacy_wolf_consensus is wolf_night_nodes._legacy_wolf_consensus
+    assert wolf_consensus.wolf_consensus is wolf_night_nodes.wolf_consensus
 
 
 def test_wolf_nodes_respect_old_agent_monkeypatch_path(monkeypatch) -> None:
