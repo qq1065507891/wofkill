@@ -36,10 +36,13 @@
 
 仍未完成:
 
-- [ ] Task 12: 拆对应超大测试文件
 - [ ] Task 13: 当前批次最终全量验证、清理 `.tmp`、同步 CodeGraph
 - [ ] Task 15-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
+
+不执行项:
+
+- [x] Task 12: 不拆 `tests/` 目录。2026-07-07 用户决策：测试目录保持现状，不做按生产边界拆分；后续只在新增功能或修复时就地维护相关测试。
 
 下一轮候选池:
 
@@ -81,7 +84,7 @@
 - [x] 拆 `werewolf_agent/runtime/nodes/day.py`。
 - [x] 拆 `werewolf_agent/api/routes/games.py`。
 - [x] 拆第二批 600 行以上但风险较低的模块。RAG retrieval/storage 已完成 facade 拆分。
-- [ ] 拆对应超大测试文件。
+- [x] 不拆对应超大测试文件（2026-07-07 用户决策：`tests/` 目录保持现状）。
 - [ ] 当前批次最终全量验证、提交、CodeGraph 同步。
 - [ ] 下一轮候选模块进入正式拆分计划。
 
@@ -821,6 +824,8 @@ git commit -m "refactor: split rag retrieval storage"
 
 ### Task 12: Split Oversized Test Files To Match Production Boundaries
 
+**状态：不执行。** 2026-07-07 用户决策：`tests/` 目录不要拆分。保留本节作为历史候选记录，后续 agent 不应按下面步骤移动测试文件；只有在新增功能或修复缺陷时，才就地维护相关测试。
+
 **Files:**
 - Modify: `tests/agents/test_prompt_builder.py`
 - Modify: `tests/runtime/test_strategy_directives.py`
@@ -829,27 +834,27 @@ git commit -m "refactor: split rag retrieval storage"
 - Modify: `tests/rag/test_rag.py`
 - Create: focused test files matching newly created production modules.
 
-- [ ] **Step 1: Split prompt builder tests**
+- [x] **Step 1: Split prompt builder tests（已取消，不执行）**
 
 Move section, persona, memory, strategy, and salience tests into dedicated files created in Task 4.
 
-- [ ] **Step 2: Split strategy directive tests**
+- [x] **Step 2: Split strategy directive tests（已取消，不执行）**
 
 Group tests by directive module or role domain.
 
-- [ ] **Step 3: Split player agent tests**
+- [x] **Step 3: Split player agent tests（已取消，不执行）**
 
 Group tests by success path, fallback/retry, latency, and provider failure behavior.
 
-- [ ] **Step 4: Split context tests**
+- [x] **Step 4: Split context tests（已取消，不执行）**
 
 Move tests to files created in Task 2.
 
-- [ ] **Step 5: Split RAG tests**
+- [x] **Step 5: Split RAG tests（已取消，不执行）**
 
 Group ingestion, retrieval, vector storage, prompt rendering, and hardening tests by module.
 
-- [ ] **Step 6: Run moved test suites**
+- [x] **Step 6: Run moved test suites（已取消，不执行）**
 
 Run:
 
@@ -859,7 +864,7 @@ python -m pytest -n 0 --basetemp .tmp tests/agents tests/runtime tests/rag -q
 
 Expected: same pass/fail baseline as before moving tests.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit（已取消，不执行）**
 
 Commit message:
 
