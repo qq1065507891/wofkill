@@ -37,7 +37,7 @@
 
 仍未完成:
 
-- [ ] Task 20-21: 下一轮候选模块正式拆分计划
+- [ ] Task 21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 不执行项:
@@ -51,7 +51,6 @@
 
 下一轮候选池:
 
-- `werewolf_agent/api/routes/games.py`，697 行，已拆 route helper，需判断 route declaration 是否还过重。
 - `werewolf_agent/model_gateway/router.py`，651 行，已拆 provider/retry/usage helper，需判断 router 是否仍承担过多。
 
 已完成候选:
@@ -62,6 +61,7 @@
 - `werewolf_agent/skills/good_skill_handlers.py` / `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，Task 17 已拆分为 `good_claim_handlers.py`、`good_vote_handlers.py`、`good_power_handlers.py`、`wolf_discussion.py`、`wolf_consensus.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
 - `werewolf_agent/evaluation/metrics.py`，Task 19 已拆分为 `metric_aggregation.py` 和 `metric_reporting.py`，旧模块保留兼容 facade。
+- `werewolf_agent/api/routes/games.py`，Task 20 已拆分为 `game_lifecycle.py`、`game_commands.py` 和 `game_snapshots.py`，旧模块保留 `create_game_router` 与 helper 兼容 facade。
 
 ## 拆分原则
 
@@ -1413,7 +1413,7 @@ All listed Task 19 commands returned exit code 0.
 - Test: `tests/api/test_pause_resume_lock.py`
 - Test: `tests/api/test_game_auth_helpers.py`
 
-- [ ] **Step 1: Inspect route declaration density**
+- [x] **Step 1: Inspect route declaration density**
 
 Run:
 
@@ -1423,15 +1423,21 @@ codegraph.cmd explore "werewolf_agent/api/routes/games.py route declarations lif
 
 Expected: determine whether route declaration itself should split by lifecycle, command, and snapshot endpoints.
 
-- [ ] **Step 2: Split route groups only if registration remains clear**
+2026-07-07 result: CodeGraph and route inspection showed `games.py` still owned lifecycle, command, snapshot/view, share, and audit route declarations after helper extraction, so route declarations remained too dense for one focused module.
+
+- [x] **Step 2: Split route groups only if registration remains clear**
 
 Move lifecycle endpoints into `game_lifecycle.py`, command/pause/resume endpoints into `game_commands.py`, and snapshot/share view endpoints into `game_snapshots.py`.
 
-- [ ] **Step 3: Keep router factory stable**
+2026-07-07 result: lifecycle endpoints moved to `game_lifecycle.py`, start/step/pause/resume moved to `game_commands.py`, and state/replay/share/audit endpoints moved to `game_snapshots.py`.
+
+- [x] **Step 3: Keep router factory stable**
 
 Keep `create_game_router` and any public route registration API stable from `games.py`.
 
-- [ ] **Step 4: Verify and commit**
+2026-07-07 result: `games.py` remains the public `create_game_router` facade and re-exports compatibility helpers. Route registration uses a current facade resolver wrapper so tests that monkeypatch `games._resolve_caller_role` keep working after router creation.
+
+- [x] **Step 4: Verify and commit**
 
 Run:
 
@@ -1444,6 +1450,21 @@ git commit -m "refactor: split game route declarations"
 ```
 
 Expected: route table and auth behavior stay unchanged.
+
+2026-07-07 final verification in the managed sandbox:
+
+```powershell
+PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -o addopts= -p no:cacheprovider --basetemp .pytest_task20_focus tests/api/test_game_auth_helpers.py tests/api/test_game_persistence_helpers.py::test_game_route_group_modules_expose_registration_helpers tests/api/test_game_persistence_helpers.py::test_game_router_keeps_route_registration_surface tests/api/test_game_persistence_helpers.py::test_game_router_uses_patched_facade_role_resolver_after_registration -q
+python -B -c "... route surface exact assertion ..."
+python -B -c "... patched games._resolve_caller_role replay assertion ..."
+python -B -c "... create/start/public-state/replay/pause/resume/rag-audit smoke ..."
+python -B -c "... ast.parse touched route modules ..."
+python -B -c "... _build_locked_config_snapshot path traversal assertion ..."
+python -m ruff check --no-cache werewolf_agent/api/routes/games.py werewolf_agent/api/routes/game_lifecycle.py werewolf_agent/api/routes/game_commands.py werewolf_agent/api/routes/game_snapshots.py tests/api/test_game_persistence_helpers.py --select F401,F841
+git diff --check
+```
+
+All listed sandbox-safe Task 20 commands returned exit code 0; the focused pytest command reported `9 passed`. The full pytest command with the plan's API test list executed 74 tests successfully, then errored only while setting up pytest's `tmp_path` fixture because the managed sandbox denied creating the requested basetemp directory (`PermissionError: [WinError 5]`). Sandboxed `compileall` also hit `WinError 5` writing bytecode cache, so AST parsing was used as the no-cache syntax check.
 
 ---
 

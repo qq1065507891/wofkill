@@ -19,10 +19,13 @@ from fastapi import HTTPException
 from werewolf_agent.api.app import create_app
 from werewolf_agent.api.auth import AuthConfig, AuthManager
 from werewolf_agent.api.routes import game_cognition_views
+from werewolf_agent.api.routes import game_commands
+from werewolf_agent.api.routes import game_lifecycle
 from werewolf_agent.api.routes import game_persistence
 from werewolf_agent.api.routes import game_public_share
+from werewolf_agent.api.routes import game_snapshots
 from werewolf_agent.api.routes import games
-from werewolf_agent.api.schemas import CreateGameRequest
+from werewolf_agent.api.schemas import CallerRole, CreateGameRequest
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
 
@@ -42,6 +45,12 @@ def test_helper_modules_are_reexported_from_games_facade() -> None:
     assert games._build_locked_config_snapshot is game_cognition_views._build_locked_config_snapshot
     assert games._event_is_public_for_share is game_public_share._event_is_public_for_share
     assert games._pick_public_mvp_candidate is game_public_share._pick_public_mvp_candidate
+
+
+def test_game_route_group_modules_expose_registration_helpers() -> None:
+    assert game_lifecycle.register_game_lifecycle_routes is not None
+    assert game_commands.register_game_command_routes is not None
+    assert game_snapshots.register_game_snapshot_routes is not None
 
 
 def test_game_router_keeps_route_registration_surface() -> None:
@@ -74,6 +83,26 @@ def test_game_router_keeps_route_registration_surface() -> None:
         ("GET", "/games/{game_id}/rag-audit"),
         ("GET", "/games/{game_id}/world-model-audit"),
     }
+
+
+def test_game_router_uses_patched_facade_role_resolver_after_registration(monkeypatch) -> None:
+    auth = AuthManager(AuthConfig(mode="local", secret_key="test-secret"))
+    app = create_app(repository=InMemoryGameRepository(), auth_manager=auth)
+    app.state.games["g_patch"] = GameState(game_id="g_patch", phase="day")
+
+    def fake_resolver(*args, **kwargs):
+        return CallerRole.MODERATOR
+
+    monkeypatch.setattr(games, "_resolve_caller_role", fake_resolver)
+
+    from fastapi.testclient import TestClient
+
+    response = TestClient(app).get(
+        "/games/g_patch/replay",
+        params={"caller_id": "anyone", "caller_role": "moderator"},
+    )
+
+    assert response.status_code == 200
 
 
 def test_get_game_raises_404_for_missing_game() -> None:
