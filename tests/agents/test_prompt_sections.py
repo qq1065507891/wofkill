@@ -39,3 +39,18 @@ def test_prompt_builder_reexports_split_compatibility_constants() -> None:
     assert prompt_builder._MAX_SKILL_TACTICAL_ADVICE_CHARS == prompt_strategy._MAX_SKILL_TACTICAL_ADVICE_CHARS
     assert prompt_builder._STRATEGY_GROUP_ORDER == prompt_strategy._STRATEGY_GROUP_ORDER
     assert prompt_builder._NEVER_DROP_TIER is prompt_sections._NEVER_DROP_TIER
+
+
+def test_prompt_output_methods_remain_compatibly_importable() -> None:
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.prompt_output import PromptOutputMixin
+
+    assert PlayerPromptBuilder._build_retry_hint is PromptOutputMixin._build_retry_hint
+    assert PlayerPromptBuilder._build_final_output_guard is PromptOutputMixin._build_final_output_guard
+    assert PlayerPromptBuilder._build_task_prompt is PromptOutputMixin._build_task_prompt
+    assert PlayerPromptBuilder._format_examples is PromptOutputMixin._format_examples
+    assert PlayerPromptBuilder._build_strict_output_contract is PromptOutputMixin._build_strict_output_contract
+    assert PlayerPromptBuilder._format_choice_prompt is PromptOutputMixin._format_choice_prompt
+    assert PlayerPromptBuilder._format_speech_intent_prompt is PromptOutputMixin._format_speech_intent_prompt
+    assert PlayerPromptBuilder._select_output_mode is PromptOutputMixin._select_output_mode
+    assert PlayerPromptBuilder._is_exile_vote_context is PromptOutputMixin._is_exile_vote_context
