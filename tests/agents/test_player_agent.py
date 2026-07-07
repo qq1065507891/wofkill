@@ -366,6 +366,33 @@ class NoToolProvider:
         )
 
 
+class TestPlayerActionFlowSplit:
+    """Task 16: PlayerAgent.act 应委托给 player_action_flow。"""
+
+    def test_act_delegates_to_player_action_flow(self, monkeypatch) -> None:
+        from werewolf_agent.agents import player_action_flow
+
+        agent = PlayerAgent(agent_id="p01", model_router=None)
+        context = AgentContext(
+            agent_id="p01",
+            task_type=TaskType.SPEECH,
+            legal_actions=[ActionType.SPEECH],
+            legal_targets=[],
+        )
+        action = FallbackAction(action_type=ActionType.NO_ACTION, reason="sentinel")
+        retry = RetryInfo()
+        calls: list[tuple[PlayerAgent, AgentContext]] = []
+
+        def fake_flow(received_agent: PlayerAgent, received_context: AgentContext):
+            calls.append((received_agent, received_context))
+            return action, retry
+
+        monkeypatch.setattr(player_action_flow, "run_player_action_flow", fake_flow)
+
+        assert agent.act(context) == (action, retry)
+        assert calls == [(agent, context)]
+
+
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests
 # ---------------------------------------------------------------------------

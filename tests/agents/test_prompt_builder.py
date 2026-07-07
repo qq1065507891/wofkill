@@ -57,6 +57,36 @@ def _make_ctx_with_directive(directive: dict) -> AgentContext:
     )
 
 
+class TestPromptComposerSplit:
+    """Task 16: PlayerPromptBuilder 只保留 public facade，组合顺序交给 composer。"""
+
+    def test_prompt_builder_delegates_prompt_composition(self, monkeypatch) -> None:
+        from werewolf_agent.agents import prompt_composer
+
+        ctx = _make_ctx_with_directive({})
+        builder = PlayerPromptBuilder(ctx, player_name="Tester")
+        retry = RetryInfo()
+        calls: list[tuple[str, object]] = []
+
+        def fake_system(received_builder: PlayerPromptBuilder) -> str:
+            calls.append(("system", received_builder))
+            return "system-from-composer"
+
+        def fake_user(received_builder: PlayerPromptBuilder, received_retry: RetryInfo) -> str:
+            calls.append(("user", received_builder, received_retry))
+            return "user-from-composer"
+
+        monkeypatch.setattr(prompt_composer, "compose_system_prompt", fake_system)
+        monkeypatch.setattr(prompt_composer, "compose_user_prompt", fake_user)
+
+        assert builder.build_system_prompt() == "system-from-composer"
+        assert builder.build_user_prompt(retry) == "user-from-composer"
+        assert calls == [
+            ("system", builder),
+            ("user", builder, retry),
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Category-membership sanity checks (module-level constants)
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-05
+修改日期: 2026-07-07
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
@@ -31,6 +31,7 @@ from werewolf_agent.agents.prompt_formatting import (
     summarize_json_value,
     truncate_text,
 )
+from werewolf_agent.agents import prompt_composer
 from werewolf_agent.agents.prompt_memory import (
     REFLECTION_CARD_BUDGET,
     PromptMemoryMixin,
@@ -251,21 +252,7 @@ class PlayerPromptBuilder(
     # ═══════════════════════════════════════════════════════════════
 
     def build_system_prompt(self) -> str:
-        parts: list[str] = []
-        parts.append(self._build_core_identity())
-        # P2-S10: _build_persona() moved to build_user_prompt() — persona
-        # is per-turn (situation-driven) and should be a dynamic section
-        # grouped with other per-turn context, not a stable section in
-        # the system prompt.
-        parts.append(self._build_game_rules())
-        parts.append(self._build_role_guide())
-        parts.append(self._build_information_boundaries())
-        parts.append(self._build_reasoning_method())
-        # P0-K1: skill tool path removed; policy about calling skill tools
-        # is gone. Skill analyses are pre-injected (skill_analysis_hints).
-        parts.append(self._build_skill_policy())
-        parts.append(self._build_output_contract())
-        return "\n\n".join(p for p in parts if p)
+        return prompt_composer.compose_system_prompt(self)
 
     def _build_core_identity(self) -> str:
         role_cn = _ROLE_NAMES.get(self.context.own_role or "", self.context.own_role or "")
@@ -415,47 +402,7 @@ class PlayerPromptBuilder(
     # ═══════════════════════════════════════════════════════════════
 
     def build_user_prompt(self, retry: RetryInfo) -> str:
-        # P1-5: build the full prompt first, then enforce the global
-        # token budget by dropping sections with the lowest ``drop_tier``.
-        # Current-game grounding, persona, strategy, and the final
-        # output guard are marked never-drop in _USER_SECTION_SPECS.
-        parts: list[tuple[str, str]] = []
-        # Boundary marker per s10: above = stable, below = dynamic.
-        # Boundary marker + task prompt are always kept (they are not
-        # sections with a priority label).
-        parts.append(("", "=== DYNAMIC_BOUNDARY ==="))
-        # P1-S3: each section is wrapped with a label so the LLM can
-        # rank attention under tight token budgets. The label is
-        # prepended at the section level
-        # — internal sub-grouping (e.g., P0-S5 within strategy_directive)
-        # is preserved.
-        parts.append(("_build_phase_context", self._label_section("_build_phase_context", self._build_phase_context())))
-        parts.append(("_build_public_summary", self._label_section("_build_public_summary", self._build_public_summary())))
-        parts.append(("_build_visible_state", self._label_section("_build_visible_state", self._build_visible_state())))
-        parts.append(("_build_salience_events", self._label_section("_build_salience_events", self._build_salience_events())))
-        parts.append(("_build_recent_transcript", self._label_section("_build_recent_transcript", self._build_recent_transcript())))
-        # P2-S10: persona (per-turn style/tone hint) lives in the user
-        # message so it stays dynamic, but it follows current-game public
-        # grounding to avoid style hints interrupting the public record chain.
-        parts.append(("_build_persona", self._label_section("_build_persona", self._build_persona())))
-        parts.append(("_build_belief_state", self._label_section("_build_belief_state", self._build_belief_state())))
-        parts.append(("_build_contradiction_alerts", self._label_section("_build_contradiction_alerts", self._build_contradiction_alerts())))
-        parts.append(("_build_seer_credibility", self._label_section("_build_seer_credibility", self._build_seer_credibility())))
-        parts.append(("_build_possible_worlds", self._label_section("_build_possible_worlds", self._build_possible_worlds())))
-        parts.append(("_build_simulation_predictions", self._label_section("_build_simulation_predictions", self._build_simulation_predictions())))
-        parts.append(("_build_private_memory_hints", self._label_section("_build_private_memory_hints", self._build_private_memory_hints())))
-        parts.append(("_build_learning_context", self._label_section("_build_learning_context", self._build_learning_context())))
-        parts.append(("_build_strategy_directive", self._label_section("_build_strategy_directive", self._build_strategy_directive())))
-        # P0-S6: retry hint must come AFTER task prompt and BEFORE the
-        # output contract. Old order put retry BEFORE task, so the LLM
-        # read "纠正提示..." and then got distracted by the task
-        # description that followed — easy to miss the correction.
-        # New order (task → retry → contract) makes the correction the
-        # last thing the LLM sees before the output contract.
-        # task prompt has no priority label — it's the action spec.
-        parts.append(("", self._build_task_prompt()))
-        parts.append(("_build_final_output_guard", self._label_section("_build_final_output_guard", self._build_final_output_guard(retry))))
-        return self._enforce_budget(parts)
+        return prompt_composer.compose_user_prompt(self, retry)
 
 
     def _build_phase_context(self) -> str:

@@ -37,7 +37,7 @@
 
 仍未完成:
 
-- [ ] Task 16-21: 下一轮候选模块正式拆分计划
+- [ ] Task 17-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 不执行项:
@@ -51,8 +51,6 @@
 
 下一轮候选池:
 
-- `werewolf_agent/agents/prompt_builder.py`，1361 行，已拆渲染 helper，需复核是否还能进一步压缩 coordinator。
-- `werewolf_agent/agents/player.py`，1037 行，已拆 pipeline helper，需复核 `PlayerAgent` 生命周期边界。
 - `werewolf_agent/skills/good_skill_handlers.py`，933 行，下一轮可按好人技能职责继续拆。
 - `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，778 行，下一轮可按讨论、计划、共识拆分。
 - `werewolf_agent/agents/schemas.py`，759 行，候选为 action/prompt/trace schema 分组。
@@ -64,6 +62,7 @@
 
 - `werewolf_agent/rag/retriever.py` / `werewolf_agent/rag/vector_store.py`，Task 11.8 / Task 14 已拆分为 `query_processing.py`、`retrieval_ranking.py`、`local_vector_store.py`、`embedding_vector_store.py`，旧模块保留兼容 facade。
 - `werewolf_agent/runtime/agent_adapter.py`，Task 15 已拆分为 `agent_action_pipeline.py`，旧模块保留兼容 facade；`agent_dispatch.py` / `agent_decision_contract.py` 本轮未创建，因为未识别出足够独立的清晰边界。
+- `werewolf_agent/agents/prompt_builder.py` / `werewolf_agent/agents/player.py`，Task 16 已拆分为 `prompt_composer.py` 和 `player_action_flow.py`；`player_result_mapping.py` 本轮未创建，因为成功/失败映射仍紧贴 action flow 的 retry 状态。
 
 ## 拆分原则
 
@@ -1117,15 +1116,15 @@ All listed commands returned exit code 0; broad runtime impact set covered 254 t
 **Files:**
 - Modify: `werewolf_agent/agents/prompt_builder.py`
 - Modify: `werewolf_agent/agents/player.py`
-- Candidate create: `werewolf_agent/agents/prompt_composer.py`
-- Candidate create: `werewolf_agent/agents/player_action_flow.py`
-- Candidate create: `werewolf_agent/agents/player_result_mapping.py`
+- Create: `werewolf_agent/agents/prompt_composer.py`
+- Create: `werewolf_agent/agents/player_action_flow.py`
+- Candidate not created: `werewolf_agent/agents/player_result_mapping.py`
 - Test: `tests/agents/test_prompt_builder.py`
 - Test: `tests/agents/test_prompt_sections.py`
 - Test: `tests/agents/test_player_agent.py`
 - Test: `tests/agents/test_player_generation.py`
 
-- [ ] **Step 1: Re-rank remaining agent files**
+- [x] **Step 1: Re-rank remaining agent files**
 
 Run:
 
@@ -1135,31 +1134,54 @@ codegraph.cmd explore "werewolf_agent/agents/prompt_builder.py werewolf_agent/ag
 
 Expected: distinguish high-level orchestration from leftover formatting, provider call, retry, and result mapping details.
 
-- [ ] **Step 2: Split prompt composition if still mixed**
+- [x] 2026-07-07 result: `prompt_builder.py` already owns section rendering through mixins, but still owned the system/user prompt composition order. `player.py` still owned provider call, retry, fallback trace, metrics, and success/failure result mapping inside `PlayerAgent.act`.
+
+- [x] **Step 2: Split prompt composition if still mixed**
 
 Move prompt assembly orchestration into `prompt_composer.py` only if `prompt_builder.py` still mixes section rendering with prompt lifecycle decisions.
 
-- [ ] **Step 3: Split player action flow if still mixed**
+- [x] 2026-07-07 result: moved system/user prompt composition order into `prompt_composer.py`; `PlayerPromptBuilder` now delegates `build_system_prompt()` and `build_user_prompt()` while keeping all section builders import-compatible.
+
+- [x] **Step 3: Split player action flow if still mixed**
 
 Move action flow coordination into `player_action_flow.py`; move response/result mapping into `player_result_mapping.py` if `player.py` still owns those details.
 
-- [ ] **Step 4: Preserve public classes**
+- [x] 2026-07-07 result: moved `PlayerAgent.act` retry/action orchestration into `player_action_flow.py`; did not create `player_result_mapping.py` because the trace/result mapping state is still coupled to retry loop locals and would require a larger behavior-sensitive redesign.
+
+- [x] **Step 4: Preserve public classes**
 
 Keep `PlayerPromptBuilder` importable from `prompt_builder.py` and `PlayerAgent` importable from `player.py`.
 
-- [ ] **Step 5: Verify and commit**
+- [x] 2026-07-07 result: public imports for `PlayerPromptBuilder` and `PlayerAgent` remain stable; characterization tests assert facade delegation to `prompt_composer` and `player_action_flow`.
+
+- [x] **Step 5: Verify and commit**
 
 Run:
 
 ```powershell
 python -m pytest -n 0 --basetemp .tmp tests/agents/test_prompt_builder.py tests/agents/test_prompt_sections.py tests/agents/test_prompt_persona.py tests/agents/test_prompt_memory.py tests/agents/test_prompt_strategy.py tests/agents/test_player_agent.py tests/agents/test_player_generation.py -q
 python -m compileall -q werewolf_agent/agents
-python -m ruff check werewolf_agent/agents/prompt_builder.py werewolf_agent/agents/player.py --select F401,F841
+python -m ruff check werewolf_agent/agents/prompt_builder.py werewolf_agent/agents/prompt_composer.py werewolf_agent/agents/player.py werewolf_agent/agents/player_action_flow.py --select F401,F841
 git diff --check
 git commit -m "refactor: slim agent prompt and player facades"
 ```
 
 Expected: public prompt/player behavior unchanged.
+
+2026-07-07 verification:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/agents/test_prompt_builder.py::TestPromptComposerSplit -q
+python -m pytest -n 0 --basetemp .tmp tests/agents/test_player_agent.py::TestPlayerActionFlowSplit -q
+python -m pytest -n 0 --basetemp .tmp tests/agents/test_prompt_builder.py tests/agents/test_prompt_sections.py tests/agents/test_prompt_persona.py tests/agents/test_prompt_memory.py tests/agents/test_prompt_strategy.py tests/agents/test_player_agent.py tests/agents/test_player_generation.py -q
+python -m pytest -n 0 --basetemp .tmp tests/agents/test_player_failures.py tests/agents/test_player_latency.py -q
+python -m compileall -q werewolf_agent/agents
+python -m ruff check werewolf_agent/agents/prompt_builder.py werewolf_agent/agents/prompt_composer.py werewolf_agent/agents/player.py werewolf_agent/agents/player_action_flow.py --select F401,F841
+git diff --check
+public import probe for `PlayerPromptBuilder`, `PlayerAgent`, `prompt_composer`, and `player_action_flow`
+```
+
+All listed commands returned exit code 0. The compatibility suite caught and guarded preserved `player.py` helper aliases after `PlayerAgent.act` moved to `player_action_flow.py`. A broader Ruff run including the two large touched test files surfaced pre-existing test-only F401/F841 debt and was not used as a Task 16 gate.
 
 ---
 
