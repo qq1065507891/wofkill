@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from werewolf_agent.evaluation import claim_metrics
 from werewolf_agent.evaluation import metric_aggregation
+from werewolf_agent.evaluation import metric_outcomes
 from werewolf_agent.evaluation import metric_reporting
 from werewolf_agent.evaluation import metrics
 from werewolf_agent.evaluation import pace_metrics
@@ -25,6 +26,21 @@ def test_metrics_aggregator_is_reexported_from_metrics_facade() -> None:
     assert (
         metric_aggregation.MetricsAggregator.compare_snapshots
         is metric_reporting.compare_snapshots
+    )
+
+
+def test_outcome_metric_helpers_are_split_from_aggregator() -> None:
+    assert (
+        metric_aggregation.MetricsAggregator._compute_faction_metrics
+        is metric_outcomes.compute_faction_metrics
+    )
+    assert (
+        metric_aggregation.MetricsAggregator._compute_player_metrics
+        is metric_outcomes.compute_player_metrics
+    )
+    assert (
+        metric_aggregation.MetricsAggregator._compute_role_metrics
+        is metric_outcomes.compute_role_metrics
     )
 
 

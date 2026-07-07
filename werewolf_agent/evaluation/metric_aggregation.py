@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-聚合阵营、玩家、角色、质量、安全和成本指标。
+聚合评价快照并委托基础 outcome、质量、安全和成本指标模块。
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-08
 
 使用示例:
     >>> from werewolf_agent.evaluation.metric_aggregation import MetricsAggregator
@@ -14,20 +15,22 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.evaluation.claim_metrics import _extract_claim_events
+from werewolf_agent.evaluation.metric_outcomes import (
+    compute_faction_metrics,
+    compute_player_metrics,
+    compute_role_metrics,
+)
 from werewolf_agent.evaluation.metric_reporting import compare_snapshots
 from werewolf_agent.evaluation.schemas import (
     ActionVerdict,
     BatchConfig,
     CostMetrics,
-    FactionMetrics,
     GameResult,
     GrowthPoint,
     MetricProvenance,
     MetricsSnapshot,
-    PlayerMetrics,
     QualityMetrics,
     ReplayRecord,
-    RoleMetrics,
     SafetyMetrics,
 )
 from werewolf_agent.evaluation.world_model_metrics import compute_world_model_metrics
@@ -38,6 +41,10 @@ __all__ = ["MetricsAggregator"]
 
 class MetricsAggregator:
     """Aggregates metrics from a list of GameResult objects."""
+
+    _compute_faction_metrics = compute_faction_metrics
+    _compute_player_metrics = compute_player_metrics
+    _compute_role_metrics = compute_role_metrics
 
     def __init__(self, batch_config: BatchConfig | None = None) -> None:
         self._config = batch_config
@@ -72,89 +79,6 @@ class MetricsAggregator:
         self._compute_growth_curve(snap)
 
         return snap
-
-    # -----------------------------------------------------------------------
-    # Faction metrics
-    # -----------------------------------------------------------------------
-
-    def _compute_faction_metrics(self, snap: MetricsSnapshot) -> None:
-        total = len(self._results)
-        good_wins = sum(1 for r in self._results if r.winning_faction == "good")
-        wolf_wins = sum(1 for r in self._results if r.winning_faction == "werewolf")
-        snap.faction_metrics = FactionMetrics(
-            good_win_rate=good_wins / total if total else 0.0,
-            werewolf_win_rate=wolf_wins / total if total else 0.0,
-            good_wins=good_wins,
-            werewolf_wins=wolf_wins,
-            total_games=total,
-        )
-
-    # -----------------------------------------------------------------------
-    # Player metrics
-    # -----------------------------------------------------------------------
-
-    def _compute_player_metrics(self, snap: MetricsSnapshot) -> None:
-        player_stats: dict[str, dict[str, Any]] = {}
-
-        for result in self._results:
-            winner = result.winning_faction
-            for pid, faction in result.player_factions.items():
-                if pid not in player_stats:
-                    player_stats[pid] = {"games": 0, "wins": 0, "role_stats": {}}
-                stats = player_stats[pid]
-                stats["games"] += 1
-                if faction == winner:
-                    stats["wins"] += 1
-                role = result.player_roles.get(pid, "unknown")
-                rs = stats["role_stats"]
-                if role not in rs:
-                    rs[role] = {"games": 0, "wins": 0}
-                rs[role]["games"] += 1
-                if faction == winner:
-                    rs[role]["wins"] += 1
-
-        for pid, stats in player_stats.items():
-            games = stats["games"]
-            wins = stats["wins"]
-            pm = PlayerMetrics(
-                player_id=pid,
-                win_rate=wins / games if games else 0.0,
-                games=games,
-                wins=wins,
-            )
-            for role, rs in stats["role_stats"].items():
-                pm.role_metrics[role] = RoleMetrics(
-                    role=role,
-                    win_rate=rs["wins"] / rs["games"] if rs["games"] else 0.0,
-                    games=rs["games"],
-                    wins=rs["wins"],
-                )
-            snap.player_metrics[pid] = pm
-
-    # -----------------------------------------------------------------------
-    # Role metrics
-    # -----------------------------------------------------------------------
-
-    def _compute_role_metrics(self, snap: MetricsSnapshot) -> None:
-        role_stats: dict[str, dict[str, int]] = {}
-
-        for result in self._results:
-            winner = result.winning_faction
-            for pid, role in result.player_roles.items():
-                if role not in role_stats:
-                    role_stats[role] = {"games": 0, "wins": 0}
-                role_stats[role]["games"] += 1
-                faction = result.player_factions.get(pid, "")
-                if faction == winner:
-                    role_stats[role]["wins"] += 1
-
-        for role, stats in role_stats.items():
-            snap.role_metrics[role] = RoleMetrics(
-                role=role,
-                win_rate=stats["wins"] / stats["games"] if stats["games"] else 0.0,
-                games=stats["games"],
-                wins=stats["wins"],
-            )
 
     # -----------------------------------------------------------------------
     # Quality metrics
