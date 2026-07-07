@@ -52,6 +52,15 @@
 
 - 当前计划内候选已处理完毕。后续新增候选需基于新的行数和职责扫描另起计划。
 
+2026-07-07 非测试文件标准复查:
+
+- 范围：仅检查 tracked Python 文件，排除 `tests/` 目录；共扫描 313 个非测试 Python 文件。
+- 结论：原 SRP 拆分计划没有遗留未完成 task；下列问题属于新的标准整改候选，需要另起小批次处理并分别验证。
+- Python 文件头顺序不合规：`werewolf_agent/runtime/context_public_summary.py`、`werewolf_agent/runtime/reflection_prompt.py`。这两个文件已有模块 docstring，但旧自动头注释位于 docstring 之前，不符合“编码声明后紧跟模块 docstring”的顺序要求。
+- Python 文件头缺失或不完整：`scripts/analyze_recent_balance.py`、`scripts/analyze_reflection_score.py`、`scripts/clear_memory.py`、`scripts/migrate_reflection_memory_v2.py`、`scripts/offline_belief_worlds_compare.py`、`scripts/print_game_audit.py`、`scripts/probe_ark_tool_support.py`、`scripts/probe_real_game_baidu_action.py`、`scripts/run_real_game.py`、`scripts/verify_ark_text_json.py`。其中多数脚本缺少编码声明、作者和日期信息，`scripts/migrate_reflection_memory_v2.py` 还缺少模块 docstring。
+- 仍超过 500 行的非测试文件：`werewolf_agent/agents/prompt_builder.py`(1308)、`werewolf_agent/runtime/agent_action_pipeline.py`(1017)、`werewolf_agent/evaluation/metric_aggregation.py`(669)、`scripts/run_real_game.py`(580)、`werewolf_agent/agents/judge_hitl.py`(576)、`werewolf_agent/agents/player_action_flow.py`(564)、`werewolf_agent/agents/action_schemas.py`(563)、`werewolf_agent/agents/judge.py`(557)、`werewolf_agent/runtime/context.py`(546)、`werewolf_agent/runtime/private_memory.py`(544)、`werewolf_agent/runtime/graph.py`(542)、`werewolf_agent/runtime/agent_sheriff_actions.py`(539)、`werewolf_agent/evaluation/balance_audit.py`(520)、`werewolf_agent/agents/player.py`(516)、`werewolf_agent/runtime/nodes/night_specialists.py`(510)。
+- 建议顺序：先做纯文件头/注释规范修复，低风险且可用 `compileall` 与针对性 `ruff` 快速验证；再按职责拆分 500 行以上文件，优先处理 `prompt_builder.py`、`agent_action_pipeline.py`、`metric_aggregation.py` 这类生产核心大文件，脚本类文件可放在生产核心之后。
+
 已完成候选:
 
 - `werewolf_agent/rag/retriever.py` / `werewolf_agent/rag/vector_store.py`，Task 11.8 / Task 14 已拆分为 `query_processing.py`、`retrieval_ranking.py`、`local_vector_store.py`、`embedding_vector_store.py`，旧模块保留兼容 facade。
