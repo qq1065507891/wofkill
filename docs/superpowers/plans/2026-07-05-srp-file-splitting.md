@@ -37,7 +37,7 @@
 
 仍未完成:
 
-- [ ] Task 19-21: 下一轮候选模块正式拆分计划
+- [ ] Task 20-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 不执行项:
@@ -51,7 +51,6 @@
 
 下一轮候选池:
 
-- `werewolf_agent/evaluation/metrics.py`，742 行，已拆第一轮 metric helper，需判断是否保留聚合 facade。
 - `werewolf_agent/api/routes/games.py`，697 行，已拆 route helper，需判断 route declaration 是否还过重。
 - `werewolf_agent/model_gateway/router.py`，651 行，已拆 provider/retry/usage helper，需判断 router 是否仍承担过多。
 
@@ -62,6 +61,7 @@
 - `werewolf_agent/agents/prompt_builder.py` / `werewolf_agent/agents/player.py`，Task 16 已拆分为 `prompt_composer.py` 和 `player_action_flow.py`；`player_result_mapping.py` 本轮未创建，因为成功/失败映射仍紧贴 action flow 的 retry 状态。
 - `werewolf_agent/skills/good_skill_handlers.py` / `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，Task 17 已拆分为 `good_claim_handlers.py`、`good_vote_handlers.py`、`good_power_handlers.py`、`wolf_discussion.py`、`wolf_consensus.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
+- `werewolf_agent/evaluation/metrics.py`，Task 19 已拆分为 `metric_aggregation.py` 和 `metric_reporting.py`，旧模块保留兼容 facade。
 
 ## 拆分原则
 
@@ -1350,7 +1350,7 @@ All listed Task 18 commands returned exit code 0.
 - Test: `tests/evaluation/test_metrics_split_helpers.py`
 - Test: `tests/evaluation/test_remaining_metrics.py`
 
-- [ ] **Step 1: Inspect remaining metric responsibilities**
+- [x] **Step 1: Inspect remaining metric responsibilities**
 
 Run:
 
@@ -1360,15 +1360,21 @@ codegraph.cmd explore "werewolf_agent/evaluation/metrics.py remaining responsibi
 
 Expected: decide whether `metrics.py` is an acceptable facade or still mixes aggregation and report formatting.
 
-- [ ] **Step 2: Move aggregation helpers if needed**
+2026-07-07 result: CodeGraph and AST inspection showed `metrics.py` still carried the large `MetricsAggregator` implementation plus snapshot comparison payload shaping, so it was not yet an acceptable thin facade.
+
+- [x] **Step 2: Move aggregation helpers if needed**
 
 Move cross-metric aggregation and denominator handling into `metric_aggregation.py`.
 
-- [ ] **Step 3: Move reporting helpers if needed**
+2026-07-07 result: moved `MetricsAggregator` and cross-metric denominator/provenance aggregation into `metric_aggregation.py`.
+
+- [x] **Step 3: Move reporting helpers if needed**
 
 Move display/report shaping helpers into `metric_reporting.py`.
 
-- [ ] **Step 4: Verify and commit**
+2026-07-07 result: moved `compare_snapshots` report payload shaping into `metric_reporting.py`; `MetricsAggregator.compare_snapshots` remains compatible through a staticmethod binding.
+
+- [x] **Step 4: Verify and commit**
 
 Run:
 
@@ -1381,6 +1387,17 @@ git commit -m "refactor: slim evaluation metrics facade"
 ```
 
 Expected: metric values and report payloads remain unchanged.
+
+2026-07-07 final verification:
+
+```powershell
+python -m pytest -n 0 --basetemp .tmp tests/evaluation/test_feedback_metrics.py tests/evaluation/test_metrics_split_helpers.py tests/evaluation/test_remaining_metrics.py -q
+python -m compileall -q werewolf_agent/evaluation
+python -m ruff check werewolf_agent/evaluation/metrics.py werewolf_agent/evaluation/metric_aggregation.py werewolf_agent/evaluation/metric_reporting.py --select F401,F841
+git diff --check
+```
+
+All listed Task 19 commands returned exit code 0.
 
 ---
 

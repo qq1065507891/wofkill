@@ -12,10 +12,20 @@
 from __future__ import annotations
 
 from werewolf_agent.evaluation import claim_metrics
+from werewolf_agent.evaluation import metric_aggregation
+from werewolf_agent.evaluation import metric_reporting
 from werewolf_agent.evaluation import metrics
 from werewolf_agent.evaluation import pace_metrics
 from werewolf_agent.evaluation import world_model_metrics
 from werewolf_agent.evaluation.schemas import GameResult, MetricsSnapshot
+
+
+def test_metrics_aggregator_is_reexported_from_metrics_facade() -> None:
+    assert metrics.MetricsAggregator is metric_aggregation.MetricsAggregator
+    assert (
+        metric_aggregation.MetricsAggregator.compare_snapshots
+        is metric_reporting.compare_snapshots
+    )
 
 
 def test_claim_event_extractor_is_reexported_from_metrics_facade() -> None:
