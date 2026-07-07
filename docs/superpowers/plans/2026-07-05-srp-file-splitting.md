@@ -12,7 +12,7 @@
 
 ## 执行状态快照
 
-更新日期: 2026-07-06
+更新日期: 2026-07-07
 
 已完成并提交:
 
@@ -32,13 +32,13 @@
 - [x] Task 11.5: `c833c19 refactor: split game runner responsibilities`
 - [x] Task 11.6: `dcb6a5f` 至 `57ecb4b`，按职责拆分 `RuleEngine`
 - [x] Task 11.7: `7c834c2 refactor: split sheriff runtime nodes`
+- [x] Task 11.8 / Task 14: `2b22ac4`、`8bc75e1`、`d82aab9`、`84d5779`，拆分 RAG retrieval/ranking/vector storage facade
 
 仍未完成:
 
-- [ ] Task 11.8: 拆 `werewolf_agent/rag/retriever.py` 和 `werewolf_agent/rag/vector_store.py`
 - [ ] Task 12: 拆对应超大测试文件
 - [ ] Task 13: 当前批次最终全量验证、清理 `.tmp`、同步 CodeGraph
-- [ ] Task 14-21: 下一轮候选模块正式拆分计划
+- [ ] Task 15-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 下一轮候选池:
@@ -52,8 +52,10 @@
 - `werewolf_agent/evaluation/metrics.py`，742 行，已拆第一轮 metric helper，需判断是否保留聚合 facade。
 - `werewolf_agent/api/routes/games.py`，697 行，已拆 route helper，需判断 route declaration 是否还过重。
 - `werewolf_agent/model_gateway/router.py`，651 行，已拆 provider/retry/usage helper，需判断 router 是否仍承担过多。
-- `werewolf_agent/rag/retriever.py`，621 行，原计划未完成候选。
-- `werewolf_agent/rag/vector_store.py`，618 行，原计划未完成候选。
+
+已完成候选:
+
+- `werewolf_agent/rag/retriever.py` / `werewolf_agent/rag/vector_store.py`，Task 11.8 / Task 14 已拆分为 `query_processing.py`、`retrieval_ranking.py`、`local_vector_store.py`、`embedding_vector_store.py`，旧模块保留兼容 facade。
 
 ## 拆分原则
 
@@ -78,7 +80,7 @@
 - [x] 拆 `werewolf_agent/memory/reflection.py`。
 - [x] 拆 `werewolf_agent/runtime/nodes/day.py`。
 - [x] 拆 `werewolf_agent/api/routes/games.py`。
-- [ ] 拆第二批 600 行以上但风险较低的模块。当前已完成大部分，RAG retrieval/storage 未完成。
+- [x] 拆第二批 600 行以上但风险较低的模块。RAG retrieval/storage 已完成 facade 拆分。
 - [ ] 拆对应超大测试文件。
 - [ ] 当前批次最终全量验证、提交、CodeGraph 同步。
 - [ ] 下一轮候选模块进入正式拆分计划。
@@ -970,7 +972,7 @@ Expected: only intended changes committed; unrelated user changes remain untouch
 - Candidate test: `tests/rag/test_query_processing.py`
 - Candidate test: `tests/rag/test_vector_store_split.py`
 
-- [ ] **Step 1: Inspect current RAG boundaries with CodeGraph**
+- [x] **Step 1: Inspect current RAG boundaries with CodeGraph**
 
 Run:
 
@@ -980,27 +982,27 @@ codegraph.cmd explore "werewolf_agent/rag/retriever.py werewolf_agent/rag/vector
 
 Expected: identify tokenization/query preparation, ranking, local storage, embedding storage, and provider-specific branches.
 
-- [ ] **Step 2: Characterize public imports and retrieval output**
+- [x] **Step 2: Characterize public imports and retrieval output**
 
 Add or update tests proving existing imports from `retriever.py` and `vector_store.py` still work, and that representative query results keep the same order and metadata.
 
-- [ ] **Step 3: Move query processing**
+- [x] **Step 3: Move query processing**
 
 Move query normalization, tokenization, filters, and lightweight scoring helpers into `query_processing.py`; re-export compatibility helpers where tests or callers rely on them.
 
-- [ ] **Step 4: Move retrieval ranking**
+- [x] **Step 4: Move retrieval ranking**
 
 Move ranking, dedupe, score combination, and result shaping into `retrieval_ranking.py`.
 
-- [ ] **Step 5: Move vector store implementations**
+- [x] **Step 5: Move vector store implementations**
 
 Move local in-memory/file-backed behavior into `local_vector_store.py`; move embedding-backed/provider-specific behavior into `embedding_vector_store.py`.
 
-- [ ] **Step 6: Keep original modules as facades**
+- [x] **Step 6: Keep original modules as facades**
 
 `retriever.py` should coordinate retrieval flow. `vector_store.py` should expose stable public store classes and delegate implementation details.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run:
 
