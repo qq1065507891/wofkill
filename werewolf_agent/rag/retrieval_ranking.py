@@ -17,6 +17,7 @@ import logging
 import math
 import re
 from collections.abc import Callable
+from inspect import Parameter, signature
 from typing import Any
 
 from werewolf_agent.rag.schemas import (
@@ -33,6 +34,26 @@ from werewolf_agent.rag.tactical_text import build_rag_retrieval_text
 
 # 保持历史 logger 名称，避免拆分后运维日志筛选和旧测试漂移。
 logger = logging.getLogger("werewolf_agent.rag.retriever")
+
+
+def _call_priority(
+    priority_fn: Callable[..., int],
+    value: Any,
+    *,
+    entry_id: str,
+) -> int:
+    """按 callback 能力传递 entry_id，兼容简单函数和旧 warning helper。"""
+    try:
+        params = signature(priority_fn).parameters.values()
+    except (TypeError, ValueError):
+        return priority_fn(value, entry_id=entry_id)
+    accepts_entry_id = any(
+        param.kind == Parameter.VAR_KEYWORD or param.name == "entry_id"
+        for param in params
+    )
+    if accepts_entry_id:
+        return priority_fn(value, entry_id=entry_id)
+    return priority_fn(value)
 
 
 def role_phase_matches(query: RAGQuery, meta: Any) -> bool:
@@ -182,7 +203,7 @@ def filter_candidates(
     entries: list[RAGEntry],
     query: RAGQuery,
     *,
-    quality_priority_fn: Callable[[QualityGrade], int],
+    quality_priority_fn: Callable[..., int],
     role_phase_matches_fn: Callable[[RAGQuery, Any], bool] = role_phase_matches,
 ) -> list[RAGEntry]:
     """Filter entries by hard criteria."""
@@ -199,11 +220,13 @@ def filter_candidates(
                 continue
 
         if query.quality_min:
-            entry_priority = quality_priority_fn(
+            entry_priority = _call_priority(
+                quality_priority_fn,
                 meta.quality_grade,
                 entry_id=entry.entry_id,
             )
-            min_priority = quality_priority_fn(
+            min_priority = _call_priority(
+                quality_priority_fn,
                 query.quality_min,
                 entry_id=f"query:{query.quality_min.value}",
             )
@@ -229,20 +252,22 @@ def score_entry(
     entry: RAGEntry,
     query: RAGQuery,
     *,
-    case_type_priority_fn: Callable[[CaseType], int],
-    quality_priority_fn: Callable[[QualityGrade], int],
+    case_type_priority_fn: Callable[..., int],
+    quality_priority_fn: Callable[..., int],
     tokenize_situation_fn: Callable[[str], set[str]] = _tokenize_situation,
 ) -> float:
     """Compute relevance score [0..1] for an entry."""
     score = 0.0
     meta = entry.metadata
 
-    score += case_type_priority_fn(
+    score += _call_priority(
+        case_type_priority_fn,
         meta.case_type,
         entry_id=entry.entry_id,
     ) * 0.075
 
-    score += quality_priority_fn(
+    score += _call_priority(
+        quality_priority_fn,
         meta.quality_grade,
         entry_id=entry.entry_id,
     ) / 20.0
@@ -328,14 +353,13 @@ def entry_to_hit(entry: RAGEntry, score: float, query: RAGQuery) -> RAGHit:
 
 def retrieve_ranked_hits(
     *,
-    entries: list[RAGEntry],
     query: RAGQuery,
     reranker: Any,
     filter_candidates_fn: Callable[[RAGQuery], list[RAGEntry]],
     merged_score_fn: Callable[[RAGEntry, RAGQuery], float],
     entry_to_hit_fn: Callable[[RAGEntry, float, RAGQuery], RAGHit],
-    case_type_priority_fn: Callable[[CaseType], int],
-    quality_priority_fn: Callable[[QualityGrade], int],
+    case_type_priority_fn: Callable[..., int],
+    quality_priority_fn: Callable[..., int],
 ) -> list[RAGHit]:
     """Retrieve, sort, optionally rerank, and shape final RAG hits."""
     candidates = filter_candidates_fn(query)
@@ -345,11 +369,13 @@ def retrieve_ranked_hits(
     ]
     scored.sort(
         key=lambda x: (
-            case_type_priority_fn(
+            _call_priority(
+                case_type_priority_fn,
                 x[1].metadata.case_type,
                 entry_id=x[1].entry_id,
             ),
-            quality_priority_fn(
+            _call_priority(
+                quality_priority_fn,
                 x[1].metadata.quality_grade,
                 entry_id=x[1].entry_id,
             ),

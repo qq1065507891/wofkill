@@ -9,8 +9,6 @@ from __future__ import annotations
 import logging
 from unittest import mock
 
-import pytest
-
 
 def test_embedding_client_logs_elapsed_ms(caplog) -> None:
     """R15: SiliconFlowEmbeddingClient.embed must emit a DEBUG log

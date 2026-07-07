@@ -133,3 +133,41 @@ def test_strategy_retriever_score_monkeypatch_still_controls_ranking(
     hits = retriever.retrieve(RAGQuery(role="seer", phase="speech", max_results=2))
 
     assert [hit.entry_id for hit in hits] == ["high", "low"]
+
+
+def test_retrieval_ranking_helpers_accept_simple_priority_callbacks() -> None:
+    from werewolf_agent.rag import retrieval_ranking
+
+    entry = RAGEntry(
+        schema_version=1,
+        entry_id="direct",
+        title="direct",
+        summary="summary",
+        metadata=_make_meta(role="seer", phase="speech"),
+    )
+    query = RAGQuery(role="seer", phase="speech")
+
+    candidates = retrieval_ranking.filter_candidates(
+        [entry],
+        query,
+        quality_priority_fn=lambda grade: 1,
+    )
+    score = retrieval_ranking.score_entry(
+        entry,
+        query,
+        case_type_priority_fn=lambda case_type: 1,
+        quality_priority_fn=lambda grade: 1,
+    )
+    hits = retrieval_ranking.retrieve_ranked_hits(
+        query=query,
+        reranker=None,
+        filter_candidates_fn=lambda q: candidates,
+        merged_score_fn=lambda item, q: score,
+        entry_to_hit_fn=retrieval_ranking.entry_to_hit,
+        case_type_priority_fn=lambda case_type: 1,
+        quality_priority_fn=lambda grade: 1,
+    )
+
+    assert candidates == [entry]
+    assert score > 0
+    assert [hit.entry_id for hit in hits] == ["direct"]

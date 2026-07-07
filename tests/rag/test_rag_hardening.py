@@ -8,9 +8,6 @@ Covers Task 8 Steps 1-3:
 
 from __future__ import annotations
 
-import os
-import tempfile
-
 import pytest
 
 from werewolf_agent.rag.schemas import (
@@ -18,7 +15,6 @@ from werewolf_agent.rag.schemas import (
     CaseType,
     QualityGrade,
     RAGEntry,
-    RAGHit,
     RAGQuery,
     RAGTacticalFrame,
     ReviewStatus,
@@ -186,6 +182,7 @@ class TestRAGPersistence:
 class TestVectorStoreAbstraction:
     def test_vector_store_interface_exists(self) -> None:
         from werewolf_agent.rag.vector_store import VectorStore
+        assert VectorStore is not None
 
     def test_local_vector_store_add_and_query(self) -> None:
         from werewolf_agent.rag.vector_store import LocalVectorStore
@@ -239,6 +236,7 @@ class TestRAGHitAudit:
 
         query = RAGQuery(role="seer", phase="night")
         hits = injector.inject(query, injection_context=InjectionContext.LIVE_PLAYER)
+        assert hits
 
         audit = injector.last_audit()
         assert audit is not None
@@ -397,7 +395,7 @@ class TestEmbeddingVectorStore:
 
     def test_cjk_ngram_hashing(self) -> None:
         """CJK text produces valid embeddings via n-gram hashing."""
-        from werewolf_agent.rag.vector_store import EmbeddingVectorStore, _text_to_embedding
+        from werewolf_agent.rag.vector_store import _text_to_embedding
         emb = _text_to_embedding("预言家查验狼人")
         assert len(emb) == 128  # default dimension
         assert any(v != 0.0 for v in emb)  # non-zero embedding

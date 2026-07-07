@@ -15,7 +15,6 @@ Covers:
 import pytest
 
 from werewolf_agent.rag.schemas import (
-    FORBIDDEN_RAG_KEYWORDS,
     CaseMetadata,
     CaseType,
     QualityGrade,
@@ -301,11 +300,8 @@ class TestIngestion:
             case_type=CaseType.PROJECT_HISTORY,
             quality=QualityGrade.SELF_PLAY_CANDIDATE,
         )
-        # This should work because the case_type is PROJECT_HISTORY
-        # but quality is SELF_PLAY_CANDIDATE — let's test the actual validation
-        # The validation checks: if case_type == SELF_PLAY, can't be PRO_MATCH
-        # But we used PROJECT_HISTORY. Let me create one with actual self-play content
-        pass
+        result = ingester.ingest(entry)
+        assert result.metadata.quality_grade == QualityGrade.SELF_PLAY_CANDIDATE
 
     def test_self_play_pro_match_rejected(self):
         """Self-play entries cannot claim PRO_MATCH quality."""
@@ -422,10 +418,6 @@ class TestIngestion:
 
     def test_auto_timestamp(self):
         ingester = CaseIngester()
-        src = SourceMetadata(
-            source_type=SourceType.MANUAL_ENTRY,
-            collected_at="",
-        )
         entry = _make_entry()
         entry.metadata.source.collected_at = ""
         # Use model_copy to clear timestamp
@@ -796,6 +788,15 @@ class TestRetriever:
         retriever, _ = self._make_retriever()
         query = RAGQuery(quality_min=QualityGrade.HIGH_RANK_GAME)
         hits = retriever.retrieve(query)
+        assert hits
+        assert all(
+            hit.quality_grade in (
+                QualityGrade.HIGH_RANK_GAME,
+                QualityGrade.EXPERT_REVIEW,
+                QualityGrade.PRO_MATCH,
+            )
+            for hit in hits
+        )
 
     def test_seer_counterclaim_vote_push_is_high_probability_hint(self):
         retriever, entries = self._make_retriever()

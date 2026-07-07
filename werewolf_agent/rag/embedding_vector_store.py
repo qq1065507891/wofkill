@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-RAG hash embedding 向量存储实现。
+RAG hash embedding、pgvector 与 SiliconFlow provider 向量存储实现。
 
 作者: Project contributors
 创建日期: 2026-07-07

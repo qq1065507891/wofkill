@@ -131,7 +131,6 @@ class StrategyRetriever:
         their rule-based score scaled down by ``(1 - weight)``.
         """
         return _ranking.retrieve_ranked_hits(
-            entries=list(self._entries.values()),
             query=query,
             reranker=self._reranker,
             filter_candidates_fn=self._filter_candidates,
