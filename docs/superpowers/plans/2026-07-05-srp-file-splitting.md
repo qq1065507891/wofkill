@@ -33,16 +33,21 @@
 - [x] Task 11.6: `dcb6a5f` 至 `57ecb4b`，按职责拆分 `RuleEngine`
 - [x] Task 11.7: `7c834c2 refactor: split sheriff runtime nodes`
 - [x] Task 11.8 / Task 14: `2b22ac4`、`8bc75e1`、`d82aab9`、`84d5779`，拆分 RAG retrieval/ranking/vector storage facade
+- [x] Task 13: 当前批次最终全量验证、清理 `.tmp`、同步 CodeGraph
 
 仍未完成:
 
-- [ ] Task 13: 当前批次最终全量验证、清理 `.tmp`、同步 CodeGraph
 - [ ] Task 15-21: 下一轮候选模块正式拆分计划
 - [ ] RuleEngine 收尾候选: `Ruleset`/YAML loader 独立模块、`tests/rules/test_rule_engine_split.py` 描述同步、公开导入兼容复核
 
 不执行项:
 
 - [x] Task 12: 不拆 `tests/` 目录。2026-07-07 用户决策：测试目录保持现状，不做按生产边界拆分；后续只在新增功能或修复时就地维护相关测试。
+
+代码级复核:
+
+- [x] 2026-07-07 已逐项检查 Task 1-11.8 / Task 14 的实际代码边界，不依赖提交记录；确认承诺拆出的模块存在、旧 facade 仍导入/委托到拆分模块、主要兼容导出可从旧路径导入。
+- [x] 复核结论：未发现已标记完成 task 的代码缺口。`agent_adapter.py`、`prompt_builder.py`、`player.py`、`games.py`、`metrics.py`、`router.py` 仍偏大，但已列入 Task 15-21 二次候选，不作为前序 task 未完成项。
 
 下一轮候选池:
 
@@ -85,7 +90,7 @@
 - [x] 拆 `werewolf_agent/api/routes/games.py`。
 - [x] 拆第二批 600 行以上但风险较低的模块。RAG retrieval/storage 已完成 facade 拆分。
 - [x] 不拆对应超大测试文件（2026-07-07 用户决策：`tests/` 目录保持现状）。
-- [ ] 当前批次最终全量验证、提交、CodeGraph 同步。
+- [x] 当前批次最终全量验证、提交、CodeGraph 同步。
 - [ ] 下一轮候选模块进入正式拆分计划。
 
 ---
@@ -879,7 +884,7 @@ git commit -m "test: split oversized characterization suites"
 **Files:**
 - All changed production and test files.
 
-- [ ] **Step 1: Run broad targeted suite**
+- [x] **Step 1: Run broad targeted suite**
 
 Run:
 
@@ -889,7 +894,9 @@ python -m pytest -n 0 --basetemp .tmp tests/runtime tests/agents tests/skills te
 
 Expected: all relevant tests pass or known unrelated baseline failures are documented.
 
-- [ ] **Step 2: Compile source**
+Result 2026-07-07: 初次运行发现 `tests/agents/test_model_router.py::TestModelRouter::test_usage_logging` 及兼容重导入用例仍硬编码 `openai` provider；当前 `config/models.yaml` 将 `p01/speech` 解析为 `minimax`，已改为按 `resolve_config()` 注册实际 provider。修复后本命令退出码 0。
+
+- [x] **Step 2: Compile source**
 
 Run:
 
@@ -899,7 +906,9 @@ python -m compileall -q werewolf_agent
 
 Expected: no output and exit code 0.
 
-- [ ] **Step 3: Run touched-file ruff**
+Result 2026-07-07: exit code 0.
+
+- [x] **Step 3: Run touched-file ruff**
 
 Run:
 
@@ -910,7 +919,9 @@ python -m ruff check $files --select F401,F841
 
 Expected: `All checks passed!`
 
-- [ ] **Step 4: Check whitespace**
+Result 2026-07-07: `python -m ruff check tests/agents/test_model_router.py --select F401,F841` 通过。全量 tests 目录存在历史 F401/F841 债务，未作为本批次 gate。
+
+- [x] **Step 4: Check whitespace**
 
 Run:
 
@@ -920,7 +931,9 @@ git diff --check
 
 Expected: no output and exit code 0.
 
-- [ ] **Step 5: Clean repo-local temp artifacts**
+Result 2026-07-07: exit code 0.
+
+- [x] **Step 5: Clean repo-local temp artifacts**
 
 Run:
 
@@ -938,7 +951,9 @@ if (Test-Path -LiteralPath $tmpPath) {
 
 Expected: `.tmp` removed.
 
-- [ ] **Step 6: Sync CodeGraph**
+Result 2026-07-07: `git status --short` 未显示 `.tmp`；repo-local pytest basetemp 未留下待清理的 untracked `.tmp`。
+
+- [x] **Step 6: Sync CodeGraph**
 
 Run:
 
@@ -949,7 +964,9 @@ codegraph status .
 
 Expected: `[OK] Index is up to date`.
 
-- [ ] **Step 7: Final commit if needed**
+Result 2026-07-07: `codegraph.cmd sync .` 完成，`codegraph.cmd status .` 显示 `[OK] Index is up to date`。
+
+- [x] **Step 7: Final commit if needed**
 
 Run:
 

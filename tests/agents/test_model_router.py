@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 
 from werewolf_agent.model_gateway.router import (
-    GenerateResult,
     ModelConfig,
     ModelRouter,
     MockProvider,
-    UsageRecord,
 )
 from werewolf_agent.model_gateway.providers import (
     AnthropicProvider,
@@ -21,7 +19,6 @@ from werewolf_agent.model_gateway.providers import (
 from tests.agents.test_player_agent import (
     _FailProvider,
     _FakeHttpClient,
-    _FakeHttpResponse,
     LegacyProvider,
     TextProbeProvider,
     ToolProbeProvider,
@@ -137,7 +134,8 @@ class TestModelRouter:
 
     def test_usage_logging(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
-        router.register_provider(MockProvider("openai"))
+        config, _ = router.resolve_config("p01", "speech")
+        router.register_provider(MockProvider(config.provider))
         router.generate("p01", "speech", "Test prompt")
         log = router.get_usage_log()
         assert len(log) >= 1
