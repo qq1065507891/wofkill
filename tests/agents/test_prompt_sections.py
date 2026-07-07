@@ -54,3 +54,16 @@ def test_prompt_output_methods_remain_compatibly_importable() -> None:
     assert PlayerPromptBuilder._format_speech_intent_prompt is PromptOutputMixin._format_speech_intent_prompt
     assert PlayerPromptBuilder._select_output_mode is PromptOutputMixin._select_output_mode
     assert PlayerPromptBuilder._is_exile_vote_context is PromptOutputMixin._is_exile_vote_context
+
+
+def test_prompt_system_methods_remain_compatibly_importable() -> None:
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.prompt_system import PromptSystemMixin
+
+    assert PlayerPromptBuilder._build_core_identity is PromptSystemMixin._build_core_identity
+    assert PlayerPromptBuilder._build_game_rules is PromptSystemMixin._build_game_rules
+    assert PlayerPromptBuilder._build_information_boundaries is PromptSystemMixin._build_information_boundaries
+    assert PlayerPromptBuilder._build_reasoning_method is PromptSystemMixin._build_reasoning_method
+    assert PlayerPromptBuilder._build_skill_policy is PromptSystemMixin._build_skill_policy
+    assert PlayerPromptBuilder._build_role_guide is PromptSystemMixin._build_role_guide
+    assert PlayerPromptBuilder._build_output_contract is PromptSystemMixin._build_output_contract
