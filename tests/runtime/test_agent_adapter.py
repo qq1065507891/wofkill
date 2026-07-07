@@ -52,8 +52,28 @@ class TestAgentActionPipelineSplit:
             agent_action_pipeline.agent_sheriff_election_speech
         )
 
+    def test_sheriff_action_exports_are_compatibility_imports(self) -> None:
+        from werewolf_agent.runtime import agent_action_pipeline, agent_sheriff_actions
+
+        sheriff_exports = (
+            "agent_sheriff_pick_speech_order",
+            "agent_sheriff_endorse",
+            "agent_sheriff_vote",
+            "agent_sheriff_register",
+            "agent_sheriff_withdraw",
+            "agent_sheriff_election_speech",
+        )
+
+        for export_name in sheriff_exports:
+            assert getattr(agent_action_pipeline, export_name) is getattr(
+                agent_sheriff_actions, export_name
+            )
+            assert getattr(agent_adapter, export_name) is getattr(
+                agent_sheriff_actions, export_name
+            )
+
     def test_facade_patch_propagates_to_action_pipeline(self, monkeypatch) -> None:
-        from werewolf_agent.runtime import agent_action_pipeline
+        from werewolf_agent.runtime import agent_action_pipeline, agent_sheriff_actions
 
         def fake_build_context(*args, **kwargs):  # noqa: ANN002, ANN003
             return None
@@ -61,6 +81,7 @@ class TestAgentActionPipelineSplit:
         monkeypatch.setattr(agent_adapter, "build_agent_context", fake_build_context)
 
         assert agent_action_pipeline.build_agent_context is fake_build_context
+        assert agent_sheriff_actions.build_agent_context is fake_build_context
 
 
 class TestKillValueAssessmentAdapterContract:

@@ -17,6 +17,7 @@ import sys
 from types import ModuleType
 
 from werewolf_agent.runtime import agent_action_pipeline as _action_pipeline
+from werewolf_agent.runtime import agent_sheriff_actions as _sheriff_actions
 from werewolf_agent.runtime.agent_action_pipeline import (
     AgentRegistry,
     SimpleAgentRegistry,
@@ -94,6 +95,8 @@ class _AgentAdapterFacadeModule(ModuleType):
         super().__setattr__(name, value)
         if hasattr(_action_pipeline, name):
             setattr(_action_pipeline, name, value)
+        if hasattr(_sheriff_actions, name):
+            setattr(_sheriff_actions, name, value)
 
 
 sys.modules[__name__].__class__ = _AgentAdapterFacadeModule
