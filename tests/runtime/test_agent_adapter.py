@@ -72,6 +72,17 @@ class TestAgentActionPipelineSplit:
                 agent_sheriff_actions, export_name
             )
 
+    def test_sheriff_election_speech_is_split_from_sheriff_actions_facade(self) -> None:
+        from werewolf_agent.runtime import (
+            agent_sheriff_actions,
+            agent_sheriff_speech_actions,
+        )
+
+        assert (
+            agent_sheriff_actions.agent_sheriff_election_speech
+            is agent_sheriff_speech_actions.agent_sheriff_election_speech
+        )
+
     def test_wolf_action_exports_are_compatibility_imports(self) -> None:
         from werewolf_agent.runtime import agent_action_pipeline, agent_wolf_actions
 
