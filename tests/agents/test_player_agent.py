@@ -428,6 +428,23 @@ class TestPlayerActionFlowSplit:
             is player_retry_hints.build_missing_tool_call_retry
         )
 
+    def test_choice_prompt_helpers_are_split_from_prompt_output_facade(self) -> None:
+        from werewolf_agent.agents import prompt_choice, prompt_output
+
+        assert (
+            prompt_output.format_choice_prompt
+            is prompt_choice.format_choice_prompt
+        )
+        assert prompt_output.vote_choice_map is prompt_choice.vote_choice_map
+        assert (
+            prompt_output.vote_candidate_summary
+            is prompt_choice.vote_candidate_summary
+        )
+        assert (
+            prompt_output.target_candidate_summary
+            is prompt_choice.target_candidate_summary
+        )
+
     def test_persona_helpers_are_split_from_player_facade(self) -> None:
         from werewolf_agent.agents import player, player_persona
 
