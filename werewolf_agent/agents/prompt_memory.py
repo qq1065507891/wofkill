@@ -14,7 +14,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from werewolf_agent.agents.prompt_formatting import clean_prompt_text
+from werewolf_agent.agents.prompt_rag_memory import (
+    build_rag_hints,
+    render_rag_hint_cards,
+    slim_rag_hint_items,
+)
 from werewolf_agent.runtime.context import REFLECTION_CARD_BUDGET
 
 _MAX_LEARNING_TEXT_CHARS = 160
@@ -64,72 +68,10 @@ class PromptMemoryMixin:
         )
 
     def _build_rag_hints(self) -> str:
-        ctx = self.context
-        if not ctx.rag_hints:
-            return ""
-        # P0-G2 defense in depth: even if a non-production code path
-        # leaks full audit items into ``ctx.rag_hints``, the live prompt
-        # must only see title plus prompt-safe V2 tactical frame fields.
-        # Audit data (summary, key_decisions, relevance, quality, source,
-        # visibility, display annotation) belongs in the audit log, not
-        # the LLM context window.
-        #
-        # G-R4-10: explicit ``type == "rag_hit"`` filter so a future
-        # code path (or a test, or a manual debug call) that injects
-        # auxiliary metadata (salience events, profile snapshots,
-        # etc.) into ``ctx.rag_hints`` cannot leak into the prompt.
-        # The previous code at runtime/context.py:231 used
-        # ``if item.get("type") != "rag_hit"`` to *retain* non-rag
-        # items, which is brittle — a stray non-rag item persists
-        # across turns and the renderer would happily process it.
-        # The prompt-side filter is explicit, defensive, and matches
-        # the slim renderer's expectation that every line carries
-        # the ``rag_hit`` discriminator.
-        rag_only = [
-            item for item in ctx.rag_hints
-            if isinstance(item, dict) and item.get("type") == "rag_hit"
-        ]
-        if not rag_only:
-            return ""
-        # P2-6: cap on total hits uses the shared live-prompt
-        # constant from rag.prompt_renderer (one source of truth for
-        # the 3 retriever / slim-renderer / prompt-builder caps).
-        from werewolf_agent.rag.prompt_renderer import RAG_LIVE_PROMPT_CAP
-        slim_items = self._slim_rag_hint_items(rag_only[:RAG_LIVE_PROMPT_CAP])
-        # P0-G3: hard-constraint prefix MUST come before the case
-        # payload. Without this the LLM has been observed to parrot
-        # case-specific player IDs (e.g., p04 / p09 in seed cases) as
-        # if they were this game's player IDs, which is information
-        # leakage and tactical error.
-        # P2-11: extended the head warning to cover TACTIC reuse in
-        # addition to player-ID reuse.  Pre-fix the warning only
-        # flagged ID leakage, but the LLM was also observed to
-        # wholesale-copy case tactics (e.g. "case used anti-herd and
-        # won, so do anti-herd this game") regardless of local
-        # context.  Add explicit anti-tactic-reuse framing.
-        warning = (
-            "⚠️ RAG 案例中的玩家 ID 与战术选择仅供启发；"
-            "本局的玩家 ID、票型、遗言均与案例无关；"
-            "不得直接套用案例中具体玩家的动作、票型或决策链。\n"
-        )
-        case_cards = self._render_rag_hint_cards(slim_items)
-        # R19: a tail reminder after the case cards re-anchors the
-        # model at the end of the section. The head warning only sets the
-        # "do not parrot" frame at the start; without a tail the
-        # LLM can still walk the section and treat the cards as a
-        # hard assertion rather than reference material. Tail text
-        # matches the head framing so the LLM sees a consistent
-        # "this is reference only" message before it generates.
-        tail = "（以上案例仅供参考，不得作为本局事实或硬性指令。）"
-        if "…已截断" in case_cards:
-            tail = tail + "（部分字段已截断，案例未完整呈现。）"
-        return (
-            "知识库提示: 知识库提示不是当前局事实，只能作为玩法经验和案例参考。\n"
-            + warning
-            + case_cards
-            + "\n"
-            + tail
-        )
+        return build_rag_hints(self.context)
+
+    _slim_rag_hint_items = staticmethod(slim_rag_hint_items)
+    _render_rag_hint_cards = staticmethod(render_rag_hint_cards)
 
     def _build_learning_context(self) -> str:
         header = (
@@ -168,90 +110,6 @@ class PromptMemoryMixin:
                     break
 
         return render(active) if active else ""
-
-    @staticmethod
-    def _slim_rag_hint_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Drop audit-only fields from RAG hint items in the live prompt.
-
-        Mirrors :func:`werewolf_agent.rag.prompt_renderer.hits_to_prompt_lines`
-        but operates on already-rendered dicts (so it works even when
-        ``ctx.rag_hints`` was populated by a test or a non-default
-        code path that bypassed :class:`RAGKnowledgeService`).
-
-        RAG V2 prompt shape is title plus prompt-safe tactical frame
-        fields. Legacy dicts are routed through the shared tactical
-        helper, which supplies a conservative fallback frame without
-        exposing raw ``summary`` / ``key_decisions`` fields here.
-        """
-        from werewolf_agent.rag.tactical_text import prompt_safe_tactical_frame_dict
-
-        slim: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            frame = prompt_safe_tactical_frame_dict(item)
-            slim.append({
-                "title": clean_prompt_text(
-                    item.get("title", ""),
-                    max_chars=_MAX_LEARNING_TEXT_CHARS,
-                ),
-                "situation_signature": clean_prompt_text(
-                    frame["situation_signature"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-                "transferable_lesson": clean_prompt_text(
-                    frame["transferable_lesson"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-                "applicability": [
-                    clean_prompt_text(
-                        value,
-                        max_chars=_MAX_RAG_TEXT_CHARS,
-                    )
-                    for value in frame["applicability"]
-                ],
-                "counter_signals": [
-                    clean_prompt_text(
-                        value,
-                        max_chars=_MAX_RAG_TEXT_CHARS,
-                    )
-                    for value in frame["counter_signals"]
-                ],
-                "recommended_use": clean_prompt_text(
-                    frame["recommended_use"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-                "misuse_risk": clean_prompt_text(
-                    frame["misuse_risk"],
-                    max_chars=_MAX_RAG_TEXT_CHARS,
-                ),
-            })
-        return slim
-
-    @staticmethod
-    def _render_rag_hint_cards(items: list[dict[str, Any]]) -> str:
-        """Render prompt-safe RAG items as readable low-priority cards."""
-        def join_values(value: Any, *, fallback: str) -> str:
-            if isinstance(value, list):
-                text = "；".join(str(part).strip() for part in value if str(part).strip())
-                return text or fallback
-            text = str(value or "").strip()
-            return text or fallback
-
-        cards: list[str] = []
-        for idx, item in enumerate(items, start=1):
-            title = str(item.get("title") or "未命名案例")
-            cards.append(
-                f"案例 {idx}：{title}\n"
-                f"- 适用局面：{join_values(item.get('situation_signature'), fallback='缺少局面描述。')}\n"
-                f"- 可迁移原则：{join_values(item.get('transferable_lesson'), fallback='仅作为谨慎参考。')}\n"
-                f"- 适用条件：{join_values(item.get('applicability'), fallback='仅当本局公开事实与案例局面相似时参考。')}\n"
-                f"- 不适用信号：{join_values(item.get('counter_signals'), fallback='若当前局面不匹配则不要套用。')}\n"
-                f"- 本局参考方式：{join_values(item.get('recommended_use'), fallback='作为参考，不作为直接指令。')}\n"
-                f"- 误用风险：{join_values(item.get('misuse_risk'), fallback='过度套用可能误导判断。')}"
-            )
-
-        return "\n\n".join(cards)
 
     def _build_reflection_memory_hints(self) -> str:
         ctx = self.context
