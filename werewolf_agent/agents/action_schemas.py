@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-提供玩家、法官和狼队计划的结构化动作输出 schema。
+提供玩家动作、法官广播和狼队计划兼容导出的结构化 schema。
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-08
 
 使用示例:
     >>> from werewolf_agent.agents.action_schemas import PlayerAction
@@ -17,6 +18,7 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from werewolf_agent.agents.trace_schemas import ActionTrace, PrivateIntent
+from werewolf_agent.agents.wolf_team_plan_schema import WolfTeamPlan
 
 
 class ActionType(str, Enum):
@@ -444,94 +446,6 @@ class FallbackAction(BaseModel):
     speech: str = ""
     reason: str = "fallback: retries exhausted"
     trace: ActionTrace | None = None
-
-
-# ---------------------------------------------------------------------------
-# Wolf team plan — LLM captain produces this once per night
-# ---------------------------------------------------------------------------
-
-class WolfTeamPlan(BaseModel):
-    """Wolf team's night-time strategic plan, produced by team captain LLM.
-
-    Visibility: werewolf_team_only. The `reasoning` field contains the
-    captain's full decision rationale — event payloads emitted from this
-    plan MUST use visibility="werewolf_team_only" and MUST NOT enter any
-    public view (renderer / public_summary / spectator API).
-
-    Replaces the legacy regex-based extraction
-    (wolf_strategy.summarize_wolf_consensus + build_wolf_team_plan_from_discussion)
-    which silently dropped role assignments when LLM dialogue used
-    synonyms (e.g. "悍跳位") not covered by the extractor's keyword set.
-
-    Schema validates structural rules (no duplicate role assignments,
-    kills cannot target wolves). Game-state validation (e.g. fake_seer
-    must be an alive werewolf) is performed by the caller after
-    model_validate, since alive set is runtime context.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    night_number: int = Field(..., ge=1, description="本夜编号")
-    night_kill_primary: str | None = Field(
-        None,
-        description="本夜首选击杀目标 player_id; None 表示主动空刀",
-    )
-    night_kill_backup: str | None = Field(
-        None,
-        description="备选击杀目标 (primary 已死或不合法时启用); None 表示无备选",
-    )
-    fake_seer: str | None = Field(
-        None, description="悍跳预言家位 (alive werewolf player_id 或 None)"
-    )
-    pusher: str | None = Field(
-        None, description="冲票位 (alive werewolf player_id 或 None)"
-    )
-    hooker: str | None = Field(
-        None, description="倒钩位 (alive werewolf player_id 或 None)"
-    )
-    deep_cover: str | None = Field(
-        None, description="深水位 (alive werewolf player_id 或 None)"
-    )
-    public_story: str = Field(
-        ...,
-        min_length=1,
-        max_length=120,
-        description="白天对外统一口径 / 抗推叙事",
-    )
-    evidence_quality: Literal["strong", "weak", "none"] = Field(
-        "weak",
-        description="队长对夜聊共识度的评估",
-    )
-    reasoning: str = Field(
-        ...,
-        min_length=1,
-        max_length=200,
-        description="队长决策依据 (审计用; werewolf_team_only 边界, 禁止公开)",
-    )
-
-    @model_validator(mode="after")
-    def _no_duplicate_role_assignments(self) -> "WolfTeamPlan":
-        roles = [self.fake_seer, self.pusher, self.hooker, self.deep_cover]
-        assigned = [r for r in roles if r is not None]
-        if len(assigned) != len(set(assigned)):
-            raise ValueError(
-                "WolfTeamPlan: 4 角色(fake_seer/pusher/hooker/deep_cover)"
-                f"中非 None 字段必须互不重复, 当前: {roles}"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _kills_not_overlap_roles(self) -> "WolfTeamPlan":
-        roles = {self.fake_seer, self.pusher, self.hooker, self.deep_cover}
-        roles.discard(None)
-        kills = {self.night_kill_primary, self.night_kill_backup}
-        kills.discard(None)
-        overlap = roles & kills
-        if overlap:
-            raise ValueError(
-                f"WolfTeamPlan: 击杀目标不能是狼队角色 {sorted(overlap)}"
-            )
-        return self
 
 
 __all__ = [

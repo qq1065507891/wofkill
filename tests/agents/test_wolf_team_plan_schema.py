@@ -13,6 +13,12 @@ from pydantic import ValidationError
 from werewolf_agent.agents.schemas import TaskType, WolfTeamPlan
 
 
+def test_wolf_team_plan_schema_is_split_from_action_schemas_facade():
+    from werewolf_agent.agents import action_schemas, wolf_team_plan_schema
+
+    assert action_schemas.WolfTeamPlan is wolf_team_plan_schema.WolfTeamPlan
+
+
 def _make_plan(**overrides):
     base = dict(
         night_number=1,
