@@ -1605,6 +1605,15 @@ All listed commands returned exit code 0. Direct RED checks first failed for mis
 
 ## Completion Criteria
 
+### 2026-07-08 Game Snapshot Share Route Split
+
+- 新增 RED 兼容测试：`tests/api/test_game_persistence_helpers.py::test_game_route_group_modules_expose_registration_helpers` 先因缺少 `werewolf_agent.api.routes.game_snapshot_share` 导入失败。
+- 将 `/games/{game_id}/share-summary` 端点从 `werewolf_agent/api/routes/game_snapshots.py` 拆到 `werewolf_agent/api/routes/game_snapshot_share.py`，公开分享摘要的权限审计、public-only 响应构造和公开事件摘要聚合由新模块负责。
+- `game_snapshots.py` 保留状态、回放、评估、认知差异注册职责，并显式委托 `register_game_snapshot_share_routes(...)`；`game_public_share.py` 的公开事件过滤和 MVP helper 继续复用，避免行为漂移。
+- 本批顺手优化：分享摘要响应构造提取为 `_build_share_summary` 和 `_summarize_public_event`，让路由函数只负责鉴权和调度。
+- 行数变化：`game_snapshots.py` 从上一批约 350 行降到约 281 行；新增 `game_snapshot_share.py` 约 90 行。
+- 验证记录：RED 命令先失败；拆分后 `tests/api/test_game_persistence_helpers.py` 及 share-summary 鉴权/公开安全相关测试通过，touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0。
+
 - Previously identified SRP candidates are either split or explicitly documented as cohesive enough to remain.
 - Every original public module path still imports successfully.
 - `agent_adapter.py`, `context.py`, `night.py`, `prompt_builder.py`, `werewolf_skills.py`, `output_parser.py`, `player.py`, `reflection.py`, `day.py`, and `games.py` are reduced to focused modules or compatibility facades.

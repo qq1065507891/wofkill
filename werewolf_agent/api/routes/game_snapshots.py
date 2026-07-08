@@ -21,12 +21,11 @@ from werewolf_agent.api.auth import AuthManager
 from werewolf_agent.api.permissions import PermissionChecker, PermissionDenied
 from werewolf_agent.api.routes.game_cognition_views import _build_cognition_data_for_viewer
 from werewolf_agent.api.routes.game_persistence import _get_game
-from werewolf_agent.api.routes.game_public_share import (
-    _event_is_public_for_share,
-    _pick_public_mvp_candidate,
-)
 from werewolf_agent.api.routes.game_snapshot_audit import (
     register_game_snapshot_audit_routes,
+)
+from werewolf_agent.api.routes.game_snapshot_share import (
+    register_game_snapshot_share_routes,
 )
 from werewolf_agent.api.schemas import (
     CallerRole,
@@ -280,62 +279,14 @@ def register_game_snapshot_routes(
             cognition_data=_build_cognition_data_for_viewer(state, viewer_id),
         )
 
-    @router.get("/games/{game_id}/share-summary")
-    def get_share_summary(
-        game_id: str,
-        caller_id: str = Query(""),
-        caller_role: CallerRole = Query(CallerRole.SPECTATOR),
-        session_token: str = Query(""),
-    ) -> dict:
-        # share-summary 强制 public 视图，但调用者身份仍需可审计。
-        if not caller_id and not session_token:
-            raise HTTPException(
-                403,
-                "share-summary requires caller_id or session_token",
-            )
-        state = _get_game(games, game_id)
-        game_active = state.winning_faction is None
-        resolved_role = resolve_caller_role(
-            authorized_callers,
-            caller_id,
-            caller_role,
-            session_token=session_token,
-            auth_manager=auth,
-        )
-        try:
-            checker.check(
-                caller_id=caller_id,
-                caller_role=resolved_role,
-                requested_view=ViewMode.PUBLIC,
-                game_id=game_id,
-                endpoint="share-summary",
-                game_active=game_active,
-            )
-        except PermissionDenied as e:
-            raise HTTPException(403, detail=e.reason)
-        public_events = [
-            {
-                "event_type": event.type,
-                "day": event.payload.get("day", state.day_number),
-                "phase": event.payload.get("phase", state.phase),
-            }
-            for event in state.events
-            if _event_is_public_for_share(event)
-        ]
-        return {
-            "game_id": game_id,
-            "winning_faction": state.winning_faction,
-            "highlight_events": public_events[:8],
-            "mvp_candidate": _pick_public_mvp_candidate(state),
-            "share_title": f"Werewolf replay {game_id}",
-            "public_only": True,
-            "leak_audit_summary": {
-                "leak_check_status": "passed",
-                "private_role_leaks": 0,
-                "illegal_view_references": 0,
-                "forbidden_event_exposures": 0,
-            },
-        }
+    register_game_snapshot_share_routes(
+        router=router,
+        games=games,
+        authorized_callers=authorized_callers,
+        auth=auth,
+        checker=checker,
+        resolve_caller_role=resolve_caller_role,
+    )
 
     register_game_snapshot_audit_routes(
         router=router,
