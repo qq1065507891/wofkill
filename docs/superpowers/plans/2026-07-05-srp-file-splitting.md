@@ -1614,6 +1614,14 @@ All listed commands returned exit code 0. Direct RED checks first failed for mis
 - 行数变化：`game_snapshots.py` 从上一批约 350 行降到约 281 行；新增 `game_snapshot_share.py` 约 90 行。
 - 验证记录：RED 命令先失败；拆分后 `tests/api/test_game_persistence_helpers.py` 及 share-summary 鉴权/公开安全相关测试通过，touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0。
 
+### 2026-07-08 Game Snapshot State Route Split
+
+- 新增 RED 兼容测试：`tests/api/test_game_persistence_helpers.py::test_game_route_group_modules_expose_registration_helpers` 先因缺少 `werewolf_agent.api.routes.game_snapshot_state` 导入失败。
+- 将 `/games/{game_id}/public-state` 和 `/games/{game_id}/players/{player_id}/private-state` 从 `werewolf_agent/api/routes/game_snapshots.py` 拆到 `werewolf_agent/api/routes/game_snapshot_state.py`，公开状态和玩家私有状态的权限审计由新模块负责。
+- `game_snapshots.py` 继续作为剩余快照/回放/评估/认知差异路由的注册入口，并显式委托 `register_game_snapshot_state_routes(...)`；`build_public_state` 与 `build_private_state` 的响应构造逻辑保持复用。
+- 行数变化：`game_snapshots.py` 从约 281 行降到约 231 行；新增 `game_snapshot_state.py` 约 91 行。
+- 验证记录：RED 命令先失败；拆分后 `tests/api/test_game_persistence_helpers.py`、`tests/api/test_api.py`、`tests/api/test_auth.py` 通过，touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0。
+
 - Previously identified SRP candidates are either split or explicitly documented as cohesive enough to remain.
 - Every original public module path still imports successfully.
 - `agent_adapter.py`, `context.py`, `night.py`, `prompt_builder.py`, `werewolf_skills.py`, `output_parser.py`, `player.py`, `reflection.py`, `day.py`, and `games.py` are reduced to focused modules or compatibility facades.

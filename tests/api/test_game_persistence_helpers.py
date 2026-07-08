@@ -25,6 +25,7 @@ from werewolf_agent.api.routes import game_persistence
 from werewolf_agent.api.routes import game_public_share
 from werewolf_agent.api.routes import game_snapshot_audit
 from werewolf_agent.api.routes import game_snapshot_share
+from werewolf_agent.api.routes import game_snapshot_state
 from werewolf_agent.api.routes import game_snapshots
 from werewolf_agent.api.routes import games
 from werewolf_agent.api.schemas import CallerRole, CreateGameRequest
@@ -55,6 +56,7 @@ def test_game_route_group_modules_expose_registration_helpers() -> None:
     assert game_snapshots.register_game_snapshot_routes is not None
     assert game_snapshot_audit.register_game_snapshot_audit_routes is not None
     assert game_snapshot_share.register_game_snapshot_share_routes is not None
+    assert game_snapshot_state.register_game_snapshot_state_routes is not None
 
 
 def test_game_router_keeps_route_registration_surface() -> None:

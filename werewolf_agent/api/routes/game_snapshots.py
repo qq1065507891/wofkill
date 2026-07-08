@@ -27,12 +27,13 @@ from werewolf_agent.api.routes.game_snapshot_audit import (
 from werewolf_agent.api.routes.game_snapshot_share import (
     register_game_snapshot_share_routes,
 )
+from werewolf_agent.api.routes.game_snapshot_state import (
+    register_game_snapshot_state_routes,
+)
 from werewolf_agent.api.schemas import (
     CallerRole,
     CognitiveDiffResponse,
     EvaluationResponse,
-    PrivateStateResponse,
-    PublicStateResponse,
     ReplayResponse,
     TimelineResponse,
     ViewMode,
@@ -40,8 +41,6 @@ from werewolf_agent.api.schemas import (
 from werewolf_agent.api.views import (
     build_cognitive_diff,
     build_evaluation,
-    build_private_state,
-    build_public_state,
     build_replay,
     build_timeline,
 )
@@ -60,65 +59,14 @@ def register_game_snapshot_routes(
 ) -> None:
     """注册只读状态视图和审计端点。"""
 
-    @router.get("/games/{game_id}/public-state", response_model=PublicStateResponse)
-    def get_public_state(
-        game_id: str,
-        caller_id: str = Query(""),
-        caller_role: CallerRole = Query(CallerRole.SPECTATOR),
-    ) -> PublicStateResponse:
-        state = _get_game(games, game_id)
-        # public-state 允许匿名读取，但仍进入权限检查审计。
-        resolved_role = resolve_caller_role(
-            authorized_callers,
-            caller_id,
-            caller_role,
-        )
-        try:
-            checker.check(
-                caller_id=caller_id,
-                caller_role=resolved_role,
-                requested_view=ViewMode.PUBLIC,
-                game_id=game_id,
-                endpoint="public-state",
-                game_active=state.winning_faction is None,
-            )
-        except PermissionDenied as e:
-            raise HTTPException(403, detail=e.reason)
-        return build_public_state(state)
-
-    @router.get(
-        "/games/{game_id}/players/{player_id}/private-state",
-        response_model=PrivateStateResponse,
+    register_game_snapshot_state_routes(
+        router=router,
+        games=games,
+        authorized_callers=authorized_callers,
+        auth=auth,
+        checker=checker,
+        resolve_caller_role=resolve_caller_role,
     )
-    def get_private_state(
-        game_id: str,
-        player_id: str,
-        caller_id: str = Query(""),
-        caller_role: CallerRole = Query(CallerRole.PLAYER_AGENT),
-        view_mode: ViewMode = Query(ViewMode.PLAYER_VIEW),
-        session_token: str = Query(""),
-    ) -> PrivateStateResponse:
-        state = _get_game(games, game_id)
-        if player_id not in state.players:
-            raise HTTPException(404, f"Player {player_id} not found in game {game_id}")
-        caller_role = resolve_caller_role(
-            authorized_callers,
-            caller_id,
-            caller_role,
-            session_token=session_token,
-            auth_manager=auth,
-        )
-        try:
-            allowed_view = checker.check_private_state(
-                caller_id=caller_id,
-                caller_role=caller_role,
-                target_player_id=player_id,
-                game_id=game_id,
-                endpoint="private-state",
-            )
-        except PermissionDenied as e:
-            raise HTTPException(403, detail=e.reason)
-        return build_private_state(state, player_id, allowed_view)
 
     @router.get("/games/{game_id}/timeline", response_model=TimelineResponse)
     def get_timeline(
