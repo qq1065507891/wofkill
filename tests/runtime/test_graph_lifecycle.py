@@ -84,6 +84,14 @@ def test_graph_compiles_with_checkpoint() -> None:
     assert "finish_game" in graph.nodes
 
 
+def test_graph_registration_helpers_are_split_from_graph_facade() -> None:
+    from werewolf_agent.runtime import graph as graph_mod
+    from werewolf_agent.runtime import graph_registration
+
+    assert graph_mod._add_all_nodes is graph_registration.add_game_graph_nodes
+    assert graph_mod._add_all_edges is graph_registration.add_game_graph_edges
+
+
 # ---------------------------------------------------------------------------
 # Setup + assign roles
 # ---------------------------------------------------------------------------

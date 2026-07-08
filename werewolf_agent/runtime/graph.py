@@ -2,11 +2,11 @@
 """LangGraph game graph: deterministic orchestration around RuleEngine.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-08
     使用示例: 内部模块，无对外接口
 Every node calls RuleEngine for rule decisions. No natural language adjudication.
 Node function implementations live in ``werewolf_agent.runtime.nodes``; this
-module owns graph construction, conditional-edge routing, and re-exports.
+module owns graph factories, conditional-edge routing, and compatibility re-exports.
 """
 
 from __future__ import annotations
@@ -15,12 +15,16 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from langgraph.graph import END, StateGraph
+from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.runtime.graph_registration import (
+    add_game_graph_edges as _add_all_edges,
+    add_game_graph_nodes as _add_all_nodes,
+)
 from werewolf_agent.runtime.sheriff_policy import is_all_players_on_sheriff
 
 # -- Re-export everything from nodes so external imports stay unchanged --
@@ -394,149 +398,3 @@ def build_game_graph_with_checkpoint(
     _add_all_nodes(graph)
     _add_all_edges(graph)
     return graph.compile(checkpointer=checkpointer)
-
-
-def _add_all_nodes(graph: StateGraph) -> None:
-    graph.add_node("setup_game", setup_game)
-    graph.add_node("assign_roles", assign_roles)
-    graph.add_node("enter_night", enter_night)
-    graph.add_node("wolf_discussion", wolf_discussion)
-    graph.add_node("wolf_team_plan", wolf_team_plan_node)
-    graph.add_node("wolf_consensus", wolf_consensus)
-    graph.add_node("night_witch", night_witch)
-    graph.add_node("night_seer", night_seer)
-    graph.add_node("night_hunter_idiot_status", night_hunter_idiot_status)
-    graph.add_node("first_night_hybrid_master", first_night_hybrid_master)
-    graph.add_node("resolve_night_node", resolve_night)
-    graph.add_node("sheriff_first_day_entry", sheriff_first_day_entry)
-    graph.add_node("announce_deaths", announce_deaths)
-    graph.add_node("announce_deaths_with_badge_loss", announce_deaths_with_badge_loss)
-    graph.add_node("night_death_last_words", night_death_last_words)
-    graph.add_node("sheriff_registration", sheriff_registration)
-    graph.add_node("sheriff_speech", sheriff_speech)
-    graph.add_node("sheriff_withdraw", sheriff_withdraw)
-    graph.add_node("sheriff_vote", sheriff_vote)
-    graph.add_node("sheriff_pk_speech", sheriff_pk_speech)
-    graph.add_node("sheriff_revote", sheriff_revote)
-    graph.add_node("free_discussion", free_discussion)
-    graph.add_node("resolve_self_destruct", resolve_self_destruct_node)
-    graph.add_node("day_vote", day_vote)
-    graph.add_node("resolve_vote_node", resolve_vote)
-    graph.add_node("tie_pk_speech", tie_pk_speech)
-    graph.add_node("tie_revote", tie_revote)
-    graph.add_node("resolve_exile", resolve_exile)
-    graph.add_node("exile_last_words", exile_last_words)
-    graph.add_node("resolve_hunter_shot", resolve_hunter_shot)
-    graph.add_node("check_victory", check_victory)
-    graph.add_node("sheriff_badge_transfer", sheriff_badge_transfer)
-    graph.add_node("summarize_positions", summarize_positions)
-    graph.add_node("sheriff_endorse", sheriff_endorse)
-    graph.add_node("summarize_context", summarize_context)
-    graph.add_node("reflection", reflection)
-    graph.add_node("finish_game", finish_game)
-
-
-def _add_all_edges(graph: StateGraph) -> None:
-    graph.set_entry_point("setup_game")
-    graph.add_edge("setup_game", "assign_roles")
-    graph.add_edge("assign_roles", "enter_night")
-    graph.add_edge("enter_night", "wolf_discussion")
-    graph.add_edge("wolf_discussion", "wolf_team_plan")
-    graph.add_edge("wolf_team_plan", "wolf_consensus")
-    graph.add_edge("wolf_consensus", "night_witch")
-    graph.add_edge("night_witch", "night_seer")
-    graph.add_edge("night_seer", "night_hunter_idiot_status")
-    graph.add_edge("night_hunter_idiot_status", "first_night_hybrid_master")
-    graph.add_edge("first_night_hybrid_master", "resolve_night_node")
-    graph.add_conditional_edges("resolve_night_node", route_after_resolve_night, {
-        "resolve_hunter_shot": "resolve_hunter_shot",
-        "check_victory": "check_victory",
-        "sheriff_badge_transfer": "sheriff_badge_transfer",
-        "sheriff_first_day_entry": "sheriff_first_day_entry",
-        "announce_deaths": "announce_deaths",
-        "announce_deaths_with_badge_loss": "announce_deaths_with_badge_loss",
-    })
-    graph.add_conditional_edges("resolve_hunter_shot", route_after_hunter_shot, {
-        "check_victory": "check_victory",
-        "sheriff_badge_transfer": "sheriff_badge_transfer",
-        "sheriff_first_day_entry": "sheriff_first_day_entry",
-        "announce_deaths": "announce_deaths",
-        "announce_deaths_with_badge_loss": "announce_deaths_with_badge_loss",
-    })
-    graph.add_edge("sheriff_first_day_entry", "sheriff_registration")
-    graph.add_conditional_edges("sheriff_registration", route_after_sheriff_registration, {
-        "resolve_self_destruct": "resolve_self_destruct",
-        "sheriff_speech": "sheriff_speech",
-    })
-    graph.add_conditional_edges("sheriff_speech", route_after_sheriff_speech, {
-        "resolve_self_destruct": "resolve_self_destruct",
-        "sheriff_withdraw": "sheriff_withdraw",
-        "announce_deaths": "announce_deaths",
-        "free_discussion": "free_discussion",
-    })
-    graph.add_conditional_edges("sheriff_withdraw", route_after_sheriff_withdraw, {
-        "resolve_self_destruct": "resolve_self_destruct",
-        "sheriff_vote": "sheriff_vote",
-    })
-    graph.add_conditional_edges("sheriff_vote", route_after_sheriff_vote, {
-        "resolve_self_destruct": "resolve_self_destruct",
-        "sheriff_pk_speech": "sheriff_pk_speech",
-        "announce_deaths": "announce_deaths",
-        "free_discussion": "free_discussion",
-    })
-    graph.add_conditional_edges("sheriff_pk_speech", route_after_sheriff_pk_speech, {
-        "resolve_self_destruct": "resolve_self_destruct",
-        "sheriff_revote": "sheriff_revote",
-        "announce_deaths": "announce_deaths",
-        "free_discussion": "free_discussion",
-    })
-    graph.add_conditional_edges("sheriff_revote", route_after_sheriff_revote, {
-        "resolve_self_destruct": "resolve_self_destruct",
-        "announce_deaths": "announce_deaths",
-        "free_discussion": "free_discussion",
-    })
-    graph.add_edge("announce_deaths", "night_death_last_words")
-    graph.add_edge("announce_deaths_with_badge_loss", "night_death_last_words")
-    graph.add_conditional_edges("night_death_last_words", route_after_announce, {
-        "free_discussion": "free_discussion",
-    })
-    graph.add_conditional_edges("free_discussion", route_self_destruct_check, {
-        "resolve_self_destruct": "resolve_self_destruct",
-        "continue_discussion": "free_discussion",
-        "summarize_positions": "summarize_positions",
-    })
-    graph.add_conditional_edges("summarize_positions", _route_after_summarize, {
-        "sheriff_endorse": "sheriff_endorse",
-        "day_vote": "day_vote",
-    })
-    graph.add_edge("sheriff_endorse", "day_vote")
-    graph.add_conditional_edges("resolve_self_destruct", route_after_self_destruct, {
-        "announce_deaths": "announce_deaths",
-        "check_victory": "check_victory",
-    })
-    graph.add_edge("day_vote", "resolve_vote_node")
-    graph.add_conditional_edges("resolve_vote_node", route_after_vote, {
-        "resolve_exile": "resolve_exile",
-        "tie_pk_speech": "tie_pk_speech",
-        "check_victory": "check_victory",
-    })
-    graph.add_edge("tie_pk_speech", "tie_revote")
-    graph.add_edge("tie_revote", "day_vote")
-    graph.add_edge("resolve_exile", "exile_last_words")
-    graph.add_conditional_edges("exile_last_words", route_after_post_exile, {
-        "resolve_hunter_shot": "resolve_hunter_shot",
-        "check_victory": "check_victory",
-    })
-    graph.add_conditional_edges("check_victory", route_victory, {
-        "finish_game": "reflection",
-        "sheriff_badge_transfer": "sheriff_badge_transfer",
-        "enter_night": "summarize_context",
-    })
-    graph.add_conditional_edges("sheriff_badge_transfer", _route_after_badge_transfer, {
-        "sheriff_first_day_entry": "sheriff_first_day_entry",
-        "announce_deaths": "announce_deaths",
-        "enter_night": "summarize_context",
-    })
-    graph.add_edge("summarize_context", "enter_night")
-    graph.add_edge("reflection", "finish_game")
-    graph.add_edge("finish_game", END)
