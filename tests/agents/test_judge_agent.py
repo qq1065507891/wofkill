@@ -43,6 +43,18 @@ class TestJudgeAgent:
             is judge_static_broadcasts.build_death_announcement_broadcast
         )
 
+    def test_judge_persona_helpers_are_split_from_judge_facade(self) -> None:
+        from werewolf_agent.agents import judge, judge_persona
+
+        assert (
+            judge._JUDGE_FACT_ONLY_SYSTEM_PROMPT
+            is judge_persona.JUDGE_FACT_ONLY_SYSTEM_PROMPT
+        )
+        assert (
+            judge._JUDGE_FACT_ONLY_USER_BOUNDARY
+            is judge_persona.JUDGE_FACT_ONLY_USER_BOUNDARY
+        )
+
     def test_broadcast_night_phase(self) -> None:
         judge = self._make_judge()
         b = judge.broadcast_phase("night", night_number=2)

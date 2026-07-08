@@ -78,11 +78,12 @@
 - 2026-07-08 balance public claims 拆分验证记录：新增兼容测试先因缺少 `balance_public_claims` 失败；拆分后 `tests/evaluation/test_game_balance_batch.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`balance_audit.py` 从 520 行降至 429 行，公开发言/投票理由中缺少公开支撑的事实声明检测迁移到 `balance_public_claims.py`，旧 `_unsupported_public_fact_claim_count` / `_unsupported_claims_in_text` 兼容入口保持可用。
 - 2026-07-08 wolf team plan schema 拆分验证记录：新增兼容测试先因缺少 `wolf_team_plan_schema` 失败；拆分后 `tests/agents/test_wolf_team_plan_schema.py`、`tests/agents/test_schemas.py`、`tests/agents/test_action_contract.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`action_schemas.py` 从 562 行降至 388 行，狼队夜间团队计划 schema 与结构校验迁移到 `wolf_team_plan_schema.py`，旧 `action_schemas.WolfTeamPlan` 兼容入口保持可用。
 - 2026-07-08 judge static broadcasts 拆分验证记录：新增兼容测试先因缺少 `judge_static_broadcasts` 失败；拆分后 `tests/agents/test_judge_agent.py` 和 `tests/runtime/test_judge_flow.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge.py` 从 526 行降至 482 行，阶段切换和死亡公告的纯模板播报迁移到 `judge_static_broadcasts.py`，旧 `JudgeAgent.broadcast_phase` / `broadcast_death_announcement` 行为保持委托兼容。
+- 2026-07-08 judge persona 拆分验证记录：新增兼容测试先因缺少 `judge_persona` 失败；拆分后 `tests/agents/test_judge_agent.py` 和 `tests/runtime/test_judge_flow.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge.py` 从 509 行降至 498 行，法官人格解析、system prompt 拼装和事实边界注入迁移到 `judge_persona.py`，旧 `_resolve_persona` / `_persona_system_prompt` / `_persona_inject` 方法和事实边界常量继续作为兼容入口委托。
 - 2026-07-08 judge HITL command 拆分验证记录：新增兼容测试先因缺少 `judge_hitl_commands` 失败；拆分后 `tests/agents/test_judge_hitl.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge_hitl.py` 从 501 行降至 487 行，HITL 命令 dataclass 和解析逻辑迁移到 `judge_hitl_commands.py`，旧 `judge_hitl.HITLCommand` 兼容入口保持可用。
 - 2026-07-08 run real game reports 拆分验证记录：新增兼容测试先因缺少 `run_real_game_reports` 失败；拆分后 `tests/scripts/test_run_real_game.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`scripts/run_real_game.py` 从 579 行降至 283 行，控制台摘要、usage、pace、quality audit 与 leakage 报告迁移到 `scripts/run_real_game_reports.py`，旧 `scripts.run_real_game` 报告函数导入入口保持可用。
 - 2026-07-08 judge HITL guards 拆分验证记录：新增兼容测试先因缺少 `judge_hitl_guards` 失败；拆分后 `tests/agents/test_judge_hitl.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge_hitl.py` 从 487 行降至 420 行，HITL 注入事件类型白名单、payload 解析、递归受保护字段检查和 4KB 限制迁移到 `judge_hitl_guards.py`，旧 `_PROTECTED_TOP_KEYS` / `_PROTECTED_PLAYER_KEYS` 兼容入口保持可用。
-- 仍超过 500 行的非测试文件：无。
-- 建议顺序：本轮 500 行以上非测试 Python 文件已处理完毕。后续如继续拆分，可转为按职责复杂度而非行数驱动。
+- 仍超过 500 行的非测试文件：`werewolf_agent/runtime/context.py`（512 行）。
+- 建议顺序：下一批优先处理 `werewolf_agent/runtime/context.py`，再转为按职责复杂度而非行数驱动。
 
 已完成候选:
 
@@ -99,7 +100,7 @@
 - `werewolf_agent/skills/good_skill_handlers.py` / `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，Task 17 已拆分为 `good_claim_handlers.py`、`good_vote_handlers.py`、`good_power_handlers.py`、`wolf_discussion.py`、`wolf_consensus.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/action_schemas.py`，2026-07-08 后续批次已拆分狼队夜间团队计划 schema 到 `wolf_team_plan_schema.py`；旧 `WolfTeamPlan` 继续从 action schema facade 导出。
-- `werewolf_agent/agents/judge.py`，2026-07-08 后续批次已拆分阶段切换和死亡公告的纯模板播报到 `judge_static_broadcasts.py`；旧 `JudgeAgent` 方法继续作为兼容入口。
+- `werewolf_agent/agents/judge.py`，2026-07-08 后续批次已拆分阶段切换和死亡公告的纯模板播报到 `judge_static_broadcasts.py`，并拆分法官人格提示词注入到 `judge_persona.py`；旧 `JudgeAgent` 方法继续作为兼容入口。
 - `werewolf_agent/agents/judge_hitl.py`，2026-07-08 后续批次已拆分 HITL 命令结构和解析到 `judge_hitl_commands.py`，并拆分注入事件安全边界到 `judge_hitl_guards.py`；旧 `HITLCommand` 和受保护字段常量继续从 judge_hitl facade 导出。
 - `scripts/run_real_game.py`，2026-07-08 后续批次已拆分运行后控制台报告输出到 `run_real_game_reports.py`；旧脚本继续导出报告函数并保留真实游戏编排入口。
 - `werewolf_agent/evaluation/metrics.py`，Task 19 已拆分为 `metric_aggregation.py` 和 `metric_reporting.py`，旧模块保留兼容 facade。

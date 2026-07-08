@@ -19,23 +19,15 @@ from werewolf_agent.agents.judge_static_broadcasts import (
     build_death_announcement_broadcast,
     build_phase_broadcast,
 )
+from werewolf_agent.agents import judge_persona
 from werewolf_agent.model_gateway.router import ModelRouter
-from werewolf_agent.persona_runtime.judge_router import (
-    JudgePersonaSnapshot,
-    JudgeProfileRouter,
-)
+from werewolf_agent.agents.judge_persona import JudgePersonaSnapshot, JudgeProfileRouter
 from werewolf_agent.runtime.timeline import phase_label
 
 logger = logging.getLogger(__name__)
 
-_JUDGE_FACT_ONLY_SYSTEM_PROMPT = (
-    "你只能根据调用中明确提供的公开字段播报结果，不得补充隐藏身份、技能使用或夜间行动。"
-    "不得推断平安夜原因；不得把无人死亡归因于守护、解药、空刀或任何未公开行动。"
-)
-
-_JUDGE_FACT_ONLY_USER_BOUNDARY = (
-    "仅陈述上文明确给出的公开结果，不得补充未提供的身份、技能或夜间原因。"
-)
+_JUDGE_FACT_ONLY_SYSTEM_PROMPT = judge_persona.JUDGE_FACT_ONLY_SYSTEM_PROMPT
+_JUDGE_FACT_ONLY_USER_BOUNDARY = judge_persona.JUDGE_FACT_ONLY_USER_BOUNDARY
 
 
 class JudgeAgent:
@@ -69,31 +61,28 @@ class JudgeAgent:
 
     def _resolve_persona(self, task_type: str = "judge_phase") -> JudgePersonaSnapshot | None:
         """Resolve the current judge persona snapshot, if a router is configured."""
-        if self._profile_router is None:
-            return None
-        return self._profile_router.resolve(
-            profile_id=self._profile_id, task_type=task_type,
+        return judge_persona.resolve_persona(
+            self._profile_router,
+            self._profile_id,
+            task_type,
         )
 
     def _persona_system_prompt(self, task_type: str = "judge_phase") -> str:
         """Build a persona-aware system prompt snippet for LLM calls."""
-        persona = self._resolve_persona(task_type)
-        persona_prompt = persona.system_prompt if persona is not None else ""
-        return "\n\n".join(
-            part for part in (persona_prompt, _JUDGE_FACT_ONLY_SYSTEM_PROMPT)
-            if part
+        return judge_persona.build_persona_system_prompt(
+            self._profile_router,
+            self._profile_id,
+            task_type,
         )
 
     def _persona_inject(self, prompt: str, task_type: str = "judge_phase") -> tuple[str, str | None]:
-        """Resolve the persona system prompt and return (user_prompt, system_prompt).
-
-        The persona is returned as a separate system prompt (not concatenated to
-        the user prompt) so downstream LLM providers can route it through the
-        native system role instead of burying it in user content.
-        """
-        bounded_prompt = f"{prompt}\n{_JUDGE_FACT_ONLY_USER_BOUNDARY}"
-        sys_p = self._persona_system_prompt(task_type) or None
-        return bounded_prompt, sys_p
+        """Resolve persona prompts while preserving the legacy method name."""
+        return judge_persona.inject_persona_prompt(
+            prompt,
+            profile_router=self._profile_router,
+            profile_id=self._profile_id,
+            task_type=task_type,
+        )
 
     def broadcast_phase(
         self,
