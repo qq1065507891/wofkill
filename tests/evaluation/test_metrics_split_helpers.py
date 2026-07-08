@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from werewolf_agent.evaluation import claim_metrics
 from werewolf_agent.evaluation import metric_aggregation
+from werewolf_agent.evaluation import metric_quality
 from werewolf_agent.evaluation import metric_outcomes
 from werewolf_agent.evaluation import metric_reporting
 from werewolf_agent.evaluation import metrics
@@ -41,6 +42,13 @@ def test_outcome_metric_helpers_are_split_from_aggregator() -> None:
     assert (
         metric_aggregation.MetricsAggregator._compute_role_metrics
         is metric_outcomes.compute_role_metrics
+    )
+
+
+def test_quality_metric_helper_is_split_from_aggregator() -> None:
+    assert (
+        metric_aggregation.MetricsAggregator._compute_quality_metrics
+        is metric_quality.compute_quality_metrics
     )
 
 
