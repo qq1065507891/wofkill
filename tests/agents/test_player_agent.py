@@ -428,6 +428,18 @@ class TestPlayerActionFlowSplit:
             is player_retry_hints.build_missing_tool_call_retry
         )
 
+    def test_quality_retry_helpers_are_split_from_action_flow_facade(self) -> None:
+        from werewolf_agent.agents import player_action_flow, player_quality_retries
+
+        assert (
+            player_action_flow.build_speech_quality_retry
+            is player_quality_retries.build_speech_quality_retry
+        )
+        assert (
+            player_action_flow.build_vote_quality_retry
+            is player_quality_retries.build_vote_quality_retry
+        )
+
     def test_choice_prompt_helpers_are_split_from_prompt_output_facade(self) -> None:
         from werewolf_agent.agents import prompt_choice, prompt_output
 

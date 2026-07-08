@@ -1,0 +1,67 @@
+# -*- coding: utf-8 -*-
+"""
+构造玩家行动语义质量失败的重试提示。
+
+作者: Project contributors
+创建日期: 2026-07-08
+修改日期: 2026-07-08
+
+使用示例:
+    >>> from werewolf_agent.agents.player_quality_retries import build_speech_quality_retry
+    >>> build_speech_quality_retry("发言过于空洞", attempt=1, max_retries=3).error_code
+    'speech_quality'
+"""
+
+from __future__ import annotations
+
+from werewolf_agent.agents.schemas import RetryInfo
+
+
+def build_speech_quality_retry(
+    speech_quality_err: str,
+    *,
+    attempt: int,
+    max_retries: int,
+) -> RetryInfo:
+    return RetryInfo(
+        attempt=attempt,
+        max_retries=max_retries,
+        error_code="speech_quality",
+        error_message=speech_quality_err,
+        correction_hint=(
+            f"发言缺少以下必填字段: {speech_quality_err}。"
+            f"请基于公开记录重写发言，在 speech 字段中体现："
+            f"1) 你的身份立场（至少引用一处公开事实）；"
+            f"2) 攻击或防御的明确论点（PK 阶段必填）。"
+            f"不要写「按公开信息判断」之类的占位文本。"
+        ),
+    )
+
+
+def build_vote_quality_retry(
+    vote_quality_err: str,
+    *,
+    attempt: int,
+    max_retries: int,
+) -> RetryInfo:
+    return RetryInfo(
+        attempt=attempt,
+        max_retries=max_retries,
+        error_code="vote_quality",
+        error_message=vote_quality_err,
+        correction_hint=(
+            f"投票理由缺少以下必填字段: {vote_quality_err}。"
+            f"请基于以下公开来源重写 vote reason："
+            f"1) 预言家查杀声明（金水/查杀 + 报验人+夜数）；"
+            f"2) 票型异常（谁跟谁、票型突变）；"
+            f"3) 警徽流状态（撕徽/未撕）；"
+            f"4) 公开记录里的具体发言引用。"
+            f"不要写「综合分析」之类的占位文本。"
+        ),
+    )
+
+
+__all__ = [
+    "build_speech_quality_retry",
+    "build_vote_quality_retry",
+]
