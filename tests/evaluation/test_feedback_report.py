@@ -15,6 +15,32 @@ from werewolf_agent.evaluation.feedback_schemas import (
 )
 
 
+def test_feedback_report_serialization_helpers_are_split_from_facade() -> None:
+    from werewolf_agent.evaluation import feedback_report
+    from werewolf_agent.evaluation import feedback_report_serialization
+
+    assert (
+        feedback_report._module_metric_to_dict
+        is feedback_report_serialization.module_metric_to_dict
+    )
+    assert (
+        feedback_report._candidate_to_dict
+        is feedback_report_serialization.candidate_to_dict
+    )
+    assert (
+        feedback_report._failure_clusters
+        is feedback_report_serialization.failure_clusters
+    )
+    assert (
+        feedback_report._candidate_workflow_summary
+        is feedback_report_serialization.candidate_workflow_summary
+    )
+    assert (
+        feedback_report._refs_to_dict
+        is feedback_report_serialization.refs_to_dict
+    )
+
+
 def _trace(trace_id: str, exposures: list[ModuleExposure]) -> EvaluationTrace:
     return EvaluationTrace(
         trace_id=trace_id,
