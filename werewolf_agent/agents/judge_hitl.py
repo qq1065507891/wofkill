@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：管理游戏暂停-恢复生命周期，解析人工命令，执行受保护字段边界校验，记录所有交互为审计事件。
+功能描述：**：管理游戏暂停-恢复生命周期，解析人工命令，委托安全边界校验，记录所有交互为审计事件。
 作者：Mike
 创建日期：2025-01-15
 修改日期：2026-07-08
@@ -16,7 +16,11 @@ from enum import Enum
 from typing import Any, Callable
 
 from werewolf_agent.agents.judge_hitl_commands import HITLCommand
+from werewolf_agent.agents import judge_hitl_guards
 from werewolf_agent.core.models import GameState, GameEvent
+
+_PROTECTED_TOP_KEYS = judge_hitl_guards.PROTECTED_TOP_KEYS
+_PROTECTED_PLAYER_KEYS = judge_hitl_guards.PROTECTED_PLAYER_KEYS
 
 
 # ---------------------------------------------------------------------------
@@ -51,26 +55,6 @@ _PRIVILEGED_COMMANDS = frozenset({
     "show_roles",
     "show_votes",
     "inject_event",
-})
-
-
-# ---------------------------------------------------------------------------
-# Protected fields — HITL commands must never mutate these
-# ---------------------------------------------------------------------------
-
-_PROTECTED_TOP_KEYS = frozenset({
-    "players",   # player state (roles, alive, etc.)
-    "deaths",    # death records
-    "votes",     # resolved votes
-    "phase",     # game phase (must follow normal flow)
-    "winning_faction",  # victory result
-    "hybrid_result",    # hybrid binding result
-})
-
-# Individual player protected fields — HITL inject must not touch
-_PROTECTED_PLAYER_KEYS = frozenset({
-    "role", "alive", "faction", "vote_enabled",
-    "revealed_idiot", "badge_eligible",
 })
 
 
@@ -422,73 +406,19 @@ class JudgeHITLInterface:
              are rejected anywhere in the value tree (dicts, lists).
           3. Size limit — the serialized payload must not exceed 4KB.
         """
-        import json as _json
-
         if len(args) < 1:
             return {"response": "用法: inject_event <type> [key=value ...]"}
         event_type = args[0]
-        # J-5a: Whitelist — only custom_* event types are allowed.
-        if not event_type or len(event_type) > 64:
-            return {"response": f"拒绝: 事件类型无效（空或过长: {len(event_type)}字符）"}
-        if event_type.startswith("_"):
-            return {"response": "拒绝: 事件类型不能以下划线开头（保留给内部事件）"}
-        if not event_type.startswith("custom_"):
-            return {"response": (
-                f"拒绝: 事件类型必须以 'custom_' 开头（收到: '{event_type}'）。"
-                "系统保留类型（如 vote_resolved / phase_changed / deaths 等）不可注入。"
-            )}
-        if event_type in ("judge_hitl_interaction", "judge_broadcast"):
-            return {"response": f"拒绝: '{event_type}' 是系统保留事件类型"}
-        # Parse key=value pairs. Values that parse as JSON dicts/lists are
-        # decoded so the recursive check below can walk into them.
-        payload: dict[str, Any] = {}
-        for kv in args[1:]:
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                try:
-                    decoded = _json.loads(v)
-                except (ValueError, TypeError):
-                    decoded = v
-                payload[k] = decoded
-        # J-5b: Recursive nested key check across the value tree.
-        protected_lower = {k.lower() for k in _PROTECTED_TOP_KEYS}
-        protected_player_lower = {k.lower() for k in _PROTECTED_PLAYER_KEYS}
-        all_protected = protected_lower | protected_player_lower
 
-        def _find_protected(obj: Any) -> str | None:
-            """Return the first protected key found anywhere in ``obj``,
-            or None if the value tree is clean.
-            """
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    if isinstance(k, str) and k.lower() in all_protected:
-                        return k
-                    found = _find_protected(v)
-                    if found is not None:
-                        return found
-            elif isinstance(obj, list):
-                for item in obj:
-                    found = _find_protected(item)
-                    if found is not None:
-                        return found
-            return None
+        event_type_error = judge_hitl_guards.validate_event_type(event_type)
+        if event_type_error is not None:
+            return {"response": event_type_error}
 
-        bad_key = _find_protected(payload)
-        if bad_key is not None:
-            return {"response": (
-                f"拒绝: '{bad_key}' 是受保护字段（递归检查），不能通过 inject_event 修改。"
-            )}
-        # J-5c: Size limit 4KB. Encode with sorted keys + ensure_ascii=False
-        # so the limit reflects what the user actually wrote.
-        try:
-            serialized = _json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        except (ValueError, TypeError) as exc:
-            return {"response": f"拒绝: payload 无法序列化: {exc}"}
-        byte_size = len(serialized.encode("utf-8"))
-        if byte_size > 4096:
-            return {"response": (
-                f"拒绝: 注入 payload 超过 4KB 限制（{byte_size}字节）。"
-            )}
+        payload = judge_hitl_guards.parse_payload_tokens(args[1:])
+        payload_error = judge_hitl_guards.validate_payload(payload)
+        if payload_error is not None:
+            return {"response": payload_error}
+
         # Log the custom event
         event = GameEvent(type=event_type, payload=payload)
         gs = replace(gs, events=gs.events + [event])

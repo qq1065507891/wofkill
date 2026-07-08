@@ -26,6 +26,13 @@ def test_hitl_command_is_split_from_judge_hitl_facade() -> None:
     assert judge_hitl.HITLCommand is judge_hitl_commands.HITLCommand
 
 
+def test_hitl_guard_constants_are_split_from_judge_hitl_facade() -> None:
+    from werewolf_agent.agents import judge_hitl, judge_hitl_guards
+
+    assert judge_hitl._PROTECTED_TOP_KEYS is judge_hitl_guards.PROTECTED_TOP_KEYS
+    assert judge_hitl._PROTECTED_PLAYER_KEYS is judge_hitl_guards.PROTECTED_PLAYER_KEYS
+
+
 def _make_gs(**kwargs) -> GameState:
     return GameState(
         game_id="test_hitl",

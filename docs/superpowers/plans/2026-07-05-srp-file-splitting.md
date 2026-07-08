@@ -80,6 +80,7 @@
 - 2026-07-08 judge static broadcasts 拆分验证记录：新增兼容测试先因缺少 `judge_static_broadcasts` 失败；拆分后 `tests/agents/test_judge_agent.py` 和 `tests/runtime/test_judge_flow.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge.py` 从 526 行降至 482 行，阶段切换和死亡公告的纯模板播报迁移到 `judge_static_broadcasts.py`，旧 `JudgeAgent.broadcast_phase` / `broadcast_death_announcement` 行为保持委托兼容。
 - 2026-07-08 judge HITL command 拆分验证记录：新增兼容测试先因缺少 `judge_hitl_commands` 失败；拆分后 `tests/agents/test_judge_hitl.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge_hitl.py` 从 501 行降至 487 行，HITL 命令 dataclass 和解析逻辑迁移到 `judge_hitl_commands.py`，旧 `judge_hitl.HITLCommand` 兼容入口保持可用。
 - 2026-07-08 run real game reports 拆分验证记录：新增兼容测试先因缺少 `run_real_game_reports` 失败；拆分后 `tests/scripts/test_run_real_game.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`scripts/run_real_game.py` 从 579 行降至 283 行，控制台摘要、usage、pace、quality audit 与 leakage 报告迁移到 `scripts/run_real_game_reports.py`，旧 `scripts.run_real_game` 报告函数导入入口保持可用。
+- 2026-07-08 judge HITL guards 拆分验证记录：新增兼容测试先因缺少 `judge_hitl_guards` 失败；拆分后 `tests/agents/test_judge_hitl.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge_hitl.py` 从 487 行降至 420 行，HITL 注入事件类型白名单、payload 解析、递归受保护字段检查和 4KB 限制迁移到 `judge_hitl_guards.py`，旧 `_PROTECTED_TOP_KEYS` / `_PROTECTED_PLAYER_KEYS` 兼容入口保持可用。
 - 仍超过 500 行的非测试文件：无。
 - 建议顺序：本轮 500 行以上非测试 Python 文件已处理完毕。后续如继续拆分，可转为按职责复杂度而非行数驱动。
 
@@ -99,7 +100,7 @@
 - `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/action_schemas.py`，2026-07-08 后续批次已拆分狼队夜间团队计划 schema 到 `wolf_team_plan_schema.py`；旧 `WolfTeamPlan` 继续从 action schema facade 导出。
 - `werewolf_agent/agents/judge.py`，2026-07-08 后续批次已拆分阶段切换和死亡公告的纯模板播报到 `judge_static_broadcasts.py`；旧 `JudgeAgent` 方法继续作为兼容入口。
-- `werewolf_agent/agents/judge_hitl.py`，2026-07-08 后续批次已拆分 HITL 命令结构和解析到 `judge_hitl_commands.py`；旧 `HITLCommand` 继续从 judge_hitl facade 导出。
+- `werewolf_agent/agents/judge_hitl.py`，2026-07-08 后续批次已拆分 HITL 命令结构和解析到 `judge_hitl_commands.py`，并拆分注入事件安全边界到 `judge_hitl_guards.py`；旧 `HITLCommand` 和受保护字段常量继续从 judge_hitl facade 导出。
 - `scripts/run_real_game.py`，2026-07-08 后续批次已拆分运行后控制台报告输出到 `run_real_game_reports.py`；旧脚本继续导出报告函数并保留真实游戏编排入口。
 - `werewolf_agent/evaluation/metrics.py`，Task 19 已拆分为 `metric_aggregation.py` 和 `metric_reporting.py`，旧模块保留兼容 facade。
 - `werewolf_agent/evaluation/metric_aggregation.py`，2026-07-08 后续批次已拆分基础 outcome 指标到 `metric_outcomes.py`，并拆分质量指标到 `metric_quality.py`；旧 `MetricsAggregator` 私有方法名继续作为类属性兼容入口。
