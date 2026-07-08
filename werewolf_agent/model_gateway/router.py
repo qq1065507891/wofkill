@@ -39,6 +39,7 @@ from werewolf_agent.model_gateway.router_errors import (
     _record_failure_usage,
     _record_success_usage,
 )
+from werewolf_agent.model_gateway.router_probe import probe_tool_call_support
 from werewolf_agent.model_gateway.router_selection import (
     _resolve_config,
     _resolve_fallback_model,
@@ -74,6 +75,7 @@ __all__ = [
     "_http_status_from_exception",
     "_is_retryable_exception",
     "_normalize_tool_metadata",
+    "probe_tool_call_support",
     "_raw_error_from_exception",
     "_configured_provider_names",
     "_empty_result",
@@ -185,60 +187,7 @@ class ModelRouter:
 
     def probe_tool_call_support(self, agent_id: str, task_type: str) -> dict[str, Any]:
         """Probe whether the resolved provider returns an actual tool call."""
-        config, _fallback_provider = self.resolve_config(agent_id, task_type)
-        config = replace(
-            config,
-            structured_output_mode=StructuredOutputMode.NATIVE_TOOL.value,
-        )
-        provider = self._providers.get(config.provider)
-        if provider is None:
-            raise RuntimeError(f"Provider '{config.provider}' not found. Available: {list(self._providers.keys())}")
-
-        tool = {
-            "name": "submit_player_action",
-            "description": "Probe structured action tool-call support.",
-            "input_schema": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "action_type": {"type": "string", "enum": ["no_action"]},
-                    "target_id": {"enum": [None]},
-                    "speech": {"type": "string"},
-                    "reason": {"type": "string"},
-                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                },
-                "required": ["action_type", "target_id", "speech", "reason", "confidence"],
-            },
-        }
-        try:
-            result = _call_provider_generate(
-                provider,
-                "Call submit_player_action with no_action probe arguments.",
-                config,
-                "You are checking tool-call support. Use the tool.",
-                tools=[tool],
-                tool_choice={"type": "tool", "name": "submit_player_action"},
-            )
-            _normalize_tool_metadata(result, {"type": "tool", "name": "submit_player_action"})
-        except Exception as exc:
-            return {
-                "supported": False,
-                "provider": config.provider,
-                "model": config.model,
-                "failure_reason": _format_exception(exc),
-                "tool_call_received": False,
-                "text_fallback_used": False,
-            }
-        supported = bool(result.tool_call_received) and not result.structured_failure_reason
-        return {
-            "supported": supported,
-            "provider": result.provider,
-            "model": result.model,
-            "failure_reason": result.structured_failure_reason,
-            "tool_call_received": result.tool_call_received,
-            "tool_call_name": result.tool_call_name,
-            "text_fallback_used": result.text_fallback_used,
-        }
+        return probe_tool_call_support(self, agent_id, task_type)
 
     def resolve_config(
         self, agent_id: str, task_type: str

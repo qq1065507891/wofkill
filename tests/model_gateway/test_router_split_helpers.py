@@ -16,6 +16,7 @@ from werewolf_agent.model_gateway import retry_policy
 from werewolf_agent.model_gateway import router
 from werewolf_agent.model_gateway import router_config
 from werewolf_agent.model_gateway import router_errors
+from werewolf_agent.model_gateway import router_probe
 from werewolf_agent.model_gateway import router_selection
 from werewolf_agent.model_gateway import usage_records
 
@@ -64,3 +65,7 @@ def test_error_helpers_are_reexported_from_router_facade() -> None:
     assert router._record_success_usage is router_errors._record_success_usage
     assert router._record_failure_usage is router_errors._record_failure_usage
     assert router._empty_result is router_errors._empty_result
+
+
+def test_probe_helper_is_reexported_from_router_facade() -> None:
+    assert router.probe_tool_call_support is router_probe.probe_tool_call_support
