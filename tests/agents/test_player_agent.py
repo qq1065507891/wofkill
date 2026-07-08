@@ -428,6 +428,18 @@ class TestPlayerActionFlowSplit:
             is player_retry_hints.build_missing_tool_call_retry
         )
 
+    def test_persona_helpers_are_split_from_player_facade(self) -> None:
+        from werewolf_agent.agents import player, player_persona
+
+        assert (
+            player.PlayerAgent._attach_persona_snapshot
+            is player_persona.attach_persona_snapshot
+        )
+        assert (
+            player.PlayerAgent._record_persona_exposure
+            is player_persona.record_persona_exposure
+        )
+
 
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests
