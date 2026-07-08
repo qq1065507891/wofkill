@@ -23,6 +23,15 @@ from werewolf_agent.runtime.context import (
 )
 
 
+def test_context_role_directives_are_split_from_context_facade() -> None:
+    from werewolf_agent.runtime import context, context_role_directives
+
+    assert (
+        context._apply_role_strategy_context
+        is context_role_directives.apply_role_strategy_context
+    )
+
+
 # ---------------------------------------------------------------------------
 # NEW-R4-P2-8: _analysis_exempt_skills uses correct enum value
 # ---------------------------------------------------------------------------

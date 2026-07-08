@@ -67,6 +67,7 @@
 - 2026-07-08 quality metrics 拆分验证记录：新增兼容测试先因缺少 `metric_quality` 失败；拆分后 `tests/evaluation/test_metrics_split_helpers.py`、evaluation metrics 相关测试集、touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0。
 - 2026-07-08 prompt user context 拆分验证记录：新增兼容测试先因缺少 `prompt_user_context` 失败；拆分后 `tests/agents/test_prompt_builder.py::TestPromptUserContextSplit` 和 prompt builder 相关测试集通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；完整 `test_prompt_builder.py` 文件仍有既有测试文件 F401/F841 债务，本批不作为 Ruff gate。
 - 2026-07-08 context cross-game memory 拆分验证记录：新增兼容测试先因缺少 `context_cross_game_memory` 失败；拆分后 `tests/runtime/test_context_memory_hints.py` 和 context 相关 runtime 测试集通过，touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；本批顺手优化为 `_role_stats_for_refs` helper，减少 `build_agent_context` 内联循环。
+- 2026-07-08 context role directives 拆分验证记录：新增兼容测试先因缺少 `context_role_directives` 失败；拆分后 `tests/runtime/test_context.py` 和 `tests/runtime/test_witch_flow.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`context.py` 从 512 行降至 482 行，女巫毒药威慑、女巫夜间临时可见字段和混血儿主人死亡策略提示迁移到 `context_role_directives.py`，旧 `_apply_role_strategy_context` facade 入口保持可用。
 - 2026-07-08 private memory safety 拆分验证记录：新增兼容测试先因缺少 `private_memory_safety` 失败；拆分后 `tests/runtime/test_private_memory_sanitize.py` 和 `tests/memory/test_reflection.py` 通过，touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`private_memory.py` 从 544 行降至 418 行，旧 `_sanitize_role_claims`、`_resolve_stance_target`、`_ROLE_LABEL_CN` 等导入保持兼容。
 - 2026-07-08 player generation request 拆分验证记录：新增兼容测试先因缺少 `player_generation_request` 失败，再因缺少 `call_player_generation_request` 失败；拆分后 `tests/agents/test_player_agent.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；完整 `test_player_agent.py` 文件仍有既有测试文件 F401/F841 债务，本批不作为 Ruff gate；`player_action_flow.py` 从 561 行降至 555 行，provider 请求构建和实际调用已迁移到 `player_generation_request.py`。
 - 2026-07-08 player action result 拆分验证记录：新增兼容测试先因缺少 `player_action_result` 失败；拆分后 `tests/agents/test_player_agent.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；完整 `test_player_agent.py` 文件仍有既有测试文件 F401/F841 债务，本批不作为 Ruff gate；`player_action_flow.py` 从 555 行降至 496 行，成功 action 与 fallback action 的 trace/metrics 收尾已迁移到 `player_action_result.py`。
@@ -82,8 +83,8 @@
 - 2026-07-08 judge HITL command 拆分验证记录：新增兼容测试先因缺少 `judge_hitl_commands` 失败；拆分后 `tests/agents/test_judge_hitl.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge_hitl.py` 从 501 行降至 487 行，HITL 命令 dataclass 和解析逻辑迁移到 `judge_hitl_commands.py`，旧 `judge_hitl.HITLCommand` 兼容入口保持可用。
 - 2026-07-08 run real game reports 拆分验证记录：新增兼容测试先因缺少 `run_real_game_reports` 失败；拆分后 `tests/scripts/test_run_real_game.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`scripts/run_real_game.py` 从 579 行降至 283 行，控制台摘要、usage、pace、quality audit 与 leakage 报告迁移到 `scripts/run_real_game_reports.py`，旧 `scripts.run_real_game` 报告函数导入入口保持可用。
 - 2026-07-08 judge HITL guards 拆分验证记录：新增兼容测试先因缺少 `judge_hitl_guards` 失败；拆分后 `tests/agents/test_judge_hitl.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge_hitl.py` 从 487 行降至 420 行，HITL 注入事件类型白名单、payload 解析、递归受保护字段检查和 4KB 限制迁移到 `judge_hitl_guards.py`，旧 `_PROTECTED_TOP_KEYS` / `_PROTECTED_PLAYER_KEYS` 兼容入口保持可用。
-- 仍超过 500 行的非测试文件：`werewolf_agent/runtime/context.py`（512 行）。
-- 建议顺序：下一批优先处理 `werewolf_agent/runtime/context.py`，再转为按职责复杂度而非行数驱动。
+- 仍超过 500 行的非测试文件：无。
+- 建议顺序：本轮 500 行以上非测试 Python 文件已处理完毕。后续如继续拆分，可转为按职责复杂度而非行数驱动。
 
 已完成候选:
 
@@ -96,7 +97,7 @@
 - `werewolf_agent/agents/prompt_builder.py` / `werewolf_agent/agents/player.py`，Task 16 已拆分为 `prompt_composer.py` 和 `player_action_flow.py`；2026-07-08 后续批次已从 `player_action_flow.py` 拆出 provider 请求构建和调用到 `player_generation_request.py`，拆出成功/fallback trace 与 metrics 收尾到 `player_action_result.py`，并拆出重试提示构造到 `player_retry_hints.py`；旧 `player_action_flow.py` 继续作为兼容入口重新导出这些 helper。`player.py` 后续又拆出 persona snapshot 解析与曝光记录到 `player_persona.py`，旧 `PlayerAgent` 私有 helper 名称保持兼容。
 - `werewolf_agent/agents/prompt_builder.py`，2026-07-08 后续批次已拆分稳定 system prompt 区段到 `prompt_system.py`，并拆分动态 user context 到 `prompt_user_context.py`；旧 `PlayerPromptBuilder._build_*` 方法名继续通过 mixin 暴露。
 - `werewolf_agent/evaluation/balance_audit.py`，2026-07-08 后续批次已拆分公开事实声明支撑检测到 `balance_public_claims.py`；旧 balance audit 模块继续导出相关私有 helper 兼容入口。
-- `werewolf_agent/runtime/context.py`，2026-07-08 后续批次已拆分跨局记忆 orchestration 到 `context_cross_game_memory.py`；旧 `build_agent_context` 继续作为兼容入口组装 AgentContext。
+- `werewolf_agent/runtime/context.py`，2026-07-08 后续批次已拆分跨局记忆 orchestration 到 `context_cross_game_memory.py`，并拆分角色策略指令/临时可见字段注入到 `context_role_directives.py`；旧 `build_agent_context` 继续作为兼容入口组装 AgentContext。
 - `werewolf_agent/skills/good_skill_handlers.py` / `werewolf_agent/runtime/nodes/wolf_night_nodes.py`，Task 17 已拆分为 `good_claim_handlers.py`、`good_vote_handlers.py`、`good_power_handlers.py`、`wolf_discussion.py`、`wolf_consensus.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/action_schemas.py`，2026-07-08 后续批次已拆分狼队夜间团队计划 schema 到 `wolf_team_plan_schema.py`；旧 `WolfTeamPlan` 继续从 action schema facade 导出。

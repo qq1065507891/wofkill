@@ -49,7 +49,7 @@ from werewolf_agent.skills.registry import SkillRegistry as SkillRegistry  # noq
 # Backward-compatible re-exports from runtime.directives package.
 # Backward-compatible re-exports from runtime.strategy (Task 2 extraction).
 from werewolf_agent.runtime.strategy import (
-    build_witch_pressure_targets as _build_witch_pressure_targets,
+    build_witch_pressure_targets as _build_witch_pressure_targets,  # noqa: F401
     evaluate_death_cause_claims as _evaluate_death_cause_claims,
 )
 from werewolf_agent.runtime.context_action_trace import _action_trace_payload  # noqa: F401
@@ -81,6 +81,9 @@ from werewolf_agent.runtime.context_rag import (
     _inject_seed_rag_hints,
     _normalize_legal_actions_to_tags,  # noqa: F401
     _rag_phase_for_task,  # noqa: F401
+)
+from werewolf_agent.runtime.context_role_directives import (
+    apply_role_strategy_context as _apply_role_strategy_context,
 )
 from werewolf_agent.runtime.context_skill_advice import (
     _inject_skill_output,
@@ -177,37 +180,14 @@ def build_agent_context(
     # that used to live here have been deleted — see the
     # defense-in-depth whitelist in ``visible_state.py``.
     #
-    # The strategy_directive still needs role-specific entries that
-    # carry imperative text (witch poison deterrent, etc.).  These
-    # are NOT private state for the LLM; they are prompt-side
-    # behavioral guidance.  Keep the witch poison_deterrent
-    # branch here.
     strategy_directive: dict[str, Any] = {}
-    if (
-        player.role == "witch"
-        and not gs.poison_used
-        and gs.phase == "day"
-    ):
-        alive = sum(1 for p in gs.players.values() if p.alive)
-        if alive <= 8:
-            strategy_directive["witch_poison_deterrent"] = (
-                "你的毒药还未使用。如果场上有人持续踩你、试图把你放逐出局，"
-                "你可以在发言中暗示自己有底牌——'我手里还有东西没用，不要太冲动'。"
-                "狼人听到这种暗示可能会退缩。但不要明报身份。"
-            )
-    # Per-night transient fields (still inline — they're not static
-    # role state, they depend on a specific GameState.event payload
-    # that context.py has access to via wolf_kill_target_id).  These
-    # are private to the witch only and bypass the public-fields
-    # whitelist in ``build_visible_player_state``; if a future change
-    # wants to surface them through the slim path, the whitelist
-    # there should be updated.
-    if player.role == "witch" and wolf_kill_target_id:
-        visible["wolf_kill_target"] = wolf_kill_target_id
-    if player.role == "witch" and not gs.poison_used:
-        pressure_targets = _build_witch_pressure_targets(gs)
-        if pressure_targets:
-            visible["poison_pressure_targets"] = pressure_targets
+    visible, strategy_directive = _apply_role_strategy_context(
+        visible=visible,
+        strategy_directive=strategy_directive,
+        gs=gs,
+        player_id=player_id,
+        wolf_kill_target_id=wolf_kill_target_id,
+    )
 
     transcript = build_recent_transcript(gs)
     public_summary = build_public_summary(gs)
@@ -228,16 +208,6 @@ def build_agent_context(
     world_state = None
     belief_state = None
     alerts: list[Any] = []
-
-    # Hybrid knows the master id, but never the master's hidden faction.
-    if player.role == "hybrid" and gs.hybrid_master_id:
-        master = gs.players.get(gs.hybrid_master_id)
-        if master and not master.alive:
-            strategy_directive["hybrid_master_dead"] = (
-                f"你的主人{gs.hybrid_master_id}已死亡。"
-                "你的胜利绑定仍按主人的原始阵营结算，但你仍不知道主人的阵营。"
-                "继续根据主人的公开行为和场上信息独立判断。"
-            )
 
     try:
         from werewolf_agent.cognition.world_state import build_world_state
