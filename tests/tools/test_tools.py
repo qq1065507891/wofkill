@@ -724,6 +724,13 @@ class TestLocalToolsStubWired:
         store.init_matrix("p01", ["p01", "p02"])
         return store
 
+    def test_memory_helpers_are_split_from_local_tools_facade(self):
+        from werewolf_agent.tools import local_tool_memory, local_tools
+
+        assert local_tools._get_default_memory_store is local_tool_memory.get_default_memory_store
+        assert local_tools._query_cognition_matrix is local_tool_memory.query_cognition_matrix
+        assert local_tools._write_review is local_tool_memory.write_review
+
     def test_query_cognition_matrix_returns_real_data(self):
         from werewolf_agent.tools.local_tools import _query_cognition_matrix
         store = self._fresh_store_with_pair()
