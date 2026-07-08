@@ -17,6 +17,9 @@ import sys
 from types import ModuleType
 
 from werewolf_agent.runtime import agent_action_pipeline as _action_pipeline
+from werewolf_agent.runtime import agent_day_actions as _day_actions
+from werewolf_agent.runtime import agent_day_speech_actions as _day_speech_actions
+from werewolf_agent.runtime import agent_day_vote_actions as _day_vote_actions
 from werewolf_agent.runtime import agent_sheriff_actions as _sheriff_actions
 from werewolf_agent.runtime import agent_wolf_actions as _wolf_actions
 from werewolf_agent.runtime.agent_action_pipeline import (
@@ -96,6 +99,12 @@ class _AgentAdapterFacadeModule(ModuleType):
         super().__setattr__(name, value)
         if hasattr(_action_pipeline, name):
             setattr(_action_pipeline, name, value)
+        if hasattr(_day_actions, name):
+            setattr(_day_actions, name, value)
+        if hasattr(_day_speech_actions, name):
+            setattr(_day_speech_actions, name, value)
+        if hasattr(_day_vote_actions, name):
+            setattr(_day_vote_actions, name, value)
         if hasattr(_sheriff_actions, name):
             setattr(_sheriff_actions, name, value)
         if hasattr(_wolf_actions, name):

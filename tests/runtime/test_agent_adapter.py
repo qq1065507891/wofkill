@@ -108,9 +108,30 @@ class TestAgentActionPipelineSplit:
                 agent_special_actions, export_name
             )
 
+    def test_day_action_exports_are_compatibility_imports(self) -> None:
+        from werewolf_agent.runtime import agent_action_pipeline, agent_day_actions
+
+        day_exports = (
+            "agent_defense_speech",
+            "agent_day_speech",
+            "agent_pk_speech",
+            "agent_day_vote",
+            "agent_exile_last_words",
+        )
+
+        for export_name in day_exports:
+            assert getattr(agent_action_pipeline, export_name) is getattr(
+                agent_day_actions, export_name
+            )
+            assert getattr(agent_adapter, export_name) is getattr(
+                agent_day_actions, export_name
+            )
+
     def test_facade_patch_propagates_to_action_pipeline(self, monkeypatch) -> None:
         from werewolf_agent.runtime import (
             agent_action_pipeline,
+            agent_day_speech_actions,
+            agent_day_vote_actions,
             agent_sheriff_actions,
             agent_wolf_actions,
         )
@@ -121,6 +142,8 @@ class TestAgentActionPipelineSplit:
         monkeypatch.setattr(agent_adapter, "build_agent_context", fake_build_context)
 
         assert agent_action_pipeline.build_agent_context is fake_build_context
+        assert agent_day_speech_actions.build_agent_context is fake_build_context
+        assert agent_day_vote_actions.build_agent_context is fake_build_context
         assert agent_sheriff_actions.build_agent_context is fake_build_context
         assert agent_wolf_actions.build_agent_context is fake_build_context
 
