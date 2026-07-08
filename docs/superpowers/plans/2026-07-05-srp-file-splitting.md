@@ -90,7 +90,8 @@
 - 2026-07-08 feedback report serialization 拆分验证记录：新增兼容测试先因缺少 `feedback_report_serialization` 失败；拆分后 `tests/evaluation/test_feedback_report.py::test_feedback_report_serialization_helpers_are_split_from_facade`、`tests/evaluation/test_feedback_report.py` 和 `tests/evaluation/test_langsmith_exporter.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`feedback_report.py` 从 423 行降至 145 行，模块指标、诊断、候选、失败聚类、回归摘要、ablation 与公开审计脱敏序列化迁移到 `feedback_report_serialization.py`，旧私有 helper 名称通过 facade 兼容别名保持可用。
 - 2026-07-08 player quality retries 拆分验证记录：新增兼容测试先因缺少 `player_quality_retries` 失败；拆分后 `tests/agents/test_player_agent.py::TestPlayerActionFlowSplit`、speech/vote quality correction hint 回归测试通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`player_action_flow.py` 从 466 行降至 436 行，speech/vote quality 语义失败的 `RetryInfo` 构造迁移到 `player_quality_retries.py`，旧 facade helper 名称保持可导入。
 - 仍超过 500 行的非测试文件：无。
-- 建议顺序：本轮 500 行以上非测试 Python 文件已处理完毕。后续如继续拆分，可转为按职责复杂度而非行数驱动。
+- 建议顺序：本轮 500 行以上非测试 Python 文件已处理完毕。后续如继续拆分，可转为按职责复杂度而非行数驱动；职责清楚但偏重的 facade/orchestrator 也纳入收尾优化范围，修改时顺手做小范围代码优化。
+- 2026-07-08 player fallback speech 拆分验证记录：新增兼容测试先因缺少 `player_fallback_speech` 失败；拆分后 `tests/agents/test_player_agent.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`player.py` 从 448 行降至 277 行，fallback 发言模板、预言家 PK 特例、上下文线索和目标选择迁移到 `player_fallback_speech.py`，旧 `PlayerAgent._fallback_speech` / `_context_clues` 兼容入口保持可用。本批顺手优化为模块级模板常量，避免每次 fallback 调用重复创建模板列表。
 
 已完成候选:
 
@@ -101,6 +102,7 @@
 - `werewolf_agent/runtime/nodes/night_specialists.py`，2026-07-08 后续批次已拆分女巫夜间节点到 `night_witch_node.py`；旧模块继续重新导出 `night_witch`，保持兼容入口可导入。
 - `werewolf_agent/runtime/graph.py`，2026-07-08 后续批次已拆分节点/边注册清单到 `graph_registration.py`；旧 graph 模块继续保留 graph factory、setup 节点、route 函数和兼容 re-export。
 - `werewolf_agent/agents/prompt_builder.py` / `werewolf_agent/agents/player.py`，Task 16 已拆分为 `prompt_composer.py` 和 `player_action_flow.py`；2026-07-08 后续批次已从 `player_action_flow.py` 拆出 provider 请求构建和调用到 `player_generation_request.py`，拆出成功/fallback trace 与 metrics 收尾到 `player_action_result.py`，并拆出重试提示构造到 `player_retry_hints.py`；旧 `player_action_flow.py` 继续作为兼容入口重新导出这些 helper。`player.py` 后续又拆出 persona snapshot 解析与曝光记录到 `player_persona.py`，旧 `PlayerAgent` 私有 helper 名称保持兼容。
+- `werewolf_agent/agents/player.py`，2026-07-08 后续批次已拆分 fallback 发言构造到 `player_fallback_speech.py`；旧 `PlayerAgent._fallback_speech` / `_context_clues` 继续作为静态兼容入口。
 - `werewolf_agent/agents/player_action_flow.py`，2026-07-08 后续批次已拆分 speech/vote quality 语义失败的 retry 构造到 `player_quality_retries.py`；旧 action flow facade 继续导出 `build_speech_quality_retry` / `build_vote_quality_retry` 兼容入口。
 - `werewolf_agent/agents/prompt_builder.py`，2026-07-08 后续批次已拆分稳定 system prompt 区段到 `prompt_system.py`，并拆分动态 user context 到 `prompt_user_context.py`；旧 `PlayerPromptBuilder._build_*` 方法名继续通过 mixin 暴露。
 - `werewolf_agent/evaluation/balance_audit.py`，2026-07-08 后续批次已拆分公开事实声明支撑检测到 `balance_public_claims.py`；旧 balance audit 模块继续导出相关私有 helper 兼容入口。

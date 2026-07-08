@@ -469,6 +469,18 @@ class TestPlayerActionFlowSplit:
             is player_persona.record_persona_exposure
         )
 
+    def test_fallback_speech_helpers_are_split_from_player_facade(self) -> None:
+        from werewolf_agent.agents import player, player_fallback_speech
+
+        assert (
+            player.PlayerAgent._fallback_speech
+            is player_fallback_speech.build_fallback_speech
+        )
+        assert (
+            player.PlayerAgent._context_clues
+            is player_fallback_speech.context_clues
+        )
+
 
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests
