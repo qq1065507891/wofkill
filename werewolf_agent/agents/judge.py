@@ -3,7 +3,7 @@
 功能描述：**：法官作为面向人类的游戏流程接口，调用 RuleEngine 确定性结果并翻译为自然语言播报。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-08
 使用示例：内部模块，无对外接口
 """
 
@@ -14,6 +14,10 @@ from typing import Any
 
 from werewolf_agent.agents.schemas import (
     JudgeBroadcast,
+)
+from werewolf_agent.agents.judge_static_broadcasts import (
+    build_death_announcement_broadcast,
+    build_phase_broadcast,
 )
 from werewolf_agent.model_gateway.router import ModelRouter
 from werewolf_agent.persona_runtime.judge_router import (
@@ -99,42 +103,11 @@ class JudgeAgent:
         public_data: dict[str, Any] | None = None,
     ) -> JudgeBroadcast:
         """Generate a phase transition broadcast."""
-        templates: dict[str, str] = {
-            "night": f"天黑请闭眼。{phase_label('night', night_number)} 开始。",
-            "day": f"天亮了。{phase_label('day', day_number)} 开始。",
-            "wolf_discussion": "狼人请睁眼，讨论击杀目标。",
-            "witch_turn": "女巫请睁眼。",
-            "seer_turn": "预言家请睁眼。",
-            "vote": "投票阶段开始。",
-            "sheriff_registration": "警长竞选开始，请上警玩家举手。",
-            "sheriff_vote": "请警下玩家投票选举警长。",
-            "free_discussion": "自由发言阶段开始。",
-            "pk_speech": "平票PK发言开始。",
-            "victory_good": "好人阵营获胜！",
-            "victory_werewolf": "狼人阵营获胜！",
-            "finished": "对局结束。",
-        }
-
-        message = templates.get(phase, f"进入 {phase} 阶段。")
-        if public_data:
-            deaths = public_data.get("deaths", [])
-            if deaths:
-                players_str = "、".join(d.get("player_id", "???") for d in deaths)
-                message += f" 昨夜倒牌：{players_str}。"
-            exiled = public_data.get("exiled")
-            if exiled:
-                message += f" {exiled} 被放逐。"
-            revealed = public_data.get("revealed_idiot")
-            if revealed:
-                message += f" {revealed} 翻牌自证白痴身份。"
-
-        return JudgeBroadcast(
-            broadcast_type=phase,
-            message=message,
+        return build_phase_broadcast(
             phase=phase,
             day_number=day_number,
             night_number=night_number,
-            public_data=public_data or {},
+            public_data=public_data,
         )
 
     def broadcast_death_announcement(
@@ -143,30 +116,9 @@ class JudgeAgent:
         day_number: int,
     ) -> JudgeBroadcast:
         """Translate death records into a public announcement."""
-        if not deaths:
-            return JudgeBroadcast(
-                broadcast_type="death_announcement",
-                message=f"{phase_label('day', day_number)}：昨夜是平安夜，无人倒牌。",
-                phase="day",
-                day_number=day_number,
-                public_data={"death_count": 0, "death_ids": ""},
-            )
-
-        dead_names = []
-        for d in deaths:
-            name = d.get("player_id", "???")
-            dead_names.append(name)
-
-        msg = f"{phase_label('day', day_number)}：昨夜倒牌：{'、'.join(dead_names)}。"
-        return JudgeBroadcast(
-            broadcast_type="death_announcement",
-            message=msg,
-            phase="day",
+        return build_death_announcement_broadcast(
+            deaths=deaths,
             day_number=day_number,
-            public_data={
-                "death_count": len(dead_names),
-                "death_ids": ",".join(dead_names),
-            },
         )
 
     def broadcast_vote_calling(

@@ -31,6 +31,18 @@ class TestJudgeAgent:
         )
         return JudgeAgent(model_router=router)
 
+    def test_static_broadcast_helpers_are_split_from_judge_facade(self) -> None:
+        from werewolf_agent.agents import judge, judge_static_broadcasts
+
+        assert (
+            judge.build_phase_broadcast
+            is judge_static_broadcasts.build_phase_broadcast
+        )
+        assert (
+            judge.build_death_announcement_broadcast
+            is judge_static_broadcasts.build_death_announcement_broadcast
+        )
+
     def test_broadcast_night_phase(self) -> None:
         judge = self._make_judge()
         b = judge.broadcast_phase("night", night_number=2)
