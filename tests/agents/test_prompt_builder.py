@@ -87,6 +87,26 @@ class TestPromptComposerSplit:
         ]
 
 
+class TestPromptUserContextSplit:
+    """PlayerPromptBuilder 保留 facade，动态 user context 由专用 mixin 承担。"""
+
+    def test_prompt_builder_uses_user_context_mixin(self) -> None:
+        from werewolf_agent.agents import prompt_user_context
+
+        assert (
+            PlayerPromptBuilder._build_phase_context
+            is prompt_user_context.PromptUserContextMixin._build_phase_context
+        )
+        assert (
+            PlayerPromptBuilder._build_possible_worlds
+            is prompt_user_context.PromptUserContextMixin._build_possible_worlds
+        )
+        assert (
+            prompt_builder_module._clean_current_game_list_items
+            is prompt_user_context._clean_current_game_list_items
+        )
+
+
 # ---------------------------------------------------------------------------
 # Category-membership sanity checks (module-level constants)
 # ---------------------------------------------------------------------------
