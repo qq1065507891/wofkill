@@ -92,6 +92,12 @@ def test_graph_registration_helpers_are_split_from_graph_facade() -> None:
     assert graph_mod._add_all_edges is graph_registration.add_game_graph_edges
 
 
+def test_night_witch_node_is_split_from_night_specialists_facade() -> None:
+    from werewolf_agent.runtime.nodes import night_specialists, night_witch_node
+
+    assert night_specialists.night_witch is night_witch_node.night_witch
+
+
 # ---------------------------------------------------------------------------
 # Setup + assign roles
 # ---------------------------------------------------------------------------
