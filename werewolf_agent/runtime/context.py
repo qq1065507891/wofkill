@@ -53,13 +53,16 @@ from werewolf_agent.runtime.strategy import (
     evaluate_death_cause_claims as _evaluate_death_cause_claims,
 )
 from werewolf_agent.runtime.context_action_trace import _action_trace_payload  # noqa: F401
+from werewolf_agent.runtime.context_cross_game_memory import (
+    build_cross_game_memory_hints,
+)
 from werewolf_agent.runtime.context_memory_hints import (
     HINT_BUDGET,  # noqa: F401
     REFLECTION_CARD_BUDGET,  # noqa: F401
-    _cognition_matrix_hint,
+    _cognition_matrix_hint,  # noqa: F401
     _evidence_id_ref,  # noqa: F401
-    _profile_memory_hint,
-    _reflection_memory_hints,
+    _profile_memory_hint,  # noqa: F401
+    _reflection_memory_hints,  # noqa: F401
 )
 from werewolf_agent.runtime.context_persona import (
     _SHERIFF_SPEECH_STYLE_OVERRIDES,  # noqa: F401
@@ -442,55 +445,18 @@ def build_agent_context(
             logger.debug("Death cause evaluation failed, skipping", exc_info=True)
 
     # -- Cross-game memory: inject accumulated learning from previous games --
-    profile_memory_hint: dict[str, Any] = {}
-    reflection_memory_hints: list[dict[str, Any]] = []
-    cognition_matrix_hint: dict[str, Any] = {}
-    error_pattern_hint: dict[str, Any] = {}
+    cross_game_memory = build_cross_game_memory_hints(
+        None,
+        player_id=player_id,
+        current_role=player.role,
+    )
     if restored_memory is not None:
         try:
-            profile = restored_memory.get_profile(player_id)
-            current_role = player.role
-            from werewolf_agent.memory.store import MemoryStore
-            current_faction = MemoryStore._player_faction(
-                current_role,
-                master_faction=None,
+            cross_game_memory = build_cross_game_memory_hints(
+                restored_memory,
+                player_id=player_id,
+                current_role=player.role,
             )
-            v2_refs: list[Any] = []
-            reflection_memory = getattr(restored_memory, "reflections", None)
-            if reflection_memory is not None and hasattr(reflection_memory, "query_live"):
-                from werewolf_agent.memory.schemas import CrossGameQuery
-                v2_refs = reflection_memory.query_live(
-                    CrossGameQuery(
-                        player_id=player_id,
-                        role=current_role,
-                        max_results=REFLECTION_CARD_BUDGET,
-                    )
-                )
-            if v2_refs:
-                reflection_memory_hints = _reflection_memory_hints(
-                    v2_refs, current_role, current_faction
-                )
-                if hasattr(reflection_memory, "live_error_pattern"):
-                    error_pattern_hint = reflection_memory.live_error_pattern(
-                        player_id, current_role
-                    )
-
-            if profile is not None and profile.games_played > 0:
-                # Aggregate by role across all reflections for pattern summary
-                role_stats: dict[str, dict[str, int]] = {}
-                refs_for_profile: list[Any] = []
-                if hasattr(restored_memory, "reflections_by_player"):
-                    refs_for_profile = restored_memory.reflections_by_player(player_id)
-                elif v2_refs:
-                    refs_for_profile = v2_refs
-                for ref in refs_for_profile:
-                    r = ref.role or "?"
-                    role_stats.setdefault(r, {"count": 0, "wins": 0})
-                    role_stats[r]["count"] += 1
-                    if ref.faction_won:
-                        role_stats[r]["wins"] += 1
-                profile_memory_hint = _profile_memory_hint(profile, role_stats, player.role)
-            cognition_matrix_hint = _cognition_matrix_hint(restored_memory, player_id)
         except Exception:
             logger.debug("Failed to inject cross-game memory for %s", player_id, exc_info=True)
 
@@ -507,10 +473,10 @@ def build_agent_context(
         visible_world_state=visible,
         private_memory_hints=private_memory_hints,
         private_memory_caveat=private_memory_caveat,
-        reflection_memory_hints=reflection_memory_hints,
-        profile_memory_hint=profile_memory_hint,
-        cognition_matrix_hint=cognition_matrix_hint,
-        error_pattern_hint=error_pattern_hint,
+        reflection_memory_hints=cross_game_memory.reflection_memory_hints,
+        profile_memory_hint=cross_game_memory.profile_memory_hint,
+        cognition_matrix_hint=cross_game_memory.cognition_matrix_hint,
+        error_pattern_hint=cross_game_memory.error_pattern_hint,
         recent_transcript=transcript,
         contradiction_alerts=ctx_alerts,
         seer_credibility=seer_credibility_summary,

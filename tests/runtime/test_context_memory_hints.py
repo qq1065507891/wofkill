@@ -22,3 +22,13 @@ def test_memory_hint_helpers_remain_compatibly_importable() -> None:
     assert context._cognition_matrix_hint is context_memory_hints._cognition_matrix_hint
     assert context.HINT_BUDGET == context_memory_hints.HINT_BUDGET
     assert context.REFLECTION_CARD_BUDGET == context_memory_hints.REFLECTION_CARD_BUDGET
+
+
+def test_cross_game_memory_builder_is_split_from_context_facade() -> None:
+    from werewolf_agent.runtime import context
+    from werewolf_agent.runtime import context_cross_game_memory
+
+    assert (
+        context.build_cross_game_memory_hints
+        is context_cross_game_memory.build_cross_game_memory_hints
+    )
