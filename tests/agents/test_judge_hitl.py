@@ -20,6 +20,12 @@ from werewolf_agent.agents.judge_hitl import (
 )
 
 
+def test_hitl_command_is_split_from_judge_hitl_facade() -> None:
+    from werewolf_agent.agents import judge_hitl, judge_hitl_commands
+
+    assert judge_hitl.HITLCommand is judge_hitl_commands.HITLCommand
+
+
 def _make_gs(**kwargs) -> GameState:
     return GameState(
         game_id="test_hitl",

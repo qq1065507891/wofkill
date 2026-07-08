@@ -3,7 +3,7 @@
 功能描述：**：管理游戏暂停-恢复生命周期，解析人工命令，执行受保护字段边界校验，记录所有交互为审计事件。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-08
 使用示例：内部模块，无对外接口
 """
 
@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from enum import Enum
 from typing import Any, Callable
 
+from werewolf_agent.agents.judge_hitl_commands import HITLCommand
 from werewolf_agent.core.models import GameState, GameEvent
 
 
@@ -51,24 +52,6 @@ _PRIVILEGED_COMMANDS = frozenset({
     "show_votes",
     "inject_event",
 })
-
-
-@dataclass
-class HITLCommand:
-    command: str
-    args: list[str] = field(default_factory=list)
-    timestamp: float = 0.0
-
-    @classmethod
-    def parse(cls, raw: str) -> HITLCommand:
-        parts = raw.strip().split()
-        if not parts:
-            return cls(command="")
-        return cls(
-            command=parts[0].lower(),
-            args=parts[1:] if len(parts) > 1 else [],
-            timestamp=time.time(),
-        )
 
 
 # ---------------------------------------------------------------------------

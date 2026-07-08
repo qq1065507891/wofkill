@@ -78,8 +78,9 @@
 - 2026-07-08 balance public claims 拆分验证记录：新增兼容测试先因缺少 `balance_public_claims` 失败；拆分后 `tests/evaluation/test_game_balance_batch.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`balance_audit.py` 从 520 行降至 429 行，公开发言/投票理由中缺少公开支撑的事实声明检测迁移到 `balance_public_claims.py`，旧 `_unsupported_public_fact_claim_count` / `_unsupported_claims_in_text` 兼容入口保持可用。
 - 2026-07-08 wolf team plan schema 拆分验证记录：新增兼容测试先因缺少 `wolf_team_plan_schema` 失败；拆分后 `tests/agents/test_wolf_team_plan_schema.py`、`tests/agents/test_schemas.py`、`tests/agents/test_action_contract.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`action_schemas.py` 从 562 行降至 388 行，狼队夜间团队计划 schema 与结构校验迁移到 `wolf_team_plan_schema.py`，旧 `action_schemas.WolfTeamPlan` 兼容入口保持可用。
 - 2026-07-08 judge static broadcasts 拆分验证记录：新增兼容测试先因缺少 `judge_static_broadcasts` 失败；拆分后 `tests/agents/test_judge_agent.py` 和 `tests/runtime/test_judge_flow.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge.py` 从 526 行降至 482 行，阶段切换和死亡公告的纯模板播报迁移到 `judge_static_broadcasts.py`，旧 `JudgeAgent.broadcast_phase` / `broadcast_death_announcement` 行为保持委托兼容。
-- 仍超过 500 行的非测试文件：`scripts/run_real_game.py`(579)、`werewolf_agent/agents/judge_hitl.py`(576)。
-- 建议顺序：下一步处理 `agents/judge_hitl.py`；脚本类文件可放在生产核心之后。`private_memory.py`、`graph.py`、`agent_sheriff_actions.py`、`night_specialists.py`、`player_action_flow.py`、`player.py`、`balance_audit.py`、`action_schemas.py` 和 `judge.py` 已低于 500 行。
+- 2026-07-08 judge HITL command 拆分验证记录：新增兼容测试先因缺少 `judge_hitl_commands` 失败；拆分后 `tests/agents/test_judge_hitl.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`judge_hitl.py` 从 501 行降至 487 行，HITL 命令 dataclass 和解析逻辑迁移到 `judge_hitl_commands.py`，旧 `judge_hitl.HITLCommand` 兼容入口保持可用。
+- 仍超过 500 行的非测试文件：`scripts/run_real_game.py`(579)。
+- 建议顺序：下一步处理脚本类 `scripts/run_real_game.py`。`private_memory.py`、`graph.py`、`agent_sheriff_actions.py`、`night_specialists.py`、`player_action_flow.py`、`player.py`、`balance_audit.py`、`action_schemas.py`、`judge.py` 和 `judge_hitl.py` 已低于 500 行。
 
 已完成候选:
 
@@ -97,6 +98,7 @@
 - `werewolf_agent/agents/schemas.py`，Task 18 已拆分为 `action_schemas.py`、`prompt_schemas.py`、`trace_schemas.py`，旧模块保留兼容 facade。
 - `werewolf_agent/agents/action_schemas.py`，2026-07-08 后续批次已拆分狼队夜间团队计划 schema 到 `wolf_team_plan_schema.py`；旧 `WolfTeamPlan` 继续从 action schema facade 导出。
 - `werewolf_agent/agents/judge.py`，2026-07-08 后续批次已拆分阶段切换和死亡公告的纯模板播报到 `judge_static_broadcasts.py`；旧 `JudgeAgent` 方法继续作为兼容入口。
+- `werewolf_agent/agents/judge_hitl.py`，2026-07-08 后续批次已拆分 HITL 命令结构和解析到 `judge_hitl_commands.py`；旧 `HITLCommand` 继续从 judge_hitl facade 导出。
 - `werewolf_agent/evaluation/metrics.py`，Task 19 已拆分为 `metric_aggregation.py` 和 `metric_reporting.py`，旧模块保留兼容 facade。
 - `werewolf_agent/evaluation/metric_aggregation.py`，2026-07-08 后续批次已拆分基础 outcome 指标到 `metric_outcomes.py`，并拆分质量指标到 `metric_quality.py`；旧 `MetricsAggregator` 私有方法名继续作为类属性兼容入口。
 - `werewolf_agent/api/routes/games.py`，Task 20 已拆分为 `game_lifecycle.py`、`game_commands.py` 和 `game_snapshots.py`，旧模块保留 `create_game_router` 与 helper 兼容 facade。
