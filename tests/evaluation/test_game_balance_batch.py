@@ -3,6 +3,19 @@ from __future__ import annotations
 import json
 
 
+def test_public_fact_claim_helpers_are_split_from_balance_audit_facade():
+    from werewolf_agent.evaluation import balance_audit, balance_public_claims
+
+    assert (
+        balance_audit._unsupported_public_fact_claim_count
+        is balance_public_claims.unsupported_public_fact_claim_count
+    )
+    assert (
+        balance_audit._unsupported_claims_in_text
+        is balance_public_claims.unsupported_claims_in_text
+    )
+
+
 def test_balance_audit_flags_high_wolf_win_rate():
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 
