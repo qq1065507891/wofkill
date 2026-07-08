@@ -92,6 +92,7 @@
 - 仍超过 500 行的非测试文件：无。
 - 建议顺序：本轮 500 行以上非测试 Python 文件已处理完毕。后续如继续拆分，可转为按职责复杂度而非行数驱动；职责清楚但偏重的 facade/orchestrator 也纳入收尾优化范围，修改时顺手做小范围代码优化。
 - 2026-07-08 player fallback speech 拆分验证记录：新增兼容测试先因缺少 `player_fallback_speech` 失败；拆分后 `tests/agents/test_player_agent.py` 通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`player.py` 从 448 行降至 277 行，fallback 发言模板、预言家 PK 特例、上下文线索和目标选择迁移到 `player_fallback_speech.py`，旧 `PlayerAgent._fallback_speech` / `_context_clues` 兼容入口保持可用。本批顺手优化为模块级模板常量，避免每次 fallback 调用重复创建模板列表。
+- 2026-07-08 judge broadcast helpers 拆分验证记录：新增兼容测试先因缺少 `judge_broadcast_helpers` 失败；拆分后 `tests/runtime/test_judge_flow.py` 和 graph/day vote/night specialist/witch runtime 相关测试通过，production touched-file `ruff F401,F841`、`compileall`、`git diff --check` 均返回 exit code 0；`node_helpers.py` 从 484 行降至 329 行，裁判广播事件构造、JudgeAgent 文案调度和 `_jb` 状态桥接迁移到 `judge_broadcast_helpers.py`，旧 `node_helpers` / `_shared` 导入路径保持兼容。本批顺手将重复的 JudgeAgent result message 提取收敛为 `_message_or_empty` helper。
 
 已完成候选:
 

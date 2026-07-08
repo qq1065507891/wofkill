@@ -21,6 +21,7 @@ from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes import action_audit as _action_audit
+from werewolf_agent.runtime.nodes import judge_broadcast_helpers as _judge_broadcast_helpers
 from werewolf_agent.runtime.nodes import node_helpers as _node_helpers
 from werewolf_agent.runtime.nodes import runtime_state as _runtime_state
 from werewolf_agent.runtime.nodes.action_audit import (
@@ -73,7 +74,7 @@ _PATCHED_DEPENDENCIES = {
     "_stable_seed": (_runtime_state, _node_helpers),
     "detect_timeline_confusion": (_action_audit,),
     "logger": (_node_helpers,),
-    "phase_label": (_node_helpers,),
+    "phase_label": (_node_helpers, _judge_broadcast_helpers),
     "timed_call": (_node_helpers,),
 }
 

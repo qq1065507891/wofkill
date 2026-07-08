@@ -350,6 +350,20 @@ class TestJudgeAgentWiredToGraph:
         assert "message" in event.payload
         assert "visibility" in event.payload
 
+    def test_judge_broadcast_helpers_are_split_from_node_helpers(self):
+        from werewolf_agent.runtime.nodes import judge_broadcast_helpers
+        from werewolf_agent.runtime.nodes import node_helpers
+        from werewolf_agent.runtime.nodes import _shared
+
+        assert node_helpers._jb is judge_broadcast_helpers._jb
+        assert node_helpers._judge_broadcast is judge_broadcast_helpers._judge_broadcast
+        assert (
+            node_helpers._generate_judge_message
+            is judge_broadcast_helpers._generate_judge_message
+        )
+        assert _shared._jb is judge_broadcast_helpers._jb
+        assert _shared._judge_broadcast is judge_broadcast_helpers._judge_broadcast
+
     def test_game_runner_injects_judge_agent_when_registry_exists(self):
         """GameRunner with use_agent_registry=True creates and injects JudgeAgent."""
         from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
