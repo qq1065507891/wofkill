@@ -13,6 +13,7 @@ from __future__ import annotations
 from werewolf_agent.core.models import GameEvent
 from werewolf_agent.runtime.private_memory import (
     _add_own_speech_notes,
+    _resolve_stance_target,
     _sanitize_role_claims,
 )
 
@@ -26,6 +27,15 @@ HaoRen = "好人"     # 好人
 YuYanJia = "预言家"  # 预言家
 ZhenShen = "真身"   # 真身
 DuiYou = "队友"     # 队友
+
+
+def test_private_memory_safety_helpers_are_split_from_facade():
+    from werewolf_agent.runtime import private_memory, private_memory_safety
+
+    assert private_memory._sanitize_role_claims is private_memory_safety._sanitize_role_claims
+    assert private_memory._resolve_stance_target is private_memory_safety._resolve_stance_target
+    assert _sanitize_role_claims is private_memory_safety._sanitize_role_claims
+    assert _resolve_stance_target is private_memory_safety._resolve_stance_target
 
 
 def test_sanitize_catches_team_mate_disclosure():

@@ -1,10 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
 """
-根据玩家自身认知生成和清洗私有记忆。
+根据玩家自身认知生成私有记忆，并委托安全模块清洗身份信息。
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-05
+修改日期: 2026-07-08
 
 使用示例:
     >>> from werewolf_agent.runtime.private_memory import build_private_memory
@@ -18,25 +18,17 @@ import re
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
-
-# P0-I4: player-ID pattern. We strip any p\d{1,2} token (e.g. p03, p11)
-# from cross-game-facing strings to prevent concrete game identities from
-# leaking across runs.
-# Note: do NOT use \b — `\b` does not match between an ASCII letter and a
-# CJK character, so a token like "p03的预言家" wouldn't be detected.
-_PLAYER_ID_RE = re.compile(r"[Pp]\d{1,2}")
-
-# Mapping from internal role id → Chinese role label. Used when a stance
-# target resolves to a known player.
-_ROLE_LABEL_CN = {
-    "villager": "村民",
-    "seer": "预言家",
-    "witch": "女巫",
-    "hunter": "猎人",
-    "idiot": "白痴",
-    "werewolf": "狼人",
-    "hybrid": "混血儿",
-}
+from werewolf_agent.runtime.private_memory_safety import (
+    _FACTION_DISCLOSURE_RE as _FACTION_DISCLOSURE_RE,
+    _FIRST_PERSON_CHECK_RE as _FIRST_PERSON_CHECK_RE,
+    _NEGATION_MARKERS,
+    _PLAYER_ID_RE as _PLAYER_ID_RE,
+    _ROLE_LABEL_CN as _ROLE_LABEL_CN,
+    _ROLE_SELF_DECLAIM_RE as _ROLE_SELF_DECLAIM_RE,
+    _TEAMMATE_DISCLOSURE_RE as _TEAMMATE_DISCLOSURE_RE,
+    _resolve_stance_target,
+    _sanitize_role_claims,
+)
 
 MEMORY_EVENT_TYPES = {
     "speech",
@@ -101,124 +93,6 @@ _LLM_AWARE_HINT = (
     "（如'漏洞'/'合理'/'可信'）的粗粒度信号，并非权威判定。LLM 在"
     "引用这些条目时，必须结合原句上下文判断，不可直接当作逻辑结论。"
 )
-
-_ROLE_SELF_DECLAIM_RE = re.compile(
-    r"我(?:的)?(?:身份|是|扮演|底牌是|角色是|真身是|阵营是)"
-    r"(?:一名|一个|那只)?"
-    r"(狼人|预言家|女巫|猎人|白痴|混血儿|村民)"
-)
-
-# P0-M2: Catch "X 是我的队友/同伴" patterns (game trace g_3528592081 Action 56 leak)
-_TEAMMATE_DISCLOSURE_RE = re.compile(
-    r"(?:的|是)?(?:队友|同伴|同伙|同党)"
-)
-
-# P0-M2: Catch "我的阵营是X" patterns
-_FACTION_DISCLOSURE_RE = re.compile(
-    r"我(?:的|方)?阵营(?:是|为|属于)?(好人|狼人|神职|平民|村民)"
-)
-
-# P0-M2: Catch "我(发现|看穿|验出)X是(role)" — first-person seer-style leaks
-_FIRST_PERSON_CHECK_RE = re.compile(
-    r"我(?:看穿|发现|看出|验出|查到|查到)(?:了)?\s*(?:[Pp]\d{1,2}|他|她|它)?\s*(?:是)?(狼人|预言家|女巫|猎人|白痴|混血儿|村民)"
-)
-
-# MEM-03: negation markers used to detect stance-deny patterns. These
-# flip a positive "X 是 角色" claim into a denial, so the resolved
-# stance target must NOT echo the role label.
-_NEGATION_MARKERS = (
-    "不是",
-    "不信",
-    "不站",
-    "否认",
-    "反",
-    "否定",
-    "不认为",
-)
-
-
-def _sanitize_role_claims(text: str) -> str:
-    """Strip role/team-mate/faction claims that would leak private info.
-
-    Patterns sanitized (P0-M2 expansion):
-    - 我是/我扮演/我的真身/我的阵营 + role name
-    - 队友/同伴/同伙/同党 (teammate disclosure)
-    - 我看穿/我发现/我验出 + role
-    - 我的阵营 + faction
-    """
-    if not text:
-        return text
-    text = _ROLE_SELF_DECLAIM_RE.sub("[角色信息已省略]", text)
-    text = _TEAMMATE_DISCLOSURE_RE.sub("[角色信息已省略]", text)
-    text = _FACTION_DISCLOSURE_RE.sub("[角色信息已省略]", text)
-    text = _FIRST_PERSON_CHECK_RE.sub("[角色信息已省略]", text)
-    return text
-
-
-# P0-I4: Resolve a stance target to a role-based label, stripping
-# concrete player IDs. This is the only safe way to carry
-# ``standing_with_seer`` text from the in-game ``private_memory`` into
-# the long-term ``ReflectionEntry`` — game-to-game identity leakage
-# would otherwise reveal that "I stood with player 03 in game A and
-# player 07 in game B" — i.e. a stable, identifiable target.
-def _resolve_stance_target(target: str, game_state: GameState | None) -> str:
-    """Return a role-based label for ``target``.
-
-    Resolution order:
-      1. If ``target`` is a known player id in ``game_state.players``,
-         map their role to a Chinese label (e.g. ``预言家``).
-      2. If ``target`` contains a player-id substring (e.g. ``p03的
-         预言家``), look up the embedded id, and if it resolves to a
-         role, return that role.
-      3. Strip any remaining pIDs from the residual text. If the
-         residual is empty or unresolvable, fall back to a neutral
-         ``玩家`` placeholder. Concrete pIDs are never echoed back.
-    """
-    if not target:
-        return "玩家"
-    text = str(target).strip()
-    if not text:
-        return "玩家"
-    # MEM-03: if the stance text contains a negation marker, the
-    # speaker is denying the role claim — do NOT echo the role label.
-    # Mark as denial so the downstream note reflects the negation.
-    for marker in _NEGATION_MARKERS:
-        if marker in text:
-            return "[否认]"
-    # Try direct lookup first: target is exactly a player id.
-    if game_state is not None:
-        player = game_state.players.get(text)
-        if player is not None:
-            return _ROLE_LABEL_CN.get(player.role, "玩家")
-    # Look for any embedded p\d{1,2} tokens. If exactly one is found
-    # and it resolves to a known player, use that role.
-    embedded_ids = _PLAYER_ID_RE.findall(text)
-    had_embedded_id = bool(embedded_ids)
-    if had_embedded_id and game_state is not None:
-        # Use the first id (rare to have multiple).
-        pid = embedded_ids[0].lower()
-        player = game_state.players.get(pid) or game_state.players.get(embedded_ids[0])
-        if player is not None:
-            return _ROLE_LABEL_CN.get(player.role, "玩家")
-    # Otherwise, strip any embedded p\d{1,2} tokens and re-resolve
-    # whatever role hint remains.
-    stripped = _PLAYER_ID_RE.sub("", text).strip() if had_embedded_id else text
-    if not stripped:
-        return "玩家"
-    # If the residual is already a known role (Chinese or English),
-    # normalize to Chinese label.
-    normalized = stripped.lower()
-    if normalized in _ROLE_LABEL_CN:
-        return _ROLE_LABEL_CN[normalized]
-    if stripped in _ROLE_LABEL_CN.values():
-        return stripped
-    # If we never found a pID, the input must be a role label or hint
-    # already. Just return it as-is (still no IDs to leak).
-    if not had_embedded_id:
-        return stripped
-    # Generic non-empty role hint: keep it (still no IDs).
-    return stripped
-
 
 # P1-M14: total token budget for private memory. When the rendered
 # memory exceeds this, drop entries from the lowest-priority category
