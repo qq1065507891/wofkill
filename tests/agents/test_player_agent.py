@@ -404,6 +404,18 @@ class TestPlayerActionFlowSplit:
             is player_generation_request.call_player_generation_request
         )
 
+    def test_result_finalizers_are_split_from_action_flow_facade(self) -> None:
+        from werewolf_agent.agents import player_action_flow, player_action_result
+
+        assert (
+            player_action_flow.finalize_successful_player_action
+            is player_action_result.finalize_successful_player_action
+        )
+        assert (
+            player_action_flow.finalize_fallback_player_action
+            is player_action_result.finalize_fallback_player_action
+        )
+
 
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests

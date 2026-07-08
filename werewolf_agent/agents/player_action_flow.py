@@ -30,6 +30,10 @@ from werewolf_agent.agents.player_generation_request import (
     build_player_generation_request,
     call_player_generation_request,
 )
+from werewolf_agent.agents.player_action_result import (
+    finalize_fallback_player_action,
+    finalize_successful_player_action,
+)
 from werewolf_agent.agents.player_latency import latency_from_result as _latency_from_result
 from werewolf_agent.agents.schemas import (
     ActionType,
@@ -39,7 +43,6 @@ from werewolf_agent.agents.schemas import (
     PlayerAction,
     RetryInfo,
 )
-from werewolf_agent.agents.trace_builder import build_action_trace as _build_action_trace
 from werewolf_agent.model_gateway.structured_output import (
     StructuredFailureStage,
     StructuredOutputMode,
@@ -117,14 +120,13 @@ def run_player_action_flow(
             # Provider does not support tool_choice
             structured_failure_reason = "structured_output_unsupported"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
-            fallback = agent._fallback_action(context)
-            trace = _build_action_trace(
-                context,
+            fallback = finalize_fallback_player_action(
+                agent=agent,
+                context=context,
+                fallback=agent._fallback_action(context),
+                retry=retry,
                 raw_text="",
                 parsed_action=None,
-                final_action_type=fallback.action_type,
-                retry=retry,
-                fallback_reason=fallback.reason,
                 tool_call_required=tool_call_required,
                 tool_call_received=False,
                 parse_success=False,
@@ -133,14 +135,7 @@ def run_player_action_flow(
                 structured_failure_reason=structured_failure_reason,
                 structured_output_mode=structured_output_mode,
                 structured_failure_stage=structured_failure_stage,
-            )
-            fallback = fallback.model_copy(update={"trace": trace})
-            agent.metrics_collector.record(
-                player_id=context.agent_id,
-                task_type=context.task_type.value,
-                error_code=structured_failure_reason,
-                fallback_used=True,
-                retry_count=attempt,
+                metrics_error_code=structured_failure_reason,
             )
             return fallback, retry
 
@@ -186,14 +181,13 @@ def run_player_action_flow(
                         "using fallback action."
                     ),
                 )
-                fallback = agent._fallback_action(context)
-                trace = _build_action_trace(
-                    context,
+                fallback = finalize_fallback_player_action(
+                    agent=agent,
+                    context=context,
+                    fallback=agent._fallback_action(context),
+                    retry=retry,
                     raw_text="",
                     parsed_action=None,
-                    final_action_type=fallback.action_type,
-                    retry=retry,
-                    fallback_reason=fallback.reason,
                     tool_call_required=tool_call_required,
                     tool_call_received=False,
                     parse_success=False,
@@ -202,19 +196,7 @@ def run_player_action_flow(
                     structured_failure_reason=structured_failure_reason,
                     structured_output_mode=structured_output_mode,
                     structured_failure_stage=structured_failure_stage,
-                )
-                fallback = fallback.model_copy(update={"trace": trace})
-                agent.metrics_collector.record(
-                    player_id=context.agent_id,
-                    task_type=context.task_type.value,
-                    # R3-MG-9: ``retry`` is always truthy on this
-                    # path (we just built a new RetryInfo on line 327
-                    # and stored it in the local). Replace the dead
-                    # ternary with a literal that matches the
-                    # structured_failure_reason branch above.
-                    error_code="model_generation_failed",
-                    fallback_used=True,
-                    retry_count=attempt,
+                    metrics_error_code="model_generation_failed",
                 )
                 return fallback, retry
             failure_category = _categorize_failure_category(
@@ -493,32 +475,19 @@ def run_player_action_flow(
                 break
             continue
 
-        # Private intent is stored but never written to public timeline
-        trace = _build_action_trace(
-            context,
+        return finalize_successful_player_action(
+            agent=agent,
+            context=context,
+            action=action,
+            retry=retry,
             raw_text=raw_text,
             parsed_action=choice_data or action,
-            final_action_type=action.action_type,
-            retry=retry,
             tool_call_required=tool_call_required,
             tool_call_received=tool_call_received,
             parse_success=parse_success,
             retry_count=attempt,
             structured_output_mode=structured_output_mode,
-        )
-        # P3-G3223805846-1: 记录达到成功一共重试了几次。attempt 是 1-indexed
-        # （首次尝试 attempt=1，无重试），所以 retries = attempt - 1。
-        trace.total_retry_count_until_success = max(attempt - 1, 0)
-        agent.metrics_collector.record(
-            player_id=context.agent_id,
-            task_type=context.task_type.value,
-            # Success path: any prior retry errors are now resolved — record as success.
-            # A separate counter (retry_count) tracks how many attempts it took.
-            error_code=None,
-            fallback_used=False,
-            retry_count=attempt,
-        )
-        return action.model_copy(update={"trace": trace}), retry
+        ), retry
 
     # Fallback
     exit_reason = f" early_exit={retry.early_exit_reason}" if retry and retry.early_exit_reason else ""
@@ -528,16 +497,14 @@ def run_player_action_flow(
         retry.error_code if retry else "none",
         exit_reason,
     )
-    fallback = agent._fallback_action(context)
-    trace = _build_action_trace(
-        context,
+    fallback = finalize_fallback_player_action(
+        agent=agent,
+        context=context,
+        fallback=agent._fallback_action(context),
+        retry=retry,
         raw_text=raw_text,
         parsed_action=parsed_action,
-        final_action_type=fallback.action_type,
-        retry=retry,
-        fallback_reason=fallback.reason,
         fallback_target_used=True,
-        fallback_target_id=fallback.target_id,
         tool_call_required=tool_call_required,
         tool_call_received=tool_call_received,
         parse_success=parse_success,
@@ -546,13 +513,5 @@ def run_player_action_flow(
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
-    )
-    fallback = fallback.model_copy(update={"trace": trace})
-    agent.metrics_collector.record(
-        player_id=context.agent_id,
-        task_type=context.task_type.value,
-        error_code=retry.error_code if retry else "exhausted_retries",
-        fallback_used=True,
-        retry_count=attempt,
     )
     return fallback, retry
