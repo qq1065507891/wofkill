@@ -25,6 +25,9 @@ from werewolf_agent.api.routes.game_public_share import (
     _event_is_public_for_share,
     _pick_public_mvp_candidate,
 )
+from werewolf_agent.api.routes.game_snapshot_audit import (
+    register_game_snapshot_audit_routes,
+)
 from werewolf_agent.api.schemas import (
     CallerRole,
     CognitiveDiffResponse,
@@ -42,10 +45,8 @@ from werewolf_agent.api.views import (
     build_public_state,
     build_replay,
     build_timeline,
-    build_world_model_audit,
 )
 from werewolf_agent.core.models import GameState
-from werewolf_agent.runtime.world_model_audit import extract_world_model_audits_from_events
 
 
 def register_game_snapshot_routes(
@@ -336,88 +337,14 @@ def register_game_snapshot_routes(
             },
         }
 
-    @router.get("/games/{game_id}/rag-audit")
-    def get_rag_audit(
-        game_id: str,
-        caller_id: str = Query(""),
-        caller_role: CallerRole = Query(CallerRole.MODERATOR),
-        session_token: str = Query(""),
-    ) -> dict:
-        """返回该局所有 RAG 注入审计事件。"""
-        state = _get_game(games, game_id)
-        resolved_role = resolve_caller_role(
-            authorized_callers,
-            caller_id,
-            caller_role,
-            session_token=session_token,
-            auth_manager=auth,
-        )
-        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
-            raise HTTPException(
-                403,
-                "rag-audit requires moderator or debugger role",
-            )
-
-        audits: list[dict] = []
-        if repo is not None and hasattr(repo, "load_events"):
-            try:
-                events = repo.load_events(game_id)
-            except Exception:
-                events = state.events
-            for event in events:
-                event_type = getattr(event, "type", None) or (
-                    event.get("type") if isinstance(event, dict) else None
-                )
-                if event_type == "rag_injection_audit":
-                    payload = getattr(event, "payload", None) or (
-                        event.get("payload") if isinstance(event, dict) else {}
-                    )
-                    audits.append(payload if isinstance(payload, dict) else {})
-        else:
-            for event in state.events:
-                if getattr(event, "type", None) == "rag_injection_audit":
-                    audits.append(event.payload)
-
-        return {
-            "game_id": game_id,
-            "rag_audits": audits,
-            "audits": audits,
-        }
-
-    @router.get("/games/{game_id}/world-model-audit")
-    def get_world_model_audit(
-        game_id: str,
-        caller_id: str = Query(""),
-        caller_role: CallerRole = Query(CallerRole.MODERATOR),
-        session_token: str = Query(""),
-    ) -> dict:
-        state = _get_game(games, game_id)
-        resolved_role = resolve_caller_role(
-            authorized_callers,
-            caller_id,
-            caller_role,
-            session_token=session_token,
-            auth_manager=auth,
-        )
-        if resolved_role not in (CallerRole.MODERATOR, CallerRole.DEBUGGER):
-            raise HTTPException(
-                403,
-                "world-model-audit requires moderator or debugger role",
-            )
-
-        events = state.events
-        if repo is not None and hasattr(repo, "load_events"):
-            try:
-                events = repo.load_events(game_id)
-            except Exception:
-                events = state.events
-        audits = extract_world_model_audits_from_events(list(events))
-
-        return build_world_model_audit(
-            state,
-            ViewMode.MODERATOR_FULL,
-            audit_events=audits,
-        )
+    register_game_snapshot_audit_routes(
+        router=router,
+        games=games,
+        repo=repo,
+        authorized_callers=authorized_callers,
+        auth=auth,
+        resolve_caller_role=resolve_caller_role,
+    )
 
 
 __all__ = ["register_game_snapshot_routes"]
