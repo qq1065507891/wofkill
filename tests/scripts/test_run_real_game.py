@@ -9,6 +9,16 @@ from scripts.run_real_game import print_quality_audit
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 
 
+def test_report_helpers_are_split_from_run_real_game_facade() -> None:
+    from scripts import run_real_game, run_real_game_reports
+
+    assert run_real_game.print_game_summary is run_real_game_reports.print_game_summary
+    assert run_real_game.print_usage_stats is run_real_game_reports.print_usage_stats
+    assert run_real_game.print_pace_report is run_real_game_reports.print_pace_report
+    assert run_real_game.print_quality_audit is run_real_game_reports.print_quality_audit
+    assert run_real_game.check_leakage is run_real_game_reports.check_leakage
+
+
 def test_quality_audit_handles_vote_trace_without_parsed_action(capsys) -> None:
     runner = SimpleNamespace(
         state=GameState(
