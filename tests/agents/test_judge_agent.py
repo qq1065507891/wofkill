@@ -55,6 +55,30 @@ class TestJudgeAgent:
             is judge_persona.JUDGE_FACT_ONLY_USER_BOUNDARY
         )
 
+    def test_dynamic_broadcast_helpers_are_split_from_judge_facade(self) -> None:
+        from werewolf_agent.agents import judge, judge_dynamic_broadcasts
+
+        assert (
+            judge.build_vote_calling_broadcast
+            is judge_dynamic_broadcasts.build_vote_calling_broadcast
+        )
+        assert (
+            judge.build_skill_guide_broadcast
+            is judge_dynamic_broadcasts.build_skill_guide_broadcast
+        )
+        assert (
+            judge.build_vote_tally_broadcast
+            is judge_dynamic_broadcasts.build_vote_tally_broadcast
+        )
+        assert (
+            judge.build_exile_result_broadcast
+            is judge_dynamic_broadcasts.build_exile_result_broadcast
+        )
+        assert (
+            judge.build_sheriff_result_broadcast
+            is judge_dynamic_broadcasts.build_sheriff_result_broadcast
+        )
+
     def test_broadcast_night_phase(self) -> None:
         judge = self._make_judge()
         b = judge.broadcast_phase("night", night_number=2)
