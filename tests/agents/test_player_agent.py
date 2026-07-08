@@ -392,6 +392,18 @@ class TestPlayerActionFlowSplit:
         assert agent.act(context) == (action, retry)
         assert calls == [(agent, context)]
 
+    def test_generation_request_builder_is_split_from_action_flow_facade(self) -> None:
+        from werewolf_agent.agents import player_action_flow, player_generation_request
+
+        assert (
+            player_action_flow.build_player_generation_request
+            is player_generation_request.build_player_generation_request
+        )
+        assert (
+            player_action_flow.call_player_generation_request
+            is player_generation_request.call_player_generation_request
+        )
+
 
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests

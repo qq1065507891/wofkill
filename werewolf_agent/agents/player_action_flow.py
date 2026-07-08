@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-08
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -25,8 +26,9 @@ from werewolf_agent.agents.parse_dispatch import (
 from werewolf_agent.agents.player_failures import (
     categorize_failure_category as _categorize_failure_category,
 )
-from werewolf_agent.agents.player_generation import (
-    generate_player_response as _generate_player_response,
+from werewolf_agent.agents.player_generation_request import (
+    build_player_generation_request,
+    call_player_generation_request,
 )
 from werewolf_agent.agents.player_latency import latency_from_result as _latency_from_result
 from werewolf_agent.agents.schemas import (
@@ -98,26 +100,18 @@ def run_player_action_flow(
             correction_hint=retry.correction_hint,
         )
 
-        # Build tool list: always include submit_player_action.
-        tools = [agent._player_action_tool(context)]
-        if active_structured_mode == StructuredOutputMode.NATIVE_TOOL:
-            tool_choice_val = {"type": "tool", "name": "submit_player_action"}
-        else:
-            tool_choice_val = None
-        tool_call_required = tool_choice_val is not None
-
-        # Generate LLM output
-        prompt = agent._build_prompt(context, retry)
+        generation_request = build_player_generation_request(
+            agent,
+            context,
+            retry,
+            active_structured_mode,
+        )
+        tool_call_required = generation_request.tool_call_required
         try:
-            result = _generate_player_response(
-                agent.model_router,
-                agent_id=agent.agent_id,
-                task_type=context.task_type.value,
-                prompt=prompt,
-                system_prompt=agent._build_system_prompt(context),
-                tools=tools,
-                tool_choice=tool_choice_val,
-                structured_output_mode=active_structured_mode.value,
+            result = call_player_generation_request(
+                agent,
+                context,
+                generation_request,
             )
         except NotImplementedError:
             # Provider does not support tool_choice
