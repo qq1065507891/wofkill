@@ -26,6 +26,10 @@ from werewolf_agent.agents.parse_dispatch import (
 from werewolf_agent.agents.player_failures import (
     categorize_failure_category as _categorize_failure_category,
 )
+from werewolf_agent.agents.player_retry_hints import (
+    build_empty_response_retry,
+    build_missing_tool_call_retry,
+)
 from werewolf_agent.agents.player_generation_request import (
     build_player_generation_request,
     call_player_generation_request,
@@ -36,7 +40,6 @@ from werewolf_agent.agents.player_action_result import (
 )
 from werewolf_agent.agents.player_latency import latency_from_result as _latency_from_result
 from werewolf_agent.agents.schemas import (
-    ActionType,
     AgentContext,
     FallbackAction,
     OutputMode,
@@ -204,9 +207,6 @@ def run_player_action_flow(
                 raw_error=None,
                 http_status=int(getattr(result, "http_status", 0) or 0),
             )
-            category_hint = (
-                f" (cause: {failure_category})" if failure_category else ""
-            )
             # P0-R2: when the empty_response is categorized as a
             # timeout, the LLM needs explicit permission to take
             # a safe no-op. Without it, the model either retries
@@ -221,35 +221,12 @@ def run_player_action_flow(
             # validator would reject the action, and we'd loop
             # forever. Fall back to a target-suggestion hint for
             # those cases.
-            timeout_hint = ""
-            if failure_category == "timeout":
-                can_emit_no_action = (
-                    ActionType.NO_ACTION in context.legal_actions
-                    and output_mode == OutputMode.FULL_ACTION
-                )
-                if can_emit_no_action:
-                    timeout_hint = (
-                        " 如果超时，请直接返回 no_action 而非空响应"
-                        "（action_type='no_action', target_id=null,"
-                        "reason='timeout - safe no-op'）。"
-                    )
-                elif context.legal_targets:
-                    first_target = context.legal_targets[0]
-                    timeout_hint = (
-                        f" 如果超时，请直接选择一个合法目标 "
-                        f"（例如 {first_target}）并提交结构化JSON。"
-                    )
-            retry = RetryInfo(
+            retry = build_empty_response_retry(
+                context=context,
                 attempt=attempt,
                 max_retries=agent.max_retries,
-                error_code="empty_response",
-                error_message="Model returned empty text",
                 failure_category=failure_category,
-                correction_hint=(
-                    f"Please provide a valid JSON action{category_hint}. "
-                    f"If the model timed out, consider shorter reasoning."
-                    f"{timeout_hint}"
-                ),
+                output_mode=output_mode,
             )
             structured_failure_reason = "empty_response"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
@@ -283,16 +260,10 @@ def run_player_action_flow(
             )
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
             parse_error_str = "missing required tool call: submit_player_action"
-            correction_hint = (
-                "必须通过 submit_player_action 工具调用提交结构化参数；"
-                "不要把JSON写在普通文本内容里。"
-            )
-            retry = RetryInfo(
+            retry = build_missing_tool_call_retry(
                 attempt=attempt,
                 max_retries=agent.max_retries,
-                error_code=structured_failure_reason,
-                error_message=parse_error_str,
-                correction_hint=correction_hint,
+                structured_failure_reason=structured_failure_reason,
             )
             active_structured_mode = structured_policy.next_mode(
                 active_structured_mode,

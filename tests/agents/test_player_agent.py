@@ -416,6 +416,18 @@ class TestPlayerActionFlowSplit:
             is player_action_result.finalize_fallback_player_action
         )
 
+    def test_retry_hint_helpers_are_split_from_action_flow_facade(self) -> None:
+        from werewolf_agent.agents import player_action_flow, player_retry_hints
+
+        assert (
+            player_action_flow.build_empty_response_retry
+            is player_retry_hints.build_empty_response_retry
+        )
+        assert (
+            player_action_flow.build_missing_tool_call_retry
+            is player_retry_hints.build_missing_tool_call_retry
+        )
+
 
 # ---------------------------------------------------------------------------
 # Player Agent retry/fallback tests
