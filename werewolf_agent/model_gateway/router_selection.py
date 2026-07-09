@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     >>> _resolve_config(model_profiles={}, llm_profiles={}, player_assignments={}, agent_id="p01", task_type="speech")[0].provider
@@ -49,7 +50,7 @@ def _resolve_config(
         provider=provider_name,
         model=model_profile.get("model", model_profile_id),
         temperature=model_profile.get("temperature", 0.5),
-        max_tokens=model_profile.get("max_tokens", 1024),
+        max_tokens=model_profile.get("max_tokens"),
         top_p=model_profile.get("top_p", 0.9),
         timeout=model_profile.get("timeout", 30),
         allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),
@@ -100,7 +101,7 @@ def _resolve_fallback_model(
         provider=fallback_cfg.get("provider", "mock"),
         model=model_profile.get("model", model_profile_id),
         temperature=model_profile.get("temperature", 0.3),
-        max_tokens=model_profile.get("max_tokens", 256),
+        max_tokens=model_profile.get("max_tokens"),
         top_p=model_profile.get("top_p", 0.9),
         timeout=model_profile.get("timeout", 10),
         allow_text_tool_fallback=bool(model_profile.get("allow_text_tool_fallback", False)),

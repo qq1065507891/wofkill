@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-06
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.output_parser import parse_action
@@ -160,6 +160,33 @@ def action_from_data(data: Any) -> tuple[PlayerAction | None, str | None]:
         return None, f"Schema validation error: {e}"
 
 
+def _looks_like_truncated_json(text: str) -> bool:
+    """判断模型输出是否像未闭合的 JSON，而不是完全没输出 JSON。"""
+    if "{" not in text:
+        return False
+    depth = 0
+    in_string = False
+    escape = False
+    for char in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}" and depth > 0:
+            depth -= 1
+    return depth > 0 or in_string
+
+
 def parse_action(text: str) -> tuple[PlayerAction | None, str | None]:
     """Parse LLM output into PlayerAction. Returns (action, error)."""
     cleaned = text.strip()
@@ -193,6 +220,8 @@ def parse_action(text: str) -> tuple[PlayerAction | None, str | None]:
 
         candidates = extract_json_object_candidates(cleaned)
         if not candidates:
+            if _looks_like_truncated_json(cleaned):
+                return None, "truncated_json: JSON object ended before it closed"
             return None, f"No JSON object found in output"
         first_error: str | None = None
         for candidate in candidates:

@@ -3,7 +3,7 @@
 功能描述：结构化输出协议选择与失败分类模块
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-09
 使用示例：内部模块，无对外接口
 """
 
@@ -31,6 +31,7 @@ class StructuredFailureStage(str, Enum):
 _PROTOCOL_FAILURES = {
     "missing_tool_call",
     "parse_error",
+    "truncated_json",
     "empty_response",
     "structured_output_unsupported",
 }

@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.day_speech_directives import build_day_speech_base_directive
@@ -24,7 +24,9 @@ def build_day_speech_base_directive(style_hint: str) -> dict[str, Any]:
         "anti_following_and_peace_night_rule": (
             "不要跟风复述已有指控；如果质疑女巫或预言家，必须给出独立证据并区分事实和推测。"
             "平安夜只代表公开无人死亡，不代表狼人没有刀人。"
+            "平安夜不影响预言家夜间查验，不能用平安夜否定预言家验人。"
             "质疑跳女巫玩家时，应询问是否用药、为什么暂不公开银水、以及发言是否前后矛盾。"
+            "质疑跳预言家玩家时，应核验验人时间线、警徽流、查验动机、发言矛盾和票型承接。"
         ),
         "speech_originality": (
             "【发言原创性要求】\n"

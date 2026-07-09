@@ -12,6 +12,7 @@ from werewolf_agent.model_gateway.router import (
 from werewolf_agent.model_gateway.providers import (
     AnthropicProvider,
     GLMProvider,
+    MiniMaxProvider,
     OpenAIProvider,
     create_provider_from_env,
 )
@@ -204,6 +205,34 @@ class TestModelRouter:
         assert result.usage.prompt_tokens == 3
         assert result.usage.completion_tokens == 1
 
+    def test_anthropic_provider_omits_unset_max_tokens(self) -> None:
+        client = _FakeHttpClient({
+            "content": [{"type": "text", "text": "hello"}],
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+        })
+        provider = AnthropicProvider(api_key="key", http_client=client)
+
+        provider.generate(
+            "Say hello",
+            ModelConfig(provider="anthropic", model="claude-test", max_tokens=None),
+        )
+
+        assert "max_tokens" not in client.calls[0]["json"]
+
+    def test_anthropic_provider_sends_explicit_max_tokens(self) -> None:
+        client = _FakeHttpClient({
+            "content": [{"type": "text", "text": "hello"}],
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+        })
+        provider = AnthropicProvider(api_key="key", http_client=client)
+
+        provider.generate(
+            "Say hello",
+            ModelConfig(provider="anthropic", model="claude-test", max_tokens=20),
+        )
+
+        assert client.calls[0]["json"]["max_tokens"] == 20
+
     def test_anthropic_provider_uses_tool_call_for_structured_output(self) -> None:
         tool_input = {
             "action_type": "vote",
@@ -300,6 +329,34 @@ class TestModelRouter:
         assert client.calls[0]["headers"]["Authorization"] == "Bearer key"
         assert client.calls[0]["json"]["messages"][0]["role"] == "system"
 
+    def test_openai_provider_omits_unset_max_tokens(self) -> None:
+        client = _FakeHttpClient({
+            "choices": [{"message": {"content": "hello"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        })
+        provider = OpenAIProvider(api_key="key", http_client=client)
+
+        provider.generate(
+            "Say hello",
+            ModelConfig(provider="openai", model="gpt-test", max_tokens=None),
+        )
+
+        assert "max_tokens" not in client.calls[0]["json"]
+
+    def test_openai_provider_sends_explicit_max_tokens(self) -> None:
+        client = _FakeHttpClient({
+            "choices": [{"message": {"content": "hello"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+        })
+        provider = OpenAIProvider(api_key="key", http_client=client)
+
+        provider.generate(
+            "Say hello",
+            ModelConfig(provider="openai", model="gpt-test", max_tokens=20),
+        )
+
+        assert client.calls[0]["json"]["max_tokens"] == 20
+
     def test_openai_provider_preserves_compatible_base_url_path(self) -> None:
         client = _FakeHttpClient({
             "choices": [{"message": {"content": "hello"}}],
@@ -334,6 +391,34 @@ class TestModelRouter:
         assert result.text == "hello"
         assert "bigmodel.cn" in client.calls[0]["url"]
         assert client.calls[0]["headers"]["Authorization"] == "Bearer key"
+
+    def test_minimax_provider_omits_unset_max_tokens(self) -> None:
+        client = _FakeHttpClient({
+            "content": [{"type": "text", "text": "hello"}],
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+        })
+        provider = MiniMaxProvider(api_key="key", http_client=client)
+
+        provider.generate(
+            "Say hello",
+            ModelConfig(provider="minimax", model="abab-test", max_tokens=None),
+        )
+
+        assert "max_tokens" not in client.calls[0]["json"]
+
+    def test_minimax_provider_sends_explicit_max_tokens(self) -> None:
+        client = _FakeHttpClient({
+            "content": [{"type": "text", "text": "hello"}],
+            "usage": {"input_tokens": 3, "output_tokens": 1},
+        })
+        provider = MiniMaxProvider(api_key="key", http_client=client)
+
+        provider.generate(
+            "Say hello",
+            ModelConfig(provider="minimax", model="abab-test", max_tokens=20),
+        )
+
+        assert client.calls[0]["json"]["max_tokens"] == 20
 
     def test_openai_provider_marks_missing_tool_call(self) -> None:
         client = _FakeHttpClient({

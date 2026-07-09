@@ -1,4 +1,10 @@
-"""Tests for PlayerAgent retry/fallback, vote quality, speech quality, structured output, and skill handling."""
+# -*- coding: utf-8 -*-
+"""
+测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
+
+作者: Project contributors
+修改日期: 2026-07-09
+"""
 
 from __future__ import annotations
 
@@ -1218,6 +1224,20 @@ class TestPlayerAgentRetryFallback:
         assert isinstance(action, FallbackAction)
         assert retry.error_code == "parse_error"
 
+    def test_truncated_json_triggers_specific_retry_reason(self) -> None:
+        raw = (
+            '{"action_type":"speech","target_id":"p07",'
+            '"speech":"我是好人阵营。我怀疑p07，p07发言前后矛盾。我倾向投p07。",'
+            '"reason":"输出被截断","confidence":0.7'
+        )
+        agent = self._make_agent(raw)
+
+        action, retry = agent.act(self._make_context())
+
+        assert isinstance(action, FallbackAction)
+        assert retry.error_code == "truncated_json"
+        assert "JSON没有闭合" in retry.correction_hint
+
     def test_illegal_action_triggers_retry(self) -> None:
         json_resp = '{"action_type":"wolf_kill","target_id":"p07","speech":"test","reason":"test","confidence":0.5}'
         agent = self._make_agent(json_resp)
@@ -1783,6 +1803,7 @@ class TestMandatoryVote:
 
         assert "平安夜不等于无人被刀" in prompt
         assert "不能用「平安夜没人死」反驳女巫知道刀口" in prompt
+        assert "不能用「平安夜没人死」否定预言家验人" in prompt
         assert "不要跟风复述" in prompt
 
     def test_vote_pressure_from_strategy_directive(self) -> None:
@@ -2663,6 +2684,33 @@ def test_speech_quality_hint_specific():
     assert "角色身份/攻击或防御论点" in prompt
 
 
+def test_speech_quality_retry_hint_targets_missing_identity_stance():
+    from werewolf_agent.agents.player_quality_retries import build_speech_quality_retry
+
+    retry = build_speech_quality_retry(
+        "发言不完整。需要表明你的身份立场（如'我是好人阵营'）。",
+        attempt=1,
+        max_retries=3,
+    )
+
+    assert "先补一句身份立场" in retry.correction_hint
+    assert "我是好人阵营" in retry.correction_hint
+
+
+def test_speech_quality_retry_hint_targets_public_record_grounding():
+    from werewolf_agent.agents.player_quality_retries import build_speech_quality_retry
+
+    retry = build_speech_quality_retry(
+        "发言不完整。引用公开记录时，必须能在游戏概况或近期发言中找到对应原文；"
+        "不要把推测写成“公开记录”，无法确认时改成“我推测/我质疑”。",
+        attempt=1,
+        max_retries=3,
+    )
+
+    assert "把无法确认的公开记录改写为“我推测/我质疑”" in retry.correction_hint
+    assert "不要继续声称公开记录已经证明" in retry.correction_hint
+
+
 def test_vote_quality_hint_specific():
     """P1-S6 (residual): vote_quality retry → short specific correction_hint.
 
@@ -2808,14 +2856,11 @@ def test_speech_quality_correction_hint_differs_from_error_message():
         # 1) 2) 3) numbered steps the LLM can mechanically follow.
         # error_message keeps the long detail for the audit log.
         assert retry.correction_hint == (
-            "发言缺少以下必填字段: 发言不完整。需要表明你的身份立场。。"
-            "请基于公开记录重写发言，在 speech 字段中体现："
-            "1) 你的身份立场（至少引用一处公开事实）；"
-            "2) 攻击或防御的明确论点（PK 阶段必填）。"
-            "不要写「按公开信息判断」之类的占位文本。"
+            "先补一句身份立场，例如“我是好人阵营”。"
+            "再基于一条公开发言、票型或查验声明给出攻击或防御论点。"
         ), (
             f"P3-3: speech_quality correction_hint must be the executable "
-            f"1) 2) template; got: {retry.correction_hint!r}"
+            f"specific template; got: {retry.correction_hint!r}"
         )
         # error_message keeps the long detail
         assert "发言不完整" in retry.error_message, (

@@ -3,7 +3,7 @@
 功能描述：OpenAI 兼容 Chat Completions Provider 及 GLM 共享生成辅助函数
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-09
 使用示例：内部模块，无对外接口
 """
 
@@ -83,9 +83,10 @@ def _generate_openai_compatible(
         "model": config.model,
         "messages": messages,
         "temperature": config.temperature,
-        "max_tokens": config.max_tokens,
         "top_p": config.top_p,
     }
+    if config.max_tokens is not None:
+        payload["max_tokens"] = config.max_tokens
     mode = resolve_structured_output_mode(
         provider=config.provider,
         configured_mode=config.structured_output_mode,

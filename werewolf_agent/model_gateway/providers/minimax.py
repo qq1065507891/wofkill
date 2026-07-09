@@ -3,7 +3,7 @@
 功能描述：MiniMax Anthropic 兼容 Provider，注意该厂商不完全支持 tool_choice
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-09
 使用示例：内部模块，无对外接口
 """
 
@@ -76,11 +76,12 @@ class MiniMaxProvider(_BaseHttpProvider):
 
         payload: dict[str, Any] = {
             "model": config.model,
-            "max_tokens": config.max_tokens,
             "temperature": config.temperature,
             "top_p": config.top_p,
             "messages": messages,
         }
+        if config.max_tokens is not None:
+            payload["max_tokens"] = config.max_tokens
         if system_prompt:
             payload["system"] = system_prompt
         if tools and mode == StructuredOutputMode.NATIVE_TOOL:

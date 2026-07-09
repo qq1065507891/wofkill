@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-08
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -309,23 +309,31 @@ def run_player_action_flow(
         parsed_action = action
         if parse_error:
             parse_error_str = parse_error
-            structured_failure_reason = (
-                "schema_validation"
-                if parse_error.startswith("Schema validation error:")
-                else "parse_error"
-            )
+            if parse_error.startswith("Schema validation error:"):
+                structured_failure_reason = "schema_validation"
+            elif parse_error.startswith("truncated_json:"):
+                structured_failure_reason = "truncated_json"
+            else:
+                structured_failure_reason = "parse_error"
             failure_stage = classify_structured_failure(
                 structured_failure_reason
             )
             structured_failure_stage = (
                 failure_stage.value if failure_stage else None
             )
+            correction_hint = agent._parse_correction_hint(context, parse_error)
+            if structured_failure_reason == "truncated_json":
+                correction_hint = (
+                    "上次输出的JSON没有闭合。请缩短发言和reason，"
+                    "只输出一个完整JSON对象，确保以}结尾；"
+                    "不要输出private_intent长列表或多余解释。"
+                )
             retry = RetryInfo(
                 attempt=attempt,
                 max_retries=agent.max_retries,
                 error_code=structured_failure_reason,
                 error_message=parse_error,
-                correction_hint=agent._parse_correction_hint(context, parse_error) or (
+                correction_hint=correction_hint or (
                     "只输出JSON，不要解释、不要Markdown代码块。必须包含action_type、target_id、speech、"
                     "reason、confidence；action_type必须来自合法动作，target_id必须来自合法目标或null。"
                 ),

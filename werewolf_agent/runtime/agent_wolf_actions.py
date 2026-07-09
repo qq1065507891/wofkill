@@ -4,6 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_wolf_actions import agent_wolf_discussion
@@ -55,6 +56,28 @@ from werewolf_agent.runtime.wolf_team_plan_support import (
 logger = logging.getLogger(__name__)
 
 
+_WOLF_TEAM_PLAN_FAILURE_KEY = "wolf_team_plan_failure"
+
+
+def _record_wolf_team_plan_failure(
+    state: dict[str, Any],
+    *,
+    reason: str,
+    stage: str,
+    attempts: int,
+    last_error: str,
+    captain_id: str | None,
+) -> None:
+    """记录狼队计划失败元数据，供审计事件下钻原因。"""
+    state[_WOLF_TEAM_PLAN_FAILURE_KEY] = {
+        "reason": reason,
+        "stage": stage,
+        "attempts": attempts,
+        "last_error": last_error,
+        "captain_id": captain_id,
+    }
+
+
 def agent_wolf_team_plan(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -80,11 +103,20 @@ def agent_wolf_team_plan(
     from werewolf_agent.agents.tool_schema import wolf_team_plan_tool
     from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
 
+    state.pop(_WOLF_TEAM_PLAN_FAILURE_KEY, None)
     gs: GameState = state["game_state"]
     alive_wolves = sorted(
         pid for pid, p in gs.players.items() if p.role == "werewolf" and p.alive
     )
     if not alive_wolves:
+        _record_wolf_team_plan_failure(
+            state,
+            reason="no_alive_wolves",
+            stage="runtime",
+            attempts=0,
+            last_error="no alive wolves",
+            captain_id=None,
+        )
         return None
 
     captain_id = alive_wolves[0]
@@ -92,6 +124,14 @@ def agent_wolf_team_plan(
     if captain_agent is None:
         logger.debug(
             "[wolf_team_plan] captain %s agent unavailable, fallback", captain_id
+        )
+        _record_wolf_team_plan_failure(
+            state,
+            reason="captain_agent_missing",
+            stage="registry",
+            attempts=0,
+            last_error=f"captain {captain_id} agent unavailable",
+            captain_id=captain_id,
         )
         return None
 
@@ -132,6 +172,9 @@ def agent_wolf_team_plan(
     tool = wolf_team_plan_tool(alive_wolves, alive_non_wolves)
     max_retries = 3
     last_err: str | None = None
+    last_reason = "retry_exhausted"
+    last_stage = "unknown"
+    use_tool_choice = True
 
     for attempt in range(1, max_retries + 1):
         retry_suffix = (
@@ -140,21 +183,59 @@ def agent_wolf_team_plan(
             else ""
         )
         try:
+            prompt_text = user_prompt + retry_suffix
+            system_text = system_prompt
+            tools_arg = [tool] if use_tool_choice else None
+            tool_choice_arg = (
+                {"type": "tool", "name": "submit_wolf_team_plan"}
+                if use_tool_choice else None
+            )
+            if not use_tool_choice:
+                prompt_text += (
+                    "\n\n当前模型不支持工具调用；只输出一个完整JSON对象，"
+                    "不要输出Markdown、解释或额外文本。"
+                )
+                system_text += "\n\n如果工具调用不可用，直接输出符合字段约束的JSON对象。"
             result = captain_agent.model_router.generate(
                 agent_id=captain_id,
                 task_type=TaskType.WOLF_TEAM_PLAN.value,
-                prompt=user_prompt + retry_suffix,
-                system_prompt=system_prompt,
-                tools=[tool],
-                tool_choice={"type": "tool", "name": "submit_wolf_team_plan"},
+                prompt=prompt_text,
+                system_prompt=system_text,
+                tools=tools_arg,
+                tool_choice=tool_choice_arg,
             )
         except NotImplementedError:
             logger.debug(
-                "[wolf_team_plan] provider does not support tool_choice, fallback"
+                "[wolf_team_plan] provider does not support tool_choice, "
+                "retrying as plain JSON"
             )
-            return None
+            use_tool_choice = False
+            try:
+                result = captain_agent.model_router.generate(
+                    agent_id=captain_id,
+                    task_type=TaskType.WOLF_TEAM_PLAN.value,
+                    prompt=(
+                        user_prompt
+                        + retry_suffix
+                        + "\n\n当前模型不支持工具调用；只输出一个完整JSON对象，"
+                        "不要输出Markdown、解释或额外文本。"
+                    ),
+                    system_prompt=(
+                        system_prompt
+                        + "\n\n如果工具调用不可用，直接输出符合字段约束的JSON对象。"
+                    ),
+                    tools=None,
+                    tool_choice=None,
+                )
+            except Exception as e:  # noqa: BLE001
+                last_err = f"plain_json_generate_error: {e}"
+                last_reason = "provider_tool_choice_unsupported"
+                last_stage = "provider"
+                continue
         except Exception as e:  # noqa: BLE001
             last_err = f"generate_error: {e}"
+            last_reason = "generate_error"
+            last_stage = "provider"
             logger.debug(
                 "[wolf_team_plan] LLM generate failed attempt %d: %s", attempt, e
             )
@@ -163,6 +244,8 @@ def agent_wolf_team_plan(
         raw = (result.text or "").strip()
         if not raw:
             last_err = "empty_response"
+            last_reason = "empty_response"
+            last_stage = "model_output"
             continue
 
         # 先尝试直接解析，再走修复器，最后做平衡 JSON 扫描。
@@ -178,12 +261,16 @@ def agent_wolf_team_plan(
                 data = _extract_first_balanced_json_object(raw)
         if not isinstance(data, dict):
             last_err = f"json_parse_failed: raw[:80]={raw[:80]!r}"
+            last_reason = "json_parse_failed"
+            last_stage = "protocol"
             continue
 
         try:
             plan = WolfTeamPlan.model_validate(data)
         except Exception as e:  # noqa: BLE001
             last_err = f"schema_validation: {str(e)[:200]}"
+            last_reason = "schema_validation_failed"
+            last_stage = "schema"
             continue
 
         membership_err = validate_wolf_team_plan_membership(
@@ -193,6 +280,8 @@ def agent_wolf_team_plan(
         )
         if membership_err is not None:
             last_err = membership_err
+            last_reason = "membership_validation_failed"
+            last_stage = "semantic"
             continue
 
         plan_dict: dict[str, Any] = plan.model_dump()
@@ -213,6 +302,14 @@ def agent_wolf_team_plan(
         "[wolf_team_plan] retry exhausted (%d), last_err=%s, fallback",
         max_retries,
         last_err,
+    )
+    _record_wolf_team_plan_failure(
+        state,
+        reason=last_reason,
+        stage=last_stage,
+        attempts=max_retries,
+        last_error=last_err or "retry exhausted",
+        captain_id=captain_id,
     )
     return None
 

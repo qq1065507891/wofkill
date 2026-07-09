@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.model_gateway.usage_records import ModelConfig
@@ -24,7 +25,7 @@ class ModelConfig:
     provider: str
     model: str
     temperature: float = 0.5
-    max_tokens: int = 1024
+    max_tokens: int | None = None
     top_p: float = 0.9
     timeout: int = 30
     allow_text_tool_fallback: bool = False

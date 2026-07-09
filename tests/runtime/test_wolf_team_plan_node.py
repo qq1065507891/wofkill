@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from tests.runtime.test_agent_wolf_team_plan import _FakeAgent, _FakeModelRouter
 
 
 def _make_gs(*, night=1, wolves=("p04", "p05", "p08", "p10"), with_discussion=True):
@@ -80,6 +81,32 @@ class TestNoRegistryFallback:
         ]
         assert len(fallback_events) == 1
         assert fallback_events[0].payload["reason"] == "no_registry"
+
+    def test_no_registry_does_not_reuse_stale_llm_failure_metadata(self):
+        from werewolf_agent.runtime.nodes.night import wolf_team_plan_node
+        gs = _make_gs()
+        state = {
+            "game_state": gs,
+            "wolf_team_plan_failure": {
+                "reason": "empty_response",
+                "stage": "model_output",
+                "attempts": 3,
+                "last_error": "empty_response",
+                "captain_id": "p04",
+            },
+        }
+
+        result = wolf_team_plan_node(state)
+
+        fallback_event = next(
+            e for e in result["game_state"].events
+            if e.type == "wolf_team_plan_fallback"
+        )
+        assert fallback_event.payload == {
+            "night_number": 1,
+            "reason": "no_registry",
+            "visibility": "werewolf_team_only",
+        }
 
     def test_no_alive_wolves_returns_empty(self):
         from werewolf_agent.runtime.nodes.night import wolf_team_plan_node
@@ -180,6 +207,27 @@ class TestLLMFallback:
             "public_story", "evidence_quality",
         ):
             assert key in plan
+
+    def test_fallback_event_uses_llm_failure_metadata(self):
+        from werewolf_agent.runtime.nodes import night as night_mod
+        gs = _make_gs()
+        router = _FakeModelRouter([("", None), ("", None), ("", None)])
+        registry = _MockRegistry({"p04": _FakeAgent("p04", router)})
+        state = {"game_state": gs, "agent_registry": registry}
+
+        with patch.object(night_mod, "_alive_wolves") as mock_alive:
+            mock_alive.return_value = ["p04", "p05", "p08", "p10"]
+            result = night_mod.wolf_team_plan_node(state)
+
+        fallback_event = next(
+            e for e in result["game_state"].events
+            if e.type == "wolf_team_plan_fallback"
+        )
+        assert fallback_event.payload["reason"] == "empty_response"
+        assert fallback_event.payload["stage"] == "model_output"
+        assert fallback_event.payload["attempts"] == 3
+        assert fallback_event.payload["last_error"] == "empty_response"
+        assert fallback_event.payload["captain_id"] == "p04"
 
 
 class TestStateReturn:

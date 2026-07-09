@@ -3,7 +3,7 @@
 探测 Ark OpenAI 兼容接口的工具调用返回行为。
 
 作者: Project contributors
-修改日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     python scripts/probe_ark_tool_support.py --only auto
@@ -193,7 +193,6 @@ def _payload(model: str, mode: str) -> dict[str, Any]:
             },
         ],
         "temperature": 0,
-        "max_tokens": 256,
     }
     if mode == "none":
         payload["response_format"] = {"type": "json_object"}

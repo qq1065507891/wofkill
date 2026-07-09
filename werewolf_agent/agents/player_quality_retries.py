@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-08
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.player_quality_retries import build_speech_quality_retry
@@ -15,6 +15,28 @@
 from __future__ import annotations
 
 from werewolf_agent.agents.schemas import RetryInfo
+
+
+def _speech_quality_correction_hint(speech_quality_err: str) -> str:
+    """按具体 speech_quality 失败类型生成更可执行的重试提示。"""
+    if "公开记录" in speech_quality_err or "我推测/我质疑" in speech_quality_err:
+        return (
+            "把无法确认的公开记录改写为“我推测/我质疑”；"
+            "不要继续声称公开记录已经证明。"
+            "然后补一句身份立场和一个明确攻击或防御论点。"
+        )
+    if "身份立场" in speech_quality_err or "我是好人阵营" in speech_quality_err:
+        return (
+            "先补一句身份立场，例如“我是好人阵营”。"
+            "再基于一条公开发言、票型或查验声明给出攻击或防御论点。"
+        )
+    return (
+        f"发言缺少以下必填字段: {speech_quality_err}。"
+        f"请基于公开记录重写发言，在 speech 字段中体现："
+        f"1) 你的身份立场（至少引用一处公开事实）；"
+        f"2) 攻击或防御的明确论点（PK 阶段必填）。"
+        f"不要写「按公开信息判断」之类的占位文本。"
+    )
 
 
 def build_speech_quality_retry(
@@ -28,13 +50,7 @@ def build_speech_quality_retry(
         max_retries=max_retries,
         error_code="speech_quality",
         error_message=speech_quality_err,
-        correction_hint=(
-            f"发言缺少以下必填字段: {speech_quality_err}。"
-            f"请基于公开记录重写发言，在 speech 字段中体现："
-            f"1) 你的身份立场（至少引用一处公开事实）；"
-            f"2) 攻击或防御的明确论点（PK 阶段必填）。"
-            f"不要写「按公开信息判断」之类的占位文本。"
-        ),
+        correction_hint=_speech_quality_correction_hint(speech_quality_err),
     )
 
 

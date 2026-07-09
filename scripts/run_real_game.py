@@ -3,7 +3,7 @@
 运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
 作者: Project contributors
-修改日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     python scripts/run_real_game.py --seed 42 --max-steps 500
@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import logging
 import os
@@ -60,11 +61,18 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     """Compute structured quality metrics for a completed game."""
     gs = runner.state
     traces = [e for e in gs.events if e.type == "action_trace_audit"]
+    action_fallback_traces = [
+        e.payload.get("action_trace", {}) for e in traces
+        if e.payload.get("action_trace", {}).get("fallback_reason")
+    ]
+    wolf_plan_fallbacks = [
+        e for e in gs.events if e.type == "wolf_team_plan_fallback"
+    ]
     action_fallback_count = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("fallback_reason")
     )
-    wolf_plan_fallback_count = sum(1 for e in gs.events if e.type == "wolf_team_plan_fallback")
+    wolf_plan_fallback_count = len(wolf_plan_fallbacks)
     wolf_plan_attempts = max(
         sum(1 for e in gs.events if e.type == "wolf_team_plan"),
         wolf_plan_fallback_count,
@@ -82,12 +90,49 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     speech_rate = non_empty_speeches / len(speeches) if speeches else 0.0
     phases_seen = {e.payload.get("phase") for e in gs.events if e.type == "judge_broadcast"}
     has_winner = bool(gs.winning_faction)
+    action_fallback_by_error_code = Counter(
+        trace.get("retry", {}).get("error_code") or "unknown"
+        for trace in action_fallback_traces
+    )
+    retry_error_counts = Counter(
+        retry_error for retry_error in (
+            e.payload.get("action_trace", {}).get("retry", {}).get("error_code")
+            for e in traces
+        )
+        if retry_error
+    )
+    wolf_team_plan_fallback_by_reason = Counter(
+        e.payload.get("reason") or "unknown" for e in wolf_plan_fallbacks
+    )
+    fallback_by_reason = Counter(
+        trace.get("structured_failure_reason")
+        or trace.get("retry", {}).get("error_code")
+        or "unknown"
+        for trace in action_fallback_traces
+    )
+    fallback_by_reason.update(wolf_team_plan_fallback_by_reason)
+    fallback_by_stage = Counter(
+        trace.get("structured_failure_stage") or "unknown"
+        for trace in action_fallback_traces
+    )
+    fallback_by_stage.update(
+        e.payload.get("stage") or "unknown" for e in wolf_plan_fallbacks
+    )
 
     return {
         "fallback_rate": round(fallback_rate, 3),
         "fallback_count": fallback_count,
         "action_fallback_count": action_fallback_count,
         "wolf_team_plan_fallback_count": wolf_plan_fallback_count,
+        "fallback_by_reason": dict(sorted(fallback_by_reason.items())),
+        "fallback_by_stage": dict(sorted(fallback_by_stage.items())),
+        "action_fallback_by_error_code": dict(
+            sorted(action_fallback_by_error_code.items())
+        ),
+        "retry_error_counts": dict(sorted(retry_error_counts.items())),
+        "wolf_team_plan_fallback_by_reason": dict(
+            sorted(wolf_team_plan_fallback_by_reason.items())
+        ),
         "structured_fail_count": structured_fail,
         "total_action_traces": total,
         "total_wolf_team_plans": wolf_plan_attempts,

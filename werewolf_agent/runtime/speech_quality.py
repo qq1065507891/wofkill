@@ -1,8 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
-"""Public speech quality validation.
+"""公开发言质量校验。
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-09
     使用示例: 内部模块，无对外接口
 Validates that speeches include required components:
 - Identity perspective / stance
@@ -91,9 +91,27 @@ _PEACE_NIGHT_WITCH_FALLACY_PATTERNS = [
     r"预言家.{0,20}(?:应该|必须).{0,12}质疑.{0,30}(?:女巫|救了谁|平安夜).{0,30}(?:而不是|不该).{0,20}(?:发金水|给.*金水)",
 ]
 
+_PEACE_NIGHT_SEER_FALLACY_PATTERNS = [
+    r"平安夜.{0,40}(?:验人|查验|验人结论|查验结论).{0,30}(?:靠不住|不可信|有问题|逻辑漏洞|无效)",
+    r"(?:验人|查验|验人结论|查验结论).{0,30}(?:依赖|取决于).{0,24}(?:平安夜|首夜格局|狼人为什么没人死)",
+    r"验出.{0,8}狼人.{0,30}(?:为什么|怎么).{0,20}(?:没人死|无人死亡|平安夜)",
+    r"(?:解释不清|没解释|没有解释).{0,24}(?:狼人为什么没人死|平安夜).{0,40}(?:验人|查验).{0,20}(?:靠不住|不可信|有问题)",
+]
+
 _ROLE_CLAIM_PATTERNS = [
     re.compile(
         r"(p\d{2}).{0,12}(?:声称自己是|说自己是|自称|认|跳)(狼人|预言家|女巫|猎人|白痴|村民|民|混血儿|hybrid)"
+    ),
+]
+
+_PUBLIC_DEATH_CLAIM_PATTERNS = [
+    re.compile(
+        r"(p\d{2}).{0,20}(?:死因报告|死亡陈述).{0,20}"
+        r"(p\d{2}).{0,12}(?:被狼刀|被刀|被狼人(?:杀|击杀))"
+    ),
+    re.compile(
+        r"(p\d{2})(?:(?!p\d{2}).){0,12}(?:说|称|声称|表示)"
+        r"(?:(?!p\d{2}).){0,20}(p\d{2}).{0,12}(?:被狼刀|被刀|被狼人(?:杀|击杀))"
     ),
 ]
 
@@ -114,6 +132,10 @@ def _has_peace_night_witch_fallacy(text: str) -> bool:
     return any(re.search(pattern, text) for pattern in _PEACE_NIGHT_WITCH_FALLACY_PATTERNS)
 
 
+def _has_peace_night_seer_fallacy(text: str) -> bool:
+    return any(re.search(pattern, text) for pattern in _PEACE_NIGHT_SEER_FALLACY_PATTERNS)
+
+
 def _context_public_texts(context: dict[str, Any]) -> list[tuple[str, str]]:
     public_texts: list[tuple[str, str]] = []
     for item in context.get("recent_transcript", []) or []:
@@ -125,8 +147,23 @@ def _context_public_texts(context: dict[str, Any]) -> list[tuple[str, str]]:
     return public_texts
 
 
+def _public_text_supports_death_claim(
+    public_texts: list[tuple[str, str]],
+    speaker: str,
+    target: str,
+) -> bool:
+    """检查公开文本中是否存在指定玩家对夜死/狼刀的原始声明。"""
+    death_markers = ("被狼刀", "被刀", "被狼人杀", "被狼人击杀", "死亡原因")
+    return any(
+        (not claim_speaker or claim_speaker == speaker)
+        and target in public_text
+        and any(marker in public_text for marker in death_markers)
+        for claim_speaker, public_text in public_texts
+    )
+
+
 def _has_unsupported_public_record_claim(text: str, context: dict[str, Any]) -> bool:
-    """Return True when a speech cites a public role claim not in public text."""
+    """Return True when a speech cites a public claim not in public text."""
     public_texts = _context_public_texts(context)
     if not public_texts:
         return False
@@ -139,6 +176,11 @@ def _has_unsupported_public_record_claim(text: str, context: dict[str, Any]) -> 
                 for speaker, public_text in public_texts
             )
             if not supported:
+                return True
+    for pattern in _PUBLIC_DEATH_CLAIM_PATTERNS:
+        for match in pattern.finditer(text):
+            speaker, target = match.group(1), match.group(2)
+            if not _public_text_supports_death_claim(public_texts, speaker, target):
                 return True
     return False
 
@@ -258,6 +300,8 @@ def validate_public_speech(
 
     if _has_peace_night_witch_fallacy(text):
         missing.append("peace_night_witch_reasoning")
+    if _has_peace_night_seer_fallacy(text):
+        missing.append("peace_night_seer_reasoning")
     if _has_unsupported_public_record_claim(text, context):
         missing.append("public_record_grounding")
 
@@ -373,6 +417,11 @@ def build_speech_retry_hint(missing_fields: list[str]) -> str:
             "平安夜不等于无人被刀；可能是狼人空刀，也可能是女巫用解药救人。"
             "不能用“平安夜没人死”反驳女巫知道刀口，也不能把“不公开救谁”直接等同于假女巫；"
             "请改为询问是否用药、为什么暂不公开银水、以及发言前后是否矛盾"
+        ),
+        "peace_night_seer_reasoning": (
+            "平安夜只代表公开无人死亡，不影响预言家夜间查验。"
+            "不能用“平安夜没人死”否定预言家验人；"
+            "请改为核验验人时间线、警徽流、查验动机、发言前后矛盾和票型承接"
         ),
         "public_record_grounding": (
             "引用公开记录时，必须能在游戏概况或近期发言中找到对应原文；"

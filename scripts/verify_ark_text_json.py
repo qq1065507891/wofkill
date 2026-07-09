@@ -3,7 +3,7 @@
 验证 Ark text_json 模式能返回可解析 JSON。
 
 作者: Project contributors
-修改日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     python scripts/verify_ark_text_json.py --all
@@ -44,7 +44,6 @@ def _probe(model: str, key: str, url: str) -> int:
             },
         ],
         "temperature": 0.5,
-        "max_tokens": 256,
         "top_p": 0.9,
     }
     r = httpx.post(

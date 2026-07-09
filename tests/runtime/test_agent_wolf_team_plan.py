@@ -68,7 +68,16 @@ class _FakeModelRouter:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
-    def generate(self, *, agent_id, task_type, prompt, system_prompt, tools, tool_choice):
+    def generate(
+        self,
+        *,
+        agent_id,
+        task_type,
+        prompt,
+        system_prompt,
+        tools=None,
+        tool_choice=None,
+    ):
         self.calls.append({
             "agent_id": agent_id, "task_type": task_type, "prompt": prompt,
             "system_prompt": system_prompt, "tool_choice": tool_choice,
@@ -290,15 +299,46 @@ class TestRetryAndFailure:
         plan = agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
         assert plan is not None
 
-    def test_provider_not_implemented_returns_immediately(self):
+    def test_provider_not_implemented_switches_remaining_attempts_to_plain_json(self):
+        gs = _make_gs()
+        state = {"game_state": gs}
+        router = _FakeModelRouter([
+            ("", NotImplementedError("provider does not support tool_choice")),
+            ("", None),
+            ("", None),
+            ("", None),
+        ])
+        registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+        plan = agent_wolf_team_plan(state, engine=None, registry=registry)
+
+        assert plan is None
+        assert state["wolf_team_plan_failure"]["reason"] == "empty_response"
+        assert router.calls[0]["tool_choice"] == {
+            "type": "tool",
+            "name": "submit_wolf_team_plan",
+        }
+        assert all(call["tool_choice"] is None for call in router.calls[1:])
+
+    def test_provider_without_tool_choice_falls_back_to_plain_json(self):
         gs = _make_gs()
         router = _FakeModelRouter([
             ("", NotImplementedError("provider does not support tool_choice")),
+            (_valid_plan_json(), None),
         ])
         registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
         plan = agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
-        assert plan is None
-        assert len(router.calls) == 1  # no retry
+
+        assert plan is not None
+        assert plan["consensus_method"] == "llm"
+        assert len(router.calls) == 2
+        assert router.calls[0]["tool_choice"] == {
+            "type": "tool",
+            "name": "submit_wolf_team_plan",
+        }
+        assert router.calls[1]["tool_choice"] is None
+        assert "只输出一个完整JSON对象" in router.calls[1]["prompt"]
 
     def test_empty_response_retries(self):
         gs = _make_gs()
@@ -309,6 +349,23 @@ class TestRetryAndFailure:
         plan = agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
         assert plan is not None
         assert len(router.calls) == 3
+
+    def test_empty_response_exhaustion_records_failure_metadata(self):
+        gs = _make_gs()
+        state = {"game_state": gs}
+        router = _FakeModelRouter([("", None), ("", None), ("", None)])
+        registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+        plan = agent_wolf_team_plan(state, engine=None, registry=registry)
+
+        assert plan is None
+        assert state["wolf_team_plan_failure"] == {
+            "reason": "empty_response",
+            "stage": "model_output",
+            "attempts": 3,
+            "last_error": "empty_response",
+            "captain_id": "p04",
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@ def test_build_day_speech_base_directive_contains_originality_and_style() -> Non
     directive = build_day_speech_base_directive("发言短促，重视票型。")
 
     assert "anti_following_and_peace_night_rule" in directive
+    assert "不能用平安夜否定预言家验人" in directive["anti_following_and_peace_night_rule"]
     assert "【发言原创性要求】" in directive["speech_originality"]
     assert "发言短促，重视票型。" in directive["speech_originality"]
 

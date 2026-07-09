@@ -138,6 +138,50 @@ class TestResolveConfig:
         config, fallback = router.resolve_config(agent_id="ghost", task_type="speech")
         assert config.provider == "mock"
 
+    def test_unspecified_primary_max_tokens_uses_provider_default(self) -> None:
+        router = _make_router()
+
+        config, _fallback = router.resolve_config(
+            agent_id="p01",
+            task_type="speech",
+        )
+
+        assert config.max_tokens is None
+
+    def test_unspecified_fallback_max_tokens_uses_provider_default(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary_profile": {
+                    "provider": "primary",
+                    "model": "primary-model",
+                },
+                "fallback_profile": {
+                    "provider": "fallback",
+                    "model": "fallback-model",
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {
+                        "provider": "primary",
+                        "model_profile": "primary_profile",
+                    },
+                    "fallback": {
+                        "provider": "fallback",
+                        "model_profile": "fallback_profile",
+                    },
+                },
+            },
+            player_assignments={"p01": "default"},
+        )
+
+        fallback_config = router._resolve_fallback_model("default")
+
+        assert fallback_config is not None
+        assert fallback_config.max_tokens is None
+
 
 class TestGenerateWithMockProvider:
     def test_generate_returns_text_from_mock(self) -> None:

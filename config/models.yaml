@@ -14,7 +14,6 @@ model_profiles:
     provider: openai
     model: minimax-m3
     temperature: 0.5
-    max_tokens: 1024
     top_p: 0.9
     timeout: 120
     allow_text_tool_fallback: true
@@ -26,7 +25,6 @@ model_profiles:
     provider: openai
     model: deepseek-v4-flash
     temperature: 0.5
-    max_tokens: 1024
     top_p: 0.9
     timeout: 120
     allow_text_tool_fallback: true
@@ -38,7 +36,6 @@ model_profiles:
     provider: openai
     model: deepseek-v4-pro
     temperature: 0.5
-    max_tokens: 1024
     top_p: 0.9
     timeout: 120
     allow_text_tool_fallback: true
@@ -50,7 +47,6 @@ model_profiles:
     provider: openai
     model: minimax-m2.7
     temperature: 0.5
-    max_tokens: 1024
     top_p: 0.9
     timeout: 120
     allow_text_tool_fallback: true
@@ -63,7 +59,6 @@ model_profiles:
     provider: minimax
     model: MiniMax-M2.7
     temperature: 0.5
-    max_tokens: 1024
     top_p: 0.9
     timeout: 120
     allow_text_tool_fallback: true
@@ -75,7 +70,6 @@ model_profiles:
     provider: minimax
     model: MiniMax-M2.7
     temperature: 0.4
-    max_tokens: 2048
     top_p: 0.9
     timeout: 180
     allow_text_tool_fallback: true
@@ -87,7 +81,6 @@ model_profiles:
     provider: minimax
     model: MiniMax-M2.7
     temperature: 0.7
-    max_tokens: 768
     top_p: 0.95
     timeout: 90
     allow_text_tool_fallback: true

@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.wolf_discussion import wolf_discussion
@@ -419,7 +420,13 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
         if fallback_reason is None:
 
-            fallback_reason = "llm_failed_or_unavailable"
+            failure_meta = state.get("wolf_team_plan_failure")
+            if not isinstance(failure_meta, dict):
+                failure_meta = {}
+
+            fallback_reason = failure_meta.get("reason") or "llm_failed_or_unavailable"
+        else:
+            failure_meta = {}
 
         plan = _build_fallback_wolf_team_plan(state, wolves)
 
@@ -427,19 +434,20 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
         plan.setdefault("captain_id", wolves[0] if wolves else None)
 
+        fallback_payload = {
+            "night_number": gs.night_number,
+            "reason": fallback_reason,
+            "visibility": "werewolf_team_only",
+        }
+        for key in ("stage", "attempts", "last_error", "captain_id"):
+            if key in failure_meta:
+                fallback_payload[key] = failure_meta[key]
+
         events.append(GameEvent(
 
             type="wolf_team_plan_fallback",
 
-            payload={
-
-                "night_number": gs.night_number,
-
-                "reason": fallback_reason,
-
-                "visibility": "werewolf_team_only",
-
-            },
+            payload=fallback_payload,
 
         ))
 
@@ -462,4 +470,3 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
     gs = replace(gs, events=gs.events + events)
 
     return {"game_state": gs, "wolf_team_plan": plan}
-

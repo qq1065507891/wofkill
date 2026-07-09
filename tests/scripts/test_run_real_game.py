@@ -120,6 +120,81 @@ def test_quality_score_counts_wolf_team_plan_fallbacks() -> None:
     assert quality["fallback_rate"] == 1.0
 
 
+def test_quality_score_groups_fallbacks_by_reason_and_stage() -> None:
+    from scripts import run_real_game
+
+    gs = GameState(
+        game_id="g_quality_fallback_reasons",
+        events=[
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "action_trace": {
+                        "fallback_reason": "fallback: 结构化输出失败，按当前可见线索选择默认目标",
+                        "structured_failure_reason": "speech_quality",
+                        "structured_failure_stage": "semantic",
+                        "retry": {"error_code": "speech_quality"},
+                    }
+                },
+            ),
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "action_trace": {
+                        "fallback_reason": "fallback: 结构化输出失败，按当前可见线索选择默认目标",
+                        "structured_failure_reason": "parse_error",
+                        "structured_failure_stage": "protocol",
+                        "retry": {"error_code": "parse_error"},
+                    }
+                },
+            ),
+            GameEvent(
+                type="action_trace_audit",
+                payload={
+                    "action_trace": {
+                        "structured_failure_reason": "empty_response",
+                        "structured_failure_stage": "model_output",
+                        "retry": {"error_code": "empty_response"},
+                    }
+                },
+            ),
+            GameEvent(
+                type="wolf_team_plan_fallback",
+                payload={
+                    "night_number": 1,
+                    "reason": "empty_response",
+                    "stage": "model_output",
+                },
+            ),
+            GameEvent(type="wolf_team_plan", payload={"night_number": 1}),
+        ],
+    )
+    runner = SimpleNamespace(state=gs, step_count=5)
+
+    quality = run_real_game.compute_game_quality_score(runner)
+
+    assert quality["action_fallback_by_error_code"] == {
+        "parse_error": 1,
+        "speech_quality": 1,
+    }
+    assert quality["retry_error_counts"] == {
+        "empty_response": 1,
+        "parse_error": 1,
+        "speech_quality": 1,
+    }
+    assert quality["wolf_team_plan_fallback_by_reason"] == {"empty_response": 1}
+    assert quality["fallback_by_reason"] == {
+        "empty_response": 1,
+        "parse_error": 1,
+        "speech_quality": 1,
+    }
+    assert quality["fallback_by_stage"] == {
+        "model_output": 1,
+        "protocol": 1,
+        "semantic": 1,
+    }
+
+
 def test_save_game_log_exports_hybrid_fields_from_victory_event(tmp_path, monkeypatch) -> None:
     from scripts import run_real_game
 

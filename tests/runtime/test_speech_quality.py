@@ -1,4 +1,10 @@
-"""Tests for public speech quality validation."""
+# -*- coding: utf-8 -*-
+"""
+测试公开发言质量校验，包括模板发言、平安夜误推理和公开记录引用。
+
+作者: Project contributors
+修改日期: 2026-07-09
+"""
 
 import pytest
 from werewolf_agent.runtime.speech_quality import (
@@ -201,6 +207,30 @@ class TestPeaceNightWitchReasoning:
 
         assert result["valid"] is True
 
+    def test_rejects_peace_night_used_to_discredit_seer_check(self):
+        speech = (
+            "我是好人阵营。我怀疑p11，因为首夜平安夜没人死，"
+            "他却说自己验出p03是狼人。如果他解释不清狼人为什么没人死，"
+            "那他的验人结论就靠不住，我倾向投p11。"
+        )
+
+        result = validate_public_speech(speech, phase="day_discussion", context={})
+
+        assert result["valid"] is False
+        assert "peace_night_seer_reasoning" in result["missing_fields"]
+        assert "不能用“平安夜没人死”否定预言家验人" in result["hint"]
+
+    def test_accepts_seer_pressure_that_separates_peace_night_from_check(self):
+        speech = (
+            "我是好人阵营。平安夜只代表公开无人死亡，不影响预言家验人。"
+            "我怀疑p11不是因为平安夜本身，而是他先报p03查杀后没有兑现警徽流，"
+            "且没有解释为什么验p03。我倾向投p11。"
+        )
+
+        result = validate_public_speech(speech, phase="day_discussion", context={})
+
+        assert result["valid"] is True
+
 
 class TestPublicRecordGrounding:
     """Public-record claims must be backed by actual transcript text."""
@@ -232,6 +262,40 @@ class TestPublicRecordGrounding:
             "recent_transcript": [
                 {"speaker": "p02", "text": "我是狼人，这局我摊牌了。"},
             ],
+        }
+
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+
+        assert result["valid"] is True
+
+    def test_rejects_unsupported_public_death_claim(self):
+        speech = (
+            "我是好人阵营。我怀疑p12，因为p12说p02在死因报告里称p03被狼刀，"
+            "但公开记录里没有这句话。这个逻辑矛盾很大，我倾向投p12。"
+        )
+        context = {
+            "recent_transcript": [
+                {"speaker": "p02", "text": "p03和p11对跳预言家，我先看警徽流。"},
+                {"speaker": "p12", "text": "我认为p11需要补充警徽流。"},
+            ],
+            "public_summary": "昨夜是平安夜，无人死亡。",
+        }
+
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+
+        assert result["valid"] is False
+        assert "public_record_grounding" in result["missing_fields"]
+
+    def test_accepts_supported_public_death_claim(self):
+        speech = (
+            "我是好人阵营。我怀疑p12，因为p02刚才说p03被狼刀，"
+            "但公开死讯是平安夜，这个公开陈述需要p02解释。我倾向投p12。"
+        )
+        context = {
+            "recent_transcript": [
+                {"speaker": "p02", "text": "我认为p03被狼刀，但这个信息还需要核对。"},
+            ],
+            "public_summary": "昨夜是平安夜，无人死亡。",
         }
 
         result = validate_public_speech(speech, phase="day_discussion", context=context)

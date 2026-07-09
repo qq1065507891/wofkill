@@ -257,6 +257,20 @@ class TestParseActionMojibake:
         # (proving the JSON was recovered, not the raw text)
         assert "intent" in error or "action_type" in error or "validation" in error.lower()
 
+    def test_parse_action_classifies_truncated_json(self):
+        raw = (
+            '{"action_type":"speech","target_id":"p12",'
+            '"speech":"我建议今晚重点关注p09",'
+            '"reason":"狼队夜聊输出被截断","confidence":0.75,'
+            '"private_intent":{"risk_flags":["p'
+        )
+
+        action, error = parse_action(raw)
+
+        assert action is None
+        assert error is not None
+        assert error.startswith("truncated_json:")
+
 
 # ---------------------------------------------------------------------------
 # D4-6 (P2): clean_reason filter set is too small
