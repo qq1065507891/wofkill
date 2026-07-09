@@ -82,6 +82,7 @@ class PromptUserContextMixin:
                 "standing_with_seer（你站边哪个预言家/逻辑线，没有则写空字符串）、"
                 "suspect_reason（为什么怀疑最终投票对象）、"
                 "not_voting_reason（为什么不投其他主要候选人）、"
+                "candidate_comparison（至少两名候选人的公开证据与反证对比）、"
                 "private_reason（完整内心活动：为什么投他、担心什么、最终如何决定）。"
                 "这些字段不会公开发言，只给主持人审计。"
             )

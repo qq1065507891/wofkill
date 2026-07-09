@@ -70,6 +70,7 @@ class TestPlayerActionSchema:
             confidence=0.72,
             suspect_reason="p07的视角不对",
             not_voting_reason="p08也没充分证据",
+            candidate_comparison="p07有公开发言矛盾；p08目前只有跟票嫌疑，证据弱于p07。",
             private_reason="我信p03的查杀",
             private_intent=PrivateIntent(
                 true_role="werewolf",
@@ -83,6 +84,17 @@ class TestPlayerActionSchema:
         assert action.target_id == "p07"
         assert action.private_intent is not None
         assert action.private_intent.true_role == "werewolf"
+
+    def test_vote_action_requires_candidate_comparison(self) -> None:
+        with pytest.raises(ValidationError, match="candidate_comparison"):
+            VotePlayerAction(
+                action_type=ActionType.VOTE,
+                target_id="p07",
+                reason="p07的发言矛盾最多",
+                suspect_reason="p07前后逻辑不一致",
+                not_voting_reason="p08目前只有轻微跟票嫌疑",
+                private_reason="公开证据下p07更可疑",
+            )
 
     def test_action_requiring_target_fails_without_target(self) -> None:
         with pytest.raises(ValidationError, match="requires target_id"):
@@ -366,6 +378,7 @@ class TestVoteActionRejectsEmptyReason:
             target_id="p05",
             suspect_reason="p05没有回应p03的查杀逻辑",
             not_voting_reason="p07虽然被踩但无明确证据",
+            candidate_comparison="p05有查杀压力；p07只有轻微被踩，证据更弱",
             private_reason="心里活动：更信p03的预言家线",
         )
         assert action.suspect_reason == "p05没有回应p03的查杀逻辑"
@@ -381,6 +394,7 @@ class TestVoteActionRejectsEmptyReason:
             standing_with_seer="",
             suspect_reason="x",
             not_voting_reason="y",
+            candidate_comparison="x 比 y 的公开证据更强",
             private_reason="z",
         )
         assert action.standing_with_seer == ""
@@ -462,6 +476,7 @@ class TestPlayerActionUnion:
             seer_stance="undecided",
             suspect_reason="p05发言矛盾",
             not_voting_reason="p07没有明显证据",
+            candidate_comparison="p05有发言矛盾；p07没有明显证据",
             private_reason="我投p05",
         )
         assert action.action_kind == "vote"
@@ -484,6 +499,7 @@ class TestPlayerActionUnion:
             "seer_stance": "undecided",
             "suspect_reason": "p05发言矛盾",
             "not_voting_reason": "p07没有明显证据",
+            "candidate_comparison": "p05有发言矛盾；p07没有明显证据",
             "private_reason": "我投p05",
         }
         action = PlayerAction.model_validate(data)
@@ -517,6 +533,7 @@ class TestPlayerActionUnion:
             seer_stance="undecided",
             suspect_reason="p07的视角不对",
             not_voting_reason="p08没明显证据",
+            candidate_comparison="p07视角问题更明显；p08没有同等证据",
             private_reason="我信p03的查杀",
         )
         assert isinstance(action, VotePlayerAction)
@@ -577,6 +594,7 @@ class TestPlayerActionUnion:
                     target_id=target,
                     suspect_reason="x",
                     not_voting_reason="y",
+                    candidate_comparison="x 比 y 的公开证据更强",
                     private_reason="z",
                 )
             else:
@@ -697,6 +715,7 @@ class TestPlayerActionExtraForbid:
             standing_with_seer="p03",
             suspect_reason="p07没有回应",
             not_voting_reason="p08没查验",
+            candidate_comparison="p07没有回应查杀；p08只是没查验",
             private_reason="我信p03",
         )
         assert action.vote_basis == "seer_check"

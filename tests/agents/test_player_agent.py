@@ -148,7 +148,7 @@ class ToolAwareProvider:
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
         self.calls.append({"tools": tools, "tool_choice": tool_choice})
         return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}',
+            text='{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","candidate_comparison":"p07发言矛盾比p08更具体","private_reason":"我投p07"}',
             provider=self.name,
             model=config.model,
             usage=UsageRecord(agent_id="", task_type="", provider=self.name, model=config.model),
@@ -232,7 +232,7 @@ class TextOnlyProvider:
 
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
         return GenerateResult(
-            text='{"action_type":"vote","target_id":"p07","speech":"","reason":"x","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}',
+            text='{"action_type":"vote","target_id":"p07","speech":"","reason":"x","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","candidate_comparison":"p07发言矛盾比p08更具体","private_reason":"我投p07"}',
             provider=self.name,
             model=config.model,
             tool_call_required=bool(tool_choice),
@@ -510,7 +510,7 @@ class TestPlayerAgentRetryFallback:
         )
 
     def test_valid_action_no_retry(self) -> None:
-        json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}'
+        json_resp = '{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","candidate_comparison":"p07发言矛盾比p08更具体","private_reason":"我投p07"}'
         agent = self._make_agent(json_resp)
         action, retry = agent.act(self._make_context())
         assert isinstance(action, PlayerAction)
@@ -601,6 +601,7 @@ class TestPlayerAgentRetryFallback:
         assert "standing_with_seer" in props
         assert "suspect_reason" in props
         assert "not_voting_reason" in props
+        assert "candidate_comparison" in props
         assert "private_reason" in props
         assert props["seer_stance"]["enum"] == ["trust", "distrust", "undecided", "no_claim"]
         assert props["vote_basis"]["enum"] == [
@@ -1128,6 +1129,7 @@ class TestPlayerAgentRetryFallback:
             '"confidence":0.8,"standing_with_seer":"p03",'
             '"suspect_reason":"p07站边摇摆",'
             '"not_voting_reason":"p08证据不足",'
+            '"candidate_comparison":"p07站边摇摆，p08证据不足",'
             '"private_reason":"我更信p03，所以投p07"}'
         )
         agent = self._make_agent(json_resp)
@@ -1225,7 +1227,7 @@ class TestPlayerAgentRetryFallback:
         assert retry.error_code == "illegal_action"
 
     def test_illegal_target_triggers_retry(self) -> None:
-        json_resp = '{"action_type":"vote","target_id":"p99","speech":"test","reason":"test","confidence":0.5,"suspect_reason":"p99发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p99"}'
+        json_resp = '{"action_type":"vote","target_id":"p99","speech":"test","reason":"test","confidence":0.5,"suspect_reason":"p99发言矛盾","not_voting_reason":"p08没有证据","candidate_comparison":"p99发言矛盾比p08更具体","private_reason":"我投p99"}'
         agent = self._make_agent(json_resp)
         action, retry = agent.act(self._make_context())
         assert isinstance(action, FallbackAction)
@@ -1261,6 +1263,7 @@ class TestPlayerAgentRetryFallback:
             '"reason":"可疑","confidence":0.8,'
             '"suspect_reason":"p07发言矛盾",'
             '"not_voting_reason":"p08没有证据",'
+            '"candidate_comparison":"p07发言矛盾比p08更具体",'
             '"private_reason":"我投p07",'
             '"private_intent":{"true_role":"werewolf","faction_goal":"push_good_player_out",'
             '"claimed_view":"good_player_without_night_info","pressure_target":"p07",'
@@ -1366,7 +1369,7 @@ class TestPlayerAgentRetryFallback:
         assert retry.error_code is None
 
     def test_code_fence_stripping(self) -> None:
-        json_resp = '```json\n{"action_type":"vote","target_id":"p07","speech":"test","reason":"test","confidence":0.5,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","private_reason":"我投p07"}\n```'
+        json_resp = '```json\n{"action_type":"vote","target_id":"p07","speech":"test","reason":"test","confidence":0.5,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","candidate_comparison":"p07发言矛盾比p08更具体","private_reason":"我投p07"}\n```'
         agent = self._make_agent(json_resp)
         action, retry = agent.act(self._make_context())
         assert isinstance(action, PlayerAction)
@@ -1379,6 +1382,7 @@ class TestPlayerAgentRetryFallback:
             '"speech":"归票p07","reason":"p07发言矛盾","confidence":0.72,'
             '"suspect_reason":"p07发言矛盾",'
             '"not_voting_reason":"p08没有证据",'
+            '"candidate_comparison":"p07发言矛盾比p08更具体",'
             '"private_reason":"我投p07"}'
             '</parameters></minimax:tool_call>'
         )
@@ -1398,6 +1402,7 @@ class TestPlayerAgentRetryFallback:
             '"speech":"我倾向投p08","reason":"p08票型不合理","confidence":0.66,'
             '"suspect_reason":"p08票型不合理",'
             '"not_voting_reason":"p07没有证据",'
+            '"candidate_comparison":"p08票型不合理，p07缺少同等证据",'
             '"private_reason":"我投p08"}'
             '</tool_input></invoke>'
         )
@@ -1422,6 +1427,7 @@ class TestPlayerAgentRetryFallback:
             '<parameter name="standing_with_seer">p08</parameter>'
             '<parameter name="suspect_reason">p07没有回应查杀逻辑</parameter>'
             '<parameter name="not_voting_reason">p08有查验信息，p06发言更自洽</parameter>'
+            '<parameter name="candidate_comparison">p07回避查杀，p06发言更自洽</parameter>'
             '<parameter name="private_reason">综合查验和发言，投p07更合理</parameter>'
             '</invoke>'
             '</minimax:tool_call>'
@@ -1615,7 +1621,7 @@ class TestPlayerAgentRetryFallback:
         assert "必填字段：action_type、target_id、speech、reason、confidence" not in prompt
         assert (
             "最终输出字段：choice、reason、seer_stance、vote_basis、standing_with_seer、suspect_reason、"
-            "not_voting_reason、private_reason、confidence"
+            "not_voting_reason、candidate_comparison、private_reason、confidence"
         ) in prompt
 
     def test_target_action_prompt_uses_choice_schema(self) -> None:
@@ -2144,6 +2150,7 @@ class TestPlainTextRejection:
                 '"speech": "test", "reason": "test", "confidence": 0.8,'
                 '"suspect_reason":"p07发言矛盾",'
                 '"not_voting_reason":"p08没有证据",'
+                '"candidate_comparison":"p07发言矛盾比p08更具体",'
                 '"private_reason":"我投p07"}'
             )},
         )
@@ -2454,6 +2461,7 @@ class TestStructuredOutputMetadata:
                 '"speech":"归7","reason":"可疑","confidence":0.8,'
                 '"suspect_reason":"p07发言矛盾",'
                 '"not_voting_reason":"p08没有证据",'
+                '"candidate_comparison":"p07发言矛盾比p08更具体",'
                 '"private_reason":"我投p07"}'
             )},
         )

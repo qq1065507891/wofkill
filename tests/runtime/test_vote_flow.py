@@ -342,6 +342,7 @@ def test_vote_action_trace_audit_exposes_structured_private_vote_thought_to_mode
             "standing_with_seer": "p03",
             "suspect_reason": "p02警上站边摇摆，且投票理由跟风",
             "not_voting_reason": "p04虽然发言短，但没有和悍跳线绑定",
+            "candidate_comparison": "p02有站边摇摆和跟风票；p04只是发言短，证据较弱",
             "private_intent": {"true_role": "villager"},
         },
     }
@@ -366,6 +367,7 @@ def test_vote_action_trace_audit_exposes_structured_private_vote_thought_to_mode
         "standing_with_seer": "p03",
         "suspect_reason": "p02警上站边摇摆，且投票理由跟风",
         "not_voting_reason": "p04虽然发言短，但没有和悍跳线绑定",
+        "candidate_comparison": "p02有站边摇摆和跟风票；p04只是发言短，证据较弱",
         "private_reason": "心里想：p02的发言像倒钩狼，先投他试压力",
     }
     assert audit_event.payload["vote_target"] == "p02"
@@ -463,6 +465,7 @@ def test_agent_day_vote_excludes_voter_from_legal_targets() -> None:
                 reason="p02 has the weakest public logic",
                 suspect_reason="p02发言前后矛盾",
                 not_voting_reason="其他人没明显证据",
+                candidate_comparison="p02发言矛盾比p03更具体",
                 private_reason="我投p02",
             ), RetryInfo()
 

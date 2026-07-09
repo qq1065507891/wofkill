@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.day_vote_directives import build_day_vote_base_directive
@@ -46,7 +46,7 @@ def build_day_vote_base_directive(
             "你只能内心选择要投谁，不能在投票时发表任何公开言论。"
             "请在reason字段中写下简短公开理由；同时在JSON中额外写"
             "seer_stance、vote_basis、standing_with_seer、suspect_reason、"
-            "not_voting_reason、private_reason。"
+            "not_voting_reason、candidate_comparison、private_reason。"
             "这些字段是你的投票心理活动，只给主持人审计，不会公开给其他玩家。"
         ),
         "vote_strategy": (

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-08
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.action_schemas import PlayerAction
@@ -207,6 +207,9 @@ class VotePlayerAction(PlayerAction):
     not_voting_reason: str = Field(
         default="", description="Private vote audit: why other major candidates were not selected"
     )
+    candidate_comparison: str = Field(
+        default="", description="Private vote audit: comparison between at least two candidates"
+    )
     private_reason: str = Field(
         default="", description="Private vote audit: full non-public reasoning for moderator audit"
     )
@@ -226,6 +229,7 @@ class VotePlayerAction(PlayerAction):
             for name, value in (
                 ("suspect_reason", self.suspect_reason),
                 ("not_voting_reason", self.not_voting_reason),
+                ("candidate_comparison", self.candidate_comparison),
                 ("private_reason", self.private_reason),
             )
             if not value or not value.strip()

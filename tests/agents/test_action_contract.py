@@ -9,6 +9,7 @@ _VOTE_AUDIT_FIELDS = (
     "standing_with_seer",
     "suspect_reason",
     "not_voting_reason",
+    "candidate_comparison",
     "private_reason",
 )
 
@@ -31,6 +32,7 @@ def test_target_choice_vote_contract_matches_prompt_fields() -> None:
         "standing_with_seer",
         "suspect_reason",
         "not_voting_reason",
+        "candidate_comparison",
         "private_reason",
         "confidence",
     ]

@@ -386,6 +386,7 @@ def test_action_trace_audit_enabled_by_default():
                         "standing_with_seer": "",
                         "suspect_reason": "推理有漏洞",
                         "not_voting_reason": "",
+                        "candidate_comparison": "p05矛盾多于p06",
                         "private_reason": "",
                     },
                 },
@@ -399,6 +400,7 @@ def test_action_trace_audit_enabled_by_default():
         f"MEM-23: default behavior must include action_trace_audit "
         f"events; got {memory!r}"
     )
+    assert memory["vote_thoughts"][0]["candidate_comparison"] == "p05矛盾多于p06"
 
 
 # ---------------------------------------------------------------------------

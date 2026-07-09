@@ -139,6 +139,10 @@ def decision_and_dialogue_to_action(
             confidence=decision.confidence,
             suspect_reason=public_reason or "current-game evidence supports this target",
             not_voting_reason="other legal targets have weaker current-game evidence",
+            candidate_comparison=(
+                f"{target_id}当前公开证据最强；"
+                "其他合法目标的公开矛盾和票型证据更弱。"
+            ),
             private_reason=_private_audit_reason(decision),
         )
 

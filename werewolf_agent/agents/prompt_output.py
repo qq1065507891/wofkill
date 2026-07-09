@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_output import PromptOutputMixin
@@ -30,7 +31,7 @@ from werewolf_agent.agents.schemas import (
 _OUTPUT_SCHEMA_VOTE_FIELDS: tuple[str, ...] = (
     "choice", "reason", "seer_stance", "vote_basis",
     "standing_with_seer", "suspect_reason", "not_voting_reason",
-    "private_reason", "confidence",
+    "candidate_comparison", "private_reason", "confidence",
 )
 _OUTPUT_SCHEMA_SPEECH_FIELDS: tuple[str, ...] = (
     "action_type", "target_id", "speech", "reason", "confidence",
@@ -292,6 +293,7 @@ class PromptOutputMixin:
                          f'"standing_with_seer": "{vote_standing_with_seer}", '
                          '"suspect_reason": "pXX没有回应pXX的查杀逻辑，发言前后不一致", '
                          '"not_voting_reason": "pXX虽然被踩，但目前没有明确查验或票型证据", '
+                         '"candidate_comparison": "pXX有查杀压力和发言矛盾；pXX只有轻微跟票嫌疑，证据较弱", '
                          '"private_reason": "心里活动：我更信pXX的预言家线，pXX像狼队抗推失败后的防守位，所以投pXX。", '
                          '"confidence": 0.8, '
                          f'"private_intent": {{"true_role": "{example_role}", '

@@ -80,6 +80,7 @@ def parse_choice_action(
             standing_with_seer=repaired.get("standing_with_seer", ""),
             suspect_reason=repaired.get("suspect_reason", ""),
             not_voting_reason=repaired.get("not_voting_reason", ""),
+            candidate_comparison=repaired.get("candidate_comparison", ""),
             private_reason=repaired.get("private_reason", ""),
         )
     else:

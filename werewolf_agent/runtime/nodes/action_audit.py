@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.action_audit import _allocate_decision_identity
@@ -134,6 +135,7 @@ def _private_vote_audit_payload(action_trace: dict[str, Any]) -> dict[str, Any]:
         "standing_with_seer": str(parsed.get("standing_with_seer") or "")[:100],
         "suspect_reason": str(parsed.get("suspect_reason") or "")[:300],
         "not_voting_reason": str(parsed.get("not_voting_reason") or "")[:300],
+        "candidate_comparison": str(parsed.get("candidate_comparison") or "")[:300],
         "private_reason": str(parsed.get("private_reason") or "")[:500],
     }
     return {

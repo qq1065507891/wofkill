@@ -125,6 +125,16 @@ def default_not_voting_reason(legal_targets: list[str], target_id: str) -> str:
     return f"暂不投{', '.join(others[:4])}，因为当前可见线索优先指向{target_id}。"
 
 
+def default_candidate_comparison(legal_targets: list[str], target_id: str) -> str:
+    others = [target for target in legal_targets if target != target_id]
+    if not others:
+        return f"{target_id}是本轮唯一合法候选，无法形成第二候选对比。"
+    return (
+        f"{target_id}当前公开证据更强；"
+        f"{others[0]}暂未出现同等强度的查验、票型或发言矛盾。"
+    )
+
+
 def target_consistent_reason(text: str, target_id: str, fallback: str) -> str:
     mentioned = set(re.findall(r"p\d{2}", text))
     if mentioned and target_id not in mentioned:
@@ -158,6 +168,10 @@ def repair_vote_decision(
     not_voting = clean_reason(data.get("not_voting_reason")) or default_not_voting_reason(
         legal_targets,
         target_id,
+    )
+    candidate_comparison = (
+        clean_reason(data.get("candidate_comparison"))
+        or default_candidate_comparison(legal_targets, target_id)
     )
     private_fallback = f"结构化投票修复：在合法候选中选择{target_id}。依据：{reason}"
     private_reason = target_consistent_reason(
@@ -193,6 +207,7 @@ def repair_vote_decision(
         "standing_with_seer": standing,
         "suspect_reason": suspect_reason,
         "not_voting_reason": not_voting,
+        "candidate_comparison": candidate_comparison,
         "private_reason": private_reason,
         "confidence": confidence,
     }

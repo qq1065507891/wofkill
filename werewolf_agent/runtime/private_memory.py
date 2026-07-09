@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-08
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.private_memory import build_private_memory
@@ -314,6 +314,7 @@ def _add_private_vote_thought(
         "standing_with_seer": thought.get("standing_with_seer", ""),
         "suspect_reason": _sanitize_role_claims(_clip(thought.get("suspect_reason", ""))),
         "not_voting_reason": _clip(thought.get("not_voting_reason", "")),
+        "candidate_comparison": _clip(thought.get("candidate_comparison", "")),
         "private_reason": _sanitize_role_claims(_clip(thought.get("private_reason", ""))),
         "source_event": event.type,
     }
@@ -356,6 +357,7 @@ def _private_vote_thought_from_trace(trace: Any) -> dict[str, Any]:
         "standing_with_seer": parsed.get("standing_with_seer", ""),
         "suspect_reason": parsed.get("suspect_reason", ""),
         "not_voting_reason": parsed.get("not_voting_reason", ""),
+        "candidate_comparison": parsed.get("candidate_comparison", ""),
         "private_reason": parsed.get("private_reason", ""),
     }
 

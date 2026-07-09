@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-08
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_choice import vote_choice_map
@@ -121,6 +121,7 @@ def format_choice_prompt(context: AgentContext) -> str:
             '"standing_with_seer":"站边的预言家或逻辑线",'
             '"suspect_reason":"为什么怀疑该候选",'
             '"not_voting_reason":"为什么不投其他候选",'
+            '"candidate_comparison":"至少两名候选人的公开证据对比",'
             '"private_reason":"完整内心理由",'
             '"confidence":0.7}'
         )
