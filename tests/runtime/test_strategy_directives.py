@@ -554,7 +554,7 @@ class TestHunterStrategyDirectives:
         assert "避免误伤好人" in directive
 
     def test_public_good_claim_penalizes_hunter_shot_target(self) -> None:
-        """Public gold-water/protect claims should lower hunter shot value."""
+        """公开金水/认好声明应降低猎人开枪目标价值。"""
         events = [
             GameEvent(type="speech", payload={
                 "speaker": "seer", "day_number": 1,
@@ -572,7 +572,11 @@ class TestHunterStrategyDirectives:
         sv = ctx.strategy_directive["shot_value_assessment"]
         v1_entry = next((t for t in sv["ranked_targets"] if t["target"] == "v1"), None)
         assert v1_entry is not None
-        assert "protected_good_by_seer" in v1_entry["signals"]
+        assert "public_good_claim_by_seer" in v1_entry["signals"]
+        assert not any(
+            "protected" in signal or "守护" in signal or "守卫" in signal
+            for signal in v1_entry["signals"]
+        )
         assert v1_entry["value"] <= 0
         assert sv["ranked_targets"][0]["target"] != "v1"
 
@@ -909,6 +913,7 @@ class TestHybridStrategyDirectives:
                     reason="test",
                     suspect_reason="w1是测试目标",
                     not_voting_reason="其他人没明显证据",
+                    candidate_comparison="w1比其他人更像测试目标",
                     private_reason="测试用例",
                 ), RetryInfo())
 
@@ -1038,6 +1043,7 @@ class TestVillagerStrategyDirectives:
                     reason="test",
                     suspect_reason="w1是测试目标",
                     not_voting_reason="其他人没明显证据",
+                    candidate_comparison="w1比其他人更像测试目标",
                     private_reason="测试用例",
                 ), RetryInfo())
 
@@ -1113,6 +1119,7 @@ class TestVillagerStrategyDirectives:
                     standing_with_seer="seer",
                     suspect_reason="w1被seer查杀",
                     not_voting_reason="hunter没有硬证据狼面",
+                    candidate_comparison="w1有查杀信息，hunter没有同等硬证据",
                     private_reason="优先走可信预言家的查验。",
                 ), RetryInfo())
 
@@ -2283,6 +2290,7 @@ class TestVoteDirectiveBranchesByRole:
                     reason="test",
                     suspect_reason="suspect",
                     not_voting_reason="others clean",
+                    candidate_comparison="p02 is more suspicious than other targets",
                     private_reason="private",
                 ), RetryInfo())
 
@@ -2480,6 +2488,7 @@ class TestSingleSeerBranch:
                     reason="test",
                     suspect_reason="suspect",
                     not_voting_reason="others clean",
+                    candidate_comparison="p01 is more suspicious than other targets",
                     private_reason="private",
                 ), RetryInfo())
 

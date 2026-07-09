@@ -3,7 +3,7 @@
 功能描述：猎人策略评估函数。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-09
 使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
@@ -30,16 +30,15 @@ def evaluate_hunter_shot_target(
     if not legal_targets:
         return None
 
-    protected_good_sources = _public_good_protection_sources(gs, legal_targets)
+    public_good_claim_sources = _public_good_claim_sources(gs, legal_targets)
     scores: dict[str, dict[str, Any]] = {}
     for pid in legal_targets:
         sig: list[str] = []
         value = 0
 
-        # Public gold-water / protection claims reduce shot value. This uses
-        # public speech/facts only; hidden roles are intentionally ignored.
-        for source in sorted(protected_good_sources.get(pid, set())):
-            sig.append(f"protected_good_by_{source}")
+        # 公开金水/认好声明降低开枪价值；只使用公开信息，不读取隐藏身份。
+        for source in sorted(public_good_claim_sources.get(pid, set())):
+            sig.append(f"public_good_claim_by_{source}")
             value -= 6
 
         # 公开查杀声明：狼人阵营是最强信号 (+10)
@@ -160,11 +159,11 @@ def evaluate_hunter_shot_target(
     }
 
 
-def _public_good_protection_sources(
+def _public_good_claim_sources(
     gs: GameState,
     legal_targets: list[str],
 ) -> dict[str, set[str]]:
-    """Return public sources that have protected or gold-watered targets."""
+    """返回公开认好或给出金水声明的来源玩家。"""
     legal = set(legal_targets)
     sources: dict[str, set[str]] = {pid: set() for pid in legal_targets}
 
@@ -189,7 +188,7 @@ def _public_good_protection_sources(
             if target in legal and source and source != target:
                 sources.setdefault(target, set()).add(source)
     except Exception:
-        logger.warning("Failed to collect public good protection sources", exc_info=True)
+        logger.warning("Failed to collect public good claim sources", exc_info=True)
 
     for event in gs.events:
         if event.type not in ("speech", "sheriff_speech"):
@@ -201,14 +200,14 @@ def _public_good_protection_sources(
         for target in legal:
             if speaker == target or target not in text:
                 continue
-            if _negates_good_protection(text, target):
+            if _negates_good_claim(text, target):
                 continue
             if "金水" in text or "好人" in text or f"保{target}" in text:
                 sources.setdefault(target, set()).add(str(speaker))
     return sources
 
 
-def _negates_good_protection(text: str, target: str) -> bool:
+def _negates_good_claim(text: str, target: str) -> bool:
     negated_patterns = (
         f"{target}不是好人",
         f"{target}不是金水",
