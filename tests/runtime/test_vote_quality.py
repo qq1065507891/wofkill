@@ -111,6 +111,7 @@ class TestVoteBasisValidator:
             "standing_with_seer": "p08",
             "suspect_reason": "p07被p08查杀后没有回应查杀逻辑",
             "not_voting_reason": "p06发言虽弱，但没有查验压力",
+            "candidate_comparison": "p07有查杀压力和回避行为；p06只是发言较弱，证据更轻",
             "private_reason": "我更信p08的预言家线，所以投p07。",
         }
 
@@ -118,6 +119,26 @@ class TestVoteBasisValidator:
 
         assert result["valid"] is True
         assert result["detected_bases"] == ["seer_check"]
+
+    def test_structured_vote_requires_candidate_comparison(self):
+        action = {
+            "action_type": "vote",
+            "target_id": "p07",
+            "reason": "p07没有回应p08查杀，发言前后不一致",
+            "speech": "",
+            "seer_stance": "trust",
+            "vote_basis": "seer_check",
+            "standing_with_seer": "p08",
+            "suspect_reason": "p07被p08查杀后没有回应查杀逻辑",
+            "not_voting_reason": "p06发言虽弱，但没有查验压力",
+            "private_reason": "我更信p08的预言家线，所以投p07。",
+        }
+
+        result = validate_structured_vote_action(action)
+
+        assert result["valid"] is False
+        assert result["error_code"] == "vote_quality"
+        assert result["missing_field"] == "candidate_comparison"
 
     def test_structured_vote_rejects_template_candidate_reason(self):
         action = {
@@ -254,6 +275,7 @@ class TestValidateStructuredVoteAction:
             "standing_with_seer": "",
             "suspect_reason": "p07的发言节奏有点奇怪",
             "not_voting_reason": "其他人证据更弱",
+            "candidate_comparison": "p07发言节奏更奇怪；其他人暂时只有轻微疑点",
             "private_reason": "保守票",
         }
         result = validate_structured_vote_action(action)
@@ -276,6 +298,7 @@ class TestValidateStructuredVoteAction:
             "standing_with_seer": "",
             "suspect_reason": "p03的立场模糊",
             "not_voting_reason": "其他人证据更弱",
+            "candidate_comparison": "p03立场模糊；其他人目前缺少同等疑点",
             "private_reason": "保守票",
         }
         result = validate_structured_vote_action(action)

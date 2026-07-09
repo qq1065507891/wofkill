@@ -2,7 +2,7 @@
 """Vote quality validation: require evidence-based voting.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-09
     使用示例: 内部模块，无对外接口
 Every vote must cite a concrete logic basis. Basis types:
 seer_check, counterclaim, badge_flow, contradiction, vote_tally,
@@ -186,6 +186,7 @@ def validate_structured_vote_action(
         ("reason", "投票理由"),
         ("suspect_reason", "怀疑理由"),
         ("not_voting_reason", "排除理由"),
+        ("candidate_comparison", "候选对比"),
         ("private_reason", "内心理由"),
     ]
     for field_name, label in required_reason_fields:
