@@ -5,7 +5,7 @@
 每条私密信息泄露必须可追溯至此处的策略规则。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-09
 使用示例：内部模块，无对外接口
 """
 
@@ -101,6 +101,11 @@ _FORBIDDEN_FACT_TYPES: set[str] = {
     "moderator_note",
     "hidden_identity",
     "other_private_intent",
+}
+
+_OWNER_PRIVATE_FACT_TYPES: set[str] = {
+    "seer_check",
+    "hybrid_master_chosen",
 }
 
 
@@ -215,12 +220,22 @@ class VisibilityPolicy:
             label = self.compute_fact_visibility(fact, idx)
             report.fact_labels.append(label)
 
-            if label.visibility in allowed:
+            if label.visibility in allowed and self._viewer_owns_private_fact(
+                fact,
+                viewer_id,
+            ):
                 report.visible_indices.append(idx)
             else:
                 report.hidden_indices.append(idx)
 
         return report
+
+    @staticmethod
+    def _viewer_owns_private_fact(fact: StructuredFact, viewer_id: str) -> bool:
+        """限制单人私有事实只进入事实来源者视角。"""
+        if fact.fact_type not in _OWNER_PRIVATE_FACT_TYPES:
+            return True
+        return bool(viewer_id) and fact.source_player == viewer_id
 
     def filter_visible_facts(
         self,

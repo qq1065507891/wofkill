@@ -324,6 +324,18 @@ class TestVisibilityPolicy:
         assert "seer_check" not in visible_types
         assert "wolf_discussion" not in visible_types
 
+    def test_owner_private_facts_require_matching_source_player(self):
+        ws = self._ws_with_all_fact_types()
+        policy = VisibilityPolicy()
+
+        other_seer_visible = policy.filter_visible_facts(ws, "p10", "seer")
+        other_hybrid_visible = policy.filter_visible_facts(ws, "p11", "hybrid")
+
+        assert "seer_check" not in {f.fact_type for f in other_seer_visible}
+        assert "hybrid_master_chosen" not in {
+            f.fact_type for f in other_hybrid_visible
+        }
+
     def test_visibility_report_has_audit_trail(self):
         ws = self._ws_with_all_fact_types()
         policy = VisibilityPolicy()
