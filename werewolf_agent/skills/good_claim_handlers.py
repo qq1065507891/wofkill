@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.skills.good_claim_handlers import bold_claim_handler
@@ -157,7 +158,7 @@ def counter_claim_handler(inp: SkillInput, skill: SkillDefinition) -> SkillOutpu
                 speech_structure=["展示自己的真查验结果", "攻击对方时间线漏洞", "对比警徽流"],
                 risk_alerts=risks,
                 confidence=0.6,
-                reasoning="真预言家对跳：核心是守护自己的查验时间线",
+                reasoning="真预言家对跳：核心是维护自己的查验时间线",
                 prompt_injectable=_cap_prompt_injectable(prompt),
                 advice_frame=_counter_claim_advice_frame(
                     inp,

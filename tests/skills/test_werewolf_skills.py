@@ -733,6 +733,21 @@ def test_counter_claim_branch_by_role():
     )
 
 
+def test_counter_claim_seer_reasoning_avoids_guard_board_wording() -> None:
+    """无守卫板子下,真预言家对跳建议不应使用守护措辞。"""
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    out = apply_skill(
+        SkillName.COUNTER_CLAIM,
+        SkillInput(role="seer", phase="speech", task_type="speech"),
+    )
+
+    assert "守卫" not in out.reasoning
+    assert "守护" not in out.reasoning
+    assert "维护自己的查验时间线" in out.reasoning
+
+
 # ---------------------------------------------------------------------------
 # S-14: bold_claim_handler does NOT name the fake_seer teammate.
 # ---------------------------------------------------------------------------
@@ -1730,6 +1745,29 @@ def test_protect_power_empty_at_risk_specific() -> None:
         f"NEW-R4-P2-9: protect_power empty-at_risk fallback must "
         f"include the candidate's likely role; got: {text!r}"
     )
+
+
+def test_protect_power_prompt_uses_no_guard_board_wording() -> None:
+    """无守卫板子下,protect_power 可见建议应表达社交降压而非守护技能。"""
+    from werewolf_agent.skills.schemas import SkillInput, SkillName
+    from werewolf_agent.skills.werewolf_skills import apply_skill
+
+    out = apply_skill(
+        SkillName.PROTECT_POWER,
+        SkillInput(role="villager", phase="speech", task_type="speech"),
+    )
+
+    visible_text = " ".join([
+        out.prompt_injectable,
+        out.reasoning,
+        " ".join(out.speech_structure),
+        " ".join(out.risk_alerts),
+    ])
+    assert "守卫" not in visible_text
+    assert "守护" not in visible_text
+    assert "保护强神" not in visible_text
+    assert "社交发言降压" in visible_text
+    assert "不是夜间技能" in visible_text
 
 
 def _vote_targets_for_player(ws, player_id):
