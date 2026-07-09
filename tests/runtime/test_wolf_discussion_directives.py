@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.wolf_discussion_directives import build_wolf_discussion_instruction
@@ -90,6 +90,20 @@ def test_build_wolf_discussion_instruction_adds_response_and_first_night_role_sp
     assert "【首夜角色分工建议】" in first
     assert "你必须回应队友的发言" in response
     assert "【首夜角色分工建议】" not in response
+
+
+def test_first_night_role_split_restrains_mechanical_fake_seer_push() -> None:
+    """首夜分工提示不能无条件鼓励机械悍跳。"""
+    first = build_wolf_discussion_instruction(
+        "w1",
+        night_number=1,
+        has_teammate_input=False,
+        has_previous_speeches=False,
+    )
+
+    assert "fake_seer (悍跳位)" in first
+    assert "悍跳是很好的选择" not in first
+    assert "不要在缺少白天公开发言证据时机械悍跳" in first
 
 
 def test_build_wolf_discussion_strategy_directive_keeps_last_eight_speeches() -> None:
