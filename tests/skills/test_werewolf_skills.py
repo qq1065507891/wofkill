@@ -1770,6 +1770,26 @@ def test_protect_power_prompt_uses_no_guard_board_wording() -> None:
     assert "不是夜间技能" in visible_text
 
 
+def test_skill_markdown_body_uses_no_guard_board_wording() -> None:
+    """SKILL.md 正文注入 prompt 时也不能残留守卫板型措辞。"""
+    from werewolf_agent.skills.registry import SkillRegistry
+    from werewolf_agent.skills.schemas import SkillInput
+
+    outputs = SkillRegistry().dispatch_for_role(
+        "villager",
+        "speech",
+        SkillInput(role="villager", phase="speech", task_type="speech"),
+        task_type="speech",
+    )
+
+    injected_text = "\n".join(output.prompt_injectable for output in outputs)
+    assert "## 技能说明" in injected_text
+    assert "守卫" not in injected_text
+    assert "守护" not in injected_text
+    assert "保护强神" not in injected_text
+    assert "神职降压" in injected_text
+
+
 def _vote_targets_for_player(ws, player_id):
     """Local helper — mirror of the production helper for use in
     this test module without depending on the production symbol."""

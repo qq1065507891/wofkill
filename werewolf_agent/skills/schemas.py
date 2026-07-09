@@ -3,7 +3,7 @@
 功能描述：技能数据模式模块，定义技能输入/输出、技能定义及枚举类型
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-09
 使用示例：内部模块，无对外接口
 """
 
@@ -28,7 +28,7 @@ class SkillName(str, Enum):
     HIDE_IDENTITY = "hide_identity"      # 藏身份
     RESIST_PUSH = "resist_push"          # 抗推
     WOLF_PIT_ANALYSIS = "wolf_pit"       # 盘狼坑
-    PROTECT_POWER = "protect_power"      # 保护强神
+    PROTECT_POWER = "protect_power"      # 神职降压
     LAST_WORDS_ANALYSIS = "last_words"   # 遗言分析
     REVIEW_CORRECTION = "review_correct" # 复盘纠错
 
