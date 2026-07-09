@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.pk_speech_directives import build_pk_speech_strategy
@@ -59,11 +59,15 @@ def test_build_pk_speech_strategy_adds_seer_check_evidence() -> None:
 
 
 def test_build_pk_speech_strategy_adds_hybrid_master_alignment() -> None:
-    """混血儿有主人时应收到主人方向提示。"""
+    """混血儿 PK 指令应私下参考主人方向,但不能诱导暴露身份。"""
     strategy = build_pk_speech_strategy(
         _make_game_state("hybrid", master_id="target"),
         "speaker",
     )
 
     assert "hybrid_pk_master_align" in strategy
-    assert "主人是target" in strategy["hybrid_pk_master_align"]
+    directive = strategy["hybrid_pk_master_align"]
+    assert "私下参考" in directive
+    assert "不要在发言中暴露" in directive
+    assert "你是混血儿" not in directive
+    assert "主人是target" not in directive

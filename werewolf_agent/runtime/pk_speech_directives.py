@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.pk_speech_directives import build_pk_speech_strategy
@@ -71,10 +71,9 @@ def build_pk_speech_strategy(gs: GameState, speaker_id: str) -> dict[str, Any]:
         master_id = gs.hybrid_master_id
         if master_id:
             pk_strategy["hybrid_pk_master_align"] = (
-                f"你是混血儿，主人是{master_id}。"
-                "PK发言要表现得像主人的判断方向——"
-                "如果主人在场，分析与主人站边一致；"
-                "但不要每轮都跟主人保持完全一致，那会暴露关系。"
+                f"私下参考主人方向（master_id={master_id}），但PK发言必须伪装成普通好人视角。"
+                "如果主人在场，可以围绕公开发言和票型分析与其站边一致；"
+                "不要在发言中暴露混血儿身份、主人关系或'主人'字样。"
             )
     return pk_strategy
 

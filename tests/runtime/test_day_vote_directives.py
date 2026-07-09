@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.day_vote_directives import build_day_vote_base_directive
@@ -108,7 +108,12 @@ def test_static_role_vote_strategies_keep_role_specific_constraints() -> None:
     """女巫、猎人、混血儿策略保留原有角色约束。"""
     assert "不要在公开投票理由中提及药水使用细节" in build_witch_vote_strategy()
     assert "一旦你被放逐，你会开枪" in build_hunter_vote_strategy()
-    assert "主人是 p03" in build_hybrid_vote_strategy("p03")
+    hybrid_strategy = build_hybrid_vote_strategy("p03")
+    assert "私下参考" in hybrid_strategy
+    assert "投票理由中" in hybrid_strategy
+    assert "不要暴露" in hybrid_strategy
+    assert "你是混血儿" not in hybrid_strategy
+    assert "主人是 p03" not in hybrid_strategy
 
 
 def test_vote_anti_herd_and_fallback_seer_strategy_are_explicit_helpers() -> None:
