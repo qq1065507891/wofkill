@@ -3,7 +3,7 @@
 功能描述：**：消费已保存的JSON格式对局字典，纯函数实现，不调用模型提供方也不变更对局状态
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-08
+修改日期：2026-07-09
 使用示例：内部模块，无对外接口
 """
 
@@ -54,6 +54,11 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     wolf_plan_count = sum(_wolf_plan_attempt_count(game) for game in games)
 
     weak_wolf_plan_kill_count = sum(_weak_wolf_plan_kills(game) for game in games)
+    fallback_plan_kill_without_target_evidence_count = sum(
+        _fallback_plan_kill_without_target_evidence_count(game)
+        for game in games
+    )
+    fallback_plan_kill_count = sum(_fallback_plan_kill_count(game) for game in games)
     vote_concentrations = [_vote_concentration(event) for game in games for event in game.get("events", []) if event.get("type") == "vote_resolved"]
     warnings: list[str] = []
 
@@ -72,6 +77,10 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     sheriff_vote_fallback_rate = _sheriff_vote_fallback_rate(action_trace_records)
     hunter_friendly_fire_rate = _hunter_friendly_fire_rate(games)
     weak_plan_kill_rate = _weak_plan_kill_rate(games)
+    fallback_plan_kill_without_target_evidence_rate = (
+        fallback_plan_kill_without_target_evidence_count / fallback_plan_kill_count
+        if fallback_plan_kill_count else 0.0
+    )
     power_role_fallback_rate = _power_role_fallback_rate(action_trace_records)
     template_vote_reason_count, vote_reason_count = _template_vote_reason_counts(games)
     template_vote_reason_rate = (
@@ -104,6 +113,8 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         warnings.append("hunter_friendly_fire_high")
     if weak_plan_kill_rate > 0.2:
         warnings.append("weak_plan_kill_high")
+    if fallback_plan_kill_without_target_evidence_count:
+        warnings.append("fallback_plan_kill_without_target_evidence_present")
     if template_vote_reason_rate > 0.1:
         warnings.append("template_vote_reason_high")
     if unsupported_public_fact_claim_count:
@@ -126,6 +137,12 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         "sheriff_vote_fallback_rate": sheriff_vote_fallback_rate,
         "hunter_friendly_fire_rate": hunter_friendly_fire_rate,
         "weak_plan_kill_rate": weak_plan_kill_rate,
+        "fallback_plan_kill_without_target_evidence_rate": (
+            fallback_plan_kill_without_target_evidence_rate
+        ),
+        "fallback_plan_kill_without_target_evidence_count": (
+            fallback_plan_kill_without_target_evidence_count
+        ),
         "power_role_fallback_rate": power_role_fallback_rate,
         "mean_vote_concentration": mean_vote_concentration,
         "template_vote_reason_count": template_vote_reason_count,
@@ -319,6 +336,49 @@ def _weak_wolf_plan_kill_counts(game: dict[str, Any]) -> tuple[int, int]:
         if quality in ("none", "weak"):
             count += 1
     return count, total
+
+
+def _fallback_plan_kill_count(game: dict[str, Any]) -> int:
+    _missing_evidence, total = _fallback_plan_kill_evidence_counts(game)
+    return total
+
+
+def _fallback_plan_kill_without_target_evidence_count(game: dict[str, Any]) -> int:
+    missing_evidence, _total = _fallback_plan_kill_evidence_counts(game)
+    return missing_evidence
+
+
+def _fallback_plan_kill_evidence_counts(game: dict[str, Any]) -> tuple[int, int]:
+    fallback_evidence_targets_by_night: dict[Any, set[Any]] = {}
+    for event in game.get("events", []):
+        if event.get("type") != "wolf_team_plan":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("consensus_method") != "fallback":
+            continue
+        night = payload.get("night_number")
+        targets = {
+            item.get("target")
+            for item in payload.get("evidence_from_discussion") or []
+            if isinstance(item, dict) and item.get("target")
+        }
+        fallback_evidence_targets_by_night[night] = targets
+
+    missing_evidence = 0
+    total = 0
+    for event in game.get("events", []):
+        if event.get("type") != "wolf_kill_selected":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("reason") != "wolf_team_plan":
+            continue
+        night = payload.get("night_number")
+        if night not in fallback_evidence_targets_by_night:
+            continue
+        total += 1
+        if payload.get("target_id") not in fallback_evidence_targets_by_night[night]:
+            missing_evidence += 1
+    return missing_evidence, total
 
 
 def _vote_concentration(event: dict[str, Any]) -> float:

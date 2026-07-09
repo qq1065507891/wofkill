@@ -522,6 +522,33 @@ def test_wolf_consensus_prefers_planned_primary_then_backup_target() -> None:
     assert event.payload["target_id"] == "v2"
 
 
+def test_wolf_consensus_rejects_fallback_plan_without_target_evidence() -> None:
+    from werewolf_agent.runtime.graph import wolf_consensus
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "v1": PlayerState(id="v1", role="villager"),
+        "v2": PlayerState(id="v2", role="seer"),
+    }
+    gs = GameState(game_id="wolf_fallback_missing_evidence", players=players, night_number=2)
+
+    result = wolf_consensus({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "wolf_team_plan": {
+            "night_kill_primary": "v2",
+            "evidence_quality": "strong",
+            "consensus_method": "fallback",
+            "evidence_from_discussion": [],
+        },
+    })
+
+    assert result["wolf_kill_target_id"] is None
+    event = _last_non_broadcast_event(result["game_state"])
+    assert event.type == "wolf_no_kill_timeout"
+
+
 # ---------------------------------------------------------------------------
 # Issue 2 (Task 5): Solo-wolf fallback target heuristic
 # ---------------------------------------------------------------------------

@@ -76,6 +76,13 @@ class TestAntiHerdForGoodSide:
         assert "机械抗推可能神职" in prompt
         assert "预言家、女巫、猎人、白痴" in prompt
 
+    def test_good_side_vote_requires_public_evidence_candidate_comparison(self):
+        ctx = _make_vote_ctx("villager")
+        prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+        assert "至少比较两名候选人" in prompt
+        assert "公开证据" in prompt
+        assert "不能只写跟票" in prompt
+
 
 # ---------------------------------------------------------------------------
 # K6.2: anti-herd text does NOT appear for wolves; wolf-specific text does

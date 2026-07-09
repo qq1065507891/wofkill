@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.node_helpers import _alive_wolves
@@ -255,6 +256,8 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
         if target is None:
             continue
         has_target_evidence = target in evidenced_targets
+        if plan.get("consensus_method") == "fallback" and not has_target_evidence:
+            continue
         if evidence_quality == "weak" and not has_target_evidence:
             continue
         if key == "night_kill_backup" and primary_unavailable and not has_target_evidence:

@@ -433,6 +433,51 @@ def test_balance_audit_flags_weak_plan_kill_rate():
     assert "weak_plan_kill_high" in audit["warnings"]
 
 
+def test_balance_audit_flags_fallback_plan_kill_without_target_evidence():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = {
+        "winning_faction": "werewolf",
+        "players": {
+            "p01": {"role": "werewolf"},
+            "p02": {"role": "seer"},
+        },
+        "events": [
+            {
+                "type": "wolf_team_plan",
+                "payload": {
+                    "night_number": 1,
+                    "night_kill_primary": "p02",
+                    "evidence_quality": "strong",
+                    "consensus_method": "fallback",
+                    "evidence_from_discussion": [],
+                },
+            },
+            {
+                "type": "wolf_kill_selected",
+                "payload": {
+                    "night_number": 1,
+                    "target_id": "p02",
+                    "reason": "wolf_team_plan",
+                },
+            },
+        ],
+        "deaths": [
+            {
+                "player_id": "p02",
+                "reason": "wolf_kill",
+                "resolution_batch": "night_1",
+            }
+        ],
+    }
+
+    audit = compute_balance_audit([game])
+
+    assert audit["fallback_plan_kill_without_target_evidence_count"] == 1
+    assert audit["fallback_plan_kill_without_target_evidence_rate"] == 1.0
+    assert "fallback_plan_kill_without_target_evidence_present" in audit["warnings"]
+
+
 def test_balance_audit_warns_on_recent_small_sample_skew():
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 

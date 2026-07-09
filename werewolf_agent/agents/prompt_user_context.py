@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_user_context import PromptUserContextMixin
@@ -103,6 +104,8 @@ class PromptUserContextMixin:
                     "检查是否可能是狼人抱团。独立判断优先级：发言逻辑矛盾 > 票型异常 > 谁说了什么。"
                     "不要仅因立场反复或票型矛盾机械抗推可能神职；涉及预言家、女巫、猎人、白痴时，"
                     "先核验证据链和技能风险。"
+                    "投票前至少比较两名候选人，分别写清公开证据、反证和不投其他主要候选人的理由，"
+                    "不能只写跟票、感觉可疑或继续施压。"
                 )
         return "\n".join(lines)
 
