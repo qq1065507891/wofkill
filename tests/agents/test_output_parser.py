@@ -517,6 +517,25 @@ class TestSchemaTypoTolerance:
         assert "targe_id" not in result
         assert result["target_id"] == "p02"
 
+    def test_candidate_compare_alias_normalized(self):
+        from werewolf_agent.agents.output_parser import _normalize_typos
+        result = _normalize_typos({
+            "candidate_compare": "p07矛盾更强，p08证据较弱",
+            "action_type": "vote",
+        })
+        assert result["candidate_comparison"] == "p07矛盾更强，p08证据较弱"
+        assert "candidate_compare" not in result
+
+    def test_candidate_compare_alias_does_not_override_correct_field(self):
+        from werewolf_agent.agents.output_parser import _normalize_typos
+        result = _normalize_typos({
+            "candidate_compare": "别名字段",
+            "candidate_comparison": "正确字段",
+            "action_type": "vote",
+        })
+        assert result["candidate_comparison"] == "正确字段"
+        assert result["candidate_compare"] == "别名字段"
+
     def test_no_typos_unchanged(self):
         from werewolf_agent.agents.output_parser import _normalize_typos
         d = {"action_type": "vote", "target_id": "p02", "reason": "test"}

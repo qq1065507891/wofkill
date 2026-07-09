@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-09
 
 使用示例:
     >>> from werewolf_agent.agents.action_normalization import normalize_action_data
@@ -46,6 +47,8 @@ def normalize_action_data(data: Any) -> Any:
 _TYPO_ALIASES: dict[str, str] = {
     "not_vading_reason": "not_voting_reason",
     "not_vote_reason": "not_voting_reason",
+    "candidate_compare": "candidate_comparison",
+    "candidate_evidence_comparison": "candidate_comparison",
     "targe_id": "target_id",
     "targt_id": "target_id",
 }
