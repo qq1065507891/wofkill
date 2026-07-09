@@ -3,7 +3,7 @@
 功能描述：API 视图构建函数，根据调用者视图模式过滤 GameState 数据后组装响应模型。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-09
 使用示例：from werewolf_agent.api.views import build_public_state, build_timeline
 """
 
@@ -140,7 +140,7 @@ def build_timeline(
                 continue
             events.append(te)
         elif view_mode == ViewMode.PLAYER_VIEW and viewer is not None:
-            if not _event_visible_to_player(event, viewer_id or "", viewer.role):
+            if not _event_visible_to_player(event, game_state, viewer_id or "", viewer.role):
                 continue
             te = _build_event(event, view_mode)
             if day_filter is not None and te.day != day_filter:
@@ -176,18 +176,38 @@ KNOWN_SENSITIVE_FIELDS: set[str] = {
 }
 
 
-def _event_visible_to_player(event: Any, viewer_id: str, viewer_role: str) -> bool:
+def _event_visible_to_player(
+    event: Any,
+    game_state: GameState,
+    viewer_id: str,
+    viewer_role: str,
+) -> bool:
     if event.type in _PUBLIC_EVENT_TYPES:
         return True
     if event.type in {"wolf_discussion", "wolf_kill_selected", "wolf_no_kill_declared", "wolf_no_kill_timeout"}:
         return viewer_role == "werewolf"
     if event.type == "seer_check":
-        return event.payload.get("seer_id") == viewer_id
+        event_seer_id = event.payload.get("seer_id") or _single_role_player_id(
+            game_state,
+            "seer",
+        )
+        return event_seer_id == viewer_id
     if event.type in {"witch_antidote_used", "witch_poison_used"}:
         return viewer_role == "witch"
     if event.type == "hybrid_master_chosen":
         return event.payload.get("hybrid_id") == viewer_id
     return False
+
+
+def _single_role_player_id(game_state: GameState, role: str) -> str | None:
+    """从当前局唯一角色回填历史私有事件的来源者。"""
+    player_ids = [
+        pid for pid, player in game_state.players.items()
+        if player.role == role
+    ]
+    if len(player_ids) != 1:
+        return None
+    return player_ids[0]
 
 
 def _build_public_event(event: Any) -> TimelineEvent:

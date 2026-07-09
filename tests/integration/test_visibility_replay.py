@@ -156,6 +156,25 @@ class TestPlayerViewLeaks:
         assert seer_events[0].data.get("target_id") == "w1"
         assert seer_events[0].data.get("alignment") == "werewolf"
 
+    def test_seer_timeline_accepts_runtime_check_event_without_seer_id(self) -> None:
+        gs = _make_game_state()
+        events = []
+        for event in gs.events:
+            if event.type == "seer_check":
+                payload = dict(event.payload)
+                payload.pop("seer_id", None)
+                events.append(GameEvent(type=event.type, payload=payload))
+            else:
+                events.append(event)
+        gs = replace(gs, events=events)
+
+        timeline = build_timeline(gs, ViewMode.PLAYER_VIEW, viewer_id="seer")
+
+        seer_events = [e for e in timeline.events if e.event_type == "seer_check"]
+        assert len(seer_events) == 1
+        assert seer_events[0].data.get("target_id") == "w1"
+        assert seer_events[0].data.get("alignment") == "werewolf"
+
     def test_villager_sees_no_night_private_events(self) -> None:
         gs = _make_game_state()
         timeline = build_timeline(gs, ViewMode.PLAYER_VIEW, viewer_id="v2")
