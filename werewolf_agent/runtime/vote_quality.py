@@ -2,7 +2,7 @@
 """Vote quality validation: require evidence-based voting.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-09
+    修改日期: 2026-07-10
     使用示例: 内部模块，无对外接口
 Every vote must cite a concrete logic basis. Basis types:
 seer_check, counterclaim, badge_flow, contradiction, vote_tally,
@@ -33,6 +33,30 @@ _UNEXPLAINED_VALUES = {"", "未说明", "无", "没有", "none", "null", "n/a"}
 _TEMPLATE_REASON_MARKERS = (
     "当前合法投票候选",
     "继续施压",
+)
+_SEER_DISTRUST_MARKERS = (
+    "都不可信",
+    "都不像预言家",
+    "都不是预言家",
+    "全都不可信",
+    "全部不可信",
+    "两个预言家都",
+    "两条预言家线都",
+    "跳预言家的都",
+    "没有报验人",
+    "警徽流前后矛盾",
+    "悍跳",
+    "假预言家",
+)
+_GOOD_TARGET_MARKERS = (
+    "好人",
+    "更像好人",
+    "可信",
+    "复盘",
+    "逻辑更完整",
+    "视角更正",
+    "拿警徽",
+    "适合警长",
 )
 
 # Public alias used by other modules for retry hints (matches Pydantic enum).
@@ -261,6 +285,48 @@ def validate_structured_vote_action(
         "hint": "",
         "vote_basis": action.get("vote_basis"),
         "seer_stance": action.get("seer_stance"),
+    }
+
+
+def validate_sheriff_vote_choice(
+    *,
+    target_id: str | None,
+    reason: str,
+    seer_claimants: list[str],
+    candidates: list[str],
+) -> dict[str, Any]:
+    """校验警长票是否满足非预言家候选强理由规则。
+
+    项目口径：警长票可以投给没有跳预言家的候选，但必须明确说明所有
+    跳预言家候选都不可信，并给出目标更像好人的公开依据。
+    """
+    if not target_id or target_id not in candidates:
+        return {
+            "valid": False,
+            "error_code": "invalid_sheriff_vote_target",
+            "hint": "警长票目标必须来自当前警上候选。",
+        }
+
+    claimants = [pid for pid in seer_claimants if pid in candidates]
+    if not claimants or target_id in claimants:
+        return {"valid": True, "error_code": None, "hint": ""}
+
+    text = str(reason or "")
+    mentions_all_claimants = all(pid in text for pid in claimants)
+    distrusts_claimants = any(marker in text for marker in _SEER_DISTRUST_MARKERS)
+    supports_target_good = target_id in text and any(
+        marker in text for marker in _GOOD_TARGET_MARKERS
+    )
+    if mentions_all_claimants and distrusts_claimants and supports_target_good:
+        return {"valid": True, "error_code": None, "hint": ""}
+
+    return {
+        "valid": False,
+        "error_code": "weak_non_seer_sheriff_vote",
+        "hint": (
+            "允许投给非预言家候选，但必须说明所有跳预言家的候选都不可信，"
+            "并基于公开发言/警徽流/验人矛盾解释目标为什么更像好人。"
+        ),
     }
 
 

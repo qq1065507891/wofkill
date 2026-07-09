@@ -5,7 +5,7 @@
 每条私密信息泄露必须可追溯至此处的策略规则。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-09
+修改日期：2026-07-10
 使用示例：内部模块，无对外接口
 """
 
@@ -108,6 +108,15 @@ _OWNER_PRIVATE_FACT_TYPES: set[str] = {
     "hybrid_master_chosen",
 }
 
+_EVENT_VISIBILITY_TO_FACT_VISIBILITY = {
+    "public": "public",
+    "moderator_only": "moderator_only",
+    "werewolf_team_only": "wolf_team",
+    "seer_private": "seer_private",
+    "witch_private": "witch_private",
+    "hybrid_private": "hybrid_private",
+}
+
 
 class VisibilityPolicy:
     """Deterministic visibility computation per viewer role.
@@ -172,6 +181,18 @@ class VisibilityPolicy:
                     visibility="moderator_only",
                     audit_reason=f"forbidden fact type: {fact.fact_type}",
                 )
+
+            event_visibility = fact.metadata.get("visibility")
+            if event_visibility in _EVENT_VISIBILITY_TO_FACT_VISIBILITY:
+                mapped = _EVENT_VISIBILITY_TO_FACT_VISIBILITY[event_visibility]
+                if mapped != "public":
+                    return FactVisibility(
+                        fact_index=fact_index,
+                        visibility=mapped,
+                        audit_reason=(
+                            f"event visibility: {event_visibility} → {mapped}"
+                        ),
+                    )
 
             vis = self._fact_vis.get(fact.fact_type)
             if vis is not None:

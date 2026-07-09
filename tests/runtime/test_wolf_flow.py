@@ -808,3 +808,28 @@ class TestPlannedWolfKillPrimaryAlive:
         )
         result = _planned_wolf_kill(state)
         assert result is None
+
+    def test_fallback_plan_with_two_illegal_targets_records_no_kill(self) -> None:
+        """Fallback 计划双非法时不应随机强刀，必须记录安全空刀原因。"""
+        from werewolf_agent.runtime.nodes.wolf_consensus import wolf_consensus
+
+        state = self._make_state(
+            primary="w1",
+            backup="p03",
+            primary_alive=True,
+            backup_alive=False,
+            evidence_quality="strong",
+            evidence_targets=["w1", "p03"],
+            consensus_method="fallback",
+        )
+
+        result = wolf_consensus(state)
+
+        assert result["wolf_kill_target_id"] is None
+        no_kill_events = [
+            event
+            for event in result["game_state"].events
+            if event.type == "wolf_no_kill_timeout"
+        ]
+        assert no_kill_events
+        assert no_kill_events[-1].payload["reason"] == "wolf_plan_invalid_no_kill"

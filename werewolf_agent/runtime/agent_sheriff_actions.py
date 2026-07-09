@@ -4,6 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-07
+修改日期: 2026-07-10
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_sheriff_actions import agent_sheriff_vote
@@ -42,6 +43,8 @@ from werewolf_agent.runtime.sheriff_action_directives import (
 from werewolf_agent.runtime.strategy import (
     get_wolf_role_assignment as _get_wolf_role_assignment,
 )
+from werewolf_agent.runtime.strategy.seer import public_seer_claimants
+from werewolf_agent.runtime.vote_quality import validate_sheriff_vote_choice
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +197,14 @@ def agent_sheriff_vote(
 
     strategy_directive = context.strategy_directive or {}
     voter_role = gs.players[voter_id].role if voter_id in gs.players else ""
+    seer_claimants = sorted(public_seer_claimants(gs) & set(candidates))
+    non_seer_candidates = [c for c in candidates if c not in seer_claimants]
+    if seer_claimants and non_seer_candidates:
+        strategy_directive["sheriff_vote_non_seer_candidate_rule"] = (
+            "允许投给非预言家候选，但必须说明所有跳预言家的候选都不可信，"
+            "再基于公开发言、验人矛盾、警徽流或票型解释该候选为什么更像好人。"
+            f"当前跳预言家候选: {seer_claimants}; 非预言家候选: {non_seer_candidates}。"
+        )
     # 警长投票是竞选投票，不是白天放逐投票，不注入放逐投票的 vote_basis/seer_stance。
     if voter_role == "werewolf":
         wolf_teammates = [
@@ -215,9 +226,40 @@ def agent_sheriff_vote(
     if action.action_type == ActionType.SELF_DESTRUCT:
         return {"vote_target": None, "self_destruct": True}
     target = action.target_id if action.action_type == ActionType.SHERIFF_VOTE else None
+    check = validate_sheriff_vote_choice(
+        target_id=target,
+        reason=getattr(action, "reason", "") or "",
+        seer_claimants=seer_claimants,
+        candidates=candidates,
+    )
+    vote_validation = {
+        **check,
+        "original_target": target,
+        "final_target": target,
+        "repaired": False,
+    }
+    if not check["valid"] and check["error_code"] == "weak_non_seer_sheriff_vote":
+        target = next((pid for pid in seer_claimants if pid in candidates), None)
+        vote_validation.update(
+            {
+                "final_target": target,
+                "repaired": target is not None,
+                "repair_reason": "weak_non_seer_sheriff_vote_retargeted_to_seer_claimant",
+            }
+        )
+    elif not check["valid"] and check["error_code"] == "invalid_sheriff_vote_target":
+        target = None
+        vote_validation.update(
+            {
+                "final_target": None,
+                "repaired": True,
+                "repair_reason": "invalid_sheriff_vote_target_cleared",
+            }
+        )
     return {
         "vote_target": target,
         "action_trace": _action_trace_payload(action),
+        "sheriff_vote_validation": vote_validation,
         "self_destruct": False,
     }
 
@@ -248,6 +290,8 @@ def agent_sheriff_register(
             "你是预言家。上警通常有利于公开真实验人和建立警徽流，"
             "但应结合已有验人、发言顺序和场上声明决定；"
             "若上警，只能准确报告真实信息，不得为增强可信度编造结果。"
+            "不上警是极低概率高阶战术，只有高玩画像且能说明隐忍收益、"
+            "风险和后续补跳计划时才可使用；普通情况下必须上警。"
         )
     elif player_role == "werewolf":
         wolf_assignment = _get_wolf_role_assignment(wolf_plan, player_id)
@@ -302,6 +346,16 @@ def agent_sheriff_register(
                 "self_destruct": True,
                 "action_trace": action_trace,
             }
+        if (
+            player_role == "seer"
+            and action.action_type != ActionType.SHERIFF_REGISTER
+            and not _seer_skip_sheriff_tactic_allowed(agent, context)
+        ):
+            return {
+                "registered": True,
+                "self_destruct": False,
+                "action_trace": action_trace,
+            }
         return {
             "registered": action.action_type == ActionType.SHERIFF_REGISTER,
             "self_destruct": False,
@@ -310,6 +364,37 @@ def agent_sheriff_register(
     except Exception:
         logger.warning("Sheriff registration failed for %s", player_id, exc_info=True)
         return {"registered": False, "self_destruct": False}
+
+
+def _seer_skip_sheriff_tactic_allowed(agent: Any, context: Any) -> bool:
+    """判断真预言家不上警是否达到高玩战术门槛。"""
+    snapshot = dict(getattr(context, "persona_snapshot", {}) or {})
+    if not snapshot:
+        try:
+            from dataclasses import asdict
+            from werewolf_agent.persona_runtime.router import GameContext
+
+            router = getattr(agent, "persona_router", None)
+            if router is not None:
+                resolved = router.resolve(
+                    getattr(agent, "agent_id", context.agent_id),
+                    context.task_type.value,
+                    GameContext(
+                        phase=context.phase,
+                        day_number=context.day_number,
+                        night_number=context.night_number,
+                        own_role=context.own_role or "",
+                    ),
+                )
+                snapshot = asdict(resolved)
+        except Exception:
+            snapshot = {}
+    params = snapshot.get("effective_params") or {}
+    logic = float(params.get("logic_skill", params.get("logic", 0.0)) or 0.0)
+    credibility = float(params.get("credibility", 0.0) or 0.0)
+    profile_id = str(snapshot.get("profile_id") or "").lower()
+    expert_profile = any(marker in profile_id for marker in ("expert", "pro", "high", "高手", "高玩"))
+    return expert_profile and logic >= 0.85 and credibility >= 0.75
 
 
 def agent_sheriff_withdraw(

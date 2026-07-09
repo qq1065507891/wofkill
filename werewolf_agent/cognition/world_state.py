@@ -3,13 +3,13 @@
 功能描述：每个事实是带已知模式的冻结 dataclass。事实列表是所有下游认知模块
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-10
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import re
 from typing import Any
 
@@ -459,18 +459,31 @@ def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
     """Extract structured facts from a single GameEvent."""
     extractor = _EXTRACTORS.get(event.type)
     if extractor is None:
-        return [StructuredFact(
+        return [_attach_event_metadata(StructuredFact(
             fact_type=event.type,
             value=str(event.payload)[:200],
-        )]
+        ), event)]
     # E2 (post-review-v2): seer_check 走特殊路径，seer_id 在 dispatch 入口预计算
     if event.type == "seer_check":
         seer_id = next(
             (pid for pid, p in state.players.items() if p.role == "seer"),
             "?",
         )
-        return _extract_seer_check(event, seer_id)
-    return extractor(event, state)
+        return [
+            _attach_event_metadata(fact, event)
+            for fact in _extract_seer_check(event, seer_id)
+        ]
+    return [_attach_event_metadata(fact, event) for fact in extractor(event, state)]
+
+
+def _attach_event_metadata(fact: StructuredFact, event: GameEvent) -> StructuredFact:
+    """把来源事件和 visibility 写入事实 metadata，供可见性策略使用。"""
+    metadata = dict(fact.metadata)
+    metadata.setdefault("source_event", event.type)
+    visibility = event.payload.get("visibility")
+    if visibility:
+        metadata.setdefault("visibility", visibility)
+    return replace(fact, metadata=metadata)
 
 
 def build_world_state(state: GameState) -> StructuredWorldState:

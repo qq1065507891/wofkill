@@ -263,6 +263,19 @@ class TestRetryAndFailure:
         assert plan is not None
         assert len(router.calls) == 2
 
+    def test_missing_night_number_is_autofilled_from_game_state(self):
+        gs = _make_gs(night=2)
+        payload = json.loads(_valid_plan_json(night_number=2))
+        payload.pop("night_number")
+        router = _FakeModelRouter([(json.dumps(payload, ensure_ascii=False), None)])
+        registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+        plan = agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
+
+        assert plan is not None
+        assert plan["night_number"] == 2
+        assert len(router.calls) == 1
+
     def test_duplicate_role_rejected_by_schema(self):
         gs = _make_gs()
         # fake_seer == pusher → schema validator rejects

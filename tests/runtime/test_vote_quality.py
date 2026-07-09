@@ -5,6 +5,7 @@ from werewolf_agent.runtime.vote_quality import (
     extract_vote_basis,
     validate_vote_reason,
     validate_structured_vote_action,
+    validate_sheriff_vote_choice,
     build_day_discussion_summary,
     build_vote_pressure_context,
 )
@@ -304,6 +305,57 @@ class TestValidateStructuredVoteAction:
         result = validate_structured_vote_action(action)
         assert result.get("valid") is True
         assert result.get("seer_stance") in ("no_claim", "undecided")
+
+
+class TestSheriffVoteChoice:
+    """警长票投给非预言家候选时必须给出强公开理由。"""
+
+    def test_non_seer_candidate_without_strong_reason_is_rejected(self) -> None:
+        result = validate_sheriff_vote_choice(
+            target_id="p03",
+            reason="p03发言比较稳，我想让他拿警徽。",
+            seer_claimants=["p01", "p02"],
+            candidates=["p01", "p02", "p03"],
+        )
+
+        assert result["valid"] is False
+        assert result["error_code"] == "weak_non_seer_sheriff_vote"
+        assert "所有跳预言家的候选" in result["hint"]
+
+    def test_non_seer_candidate_with_strong_public_reason_is_allowed(self) -> None:
+        result = validate_sheriff_vote_choice(
+            target_id="p03",
+            reason=(
+                "p01和p02都跳预言家，但p01没有报验人，p02警徽流前后矛盾；"
+                "两条预言家线都不可信。p03在警下复盘两边逻辑更像好人，"
+                "所以我把警长票投给p03。"
+            ),
+            seer_claimants=["p01", "p02"],
+            candidates=["p01", "p02", "p03"],
+        )
+
+        assert result["valid"] is True
+
+    def test_seer_claimant_target_is_allowed_without_extra_gate(self) -> None:
+        result = validate_sheriff_vote_choice(
+            target_id="p01",
+            reason="p01跳预言家并报出查验和警徽流，我暂时站边p01。",
+            seer_claimants=["p01", "p02"],
+            candidates=["p01", "p02", "p03"],
+        )
+
+        assert result["valid"] is True
+
+    def test_invalid_candidate_target_is_rejected(self) -> None:
+        result = validate_sheriff_vote_choice(
+            target_id="p09",
+            reason="p09发言更像好人。",
+            seer_claimants=["p01"],
+            candidates=["p01", "p02", "p03"],
+        )
+
+        assert result["valid"] is False
+        assert result["error_code"] == "invalid_sheriff_vote_target"
 
 
 class TestNormalizeMultiBasis:

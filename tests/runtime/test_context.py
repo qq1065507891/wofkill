@@ -234,6 +234,59 @@ def test_build_agent_context_ignores_third_party_seer_recaps() -> None:
     assert {line["claimant"] for line in lines} == {"p02", "p09"}
 
 
+def test_build_agent_context_excludes_moderator_only_sheriff_claims() -> None:
+    """主持人/审计私有事件不能污染公开预言家线和矛盾告警。"""
+    from werewolf_agent.runtime.graph import _new_engine
+
+    players = {
+        "p01": PlayerState(id="p01", role="seer", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="villager", alive=True),
+    }
+    gs = GameState(
+        game_id="private_sheriff_claim_guard",
+        phase="day",
+        day_number=1,
+        players=players,
+        events=[
+            GameEvent(
+                type="sheriff_speech",
+                payload={
+                    "speaker": "p01",
+                    "day_number": 1,
+                    "visibility": "moderator_only",
+                    "text": "我是预言家，昨晚查验p03是好人。",
+                },
+            ),
+            GameEvent(
+                type="sheriff_speech",
+                payload={
+                    "speaker": "p02",
+                    "day_number": 1,
+                    "visibility": "public",
+                    "text": "我是预言家，昨晚查验p03是狼人。",
+                },
+            ),
+        ],
+    )
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p03",
+        TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+
+    lines = ctx.seer_credibility["seer_lines"]
+    assert {line["claimant"] for line in lines} == {"p02"}
+    assert not [
+        alert
+        for alert in ctx.contradiction_alerts
+        if alert["alert_type"] == "claim_conflict" and "p01" in alert["player_id"]
+    ]
+
+
 def test_reflection_hints_tie_broken_by_game_id_descending() -> None:
     """Same role + faction priority; ties broken by game_id descending."""
     refs = [

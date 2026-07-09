@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-06
+修改日期: 2026-07-10
 
 使用示例:
     >>> from werewolf_agent.runtime.context import build_agent_context
@@ -15,7 +15,7 @@
 # 将 GameState 转换为 PlayerAgent 可用的 AgentContext。
 # 作者: Mike
 # 创建日期: 2025-01-15
-# 修改日期: 2026-07-06
+# 修改日期: 2026-07-10
 # 使用示例: 内部模块，无对外接口
 # 从 agent_adapter.py 拆出，用于降低大型适配器的职责复杂度。
 # 本模块负责：
@@ -261,7 +261,7 @@ def build_agent_context(
         contradiction_engine = ContradictionEngine(
             role_capacities=engine.ruleset.raw.get("role_distribution"),
         )
-        alerts = contradiction_engine.detect(world_state.facts, gs.day_number)
+        alerts = contradiction_engine.detect(visible_facts, gs.day_number)
 
         for alert in alerts:
             alert_entry = {

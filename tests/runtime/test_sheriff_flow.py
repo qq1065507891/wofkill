@@ -556,6 +556,183 @@ def test_agent_sheriff_vote_does_not_inject_exile_vote_basis_hint() -> None:
     assert "vote_basis_hint" not in directive
 
 
+def test_agent_sheriff_vote_injects_non_seer_candidate_strong_reason_rule() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_sheriff_vote
+
+    class CaptureAgent:
+        last_context: AgentContext | None = None
+
+        def act(self, context: AgentContext):
+            self.last_context = context
+            return (
+                PlayerAction(
+                    action_type=ActionType.SHERIFF_VOTE,
+                    target_id="p03",
+                    speech="",
+                    reason="p03比较稳。",
+                    confidence=0.6,
+                ),
+                RetryInfo(),
+            )
+
+    class Registry:
+        def __init__(self) -> None:
+            self.agent = CaptureAgent()
+
+        def get_agent(self, player_id: str):
+            return self.agent
+
+    gs = GameState(
+        game_id="sheriff_non_seer_vote_rule",
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=True),
+            "p02": PlayerState(id="p02", role="werewolf", alive=True),
+            "p03": PlayerState(id="p03", role="villager", alive=True),
+            "p04": PlayerState(id="p04", role="villager", alive=True),
+        },
+        phase="sheriff_vote",
+        day_number=1,
+        sheriff_candidates=["p01", "p02", "p03"],
+        events=[
+            GameEvent(type="sheriff_speech", payload={
+                "speaker": "p01",
+                "day_number": 1,
+                "visibility": "public",
+                "text": "我是预言家，昨晚查验p04是好人，警徽流p03 p02。",
+            }),
+            GameEvent(type="sheriff_speech", payload={
+                "speaker": "p02",
+                "day_number": 1,
+                "visibility": "public",
+                "text": "我是预言家，昨晚查验p03是狼人，警徽流p04 p01。",
+            }),
+        ],
+    )
+    registry = Registry()
+
+    result = agent_sheriff_vote(
+        {"game_state": gs},
+        _new_engine(),
+        registry,
+        "p04",
+        ["p01", "p02", "p03"],
+    )
+
+    assert result["vote_target"] != "p03"
+    assert result["sheriff_vote_validation"]["original_target"] == "p03"
+    assert result["sheriff_vote_validation"]["final_target"] in {"p01", "p02"}
+    assert result["sheriff_vote_validation"]["repaired"] is True
+    assert (
+        result["sheriff_vote_validation"]["repair_reason"]
+        == "weak_non_seer_sheriff_vote_retargeted_to_seer_claimant"
+    )
+    assert registry.agent.last_context is not None
+    directive = registry.agent.last_context.strategy_directive or {}
+    rule_text = str(directive.get("sheriff_vote_non_seer_candidate_rule", ""))
+    assert "允许投给非预言家候选" in rule_text
+    assert "必须说明所有跳预言家的候选都不可信" in rule_text
+
+
+def test_agent_sheriff_vote_clears_invalid_candidate_target() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_sheriff_vote
+
+    class InvalidTargetAgent:
+        def act(self, context: AgentContext):
+            return (
+                PlayerAction(
+                    action_type=ActionType.SHERIFF_VOTE,
+                    target_id="p99",
+                    speech="",
+                    reason="p99更像好人。",
+                    confidence=0.6,
+                ),
+                RetryInfo(),
+            )
+
+    class Registry:
+        def get_agent(self, player_id: str):
+            return InvalidTargetAgent()
+
+    gs = GameState(
+        game_id="sheriff_invalid_vote_target_guard",
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+            "p03": PlayerState(id="p03", role="villager", alive=True),
+        },
+        phase="sheriff_vote",
+        day_number=1,
+        sheriff_candidates=["p01", "p02"],
+    )
+
+    result = agent_sheriff_vote(
+        {"game_state": gs},
+        _new_engine(),
+        Registry(),
+        "p03",
+        ["p01", "p02"],
+    )
+
+    assert result["vote_target"] is None
+    assert result["sheriff_vote_validation"]["error_code"] == "invalid_sheriff_vote_target"
+    assert result["sheriff_vote_validation"]["repaired"] is True
+    assert (
+        result["sheriff_vote_validation"]["repair_reason"]
+        == "invalid_sheriff_vote_target_cleared"
+    )
+
+
+def test_seer_sheriff_registration_no_action_requires_expert_tactic() -> None:
+    from werewolf_agent.runtime.agent_adapter import agent_sheriff_register
+
+    class CaptureAgent:
+        last_context: AgentContext | None = None
+
+        def act(self, context: AgentContext):
+            self.last_context = context
+            return (
+                PlayerAction(
+                    action_type=ActionType.NO_ACTION,
+                    target_id=None,
+                    speech="",
+                    reason="我想留在警下观察。",
+                    confidence=0.6,
+                ),
+                RetryInfo(),
+            )
+
+    class Registry:
+        def __init__(self) -> None:
+            self.agent = CaptureAgent()
+
+        def get_agent(self, player_id: str):
+            return self.agent
+
+    gs = GameState(
+        game_id="seer_registration_expert_gate",
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=True),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+        },
+        phase="sheriff_registration",
+        day_number=1,
+        night_number=1,
+    )
+    registry = Registry()
+
+    result = agent_sheriff_register(
+        {"game_state": gs},
+        _new_engine(),
+        registry,
+        "p01",
+    )
+
+    assert result["registered"] is True
+    assert registry.agent.last_context is not None
+    directive = str(registry.agent.last_context.strategy_directive)
+    assert "不上警是极低概率高阶战术" in directive
+
+
 class TestSheriffElectionPK:
     def test_first_tie_triggers_pk_speech(self):
         """First sheriff vote tie should route to sheriff_pk_speech with tied candidates."""

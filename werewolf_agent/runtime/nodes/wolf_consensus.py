@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-10
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.wolf_consensus import wolf_consensus
@@ -26,6 +27,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _allocate_decision_identity,
     _dispatch_agent,
     _ensure_runtime_audit_state,
+    _first_alive_target,
     _force_wolf_kill,
     _judge_broadcast,
     _planned_wolf_kill,
@@ -304,6 +306,18 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
 
         result = planned
 
+    elif _fallback_plan_has_only_illegal_targets(state):
+
+        event = GameEvent(
+            type="wolf_no_kill_timeout",
+            payload={
+                "night_number": gs.night_number,
+                "reason": "wolf_plan_invalid_no_kill",
+            },
+        )
+        result_gs = replace(gs, events=gs.events + [event])
+        result = {"game_state": result_gs, "wolf_kill_target_id": None}
+
     else:
 
         result = _legacy_wolf_consensus(state)
@@ -325,3 +339,19 @@ def wolf_consensus(state: RuntimeState) -> dict[str, Any]:
     )
 
     return {**result, "game_state": result_gs}
+
+
+def _fallback_plan_has_only_illegal_targets(state: RuntimeState) -> bool:
+    """fallback 狼队计划主备目标均非法时，进入最终安全空刀。"""
+    gs: GameState = state["game_state"]
+    plan = state.get("wolf_team_plan") or {}
+    if plan.get("consensus_method") != "fallback":
+        return False
+    targets = [
+        plan.get("night_kill_primary"),
+        plan.get("night_kill_backup"),
+    ]
+    present_targets = [target for target in targets if target is not None]
+    if not present_targets:
+        return False
+    return all(_first_alive_target(gs, target) is None for target in present_targets)

@@ -264,6 +264,7 @@ def agent_wolf_team_plan(
             last_reason = "json_parse_failed"
             last_stage = "protocol"
             continue
+        data.setdefault("night_number", night_num)
 
         try:
             plan = WolfTeamPlan.model_validate(data)
