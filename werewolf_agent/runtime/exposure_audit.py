@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-"""Runtime audit events for prompt-visible module exposure and call monitoring.
+"""Runtime audit events for module exposure, call monitoring, and prompt injection.
     作者: Mike
     创建日期: 2025-01-15
     修改日期: 2026-07-10
@@ -80,6 +80,38 @@ _SKILL_TOOL_OUTPUT_KEYS = frozenset({
     "reasoning_hash",
     "tool_call_name",
 })
+_PROMPT_INJECTION_KEYS = frozenset({
+    "module_name",
+    "field_path",
+    "injection_kind",
+    "injected",
+    "prompt_visible",
+    "visibility_scope",
+    "item_count",
+    "char_count",
+    "content_hash",
+    "decision_usage",
+    "sanitized",
+})
+_PROMPT_INJECTION_FIELDS = (
+    ("public_summary", "public_summary", "text_section", "public"),
+    ("recent_transcript", "recent_transcript", "transcript_section", "public"),
+    ("visible_world_state", "visible_world_state", "structured_state", "viewer_visible"),
+    ("rag_hints", "rag_hints", "retrieval_section", "viewer_visible"),
+    ("private_memory_hints", "private_memory_hints", "memory_section", "viewer_private"),
+    ("reflection_memory_hints", "reflection_memory_hints", "memory_section", "viewer_private"),
+    ("profile_memory_hint", "profile_memory_hint", "memory_section", "viewer_private"),
+    ("cognition_matrix_hint", "cognition_matrix_hint", "memory_section", "viewer_private"),
+    ("error_pattern_hint", "error_pattern_hint", "memory_section", "viewer_private"),
+    ("belief_state", "belief_state", "cognition_section", "viewer_visible"),
+    ("contradiction_alerts", "contradiction_alerts", "cognition_section", "viewer_visible"),
+    ("seer_credibility", "seer_credibility", "cognition_section", "viewer_visible"),
+    ("possible_worlds", "possible_worlds", "world_model_section", "viewer_visible"),
+    ("simulation_predictions", "simulation_predictions", "world_model_section", "viewer_visible"),
+    ("strategy_directive", "strategy_directive", "strategy_section", "viewer_visible"),
+    ("skill_analyses", "skill_analyses", "skill_section", "viewer_visible"),
+    ("persona", "persona_snapshot", "persona_section", "viewer_visible"),
+)
 
 
 def _identity_payload(identity: DecisionIdentity) -> dict[str, Any]:
@@ -192,6 +224,53 @@ def _sanitize_skill_tool_rows(calls: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _context_value(context: Any, field_path: str) -> Any:
+    if isinstance(context, Mapping):
+        return context.get(field_path)
+    return getattr(context, field_path, None)
+
+
+def _is_injected(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (Mapping, list, tuple, set)):
+        return bool(value)
+    return value is not None
+
+
+def _item_count(value: Any) -> int:
+    if isinstance(value, Mapping):
+        return len(value)
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    if isinstance(value, str):
+        return 1 if value.strip() else 0
+    return 1 if value is not None else 0
+
+
+def _prompt_injection_rows(context: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for module_name, field_path, injection_kind, visibility_scope in _PROMPT_INJECTION_FIELDS:
+        value = _context_value(context, field_path)
+        injected = _is_injected(value)
+        rows.append({
+            "module_name": module_name,
+            "field_path": field_path,
+            "injection_kind": injection_kind,
+            "injected": injected,
+            "prompt_visible": True,
+            "visibility_scope": visibility_scope,
+            "item_count": _item_count(value),
+            "char_count": len(str(value or "")),
+            "content_hash": _summary_hash(value) if injected else "",
+            "decision_usage": (
+                "prompt_context_available" if injected else "not_available_empty"
+            ),
+            "sanitized": True,
+        })
+    return rows
+
+
 class ModuleExposureAuditCollector:
     """Collect sanitized module exposure audit events for one agent action."""
 
@@ -241,6 +320,19 @@ class ModuleExposureAuditCollector:
         if not rows:
             return
         self._append("skill_tool_call_audit", identity, {"calls": rows})
+
+    def record_prompt_injections(
+        self,
+        identity: DecisionIdentity,
+        context: Any,
+    ) -> None:
+        rows = [
+            _sanitize_allowed(row, _PROMPT_INJECTION_KEYS)
+            for row in _prompt_injection_rows(context)
+        ]
+        if not rows:
+            return
+        self._append("prompt_injection_audit", identity, {"injections": rows})
 
     def record_action_tool_call(
         self,

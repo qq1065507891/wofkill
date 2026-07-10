@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：从评估对局结果构建归一化反馈回路轨迹，并汇总模块与调用监控。
+功能描述：**：从评估对局结果构建归一化反馈回路轨迹，并汇总模块、调用与 prompt 注入监控。
 作者：Mike
 创建日期：2025-01-15
 修改日期：2026-07-10
@@ -60,6 +60,18 @@ _SKILL_TOOL_OUTPUT_METADATA_KEYS = frozenset({
     "summary_hash",
     "reasoning_hash",
     "tool_call_name",
+})
+_PROMPT_INJECTION_METADATA_KEYS = frozenset({
+    "module_name",
+    "field_path",
+    "injection_kind",
+    "injected",
+    "visibility_scope",
+    "item_count",
+    "char_count",
+    "content_hash",
+    "decision_usage",
+    "sanitized",
 })
 
 
@@ -189,6 +201,8 @@ class EvaluationTraceBuilder:
                 grouped[trace_id].extend(_skill_exposures(audit))
             elif audit_type == "skill_tool_call_audit":
                 grouped[trace_id].extend(_skill_tool_call_exposures(audit))
+            elif audit_type == "prompt_injection_audit":
+                grouped[trace_id].extend(_prompt_injection_exposures(audit))
             elif audit_type == "persona_exposure_audit":
                 grouped[trace_id].extend(_persona_exposures(audit))
         return grouped
@@ -203,6 +217,7 @@ class EvaluationTraceBuilder:
                 "reflection_exposure_audit",
                 "skill_exposure_audit",
                 "skill_tool_call_audit",
+                "prompt_injection_audit",
                 "persona_exposure_audit",
             }:
                 continue
@@ -334,6 +349,29 @@ def _safe_nested_metadata(value: Any, allowed_keys: frozenset[str]) -> dict[str,
         for key, item in value.items()
         if str(key) in allowed_keys
     }
+
+
+def _prompt_injection_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
+    exposures: list[ModuleExposure] = []
+    for row in audit.get("injections", []) or []:
+        if not isinstance(row, dict):
+            continue
+        field_path = str(row.get("field_path") or row.get("module_name") or "")
+        if not field_path:
+            continue
+        injected = row.get("injected")
+        exposures.append(ModuleExposure(
+            module="prompt_injections",
+            item_id=field_path,
+            score=1.0 if injected is True else 0.0,
+            prompt_visible=bool(row.get("prompt_visible", True)),
+            metadata={
+                key: row[key]
+                for key in _PROMPT_INJECTION_METADATA_KEYS
+                if key in row
+            },
+        ))
+    return exposures
 
 
 def _persona_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:

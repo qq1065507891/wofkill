@@ -273,6 +273,72 @@ def test_skill_tool_call_audit_joins_trace_with_safe_call_details() -> None:
     assert "private" not in str(skill_call.metadata)
 
 
+def test_prompt_injection_audit_joins_trace_with_safe_metadata() -> None:
+    trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
+
+    traces = EvaluationTraceBuilder().build(
+        _result([
+            {
+                "type": "prompt_injection_audit",
+                "payload": {
+                    "trace_id": trace_id,
+                    "injections": [
+                        {
+                            "module_name": "public_summary",
+                            "field_path": "public_summary",
+                            "injection_kind": "text_section",
+                            "injected": True,
+                            "prompt_visible": True,
+                            "visibility_scope": "public",
+                            "item_count": 1,
+                            "char_count": 120,
+                            "content_hash": "abc123",
+                            "decision_usage": "prompt_context_available",
+                            "raw_content": "private text must not leak",
+                        },
+                        {
+                            "module_name": "strategy_directive",
+                            "field_path": "strategy_directive",
+                            "injection_kind": "structured_section",
+                            "injected": False,
+                            "prompt_visible": True,
+                            "visibility_scope": "viewer_visible",
+                            "item_count": 0,
+                            "char_count": 0,
+                            "content_hash": "",
+                            "decision_usage": "not_available_empty",
+                        },
+                    ],
+                },
+            },
+            _action_event(trace_id),
+        ])
+    )
+
+    exposures = {
+        (exposure.module, exposure.item_id): exposure
+        for exposure in traces[0].module_exposures
+    }
+    public_summary = exposures[("prompt_injections", "public_summary")]
+    strategy = exposures[("prompt_injections", "strategy_directive")]
+    assert public_summary.prompt_visible is True
+    assert public_summary.score == 1.0
+    assert public_summary.metadata == {
+        "module_name": "public_summary",
+        "field_path": "public_summary",
+        "injection_kind": "text_section",
+        "injected": True,
+        "visibility_scope": "public",
+        "item_count": 1,
+        "char_count": 120,
+        "content_hash": "abc123",
+        "decision_usage": "prompt_context_available",
+    }
+    assert strategy.score == 0.0
+    assert strategy.metadata["decision_usage"] == "not_available_empty"
+    assert "private text" not in str(public_summary.metadata)
+
+
 def test_persona_exposure_metadata_keeps_only_safe_policy_fields() -> None:
     trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
 

@@ -2131,6 +2131,75 @@ def test_build_agent_context_records_skill_tool_call_audit() -> None:
     assert all("input_summary" in row for row in rows)
 
 
+def test_build_agent_context_records_prompt_injection_audit() -> None:
+    """P2-3: 构建最终上下文后，应记录各模块 prompt/context 注入摘要。"""
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="seer", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+        "p05": PlayerState(id="p05", role="witch", alive=True),
+        "p06": PlayerState(id="p06", role="hunter", alive=True),
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="prompt_injection_audit_context",
+        phase="vote",
+        day_number=1,
+        night_number=1,
+        players=players,
+        events=[
+            GameEvent(
+                type="speech",
+                payload={
+                    "speaker": "p02",
+                    "text": "我认为p03像预言家。",
+                    "day_number": 1,
+                },
+            )
+        ],
+    )
+    engine = RuleEngine.from_yaml(
+        Path(__file__).resolve().parents[2] / "config" / "rulesets"
+        / "pre_witch_hunter_idiot_mixed.yaml"
+    )
+    collector = ModuleExposureAuditCollector()
+
+    build_agent_context(
+        engine,
+        gs,
+        "p01",
+        TaskType.VOTE,
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p02", "p03"],
+        decision_identity=DecisionIdentity(
+            "prompt_injection_audit_context",
+            "p01",
+            "vote",
+            1,
+            1,
+            "vote",
+            0,
+        ),
+        exposure_collector=collector,
+    )
+
+    events = collector.flush_events()
+    monitor_events = [event for event in events if event.type == "prompt_injection_audit"]
+    assert monitor_events
+    rows = monitor_events[0].payload["injections"]
+    by_field = {row["field_path"]: row for row in rows}
+    assert by_field["public_summary"]["injected"] is True
+    assert by_field["recent_transcript"]["injected"] is True
+    assert by_field["visible_world_state"]["module_name"] == "visible_world_state"
+    assert by_field["strategy_directive"]["decision_usage"] == "prompt_context_available"
+    assert all("content_hash" in row for row in rows if row["injected"])
+    assert "werewolf" not in str(monitor_events[0].payload)
+
+
 # ---------------------------------------------------------------------------
 # S-05: _inject_skill_output's 7th param is `task_type`, not `phase`.
 # ---------------------------------------------------------------------------

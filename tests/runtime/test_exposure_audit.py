@@ -193,6 +193,37 @@ def test_action_tool_call_monitor_marks_received_parse_failure_as_failed() -> No
     assert row["decision_usage"] == "not_used_parse_failed"
 
 
+def test_collector_records_prompt_injection_rows_without_raw_content() -> None:
+    collector = ModuleExposureAuditCollector()
+    context = AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="vote",
+        day_number=2,
+        public_summary="p02 claimed seer; hidden raw text must be hashed only",
+        visible_world_state={"alive_players": ["p01", "p02"], "private_role": "werewolf"},
+        strategy_directive={"must_address_alerts": [{"alert_type": "claim_conflict"}]},
+        skill_analyses={"push_vote": "raw tactical advice should not appear"},
+    )
+
+    collector.record_prompt_injections(_identity(), context)
+
+    events = collector.flush_events()
+    assert [event.type for event in events] == ["prompt_injection_audit"]
+    rows = events[0].payload["injections"]
+    by_field = {row["field_path"]: row for row in rows}
+    assert by_field["public_summary"]["module_name"] == "public_summary"
+    assert by_field["public_summary"]["injected"] is True
+    assert by_field["public_summary"]["char_count"] > 0
+    assert by_field["public_summary"]["content_hash"]
+    assert by_field["strategy_directive"]["item_count"] == 1
+    assert by_field["skill_analyses"]["decision_usage"] == "prompt_context_available"
+    assert "hidden raw text" not in str(events[0].payload)
+    assert "raw tactical advice" not in str(events[0].payload)
+    assert "private_role" not in str(events[0].payload)
+    assert "werewolf" not in str(events[0].payload)
+
+
 def test_persona_exposure_can_be_recorded_after_prompt_visible_attachment() -> None:
     agent = PlayerAgent(
         agent_id="p01",

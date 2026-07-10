@@ -502,4 +502,5 @@ def build_agent_context(
         )
         exposure_collector.record_skill(decision_identity, final_context.skill_analyses)
         exposure_collector.record_skill_tool_calls(decision_identity, skill_call_records)
+        exposure_collector.record_prompt_injections(decision_identity, final_context)
     return final_context
