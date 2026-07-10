@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：将反馈报告导出至LangSmith，导入时避免引入外部追踪依赖
+功能描述：**：将反馈报告和脱敏监控摘要导出至LangSmith，导入时避免引入外部追踪依赖
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-10
 使用示例：内部模块，无对外接口
 """
 
@@ -49,6 +49,9 @@ class LangSmithFeedbackExporter:
                         "regression_summary": data["regression_summary"],
                         "candidates": _scrub_private_fields(data["candidates"]),
                         "ablations": data["ablations"],
+                        "monitoring_exposures": _scrub_private_fields(
+                            data.get("monitoring_exposures", []),
+                        ),
                     },
                     "metadata": {
                         "batch_id": report.batch_id,

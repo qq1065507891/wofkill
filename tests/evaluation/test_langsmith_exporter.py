@@ -238,3 +238,75 @@ def test_langsmith_payload_scrubs_diagnoses_refs_and_moderator_notes() -> None:
     assert "target_faction" not in serialized
     assert "werewolf" not in serialized
     assert "moderator_notes" not in serialized
+
+
+def test_langsmith_payload_includes_redacted_monitoring_exposures() -> None:
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+    from werewolf_agent.evaluation.langsmith_exporter import LangSmithFeedbackExporter
+
+    trace = EvaluationTrace(
+        trace_id="g_langsmith:p01:vote:D2:N1:vote:4",
+        game_id="g_langsmith",
+        player_id="p01",
+        role="seer",
+        faction="good",
+        phase="vote",
+        task_type="vote",
+        module_exposures=[
+            ModuleExposure(
+                module="skill_tool_calls",
+                item_id="push_vote",
+                score=1.0,
+                prompt_visible=True,
+                metadata={
+                    "call_kind": "skill",
+                    "status": "success",
+                    "success": True,
+                    "decision_usage": "prompt_injected",
+                    "target_role": "werewolf",
+                },
+            ),
+            ModuleExposure(
+                module="prompt_injections",
+                item_id="public_summary",
+                score=1.0,
+                prompt_visible=True,
+                metadata={
+                    "module_name": "public_summary",
+                    "field_path": "public_summary",
+                    "injection_kind": "text_section",
+                    "injected": True,
+                    "content_hash": "abc123",
+                    "raw_content": "p01 saw target_role werewolf",
+                },
+            ),
+        ],
+    )
+    report = build_feedback_report(
+        report_id="feedback_monitoring",
+        batch_id="batch_langsmith",
+        traces=[trace],
+    )
+
+    payload = LangSmithFeedbackExporter().build_payload(report)
+
+    monitoring = payload["runs"][0]["outputs"]["monitoring_exposures"]
+    assert {
+        (row["module"], row["item_id"])
+        for row in monitoring
+    } == {
+        ("skill_tool_calls", "push_vote"),
+        ("prompt_injections", "public_summary"),
+    }
+    skill_row = next(row for row in monitoring if row["module"] == "skill_tool_calls")
+    prompt_row = next(row for row in monitoring if row["module"] == "prompt_injections")
+    assert skill_row["metadata"]["status"] == "success"
+    assert skill_row["metadata"]["success"] is True
+    assert prompt_row["metadata"]["content_hash"] == "abc123"
+    assert "trace_hash" in skill_row
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert "g_langsmith:p01" not in serialized
+    assert "p01" not in serialized
+    assert "target_role" not in serialized
+    assert "werewolf" not in serialized
+    assert "raw_content" not in serialized

@@ -1,14 +1,15 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：为反馈回路评估输出生成紧凑JSON报告。
+功能描述：为反馈回路评估输出生成紧凑JSON报告，并携带脱敏监控摘要。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-08
+修改日期：2026-07-10
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,6 +61,7 @@ class FeedbackReport:
     source_refs: list[str] = field(default_factory=list)
     full_game_ablation_reports: list[FullGameAblationReport] = field(default_factory=list)
     candidate_gate_reports: list[CandidateRegressionReport] = field(default_factory=list)
+    monitoring_exposures: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json_dict(self, *, include_private_audit: bool = False) -> dict[str, Any]:
         failure_clusters = _failure_clusters(
@@ -110,6 +112,7 @@ class FeedbackReport:
                 _full_game_ablation_to_dict(report)
                 for report in self.full_game_ablation_reports
             ],
+            "monitoring_exposures": _public_safe_json(self.monitoring_exposures),
         }
 
     def to_json(self, *, include_private_audit: bool = False) -> str:
@@ -146,6 +149,7 @@ def build_feedback_report(
         candidate_gate_reports=list(candidate_gate_reports or []),
         generated_at=generated_at,
         source_refs=_collect_source_refs(traces),
+        monitoring_exposures=_monitoring_exposure_rows(traces),
     )
 
 
@@ -155,3 +159,21 @@ def _collect_source_refs(traces: list[EvaluationTrace]) -> list[str]:
         refs.add(f"trace:{trace.trace_id}")
         refs.update(trace.source_refs)
     return sorted(refs)
+
+
+def _monitoring_exposure_rows(traces: list[EvaluationTrace]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for trace in traces:
+        trace_hash = hashlib.sha256(trace.trace_id.encode("utf-8")).hexdigest()[:16]
+        for exposure in trace.module_exposures:
+            if exposure.module not in {"skill_tool_calls", "prompt_injections"}:
+                continue
+            rows.append({
+                "trace_hash": trace_hash,
+                "module": exposure.module,
+                "item_id": exposure.item_id,
+                "score": exposure.score,
+                "prompt_visible": exposure.prompt_visible,
+                "metadata": _public_safe_json(exposure.metadata),
+            })
+    return rows

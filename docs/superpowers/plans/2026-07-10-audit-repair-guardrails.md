@@ -23,6 +23,7 @@
 | P2-1 | fallback 原因、私有可见性来源字段不足 | 日志字段缺失 | audit / replay | 轻微 | P2 | 部分修复 |
 | P2-2 | skill/tool 调用可审计性仍依赖现有 exposure audit | 日志字段缺失 | skill/tool | 轻微 | P2 | 是 |
 | P2-3 | 各模块 prompt/context 注入缺少统一监控账本 | 日志字段缺失 | context / prompt injection / evaluation | 轻微 | P2 | 是 |
+| P2-4 | LangSmith 导出未显式携带新增监控摘要 | 日志字段缺失 | LangSmith / feedback report | 轻微 | P2 | 是 |
 
 ## 2. 根因分析
 
@@ -35,6 +36,7 @@
 | P1-2 | 警下玩家把警长票投给非预言家候选但理由弱 | 没有独立的 sheriff vote strong-reason validator | 用户口径 + vote_quality 测试 | 是 | 与普通放逐投票质量不同 |
 | P2-2 | skill/tool 调用缺少逐调用成功/失败监控 | 旧日志只记录 prompt-visible skill exposure 和 action trace 中的 tool-call 元数据，缺少统一调用明细事件 | 用户补充口径 + skill/tool audit 测试 | 是 | 采用监控事件，不阻断流程 |
 | P2-3 | 各模块是否实际注入 prompt/context 难以审计 | 旧日志分散记录 RAG/reflection/skill/persona，缺少对 final `AgentContext` 各字段的统一摘要账本 | 用户补充口径 + prompt injection audit 测试 | 是 | 仅记录摘要、数量和 hash，不记录原文 |
+| P2-4 | LangSmith 看不到新增监控细节 | `FeedbackReport` 未保存逐 trace 的 monitoring exposure 摘要，`LangSmithFeedbackExporter` 只能输出聚合指标 | 用户补充口径 + LangSmith exporter 测试 | 是 | 输出 `trace_hash` 和脱敏 metadata，不输出原始 trace_id/player_id |
 
 ## 3. 修复动作
 
@@ -48,6 +50,7 @@
 | P2-1 | `runtime/strategy/seer.py` | `public_seer_claimants` 忽略非 public 发言 | context / sheriff vote 回归 |
 | P2-2 | `skills/registry.py`, `runtime/exposure_audit.py`, `runtime/context.py`, `runtime/nodes/action_audit.py`, `evaluation/trace_builder.py` | 新增 `skill_tool_call_audit` 监控事件；逐 skill 记录调用名称、输入摘要、成功/失败、错误、输出摘要和是否进入 prompt；从 action trace 记录模型 tool-call 是否 required/received、失败原因、fallback 关系和决策使用状态；评估 trace 聚合该事件的白名单摘要，便于后续质量分析 | `test_dispatch_for_role_records_each_skill_success_and_failure`, `test_collector_records_detailed_skill_tool_call_rows`, `test_action_audit_emits_model_tool_call_monitor_event`, `test_build_agent_context_records_skill_tool_call_audit`, `test_skill_tool_call_audit_joins_trace_with_safe_call_details` |
 | P2-3 | `runtime/exposure_audit.py`, `runtime/context.py`, `evaluation/trace_builder.py` | 新增 `prompt_injection_audit` 监控事件；统一记录 final `AgentContext` 中各模块字段是否注入、字段路径、注入类型、可见性范围、条数、字符规模和内容 hash；评估 trace 聚合为 `prompt_injections` exposure | `test_collector_records_prompt_injection_rows_without_raw_content`, `test_build_agent_context_records_prompt_injection_audit`, `test_prompt_injection_audit_joins_trace_with_safe_metadata` |
+| P2-4 | `evaluation/feedback_report.py`, `evaluation/langsmith_exporter.py` | `FeedbackReport` 保存 `skill_tool_calls` / `prompt_injections` 的脱敏 monitoring exposure 摘要；LangSmith payload 输出 `monitoring_exposures`，包含 `trace_hash`、module、item_id、score、prompt_visible 和白名单 metadata | `test_langsmith_payload_includes_redacted_monitoring_exposures` |
 
 ## 4. 验收标准
 
@@ -58,6 +61,7 @@
 - 狼 fallback 主备目标均非法时先视为计划不可执行，运行时最终记录 no-kill，不随机刀人。
 - skill/tool 调用必须有 moderator-only 监控事件：skill 记录逐个调用的成功/失败，模型 tool-call 记录 required/received、结构化失败原因、fallback 关系和决策使用状态。
 - 各模块 prompt/context 注入必须有 moderator-only 监控事件：记录模块名、字段路径、是否注入、规模摘要和安全 hash；禁止记录完整 prompt 原文、私有推理链或未白名单字段。
+- LangSmith 导出必须包含上述新增监控摘要，并保持脱敏：只允许 `trace_hash`，不导出原始 `trace_id`、player_id、真实身份字段或 raw content。
 - deterministic 字段缺失不触发不必要 fallback。
 - 新增测试与相邻回归测试通过；超时或未完成测试不作为通过证据。
 
