@@ -77,6 +77,122 @@ def test_dict_skill_analyses_include_default_advice_type() -> None:
     ]
 
 
+def test_collector_records_detailed_skill_tool_call_rows() -> None:
+    collector = ModuleExposureAuditCollector()
+
+    collector.record_skill_tool_calls(
+        _identity(),
+        [
+            {
+                "call_kind": "skill",
+                "call_name": "push_vote",
+                "skill_name": "push_vote",
+                "status": "success",
+                "success": True,
+                "input_summary": {
+                    "role": "villager",
+                    "phase": "vote",
+                    "task_type": "vote",
+                    "legal_target_count": 3,
+                    "private_role": "werewolf",
+                },
+                "output_summary": {
+                    "confidence": 0.82,
+                    "has_prompt_injectable": True,
+                    "private_notes": "must not leak",
+                },
+                "result_available_to_decision": True,
+                "decision_usage": "prompt_injected",
+            }
+        ],
+    )
+
+    events = collector.flush_events()
+
+    assert [event.type for event in events] == ["skill_tool_call_audit"]
+    payload = events[0].payload
+    assert payload["trace_id"] == "g1:p01:vote:D2:N1:vote:4"
+    row = payload["calls"][0]
+    assert row["call_kind"] == "skill"
+    assert row["call_name"] == "push_vote"
+    assert row["status"] == "success"
+    assert row["success"] is True
+    assert row["input_summary"] == {
+        "role": "villager",
+        "phase": "vote",
+        "task_type": "vote",
+        "legal_target_count": 3,
+    }
+    assert row["output_summary"] == {
+        "confidence": 0.82,
+        "has_prompt_injectable": True,
+    }
+    assert "werewolf" not in str(payload)
+    assert "private_notes" not in str(payload)
+
+
+def test_action_audit_emits_model_tool_call_monitor_event() -> None:
+    from werewolf_agent.runtime.nodes.action_audit import _action_audit_events
+
+    collector = ModuleExposureAuditCollector()
+    action_trace = {
+        "tool_call_required": True,
+        "tool_call_received": False,
+        "tool_call_name": "submit_player_action",
+        "parse_success": False,
+        "fallback_reason": "fallback: retries exhausted",
+        "retry_count": 3,
+        "structured_failure_reason": "missing_tool_call",
+        "structured_failure_stage": "protocol",
+        "structured_output_mode": "native_tool",
+    }
+
+    events = _action_audit_events(
+        state={},
+        player_id="p01",
+        phase="vote",
+        action_trace=action_trace,
+        decision_identity=_identity(),
+        exposure_collector=collector,
+        day_number=2,
+        night_number=1,
+    )
+
+    monitor = [event for event in events if event.type == "skill_tool_call_audit"]
+    assert monitor
+    row = monitor[0].payload["calls"][0]
+    assert row["call_kind"] == "tool"
+    assert row["call_name"] == "submit_player_action"
+    assert row["required"] is True
+    assert row["received"] is False
+    assert row["status"] == "missing"
+    assert row["fallback_triggered"] is True
+    assert row["decision_usage"] == "not_used_fallback"
+
+
+def test_action_tool_call_monitor_marks_received_parse_failure_as_failed() -> None:
+    collector = ModuleExposureAuditCollector()
+    collector.record_action_tool_call(
+        _identity(),
+        {
+            "tool_call_required": True,
+            "tool_call_received": True,
+            "tool_call_name": "submit_player_action",
+            "parse_success": False,
+            "retry_count": 1,
+            "structured_failure_reason": "invalid_tool_arguments",
+            "structured_failure_stage": "parse",
+        },
+    )
+
+    events = collector.flush_events()
+    row = events[0].payload["calls"][0]
+    assert row["received"] is True
+    assert row["status"] == "parse_failed"
+    assert row["success"] is False
+    assert row["decision_usage"] == "not_used_parse_failed"
+
+
 def test_persona_exposure_can_be_recorded_after_prompt_visible_attachment() -> None:
     agent = PlayerAgent(
         agent_id="p01",

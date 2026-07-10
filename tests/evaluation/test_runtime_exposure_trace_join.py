@@ -192,6 +192,87 @@ def test_skill_exposure_metadata_keeps_only_safe_summary_fields() -> None:
     }
 
 
+def test_skill_tool_call_audit_joins_trace_with_safe_call_details() -> None:
+    trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
+
+    traces = EvaluationTraceBuilder().build(
+        _result([
+            {
+                "type": "skill_tool_call_audit",
+                "payload": {
+                    "trace_id": trace_id,
+                    "calls": [
+                        {
+                            "call_kind": "skill",
+                            "call_name": "push_vote",
+                            "skill_name": "push_vote",
+                            "status": "success",
+                            "success": True,
+                            "prompt_visible": True,
+                            "result_available_to_decision": True,
+                            "decision_usage": "prompt_injected",
+                            "input_summary": {
+                                "role": "villager",
+                                "task_type": "vote",
+                                "private_role": "werewolf",
+                            },
+                            "output_summary": {
+                                "confidence": 0.82,
+                                "risk_alert_count": 1,
+                                "private_reasoning": "hidden",
+                            },
+                            "private_payload": "must not leak",
+                        },
+                        {
+                            "call_kind": "tool",
+                            "call_name": "submit_player_action",
+                            "tool_name": "submit_player_action",
+                            "status": "missing",
+                            "success": False,
+                            "required": True,
+                            "received": False,
+                            "fallback_triggered": True,
+                            "decision_usage": "not_used_fallback",
+                            "structured_failure_reason": "missing_tool_call",
+                        },
+                    ],
+                },
+            },
+            _action_event(trace_id),
+        ])
+    )
+
+    exposures = {
+        (exposure.module, exposure.item_id): exposure
+        for exposure in traces[0].module_exposures
+    }
+    skill_call = exposures[("skill_tool_calls", "push_vote")]
+    tool_call = exposures[("skill_tool_calls", "submit_player_action")]
+    assert skill_call.prompt_visible is True
+    assert skill_call.score == 1.0
+    assert skill_call.metadata == {
+        "call_kind": "skill",
+        "status": "success",
+        "success": True,
+        "result_available_to_decision": True,
+        "decision_usage": "prompt_injected",
+        "input_summary": {
+            "role": "villager",
+            "task_type": "vote",
+        },
+        "output_summary": {
+            "confidence": 0.82,
+            "risk_alert_count": 1,
+        },
+    }
+    assert tool_call.score == 0.0
+    assert tool_call.metadata["required"] is True
+    assert tool_call.metadata["received"] is False
+    assert tool_call.metadata["fallback_triggered"] is True
+    assert tool_call.metadata["structured_failure_reason"] == "missing_tool_call"
+    assert "private" not in str(skill_call.metadata)
+
+
 def test_persona_exposure_metadata_keeps_only_safe_policy_fields() -> None:
     trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
 

@@ -366,14 +366,36 @@ def build_agent_context(
 
     # -- Skill-based tactical advice (pre-injection path; no tool exposure) --
     skill_analyses: dict[str, str] = {}
+    skill_call_records: list[dict[str, Any]] = []
     try:
         strategy_directive, skill_analyses = _inject_skill_output(
             strategy_directive, gs, player_id,
             world_state, belief_state, alerts, task_type.value,
             legal_targets=legal_targets,
             wolf_team_plan=wolf_team_plan,
+            skill_call_records=skill_call_records,
         )
-    except Exception:
+    except Exception as exc:
+        skill_call_records.append({
+            "call_kind": "skill",
+            "call_name": "skill_injection",
+            "skill_name": "skill_injection",
+            "status": "error",
+            "success": False,
+            "prompt_visible": False,
+            "result_available_to_decision": False,
+            "decision_usage": "not_available_error",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "input_summary": {
+                "role": player.role,
+                "phase": task_type.value,
+                "task_type": task_type.value,
+                "day": gs.day_number,
+                "legal_target_count": len(legal_targets or []),
+                "has_wolf_team_plan": bool(wolf_team_plan),
+            },
+        })
         logger.debug("Skill injection failed, skipping", exc_info=True)
 
     # -- Role state monitoring: inject role-specific critical/warning alerts --
@@ -479,4 +501,5 @@ def build_agent_context(
             final_context.reflection_memory_hints,
         )
         exposure_collector.record_skill(decision_identity, final_context.skill_analyses)
+        exposure_collector.record_skill_tool_calls(decision_identity, skill_call_records)
     return final_context

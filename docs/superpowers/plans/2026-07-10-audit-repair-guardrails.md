@@ -21,7 +21,7 @@
 | P1-2 | 警长票投给非预言家候选允许但缺强理由校验 | 规则缺失 | sheriff_vote | 严重 | P1 | 是 |
 | P1-3 | 投票理由与公开事实、候选身份关系缺专门审计 | 模型推理质量问题 | sheriff_vote / vote_quality | 中等 | P1 | 是 |
 | P2-1 | fallback 原因、私有可见性来源字段不足 | 日志字段缺失 | audit / replay | 轻微 | P2 | 部分修复 |
-| P2-2 | skill/tool 调用可审计性仍依赖现有 exposure audit | 日志字段缺失 | skill/tool | 待确认 | P2 | 信息不足 |
+| P2-2 | skill/tool 调用可审计性仍依赖现有 exposure audit | 日志字段缺失 | skill/tool | 轻微 | P2 | 是 |
 
 ## 2. 根因分析
 
@@ -32,6 +32,7 @@
 | P0-3 | LLM 漏填 `night_number` 造成不必要 fallback | 可由 GameState 决定的字段仍强依赖模型输出 | 审计计划 + schema 测试 | 是 | deterministic 字段应自动补齐 |
 | P1-1 | 真预言家普通情况下不上警 | 提示词没有把“不上警”限定为高玩极低概率战术，adapter 无兜底 | 用户口径 + sheriff 测试 | 否 | 高玩例外保留 |
 | P1-2 | 警下玩家把警长票投给非预言家候选但理由弱 | 没有独立的 sheriff vote strong-reason validator | 用户口径 + vote_quality 测试 | 是 | 与普通放逐投票质量不同 |
+| P2-2 | skill/tool 调用缺少逐调用成功/失败监控 | 旧日志只记录 prompt-visible skill exposure 和 action trace 中的 tool-call 元数据，缺少统一调用明细事件 | 用户补充口径 + skill/tool audit 测试 | 是 | 采用监控事件，不阻断流程 |
 
 ## 3. 修复动作
 
@@ -43,6 +44,7 @@
 | P1-1 | `runtime/agent_sheriff_actions.py` | seer sheriff registration prompt 增加高玩极低概率说明；非高玩 NO_ACTION 确定性修复为报名 | `test_seer_sheriff_registration_no_action_requires_expert_tactic` |
 | P1-2 | `runtime/vote_quality.py`, `runtime/agent_sheriff_actions.py` | 新增 `validate_sheriff_vote_choice`；弱理由非预言家票改投可见 seer claimant；非法警长票目标置空；返回 `sheriff_vote_validation` 结构化记录 | `TestSheriffVoteChoice`, `test_agent_sheriff_vote_injects_non_seer_candidate_strong_reason_rule`, `test_agent_sheriff_vote_clears_invalid_candidate_target` |
 | P2-1 | `runtime/strategy/seer.py` | `public_seer_claimants` 忽略非 public 发言 | context / sheriff vote 回归 |
+| P2-2 | `skills/registry.py`, `runtime/exposure_audit.py`, `runtime/context.py`, `runtime/nodes/action_audit.py`, `evaluation/trace_builder.py` | 新增 `skill_tool_call_audit` 监控事件；逐 skill 记录调用名称、输入摘要、成功/失败、错误、输出摘要和是否进入 prompt；从 action trace 记录模型 tool-call 是否 required/received、失败原因、fallback 关系和决策使用状态；评估 trace 聚合该事件的白名单摘要，便于后续质量分析 | `test_dispatch_for_role_records_each_skill_success_and_failure`, `test_collector_records_detailed_skill_tool_call_rows`, `test_action_audit_emits_model_tool_call_monitor_event`, `test_build_agent_context_records_skill_tool_call_audit`, `test_skill_tool_call_audit_joins_trace_with_safe_call_details` |
 
 ## 4. 验收标准
 
@@ -51,6 +53,7 @@
 - 警长票投非预言家候选仍允许，但必须说明所有跳预言家的候选不可信，并说明目标好人依据。
 - 警长票目标必须来自当前候选；非法目标不能进入计票，并必须留下结构化校验/修复记录。
 - 狼 fallback 主备目标均非法时先视为计划不可执行，运行时最终记录 no-kill，不随机刀人。
+- skill/tool 调用必须有 moderator-only 监控事件：skill 记录逐个调用的成功/失败，模型 tool-call 记录 required/received、结构化失败原因、fallback 关系和决策使用状态。
 - deterministic 字段缺失不触发不必要 fallback。
 - 新增测试与相邻回归测试通过；超时或未完成测试不作为通过证据。
 

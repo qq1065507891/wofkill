@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-把技能输出转换为 AgentContext 中的战术建议。
+把技能输出转换为 AgentContext 中的战术建议，并收集技能调用监控记录。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-10
 
 使用示例:
     >>> from werewolf_agent.runtime.context_skill_advice import _inject_skill_output
@@ -99,6 +100,7 @@ def _inject_skill_output(
     task_type: str,
     legal_targets: list[str] | None = None,
     wolf_team_plan: dict[str, Any] | None = None,
+    skill_call_records: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """把技能建议注入 strategy_directive，并返回技能分析摘要。"""
 
@@ -125,8 +127,14 @@ def _inject_skill_output(
         extra={"wolf_team_plan": wolf_team_plan} if wolf_team_plan else {},
         task_type=task_type,
     )
+    dispatch_kwargs: dict[str, Any] = {"task_type": task_type, "gs": gs}
+    if skill_call_records is not None:
+        dispatch_kwargs["audit_records"] = skill_call_records
     outputs = registry.dispatch_for_role(
-        player.role, task_type, skill_input, task_type=task_type, gs=gs,
+        player.role,
+        task_type,
+        skill_input,
+        **dispatch_kwargs,
     )
 
     sortable: list[tuple[float, str, Any]] = []

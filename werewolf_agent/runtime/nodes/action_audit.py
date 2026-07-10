@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-运行时节点的行动轨迹审计、投票私有审计和决策身份 helper。
+运行时节点的行动轨迹审计、调用监控、投票私有审计和决策身份 helper。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-09
+修改日期: 2026-07-10
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.action_audit import _allocate_decision_identity
@@ -115,6 +115,8 @@ def _action_audit_events(
         night_number=night_number,
         decision_identity=decision_identity,
     )
+    if exposure_collector is not None and decision_identity is not None:
+        exposure_collector.record_action_tool_call(decision_identity, action_trace)
     exposure_events = exposure_collector.flush_events() if exposure_collector else []
     return [*exposure_events, event]
 

@@ -1,8 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
-"""Runtime audit events for prompt-visible module exposure.
+"""Runtime audit events for prompt-visible module exposure and call monitoring.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-10
     使用示例: 内部模块，无对外接口
 """
 
@@ -38,6 +38,48 @@ _PERSONA_KEYS = frozenset({
     "policy_keys",
     "sanitized",
 })
+_SKILL_TOOL_CALL_KEYS = frozenset({
+    "call_kind",
+    "call_name",
+    "skill_name",
+    "tool_name",
+    "provider_name",
+    "status",
+    "success",
+    "required",
+    "received",
+    "prompt_visible",
+    "result_available_to_decision",
+    "decision_usage",
+    "fallback_triggered",
+    "error_type",
+    "error_message",
+    "structured_failure_reason",
+    "structured_failure_stage",
+    "structured_output_mode",
+    "parse_success",
+    "retry_count",
+    "duration_ms",
+})
+_SKILL_TOOL_INPUT_KEYS = frozenset({
+    "role",
+    "phase",
+    "task_type",
+    "day",
+    "night",
+    "legal_target_count",
+    "candidate_count",
+    "has_wolf_team_plan",
+})
+_SKILL_TOOL_OUTPUT_KEYS = frozenset({
+    "confidence",
+    "has_prompt_injectable",
+    "risk_alert_count",
+    "evidence_ref_count",
+    "summary_hash",
+    "reasoning_hash",
+    "tool_call_name",
+})
 
 
 def _identity_payload(identity: DecisionIdentity) -> dict[str, Any]:
@@ -72,6 +114,11 @@ def _sanitize_allowed(value: Any, allowed_keys: frozenset[str]) -> Any:
 
 def _summary_hash(text: Any) -> str:
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:16]
+
+
+def _truncate(value: Any, limit: int = 300) -> str:
+    text = str(value or "")
+    return text[:limit]
 
 
 def _skill_rows(analyses: Any) -> list[dict[str, Any]]:
@@ -116,6 +163,35 @@ def _skill_rows(analyses: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _sanitize_skill_tool_rows(calls: Any) -> list[dict[str, Any]]:
+    if not isinstance(calls, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in calls:
+        if not isinstance(item, Mapping):
+            continue
+        row = {
+            str(key): _sanitize_allowed(value, _SKILL_TOOL_CALL_KEYS)
+            for key, value in item.items()
+            if str(key) in _SKILL_TOOL_CALL_KEYS
+        }
+        if "error_message" in row:
+            row["error_message"] = _truncate(row["error_message"])
+        input_summary = item.get("input_summary")
+        if isinstance(input_summary, Mapping):
+            clean_input = _sanitize_allowed(input_summary, _SKILL_TOOL_INPUT_KEYS)
+            if clean_input:
+                row["input_summary"] = clean_input
+        output_summary = item.get("output_summary")
+        if isinstance(output_summary, Mapping):
+            clean_output = _sanitize_allowed(output_summary, _SKILL_TOOL_OUTPUT_KEYS)
+            if clean_output:
+                row["output_summary"] = clean_output
+        if row:
+            rows.append(row)
+    return rows
+
+
 class ModuleExposureAuditCollector:
     """Collect sanitized module exposure audit events for one agent action."""
 
@@ -155,6 +231,87 @@ class ModuleExposureAuditCollector:
         if not rows:
             return
         self._append("skill_exposure_audit", identity, {"analyses": rows})
+
+    def record_skill_tool_calls(
+        self,
+        identity: DecisionIdentity,
+        calls: list[dict[str, Any]] | None,
+    ) -> None:
+        rows = _sanitize_skill_tool_rows(calls or [])
+        if not rows:
+            return
+        self._append("skill_tool_call_audit", identity, {"calls": rows})
+
+    def record_action_tool_call(
+        self,
+        identity: DecisionIdentity,
+        action_trace: Mapping[str, Any] | None,
+    ) -> None:
+        if not action_trace:
+            return
+        required = bool(action_trace.get("tool_call_required"))
+        received = bool(action_trace.get("tool_call_received"))
+        call_name = str(action_trace.get("tool_call_name") or "")
+        if not call_name and required:
+            call_name = "submit_player_action"
+        if not (required or received or call_name):
+            return
+
+        fallback_triggered = bool(
+            action_trace.get("fallback_reason")
+            or action_trace.get("fallback_target_used")
+        )
+        parse_success = bool(action_trace.get("parse_success"))
+        if required and not received:
+            status = "missing"
+            success = False
+        elif received and parse_success:
+            status = "success"
+            success = True
+        elif received:
+            status = "parse_failed"
+            success = False
+        else:
+            status = "not_required"
+            success = True
+
+        if received and parse_success:
+            decision_usage = "tool_response_parsed"
+            result_available = True
+        elif parse_success:
+            decision_usage = "text_fallback_parsed"
+            result_available = True
+        elif fallback_triggered:
+            decision_usage = "not_used_fallback"
+            result_available = False
+        elif received and not parse_success:
+            decision_usage = "not_used_parse_failed"
+            result_available = False
+        else:
+            decision_usage = "not_used"
+            result_available = False
+
+        self.record_skill_tool_calls(
+            identity,
+            [{
+                "call_kind": "tool",
+                "call_name": call_name,
+                "tool_name": call_name,
+                "status": status,
+                "success": success,
+                "required": required,
+                "received": received,
+                "fallback_triggered": fallback_triggered,
+                "result_available_to_decision": result_available,
+                "decision_usage": decision_usage,
+                "parse_success": parse_success,
+                "retry_count": int(action_trace.get("retry_count") or 0),
+                "structured_failure_reason": action_trace.get("structured_failure_reason"),
+                "structured_failure_stage": action_trace.get("structured_failure_stage"),
+                "structured_output_mode": action_trace.get("structured_output_mode"),
+                "output_summary": {"tool_call_name": call_name},
+            }],
+        )
 
     def record_persona(self, identity: DecisionIdentity, snapshot: Mapping[str, Any] | None) -> None:
         if not snapshot:

@@ -2073,6 +2073,64 @@ def test_skill_analyses_field_populated() -> None:
     )
 
 
+def test_build_agent_context_records_skill_tool_call_audit() -> None:
+    """P2-2: 构建上下文时应记录每个 skill 的调用状态，供后续日志审计。"""
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    players = {
+        "p01": PlayerState(id="p01", role="villager", alive=True),
+        "p02": PlayerState(id="p02", role="werewolf", alive=True),
+        "p03": PlayerState(id="p03", role="seer", alive=True),
+        "p04": PlayerState(id="p04", role="villager", alive=True),
+        "p05": PlayerState(id="p05", role="witch", alive=True),
+        "p06": PlayerState(id="p06", role="hunter", alive=True),
+    }
+    gs = GameState(
+        ruleset_id="test",
+        game_id="skill_tool_call_audit_context",
+        phase="vote",
+        day_number=1,
+        night_number=1,
+        players=players,
+    )
+    engine = RuleEngine.from_yaml(
+        Path(__file__).resolve().parents[2] / "config" / "rulesets"
+        / "pre_witch_hunter_idiot_mixed.yaml"
+    )
+    collector = ModuleExposureAuditCollector()
+
+    build_agent_context(
+        engine,
+        gs,
+        "p01",
+        TaskType.VOTE,
+        legal_actions=[ActionType.VOTE],
+        legal_targets=["p02", "p03"],
+        decision_identity=DecisionIdentity(
+            "skill_tool_call_audit_context",
+            "p01",
+            "vote",
+            1,
+            1,
+            "vote",
+            0,
+        ),
+        exposure_collector=collector,
+    )
+
+    events = collector.flush_events()
+    monitor_events = [event for event in events if event.type == "skill_tool_call_audit"]
+    assert monitor_events
+    rows = monitor_events[0].payload["calls"]
+    assert rows
+    assert all(row["call_kind"] == "skill" for row in rows)
+    assert all("call_name" in row for row in rows)
+    assert all("status" in row for row in rows)
+    assert all("success" in row for row in rows)
+    assert all("input_summary" in row for row in rows)
+
+
 # ---------------------------------------------------------------------------
 # S-05: _inject_skill_output's 7th param is `task_type`, not `phase`.
 # ---------------------------------------------------------------------------

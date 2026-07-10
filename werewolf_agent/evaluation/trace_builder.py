@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：从评估对局结果构建归一化反馈回路轨迹
+功能描述：**：从评估对局结果构建归一化反馈回路轨迹，并汇总模块与调用监控。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-10
 使用示例：内部模块，无对外接口
 """
 
@@ -25,6 +25,42 @@ from werewolf_agent.evaluation.feedback_schemas import (
 )
 from werewolf_agent.evaluation.schemas import GameResult
 from werewolf_agent.evaluation.trace_identity import make_trace_id
+
+_SKILL_TOOL_CALL_METADATA_KEYS = frozenset({
+    "call_kind",
+    "status",
+    "success",
+    "required",
+    "received",
+    "result_available_to_decision",
+    "decision_usage",
+    "fallback_triggered",
+    "error_type",
+    "structured_failure_reason",
+    "structured_failure_stage",
+    "structured_output_mode",
+    "parse_success",
+    "retry_count",
+})
+_SKILL_TOOL_INPUT_METADATA_KEYS = frozenset({
+    "role",
+    "phase",
+    "task_type",
+    "day",
+    "night",
+    "legal_target_count",
+    "candidate_count",
+    "has_wolf_team_plan",
+})
+_SKILL_TOOL_OUTPUT_METADATA_KEYS = frozenset({
+    "confidence",
+    "has_prompt_injectable",
+    "risk_alert_count",
+    "evidence_ref_count",
+    "summary_hash",
+    "reasoning_hash",
+    "tool_call_name",
+})
 
 
 class EvaluationTraceBuilder:
@@ -151,6 +187,8 @@ class EvaluationTraceBuilder:
                 grouped[trace_id].extend(_reflection_exposures(audit))
             elif audit_type == "skill_exposure_audit":
                 grouped[trace_id].extend(_skill_exposures(audit))
+            elif audit_type == "skill_tool_call_audit":
+                grouped[trace_id].extend(_skill_tool_call_exposures(audit))
             elif audit_type == "persona_exposure_audit":
                 grouped[trace_id].extend(_persona_exposures(audit))
         return grouped
@@ -164,6 +202,7 @@ class EvaluationTraceBuilder:
                 "rag_exposure_audit",
                 "reflection_exposure_audit",
                 "skill_exposure_audit",
+                "skill_tool_call_audit",
                 "persona_exposure_audit",
             }:
                 continue
@@ -240,6 +279,61 @@ def _skill_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
             },
         ))
     return exposures
+
+
+def _skill_tool_call_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
+    exposures: list[ModuleExposure] = []
+    for call in audit.get("calls", []) or []:
+        if not isinstance(call, dict):
+            continue
+        call_name = str(
+            call.get("call_name")
+            or call.get("skill_name")
+            or call.get("tool_name")
+            or ""
+        )
+        if not call_name:
+            continue
+        success = call.get("success")
+        exposures.append(ModuleExposure(
+            module="skill_tool_calls",
+            item_id=call_name,
+            score=1.0 if success is True else 0.0,
+            prompt_visible=bool(call.get("prompt_visible")),
+            metadata=_skill_tool_call_metadata(call),
+        ))
+    return exposures
+
+
+def _skill_tool_call_metadata(call: dict[str, Any]) -> dict[str, Any]:
+    metadata = {
+        key: call[key]
+        for key in _SKILL_TOOL_CALL_METADATA_KEYS
+        if key in call
+    }
+    input_summary = _safe_nested_metadata(
+        call.get("input_summary"),
+        _SKILL_TOOL_INPUT_METADATA_KEYS,
+    )
+    if input_summary:
+        metadata["input_summary"] = input_summary
+    output_summary = _safe_nested_metadata(
+        call.get("output_summary"),
+        _SKILL_TOOL_OUTPUT_METADATA_KEYS,
+    )
+    if output_summary:
+        metadata["output_summary"] = output_summary
+    return metadata
+
+
+def _safe_nested_metadata(value: Any, allowed_keys: frozenset[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): item
+        for key, item in value.items()
+        if str(key) in allowed_keys
+    }
 
 
 def _persona_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:

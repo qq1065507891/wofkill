@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：技能注册中心，根据角色和阶段查找、派发适用技能
+功能描述：技能注册中心，根据角色和阶段查找、派发适用技能，并生成调用监控摘要。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-10
 使用示例：内部模块，无对外接口
 """
 
@@ -126,6 +126,7 @@ class SkillRegistry:
         skill_input: SkillInput,
         task_type: str = "",
         gs: Any | None = None,
+        audit_records: list[dict[str, Any]] | None = None,
     ) -> list[SkillOutput]:
         """Dispatch all faction-applicable skills for a role in a given phase.
 
@@ -146,24 +147,99 @@ class SkillRegistry:
             if s.faction in allowed
             and s.is_applicable(effective_role, phase, task_type=task_type)
         ]
-        outputs = [self.dispatch(s.name, skill_input) for s in skills]
+        outputs: list[SkillOutput] = []
         # P-SK1: 把 SKILL.md 正文（markdown body）追加到每个
         # SkillOutput.prompt_injectable 末尾的 "## 技能说明" 段。
         # 散文形式的设计/使用/注意事项由此真正进入 LLM 的视野 —
         # markdown-driven 设计的"驱动"语义由此字段落地。无 body
         # 的 skill（如纯 Python handler 自带完整 advice 的）保持
         # 现状不变。
-        for skill_def, out in zip(skills, outputs):
+        for skill_def in skills:
+            try:
+                out = self.dispatch(skill_def.name, skill_input)
+            except Exception as exc:
+                if audit_records is None:
+                    raise
+                audit_records.append(
+                    _skill_call_audit_error(skill_def, skill_input, exc)
+                )
+                continue
             if skill_def.body and out.prompt_injectable:
                 out.prompt_injectable = _cap_prompt_injectable(
                     out.prompt_injectable
                     + f"\n\n## 技能说明\n{skill_def.body}\n"
                 )
             else:
-                out.prompt_injectable = _cap_prompt_injectable(
-                    out.prompt_injectable
+                out.prompt_injectable = _cap_prompt_injectable(out.prompt_injectable)
+            outputs.append(out)
+            if audit_records is not None:
+                audit_records.append(
+                    _skill_call_audit_success(skill_def, skill_input, out)
                 )
         return outputs
 
     def names(self) -> list[str]:
         return [s.name.value for s in self._skills.values()]
+
+
+def _skill_input_summary(skill_input: SkillInput) -> dict[str, Any]:
+    return {
+        "role": skill_input.role,
+        "phase": skill_input.phase,
+        "task_type": skill_input.task_type,
+        "day": skill_input.day,
+        "legal_target_count": len(skill_input.legal_targets),
+        "has_wolf_team_plan": bool(skill_input.extra.get("wolf_team_plan")),
+    }
+
+
+def _skill_call_base(
+    skill_def: SkillDefinition,
+    skill_input: SkillInput,
+) -> dict[str, Any]:
+    return {
+        "call_kind": "skill",
+        "call_name": skill_def.name.value,
+        "skill_name": skill_def.name.value,
+        "input_summary": _skill_input_summary(skill_input),
+    }
+
+
+def _skill_call_audit_success(
+    skill_def: SkillDefinition,
+    skill_input: SkillInput,
+    output: SkillOutput,
+) -> dict[str, Any]:
+    prompt_visible = bool(output.prompt_injectable)
+    evidence_refs = (output.metadata or {}).get("evidence_refs", []) or []
+    return {
+        **_skill_call_base(skill_def, skill_input),
+        "status": "success",
+        "success": True,
+        "prompt_visible": prompt_visible,
+        "result_available_to_decision": prompt_visible,
+        "decision_usage": "prompt_injected" if prompt_visible else "result_not_prompt_visible",
+        "output_summary": {
+            "confidence": float(output.confidence),
+            "has_prompt_injectable": prompt_visible,
+            "risk_alert_count": len(output.risk_alerts),
+            "evidence_ref_count": len(evidence_refs),
+        },
+    }
+
+
+def _skill_call_audit_error(
+    skill_def: SkillDefinition,
+    skill_input: SkillInput,
+    exc: Exception,
+) -> dict[str, Any]:
+    return {
+        **_skill_call_base(skill_def, skill_input),
+        "status": "error",
+        "success": False,
+        "prompt_visible": False,
+        "result_available_to_decision": False,
+        "decision_usage": "not_available_error",
+        "error_type": type(exc).__name__,
+        "error_message": str(exc),
+    }

@@ -22,6 +22,7 @@ from werewolf_agent.skills.schemas import (
     SkillFaction,
     SkillInput,
     SkillName,
+    SkillOutput,
 )
 
 
@@ -250,6 +251,82 @@ def test_markdown_body_append_respects_final_prompt_cap() -> None:
 
     assert len(output.prompt_injectable) <= PROMPT_INJECTABLE_CAP
     assert output.prompt_injectable.endswith("...（已省略）")
+
+
+def test_dispatch_for_role_records_each_skill_success_and_failure() -> None:
+    """P2-2: skill 调用监控必须逐个记录名称、输入摘要、成功/失败和结果摘要。"""
+
+    class AuditedRegistry(SkillRegistry):
+        def __init__(self) -> None:
+            self._skills = {
+                SkillName.PUSH_VOTE: SkillDefinition(
+                    name=SkillName.PUSH_VOTE,
+                    display_name="归票",
+                    description="push vote",
+                    faction=SkillFaction.COMMON,
+                    applicable_phases=["vote"],
+                ),
+                SkillName.RESIST_PUSH: SkillDefinition(
+                    name=SkillName.RESIST_PUSH,
+                    display_name="抗推",
+                    description="resist push",
+                    faction=SkillFaction.COMMON,
+                    applicable_phases=["vote"],
+                ),
+            }
+
+        def dispatch(self, name: SkillName, skill_input: SkillInput) -> SkillOutput:
+            if name == SkillName.RESIST_PUSH:
+                raise RuntimeError("boom private wolf")
+            return SkillOutput(
+                skill_name=name.value,
+                confidence=0.82,
+                prompt_injectable="建议对p02归票。",
+                reasoning="p02发言矛盾",
+                risk_alerts=["不要过度跟票"],
+                metadata={"evidence_refs": ["event:1"]},
+            )
+
+    records: list[dict[str, object]] = []
+    outputs = AuditedRegistry().dispatch_for_role(
+        "villager",
+        "vote",
+        SkillInput(
+            role="villager",
+            phase="vote",
+            task_type="vote",
+            day=1,
+            legal_targets=["p02", "p03"],
+            extra={"wolf_team_plan": {"private": "hidden"}},
+        ),
+        task_type="vote",
+        audit_records=records,
+    )
+
+    assert [output.skill_name for output in outputs] == ["push_vote"]
+    assert [record["call_name"] for record in records] == ["push_vote", "resist_push"]
+    assert records[0]["status"] == "success"
+    assert records[0]["success"] is True
+    assert records[0]["result_available_to_decision"] is True
+    assert records[0]["decision_usage"] == "prompt_injected"
+    assert records[0]["input_summary"] == {
+        "role": "villager",
+        "phase": "vote",
+        "task_type": "vote",
+        "day": 1,
+        "legal_target_count": 2,
+        "has_wolf_team_plan": True,
+    }
+    assert records[0]["output_summary"] == {
+        "confidence": 0.82,
+        "has_prompt_injectable": True,
+        "risk_alert_count": 1,
+        "evidence_ref_count": 1,
+    }
+    assert records[1]["status"] == "error"
+    assert records[1]["success"] is False
+    assert records[1]["error_type"] == "RuntimeError"
+    assert "boom" in str(records[1]["error_message"])
 
 
 def test_skill_bodies_do_not_reintroduce_false_role_rules() -> None:
