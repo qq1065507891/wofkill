@@ -270,6 +270,11 @@ class ModelRouter:
                 )
                 result.allow_text_tool_fallback = config.allow_text_tool_fallback
                 result.structured_output_mode = active_mode.value
+                result.reasoning_level = config.reasoning_level
+                result.reasoning_status = (
+                    "requested_not_confirmed" if config.reasoning_requested
+                    else "not_requested"
+                )
                 _normalize_tool_metadata(result, effective_tool_choice)
                 if not result.text:
                     last_empty_result = result
@@ -295,6 +300,8 @@ class ModelRouter:
                         primary_model=config.model,
                         fallback_provider=fallback_provider,
                         retry_count=primary_attempts - 1,
+                        reasoning_level=config.reasoning_level,
+                        reasoning_status=result.reasoning_status,
                     )
                 return result
             except Exception as exc:
@@ -355,6 +362,11 @@ class ModelRouter:
                     )
                     result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
                     result.structured_output_mode = fb_mode.value
+                    result.reasoning_level = fb_config.reasoning_level
+                    result.reasoning_status = (
+                        "requested_not_confirmed" if fb_config.reasoning_requested
+                        else "not_requested"
+                    )
                     _normalize_tool_metadata(result, fb_effective_tool_choice)
                     if not result.text:
                         last_empty_result = result
@@ -383,6 +395,8 @@ class ModelRouter:
                             fallback_model=fb_config.model,
                             retry_count=primary_attempts - 1 + fallback_attempts - 1,
                             failure_category="unknown" if primary_error else None,
+                            reasoning_level=fb_config.reasoning_level,
+                            reasoning_status=result.reasoning_status,
                         )
                     return result
                 except Exception as exc:
@@ -425,6 +439,11 @@ class ModelRouter:
             fallback_provider=fallback_provider,
             retry_count=primary_attempts - 1,
             failure_category="unknown" if primary_error else None,
+            reasoning_level=config.reasoning_level,
+            reasoning_status=(
+                "requested_not_confirmed" if config.reasoning_requested
+                else "not_requested"
+            ),
         )
         # R3-MG-2: surface the HTTP status / raw error from the most recent
         # exception so the categorizer can attribute 4xx/5xx to

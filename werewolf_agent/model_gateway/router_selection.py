@@ -59,6 +59,8 @@ def _resolve_config(
         structured_output_fallback_modes=tuple(
             mode.value for mode in structured_policy.fallback_modes
         ),
+        reasoning_level=_reasoning_level(model_profile),
+        reasoning_requested=bool(_reasoning_level(model_profile) != "none"),
     )
 
     fallback_cfg = llm_profile.get("fallback")
@@ -110,7 +112,17 @@ def _resolve_fallback_model(
         structured_output_fallback_modes=tuple(
             mode.value for mode in structured_policy.fallback_modes
         ),
+        reasoning_level=_reasoning_level(model_profile),
+        reasoning_requested=bool(_reasoning_level(model_profile) != "none"),
     )
+
+
+def _reasoning_level(model_profile: dict[str, Any]) -> str:
+    """读取供应商无关的推理意图，不把它误当成已生效能力。"""
+    value = model_profile.get("reasoning", "none")
+    if isinstance(value, dict):
+        value = value.get("level", "none")
+    return str(value or "none")
 
 
 __all__ = ["_resolve_config", "_resolve_fallback_model"]

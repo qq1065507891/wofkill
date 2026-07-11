@@ -182,6 +182,15 @@ class TestResolveConfig:
         assert fallback_config is not None
         assert fallback_config.max_tokens is None
 
+    def test_resolves_reasoning_request_without_claiming_provider_support(self) -> None:
+        router = _make_router()
+        router._model_profiles["claude_default"]["reasoning"] = {"level": "high"}
+
+        config, _fallback = router.resolve_config("p01", "speech")
+
+        assert config.reasoning_level == "high"
+        assert config.reasoning_requested is True
+
 
 class TestGenerateWithMockProvider:
     def test_generate_returns_text_from_mock(self) -> None:

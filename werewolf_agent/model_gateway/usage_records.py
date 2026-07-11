@@ -32,6 +32,8 @@ class ModelConfig:
     retry_count: int = 2
     structured_output_mode: str = "auto"
     structured_output_fallback_modes: tuple[str, ...] = ()
+    reasoning_level: str = "none"
+    reasoning_requested: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,8 @@ class UsageRecord:
     fallback_model: str | None = None
     retry_count: int = 0
     failure_category: str | None = None
+    reasoning_level: str = "none"
+    reasoning_status: str = "not_requested"
 
 
 @dataclass
@@ -73,6 +77,8 @@ class GenerateResult:
     structured_output_mode: str = ""
     http_status: int = 0
     raw_error: str | None = None
+    reasoning_level: str = "none"
+    reasoning_status: str = "not_requested"
 
 
 class EmptyModelResponseError(RuntimeError):
