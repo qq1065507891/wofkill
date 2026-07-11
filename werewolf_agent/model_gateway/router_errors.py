@@ -30,6 +30,13 @@ def _record_success_usage(
     result: GenerateResult,
     structured_output_mode: str,
     fallback_reason: str | None = None,
+    request_id: str = "",
+    primary_provider: str = "",
+    primary_model: str = "",
+    fallback_provider: str | None = None,
+    fallback_model: str | None = None,
+    retry_count: int = 0,
+    failure_category: str | None = None,
 ) -> None:
     """记录成功调用的用量，保持旧的截断策略。"""
     if not result.usage:
@@ -45,6 +52,13 @@ def _record_success_usage(
         fallback_reason=fallback_reason,
         success=True,
         structured_output_mode=structured_output_mode,
+        request_id=request_id,
+        primary_provider=primary_provider,
+        primary_model=primary_model,
+        fallback_provider=fallback_provider,
+        fallback_model=fallback_model,
+        retry_count=retry_count,
+        failure_category=failure_category,
     )
     _append_usage(usage_log, usage_lock, usage)
 
@@ -59,6 +73,13 @@ def _record_failure_usage(
     model: str,
     fallback_reason: str,
     structured_output_mode: str,
+    request_id: str = "",
+    primary_provider: str = "",
+    primary_model: str = "",
+    fallback_provider: str | None = None,
+    fallback_model: str | None = None,
+    retry_count: int = 0,
+    failure_category: str | None = None,
 ) -> None:
     """记录最终失败的路由用量。"""
     usage = UsageRecord(
@@ -69,6 +90,13 @@ def _record_failure_usage(
         fallback_reason=fallback_reason,
         success=False,
         structured_output_mode=structured_output_mode,
+        request_id=request_id,
+        primary_provider=primary_provider,
+        primary_model=primary_model,
+        fallback_provider=fallback_provider,
+        fallback_model=fallback_model,
+        retry_count=retry_count,
+        failure_category=failure_category,
     )
     _append_usage(usage_log, usage_lock, usage)
 

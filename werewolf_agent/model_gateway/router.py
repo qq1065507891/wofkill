@@ -13,6 +13,7 @@ import logging
 import random
 import threading
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -228,6 +229,7 @@ class ModelRouter:
         tests to avoid 5-15s of cumulative wait across 12 players.
         """
         config, fallback_provider = self.resolve_config(agent_id, task_type)
+        request_id = uuid.uuid4().hex
         active_mode = resolve_structured_output_mode(
             provider=config.provider,
             configured_mode=structured_output_mode or config.structured_output_mode,
@@ -242,9 +244,11 @@ class ModelRouter:
         primary_error: Exception | None = None
         fallback_error: Exception | None = None
         last_empty_result: GenerateResult | None = None
+        primary_attempts = 0
 
         max_retries = getattr(config, "retry_count", 2) or 0
         for attempt in range(max_retries + 1):
+            primary_attempts += 1
             # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
             # On the first attempt only — retries already have backoff.
             # R3-MG-3: skip entirely when jitter_seconds == (0, 0).
@@ -286,6 +290,11 @@ class ModelRouter:
                         task_type=task_type,
                         result=result,
                         structured_output_mode=active_mode.value,
+                        request_id=request_id,
+                        primary_provider=config.provider,
+                        primary_model=config.model,
+                        fallback_provider=fallback_provider,
+                        retry_count=primary_attempts - 1,
                     )
                 return result
             except Exception as exc:
@@ -327,7 +336,9 @@ class ModelRouter:
                 structured_output_mode=fb_mode.value,
             )
             fb_max_retries = getattr(fb_config, "retry_count", 1) or 0
+            fallback_attempts = 0
             for fb_attempt in range(fb_max_retries + 1):
+                fallback_attempts += 1
                 try:
                     fb_effective_tool_choice = (
                         tool_choice
@@ -365,6 +376,13 @@ class ModelRouter:
                             result=result,
                             fallback_reason=f"primary_failed:{_format_exception(primary_error)}",
                             structured_output_mode=fb_mode.value,
+                            request_id=request_id,
+                            primary_provider=config.provider,
+                            primary_model=config.model,
+                            fallback_provider=fb_config.provider,
+                            fallback_model=fb_config.model,
+                            retry_count=primary_attempts - 1 + fallback_attempts - 1,
+                            failure_category="unknown" if primary_error else None,
                         )
                     return result
                 except Exception as exc:
@@ -401,6 +419,12 @@ class ModelRouter:
             model=config.model,
             fallback_reason=failure_reason,
             structured_output_mode=active_mode.value,
+            request_id=request_id,
+            primary_provider=config.provider,
+            primary_model=config.model,
+            fallback_provider=fallback_provider,
+            retry_count=primary_attempts - 1,
+            failure_category="unknown" if primary_error else None,
         )
         # R3-MG-2: surface the HTTP status / raw error from the most recent
         # exception so the categorizer can attribute 4xx/5xx to

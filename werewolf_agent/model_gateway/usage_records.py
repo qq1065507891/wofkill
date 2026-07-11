@@ -48,6 +48,13 @@ class UsageRecord:
     fallback_reason: str | None = None
     success: bool = True
     structured_output_mode: str = ""
+    request_id: str = ""
+    primary_provider: str = ""
+    primary_model: str = ""
+    fallback_provider: str | None = None
+    fallback_model: str | None = None
+    retry_count: int = 0
+    failure_category: str | None = None
 
 
 @dataclass

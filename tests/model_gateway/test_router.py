@@ -294,6 +294,46 @@ class TestGenerateWithMockProvider:
         assert primary.calls == 1
         assert fallback.calls == 1
 
+    def test_fallback_usage_records_request_and_model_transition(self) -> None:
+        """fallback 元数据必须能还原主模型到备用模型的切换。"""
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _EmptyTextProvider("primary")
+        fallback = _StaticTextProvider('{"action_type":"speech","speech":"ok"}', "fallback")
+        router = ModelRouter(
+            model_profiles={
+                "primary_model": {
+                    "provider": "primary",
+                    "model": "primary-model",
+                    "retry_count": 0,
+                },
+                "fallback_model": {
+                    "provider": "fallback",
+                    "model": "fallback-model",
+                    "retry_count": 0,
+                },
+            },
+            llm_profiles={
+                "default": {
+                    "default": {"provider": "primary", "model_profile": "primary_model"},
+                    "fallback": {"provider": "fallback", "model_profile": "fallback_model"},
+                },
+            },
+            player_assignments={"p01": "default"},
+            providers={"primary": primary, "fallback": fallback},
+        )
+
+        router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+        usage = router.get_usage_log()[-1]
+
+        assert usage.request_id
+        assert usage.primary_provider == "primary"
+        assert usage.primary_model == "primary-model"
+        assert usage.fallback_provider == "fallback"
+        assert usage.fallback_model == "fallback-model"
+        assert usage.retry_count == 0
+        assert usage.failure_category == "unknown"
+
     def test_probe_tool_call_support_detects_mock(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
         result = router.probe_tool_call_support(agent_id="p01", task_type="speech")
