@@ -687,7 +687,7 @@ class TestPlannedWolfKillPrimaryAlive:
             players=players,
             night_number=1,
         )
-        evidence = [{"target": t} for t in (evidence_targets or [])]
+        evidence = [{"wolf_id": "w1", "target": t} for t in (evidence_targets or [])]
         return {
             "game_state": gs,
             "wolf_team_plan": {
@@ -714,8 +714,8 @@ class TestPlannedWolfKillPrimaryAlive:
         result = _planned_wolf_kill(state)
         assert result is None
 
-    def test_fallback_plan_with_weak_evidence_returns_none(self) -> None:
-        """Fallback wolf-team plans need strong evidence before authorizing a kill."""
+    def test_fallback_plan_with_weak_evidence_uses_quorum(self) -> None:
+        """Fallback weak plans use the same independent-wolf quorum gate."""
         from werewolf_agent.runtime.nodes._shared import _planned_wolf_kill
 
         state = self._make_state(
@@ -728,7 +728,8 @@ class TestPlannedWolfKillPrimaryAlive:
             consensus_method="fallback",
         )
         result = _planned_wolf_kill(state)
-        assert result is None
+        assert result is not None
+        assert result["wolf_kill_target_id"] == "p07"
 
     def test_returns_alive_primary_when_present(self) -> None:
         """Primary 存活时优先使用 primary。"""

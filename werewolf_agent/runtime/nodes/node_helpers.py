@@ -241,9 +241,73 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     evidence_quality = plan.get("evidence_quality")
     if evidence_quality == "none":
         return None
-    if plan.get("consensus_method") == "fallback" and evidence_quality != "strong":
+    if plan.get("consensus_method") == "fallback" and evidence_quality == "none":
         return None
     evidence = plan.get("evidence_from_discussion") or []
+    # 弱证据计划必须在执行边界重新验证独立狼人多数。计划可能来自
+    # LLM 或 fallback，不能仅凭生成阶段的 evidence_quality 放行。
+    if evidence_quality == "weak":
+        alive_wolves = set(_alive_wolves(gs))
+        quorum = len(alive_wolves) // 2 + 1
+        supporters_by_target: dict[str, set[str]] = {}
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            target_id = item.get("target")
+            wolf_id = item.get("wolf_id")
+            if target_id and wolf_id in alive_wolves:
+                supporters_by_target.setdefault(target_id, set()).add(wolf_id)
+        qualified = {
+            target_id: supporters
+            for target_id, supporters in supporters_by_target.items()
+            if len(supporters) >= quorum
+        }
+        # 两个目标同票时保持安全空刀，避免按计划顺序隐式裁决平票。
+        if qualified:
+            max_support = max(len(supporters) for supporters in qualified.values())
+            leaders = [
+                target_id
+                for target_id, supporters in qualified.items()
+                if len(supporters) == max_support
+            ]
+            if len(leaders) != 1:
+                event = GameEvent(
+                    type="wolf_no_kill_timeout",
+                    payload={
+                        "night_number": gs.night_number,
+                        "reason": "weak_plan_quorum_tie",
+                        "quorum": quorum,
+                        "supporters": {
+                            target_id: sorted(supporters)
+                            for target_id, supporters in supporters_by_target.items()
+                        },
+                    },
+                )
+                return {
+                    "game_state": replace(gs, events=gs.events + [event]),
+                    "wolf_kill_target_id": None,
+                }
+        else:
+            # 完全没有讨论证据时保持旧调用契约，由上层继续走通用安全路径；
+            # 只有存在但不足的证据才记录明确的 quorum 空刀。
+            if not supporters_by_target:
+                return None
+            event = GameEvent(
+                type="wolf_no_kill_timeout",
+                payload={
+                    "night_number": gs.night_number,
+                    "reason": "weak_plan_quorum_not_met",
+                    "quorum": quorum,
+                    "supporters": {
+                        target_id: sorted(supporters)
+                        for target_id, supporters in supporters_by_target.items()
+                    },
+                },
+            )
+            return {
+                "game_state": replace(gs, events=gs.events + [event]),
+                "wolf_kill_target_id": None,
+            }
     evidenced_targets = {
         item.get("target")
         for item in evidence

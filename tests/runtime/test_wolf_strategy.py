@@ -179,6 +179,67 @@ class TestWolfPlanDerivedFromDiscussion:
         assert _planned_wolf_kill(state) is None
 
 
+class TestWeakPlanQuorum:
+    """弱计划按独立存活狼人多数放行。"""
+
+    @staticmethod
+    def _state(evidence, *, wolf_count=3, primary="p10", backup=None):
+        players = {
+            **{
+                f"w{i}": PlayerState(id=f"w{i}", role="werewolf", alive=True)
+                for i in range(1, wolf_count + 1)
+            },
+            "p10": PlayerState(id="p10", role="villager", alive=True),
+            "p11": PlayerState(id="p11", role="villager", alive=True),
+        }
+        gs = GameState(game_id="weak-quorum", players=players, night_number=1)
+        return {
+            "game_state": gs,
+            "wolf_team_plan": {
+                "night_kill_primary": primary,
+                "night_kill_backup": backup,
+                "evidence_quality": "weak",
+                "evidence_from_discussion": evidence,
+            },
+        }
+
+    def test_three_wolves_need_two_unique_supporters(self):
+        from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+        result = _planned_wolf_kill(self._state([
+            {"wolf_id": "w1", "target": "p10"},
+        ]))
+        assert result["wolf_kill_target_id"] is None
+        assert result["game_state"].events[-1].type == "wolf_no_kill_timeout"
+
+        result = _planned_wolf_kill(self._state([
+            {"wolf_id": "w1", "target": "p10"},
+            {"wolf_id": "w1", "target": "p10"},
+            {"wolf_id": "w2", "target": "p10"},
+        ]))
+        assert result["wolf_kill_target_id"] == "p10"
+
+    def test_single_wolf_one_vote_meets_quorum(self):
+        from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+        result = _planned_wolf_kill(self._state(
+            [{"wolf_id": "w1", "target": "p10"}], wolf_count=1,
+        ))
+        assert result["wolf_kill_target_id"] == "p10"
+
+    def test_tied_qualified_targets_result_in_no_kill(self):
+        from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+        result = _planned_wolf_kill(self._state([
+            {"wolf_id": "w1", "target": "p10"},
+            {"wolf_id": "w2", "target": "p10"},
+            {"wolf_id": "w2", "target": "p11"},
+            {"wolf_id": "w3", "target": "p11"},
+        ], backup="p11"))
+        assert result["wolf_kill_target_id"] is None
+        assert result["game_state"].events[-1].payload["reason"] == "weak_plan_quorum_tie"
+
+
 class TestWolfDiscussionEarlyStop:
     """If majority agrees in round 1, later rounds can be skipped."""
 
