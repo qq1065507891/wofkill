@@ -16,6 +16,29 @@ def test_public_fact_claim_helpers_are_split_from_balance_audit_facade():
     )
 
 
+def test_public_fact_guard_redacts_unsupported_night_claims():
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    text = "p04知道首夜刀口信息，所以我不信任p04。"
+    sanitized, count = sanitize_public_text(text, [])
+
+    assert count == 1
+    assert "p04知道首夜刀口信息" not in sanitized
+    assert "未公开事实" in sanitized
+
+
+def test_public_fact_guard_preserves_supported_role_claims():
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    history = [("p02", "我是预言家，首夜查验p04为好人。")]
+    text = "p02自称预言家，应该优先核对他的警徽流。"
+
+    sanitized, count = sanitize_public_text(text, history)
+
+    assert count == 0
+    assert sanitized == text
+
+
 def test_balance_audit_flags_high_wolf_win_rate():
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 

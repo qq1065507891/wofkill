@@ -34,6 +34,10 @@ from werewolf_agent.runtime.nodes._shared import (
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.timeline import phase_label
+from werewolf_agent.evaluation.balance_public_claims import (
+    public_speech_history,
+    sanitize_public_text,
+)
 
 
 _REASON_LABELS = {
@@ -171,10 +175,19 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
                 exposure_collector=exposure_collector,
             )
             speech_text = result.get("speech_text", "") if result else ""
+            speech_text, redacted_claims = sanitize_public_text(
+                speech_text,
+                public_speech_history(gs.events),
+            )
             logger.debug(f"  [夜死遗言] {_player_display(state, pid)}: {speech_text if speech_text else '(无遗言)'}")
             new_events = [GameEvent(
                 type="night_death_last_words",
-                payload={"speaker": pid, "day_number": gs.day_number, "text": speech_text},
+                payload={
+                    "speaker": pid,
+                    "day_number": gs.day_number,
+                    "text": speech_text,
+                    **({"redacted_public_claims": redacted_claims} if redacted_claims else {}),
+                },
             )]
             if result and result.get("action_trace"):
                 new_events.extend(_action_audit_events(
@@ -237,10 +250,19 @@ def exile_last_words(state: RuntimeState) -> dict[str, Any]:
             exposure_collector=exposure_collector,
         )
         speech_text = result.get("speech_text", "") if result else ""
+        speech_text, redacted_claims = sanitize_public_text(
+            speech_text,
+            public_speech_history(gs.events),
+        )
         logger.debug(f"  [遗言] {_player_display(state, exiled_id)}: {speech_text if speech_text else '(无遗言)'}")
         new_events = [GameEvent(
             type="exile_last_words",
-            payload={"speaker": exiled_id, "day_number": gs.day_number, "text": speech_text},
+            payload={
+                "speaker": exiled_id,
+                "day_number": gs.day_number,
+                "text": speech_text,
+                **({"redacted_public_claims": redacted_claims} if redacted_claims else {}),
+            },
         )]
         if result and result.get("action_trace"):
             new_events.extend(_action_audit_events(

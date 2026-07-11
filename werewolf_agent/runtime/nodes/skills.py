@@ -30,6 +30,10 @@ from werewolf_agent.runtime.nodes._shared import (
     _player_display,
     logger,
 )
+from werewolf_agent.evaluation.balance_public_claims import (
+    public_speech_history,
+    sanitize_public_text,
+)
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 
@@ -359,6 +363,10 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
                 exposure_collector=exposure_collector,
             )
             speech_text = result.get("speech_text", "") if result else ""
+            speech_text, redacted_claims = sanitize_public_text(
+                speech_text,
+                public_speech_history(gs.events),
+            )
             logger.debug(f"  [PK发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
             events.append(GameEvent(
                 type="tie_pk_speech",
@@ -366,6 +374,7 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
                     "speaker": candidate_id,
                     "day_number": gs.day_number,
                     "text": speech_text,
+                    **({"redacted_public_claims": redacted_claims} if redacted_claims else {}),
                 },
             ))
             if result and result.get("action_trace"):

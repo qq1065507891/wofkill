@@ -29,6 +29,10 @@ from werewolf_agent.runtime.nodes._shared import (
     _stable_seed,
 )
 from werewolf_agent.runtime.sheriff_policy import is_all_players_on_sheriff
+from werewolf_agent.evaluation.balance_public_claims import (
+    public_speech_history,
+    sanitize_public_text,
+)
 
 
 def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
@@ -97,6 +101,10 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                 exposure_collector=exposure_collector,
             )
             speech_text = result.get("speech_text", "") if result else ""
+            speech_text, redacted_claims = sanitize_public_text(
+                speech_text,
+                public_speech_history(gs.events),
+            )
             logger.debug(f"  [警上发言] {_player_display(state, candidate_id)}: {speech_text if speech_text else '(未发言)'}")
             new_events: list[GameEvent] = []
             speech_event = GameEvent(
@@ -105,6 +113,7 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                     "speaker": candidate_id,
                     "day_number": gs.day_number,
                     "text": speech_text,
+                    **({"redacted_public_claims": redacted_claims} if redacted_claims else {}),
                 },
             )
             new_events.append(speech_event)

@@ -28,6 +28,10 @@ from werewolf_agent.runtime.nodes._shared import (
     _player_display,
     _timer_expired,
 )
+from werewolf_agent.evaluation.balance_public_claims import (
+    public_speech_history,
+    sanitize_public_text,
+)
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.sheriff_policy import (
     choose_no_sheriff_speech_order,
@@ -205,11 +209,17 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                     visibility="public",
                 )
             return {"game_state": gs, **advanced}
+        speech_text, redacted_claims = sanitize_public_text(
+            speech_text,
+            public_speech_history(gs.events),
+        )
         payload = {
             "speaker": speaker_id,
             "day_number": gs.day_number,
             "text": speech_text,
         }
+        if redacted_claims:
+            payload["redacted_public_claims"] = redacted_claims
         events = [GameEvent(type="speech", payload=payload)]
         if seer_credibility_audit:
             events.append(GameEvent(

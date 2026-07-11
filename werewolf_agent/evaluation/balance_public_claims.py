@@ -93,6 +93,64 @@ def unsupported_claims_in_text(
     return count
 
 
+def sanitize_public_text(
+    text: str,
+    public_speeches: list[tuple[str, str]],
+) -> tuple[str, int]:
+    """在公开事件写入前屏蔽没有公开来源支撑的事实引用。"""
+    redacted = 0
+
+    def replace_role(match: re.Match[str]) -> str:
+        nonlocal redacted
+        player_id, role = match.group(1), match.group(2)
+        if role_claim_supported(player_id, role, public_speeches):
+            return match.group(0)
+        redacted += 1
+        return "[未公开事实]"
+
+    def replace_night(match: re.Match[str]) -> str:
+        nonlocal redacted
+        player_id = match.group(1)
+        if night_info_claim_supported(player_id, public_speeches):
+            return match.group(0)
+        redacted += 1
+        return "[未公开事实]"
+
+    sanitized = _PUBLIC_ROLE_CLAIM_REF.sub(replace_role, text)
+    sanitized = _PUBLIC_NIGHT_INFO_REF.sub(replace_night, sanitized)
+    return sanitized, redacted
+
+
+def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:
+    """提取当前事件之前已经公开的发言，供发布前事实校验使用。"""
+    history: list[tuple[str, str]] = []
+    for event in events:
+        event_type = getattr(event, "type", None)
+        payload = getattr(event, "payload", {}) or {}
+        if isinstance(event, dict):
+            event_type = event.get("type")
+            payload = event.get("payload") or {}
+        if event_type not in {
+            "speech",
+            "sheriff_speech",
+            "sheriff_pk_speech",
+            "tie_pk_speech",
+            "exile_last_words",
+            "night_death_last_words",
+        } or not isinstance(payload, dict):
+            continue
+        speaker = str(
+            payload.get("speaker")
+            or payload.get("player_id")
+            or payload.get("candidate_id")
+            or ""
+        )
+        text = str(payload.get("text") or payload.get("speech") or "")
+        if speaker and text:
+            history.append((speaker, text))
+    return history
+
+
 def role_claim_supported(
     player_id: str,
     role: str,

@@ -34,6 +34,10 @@ from werewolf_agent.runtime.nodes._shared import (
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+from werewolf_agent.evaluation.balance_public_claims import (
+    public_speech_history,
+    sanitize_public_text,
+)
 
 
 def day_vote(state: RuntimeState) -> dict[str, Any]:
@@ -286,6 +290,17 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         logger.debug(f"  [投票结果] 防死循环强制放逐: {_player_display(state, result.exiled_player_id)}")
     else:
         logger.debug(f"  [投票结果] {result.reason}")
+    public_history = public_speech_history(gs.events)
+    public_votes: list[dict[str, Any]] = []
+    for voter_id, target_id in sorted(votes.items()):
+        reason, redacted_claims = sanitize_public_text(
+            _public_vote_reason((state.get("vote_action_traces") or {}).get(voter_id)),
+            public_history,
+        )
+        vote = {"voter": voter_id, "target": target_id, "reason": reason}
+        if redacted_claims:
+            vote["redacted_public_claims"] = redacted_claims
+        public_votes.append(vote)
     payload: dict[str, Any] = {
         "exiled": result.exiled_player_id,
         "reason": result.reason,
@@ -294,16 +309,7 @@ def resolve_vote(state: RuntimeState) -> dict[str, Any]:
         "sheriff_vote_weight": sheriff_vote_weight if sheriff_id else base_vote_weight,
         "weighted_tally": weighted_tally,
         "vote_weights": vote_weights,
-        "votes": [
-            {
-                "voter": voter_id,
-                "target": target_id,
-                "reason": _public_vote_reason(
-                    (state.get("vote_action_traces") or {}).get(voter_id)
-                ),
-            }
-            for voter_id, target_id in sorted(votes.items())
-        ],
+        "votes": public_votes,
     }
     if result.tied_player_ids:
         payload["tied"] = result.tied_player_ids
