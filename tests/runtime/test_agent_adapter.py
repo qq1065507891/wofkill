@@ -16,6 +16,19 @@ import pytest
 from werewolf_agent.runtime import agent_adapter
 
 
+def test_agent_adapter_reexports_dispatch_helpers() -> None:
+    from werewolf_agent.runtime import agent_action_pipeline
+
+    assert agent_adapter._action_trace_payload is agent_action_pipeline._action_trace_payload
+    assert agent_adapter._audit_context_kwargs is agent_action_pipeline._audit_context_kwargs
+
+
+def test_shared_agent_timeouts_remain_importable() -> None:
+    from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+
+    assert agent_adapter.AGENT_TIMEOUTS is AGENT_TIMEOUTS
+
+
 class TestSheriffPickSpeechOrderContract:
     """审查 A5: agent_sheriff_pick_speech_order 不应 model_copy 改 legal_actions 改 task_type。"""
 

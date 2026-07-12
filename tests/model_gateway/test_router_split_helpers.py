@@ -21,6 +21,20 @@ from werewolf_agent.model_gateway import router_selection
 from werewolf_agent.model_gateway import usage_records
 
 
+def test_usage_record_legacy_fields_remain_readable() -> None:
+    usage = usage_records.UsageRecord(
+        agent_id="p01",
+        task_type="vote",
+        provider="mock",
+        model="mock",
+        fallback_reason="legacy",
+        retry_count=1,
+    )
+
+    assert usage.fallback_reason == "legacy"
+    assert usage.retry_count == 1
+
+
 def test_usage_models_are_reexported_from_router_facade() -> None:
     assert router.ModelConfig is usage_records.ModelConfig
     assert router.UsageRecord is usage_records.UsageRecord

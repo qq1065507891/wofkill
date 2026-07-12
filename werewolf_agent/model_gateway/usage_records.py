@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-模型网关的配置、生成结果与用量记录数据结构。
+模型网关的配置、生成结果、用量记录与逐尝试执行记录兼容入口。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-09
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.model_gateway.usage_records import ModelConfig
@@ -17,6 +17,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ class UsageRecord:
     reasoning_level: str = "none"
     reasoning_status: str = "not_requested"
     reasoning_tokens: int = 0
+    attempts: tuple[AttemptExecutionRecord, ...] = ()
 
 
 @dataclass
@@ -81,6 +84,7 @@ class GenerateResult:
     reasoning_level: str = "none"
     reasoning_status: str = "not_requested"
     reasoning_tokens: int = 0
+    attempts: tuple[AttemptExecutionRecord, ...] = ()
 
 
 class EmptyModelResponseError(RuntimeError):
