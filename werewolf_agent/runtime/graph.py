@@ -224,6 +224,16 @@ def route_after_post_exile(state: RuntimeState) -> str:
     return "exile_last_words"
 
 
+def route_after_exile_last_words(state: RuntimeState) -> str:
+    """遗言完成后优先清理死亡警长的 active 警徽。"""
+    gs: GameState = state["game_state"]
+    if gs.winning_faction is not None:
+        return "reflection"
+    if _sheriff_died_this_batch(gs):
+        return "sheriff_badge_transfer"
+    return "summarize_context"
+
+
 def _route_after_badge_transfer(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
     if gs.phase == "night":

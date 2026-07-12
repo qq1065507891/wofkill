@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证警长竞选、死亡警徽处理与阶段路由。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -164,6 +172,62 @@ class TestSheriffBadgeNightDeathRouting:
         )
         result = route_after_hunter_shot({"game_state": gs, "engine": engine})
         assert result == "sheriff_badge_transfer"
+
+    def test_exiled_active_sheriff_transfers_badge_after_last_words(self) -> None:
+        """非终局警长放逐必须在遗言后处理警徽，再进入下一夜。"""
+        from werewolf_agent.runtime.graph import (
+            _route_after_badge_transfer,
+            route_after_exile_last_words,
+            route_after_post_exile,
+        )
+        from werewolf_agent.runtime.graph_registration import add_game_graph_edges
+        from werewolf_agent.runtime.nodes.day_deaths import exile_last_words
+        from werewolf_agent.runtime.nodes.day_vote import resolve_exile
+        from werewolf_agent.runtime.nodes.skills import sheriff_badge_transfer
+
+        engine = _new_engine()
+        players = {
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "sheriff": PlayerState(id="sheriff", role="villager"),
+            "good1": PlayerState(id="good1", role="villager"),
+            "good2": PlayerState(id="good2", role="seer"),
+        }
+        gs = GameState(
+            game_id="exiled_active_sheriff",
+            players=players,
+            phase="day",
+            day_number=2,
+            sheriff_id="sheriff",
+            sheriff_badge_state="active",
+            events=[GameEvent(type="vote_resolved", payload={"exiled": "sheriff"})],
+        )
+        exiled = resolve_exile({"game_state": gs, "engine": engine})["game_state"]
+        assert exiled.winning_faction is None
+        assert route_after_post_exile({"game_state": exiled, "engine": engine}) == "exile_last_words"
+        after_words = exile_last_words({"game_state": exiled, "engine": engine})["game_state"]
+
+        class EdgeProbe:
+            def __init__(self):
+                self.fixed_edges = []
+
+            def __getattr__(self, name):
+                if name == "add_edge":
+                    return lambda source, target: self.fixed_edges.append((source, target))
+                return lambda *_args, **_kwargs: None
+
+        probe = EdgeProbe()
+        add_game_graph_edges(probe)
+        assert ("exile_last_words", "summarize_context") not in probe.fixed_edges
+        assert route_after_exile_last_words({"game_state": after_words}) == "sheriff_badge_transfer"
+
+        transferred = sheriff_badge_transfer({
+            "game_state": after_words,
+            "engine": engine,
+            "badge_decision": "tear",
+        })["game_state"]
+        assert transferred.sheriff_id is None
+        assert transferred.sheriff_badge_state == "torn"
+        assert _route_after_badge_transfer({"game_state": transferred}) == "enter_night"
 
     def test_no_sheriff_death_routes_to_sheriff_election_on_night1(self) -> None:
         """Night 1 with no sheriff death must route to sheriff_first_day_entry.

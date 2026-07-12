@@ -207,7 +207,11 @@ def add_game_graph_edges(graph: StateGraph) -> None:
         "reflection": "reflection",
         "exile_last_words": "exile_last_words",
     })
-    graph.add_edge("exile_last_words", "summarize_context")
+    graph.add_conditional_edges("exile_last_words", graph_mod.route_after_exile_last_words, {
+        "reflection": "reflection",
+        "sheriff_badge_transfer": "sheriff_badge_transfer",
+        "summarize_context": "summarize_context",
+    })
     graph.add_conditional_edges("check_victory", graph_mod.route_victory, {
         "finish_game": "reflection",
         "exile_last_words": "exile_last_words",
