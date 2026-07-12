@@ -195,11 +195,6 @@ def route_after_resolve_night(state: RuntimeState) -> str:
 
 
 def route_after_hunter_shot(state: RuntimeState) -> str:
-    gs: GameState = state["game_state"]
-    if gs.winning_faction is not None:
-        return "reflection"
-    if _sheriff_died_this_batch(gs):
-        return "sheriff_badge_transfer"
     return "check_victory"
 
 

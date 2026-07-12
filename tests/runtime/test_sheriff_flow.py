@@ -153,8 +153,8 @@ class TestSheriffBadgeNightDeathRouting:
         assert result == "sheriff_badge_transfer"
 
     def test_sheriff_died_at_night_after_hunter_shot_routes_to_badge_transfer(self) -> None:
-        """route_after_hunter_shot routes to sheriff_badge_transfer when
-        sheriff died and game continues."""
+        """猎人反应先过胜负门，再处理夜死警长警徽。"""
+        from werewolf_agent.runtime.graph import route_victory
         engine = _new_engine()
         players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=42)
         sheriff_id = next(
@@ -171,7 +171,9 @@ class TestSheriffBadgeNightDeathRouting:
             sheriff_badge_state="active",
         )
         result = route_after_hunter_shot({"game_state": gs, "engine": engine})
-        assert result == "sheriff_badge_transfer"
+        assert result == "check_victory"
+        checked = check_victory({"game_state": gs, "engine": engine})["game_state"]
+        assert route_victory({"game_state": checked}) == "sheriff_badge_transfer"
 
     def test_exiled_active_sheriff_transfers_badge_after_last_words(self) -> None:
         """非终局警长放逐必须在遗言后处理警徽，再进入下一夜。"""
@@ -227,6 +229,62 @@ class TestSheriffBadgeNightDeathRouting:
         })["game_state"]
         assert transferred.sheriff_id is None
         assert transferred.sheriff_badge_state == "torn"
+        assert _route_after_badge_transfer({"game_state": transferred}) == "enter_night"
+
+    def test_exiled_sheriff_hunter_resolves_reaction_before_last_words_and_badge(self) -> None:
+        """警长猎人放逐后先结算开枪，再过胜负门、遗言和警徽。"""
+        from werewolf_agent.runtime.graph import (
+            _route_after_badge_transfer,
+            check_victory,
+            route_after_exile_last_words,
+            route_after_hunter_shot,
+            route_after_post_exile,
+            route_victory,
+        )
+        from werewolf_agent.runtime.nodes.day_deaths import exile_last_words
+        from werewolf_agent.runtime.nodes.day_vote import resolve_exile
+        from werewolf_agent.runtime.nodes.skills import resolve_hunter_shot, sheriff_badge_transfer
+
+        engine = _new_engine()
+        gs = GameState(
+            game_id="exiled_sheriff_hunter",
+            players={
+                "wolf": PlayerState(id="wolf", role="werewolf"),
+                "hunter": PlayerState(id="hunter", role="hunter"),
+                "good1": PlayerState(id="good1", role="villager"),
+                "good2": PlayerState(id="good2", role="seer"),
+            },
+            phase="day",
+            day_number=2,
+            sheriff_id="hunter",
+            sheriff_badge_state="active",
+            events=[GameEvent(type="vote_resolved", payload={"exiled": "hunter"})],
+        )
+        exiled = resolve_exile({"game_state": gs, "engine": engine})["game_state"]
+        assert route_after_post_exile({"game_state": exiled, "engine": engine}) == "resolve_hunter_shot"
+
+        reacted = resolve_hunter_shot({
+            "game_state": exiled,
+            "engine": engine,
+            "hunter_shot_target_id": None,
+        })["game_state"]
+        assert route_after_hunter_shot({"game_state": reacted, "engine": engine}) == "check_victory"
+        checked = check_victory({"game_state": reacted, "engine": engine})["game_state"]
+        assert checked.winning_faction is None
+        assert route_victory({"game_state": checked}) == "exile_last_words"
+
+        after_words = exile_last_words({"game_state": checked, "engine": engine})["game_state"]
+        assert route_after_exile_last_words({"game_state": after_words}) == "sheriff_badge_transfer"
+        transferred = sheriff_badge_transfer({
+            "game_state": after_words,
+            "engine": engine,
+            "badge_decision": "tear",
+        })["game_state"]
+
+        phases = [event.payload.get("phase") for event in transferred.events]
+        assert phases.count("exile_last_words") == 1
+        assert phases.index("exile_last_words") < phases.index("badge_decision")
+        assert transferred.sheriff_id is None
         assert _route_after_badge_transfer({"game_state": transferred}) == "enter_night"
 
     def test_no_sheriff_death_routes_to_sheriff_election_on_night1(self) -> None:

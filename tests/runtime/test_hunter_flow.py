@@ -285,6 +285,7 @@ class TestHunterShotOrdering:
             resolve_exile,
             resolve_hunter_shot,
             route_after_hunter_shot,
+            route_victory,
         )
 
         engine = _new_engine()
@@ -314,11 +315,17 @@ class TestHunterShotOrdering:
             "engine": engine,
             "hunter_shot_target_id": None,
         })["game_state"]
-        assert route_after_hunter_shot({"game_state": shot, "engine": engine}) == "reflection"
+        assert route_after_hunter_shot({"game_state": shot, "engine": engine}) == "check_victory"
         terminal = check_victory({"game_state": shot, "engine": engine})["game_state"]
 
         assert calls == 1
         assert len([e for e in terminal.events if e.type == "victory"]) == 1
+        assert route_victory({"game_state": terminal}) == "finish_game"
+        assert not [
+            e for e in terminal.events
+            if e.type == "judge_broadcast"
+            and e.payload.get("phase") in {"exile_last_words", "badge_decision"}
+        ]
 
     def test_daytime_hunter_shot_returns_to_victory_check_not_night_announcement(self) -> None:
         engine = _new_engine()
