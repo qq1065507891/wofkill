@@ -134,6 +134,27 @@ def _dispatch_agent(
     )
 
 
+def _hunter_reaction_resolved(
+    gs: GameState,
+    hunter_id: str,
+    resolution_batch: str,
+) -> bool:
+    """按猎人和死亡批次判断开枪或放弃反应是否已经完成。"""
+    if any(
+        death.source_player_id == hunter_id
+        and death.reason == "hunter_shot"
+        and death.resolution_batch == resolution_batch
+        for death in gs.deaths
+    ):
+        return True
+    return any(
+        event.type == "hunter_shot_declined"
+        and event.payload.get("hunter_id") == hunter_id
+        and event.payload.get("resolution_batch") == resolution_batch
+        for event in gs.events
+    )
+
+
 def _has_pending_hunter_shot(gs: GameState) -> bool:
     """判断死亡批次中是否仍有必须先结算的猎人开枪。"""
     for death in gs.deaths:
@@ -142,10 +163,7 @@ def _has_pending_hunter_shot(gs: GameState) -> bool:
         player = gs.players.get(death.player_id)
         if player is None or player.alive:
             continue
-        if not any(
-            item.source_player_id == death.player_id and item.reason == "hunter_shot"
-            for item in gs.deaths
-        ):
+        if not _hunter_reaction_resolved(gs, death.player_id, death.resolution_batch):
             return True
     return False
 
@@ -406,6 +424,7 @@ __all__ = [
     "_generate_judge_message",
     "_hitl_checkpoint",
     "_has_pending_hunter_shot",
+    "_hunter_reaction_resolved",
     "_jb",
     "_judge_broadcast",
     "_needs_sheriff_before_deaths",

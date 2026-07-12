@@ -26,6 +26,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _dispatch_agent,
     _ensure_runtime_audit_state,
     _judge_broadcast,
+    _hunter_reaction_resolved,
     _jb,
     _player_display,
     logger,
@@ -52,12 +53,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         player = gs.players[death.player_id]
         if player.role != "hunter" or player.alive:
             continue
-        # Skip if already resolved (death from this hunter already applied)
-        already_shot = any(
-            d.source_player_id == death.player_id and d.reason == "hunter_shot"
-            for d in gs.deaths
-        )
-        if already_shot:
+        if _hunter_reaction_resolved(gs, death.player_id, death.resolution_batch):
             continue
 
         gs, _ = _jb(

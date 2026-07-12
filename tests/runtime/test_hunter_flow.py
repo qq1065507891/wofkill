@@ -50,6 +50,7 @@ class _HunterMockRegistry:
     def __init__(self, shot_target: str | None = None) -> None:
         self._target = shot_target
         self.hunter_called = False
+        self.hunter_calls = 0
 
     def get_agent(self, player_id: str):
         return _HunterMockAgent(self)
@@ -65,6 +66,7 @@ class _HunterMockAgent:
             ActionType, FallbackAction, PlayerAction, RetryInfo,
         )
         self._registry.hunter_called = True
+        self._registry.hunter_calls += 1
         if self._registry._target and context.legal_actions and any(
             a.value == "hunter_shot" for a in context.legal_actions
         ):
@@ -377,6 +379,100 @@ class TestHunterShotOrdering:
             and event.payload.get("phase") == "death_announce"
             for event in dawn.events
         )
+
+    def test_repeated_hunter_resolver_declines_once_without_redispatch(self) -> None:
+        from werewolf_agent.runtime.graph import resolve_hunter_shot
+
+        engine = _new_engine()
+        registry = _HunterMockRegistry()
+        death = Death(
+            player_id="hunter",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_1",
+            triggered_skills=["hunter_shot"],
+        )
+        gs = GameState(
+            game_id="hunter_decline_idempotent",
+            players={
+                "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+                "wolf": PlayerState(id="wolf", role="werewolf"),
+                "good": PlayerState(id="good", role="villager"),
+            },
+            phase="night",
+            night_number=1,
+            deaths=[death],
+        )
+        state = {"game_state": gs, "engine": engine, "agent_registry": registry}
+
+        first = resolve_hunter_shot(state)["game_state"]
+        second = resolve_hunter_shot({**state, "game_state": first})["game_state"]
+
+        assert registry.hunter_calls == 1
+        assert len([event for event in second.events if event.type == "hunter_shot_declined"]) == 1
+
+    def test_hunter_reaction_resolution_is_scoped_by_hunter_and_batch(self) -> None:
+        from werewolf_agent.runtime.nodes._shared import _has_pending_hunter_shot
+
+        decline = GameEvent(
+            type="hunter_shot_declined",
+            payload={"hunter_id": "hunter1", "resolution_batch": "night_1"},
+        )
+        gs = GameState(
+            game_id="hunter_reaction_scope",
+            players={
+                "hunter1": PlayerState(id="hunter1", role="hunter", alive=False),
+                "hunter2": PlayerState(id="hunter2", role="hunter", alive=False),
+            },
+            deaths=[Death(
+                player_id="hunter1",
+                reason="wolf_kill",
+                timing="night",
+                resolution_batch="night_1",
+                triggered_skills=["hunter_shot"],
+            )],
+            events=[decline],
+        )
+
+        assert _has_pending_hunter_shot(gs) is False
+        assert _has_pending_hunter_shot(replace(
+            gs,
+            deaths=[replace(gs.deaths[0], resolution_batch="night_2")],
+        )) is True
+        assert _has_pending_hunter_shot(replace(
+            gs,
+            deaths=[replace(gs.deaths[0], player_id="hunter2")],
+        )) is True
+
+    def test_next_night_does_not_reopen_declined_historical_hunter(self) -> None:
+        engine = _new_engine()
+        death = Death(
+            player_id="hunter",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_1",
+            triggered_skills=["hunter_shot"],
+        )
+        decline = GameEvent(
+            type="hunter_shot_declined",
+            payload={"hunter_id": "hunter", "resolution_batch": "night_1"},
+        )
+        gs = GameState(
+            game_id="historical_hunter_decline",
+            players={
+                "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+                "wolf": PlayerState(id="wolf", role="werewolf"),
+                "good1": PlayerState(id="good1", role="villager"),
+                "good2": PlayerState(id="good2", role="seer"),
+            },
+            phase="night",
+            night_number=2,
+            day_number=1,
+            deaths=[death],
+            events=[decline],
+        )
+
+        assert route_after_resolve_night({"game_state": gs, "engine": engine}) != "resolve_hunter_shot"
 
     def test_daytime_hunter_shot_returns_to_victory_check_not_night_announcement(self) -> None:
         engine = _new_engine()
