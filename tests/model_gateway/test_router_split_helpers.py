@@ -49,6 +49,25 @@ def test_provider_call_helpers_are_reexported_from_router_facade() -> None:
     assert router._normalize_tool_metadata is provider_call._normalize_tool_metadata
 
 
+def test_tool_metadata_normalization_replaces_frozen_result() -> None:
+    original = usage_records.GenerateResult(
+        text="fallback text",
+        provider="legacy",
+        model="legacy-v1",
+        allow_text_tool_fallback=True,
+    )
+
+    normalized = provider_call._normalize_tool_metadata(
+        original,
+        {"type": "tool", "name": "submit_player_action"},
+    )
+
+    assert original.tool_call_required is False
+    assert normalized.tool_call_required is True
+    assert normalized.tool_call_name == "submit_player_action"
+    assert normalized.text_fallback_used is True
+
+
 def test_retry_helpers_are_reexported_from_router_facade() -> None:
     assert router._format_exception is retry_policy._format_exception
     assert router._http_status_from_exception is retry_policy._http_status_from_exception

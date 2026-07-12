@@ -17,6 +17,9 @@ from werewolf_agent.model_gateway.execution_records import (
     AttemptExecutionRecord,
     AttemptOutcome,
     EvidenceKind,
+    OpaqueRequestId,
+    ReasoningLevel,
+    ReasoningStatus,
     RootCause,
     RouteKind,
 )
@@ -24,17 +27,17 @@ from werewolf_agent.model_gateway.execution_records import (
 
 def _reasoned_attempt() -> AttemptExecutionRecord:
     return AttemptExecutionRecord(
-        request_id="opaque-1",
+        opaque_request_id=OpaqueRequestId("run_game_abcd1234"),
         ordinal=1,
         provider="primary",
         model="model-a",
         route_kind=RouteKind.PRIMARY,
         root_cause=RootCause.NONE,
         attempt_outcome=AttemptOutcome.SUCCESS,
-        requested_reasoning_level="high",
-        normalized_reasoning_status="confirmed",
+        requested_reasoning_level=ReasoningLevel.HIGH,
+        normalized_reasoning_status=ReasoningStatus.CONFIRMED,
         reasoning_token_count=17,
-        evidence_kind=EvidenceKind.PROVIDER_METADATA,
+        evidence_kind=EvidenceKind.AUTHORITATIVE_PROVIDER_EXECUTION,
     )
 
 
@@ -50,9 +53,9 @@ def test_usage_record_legacy_fields_remain_readable() -> None:
         attempts=(_reasoned_attempt(),),
     )
 
-    assert usage.fallback_reason == "timeout"
-    assert usage.retry_count == 2
-    assert usage.failure_category == "provider_error"
+    assert usage.fallback_reason is None
+    assert usage.retry_count == 0
+    assert usage.failure_category is None
     assert usage.reasoning_level == "high"
     assert usage.reasoning_status == "confirmed"
     assert usage.reasoning_tokens == 17
@@ -96,3 +99,22 @@ def test_provider_package_exports_remain_stable() -> None:
     }
 
     assert set(providers.__all__) == expected
+
+
+def test_raw_provider_request_id_and_invalid_reasoning_evidence_are_rejected() -> None:
+    with pytest.raises(ValueError, match="internal run-scope"):
+        OpaqueRequestId("provider-request-123")
+    with pytest.raises(ValueError, match="confirmed reasoning"):
+        AttemptExecutionRecord(
+            opaque_request_id=OpaqueRequestId("run_game_abcd1234"),
+            ordinal=1,
+            provider="primary",
+            model="model-a",
+            route_kind=RouteKind.PRIMARY,
+            root_cause=RootCause.NONE,
+            attempt_outcome=AttemptOutcome.SUCCESS,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.CONFIRMED,
+            reasoning_token_count=0,
+            evidence_kind=EvidenceKind.NORMALIZED_RESPONSE,
+        )

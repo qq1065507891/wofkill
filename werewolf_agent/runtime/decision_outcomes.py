@@ -52,6 +52,8 @@ def translate_decision_outcome(
         raise ValueError("attempt ordinals must be contiguous and start at 1")
     if attempts[0].route_kind is not RouteKind.PRIMARY:
         raise ValueError("attempt sequence must start with a primary route")
+    if any(item.route_kind is RouteKind.PRIMARY for item in attempts[1:]):
+        raise ValueError("primary route cannot be repeated")
     terminal_positions = [
         index for index, item in enumerate(attempts)
         if item.route_kind is RouteKind.SAFE_FALLBACK
@@ -61,7 +63,10 @@ def translate_decision_outcome(
     if any(item.attempt_outcome is not AttemptOutcome.FAILURE for item in attempts[:-1]):
         raise ValueError("only failed attempts may precede the final attempt")
     final = attempts[-1]
-    if final.attempt_outcome is AttemptOutcome.FAILURE:
+    if final.route_kind is RouteKind.SAFE_FALLBACK:
+        if final.attempt_outcome is not AttemptOutcome.FAILURE:
+            raise ValueError("terminal safe fallback must record a failed attempt")
+    elif final.attempt_outcome is AttemptOutcome.FAILURE:
         raise ValueError("attempt sequence has no successful terminal outcome")
 
     route_outcomes = {

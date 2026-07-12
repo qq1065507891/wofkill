@@ -14,6 +14,9 @@ from werewolf_agent.model_gateway.execution_records import (
     AttemptExecutionRecord,
     AttemptOutcome,
     EvidenceKind,
+    OpaqueRequestId,
+    ReasoningLevel,
+    ReasoningStatus,
     RootCause,
     RouteKind,
 )
@@ -33,17 +36,17 @@ def _attempt(
     reasoning_tokens: int = 0,
 ) -> AttemptExecutionRecord:
     return AttemptExecutionRecord(
-        request_id="opaque-request-1",
+        opaque_request_id=OpaqueRequestId("run_game_abcd1234"),
         ordinal=ordinal,
         provider="primary" if route_kind is not RouteKind.PROVIDER_FALLBACK else "backup",
         model="model-a",
         route_kind=route_kind,
         root_cause=cause,
         attempt_outcome=outcome,
-        requested_reasoning_level="high",
-        normalized_reasoning_status=reasoning_status,
+        requested_reasoning_level=ReasoningLevel.HIGH,
+        normalized_reasoning_status=ReasoningStatus(reasoning_status),
         reasoning_token_count=reasoning_tokens,
-        evidence_kind=EvidenceKind.PROVIDER_METADATA,
+        evidence_kind=(EvidenceKind.AUTHORITATIVE_PROVIDER_EXECUTION if reasoning_status == "confirmed" else EvidenceKind.NONE),
     )
 
 
@@ -99,7 +102,7 @@ def test_outcome_taxonomy_is_mutually_exclusive() -> None:
         (
             (
                 _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.POLICY_REJECTION),
-                _attempt(2, RouteKind.SAFE_FALLBACK, AttemptOutcome.SUCCESS),
+                _attempt(2, RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE, cause=RootCause.POLICY_REJECTION),
             ),
             DecisionOutcome.TERMINAL_FALLBACK,
             1,
@@ -129,6 +132,15 @@ def test_provider_fallback_preserves_reasoning_evidence() -> None:
 
 
 def test_illegal_attempt_sequences_are_rejected() -> None:
+    with pytest.raises(ValueError, match="start with a primary"):
+        translate_decision_outcome((_attempt(1, RouteKind.RETRY, AttemptOutcome.SUCCESS),))
+    with pytest.raises(ValueError, match="cannot be repeated"):
+        translate_decision_outcome(
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
+                _attempt(2, RouteKind.PRIMARY, AttemptOutcome.SUCCESS),
+            )
+        )
     with pytest.raises(ValueError, match="contiguous"):
         translate_decision_outcome(
             (_attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT), _attempt(3, RouteKind.RETRY, AttemptOutcome.SUCCESS))
@@ -137,7 +149,14 @@ def test_illegal_attempt_sequences_are_rejected() -> None:
         translate_decision_outcome(
             (
                 _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
-                _attempt(2, RouteKind.SAFE_FALLBACK, AttemptOutcome.SUCCESS),
+                _attempt(2, RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE, cause=RootCause.POLICY_REJECTION),
                 _attempt(3, RouteKind.RETRY, AttemptOutcome.SUCCESS),
+            )
+        )
+    with pytest.raises(ValueError, match="failed attempt"):
+        translate_decision_outcome(
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
+                _attempt(2, RouteKind.SAFE_FALLBACK, AttemptOutcome.SUCCESS),
             )
         )

@@ -69,9 +69,17 @@ class UsageRecord:
         if not self.attempts:
             return
         final = self.attempts[-1]
-        object.__setattr__(self, "request_id", final.request_id)
-        object.__setattr__(self, "reasoning_level", final.requested_reasoning_level)
-        object.__setattr__(self, "reasoning_status", final.normalized_reasoning_status)
+        object.__setattr__(self, "request_id", final.opaque_request_id.value)
+        object.__setattr__(self, "provider", final.provider)
+        object.__setattr__(self, "model", final.model)
+        object.__setattr__(self, "success", final.attempt_outcome.value == "attempt_success")
+        object.__setattr__(self, "retry_count", len(self.attempts) - 1)
+        failures = [item for item in self.attempts if item.root_cause.value != "none"]
+        cause = failures[0].root_cause.value if failures else None
+        object.__setattr__(self, "fallback_reason", cause)
+        object.__setattr__(self, "failure_category", cause)
+        object.__setattr__(self, "reasoning_level", final.requested_reasoning_level.value)
+        object.__setattr__(self, "reasoning_status", final.normalized_reasoning_status.value)
         object.__setattr__(self, "reasoning_tokens", final.reasoning_token_count)
 
 
@@ -101,8 +109,10 @@ class GenerateResult:
         if not self.attempts:
             return
         final = self.attempts[-1]
-        object.__setattr__(self, "reasoning_level", final.requested_reasoning_level)
-        object.__setattr__(self, "reasoning_status", final.normalized_reasoning_status)
+        object.__setattr__(self, "provider", final.provider)
+        object.__setattr__(self, "model", final.model)
+        object.__setattr__(self, "reasoning_level", final.requested_reasoning_level.value)
+        object.__setattr__(self, "reasoning_status", final.normalized_reasoning_status.value)
         object.__setattr__(self, "reasoning_tokens", final.reasoning_token_count)
 
 

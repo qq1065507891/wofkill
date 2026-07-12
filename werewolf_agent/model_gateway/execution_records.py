@@ -14,6 +14,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
+
+
+@dataclass(frozen=True)
+class OpaqueRequestId:
+    """仅允许内部 run-scope 格式的脱敏请求标识。"""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"run_[a-z0-9]{4,32}_[a-f0-9]{8,32}", self.value):
+            raise ValueError("opaque_request_id must use the internal run-scope format")
 
 
 class RootCause(str, Enum):
@@ -47,29 +59,43 @@ class EvidenceKind(str, Enum):
     """推理状态证据的来源类别，不保存原始私密内容。"""
 
     NONE = "none"
-    PROVIDER_METADATA = "provider_metadata"
+    AUTHORITATIVE_PROVIDER_EXECUTION = "authoritative_provider_execution"
     NORMALIZED_RESPONSE = "normalized_response"
+
+
+class ReasoningLevel(str, Enum):
+    NONE = "none"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ReasoningStatus(str, Enum):
+    CONFIRMED = "confirmed"
+    NOT_REQUESTED = "not_requested"
+    UNKNOWN = "unknown"
+    UNSUPPORTED = "unsupported"
 
 
 @dataclass(frozen=True)
 class AttemptExecutionRecord:
     """单次 provider 尝试的不可变、脱敏记录。"""
 
-    request_id: str
+    opaque_request_id: OpaqueRequestId
     ordinal: int
     provider: str
     model: str
     route_kind: RouteKind
     root_cause: RootCause
     attempt_outcome: AttemptOutcome
-    requested_reasoning_level: str
-    normalized_reasoning_status: str
+    requested_reasoning_level: ReasoningLevel
+    normalized_reasoning_status: ReasoningStatus
     reasoning_token_count: int
     evidence_kind: EvidenceKind
 
     def __post_init__(self) -> None:
-        if not self.request_id or any(char.isspace() for char in self.request_id):
-            raise ValueError("request_id must be an opaque non-empty token")
+        if not isinstance(self.opaque_request_id, OpaqueRequestId):
+            raise ValueError("opaque_request_id must be created by the internal boundary")
         if self.ordinal < 1:
             raise ValueError("ordinal must be >= 1")
         if self.reasoning_token_count < 0:
@@ -79,12 +105,21 @@ class AttemptExecutionRecord:
                 raise ValueError("failed attempt requires a root cause")
         elif self.root_cause is not RootCause.NONE:
             raise ValueError("successful attempt cannot have a root cause")
+        if self.normalized_reasoning_status is ReasoningStatus.CONFIRMED:
+            if self.reasoning_token_count == 0 and self.evidence_kind is not EvidenceKind.AUTHORITATIVE_PROVIDER_EXECUTION:
+                raise ValueError("confirmed reasoning requires tokens or authoritative execution evidence")
+        if self.normalized_reasoning_status is ReasoningStatus.NOT_REQUESTED:
+            if self.reasoning_token_count or self.evidence_kind is not EvidenceKind.NONE:
+                raise ValueError("not_requested reasoning cannot carry provider evidence")
 
 
 __all__ = [
     "AttemptExecutionRecord",
     "AttemptOutcome",
     "EvidenceKind",
+    "OpaqueRequestId",
+    "ReasoningLevel",
+    "ReasoningStatus",
     "RootCause",
     "RouteKind",
 ]

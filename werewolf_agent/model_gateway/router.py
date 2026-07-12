@@ -268,15 +268,19 @@ class ModelRouter:
                     tools=tools,
                     tool_choice=effective_tool_choice,
                 )
-                result.allow_text_tool_fallback = config.allow_text_tool_fallback
-                result.structured_output_mode = active_mode.value
-                result.reasoning_level = config.reasoning_level
-                if result.reasoning_status != "confirmed":
-                    result.reasoning_status = (
-                        "requested_not_confirmed" if config.reasoning_requested
+                result = replace(
+                    result,
+                    allow_text_tool_fallback=config.allow_text_tool_fallback,
+                    structured_output_mode=active_mode.value,
+                    reasoning_level=config.reasoning_level,
+                    reasoning_status=(
+                        result.reasoning_status
+                        if result.reasoning_status == "confirmed"
+                        else "requested_not_confirmed" if config.reasoning_requested
                         else "not_requested"
-                    )
-                _normalize_tool_metadata(result, effective_tool_choice)
+                    ),
+                )
+                result = _normalize_tool_metadata(result, effective_tool_choice)
                 if not result.text:
                     last_empty_result = result
                     primary_error = EmptyModelResponseError("empty_response")
@@ -362,15 +366,19 @@ class ModelRouter:
                         tools=tools,
                         tool_choice=fb_effective_tool_choice,
                     )
-                    result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
-                    result.structured_output_mode = fb_mode.value
-                    result.reasoning_level = fb_config.reasoning_level
-                    if result.reasoning_status != "confirmed":
-                        result.reasoning_status = (
-                            "requested_not_confirmed" if fb_config.reasoning_requested
+                    result = replace(
+                        result,
+                        allow_text_tool_fallback=fb_config.allow_text_tool_fallback,
+                        structured_output_mode=fb_mode.value,
+                        reasoning_level=fb_config.reasoning_level,
+                        reasoning_status=(
+                            result.reasoning_status
+                            if result.reasoning_status == "confirmed"
+                            else "requested_not_confirmed" if fb_config.reasoning_requested
                             else "not_requested"
-                        )
-                    _normalize_tool_metadata(result, fb_effective_tool_choice)
+                        ),
+                    )
+                    result = _normalize_tool_metadata(result, fb_effective_tool_choice)
                     if not result.text:
                         last_empty_result = result
                         fallback_error = EmptyModelResponseError("empty_response")
