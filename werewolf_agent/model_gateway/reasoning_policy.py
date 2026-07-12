@@ -56,6 +56,8 @@ def enforce_minimum_reasoning(task_type: str, configured: str) -> ReasoningLevel
 
 
 def _profile_level(model_profile: dict[str, Any]) -> ReasoningLevel:
+    if str(model_profile.get("provider", "")).lower() == "glm":
+        return ReasoningLevel.NONE
     raw = model_profile.get("reasoning", "none")
     if isinstance(raw, dict):
         raw = raw.get("level", "none")

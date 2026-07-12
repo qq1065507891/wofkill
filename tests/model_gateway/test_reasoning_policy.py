@@ -59,3 +59,14 @@ def test_high_task_validation_reports_required_and_actual_levels():
             llm_profiles={"weak_profile": {"default": {"provider": "openai", "model_profile": "medium"}}},
             player_assignments={"p01": "weak_profile"},
         )
+
+
+def test_glm_compatible_adapter_is_not_treated_as_reasoning_capable():
+    from werewolf_agent.model_gateway.reasoning_policy import validate_player_reasoning_profiles
+
+    with pytest.raises(ValueError, match="glm_profile"):
+        validate_player_reasoning_profiles(
+            model_profiles={"glm": {"provider": "glm", "model": "glm", "reasoning": {"level": "high"}}},
+            llm_profiles={"glm_profile": {"default": {"provider": "glm", "model_profile": "glm"}}},
+            player_assignments={"p01": "glm_profile"},
+        )

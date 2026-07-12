@@ -142,6 +142,8 @@ def _resolve_fallback_model(
 
 def _reasoning_level(model_profile: dict[str, Any]) -> str:
     """读取供应商无关的推理意图，不把它误当成已生效能力。"""
+    if str(model_profile.get("provider", "")).lower() == "glm":
+        return "none"
     value = model_profile.get("reasoning", "none")
     if isinstance(value, dict):
         value = value.get("level", "none")
