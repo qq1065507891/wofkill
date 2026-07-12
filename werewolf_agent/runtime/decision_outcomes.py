@@ -65,9 +65,11 @@ def translate_decision_outcome(
     if any(item.attempt_outcome is not AttemptOutcome.FAILURE for item in attempts[:-1]):
         raise ValueError("only failed attempts may precede the final attempt")
     final = attempts[-1]
-    if final.route_kind is RouteKind.PROVIDER_FALLBACK:
-        primary = attempts[0]
-        if (final.provider, final.model) == (primary.provider, primary.model):
+    for index, item in enumerate(attempts[1:], start=1):
+        if item.route_kind is not RouteKind.PROVIDER_FALLBACK:
+            continue
+        previous = attempts[index - 1]
+        if (item.provider, item.model) == (previous.provider, previous.model):
             raise ValueError("provider fallback must switch provider or model")
     if final.route_kind is RouteKind.SAFE_FALLBACK:
         if final.attempt_outcome is not AttemptOutcome.FAILURE:

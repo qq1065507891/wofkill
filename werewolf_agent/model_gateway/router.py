@@ -453,7 +453,7 @@ class ModelRouter:
             failure_category="unknown" if primary_error else None,
             reasoning_level=config.reasoning_level,
             reasoning_status=(
-                "requested_not_confirmed" if config.reasoning_requested
+                "requested_unconfirmed" if config.reasoning_requested
                 else "not_requested"
             ),
         )

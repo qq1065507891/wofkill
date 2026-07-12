@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 from werewolf_agent.model_gateway import provider_call
 from werewolf_agent.model_gateway import retry_policy
 from werewolf_agent.model_gateway import router
@@ -102,3 +104,7 @@ def test_error_helpers_are_reexported_from_router_facade() -> None:
 
 def test_probe_helper_is_reexported_from_router_facade() -> None:
     assert router.probe_tool_call_support is router_probe.probe_tool_call_support
+
+
+def test_router_never_emits_deprecated_requested_not_confirmed_status() -> None:
+    assert "requested_not_confirmed" not in inspect.getsource(router)

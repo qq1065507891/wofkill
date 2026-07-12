@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from werewolf_agent.model_gateway.execution_records import (
@@ -139,6 +141,23 @@ def test_illegal_attempt_sequences_are_rejected() -> None:
             (
                 _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
                 _attempt(2, RouteKind.PRIMARY, AttemptOutcome.SUCCESS),
+            )
+        )
+
+    with pytest.raises(ValueError, match="must switch"):
+        translate_decision_outcome(
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
+                replace(
+                    _attempt(
+                        2,
+                        RouteKind.PROVIDER_FALLBACK,
+                        AttemptOutcome.FAILURE,
+                        cause=RootCause.PROVIDER_ERROR,
+                    ),
+                    provider="primary",
+                ),
+                _attempt(3, RouteKind.RETRY, AttemptOutcome.SUCCESS),
             )
         )
     with pytest.raises(ValueError, match="contiguous"):

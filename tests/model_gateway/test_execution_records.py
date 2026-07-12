@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -141,3 +141,19 @@ def test_generate_result_rejects_mismatched_usage_evidence_chain() -> None:
     other = _reasoned_attempt().__class__(**{**_reasoned_attempt().__dict__, "opaque_request_id": OpaqueRequestId.new("game", "deadbeef")})
     with pytest.raises(ValueError, match="same evidence chain"):
         GenerateResult(text="ok", provider="primary", model="model-a", usage=usage, attempts=(other,))
+
+
+def test_generate_result_projects_attempts_into_legacy_usage_without_chain() -> None:
+    legacy = UsageRecord(agent_id="p01", task_type="vote", provider="wrong", model="wrong")
+    result = GenerateResult(text="ok", provider="wrong", model="wrong", usage=legacy, attempts=(_reasoned_attempt(),))
+    assert result.usage is not None
+    assert result.usage.attempts == result.attempts
+    assert (result.usage.provider, result.usage.model) == ("primary", "model-a")
+
+
+def test_usage_keeps_actual_fallback_route_when_final_attempt_is_retry() -> None:
+    primary = replace(_reasoned_attempt(), attempt_outcome=AttemptOutcome.FAILURE, root_cause=RootCause.TIMEOUT)
+    fallback = replace(primary, ordinal=2, provider="backup", route_kind=RouteKind.PROVIDER_FALLBACK)
+    retry = replace(_reasoned_attempt(), ordinal=3, provider="backup", route_kind=RouteKind.RETRY)
+    usage = UsageRecord(agent_id="p01", task_type="vote", provider="wrong", model="wrong", attempts=(primary, fallback, retry))
+    assert (usage.fallback_provider, usage.fallback_model) == ("backup", "model-a")

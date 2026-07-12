@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
@@ -75,9 +75,12 @@ class UsageRecord:
         object.__setattr__(self, "model", final.model)
         object.__setattr__(self, "primary_provider", primary.provider)
         object.__setattr__(self, "primary_model", primary.model)
-        is_fallback = final.route_kind.value == "provider_fallback"
-        object.__setattr__(self, "fallback_provider", final.provider if is_fallback else None)
-        object.__setattr__(self, "fallback_model", final.model if is_fallback else None)
+        fallback = next(
+            (item for item in self.attempts if item.route_kind.value == "provider_fallback"),
+            None,
+        )
+        object.__setattr__(self, "fallback_provider", fallback.provider if fallback else None)
+        object.__setattr__(self, "fallback_model", fallback.model if fallback else None)
         object.__setattr__(self, "success", final.attempt_outcome.value == "attempt_success")
         object.__setattr__(self, "retry_count", len(self.attempts) - 1)
         failures = [item for item in self.attempts if item.root_cause.value != "none"]
@@ -117,6 +120,8 @@ class GenerateResult:
                 raise ValueError("usage and result must share the same evidence chain")
             if not self.attempts:
                 object.__setattr__(self, "attempts", self.usage.attempts)
+        elif self.usage and self.attempts:
+            object.__setattr__(self, "usage", replace(self.usage, attempts=self.attempts))
         if not self.attempts:
             return
         final = self.attempts[-1]
