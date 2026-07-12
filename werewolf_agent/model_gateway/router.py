@@ -41,7 +41,10 @@ from werewolf_agent.model_gateway.retry_policy import (
     _is_retryable_exception,
     _raw_error_from_exception,
 )
-from werewolf_agent.model_gateway.reasoning_policy import enforce_minimum_reasoning
+from werewolf_agent.model_gateway.reasoning_policy import (
+    reasoning_capability_satisfies,
+    validate_player_reasoning_profiles,
+)
 from werewolf_agent.model_gateway.router_config import (
     _configured_provider_names,
     _validate_config,
@@ -118,6 +121,7 @@ class ModelRouter:
         llm_profiles: dict[str, dict[str, Any]],
         player_assignments: dict[str, str],
         providers: dict[str, LLMProvider] | None = None,
+        validate_reasoning: bool = False,
     ) -> None:
         self._model_profiles = model_profiles
         self._llm_profiles = llm_profiles
@@ -125,6 +129,12 @@ class ModelRouter:
         self._providers: dict[str, LLMProvider] = providers or {}
         self._usage_log: list[UsageRecord] = []
         self._usage_lock = threading.Lock()
+        if validate_reasoning:
+            validate_player_reasoning_profiles(
+                model_profiles=model_profiles,
+                llm_profiles=llm_profiles,
+                player_assignments={k: v for k, v in player_assignments.items() if k != "judge"},
+            )
 
     @classmethod
     def from_yaml(
@@ -148,20 +158,11 @@ class ModelRouter:
             player_assignments=assignments,
         )
         router._validate_config()
-        if data.get("enforce_player_reasoning", False):
-            from werewolf_agent.model_gateway.reasoning_policy import (
-                validate_player_reasoning_profiles,
-            )
-
-            validate_player_reasoning_profiles(
-                model_profiles=model_profiles,
-                llm_profiles=llm_profiles,
-                player_assignments={
-                    player_id: profile_id
-                    for player_id, profile_id in assignments.items()
-                    if player_id != "judge"
-                },
-            )
+        validate_player_reasoning_profiles(
+            model_profiles=model_profiles,
+            llm_profiles=llm_profiles,
+            player_assignments={k: v for k, v in assignments.items() if k != "judge"},
+        )
         if register_env_providers:
             router.register_env_providers()
         return router
@@ -270,16 +271,19 @@ class ModelRouter:
         )
         config = replace(config, structured_output_mode=active_mode.value)
 
-        provider = self._providers.get(config.provider)
-        if provider is None:
-            raise RuntimeError(f"Provider '{config.provider}' not found. Available: {list(self._providers.keys())}")
+        primary_capable = reasoning_capability_satisfies(
+            config.reasoning_capability,
+            config.reasoning_level,
+        )
+        provider = self._providers.get(config.provider) if primary_capable else None
+        primary_unavailable = primary_capable and provider is None
 
         primary_error: Exception | None = None
         fallback_error: Exception | None = None
         last_empty_result: GenerateResult | None = None
         primary_attempts = 0
 
-        max_retries = getattr(config, "retry_count", 2) or 0
+        max_retries = (getattr(config, "retry_count", 2) or 0) if provider else -1
         for attempt in range(max_retries + 1):
             primary_attempts += 1
             # Pre-call jitter: spread concurrent requests to avoid rate-limiting.
@@ -330,6 +334,8 @@ class ModelRouter:
                         config.provider,
                         config.model,
                     )
+                    if attempt < max_retries:
+                        continue
                     break
                 attempts.append(_attempt_record(
                     opaque_request_id, len(attempts) + 1, config, result,
@@ -337,6 +343,17 @@ class ModelRouter:
                     AttemptOutcome.SUCCESS, RootCause.NONE,
                 ))
                 result = replace(result, attempts=tuple(attempts))
+                if result.usage is None:
+                    result = replace(
+                        result,
+                        usage=UsageRecord(
+                            agent_id=agent_id,
+                            task_type=task_type,
+                            provider=result.provider,
+                            model=result.model,
+                            attempts=tuple(attempts),
+                        ),
+                    )
                 if result.usage:
                     _record_success_usage(
                         usage_log=self._usage_log,
@@ -383,21 +400,40 @@ class ModelRouter:
                 break
 
         # Try fallback
+        chain_result = self._generate_fallback_chain(
+            agent_id=agent_id,
+            task_type=task_type,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            tools=tools,
+            tool_choice=tool_choice,
+            primary_config=config,
+            primary_error=primary_error,
+            request_id=opaque_request_id,
+            attempts=attempts,
+        )
+        if chain_result is not None:
+            return chain_result
+        fallback_provider = None
         if fallback_provider and fallback_provider in self._providers:
             fb_provider = self._providers[fallback_provider]
-            fallback_model_profile = self._resolve_fallback_model(llm_profile_id=self._player_assignments.get(agent_id, ""))
+            fallback_model_profile = self._resolve_fallback_model(
+                llm_profile_id=self._player_assignments.get(agent_id, ""),
+                required_reasoning_level=config.reasoning_level,
+            )
             fb_config = fallback_model_profile or ModelConfig(
                 provider=fallback_provider, model="fallback"
             )
-            fallback_level = enforce_minimum_reasoning(
-                task_type,
-                fb_config.reasoning_level,
-            )
             fb_config = replace(
                 fb_config,
-                reasoning_level=fallback_level.value,
-                reasoning_requested=fallback_level is not ReasoningLevel.NONE,
+                reasoning_level=config.reasoning_level,
+                reasoning_requested=config.reasoning_requested,
             )
+            if not reasoning_capability_satisfies(
+                fb_config.reasoning_capability,
+                fb_config.reasoning_level,
+            ):
+                fallback_provider = None
             fb_mode = resolve_structured_output_mode(
                 provider=fb_config.provider,
                 configured_mode=fb_config.structured_output_mode,
@@ -461,6 +497,17 @@ class ModelRouter:
                         AttemptOutcome.SUCCESS, RootCause.NONE,
                     ))
                     result = replace(result, attempts=tuple(attempts))
+                    if result.usage is None:
+                        result = replace(
+                            result,
+                            usage=UsageRecord(
+                                agent_id=agent_id,
+                                task_type=task_type,
+                                provider=result.provider,
+                                model=result.model,
+                                attempts=tuple(attempts),
+                            ),
+                        )
                     if result.usage:
                         _record_success_usage(
                             usage_log=self._usage_log,
@@ -512,10 +559,15 @@ class ModelRouter:
 
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
+        terminal_root = (
+            RootCause.PROVIDER_ERROR
+            if primary_unavailable and not attempts
+            else RootCause.POLICY_REJECTION
+        )
         attempts.append(_attempt_record(
             opaque_request_id, len(attempts) + 1, config, None,
             RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
-            RootCause.POLICY_REJECTION,
+            terminal_root,
             terminal=True,
         ))
         _record_failure_usage(
@@ -553,12 +605,128 @@ class ModelRouter:
             attempts=tuple(attempts),
         )
 
-    def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:
+    def _resolve_fallback_model(
+        self,
+        llm_profile_id: str,
+        required_reasoning_level: str = "none",
+        candidate_index: int = 0,
+    ) -> ModelConfig | None:
         return _resolve_fallback_model(
             model_profiles=self._model_profiles,
             llm_profiles=self._llm_profiles,
             llm_profile_id=llm_profile_id,
+            required_reasoning_level=required_reasoning_level,
+            candidate_index=candidate_index,
         )
+
+    def _generate_fallback_chain(
+        self,
+        *,
+        agent_id: str,
+        task_type: str,
+        prompt: str,
+        system_prompt: str | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: dict[str, Any] | None,
+        primary_config: ModelConfig,
+        primary_error: Exception | None,
+        request_id: OpaqueRequestId,
+        attempts: list[AttemptExecutionRecord],
+    ) -> GenerateResult | None:
+        """按配置顺序尝试所有能力合格的 fallback 候选。"""
+        profile_id = self._player_assignments.get(agent_id, "")
+        index = 0
+        while True:
+            config = self._resolve_fallback_model(
+                profile_id,
+                primary_config.reasoning_level,
+                index,
+            )
+            if config is None:
+                return None
+            index += 1
+            provider = self._providers.get(config.provider)
+            if provider is None:
+                continue
+            config = replace(
+                config,
+                reasoning_level=primary_config.reasoning_level,
+                reasoning_requested=primary_config.reasoning_requested,
+            )
+            mode = resolve_structured_output_mode(
+                provider=config.provider,
+                configured_mode=config.structured_output_mode,
+                allow_text_tool_fallback=config.allow_text_tool_fallback,
+            )
+            config = replace(config, structured_output_mode=mode.value)
+            retries = getattr(config, "retry_count", 1) or 0
+            for retry_index in range(retries + 1):
+                try:
+                    effective_choice = (
+                        tool_choice if mode == StructuredOutputMode.NATIVE_TOOL else None
+                    )
+                    result = _call_provider_generate(
+                        provider, prompt, config, system_prompt,
+                        tools=tools, tool_choice=effective_choice,
+                    )
+                    result = replace(
+                        result,
+                        structured_output_mode=mode.value,
+                        reasoning_level=config.reasoning_level,
+                        reasoning_status=(
+                            result.reasoning_status
+                            if result.reasoning_status == "confirmed"
+                            else "requested_unconfirmed"
+                        ),
+                    )
+                    result = _normalize_tool_metadata(result, effective_choice)
+                    if not result.text:
+                        attempts.append(_attempt_record(
+                            request_id, len(attempts) + 1, config, result,
+                            RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE,
+                            RootCause.INVALID_OUTPUT,
+                        ))
+                        if retry_index < retries:
+                            continue
+                        break
+                    attempts.append(_attempt_record(
+                        request_id, len(attempts) + 1, config, result,
+                        RouteKind.PROVIDER_FALLBACK, AttemptOutcome.SUCCESS,
+                        RootCause.NONE,
+                    ))
+                    if result.usage is None:
+                        result = replace(result, usage=UsageRecord(
+                            agent_id=agent_id, task_type=task_type,
+                            provider=result.provider, model=result.model,
+                            attempts=tuple(attempts),
+                        ))
+                    result = replace(result, attempts=tuple(attempts))
+                    _record_success_usage(
+                        usage_log=self._usage_log,
+                        usage_lock=self._usage_lock,
+                        agent_id=agent_id,
+                        task_type=task_type,
+                        result=result,
+                        fallback_reason="provider_error" if primary_error else None,
+                        structured_output_mode=mode.value,
+                        primary_provider=primary_config.provider,
+                        primary_model=primary_config.model,
+                        fallback_provider=config.provider,
+                        fallback_model=config.model,
+                        reasoning_level=config.reasoning_level,
+                        reasoning_status=result.reasoning_status,
+                        reasoning_tokens=result.reasoning_tokens,
+                    )
+                    return result
+                except Exception as exc:
+                    attempts.append(_attempt_record(
+                        request_id, len(attempts) + 1, config, None,
+                        RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE,
+                        _root_cause(exc),
+                    ))
+                    if retry_index < retries and _is_retryable_exception(exc):
+                        continue
+                    break
 
     def _configured_provider_names(self) -> set[str]:
         return _configured_provider_names(self._model_profiles, self._llm_profiles)
@@ -566,6 +734,29 @@ class ModelRouter:
     def get_usage_log(self) -> list[UsageRecord]:
         with self._usage_lock:
             return list(self._usage_log)
+
+    def _terminal_policy_failure(
+        self,
+        agent_id: str,
+        task_type: str,
+        config: ModelConfig,
+        request_id: OpaqueRequestId,
+        root_cause: RootCause = RootCause.POLICY_REJECTION,
+    ) -> GenerateResult:
+        attempt = _attempt_record(
+            request_id, 1, config, None, RouteKind.SAFE_FALLBACK,
+            AttemptOutcome.FAILURE, root_cause, terminal=True,
+        )
+        usage = UsageRecord(
+            agent_id=agent_id, task_type=task_type, provider=config.provider,
+            model=config.model, attempts=(attempt,),
+        )
+        with self._usage_lock:
+            self._usage_log.append(usage)
+        return GenerateResult(
+            text="", provider=config.provider, model=config.model,
+            usage=usage, attempts=(attempt,),
+        )
 
     def get_llm_profile_for_agent(self, agent_id: str) -> str:
         return self._player_assignments.get(agent_id, "")

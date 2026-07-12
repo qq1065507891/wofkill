@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-12
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -456,6 +456,7 @@ def run_player_action_flow(
             parse_success=parse_success,
             retry_count=attempt,
             structured_output_mode=structured_output_mode,
+            execution_attempts=tuple(getattr(result, "attempts", ())),
         ), retry
 
     # Fallback
@@ -482,5 +483,6 @@ def run_player_action_flow(
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
+        execution_attempts=tuple(getattr(result, "attempts", ())),
     )
     return fallback, retry

@@ -3,7 +3,7 @@
 功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -13,6 +13,8 @@ from typing import Any
 
 from werewolf_agent.agents.schemas import ActionTrace, AgentContext, PlayerAction, RetryInfo
 from werewolf_agent.runtime.world_model_audit import build_world_model_audit_from_context
+from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
+from werewolf_agent.runtime.decision_outcomes import translate_decision_outcome
 
 
 def build_action_trace(
@@ -33,6 +35,7 @@ def build_action_trace(
     structured_failure_reason: str | None = None,
     structured_output_mode: str = "",
     structured_failure_stage: str | None = None,
+    execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
 ) -> ActionTrace:
     """Build an ActionTrace from the current attempt's state.
 
@@ -49,6 +52,10 @@ def build_action_trace(
         parsed_action.model_dump(exclude={"trace"})
         if isinstance(parsed_action, PlayerAction)
         else parsed_action
+    )
+    outcome = (
+        translate_decision_outcome(execution_attempts).outcome.value
+        if execution_attempts else None
     )
     return ActionTrace(
         raw_text=raw_text,
@@ -73,4 +80,6 @@ def build_action_trace(
             context,
             parsed_action=parsed_payload,
         ),
+        execution_attempts=execution_attempts,
+        decision_outcome=outcome,
     )

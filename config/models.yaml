@@ -1,5 +1,4 @@
 # V1 real-run model routing.
-enforce_player_reasoning: true
 # Provider/model names are configuration only. API keys stay in .env.
 #
 # Ark (Volcengine) OpenAI-compatible endpoint — set in .env:
@@ -31,7 +30,7 @@ model_profiles:
     top_p: 0.9
     timeout: 120
     reasoning:
-      level: medium
+      level: high
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json
@@ -97,7 +96,7 @@ model_profiles:
     top_p: 0.95
     timeout: 90
     reasoning:
-      level: medium
+      level: high
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json

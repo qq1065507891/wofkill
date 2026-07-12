@@ -74,6 +74,7 @@ def _make_router(*, providers: dict | None = None):
                 "provider": "anthropic",
                 "model": "claude-sonnet-4-6",
                 "temperature": 0.7,
+                "reasoning": {"level": "high"},
             },
         },
         llm_profiles={
@@ -188,7 +189,8 @@ class TestResolveConfig:
 
         config, _fallback = router.resolve_config("p01", "speech")
 
-        assert config.reasoning_level == "high"
+        assert config.reasoning_level == "medium"
+        assert config.reasoning_capability == "high"
         assert config.reasoning_requested is True
 
 
@@ -214,7 +216,7 @@ class TestGenerateWithMockProvider:
         router = ModelRouter(
             model_profiles={
                 "primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "medium"}},
-                "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "none"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "high"}},
             },
             llm_profiles={"profile": {
                 "default": {"provider": "primary", "model_profile": "primary"},
@@ -230,6 +232,123 @@ class TestGenerateWithMockProvider:
         assert result.attempts[0].attempt_outcome.value == "attempt_failure"
         assert result.attempts[1].route_kind.value == "provider_fallback"
         assert result.attempts[1].requested_reasoning_level.value == "medium"
+
+    def test_high_task_skips_medium_primary_and_none_fallback_without_provider_calls(self) -> None:
+        primary = _StaticTextProvider("must not run", "primary")
+        fallback = _StaticTextProvider("must not run", "fallback")
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p", "reasoning": {"level": "medium"}},
+                "fallback": {"provider": "fallback", "model": "f", "reasoning": {"level": "none"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "fallback": fallback},
+            validate_reasoning=False,
+        )
+
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        assert primary.calls == fallback.calls == 0
+        assert result.text == ""
+        assert result.attempts[-1].normalized_reasoning_status.value == "fallback_disabled"
+
+    def test_empty_response_retries_before_fallback(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        empty = _EmptyTextProvider("primary")
+        router = ModelRouter(
+            model_profiles={"p": {"provider": "primary", "model": "p", "retry_count": 1, "reasoning": {"level": "high"}}},
+            llm_profiles={"profile": {"default": {"provider": "primary", "model_profile": "p"}}},
+            player_assignments={"p01": "profile"}, providers={"primary": empty},
+            validate_reasoning=False,
+        )
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+        assert empty.calls == 2
+        assert [attempt.route_kind.value for attempt in result.attempts[:2]] == ["primary", "retry"]
+
+    def test_success_without_provider_usage_still_records_attempt_denominator(self) -> None:
+        class NoUsageProvider(_StaticTextProvider):
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                from werewolf_agent.model_gateway.router import GenerateResult
+                self.calls += 1
+                return GenerateResult(text="ok", provider=self.name, model=config.model)
+
+        provider = NoUsageProvider("ok", "primary")
+        router = _make_router(providers={"anthropic": provider})
+        router._model_profiles["claude_default"]["reasoning"] = {"level": "high"}
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+        assert result.usage is not None
+        assert result.usage.attempts == result.attempts
+        assert len(router.get_usage_log()) == 1
+
+    def test_ordered_fallback_chain_skips_incapable_candidate(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _EmptyTextProvider("primary")
+        weak = _StaticTextProvider("must not run", "weak")
+        strong = _StaticTextProvider("ok", "strong")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "high"}},
+                "weak": {"provider": "weak", "model": "w", "reasoning": {"level": "none"}},
+                "strong": {"provider": "strong", "model": "s", "retry_count": 0, "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": [
+                    {"provider": "weak", "model_profile": "weak"},
+                    {"provider": "strong", "model_profile": "strong"},
+                ],
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "weak": weak, "strong": strong},
+            validate_reasoning=False,
+        )
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+        assert weak.calls == 0
+        assert strong.calls == 1
+        assert result.provider == "strong"
+
+    def test_missing_provider_returns_auditable_terminal_failure(self) -> None:
+        router = _make_router(providers={})
+        router._model_profiles["claude_default"]["reasoning"] = {"level": "high"}
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+        assert result.text == ""
+        assert result.attempts[-1].route_kind.value == "safe_fallback"
+        assert result.attempts[-1].root_cause.value == "provider_error"
+        assert router.get_usage_log()[-1].attempts == result.attempts
+
+    def test_ordered_fallback_continues_after_capable_candidate_failure(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        first = _EmptyTextProvider("first")
+        second = _StaticTextProvider("ok", "second")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "missing", "model": "p", "reasoning": {"level": "high"}},
+                "first": {"provider": "first", "model": "f1", "retry_count": 0, "reasoning": {"level": "high"}},
+                "second": {"provider": "second", "model": "f2", "retry_count": 0, "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "missing", "model_profile": "primary"},
+                "fallback": [
+                    {"provider": "first", "model_profile": "first"},
+                    {"provider": "second", "model_profile": "second"},
+                ],
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"first": first, "second": second}, validate_reasoning=False,
+        )
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+        assert first.calls == second.calls == 1
+        assert [attempt.provider for attempt in result.attempts] == ["first", "second"]
+        assert result.text == "ok"
 
     def test_generate_returns_text_from_mock(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
@@ -306,11 +425,13 @@ class TestGenerateWithMockProvider:
                     "provider": "primary",
                     "model": "primary-model",
                     "retry_count": 0,
+                    "reasoning": {"level": "high"},
                 },
                 "fallback_model": {
                     "provider": "fallback",
                     "model": "fallback-model",
                     "retry_count": 0,
+                    "reasoning": {"level": "high"},
                 },
             },
             llm_profiles={
@@ -353,11 +474,13 @@ class TestGenerateWithMockProvider:
                     "provider": "primary",
                     "model": "primary-model",
                     "retry_count": 0,
+                    "reasoning": {"level": "high"},
                 },
                 "fallback_model": {
                     "provider": "fallback",
                     "model": "fallback-model",
                     "retry_count": 0,
+                    "reasoning": {"level": "high"},
                 },
             },
             llm_profiles={
@@ -424,6 +547,8 @@ class TestFromYamlValidation:
             "  real_profile:\n"
             "    provider: anthropic\n"
             "    model: claude-sonnet-4-6\n"
+            "    reasoning:\n"
+            "      level: high\n"
             "llm_profiles:\n"
             "  default:\n"
             "    default:\n"
@@ -447,6 +572,8 @@ class TestFromYamlValidation:
             "  real_profile:\n"
             "    provider: anthropic\n"
             "    model: claude-sonnet-4-6\n"
+            "    reasoning:\n"
+            "      level: high\n"
             "llm_profiles:\n"
             "  default:\n"
             "    default:\n"
@@ -493,6 +620,8 @@ class TestFromYamlValidation:
             "  real_profile:\n"
             "    provider: anthropic\n"
             "    model: claude-sonnet-4-6\n"
+            "    reasoning:\n"
+            "      level: high\n"
             "llm_profiles:\n"
             "  default:\n"
             "    default:\n"

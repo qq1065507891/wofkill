@@ -45,3 +45,17 @@ def test_validation_names_profile_below_speech_minimum(configured):
             llm_profiles={"weak_profile": {"default": {"provider": "openai", "model_profile": "weak_model"}}},
             player_assignments={"p01": "weak_profile"},
         )
+
+
+def test_high_task_validation_reports_required_and_actual_levels():
+    from werewolf_agent.model_gateway.reasoning_policy import validate_player_reasoning_profiles
+
+    with pytest.raises(
+        ValueError,
+        match=r"weak_profile.*task 'deception'.*required 'high'.*actual 'medium'",
+    ):
+        validate_player_reasoning_profiles(
+            model_profiles={"medium": {"provider": "openai", "model": "m", "reasoning": {"level": "medium"}}},
+            llm_profiles={"weak_profile": {"default": {"provider": "openai", "model_profile": "medium"}}},
+            player_assignments={"p01": "weak_profile"},
+        )

@@ -161,3 +161,22 @@ class TestAnthropicTextFallbackRobustness:
         assert result.text == "final answer"
         assert result.reasoning_status == "confirmed"
         assert result.reasoning_tokens == 5
+
+    def test_high_reasoning_request_sends_anthropic_thinking_contract(self) -> None:
+        from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+        from werewolf_agent.model_gateway.router import ModelConfig
+
+        client = _FakeHttpClient({
+            "content": [{"type": "text", "text": "answer"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+        result = AnthropicProvider(
+            api_key="k", base_url="https://api.example", http_client=client,
+        ).generate("hello", ModelConfig(
+            provider="anthropic", model="claude-test",
+            reasoning_level="high", reasoning_requested=True,
+            reasoning_capability="high", max_tokens=2048,
+        ))
+        assert client.last_json["thinking"]["type"] == "enabled"
+        assert client.last_json["thinking"]["budget_tokens"] > 0
+        assert result.reasoning_status == "requested_unconfirmed"

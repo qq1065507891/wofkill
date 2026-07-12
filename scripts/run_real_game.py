@@ -40,16 +40,23 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(
-            Path(os.environ.get("WEREWOLF_GAME_LOG_PATH", ROOT / "game_stdout.log")),
-            encoding="utf-8",
-        ),
     ],
 )
 # 打开游戏步骤细节，便于观察身份分配、夜晚行动、发言和投票；压低 httpx 噪声。
 logging.getLogger("werewolf_agent.runtime.nodes").setLevel(logging.DEBUG)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("real_game")
+
+
+def _configure_file_logging() -> Path:
+    """在实际启动时创建日志文件，导入报告 helper 不产生文件副作用。"""
+    path = Path(os.environ.get("WEREWOLF_GAME_LOG_PATH", ROOT / "game_stdout.log"))
+    file_handler = logging.FileHandler(path, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
+    logging.getLogger().addHandler(file_handler)
+    return path
 
 
 # ── 辅助函数 ─────────────────────────────────────────────────────────────
@@ -247,6 +254,7 @@ def save_game_log(runner: GameRunner, elapsed: float) -> Path:
 # ── main ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    _configure_file_logging()
     parser = argparse.ArgumentParser(description="Run a real 12-player werewolf game")
     parser.add_argument("--seed", type=int, default=None, help="Game seed (default: auto)")
     parser.add_argument("--max-steps", type=int, default=500, help="Max graph steps")

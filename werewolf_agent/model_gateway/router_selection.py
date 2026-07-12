@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from werewolf_agent.model_gateway.reasoning_policy import enforce_minimum_reasoning
+from werewolf_agent.model_gateway.reasoning_policy import minimum_reasoning_level
 from werewolf_agent.model_gateway.structured_output import StructuredOutputPolicy
 from werewolf_agent.model_gateway.usage_records import ModelConfig
 
@@ -48,7 +48,7 @@ def _resolve_config(
     )
 
     configured_level = _reasoning_level(model_profile)
-    enforced_level = enforce_minimum_reasoning(task_type, configured_level)
+    enforced_level = minimum_reasoning_level(task_type)
     config = ModelConfig(
         provider=provider_name,
         model=model_profile.get("model", model_profile_id),
@@ -64,12 +64,18 @@ def _resolve_config(
         ),
         reasoning_level=enforced_level.value,
         reasoning_requested=enforced_level.value != "none",
+        reasoning_capability=configured_level,
     )
 
     fallback_cfg = llm_profile.get("fallback")
     fallback_provider = None
     if fallback_cfg:
-        fallback_provider = fallback_cfg.get("provider")
+        fallback_items = fallback_cfg if isinstance(fallback_cfg, list) else [fallback_cfg]
+        for item in fallback_items:
+            fallback_profile = model_profiles.get(item.get("model_profile", ""), {})
+            if _level_satisfies(_reasoning_level(fallback_profile), enforced_level.value):
+                fallback_provider = item.get("provider")
+                break
 
     return config, fallback_provider
 
@@ -79,14 +85,27 @@ def _resolve_fallback_model(
     model_profiles: dict[str, dict[str, Any]],
     llm_profiles: dict[str, dict[str, Any]],
     llm_profile_id: str,
+    required_reasoning_level: str = "none",
+    candidate_index: int = 0,
 ) -> ModelConfig | None:
     """解析 fallback model_profile，缺失引用时快速报错。"""
     from werewolf_agent.model_gateway.providers.base import ProviderConfigError
 
     llm_profile = llm_profiles.get(llm_profile_id, {})
-    fallback_cfg = llm_profile.get("fallback", {})
-    if not fallback_cfg:
+    fallback_raw = llm_profile.get("fallback", {})
+    if not fallback_raw:
         return None
+    fallback_items = fallback_raw if isinstance(fallback_raw, list) else [fallback_raw]
+    capable_items = [
+        item for item in fallback_items
+        if _level_satisfies(
+                _reasoning_level(model_profiles.get(item.get("model_profile", ""), {})),
+                required_reasoning_level,
+            )
+    ]
+    if candidate_index >= len(capable_items):
+        return None
+    fallback_cfg = capable_items[candidate_index]
     model_profile_id = fallback_cfg.get("model_profile", "")
     if not model_profile_id:
         raise ProviderConfigError(
@@ -117,6 +136,7 @@ def _resolve_fallback_model(
         ),
         reasoning_level=_reasoning_level(model_profile),
         reasoning_requested=bool(_reasoning_level(model_profile) != "none"),
+        reasoning_capability=_reasoning_level(model_profile),
     )
 
 
@@ -126,6 +146,11 @@ def _reasoning_level(model_profile: dict[str, Any]) -> str:
     if isinstance(value, dict):
         value = value.get("level", "none")
     return str(value or "none")
+
+
+def _level_satisfies(capability: str, required: str) -> bool:
+    order = {"none": 0, "low": 1, "medium": 2, "high": 3}
+    return order.get(capability, -1) >= order.get(required, 99)
 
 
 __all__ = ["_resolve_config", "_resolve_fallback_model"]

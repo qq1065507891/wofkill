@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-08
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_result import finalize_successful_player_action
@@ -22,6 +22,7 @@ from werewolf_agent.agents.schemas import (
     RetryInfo,
 )
 from werewolf_agent.agents.trace_builder import build_action_trace as _build_action_trace
+from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
 
 
 def finalize_successful_player_action(
@@ -37,6 +38,7 @@ def finalize_successful_player_action(
     parse_success: bool,
     retry_count: int,
     structured_output_mode: str,
+    execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
 ) -> PlayerAction:
     """为成功行动附加审计 trace，并记录成功 metrics。"""
     trace = _build_action_trace(
@@ -50,6 +52,7 @@ def finalize_successful_player_action(
         parse_success=parse_success,
         retry_count=retry_count,
         structured_output_mode=structured_output_mode,
+        execution_attempts=execution_attempts,
     )
     trace.total_retry_count_until_success = max(retry_count - 1, 0)
     agent.metrics_collector.record(
@@ -80,6 +83,7 @@ def finalize_fallback_player_action(
     structured_failure_stage: str | None,
     fallback_target_used: bool = False,
     metrics_error_code: str | None = None,
+    execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
 ) -> FallbackAction:
     """为 fallback 行动附加审计 trace，并记录 fallback metrics。"""
     trace = _build_action_trace(
@@ -99,6 +103,7 @@ def finalize_fallback_player_action(
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
+        execution_attempts=execution_attempts,
     )
     agent.metrics_collector.record(
         player_id=context.agent_id,

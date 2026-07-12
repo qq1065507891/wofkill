@@ -36,6 +36,7 @@ class ModelConfig:
     structured_output_fallback_modes: tuple[str, ...] = ()
     reasoning_level: str = "none"
     reasoning_requested: bool = False
+    reasoning_capability: str = "none"
 
 
 @dataclass(frozen=True)

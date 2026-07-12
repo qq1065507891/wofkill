@@ -19,8 +19,7 @@ _MEDIUM_TASKS = {
 }
 _HIGH_TASKS = {
     "night_action", "deception", "reflection", "wolf_discussion",
-    "wolf_team_plan", "hunter_shot", "seer", "witch", "cognition",
-    "cognition_helper", "semantic_repair",
+    "wolf_team_plan", "hunter_shot", "seer", "witch",
 }
 _NONE_TASKS = {
     "judge_phase", "judge_death", "judge_vote_calling", "judge_vote_tally",
@@ -75,29 +74,31 @@ def validate_player_reasoning_profiles(
     """校验每个玩家 profile 对所有玩家任务均满足最低等级。"""
     for profile_id in sorted(set(player_assignments.values())):
         profile = llm_profiles.get(profile_id, {})
+        fallback_raw = profile.get("fallback") or []
+        fallbacks = fallback_raw if isinstance(fallback_raw, list) else [fallback_raw]
         for task_type in sorted(_MEDIUM_TASKS | _HIGH_TASKS):
             source = (profile.get("tasks") or {}).get(task_type) or profile.get("default") or {}
-            model_id = source.get("model_profile", "")
-            level = _profile_level(model_profiles.get(model_id, {}))
-            minimum = ReasoningLevel.MEDIUM
-            if _ORDER[level] < _ORDER[minimum]:
+            candidates = [source, *fallbacks]
+            levels = [
+                _profile_level(model_profiles.get(item.get("model_profile", ""), {}))
+                for item in candidates
+            ]
+            minimum = minimum_reasoning_level(task_type)
+            if not any(_ORDER[level] >= _ORDER[minimum] for level in levels):
                 raise ValueError(
-                    f"llm_profile {profile_id!r} task {task_type!r} reasoning "
-                    f"{level.value!r} is below required {minimum.value!r}"
+                    f"llm_profile {profile_id!r} task {task_type!r} required "
+                    f"{minimum.value!r}, actual {levels[0].value!r}"
                 )
-        fallback = profile.get("fallback") or {}
-        if fallback:
-            model_id = fallback.get("model_profile", "")
-            level = _profile_level(model_profiles.get(model_id, {}))
-            if _ORDER[level] < _ORDER[ReasoningLevel.MEDIUM]:
-                raise ValueError(
-                    f"llm_profile {profile_id!r} fallback reasoning {level.value!r} "
-                    "is below required 'medium'"
-                )
+
+
+def reasoning_capability_satisfies(capability: str, required: str) -> bool:
+    """判断候选模型能力是否足以执行请求，禁止通过重标记提升能力。"""
+    return _ORDER[ReasoningLevel(capability)] >= _ORDER[ReasoningLevel(required)]
 
 
 __all__ = [
     "enforce_minimum_reasoning",
     "minimum_reasoning_level",
+    "reasoning_capability_satisfies",
     "validate_player_reasoning_profiles",
 ]

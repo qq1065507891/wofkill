@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 from werewolf_agent.model_gateway.retry_policy import (
     _http_status_from_exception,
@@ -132,7 +133,11 @@ def _empty_result(
         text="",
         provider=last_empty_result.provider if last_empty_result else config_provider,
         model=last_empty_result.model if last_empty_result else config_model,
-        usage=last_empty_result.usage if last_empty_result else None,
+        usage=(
+            replace(last_empty_result.usage, attempts=attempts)
+            if last_empty_result and last_empty_result.usage
+            else None
+        ),
         http_status=_http_status_from_exception(primary_error)
         or _http_status_from_exception(fallback_error),
         raw_error=_raw_error_from_exception(primary_error)

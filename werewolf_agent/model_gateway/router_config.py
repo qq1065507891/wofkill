@@ -36,15 +36,17 @@ def _validate_config(
 
     for profile_id, profile in llm_profiles.items():
         for block_name in ("default", "fallback"):
-            block = profile.get(block_name) or {}
-            if not block:
-                continue
-            mp_id = block.get("model_profile")
-            if mp_id and mp_id not in model_profiles:
-                raise ProviderConfigError(
-                    f"llm_profile {profile_id!r}.{block_name} "
-                    f"references unknown model_profile {mp_id!r}"
-                )
+            raw = profile.get(block_name) or {}
+            blocks = raw if isinstance(raw, list) else [raw]
+            for block in blocks:
+                if not block:
+                    continue
+                mp_id = block.get("model_profile")
+                if mp_id and mp_id not in model_profiles:
+                    raise ProviderConfigError(
+                        f"llm_profile {profile_id!r}.{block_name} "
+                        f"references unknown model_profile {mp_id!r}"
+                    )
         for task_type, task_cfg in (profile.get("tasks") or {}).items():
             mp_id = task_cfg.get("model_profile")
             if mp_id and mp_id not in model_profiles:
@@ -80,9 +82,11 @@ def _configured_provider_names(
         for task_cfg in llm_profile.get("tasks", {}).values():
             if task_cfg.get("provider"):
                 providers.add(str(task_cfg["provider"]))
-        fallback_cfg = llm_profile.get("fallback", {})
-        if fallback_cfg.get("provider"):
-            providers.add(str(fallback_cfg["provider"]))
+        fallback_raw = llm_profile.get("fallback", {})
+        fallback_items = fallback_raw if isinstance(fallback_raw, list) else [fallback_raw]
+        for fallback_cfg in fallback_items:
+            if fallback_cfg.get("provider"):
+                providers.add(str(fallback_cfg["provider"]))
     return providers
 
 

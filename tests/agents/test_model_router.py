@@ -38,7 +38,8 @@ class TestModelRouter:
         config, fallback = router.resolve_config("p01", "speech")
         assert config.provider != ""
         assert config.model != ""
-        assert config.reasoning_level == "high"
+        assert config.reasoning_level == "medium"
+        assert config.reasoning_capability == "high"
         assert config.reasoning_requested is True
 
     def test_ark_profiles_use_stage_capability_levels(self) -> None:
@@ -46,8 +47,10 @@ class TestModelRouter:
         pro_config, _ = router.resolve_config("p03", "speech")
         flash_config, _ = router.resolve_config("p05", "speech")
 
-        assert pro_config.reasoning_level == "high"
+        assert pro_config.reasoning_level == "medium"
+        assert pro_config.reasoning_capability == "high"
         assert flash_config.reasoning_level == "medium"
+        assert flash_config.reasoning_capability == "high"
 
     def test_resolve_config_task_specific(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)
@@ -95,7 +98,7 @@ class TestModelRouter:
 
     def test_router_marks_missing_tool_call_for_legacy_provider(self) -> None:
         router = ModelRouter(
-            model_profiles={"legacy_model": {"model": "legacy-v1", "provider": "legacy"}},
+            model_profiles={"legacy_model": {"model": "legacy-v1", "provider": "legacy", "reasoning": {"level": "high"}}},
             llm_profiles={"default": {"default": {"provider": "legacy", "model_profile": "legacy_model"}}},
             player_assignments={"p01": "default"},
             providers={"legacy": LegacyProvider()},

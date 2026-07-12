@@ -3,7 +3,7 @@
 功能描述：MiniMax Anthropic 兼容 Provider，注意该厂商不完全支持 tool_choice
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-09
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -82,6 +82,11 @@ class MiniMaxProvider(_BaseHttpProvider):
         }
         if config.max_tokens is not None:
             payload["max_tokens"] = config.max_tokens
+        if config.reasoning_requested:
+            budget = 1024 if config.reasoning_level in {"medium", "high"} else 512
+            payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            payload["max_tokens"] = max(int(config.max_tokens or 0), budget + 1024)
+            payload["temperature"] = 1
         if system_prompt:
             payload["system"] = system_prompt
         if tools and mode == StructuredOutputMode.NATIVE_TOOL:
@@ -107,6 +112,14 @@ class MiniMaxProvider(_BaseHttpProvider):
         # P-N3 (post-review-v2): removed ``{" + text`` re-attachment.
         # Return text verbatim; downstream parser handles it.
         usage = data.get("usage", {})
+        reasoning_tokens = int(
+            (usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+        )
+        has_thinking = any(
+            item.get("type") == "thinking"
+            for item in (data.get("content") or [])
+            if isinstance(item, dict)
+        )
         return GenerateResult(
             text=text,
             provider=self.name,
@@ -127,6 +140,13 @@ class MiniMaxProvider(_BaseHttpProvider):
                 else None
             ),
             structured_output_mode=mode.value,
+            reasoning_status=(
+                "confirmed"
+                if has_thinking or reasoning_tokens
+                else "requested_unconfirmed" if config.reasoning_requested
+                else "not_requested"
+            ),
+            reasoning_tokens=reasoning_tokens,
             usage=self._usage(
                 model=config.model,
                 latency_ms=latency_ms,
