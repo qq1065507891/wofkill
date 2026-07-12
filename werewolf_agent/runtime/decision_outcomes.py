@@ -77,15 +77,19 @@ def translate_decision_outcome(
     elif final.attempt_outcome is AttemptOutcome.FAILURE:
         raise ValueError("attempt sequence has no successful terminal outcome")
 
-    route_outcomes = {
-        RouteKind.PRIMARY: DecisionOutcome.DIRECT_SUCCESS,
-        RouteKind.RETRY: DecisionOutcome.RETRY_SUCCESS,
-        RouteKind.REPAIR: DecisionOutcome.REPAIRED_SUCCESS,
-        RouteKind.PROVIDER_FALLBACK: DecisionOutcome.PROVIDER_FALLBACK_SUCCESS,
-        RouteKind.SAFE_FALLBACK: DecisionOutcome.TERMINAL_FALLBACK,
-    }
+    route_history = {item.route_kind for item in attempts}
+    if RouteKind.SAFE_FALLBACK in route_history:
+        outcome = DecisionOutcome.TERMINAL_FALLBACK
+    elif RouteKind.PROVIDER_FALLBACK in route_history:
+        outcome = DecisionOutcome.PROVIDER_FALLBACK_SUCCESS
+    elif RouteKind.REPAIR in route_history:
+        outcome = DecisionOutcome.REPAIRED_SUCCESS
+    elif RouteKind.RETRY in route_history:
+        outcome = DecisionOutcome.RETRY_SUCCESS
+    else:
+        outcome = DecisionOutcome.DIRECT_SUCCESS
     return TranslatedDecisionOutcome(
-        outcome=route_outcomes[final.route_kind],
+        outcome=outcome,
         retry_count=len(attempts) - 1,
         attempts=attempts,
     )

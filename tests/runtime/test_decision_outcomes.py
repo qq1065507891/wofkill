@@ -109,6 +109,18 @@ def test_outcome_taxonomy_is_mutually_exclusive() -> None:
             DecisionOutcome.TERMINAL_FALLBACK,
             1,
         ),
+        (
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
+                _attempt(2, RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE, cause=RootCause.PROVIDER_ERROR),
+                replace(
+                    _attempt(3, RouteKind.RETRY, AttemptOutcome.SUCCESS),
+                    provider="backup",
+                ),
+            ),
+            DecisionOutcome.PROVIDER_FALLBACK_SUCCESS,
+            2,
+        ),
     ],
 )
 def test_retry_semantics_table(attempts, expected, retries) -> None:
