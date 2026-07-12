@@ -107,6 +107,16 @@ class AttemptExecutionRecord:
     evidence_kind: EvidenceKind
 
     def __post_init__(self) -> None:
+        enum_fields = (
+            (self.route_kind, RouteKind),
+            (self.root_cause, RootCause),
+            (self.attempt_outcome, AttemptOutcome),
+            (self.requested_reasoning_level, ReasoningLevel),
+            (self.normalized_reasoning_status, ReasoningStatus),
+            (self.evidence_kind, EvidenceKind),
+        )
+        if any(not isinstance(value, enum_type) for value, enum_type in enum_fields):
+            raise TypeError("execution record enum fields require enum instances")
         if not isinstance(self.opaque_request_id, OpaqueRequestId):
             raise ValueError("opaque_request_id must be created by the internal boundary")
         if self.ordinal < 1:

@@ -107,4 +107,8 @@ def test_probe_helper_is_reexported_from_router_facade() -> None:
 
 
 def test_router_never_emits_deprecated_requested_not_confirmed_status() -> None:
-    assert "requested_not_confirmed" not in inspect.getsource(router)
+    producers = (router, provider_call, usage_records, router_errors)
+    assert all(
+        "requested_not_confirmed" not in inspect.getsource(module)
+        for module in producers
+    )

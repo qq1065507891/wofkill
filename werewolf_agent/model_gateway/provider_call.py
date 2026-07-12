@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-模型 provider 调用适配与结构化工具调用元数据归一化。
+模型 provider 调用适配与结构化工具调用元数据的不可变归一化。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.model_gateway.provider_call import _normalize_tool_metadata

@@ -122,6 +122,21 @@ def test_raw_provider_request_id_and_invalid_reasoning_evidence_are_rejected() -
         )
 
 
+def test_execution_record_rejects_raw_string_enum_fields() -> None:
+    base = _reasoned_attempt().__dict__
+    raw_values = {
+        "route_kind": "primary",
+        "root_cause": "none",
+        "attempt_outcome": "attempt_failure",
+        "requested_reasoning_level": "high",
+        "normalized_reasoning_status": "confirmed",
+        "evidence_kind": "normalized_response",
+    }
+    for field, raw_value in raw_values.items():
+        with pytest.raises(TypeError, match="enum fields"):
+            AttemptExecutionRecord(**{**base, field: raw_value})
+
+
 def test_usage_projection_overrides_every_conflicting_legacy_route_field() -> None:
     usage = UsageRecord(
         agent_id="p01", task_type="vote", provider="wrong", model="wrong",
