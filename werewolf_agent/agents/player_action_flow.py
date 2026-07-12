@@ -57,6 +57,7 @@ from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputPolicy,
     classify_structured_failure,
 )
+from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ def run_player_action_flow(
     structured_failure_reason: str | None = None
     structured_failure_stage: str | None = None
     structured_output_mode = ""
+    generation_attempt_context = GenerationAttemptContext(run_scope=context.agent_id)
 
     attempt = 0
     # Pipeline-optimization Task 1: track previous attempt's error signature
@@ -123,11 +125,13 @@ def run_player_action_flow(
                 agent,
                 context,
                 generation_request,
+                generation_attempt_context,
             )
         except NotImplementedError:
             # Provider does not support tool_choice
             structured_failure_reason = "structured_output_unsupported"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
+            generation_attempt_context.append_terminal_fallback()
             fallback = finalize_fallback_player_action(
                 agent=agent,
                 context=context,
@@ -144,6 +148,7 @@ def run_player_action_flow(
                 structured_output_mode=structured_output_mode,
                 structured_failure_stage=structured_failure_stage,
                 metrics_error_code=structured_failure_reason,
+                execution_attempts=generation_attempt_context.attempts,
             )
             return fallback, retry
 
@@ -166,6 +171,11 @@ def run_player_action_flow(
 
         if not result.text:
             failure_reason = agent._latest_generation_failure_reason()
+            if any(
+                item.root_cause.value == "invalid_output"
+                for item in getattr(result, "attempts", ())
+            ):
+                failure_reason = "empty_response"
             if failure_reason and "empty_response" not in failure_reason:
                 if "NotImplementedError" in failure_reason:
                     structured_failure_reason = "structured_output_unsupported"
@@ -244,7 +254,9 @@ def run_player_action_flow(
                 structured_output_mode=structured_output_mode,
             )
             if should_short_circuit:
+                generation_attempt_context.reject_latest_output()
                 break
+            generation_attempt_context.reject_latest_output()
             continue
 
         allow_text_tool_fallback = bool(
@@ -279,7 +291,9 @@ def run_player_action_flow(
                 structured_output_mode=structured_output_mode,
             )
             if should_short_circuit:
+                generation_attempt_context.reject_latest_output()
                 break
+            generation_attempt_context.reject_latest_output()
             continue
 
         # Parse JSON. Mandatory vote tasks may use a narrower choice schema;
@@ -367,7 +381,9 @@ def run_player_action_flow(
                 structured_output_mode=structured_output_mode,
             )
             if should_short_circuit:
+                generation_attempt_context.reject_latest_output()
                 break
+            generation_attempt_context.reject_latest_output()
             continue
 
         parse_success = True
@@ -409,7 +425,9 @@ def run_player_action_flow(
                 structured_output_mode=structured_output_mode,
             )
             if should_short_circuit:
+                generation_attempt_context.reject_latest_output()
                 break
+            generation_attempt_context.reject_latest_output()
             continue
         speech_quality_err = agent._speech_quality_error(context, action)
         if speech_quality_err:
@@ -425,7 +443,9 @@ def run_player_action_flow(
                 structured_output_mode=structured_output_mode,
             )
             if should_short_circuit:
+                generation_attempt_context.reject_latest_output()
                 break
+            generation_attempt_context.reject_latest_output()
             continue
         vote_quality_err = agent._vote_quality_error(context, action)
         if vote_quality_err:
@@ -441,7 +461,9 @@ def run_player_action_flow(
                 structured_output_mode=structured_output_mode,
             )
             if should_short_circuit:
+                generation_attempt_context.reject_latest_output()
                 break
+            generation_attempt_context.reject_latest_output()
             continue
 
         return finalize_successful_player_action(
@@ -456,7 +478,7 @@ def run_player_action_flow(
             parse_success=parse_success,
             retry_count=attempt,
             structured_output_mode=structured_output_mode,
-            execution_attempts=tuple(getattr(result, "attempts", ())),
+            execution_attempts=generation_attempt_context.attempts,
         ), retry
 
     # Fallback
@@ -467,6 +489,7 @@ def run_player_action_flow(
         retry.error_code if retry else "none",
         exit_reason,
     )
+    generation_attempt_context.append_terminal_fallback()
     fallback = finalize_fallback_player_action(
         agent=agent,
         context=context,
@@ -483,6 +506,6 @@ def run_player_action_flow(
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
-        execution_attempts=tuple(getattr(result, "attempts", ())),
+        execution_attempts=generation_attempt_context.attempts,
     )
     return fallback, retry

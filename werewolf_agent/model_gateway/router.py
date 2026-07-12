@@ -34,6 +34,7 @@ from werewolf_agent.model_gateway.execution_records import (
     RootCause,
     RouteKind,
 )
+from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
 from werewolf_agent.model_gateway.retry_policy import (
     _failure_reason,
     _format_exception,
@@ -122,6 +123,7 @@ class ModelRouter:
         player_assignments: dict[str, str],
         providers: dict[str, LLMProvider] | None = None,
         validate_reasoning: bool = False,
+        allow_test_model_capability: bool = False,
     ) -> None:
         self._model_profiles = model_profiles
         self._llm_profiles = llm_profiles
@@ -129,6 +131,7 @@ class ModelRouter:
         self._providers: dict[str, LLMProvider] = providers or {}
         self._usage_log: list[UsageRecord] = []
         self._usage_lock = threading.Lock()
+        self._allow_test_model_capability = allow_test_model_capability
         if validate_reasoning:
             validate_player_reasoning_profiles(
                 model_profiles=model_profiles,
@@ -220,13 +223,19 @@ class ModelRouter:
         self, agent_id: str, task_type: str
     ) -> tuple[ModelConfig, str | None]:
         """Resolve model config for agent+task. Returns (config, fallback_provider_name)."""
-        return _resolve_config(
+        config, fallback = _resolve_config(
             model_profiles=self._model_profiles,
             llm_profiles=self._llm_profiles,
             player_assignments=self._player_assignments,
             agent_id=agent_id,
             task_type=task_type,
         )
+        if (
+            self._allow_test_model_capability
+            and config.reasoning_capability == "none"
+        ):
+            config = replace(config, reasoning_capability="high")
+        return config, fallback
 
     def resolve_structured_output_policy(
         self,
@@ -246,6 +255,7 @@ class ModelRouter:
         tool_choice: dict[str, Any] | None = None,
         structured_output_mode: str | None = None,
         jitter_seconds: tuple[float, float] = (0.0, 0.8),
+        generation_attempt_context: GenerationAttemptContext | None = None,
     ) -> GenerateResult:
         """Generate via routed provider with fallback.
 
@@ -261,9 +271,18 @@ class ModelRouter:
             if agent_id.lower().isalnum() and 4 <= len(agent_id) <= 32
             else "game"
         )
-        opaque_request_id = OpaqueRequestId.new(run_scope, entropy)
+        opaque_request_id = (
+            generation_attempt_context.opaque_request_id
+            if generation_attempt_context else OpaqueRequestId.new(run_scope, entropy)
+        )
         request_id = opaque_request_id.value
-        attempts: list[AttemptExecutionRecord] = []
+        attempts: list[AttemptExecutionRecord] = list(
+            generation_attempt_context.attempts if generation_attempt_context else ()
+        )
+        first_route = (
+            generation_attempt_context.next_route_kind
+            if generation_attempt_context else RouteKind.PRIMARY
+        )
         active_mode = resolve_structured_output_mode(
             provider=config.provider,
             configured_mode=structured_output_mode or config.structured_output_mode,
@@ -312,16 +331,24 @@ class ModelRouter:
                     reasoning_level=config.reasoning_level,
                     reasoning_status=(
                         result.reasoning_status
-                        if result.reasoning_status == "confirmed"
+                        if result.reasoning_status in {"confirmed", "unsupported"}
                         else "requested_unconfirmed" if config.reasoning_requested
                         else "not_requested"
                     ),
                 )
                 result = _normalize_tool_metadata(result, effective_tool_choice)
+                if result.reasoning_status == "unsupported":
+                    attempts.append(_attempt_record(
+                        opaque_request_id, len(attempts) + 1, config, result,
+                        first_route if attempt == 0 else RouteKind.RETRY,
+                        AttemptOutcome.FAILURE, RootCause.POLICY_REJECTION,
+                    ))
+                    primary_error = RuntimeError("reasoning_unsupported")
+                    break
                 if not result.text:
                     attempts.append(_attempt_record(
                         opaque_request_id, len(attempts) + 1, config, result,
-                        RouteKind.PRIMARY if attempt == 0 else RouteKind.RETRY,
+                        first_route if attempt == 0 else RouteKind.RETRY,
                         AttemptOutcome.FAILURE, RootCause.INVALID_OUTPUT,
                     ))
                     result = replace(result, attempts=tuple(attempts))
@@ -339,10 +366,12 @@ class ModelRouter:
                     break
                 attempts.append(_attempt_record(
                     opaque_request_id, len(attempts) + 1, config, result,
-                    RouteKind.PRIMARY if attempt == 0 else RouteKind.RETRY,
+                    first_route if attempt == 0 else RouteKind.RETRY,
                     AttemptOutcome.SUCCESS, RootCause.NONE,
                 ))
                 result = replace(result, attempts=tuple(attempts))
+                if generation_attempt_context:
+                    generation_attempt_context.accept(tuple(attempts))
                 if result.usage is None:
                     result = replace(
                         result,
@@ -376,9 +405,13 @@ class ModelRouter:
                 primary_error = exc
                 attempts.append(_attempt_record(
                     opaque_request_id, len(attempts) + 1, config, None,
-                    RouteKind.PRIMARY if attempt == 0 else RouteKind.RETRY,
+                    first_route if attempt == 0 else RouteKind.RETRY,
                     AttemptOutcome.FAILURE, _root_cause(exc),
                 ))
+                if isinstance(exc, NotImplementedError):
+                    if generation_attempt_context:
+                        generation_attempt_context.accept(tuple(attempts))
+                    raise
                 if attempt < max_retries and _is_retryable_exception(exc):
                     delay = _retry_delay_for_exception(exc, attempt)
                     logger.warning(
@@ -468,7 +501,7 @@ class ModelRouter:
                         reasoning_level=fb_config.reasoning_level,
                         reasoning_status=(
                             result.reasoning_status
-                            if result.reasoning_status == "confirmed"
+                            if result.reasoning_status in {"confirmed", "unsupported"}
                             else "requested_unconfirmed" if fb_config.reasoning_requested
                             else "not_requested"
                         ),
@@ -564,12 +597,13 @@ class ModelRouter:
             if primary_unavailable and not attempts
             else RootCause.POLICY_REJECTION
         )
-        attempts.append(_attempt_record(
-            opaque_request_id, len(attempts) + 1, config, None,
-            RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
-            terminal_root,
-            terminal=True,
-        ))
+        if generation_attempt_context is None:
+            attempts.append(_attempt_record(
+                opaque_request_id, len(attempts) + 1, config, None,
+                RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
+                terminal_root,
+                terminal=True,
+            ))
         _record_failure_usage(
             usage_log=self._usage_log,
             usage_lock=self._usage_lock,
@@ -595,7 +629,7 @@ class ModelRouter:
         # R3-MG-2: surface the HTTP status / raw error from the most recent
         # exception so the categorizer can attribute 4xx/5xx to
         # ``provider_error`` rather than the silent ``unknown`` fallback.
-        return _empty_result(
+        empty_result = _empty_result(
             config_provider=config.provider,
             config_model=config.model,
             active_mode=active_mode.value,
@@ -604,6 +638,9 @@ class ModelRouter:
             last_empty_result=last_empty_result,
             attempts=tuple(attempts),
         )
+        if generation_attempt_context:
+            generation_attempt_context.accept(tuple(attempts))
+        return empty_result
 
     def _resolve_fallback_model(
         self,
@@ -675,11 +712,18 @@ class ModelRouter:
                         reasoning_level=config.reasoning_level,
                         reasoning_status=(
                             result.reasoning_status
-                            if result.reasoning_status == "confirmed"
+                            if result.reasoning_status in {"confirmed", "unsupported"}
                             else "requested_unconfirmed"
                         ),
                     )
                     result = _normalize_tool_metadata(result, effective_choice)
+                    if result.reasoning_status == "unsupported":
+                        attempts.append(_attempt_record(
+                            request_id, len(attempts) + 1, config, result,
+                            RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE,
+                            RootCause.POLICY_REJECTION,
+                        ))
+                        break
                     if not result.text:
                         attempts.append(_attempt_record(
                             request_id, len(attempts) + 1, config, result,

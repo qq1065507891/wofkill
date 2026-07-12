@@ -35,6 +35,21 @@ from werewolf_agent.model_gateway.router import (
 from werewolf_agent.persona_runtime.router import PersonaRouter
 
 
+_ProductionModelRouter = ModelRouter
+
+
+class ModelRouter(_ProductionModelRouter):
+    """本文件旧式空配置 fixture 的显式测试能力豁免。"""
+
+    def __init__(self, *args, **kwargs):
+        if kwargs.get("model_profiles") == {}:
+            kwargs.setdefault("allow_test_model_capability", True)
+        else:
+            for profile in (kwargs.get("model_profiles") or {}).values():
+                profile.setdefault("reasoning", {"level": "high"})
+        super().__init__(*args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Shared mock providers
 # ---------------------------------------------------------------------------
@@ -497,6 +512,7 @@ class TestPlayerAgentRetryFallback:
     def _make_agent(self, provider_response: str) -> PlayerAgent:
         router = ModelRouter(
             model_profiles={},
+            allow_test_model_capability=True,
             llm_profiles={},
             player_assignments={"p01": "default"},
             providers={"mock": _JsonProvider(provider_response)},
@@ -528,6 +544,7 @@ class TestPlayerAgentRetryFallback:
         provider = ToolAwareProvider()
         router = ModelRouter(
             model_profiles={},
+            allow_test_model_capability=True,
             llm_profiles={},
             player_assignments={"p01": "default"},
             providers={"mock": provider},
@@ -782,6 +799,7 @@ class TestPlayerAgentRetryFallback:
         provider = _SequenceJsonProvider([bad_resp])
         router = ModelRouter(
             model_profiles={},
+            allow_test_model_capability=True,
             llm_profiles={},
             player_assignments={"p01": "default"},
             providers={"mock": provider},
@@ -920,6 +938,7 @@ class TestPlayerAgentRetryFallback:
         ])
         model_router = ModelRouter(
             model_profiles={},
+            allow_test_model_capability=True,
             llm_profiles={},
             player_assignments={},
             providers={"mock": provider},
@@ -2226,7 +2245,7 @@ class TestPlainTextRejection:
     def test_missing_tool_call_does_not_parse_text_json(self):
         """If tool_choice was required but no tool call arrived, do not treat text JSON as success."""
         router = ModelRouter(
-            model_profiles={"text": {"model": "text-v1", "provider": "text_only"}},
+            model_profiles={"text": {"model": "text-v1", "provider": "text_only", "reasoning": {"level": "high"}}},
             llm_profiles={"default": {"default": {"provider": "text_only", "model_profile": "text"}}},
             player_assignments={"p01": "default"},
             providers={"text_only": TextOnlyProvider()},
@@ -2256,6 +2275,7 @@ class TestPlainTextRejection:
                     "model": "text-v1",
                     "provider": "text_json",
                     "allow_text_tool_fallback": True,
+                    "reasoning": {"level": "high"},
                 },
             },
             llm_profiles={"default": {"default": {"provider": "text_json", "model_profile": "text"}}},
@@ -2286,7 +2306,7 @@ class TestProviderCapabilityFailure:
     def test_provider_without_tool_call_support_fails_explicitly(self):
         """When provider cannot enforce tool calls, action should fail with clear error."""
         router = ModelRouter(
-            model_profiles={"notool_model": {"model": "notool-v1", "provider": "notool"}},
+            model_profiles={"notool_model": {"model": "notool-v1", "provider": "notool", "reasoning": {"level": "high"}}},
             llm_profiles={"default": {"default": {"provider": "notool", "model_profile": "notool_model"}}},
             player_assignments={"p01": "default"},
             providers={"notool": NoToolProvider()},
@@ -2427,7 +2447,12 @@ class TestStructuredOutputMetadata:
         action, retry_info = agent.act(context)
 
         assert isinstance(action, PlayerAction)
-        assert provider.modes == ["json_schema", "json_object"]
+        assert provider.modes == [
+            "json_schema",
+            "json_schema",
+            "json_schema",
+            "json_object",
+        ]
         assert retry_info.early_exit_reason is None
         assert action.trace is not None
         assert action.trace.structured_output_mode == "json_object"
@@ -3515,6 +3540,7 @@ class TestMissingToolCallHintAdaptsToTextFallback:
                 "text_model": {
                     "model": "text-v1",
                     "provider": "text_fallback_no_tool",
+                    "reasoning": {"level": "high"},
                     "allow_text_tool_fallback": True,  # <-- key for the test
                 },
             },
@@ -3592,6 +3618,7 @@ class TestMissingToolCallHintAdaptsToTextFallback:
                 "tool_only_model": {
                     "model": "tool-v1",
                     "provider": "tool_only_no_tool",
+                    "reasoning": {"level": "high"},
                     # NOTE: no allow_text_tool_fallback → tool-only
                 },
             },

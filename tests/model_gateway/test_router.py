@@ -63,6 +63,17 @@ class _StaticTextProvider:
         )
 
 
+class _ReasoningStatusProvider(_StaticTextProvider):
+    def __init__(self, status: str, name: str) -> None:
+        super().__init__("ok", name)
+        self.status = status
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        result = super().generate(prompt, config, system_prompt, tools, tool_choice)
+        from dataclasses import replace
+        return replace(result, reasoning_status=self.status, reasoning_tokens=(3 if self.status == "confirmed" else 0))
+
+
 def _make_router(*, providers: dict | None = None):
     from werewolf_agent.model_gateway.router import ModelRouter
     profiles = providers or {}
@@ -349,6 +360,55 @@ class TestGenerateWithMockProvider:
         assert first.calls == second.calls == 1
         assert [attempt.provider for attempt in result.attempts] == ["first", "second"]
         assert result.text == "ok"
+
+    @pytest.mark.parametrize(
+        ("statuses", "expected_provider"),
+        [
+            (["unsupported", "confirmed"], "fallback1"),
+            (["unsupported", "unsupported", "confirmed"], "fallback2"),
+        ],
+    )
+    def test_unsupported_reasoning_continues_to_confirmed_candidate(self, statuses, expected_provider) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        names = ["primary", "fallback1", "fallback2"][:len(statuses)]
+        profiles = {
+            name: {"provider": name, "model": name, "retry_count": 0, "reasoning": {"level": "high"}}
+            for name in names
+        }
+        providers = {
+            name: _ReasoningStatusProvider(status, name)
+            for name, status in zip(names, statuses)
+        }
+        router = ModelRouter(
+            model_profiles=profiles,
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": [
+                    {"provider": name, "model_profile": name} for name in names[1:]
+                ],
+            }},
+            player_assignments={"p01": "profile"}, providers=providers,
+            validate_reasoning=False,
+        )
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+        assert result.provider == expected_provider
+        assert result.attempts[-1].normalized_reasoning_status.value == "confirmed"
+        assert result.attempts[0].normalized_reasoning_status.value == "unsupported"
+
+    def test_all_unsupported_reasoning_fails_closed(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _ReasoningStatusProvider("unsupported", "primary")
+        router = ModelRouter(
+            model_profiles={"primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "high"}}},
+            llm_profiles={"profile": {"default": {"provider": "primary", "model_profile": "primary"}}},
+            player_assignments={"p01": "profile"}, providers={"primary": primary}, validate_reasoning=False,
+        )
+        result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+        assert result.text == ""
+        assert result.attempts[0].normalized_reasoning_status.value == "unsupported"
+        assert result.attempts[-1].route_kind.value == "safe_fallback"
 
     def test_generate_returns_text_from_mock(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})

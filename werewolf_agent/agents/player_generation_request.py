@@ -64,6 +64,7 @@ def call_player_generation_request(
     agent: Any,
     context: AgentContext,
     request: PlayerGenerationRequest,
+    generation_attempt_context: Any | None = None,
 ) -> Any:
     """使用已构建的请求调用模型路由。"""
     return _generate_player_response(
@@ -75,4 +76,5 @@ def call_player_generation_request(
         tools=request.tools,
         tool_choice=request.tool_choice,
         structured_output_mode=request.structured_output_mode,
+        generation_attempt_context=generation_attempt_context,
     )

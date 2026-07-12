@@ -25,8 +25,9 @@ def generate_player_response(
     tools: list[dict[str, Any]],
     tool_choice: dict[str, Any] | None,
     structured_output_mode: str,
+    generation_attempt_context: Any | None = None,
 ) -> Any:
-    return model_router.generate(
+    kwargs = dict(
         agent_id=agent_id,
         task_type=task_type,
         prompt=prompt,
@@ -35,6 +36,9 @@ def generate_player_response(
         tool_choice=tool_choice,
         structured_output_mode=structured_output_mode,
     )
+    if generation_attempt_context is not None:
+        kwargs["generation_attempt_context"] = generation_attempt_context
+    return model_router.generate(**kwargs)
 
 
 def latest_generation_failure_reason(model_router: Any) -> str | None:
