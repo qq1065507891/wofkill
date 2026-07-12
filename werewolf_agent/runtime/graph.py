@@ -254,10 +254,28 @@ def route_victory(state: RuntimeState) -> str:
             latest_last_words_index = index
     if gs.phase != "night" and latest_exile_index > latest_last_words_index:
         return "exile_last_words"
+    current_night_batch = f"night_{gs.night_number}"
+    night_hunter_reaction_complete = (
+        gs.phase == "night"
+        and (
+            any(
+                event.type == "hunter_shot_declined"
+                and event.payload.get("resolution_batch") == current_night_batch
+                for event in gs.events
+            )
+            or any(
+                death.reason == "hunter_shot"
+                and death.resolution_batch == current_night_batch
+                for death in gs.deaths
+            )
+        )
+    )
     if gs.sheriff_id and gs.sheriff_badge_state == "active":
         sheriff = gs.players.get(gs.sheriff_id)
         if sheriff and not sheriff.alive:
             return "sheriff_badge_transfer"
+    if night_hunter_reaction_complete:
+        return _post_hunter_route(gs)
     return "enter_night"
 
 

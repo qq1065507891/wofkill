@@ -216,6 +216,9 @@ def add_game_graph_edges(graph: StateGraph) -> None:
         "finish_game": "reflection",
         "exile_last_words": "exile_last_words",
         "sheriff_badge_transfer": "sheriff_badge_transfer",
+        "sheriff_first_day_entry": "sheriff_first_day_entry",
+        "announce_deaths": "announce_deaths",
+        "announce_deaths_with_badge_loss": "announce_deaths_with_badge_loss",
         "enter_night": "summarize_context",
     })
     graph.add_conditional_edges("sheriff_badge_transfer", graph_mod._route_after_badge_transfer, {

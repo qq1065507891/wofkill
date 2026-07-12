@@ -327,6 +327,57 @@ class TestHunterShotOrdering:
             and e.payload.get("phase") in {"exile_last_words", "badge_decision"}
         ]
 
+    def test_nonterminal_night_hunter_returns_to_dawn_after_victory_gate(self) -> None:
+        """普通夜死猎人反应后必须继续天亮死讯，而非重复进入夜晚。"""
+        from werewolf_agent.runtime.graph import (
+            announce_deaths,
+            check_victory,
+            resolve_hunter_shot,
+            route_after_hunter_shot,
+            route_victory,
+        )
+
+        engine = _new_engine()
+        hunter_death = Death(
+            player_id="hunter",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_2",
+            triggered_skills=["hunter_shot"],
+        )
+        gs = GameState(
+            game_id="night_hunter_dawn",
+            players={
+                "wolf": PlayerState(id="wolf", role="werewolf"),
+                "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+                "good1": PlayerState(id="good1", role="villager"),
+                "good2": PlayerState(id="good2", role="seer"),
+            },
+            phase="night",
+            night_number=2,
+            day_number=1,
+            deaths=[hunter_death],
+        )
+
+        reacted = resolve_hunter_shot({
+            "game_state": gs,
+            "engine": engine,
+            "hunter_shot_target_id": None,
+        })["game_state"]
+        assert any(event.type == "hunter_shot_declined" for event in reacted.events)
+        assert route_after_hunter_shot({"game_state": reacted, "engine": engine}) == "check_victory"
+        checked = check_victory({"game_state": reacted, "engine": engine})["game_state"]
+        assert checked.winning_faction is None
+        assert route_victory({"game_state": checked}) == "announce_deaths"
+        assert route_victory({"game_state": checked}) != "enter_night"
+        dawn = announce_deaths({"game_state": checked, "engine": engine})["game_state"]
+        assert dawn.phase == "day"
+        assert any(
+            event.type == "judge_broadcast"
+            and event.payload.get("phase") == "death_announce"
+            for event in dawn.events
+        )
+
     def test_daytime_hunter_shot_returns_to_victory_check_not_night_announcement(self) -> None:
         engine = _new_engine()
         players = {
