@@ -38,6 +38,16 @@ class TestModelRouter:
         config, fallback = router.resolve_config("p01", "speech")
         assert config.provider != ""
         assert config.model != ""
+        assert config.reasoning_level == "high"
+        assert config.reasoning_requested is True
+
+    def test_ark_profiles_use_stage_capability_levels(self) -> None:
+        router = ModelRouter.from_yaml(MODELS_YAML)
+        pro_config, _ = router.resolve_config("p03", "speech")
+        flash_config, _ = router.resolve_config("p05", "speech")
+
+        assert pro_config.reasoning_level == "high"
+        assert flash_config.reasoning_level == "medium"
 
     def test_resolve_config_task_specific(self) -> None:
         router = ModelRouter.from_yaml(MODELS_YAML)

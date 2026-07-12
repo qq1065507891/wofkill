@@ -271,10 +271,11 @@ class ModelRouter:
                 result.allow_text_tool_fallback = config.allow_text_tool_fallback
                 result.structured_output_mode = active_mode.value
                 result.reasoning_level = config.reasoning_level
-                result.reasoning_status = (
-                    "requested_not_confirmed" if config.reasoning_requested
-                    else "not_requested"
-                )
+                if result.reasoning_status != "confirmed":
+                    result.reasoning_status = (
+                        "requested_not_confirmed" if config.reasoning_requested
+                        else "not_requested"
+                    )
                 _normalize_tool_metadata(result, effective_tool_choice)
                 if not result.text:
                     last_empty_result = result
@@ -302,6 +303,7 @@ class ModelRouter:
                         retry_count=primary_attempts - 1,
                         reasoning_level=config.reasoning_level,
                         reasoning_status=result.reasoning_status,
+                        reasoning_tokens=result.reasoning_tokens,
                     )
                 return result
             except Exception as exc:
@@ -363,10 +365,11 @@ class ModelRouter:
                     result.allow_text_tool_fallback = fb_config.allow_text_tool_fallback
                     result.structured_output_mode = fb_mode.value
                     result.reasoning_level = fb_config.reasoning_level
-                    result.reasoning_status = (
-                        "requested_not_confirmed" if fb_config.reasoning_requested
-                        else "not_requested"
-                    )
+                    if result.reasoning_status != "confirmed":
+                        result.reasoning_status = (
+                            "requested_not_confirmed" if fb_config.reasoning_requested
+                            else "not_requested"
+                        )
                     _normalize_tool_metadata(result, fb_effective_tool_choice)
                     if not result.text:
                         last_empty_result = result
@@ -397,6 +400,7 @@ class ModelRouter:
                             failure_category="unknown" if primary_error else None,
                             reasoning_level=fb_config.reasoning_level,
                             reasoning_status=result.reasoning_status,
+                            reasoning_tokens=result.reasoning_tokens,
                         )
                     return result
                 except Exception as exc:

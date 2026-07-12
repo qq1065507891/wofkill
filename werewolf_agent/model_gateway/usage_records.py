@@ -59,6 +59,7 @@ class UsageRecord:
     failure_category: str | None = None
     reasoning_level: str = "none"
     reasoning_status: str = "not_requested"
+    reasoning_tokens: int = 0
 
 
 @dataclass
@@ -79,6 +80,7 @@ class GenerateResult:
     raw_error: str | None = None
     reasoning_level: str = "none"
     reasoning_status: str = "not_requested"
+    reasoning_tokens: int = 0
 
 
 class EmptyModelResponseError(RuntimeError):

@@ -13,6 +13,32 @@ else.
 import pytest
 
 
+class _Response:
+    status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {
+                "prompt_tokens": 2,
+                "completion_tokens": 4,
+                "completion_tokens_details": {"reasoning_tokens": 3},
+            },
+        }
+
+
+class _Client:
+    def __init__(self):
+        self.payload = None
+
+    def post(self, _url, *, json, **_kwargs):
+        self.payload = json
+        return _Response()
+
+
 def _build_url(base_url: str) -> str:
     """Mirror the production helper exactly."""
     from werewolf_agent.model_gateway.providers.openai import (
@@ -81,3 +107,31 @@ class TestOpenAIUrlNormalization:
         must continue to work. The new whitelister accepts /v4."""
         url = _build_url("https://open.bigmodel.cn/api/paas/v4")
         assert url == "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+
+def test_openai_provider_sends_reasoning_effort_and_records_reasoning_tokens():
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _Client()
+    provider = OpenAIProvider(
+        api_key="k",
+        base_url="https://ark.example/v3",
+        http_client=client,
+    )
+    result = provider.generate(
+        "analyze",
+        ModelConfig(
+            provider="openai",
+            model="deepseek-v4-pro",
+            max_tokens=128,
+            reasoning_level="high",
+            reasoning_requested=True,
+        ),
+    )
+
+    assert client.payload["reasoning_effort"] == "high"
+    assert client.payload["max_completion_tokens"] == 128
+    assert "max_tokens" not in client.payload
+    assert result.reasoning_status == "confirmed"
+    assert result.reasoning_tokens == 3

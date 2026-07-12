@@ -86,7 +86,11 @@ def _generate_openai_compatible(
         "top_p": config.top_p,
     }
     if config.max_tokens is not None:
-        payload["max_tokens"] = config.max_tokens
+        payload[
+            "max_completion_tokens" if config.reasoning_requested else "max_tokens"
+        ] = config.max_tokens
+    if config.reasoning_requested and config.reasoning_level != "none":
+        payload["reasoning_effort"] = config.reasoning_level
     mode = resolve_structured_output_mode(
         provider=config.provider,
         configured_mode=config.structured_output_mode,
@@ -143,6 +147,9 @@ def _generate_openai_compatible(
     tool_call_received = bool(message.get("tool_calls"))
     text = message.get("content", "") or _extract_openai_tool_text(message)
     usage = data.get("usage", {})
+    details = usage.get("completion_tokens_details") or {}
+    reasoning_tokens = int(details.get("reasoning_tokens", 0) or 0)
+    message_reasoning = message.get("reasoning_content") or message.get("reasoning")
     return GenerateResult(
         text=text,
         provider=provider.name,
@@ -163,6 +170,8 @@ def _generate_openai_compatible(
             else None
         ),
         structured_output_mode=mode.value,
+        reasoning_status=("confirmed" if reasoning_tokens or message_reasoning else "not_requested"),
+        reasoning_tokens=reasoning_tokens,
         usage=provider._usage(
             model=config.model,
             latency_ms=latency_ms,

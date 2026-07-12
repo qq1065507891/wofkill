@@ -16,6 +16,8 @@ model_profiles:
     temperature: 0.5
     top_p: 0.9
     timeout: 120
+    reasoning:
+      level: high
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json
@@ -27,6 +29,8 @@ model_profiles:
     temperature: 0.5
     top_p: 0.9
     timeout: 120
+    reasoning:
+      level: medium
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json
@@ -38,6 +42,8 @@ model_profiles:
     temperature: 0.5
     top_p: 0.9
     timeout: 120
+    reasoning:
+      level: high
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json
@@ -49,6 +55,8 @@ model_profiles:
     temperature: 0.5
     top_p: 0.9
     timeout: 120
+    reasoning:
+      level: high
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json
@@ -61,6 +69,8 @@ model_profiles:
     temperature: 0.5
     top_p: 0.9
     timeout: 120
+    reasoning:
+      level: high
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json
@@ -72,6 +82,8 @@ model_profiles:
     temperature: 0.4
     top_p: 0.9
     timeout: 180
+    reasoning:
+      level: high
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json
@@ -83,6 +95,8 @@ model_profiles:
     temperature: 0.7
     top_p: 0.95
     timeout: 90
+    reasoning:
+      level: medium
     allow_text_tool_fallback: true
     structured_output:
       mode: text_json

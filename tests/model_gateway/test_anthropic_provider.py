@@ -138,3 +138,26 @@ class TestAnthropicTextFallbackRobustness:
             assert content != "{", (
                 f"priming message '{{' was injected into request: {msg!r}"
             )
+
+    def test_thinking_block_is_detected_without_exposing_it_as_public_text(self) -> None:
+        from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
+        from werewolf_agent.model_gateway.router import ModelConfig
+
+        client = _FakeHttpClient({
+            "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "text", "text": "final answer"},
+            ],
+            "usage": {
+                "input_tokens": 2,
+                "output_tokens": 7,
+                "output_tokens_details": {"reasoning_tokens": 5},
+            },
+        })
+        result = AnthropicProvider(
+            api_key="k", base_url="https://api.example", http_client=client,
+        ).generate("hello", ModelConfig(provider="anthropic", model="MiniMax-M2.7"))
+
+        assert result.text == "final answer"
+        assert result.reasoning_status == "confirmed"
+        assert result.reasoning_tokens == 5

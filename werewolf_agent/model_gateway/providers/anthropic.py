@@ -110,6 +110,12 @@ class AnthropicProvider(_BaseHttpProvider):
         # consumer parse it with ``repair_json_text`` + ``json.loads``,
         # which already strips leading whitespace and handles BOM.
         usage = data.get("usage", {})
+        reasoning_tokens = int(
+            (usage.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0
+        )
+        has_thinking = any(
+            item.get("type") == "thinking" for item in _anthropic_content(data)
+        )
         return GenerateResult(
             text=text,
             provider=self.name,
@@ -130,6 +136,8 @@ class AnthropicProvider(_BaseHttpProvider):
                 else None
             ),
             structured_output_mode=mode.value,
+            reasoning_status=("confirmed" if has_thinking or reasoning_tokens else "not_requested"),
+            reasoning_tokens=reasoning_tokens,
             usage=self._usage(
                 model=config.model,
                 latency_ms=latency_ms,

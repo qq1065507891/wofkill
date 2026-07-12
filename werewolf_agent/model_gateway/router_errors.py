@@ -39,6 +39,7 @@ def _record_success_usage(
     failure_category: str | None = None,
     reasoning_level: str = "none",
     reasoning_status: str = "not_requested",
+    reasoning_tokens: int = 0,
 ) -> None:
     """记录成功调用的用量，保持旧的截断策略。"""
     if not result.usage:
@@ -63,6 +64,7 @@ def _record_success_usage(
         failure_category=failure_category,
         reasoning_level=reasoning_level,
         reasoning_status=reasoning_status,
+        reasoning_tokens=reasoning_tokens,
     )
     _append_usage(usage_log, usage_lock, usage)
 
@@ -86,6 +88,7 @@ def _record_failure_usage(
     failure_category: str | None = None,
     reasoning_level: str = "none",
     reasoning_status: str = "not_requested",
+    reasoning_tokens: int = 0,
 ) -> None:
     """记录最终失败的路由用量。"""
     usage = UsageRecord(
@@ -105,6 +108,7 @@ def _record_failure_usage(
         failure_category=failure_category,
         reasoning_level=reasoning_level,
         reasoning_status=reasoning_status,
+        reasoning_tokens=reasoning_tokens,
     )
     _append_usage(usage_log, usage_lock, usage)
 
@@ -133,6 +137,13 @@ def _empty_result(
             if last_empty_result
             else active_mode
         ),
+        reasoning_level=(last_empty_result.reasoning_level if last_empty_result else "none"),
+        reasoning_status=(
+            last_empty_result.reasoning_status
+            if last_empty_result
+            else "not_requested"
+        ),
+        reasoning_tokens=(last_empty_result.reasoning_tokens if last_empty_result else 0),
     )
 
 
