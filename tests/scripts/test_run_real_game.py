@@ -9,6 +9,35 @@ from scripts.run_real_game import print_quality_audit
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 
 
+def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord, AttemptOutcome, EvidenceKind, OpaqueRequestId,
+        ReasoningLevel, ReasoningStatus, RootCause, RouteKind,
+    )
+    from werewolf_agent.model_gateway.usage_records import UsageRecord
+    from scripts.run_real_game_reports import _reasoning_evidence_summary
+
+    attempt = AttemptExecutionRecord(
+        opaque_request_id=OpaqueRequestId.new("game", "abcdef12"), ordinal=1,
+        provider="openai", model="reasoner", route_kind=RouteKind.PRIMARY,
+        root_cause=RootCause.NONE, attempt_outcome=AttemptOutcome.SUCCESS,
+        requested_reasoning_level=ReasoningLevel.HIGH,
+        normalized_reasoning_status=ReasoningStatus.CONFIRMED,
+        reasoning_token_count=4, evidence_kind=EvidenceKind.TOKEN_COUNT,
+    )
+    summary = _reasoning_evidence_summary([
+        UsageRecord(agent_id="p01", task_type="reflection", provider="openai", model="reasoner", attempts=(attempt,)),
+    ])
+
+    assert summary["requested_denominator"] == 1
+    assert summary["confirmed_numerator"] == 1
+    assert summary["support_flags"] == {"reasoning_token_evidence": True, "provider_status_evidence": False}
+    assert set(summary["attempts"][0]) == {
+        "opaque_request_id", "ordinal", "provider", "model", "requested_level",
+        "status", "reasoning_tokens", "evidence", "route", "root_cause", "outcome",
+    }
+
+
 def test_report_helpers_are_split_from_run_real_game_facade() -> None:
     from scripts import run_real_game, run_real_game_reports
 

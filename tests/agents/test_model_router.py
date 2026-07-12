@@ -91,8 +91,7 @@ class TestModelRouter:
         assert result.text == ""
         assert log[-1].success is False
         assert log[-1].fallback_reason is not None
-        assert "primary_failed" in log[-1].fallback_reason
-        assert "RuntimeError" in log[-1].fallback_reason
+        assert log[-1].fallback_reason == "provider_error"
 
     def test_router_marks_missing_tool_call_for_legacy_provider(self) -> None:
         router = ModelRouter(

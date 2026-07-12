@@ -24,6 +24,16 @@ from werewolf_agent.model_gateway.provider_call import (
     _call_provider_generate,
     _normalize_tool_metadata,
 )
+from werewolf_agent.model_gateway.execution_records import (
+    AttemptExecutionRecord,
+    AttemptOutcome,
+    EvidenceKind,
+    OpaqueRequestId,
+    ReasoningLevel,
+    ReasoningStatus,
+    RootCause,
+    RouteKind,
+)
 from werewolf_agent.model_gateway.retry_policy import (
     _failure_reason,
     _format_exception,
@@ -31,6 +41,7 @@ from werewolf_agent.model_gateway.retry_policy import (
     _is_retryable_exception,
     _raw_error_from_exception,
 )
+from werewolf_agent.model_gateway.reasoning_policy import enforce_minimum_reasoning
 from werewolf_agent.model_gateway.router_config import (
     _configured_provider_names,
     _validate_config,
@@ -137,6 +148,20 @@ class ModelRouter:
             player_assignments=assignments,
         )
         router._validate_config()
+        if data.get("enforce_player_reasoning", False):
+            from werewolf_agent.model_gateway.reasoning_policy import (
+                validate_player_reasoning_profiles,
+            )
+
+            validate_player_reasoning_profiles(
+                model_profiles=model_profiles,
+                llm_profiles=llm_profiles,
+                player_assignments={
+                    player_id: profile_id
+                    for player_id, profile_id in assignments.items()
+                    if player_id != "judge"
+                },
+            )
         if register_env_providers:
             router.register_env_providers()
         return router
@@ -229,7 +254,15 @@ class ModelRouter:
         tests to avoid 5-15s of cumulative wait across 12 players.
         """
         config, fallback_provider = self.resolve_config(agent_id, task_type)
-        request_id = uuid.uuid4().hex
+        entropy = uuid.uuid4().hex[:16]
+        run_scope = (
+            agent_id.lower()
+            if agent_id.lower().isalnum() and 4 <= len(agent_id) <= 32
+            else "game"
+        )
+        opaque_request_id = OpaqueRequestId.new(run_scope, entropy)
+        request_id = opaque_request_id.value
+        attempts: list[AttemptExecutionRecord] = []
         active_mode = resolve_structured_output_mode(
             provider=config.provider,
             configured_mode=structured_output_mode or config.structured_output_mode,
@@ -282,6 +315,12 @@ class ModelRouter:
                 )
                 result = _normalize_tool_metadata(result, effective_tool_choice)
                 if not result.text:
+                    attempts.append(_attempt_record(
+                        opaque_request_id, len(attempts) + 1, config, result,
+                        RouteKind.PRIMARY if attempt == 0 else RouteKind.RETRY,
+                        AttemptOutcome.FAILURE, RootCause.INVALID_OUTPUT,
+                    ))
+                    result = replace(result, attempts=tuple(attempts))
                     last_empty_result = result
                     primary_error = EmptyModelResponseError("empty_response")
                     logger.warning(
@@ -292,6 +331,12 @@ class ModelRouter:
                         config.model,
                     )
                     break
+                attempts.append(_attempt_record(
+                    opaque_request_id, len(attempts) + 1, config, result,
+                    RouteKind.PRIMARY if attempt == 0 else RouteKind.RETRY,
+                    AttemptOutcome.SUCCESS, RootCause.NONE,
+                ))
+                result = replace(result, attempts=tuple(attempts))
                 if result.usage:
                     _record_success_usage(
                         usage_log=self._usage_log,
@@ -312,6 +357,11 @@ class ModelRouter:
                 return result
             except Exception as exc:
                 primary_error = exc
+                attempts.append(_attempt_record(
+                    opaque_request_id, len(attempts) + 1, config, None,
+                    RouteKind.PRIMARY if attempt == 0 else RouteKind.RETRY,
+                    AttemptOutcome.FAILURE, _root_cause(exc),
+                ))
                 if attempt < max_retries and _is_retryable_exception(exc):
                     delay = _retry_delay_for_exception(exc, attempt)
                     logger.warning(
@@ -338,6 +388,15 @@ class ModelRouter:
             fallback_model_profile = self._resolve_fallback_model(llm_profile_id=self._player_assignments.get(agent_id, ""))
             fb_config = fallback_model_profile or ModelConfig(
                 provider=fallback_provider, model="fallback"
+            )
+            fallback_level = enforce_minimum_reasoning(
+                task_type,
+                fb_config.reasoning_level,
+            )
+            fb_config = replace(
+                fb_config,
+                reasoning_level=fallback_level.value,
+                reasoning_requested=fallback_level is not ReasoningLevel.NONE,
             )
             fb_mode = resolve_structured_output_mode(
                 provider=fb_config.provider,
@@ -380,6 +439,12 @@ class ModelRouter:
                     )
                     result = _normalize_tool_metadata(result, fb_effective_tool_choice)
                     if not result.text:
+                        attempts.append(_attempt_record(
+                            opaque_request_id, len(attempts) + 1, fb_config, result,
+                            RouteKind.PROVIDER_FALLBACK,
+                            AttemptOutcome.FAILURE, RootCause.INVALID_OUTPUT,
+                        ))
+                        result = replace(result, attempts=tuple(attempts))
                         last_empty_result = result
                         fallback_error = EmptyModelResponseError("empty_response")
                         logger.warning(
@@ -390,6 +455,12 @@ class ModelRouter:
                             fb_config.model,
                         )
                         break
+                    attempts.append(_attempt_record(
+                        opaque_request_id, len(attempts) + 1, fb_config, result,
+                        RouteKind.PROVIDER_FALLBACK,
+                        AttemptOutcome.SUCCESS, RootCause.NONE,
+                    ))
+                    result = replace(result, attempts=tuple(attempts))
                     if result.usage:
                         _record_success_usage(
                             usage_log=self._usage_log,
@@ -413,6 +484,11 @@ class ModelRouter:
                     return result
                 except Exception as exc:
                     fallback_error = exc
+                    attempts.append(_attempt_record(
+                        opaque_request_id, len(attempts) + 1, fb_config, None,
+                        RouteKind.PROVIDER_FALLBACK,
+                        AttemptOutcome.FAILURE, _root_cause(exc),
+                    ))
                     if fb_attempt < fb_max_retries and _is_retryable_exception(exc):
                         delay = _retry_delay_for_exception(exc, fb_attempt)
                         logger.warning(
@@ -436,6 +512,12 @@ class ModelRouter:
 
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
+        attempts.append(_attempt_record(
+            opaque_request_id, len(attempts) + 1, config, None,
+            RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
+            RootCause.POLICY_REJECTION,
+            terminal=True,
+        ))
         _record_failure_usage(
             usage_log=self._usage_log,
             usage_lock=self._usage_lock,
@@ -456,6 +538,7 @@ class ModelRouter:
                 "requested_unconfirmed" if config.reasoning_requested
                 else "not_requested"
             ),
+            attempts=tuple(attempts),
         )
         # R3-MG-2: surface the HTTP status / raw error from the most recent
         # exception so the categorizer can attribute 4xx/5xx to
@@ -467,6 +550,7 @@ class ModelRouter:
             primary_error=primary_error,
             fallback_error=fallback_error,
             last_empty_result=last_empty_result,
+            attempts=tuple(attempts),
         )
 
     def _resolve_fallback_model(self, llm_profile_id: str) -> ModelConfig | None:
@@ -498,3 +582,62 @@ def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
     from werewolf_agent.model_gateway.retry_policy import _retry_delay_for_exception as _impl
 
     return _impl(exc, attempt, uniform=random.uniform)
+
+
+def _root_cause(exc: Exception) -> RootCause:
+    """仅把异常归一化为审计枚举，不保留原始错误文本。"""
+    if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+        return RootCause.TIMEOUT
+    if isinstance(exc, EmptyModelResponseError):
+        return RootCause.INVALID_OUTPUT
+    return RootCause.PROVIDER_ERROR
+
+
+def _attempt_record(
+    request_id: OpaqueRequestId,
+    ordinal: int,
+    config: ModelConfig,
+    result: GenerateResult | None,
+    route_kind: RouteKind,
+    outcome: AttemptOutcome,
+    root_cause: RootCause,
+    *,
+    terminal: bool = False,
+) -> AttemptExecutionRecord:
+    """把 provider 规范化结果翻译成 Task0 的唯一逐次证据类型。"""
+    level = ReasoningLevel(config.reasoning_level)
+    tokens = int(result.reasoning_tokens if result else 0)
+    raw_status = result.reasoning_status if result else "requested_unconfirmed"
+    if terminal and level is not ReasoningLevel.NONE:
+        status = ReasoningStatus.FALLBACK_DISABLED
+        evidence = EvidenceKind.FALLBACK_DISABLED
+        tokens = 0
+    elif level is ReasoningLevel.NONE:
+        status = ReasoningStatus.NOT_REQUESTED
+        evidence = EvidenceKind.NONE
+        tokens = 0
+    elif tokens > 0:
+        status = ReasoningStatus.CONFIRMED
+        evidence = EvidenceKind.TOKEN_COUNT
+    elif raw_status == "confirmed":
+        status = ReasoningStatus.CONFIRMED
+        evidence = EvidenceKind.AUTHORITATIVE_PROVIDER_EXECUTION
+    elif raw_status == "unsupported":
+        status = ReasoningStatus.UNSUPPORTED
+        evidence = EvidenceKind.UNSUPPORTED
+    else:
+        status = ReasoningStatus.REQUESTED_UNCONFIRMED
+        evidence = EvidenceKind.NONE
+    return AttemptExecutionRecord(
+        opaque_request_id=request_id,
+        ordinal=ordinal,
+        provider=config.provider,
+        model=config.model,
+        route_kind=route_kind,
+        root_cause=root_cause,
+        attempt_outcome=outcome,
+        requested_reasoning_level=level,
+        normalized_reasoning_status=status,
+        reasoning_token_count=tokens,
+        evidence_kind=evidence,
+    )

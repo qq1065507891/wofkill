@@ -40,7 +40,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(ROOT / "game_stdout.log", encoding="utf-8"),
+        logging.FileHandler(
+            Path(os.environ.get("WEREWOLF_GAME_LOG_PATH", ROOT / "game_stdout.log")),
+            encoding="utf-8",
+        ),
     ],
 )
 # 打开游戏步骤细节，便于观察身份分配、夜晚行动、发言和投票；压低 httpx 噪声。

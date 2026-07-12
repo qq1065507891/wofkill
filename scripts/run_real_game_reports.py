@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-08
+修改日期: 2026-07-13
 
 使用示例:
     >>> from scripts.run_real_game_reports import print_quality_audit
@@ -104,6 +104,21 @@ def print_usage_stats(runner: Any) -> None:
         f"{prompt_tokens + completion_tokens:,}"
     )
     print(f"  Latency: {latency_ms / 1000:.1f}s total")
+    reasoning = _reasoning_evidence_summary(usage_log)
+    print(
+        "  Reasoning confirmed: "
+        f"{reasoning['confirmed_numerator']}/{reasoning['requested_denominator']}"
+    )
+    for attempt in reasoning["attempts"]:
+        print(
+            "    attempt "
+            f"{attempt['opaque_request_id']}#{attempt['ordinal']} "
+            f"{attempt['provider']}/{attempt['model']} "
+            f"level={attempt['requested_level']} status={attempt['status']} "
+            f"tokens={attempt['reasoning_tokens']} evidence={attempt['evidence']} "
+            f"route={attempt['route']} root={attempt['root_cause']} "
+            f"outcome={attempt['outcome']}"
+        )
 
     stats: dict[str, dict[str, int]] = {}
     for usage in usage_log:
@@ -125,6 +140,48 @@ def print_usage_stats(runner: Any) -> None:
         for reason, count in sorted(failures.items(), key=lambda item: -item[1]):
             print(f"    {count}x {reason}")
     _sep()
+
+
+def _reasoning_evidence_summary(usage_log: list[Any]) -> dict[str, Any]:
+    """仅投影允许公开的强类型执行字段，并给出精确支持分母。"""
+    attempts = [attempt for usage in usage_log for attempt in usage.attempts]
+    requested = [
+        attempt for attempt in attempts
+        if attempt.requested_reasoning_level.value != "none"
+    ]
+    confirmed = [
+        attempt for attempt in requested
+        if attempt.normalized_reasoning_status.value == "confirmed"
+    ]
+    return {
+        "requested_denominator": len(requested),
+        "confirmed_numerator": len(confirmed),
+        "support_flags": {
+            "reasoning_token_evidence": any(
+                attempt.evidence_kind.value == "token_count" for attempt in attempts
+            ),
+            "provider_status_evidence": any(
+                attempt.evidence_kind.value == "authoritative_provider_execution"
+                for attempt in attempts
+            ),
+        },
+        "attempts": [
+            {
+                "opaque_request_id": attempt.opaque_request_id.value,
+                "ordinal": attempt.ordinal,
+                "provider": attempt.provider,
+                "model": attempt.model,
+                "requested_level": attempt.requested_reasoning_level.value,
+                "status": attempt.normalized_reasoning_status.value,
+                "reasoning_tokens": attempt.reasoning_token_count,
+                "evidence": attempt.evidence_kind.value,
+                "route": attempt.route_kind.value,
+                "root_cause": attempt.root_cause.value,
+                "outcome": attempt.attempt_outcome.value,
+            }
+            for attempt in attempts
+        ],
+    }
 
 
 def print_pace_report(runner: Any) -> None:

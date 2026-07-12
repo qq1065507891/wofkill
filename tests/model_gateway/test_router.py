@@ -193,6 +193,44 @@ class TestResolveConfig:
 
 
 class TestGenerateWithMockProvider:
+    def test_success_exposes_one_primary_attempt(self) -> None:
+        router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
+        router._model_profiles["claude_default"]["reasoning"] = {"level": "medium"}
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert len(result.attempts) == 1
+        assert result.attempts[0].ordinal == 1
+        assert result.attempts[0].route_kind.value == "primary"
+        assert result.attempts[0].normalized_reasoning_status.value == "requested_unconfirmed"
+        assert result.usage is not None
+        assert result.usage.attempts == result.attempts
+
+    def test_fallback_retains_task_reasoning_minimum_and_earlier_failure(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _EmptyTextProvider("primary")
+        fallback = _StaticTextProvider("ok", "fallback")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "medium"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "none"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "fallback": fallback},
+        )
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert [item.ordinal for item in result.attempts] == [1, 2]
+        assert result.attempts[0].attempt_outcome.value == "attempt_failure"
+        assert result.attempts[1].route_kind.value == "provider_fallback"
+        assert result.attempts[1].requested_reasoning_level.value == "medium"
+
     def test_generate_returns_text_from_mock(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
         result = router.generate(agent_id="p01", task_type="speech", prompt="Hello")
@@ -341,7 +379,7 @@ class TestGenerateWithMockProvider:
         assert usage.fallback_provider == "fallback"
         assert usage.fallback_model == "fallback-model"
         assert usage.retry_count == 0
-        assert usage.failure_category == "unknown"
+        assert usage.failure_category == "invalid_output"
 
     def test_probe_tool_call_support_detects_mock(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})

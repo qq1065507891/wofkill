@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-09
+修改日期: 2026-07-13
 
 使用示例:
     >>> _resolve_config(model_profiles={}, llm_profiles={}, player_assignments={}, agent_id="p01", task_type="speech")[0].provider
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from werewolf_agent.model_gateway.reasoning_policy import enforce_minimum_reasoning
 from werewolf_agent.model_gateway.structured_output import StructuredOutputPolicy
 from werewolf_agent.model_gateway.usage_records import ModelConfig
 
@@ -46,6 +47,8 @@ def _resolve_config(
         model_profile=model_profile,
     )
 
+    configured_level = _reasoning_level(model_profile)
+    enforced_level = enforce_minimum_reasoning(task_type, configured_level)
     config = ModelConfig(
         provider=provider_name,
         model=model_profile.get("model", model_profile_id),
@@ -59,8 +62,8 @@ def _resolve_config(
         structured_output_fallback_modes=tuple(
             mode.value for mode in structured_policy.fallback_modes
         ),
-        reasoning_level=_reasoning_level(model_profile),
-        reasoning_requested=bool(_reasoning_level(model_profile) != "none"),
+        reasoning_level=enforced_level.value,
+        reasoning_requested=enforced_level.value != "none",
     )
 
     fallback_cfg = llm_profile.get("fallback")

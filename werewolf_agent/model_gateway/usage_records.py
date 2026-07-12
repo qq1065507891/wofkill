@@ -82,7 +82,11 @@ class UsageRecord:
         object.__setattr__(self, "fallback_provider", fallback.provider if fallback else None)
         object.__setattr__(self, "fallback_model", fallback.model if fallback else None)
         object.__setattr__(self, "success", final.attempt_outcome.value == "attempt_success")
-        object.__setattr__(self, "retry_count", len(self.attempts) - 1)
+        object.__setattr__(
+            self,
+            "retry_count",
+            sum(item.route_kind.value == "retry" for item in self.attempts),
+        )
         failures = [item for item in self.attempts if item.root_cause.value != "none"]
         cause = failures[0].root_cause.value if failures else None
         object.__setattr__(self, "fallback_reason", cause)
