@@ -32,11 +32,11 @@ def _attempt(
     outcome: AttemptOutcome,
     *,
     cause: RootCause = RootCause.NONE,
-    reasoning_status: str = "not_requested",
+    reasoning_status: str = "requested_unconfirmed",
     reasoning_tokens: int = 0,
 ) -> AttemptExecutionRecord:
     return AttemptExecutionRecord(
-        opaque_request_id=OpaqueRequestId("run_game_abcd1234"),
+        opaque_request_id=OpaqueRequestId.new("game", "abcd1234"),
         ordinal=ordinal,
         provider="primary" if route_kind is not RouteKind.PROVIDER_FALLBACK else "backup",
         model="model-a",

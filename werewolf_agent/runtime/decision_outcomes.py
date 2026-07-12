@@ -54,6 +54,8 @@ def translate_decision_outcome(
         raise ValueError("attempt sequence must start with a primary route")
     if any(item.route_kind is RouteKind.PRIMARY for item in attempts[1:]):
         raise ValueError("primary route cannot be repeated")
+    if any(item.opaque_request_id != attempts[0].opaque_request_id for item in attempts[1:]):
+        raise ValueError("all attempts must share one opaque request id")
     terminal_positions = [
         index for index, item in enumerate(attempts)
         if item.route_kind is RouteKind.SAFE_FALLBACK
@@ -63,6 +65,10 @@ def translate_decision_outcome(
     if any(item.attempt_outcome is not AttemptOutcome.FAILURE for item in attempts[:-1]):
         raise ValueError("only failed attempts may precede the final attempt")
     final = attempts[-1]
+    if final.route_kind is RouteKind.PROVIDER_FALLBACK:
+        primary = attempts[0]
+        if (final.provider, final.model) == (primary.provider, primary.model):
+            raise ValueError("provider fallback must switch provider or model")
     if final.route_kind is RouteKind.SAFE_FALLBACK:
         if final.attempt_outcome is not AttemptOutcome.FAILURE:
             raise ValueError("terminal safe fallback must record a failed attempt")

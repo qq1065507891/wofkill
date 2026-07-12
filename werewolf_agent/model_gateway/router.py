@@ -276,7 +276,7 @@ class ModelRouter:
                     reasoning_status=(
                         result.reasoning_status
                         if result.reasoning_status == "confirmed"
-                        else "requested_not_confirmed" if config.reasoning_requested
+                        else "requested_unconfirmed" if config.reasoning_requested
                         else "not_requested"
                     ),
                 )
@@ -374,7 +374,7 @@ class ModelRouter:
                         reasoning_status=(
                             result.reasoning_status
                             if result.reasoning_status == "confirmed"
-                            else "requested_not_confirmed" if fb_config.reasoning_requested
+                            else "requested_unconfirmed" if fb_config.reasoning_requested
                             else "not_requested"
                         ),
                     )

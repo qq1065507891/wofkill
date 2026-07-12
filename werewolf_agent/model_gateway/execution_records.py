@@ -17,15 +17,23 @@ from enum import Enum
 import re
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class OpaqueRequestId:
     """仅允许内部 run-scope 格式的脱敏请求标识。"""
 
     value: str
+    _SENTINEL = object()
 
-    def __post_init__(self) -> None:
-        if not re.fullmatch(r"run_[a-z0-9]{4,32}_[a-f0-9]{8,32}", self.value):
-            raise ValueError("opaque_request_id must use the internal run-scope format")
+    def __init__(self, value: str, sentinel: object = None) -> None:
+        if sentinel is not self._SENTINEL:
+            raise TypeError("use OpaqueRequestId.new at the internal boundary")
+        object.__setattr__(self, "value", value)
+
+    @classmethod
+    def new(cls, run_scope: str, entropy: str) -> OpaqueRequestId:
+        if not re.fullmatch(r"[a-z0-9]{4,32}", run_scope) or not re.fullmatch(r"[a-f0-9]{8,32}", entropy):
+            raise ValueError("opaque request components have an invalid safe format")
+        return cls(f"run_{run_scope}_{entropy}", cls._SENTINEL)
 
 
 class RootCause(str, Enum):
@@ -60,6 +68,10 @@ class EvidenceKind(str, Enum):
 
     NONE = "none"
     AUTHORITATIVE_PROVIDER_EXECUTION = "authoritative_provider_execution"
+    TOKEN_COUNT = "token_count"
+    FIELD_ECHO = "field_echo"
+    UNSUPPORTED = "unsupported"
+    FALLBACK_DISABLED = "fallback_disabled"
     NORMALIZED_RESPONSE = "normalized_response"
 
 
@@ -73,8 +85,9 @@ class ReasoningLevel(str, Enum):
 class ReasoningStatus(str, Enum):
     CONFIRMED = "confirmed"
     NOT_REQUESTED = "not_requested"
-    UNKNOWN = "unknown"
+    REQUESTED_UNCONFIRMED = "requested_unconfirmed"
     UNSUPPORTED = "unsupported"
+    FALLBACK_DISABLED = "fallback_disabled"
 
 
 @dataclass(frozen=True)
@@ -106,11 +119,26 @@ class AttemptExecutionRecord:
         elif self.root_cause is not RootCause.NONE:
             raise ValueError("successful attempt cannot have a root cause")
         if self.normalized_reasoning_status is ReasoningStatus.CONFIRMED:
-            if self.reasoning_token_count == 0 and self.evidence_kind is not EvidenceKind.AUTHORITATIVE_PROVIDER_EXECUTION:
+            if not (
+                (self.reasoning_token_count > 0 and self.evidence_kind is EvidenceKind.TOKEN_COUNT)
+                or self.evidence_kind is EvidenceKind.AUTHORITATIVE_PROVIDER_EXECUTION
+            ):
                 raise ValueError("confirmed reasoning requires tokens or authoritative execution evidence")
+        level_none = self.requested_reasoning_level is ReasoningLevel.NONE
+        if level_none != (self.normalized_reasoning_status is ReasoningStatus.NOT_REQUESTED):
+            raise ValueError("reasoning level and status are inconsistent")
         if self.normalized_reasoning_status is ReasoningStatus.NOT_REQUESTED:
             if self.reasoning_token_count or self.evidence_kind is not EvidenceKind.NONE:
                 raise ValueError("not_requested reasoning cannot carry provider evidence")
+        if self.normalized_reasoning_status is ReasoningStatus.REQUESTED_UNCONFIRMED:
+            if self.reasoning_token_count or self.evidence_kind not in {EvidenceKind.NONE, EvidenceKind.FIELD_ECHO}:
+                raise ValueError("requested_unconfirmed reasoning has invalid evidence")
+        expected = {
+            ReasoningStatus.UNSUPPORTED: EvidenceKind.UNSUPPORTED,
+            ReasoningStatus.FALLBACK_DISABLED: EvidenceKind.FALLBACK_DISABLED,
+        }.get(self.normalized_reasoning_status)
+        if expected is not None and (self.reasoning_token_count or self.evidence_kind is not expected):
+            raise ValueError("reasoning terminal status has invalid evidence")
 
 
 __all__ = [

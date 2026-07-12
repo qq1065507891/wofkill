@@ -69,9 +69,15 @@ class UsageRecord:
         if not self.attempts:
             return
         final = self.attempts[-1]
+        primary = self.attempts[0]
         object.__setattr__(self, "request_id", final.opaque_request_id.value)
         object.__setattr__(self, "provider", final.provider)
         object.__setattr__(self, "model", final.model)
+        object.__setattr__(self, "primary_provider", primary.provider)
+        object.__setattr__(self, "primary_model", primary.model)
+        is_fallback = final.route_kind.value == "provider_fallback"
+        object.__setattr__(self, "fallback_provider", final.provider if is_fallback else None)
+        object.__setattr__(self, "fallback_model", final.model if is_fallback else None)
         object.__setattr__(self, "success", final.attempt_outcome.value == "attempt_success")
         object.__setattr__(self, "retry_count", len(self.attempts) - 1)
         failures = [item for item in self.attempts if item.root_cause.value != "none"]
@@ -106,6 +112,11 @@ class GenerateResult:
 
     def __post_init__(self) -> None:
         """在兼容构造边界固定旧 reasoning 视图，避免实例化后漂移。"""
+        if self.usage and self.usage.attempts:
+            if self.attempts and self.attempts != self.usage.attempts:
+                raise ValueError("usage and result must share the same evidence chain")
+            if not self.attempts:
+                object.__setattr__(self, "attempts", self.usage.attempts)
         if not self.attempts:
             return
         final = self.attempts[-1]

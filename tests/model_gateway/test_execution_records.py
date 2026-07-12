@@ -27,7 +27,7 @@ from werewolf_agent.model_gateway.execution_records import (
 
 def _reasoned_attempt() -> AttemptExecutionRecord:
     return AttemptExecutionRecord(
-        opaque_request_id=OpaqueRequestId("run_game_abcd1234"),
+        opaque_request_id=OpaqueRequestId.new("game", "abcd1234"),
         ordinal=1,
         provider="primary",
         model="model-a",
@@ -102,11 +102,13 @@ def test_provider_package_exports_remain_stable() -> None:
 
 
 def test_raw_provider_request_id_and_invalid_reasoning_evidence_are_rejected() -> None:
-    with pytest.raises(ValueError, match="internal run-scope"):
+    with pytest.raises(TypeError):
+        OpaqueRequestId("run_openai_deadbeef")
+    with pytest.raises(TypeError):
         OpaqueRequestId("provider-request-123")
     with pytest.raises(ValueError, match="confirmed reasoning"):
         AttemptExecutionRecord(
-            opaque_request_id=OpaqueRequestId("run_game_abcd1234"),
+            opaque_request_id=OpaqueRequestId.new("game", "abcd1234"),
             ordinal=1,
             provider="primary",
             model="model-a",
@@ -118,3 +120,24 @@ def test_raw_provider_request_id_and_invalid_reasoning_evidence_are_rejected() -
             reasoning_token_count=0,
             evidence_kind=EvidenceKind.NORMALIZED_RESPONSE,
         )
+
+
+def test_usage_projection_overrides_every_conflicting_legacy_route_field() -> None:
+    usage = UsageRecord(
+        agent_id="p01", task_type="vote", provider="wrong", model="wrong",
+        primary_provider="wrong", primary_model="wrong", fallback_provider="wrong",
+        fallback_model="wrong", success=False, fallback_reason="wrong", retry_count=99,
+        failure_category="wrong", reasoning_level="none", reasoning_status="not_requested",
+        attempts=(_reasoned_attempt(),),
+    )
+    assert (usage.primary_provider, usage.primary_model) == ("primary", "model-a")
+    assert usage.fallback_provider is None and usage.fallback_model is None
+    assert (usage.provider, usage.model, usage.success) == ("primary", "model-a", True)
+    assert (usage.fallback_reason, usage.retry_count, usage.failure_category) == (None, 0, None)
+
+
+def test_generate_result_rejects_mismatched_usage_evidence_chain() -> None:
+    usage = UsageRecord(agent_id="p01", task_type="vote", provider="primary", model="model-a", attempts=(_reasoned_attempt(),))
+    other = _reasoned_attempt().__class__(**{**_reasoned_attempt().__dict__, "opaque_request_id": OpaqueRequestId.new("game", "deadbeef")})
+    with pytest.raises(ValueError, match="same evidence chain"):
+        GenerateResult(text="ok", provider="primary", model="model-a", usage=usage, attempts=(other,))
