@@ -64,8 +64,18 @@ class UsageRecord:
     reasoning_tokens: int = 0
     attempts: tuple[AttemptExecutionRecord, ...] = ()
 
+    def __post_init__(self) -> None:
+        """把旧构造字段一次性归一化为最终 attempt 的只读视图。"""
+        if not self.attempts:
+            return
+        final = self.attempts[-1]
+        object.__setattr__(self, "request_id", final.request_id)
+        object.__setattr__(self, "reasoning_level", final.requested_reasoning_level)
+        object.__setattr__(self, "reasoning_status", final.normalized_reasoning_status)
+        object.__setattr__(self, "reasoning_tokens", final.reasoning_token_count)
 
-@dataclass
+
+@dataclass(frozen=True)
 class GenerateResult:
     """模型生成调用的返回结果。"""
     text: str
@@ -85,6 +95,15 @@ class GenerateResult:
     reasoning_status: str = "not_requested"
     reasoning_tokens: int = 0
     attempts: tuple[AttemptExecutionRecord, ...] = ()
+
+    def __post_init__(self) -> None:
+        """在兼容构造边界固定旧 reasoning 视图，避免实例化后漂移。"""
+        if not self.attempts:
+            return
+        final = self.attempts[-1]
+        object.__setattr__(self, "reasoning_level", final.requested_reasoning_level)
+        object.__setattr__(self, "reasoning_status", final.normalized_reasoning_status)
+        object.__setattr__(self, "reasoning_tokens", final.reasoning_token_count)
 
 
 class EmptyModelResponseError(RuntimeError):

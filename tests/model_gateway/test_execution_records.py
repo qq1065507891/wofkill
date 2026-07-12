@@ -13,6 +13,29 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from werewolf_agent.model_gateway.usage_records import GenerateResult, UsageRecord
+from werewolf_agent.model_gateway.execution_records import (
+    AttemptExecutionRecord,
+    AttemptOutcome,
+    EvidenceKind,
+    RootCause,
+    RouteKind,
+)
+
+
+def _reasoned_attempt() -> AttemptExecutionRecord:
+    return AttemptExecutionRecord(
+        request_id="opaque-1",
+        ordinal=1,
+        provider="primary",
+        model="model-a",
+        route_kind=RouteKind.PRIMARY,
+        root_cause=RootCause.NONE,
+        attempt_outcome=AttemptOutcome.SUCCESS,
+        requested_reasoning_level="high",
+        normalized_reasoning_status="confirmed",
+        reasoning_token_count=17,
+        evidence_kind=EvidenceKind.PROVIDER_METADATA,
+    )
 
 
 def test_usage_record_legacy_fields_remain_readable() -> None:
@@ -24,9 +47,7 @@ def test_usage_record_legacy_fields_remain_readable() -> None:
         fallback_reason="timeout",
         retry_count=2,
         failure_category="provider_error",
-        reasoning_level="high",
-        reasoning_status="confirmed",
-        reasoning_tokens=17,
+        attempts=(_reasoned_attempt(),),
     )
 
     assert usage.fallback_reason == "timeout"
@@ -44,14 +65,14 @@ def test_generate_result_legacy_reasoning_fields_remain_readable() -> None:
         text="ok",
         provider="primary",
         model="model-a",
-        reasoning_level="medium",
-        reasoning_status="confirmed",
-        reasoning_tokens=11,
+        attempts=(_reasoned_attempt(),),
     )
 
-    assert result.reasoning_level == "medium"
+    assert result.reasoning_level == "high"
     assert result.reasoning_status == "confirmed"
-    assert result.reasoning_tokens == 11
+    assert result.reasoning_tokens == 17
+    with pytest.raises((FrozenInstanceError, AttributeError)):
+        result.reasoning_status = "drifted"  # type: ignore[misc]
 
 
 def test_provider_package_exports_remain_stable() -> None:

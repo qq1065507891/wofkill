@@ -1,13 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-把逐次模型执行记录翻译为唯一、互斥的最终决策结果。
+把逐次执行事实翻译为唯一、互斥的最终决策结果。
 
 作者: Project contributors
 创建日期: 2026-07-13
-
-使用示例:
-    >>> translate_decision_outcome((attempt,)).outcome
-    <DecisionOutcome.DIRECT_SUCCESS: 'direct_success'>
 """
 
 from __future__ import annotations
@@ -18,6 +14,7 @@ from enum import Enum
 from werewolf_agent.model_gateway.execution_records import (
     AttemptExecutionRecord,
     AttemptOutcome,
+    RouteKind,
 )
 
 
@@ -33,37 +30,52 @@ class DecisionOutcome(str, Enum):
 
 @dataclass(frozen=True)
 class TranslatedDecisionOutcome:
-    """最终分类及由尝试序列推导出的重试次数。"""
+    """最终分类及完整可追溯尝试链。"""
 
     outcome: DecisionOutcome
     retry_count: int
+    attempts: tuple[AttemptExecutionRecord, ...]
+
+    @property
+    def final_attempt(self) -> AttemptExecutionRecord:
+        """返回产生最终结果的尝试。"""
+        return self.attempts[-1]
 
 
 def translate_decision_outcome(
     attempts: tuple[AttemptExecutionRecord, ...],
 ) -> TranslatedDecisionOutcome:
-    """按强类型尝试结果翻译最终分类，不解析自由文本。"""
+    """仅按强类型路线与尝试事实翻译结果，不解析自由文本。"""
     if not attempts:
         raise ValueError("at least one attempt is required")
-    expected_numbers = tuple(range(1, len(attempts) + 1))
-    if tuple(item.attempt_number for item in attempts) != expected_numbers:
-        raise ValueError("attempt numbers must be contiguous and start at 1")
-    if any(item.outcome is not AttemptOutcome.RETRYABLE_FAILURE for item in attempts[:-1]):
-        raise ValueError("only retryable failures may precede the final attempt")
+    if tuple(item.ordinal for item in attempts) != tuple(range(1, len(attempts) + 1)):
+        raise ValueError("attempt ordinals must be contiguous and start at 1")
+    if attempts[0].route_kind is not RouteKind.PRIMARY:
+        raise ValueError("attempt sequence must start with a primary route")
+    terminal_positions = [
+        index for index, item in enumerate(attempts)
+        if item.route_kind is RouteKind.SAFE_FALLBACK
+    ]
+    if terminal_positions and terminal_positions != [len(attempts) - 1]:
+        raise ValueError("terminal safe fallback must be the final attempt")
+    if any(item.attempt_outcome is not AttemptOutcome.FAILURE for item in attempts[:-1]):
+        raise ValueError("only failed attempts may precede the final attempt")
+    final = attempts[-1]
+    if final.attempt_outcome is AttemptOutcome.FAILURE:
+        raise ValueError("attempt sequence has no successful terminal outcome")
 
-    final = attempts[-1].outcome
-    retry_count = len(attempts) - 1
-    outcome_map = {
-        AttemptOutcome.SUCCESS: (
-            DecisionOutcome.RETRY_SUCCESS if retry_count else DecisionOutcome.DIRECT_SUCCESS
-        ),
-        AttemptOutcome.REPAIRED_SUCCESS: DecisionOutcome.REPAIRED_SUCCESS,
-        AttemptOutcome.PROVIDER_FALLBACK_SUCCESS: DecisionOutcome.PROVIDER_FALLBACK_SUCCESS,
-        AttemptOutcome.TERMINAL_FALLBACK: DecisionOutcome.TERMINAL_FALLBACK,
+    route_outcomes = {
+        RouteKind.PRIMARY: DecisionOutcome.DIRECT_SUCCESS,
+        RouteKind.RETRY: DecisionOutcome.RETRY_SUCCESS,
+        RouteKind.REPAIR: DecisionOutcome.REPAIRED_SUCCESS,
+        RouteKind.PROVIDER_FALLBACK: DecisionOutcome.PROVIDER_FALLBACK_SUCCESS,
+        RouteKind.SAFE_FALLBACK: DecisionOutcome.TERMINAL_FALLBACK,
     }
-    if final is AttemptOutcome.RETRYABLE_FAILURE:
-        raise ValueError("attempt sequence has no terminal outcome")
-    return TranslatedDecisionOutcome(outcome=outcome_map[final], retry_count=retry_count)
+    return TranslatedDecisionOutcome(
+        outcome=route_outcomes[final.route_kind],
+        retry_count=len(attempts) - 1,
+        attempts=attempts,
+    )
 
 
 __all__ = [
