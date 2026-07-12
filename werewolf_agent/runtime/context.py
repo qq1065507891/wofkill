@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-10
+修改日期: 2026-07-12
 
 使用示例:
     >>> from werewolf_agent.runtime.context import build_agent_context
@@ -15,7 +15,7 @@
 # 将 GameState 转换为 PlayerAgent 可用的 AgentContext。
 # 作者: Mike
 # 创建日期: 2025-01-15
-# 修改日期: 2026-07-10
+# 修改日期: 2026-07-12
 # 使用示例: 内部模块，无对外接口
 # 从 agent_adapter.py 拆出，用于降低大型适配器的职责复杂度。
 # 本模块负责：
@@ -368,13 +368,25 @@ def build_agent_context(
     skill_analyses: dict[str, str] = {}
     skill_call_records: list[dict[str, Any]] = []
     try:
-        strategy_directive, skill_analyses = _inject_skill_output(
-            strategy_directive, gs, player_id,
-            world_state, belief_state, alerts, task_type.value,
-            legal_targets=legal_targets,
-            wolf_team_plan=wolf_team_plan,
-            skill_call_records=skill_call_records,
-        )
+        try:
+            strategy_directive, skill_analyses = _inject_skill_output(
+                strategy_directive, gs, player_id,
+                world_state, belief_state, alerts, task_type.value,
+                legal_targets=legal_targets,
+                wolf_team_plan=wolf_team_plan,
+                skill_call_records=skill_call_records,
+            )
+        except TypeError as exc:
+            # 兼容旧版/测试替身签名：新增审计记录参数不应让已有
+            # skill 注入实现整体失效。
+            if "skill_call_records" not in str(exc):
+                raise
+            strategy_directive, skill_analyses = _inject_skill_output(
+                strategy_directive, gs, player_id,
+                world_state, belief_state, alerts, task_type.value,
+                legal_targets=legal_targets,
+                wolf_team_plan=wolf_team_plan,
+            )
     except Exception as exc:
         skill_call_records.append({
             "call_kind": "skill",

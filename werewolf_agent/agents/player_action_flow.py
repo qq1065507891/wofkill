@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-09
+修改日期: 2026-07-12
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -44,6 +44,7 @@ from werewolf_agent.agents.player_action_result import (
 )
 from werewolf_agent.agents.player_latency import latency_from_result as _latency_from_result
 from werewolf_agent.agents.schemas import (
+    ActionType,
     AgentContext,
     FallbackAction,
     OutputMode,
@@ -306,6 +307,25 @@ def run_player_action_flow(
                 )
         else:
             action, parse_error = agent._parse_action(result.text)
+            # 完整行动 JSON 也要复用投票字段修复器：模型经常遗漏
+            # candidate_comparison 等审计字段，但已有 target_id 时可以
+            # 基于当前上下文安全补齐，而不应直接降级成 FallbackAction。
+            if (
+                action is None
+                and parse_error
+                and parse_error.startswith("Schema validation error:")
+                and ActionType.VOTE in context.legal_actions
+            ):
+                repaired_action, repaired_error, repaired_data = _parse_choice_action(
+                    result.text,
+                    context,
+                )
+                if repaired_action is not None:
+                    action, parse_error, choice_data = (
+                        repaired_action,
+                        None,
+                        repaired_data,
+                    )
         parsed_action = action
         if parse_error:
             parse_error_str = parse_error

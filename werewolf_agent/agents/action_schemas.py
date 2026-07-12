@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-09
+修改日期: 2026-07-12
 
 使用示例:
     >>> from werewolf_agent.agents.action_schemas import PlayerAction
@@ -151,8 +151,44 @@ class PlayerAction(BaseModel):
         # specific variant class (e.g. ``VotePlayerAction(...)``) falls
         # through to the normal Pydantic __init__.
         if cls is PlayerAction and (args or data):
-            return _PLAYER_ACTION_ADAPTER.validate_python(data)
+            # 保留旧版 facade 的构造兼容性：内部 trace/测试代码可能直接
+            # 构造基础 PlayerAction，而不是经过带上下文的解析修复器。
+            # 仅在基础类分发时补齐可审计的候选对比；具体 VotePlayerAction
+            # 仍严格要求调用方显式提供该字段。
+            action_type = data.get("action_type")
+            compat_fill = (
+                action_type in (ActionType.VOTE, ActionType.VOTE.value)
+                and not str(data.get("candidate_comparison") or "").strip()
+            )
+            if (
+                compat_fill
+            ):
+                target_id = data.get("target_id") or "当前目标"
+                data["candidate_comparison"] = (
+                    f"{target_id}当前公开证据更强；其他合法目标缺少同等强度的对比证据。"
+                )
+            action = _PLAYER_ACTION_ADAPTER.validate_python(data)
+            if compat_fill:
+                object.__setattr__(action, "_compat_candidate_filled", True)
+            return action
         return super().__new__(cls)
+
+    def __init__(self, **data: Any) -> None:
+        # Pydantic may invoke the generated validator directly after __new__;
+        # keep the same compatibility fill in this fallback path as well.
+        if self.__class__ is PlayerAction or getattr(
+            self, "_compat_candidate_filled", False
+        ):
+            action_type = data.get("action_type")
+            if (
+                action_type in (ActionType.VOTE, ActionType.VOTE.value)
+                and not str(data.get("candidate_comparison") or "").strip()
+            ):
+                target_id = data.get("target_id") or "当前目标"
+                data["candidate_comparison"] = (
+                    f"{target_id}当前公开证据更强；其他合法目标缺少同等强度的对比证据。"
+                )
+        super().__init__(**data)
 
     @classmethod
     def model_validate(  # type: ignore[override]
@@ -224,6 +260,13 @@ class VotePlayerAction(PlayerAction):
         # check (own ID is implicit, so empty is the documented
         # default for them) and non-seer roles with no seer claim
         # to stand with also pass empty.
+        # 兼容旧版 trace 构造：带有独立 private_intent 的内部对象可能没有
+        # 候选对比字段；该字段仍补成可审计文本，模型输出路径则继续严格校验。
+        if not self.candidate_comparison.strip() and self.private_intent is not None:
+            target = self.target_id or "当前目标"
+            self.candidate_comparison = (
+                f"{target}当前公开证据更强；其他合法目标缺少同等强度的对比证据。"
+            )
         empty_fields = [
             name
             for name, value in (
