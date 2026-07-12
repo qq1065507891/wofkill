@@ -2,7 +2,7 @@
 """Special skill node functions (hunter, self-destruct, PK, badge transfer).
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-13
     使用示例: 内部模块，无对外接口
 """
 
@@ -36,6 +36,7 @@ from werewolf_agent.evaluation.balance_public_claims import (
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+from werewolf_agent.runtime.nodes.day_finish import _commit_victory
 
 
 def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
@@ -182,6 +183,8 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
             )])
         break
 
+    # 猎人选择（开枪或放弃）是死亡链最后一个强制反应，随后原子提交胜负。
+    gs = _commit_victory({**state, "game_state": gs})["game_state"]
     return {"game_state": gs}
 
 

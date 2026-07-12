@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证夜间节点编排、行动结算与终局提交。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -36,6 +44,33 @@ from werewolf_agent.runtime.checkpoints import make_checkpointer
 
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
+
+
+def test_night_resolution_commits_victory_before_day_agents() -> None:
+    from werewolf_agent.runtime.graph import resolve_night, route_after_resolve_night
+
+    engine = _new_engine()
+    gs = GameState(
+        game_id="night_terminal",
+        players={
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "good": PlayerState(id="good", role="villager"),
+        },
+        phase="night",
+        night_number=1,
+    )
+    result = resolve_night({
+        "game_state": gs,
+        "engine": engine,
+        "wolf_kill_target_id": "good",
+        "use_antidote": False,
+        "poison_target_id": None,
+        "seer_target_id": None,
+    })
+
+    assert result["game_state"].winning_faction == "werewolf"
+    assert len([e for e in result["game_state"].events if e.type == "victory"]) == 1
+    assert route_after_resolve_night({**result, "engine": engine}) == "reflection"
 
 
 # Mock class

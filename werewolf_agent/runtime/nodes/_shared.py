@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes._shared import RuntimeState
@@ -42,6 +42,7 @@ from werewolf_agent.runtime.nodes.node_helpers import (
     _call_agent,
     _deaths_already_announced,
     _dispatch_agent,
+    _has_pending_hunter_shot,
     _ensure_day_incremented,
     _find_role,
     _first_alive_target,
@@ -112,6 +113,7 @@ __all__ = [
     "_call_agent",
     "_deaths_already_announced",
     "_dispatch_agent",
+    "_has_pending_hunter_shot",
     "_ensure_day_incremented",
     "_ensure_runtime_audit_state",
     "_find_role",

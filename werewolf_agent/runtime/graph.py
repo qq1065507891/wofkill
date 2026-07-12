@@ -2,7 +2,7 @@
 """LangGraph game graph: deterministic orchestration around RuleEngine.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-08
+    修改日期: 2026-07-13
     使用示例: 内部模块，无对外接口
 Every node calls RuleEngine for rule decisions. No natural language adjudication.
 Node function implementations live in ``werewolf_agent.runtime.nodes``; this
@@ -44,6 +44,7 @@ from werewolf_agent.runtime.nodes._shared import (  # noqa: F401
     _ensure_day_incremented,
     _find_role,
     _force_wolf_kill,
+    _has_pending_hunter_shot,
     _judge_broadcast,
     _jb,
     _needs_sheriff_before_deaths,
@@ -174,19 +175,10 @@ def _post_hunter_route(gs: GameState) -> str:
 
 def route_after_resolve_night(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
-    for death in gs.deaths:
-        if "hunter_shot" in (death.triggered_skills or []):
-            if death.player_id in gs.players and not gs.players[death.player_id].alive:
-                already_shot = any(
-                    d.source_player_id == death.player_id and d.reason == "hunter_shot"
-                    for d in gs.deaths
-                )
-                if not already_shot:
-                    return "resolve_hunter_shot"
-    engine: RuleEngine = state["engine"]
-    result = engine.check_victory(gs)
-    if result.winner is not None:
-        return "check_victory"
+    if _has_pending_hunter_shot(gs):
+        return "resolve_hunter_shot"
+    if gs.winning_faction is not None:
+        return "reflection"
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
     # D1-flow-rewire: D1 N1 first resolve must go to sheriff_first_day_entry
@@ -203,19 +195,12 @@ def route_after_resolve_night(state: RuntimeState) -> str:
 
 
 def route_after_hunter_shot(state: RuntimeState) -> str:
-    engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
-    result = engine.check_victory(gs)
-    if result.winner is not None:
-        return "check_victory"
+    if gs.winning_faction is not None:
+        return "reflection"
     if _sheriff_died_this_batch(gs):
         return "sheriff_badge_transfer"
-    # Daytime hunter shot: there are no night deaths to announce.
-    # Route to check_victory first; if no winner, route_victory sends
-    # the game to enter_night to continue the day→night flow.
-    if gs.phase != "night":
-        return "check_victory"
-    return _post_hunter_route(gs)
+    return "check_victory"
 
 
 def route_after_vote(state: RuntimeState) -> str:
@@ -232,20 +217,11 @@ def route_after_vote(state: RuntimeState) -> str:
 
 def route_after_post_exile(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
-    for death in gs.deaths:
-        if "hunter_shot" not in (death.triggered_skills or []):
-            continue
-        if death.player_id not in gs.players:
-            continue
-        if gs.players[death.player_id].alive:
-            continue
-        already_shot = any(
-            d.source_player_id == death.player_id and d.reason == "hunter_shot"
-            for d in gs.deaths
-        )
-        if not already_shot:
-            return "resolve_hunter_shot"
-    return "check_victory"
+    if _has_pending_hunter_shot(gs):
+        return "resolve_hunter_shot"
+    if gs.winning_faction is not None:
+        return "reflection"
+    return "exile_last_words"
 
 
 def _route_after_badge_transfer(state: RuntimeState) -> str:
@@ -261,6 +237,18 @@ def route_victory(state: RuntimeState) -> str:
     gs: GameState = state["game_state"]
     if gs.winning_faction is not None:
         return "finish_game"
+    latest_exile_index = -1
+    latest_last_words_index = -1
+    for index, event in enumerate(gs.events):
+        if event.type == "vote_resolved" and event.payload.get("exiled") is not None:
+            latest_exile_index = index
+        if (
+            event.type == "judge_broadcast"
+            and event.payload.get("phase") == "exile_last_words"
+        ):
+            latest_last_words_index = index
+    if gs.phase != "night" and latest_exile_index > latest_last_words_index:
+        return "exile_last_words"
     if gs.sheriff_id and gs.sheriff_badge_state == "active":
         sheriff = gs.players.get(gs.sheriff_id)
         if sheriff and not sheriff.alive:

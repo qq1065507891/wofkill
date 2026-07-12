@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-提供夜晚行动结算节点。
+提供夜晚行动结算与终局提交节点。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.night_resolution import resolve_night
@@ -20,8 +21,10 @@ from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     logger,
     _judge_broadcast,
+    _has_pending_hunter_shot,
     _player_display,
 )
+from werewolf_agent.runtime.nodes.day_finish import _commit_victory
 
 def resolve_night(state: RuntimeState) -> dict[str, Any]:
 
@@ -123,4 +126,7 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
 
         )
 
+    # 所有强制死亡反应完成后，在任何白天 Agent 调用前提交终局。
+    if not _has_pending_hunter_shot(gs):
+        gs = _commit_victory({**state, "game_state": gs})["game_state"]
     return {"game_state": gs}

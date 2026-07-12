@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-运行时节点共享的通用调度、裁判广播、狼队计划和流程判断 helper。
+运行时节点共享的通用调度、终局调用防御、裁判广播和流程判断 helper。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-09
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.node_helpers import _alive_wolves
@@ -106,9 +106,13 @@ def _dispatch_agent(
     fn,
     *extra_args,
     timeout_override: float | None = None,
+    post_game: bool = False,
     **extra_kwargs,
 ) -> dict[str, Any] | None:
     """检查 registry 后调度 agent adapter。"""
+    gs = state.get("game_state")
+    if gs is not None and gs.winning_faction is not None and not post_game:
+        return None
     registry = state.get("agent_registry")
     if not registry:
         return None
@@ -128,6 +132,22 @@ def _dispatch_agent(
         **extra_kwargs,
         timeout_override=timeout_override,
     )
+
+
+def _has_pending_hunter_shot(gs: GameState) -> bool:
+    """判断死亡批次中是否仍有必须先结算的猎人开枪。"""
+    for death in gs.deaths:
+        if "hunter_shot" not in (death.triggered_skills or []):
+            continue
+        player = gs.players.get(death.player_id)
+        if player is None or player.alive:
+            continue
+        if not any(
+            item.source_player_id == death.player_id and item.reason == "hunter_shot"
+            for item in gs.deaths
+        ):
+            return True
+    return False
 
 
 def _ensure_day_incremented(
@@ -385,6 +405,7 @@ __all__ = [
     "_force_wolf_kill",
     "_generate_judge_message",
     "_hitl_checkpoint",
+    "_has_pending_hunter_shot",
     "_jb",
     "_judge_broadcast",
     "_needs_sheriff_before_deaths",

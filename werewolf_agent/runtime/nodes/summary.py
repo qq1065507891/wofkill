@@ -2,7 +2,7 @@
 """Summary and reflection node functions.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-13
     使用示例: 内部模块，无对外接口
 - ``summarize_positions`` — per-player LLM summarisation after free discussion
 - ``summarize_context`` — daily structured context summary for pruning
@@ -278,7 +278,7 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
             _sleep_between_agent_calls(state, default_ms=20000)
         reflection_text = ""
         try:
-            result = _dispatch_agent(state, _agent_reflection, pid)
+            result = _dispatch_agent(state, _agent_reflection, pid, post_game=True)
             if result:
                 reflection_text = result.get("reflection_text", "")
         except Exception:

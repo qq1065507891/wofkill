@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-08
+修改日期: 2026-07-13
 
 使用示例:
     >>> from langgraph.graph import StateGraph
@@ -129,7 +129,7 @@ def add_game_graph_edges(graph: StateGraph) -> None:
     graph.add_edge("first_night_hybrid_master", "resolve_night_node")
     graph.add_conditional_edges("resolve_night_node", graph_mod.route_after_resolve_night, {
         "resolve_hunter_shot": "resolve_hunter_shot",
-        "check_victory": "check_victory",
+        "reflection": "reflection",
         "sheriff_badge_transfer": "sheriff_badge_transfer",
         "sheriff_first_day_entry": "sheriff_first_day_entry",
         "announce_deaths": "announce_deaths",
@@ -137,6 +137,7 @@ def add_game_graph_edges(graph: StateGraph) -> None:
     })
     graph.add_conditional_edges("resolve_hunter_shot", graph_mod.route_after_hunter_shot, {
         "check_victory": "check_victory",
+        "reflection": "reflection",
         "sheriff_badge_transfer": "sheriff_badge_transfer",
         "sheriff_first_day_entry": "sheriff_first_day_entry",
         "announce_deaths": "announce_deaths",
@@ -201,13 +202,15 @@ def add_game_graph_edges(graph: StateGraph) -> None:
     })
     graph.add_edge("tie_pk_speech", "tie_revote")
     graph.add_edge("tie_revote", "day_vote")
-    graph.add_edge("resolve_exile", "exile_last_words")
-    graph.add_conditional_edges("exile_last_words", graph_mod.route_after_post_exile, {
+    graph.add_conditional_edges("resolve_exile", graph_mod.route_after_post_exile, {
         "resolve_hunter_shot": "resolve_hunter_shot",
-        "check_victory": "check_victory",
+        "reflection": "reflection",
+        "exile_last_words": "exile_last_words",
     })
+    graph.add_edge("exile_last_words", "summarize_context")
     graph.add_conditional_edges("check_victory", graph_mod.route_victory, {
         "finish_game": "reflection",
+        "exile_last_words": "exile_last_words",
         "sheriff_badge_transfer": "sheriff_badge_transfer",
         "enter_night": "summarize_context",
     })

@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证女巫行动、药剂约束与毒杀终局结算。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -37,6 +45,34 @@ from werewolf_agent.runtime.checkpoints import make_checkpointer
 
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
+
+
+def test_poison_resolution_commits_victory_after_forced_death_reactions() -> None:
+    from werewolf_agent.runtime.graph import resolve_night, route_after_resolve_night
+
+    engine = _new_engine()
+    gs = GameState(
+        game_id="poison_terminal",
+        players={
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "witch": PlayerState(id="witch", role="witch"),
+            "good": PlayerState(id="good", role="villager"),
+        },
+        phase="night",
+        night_number=1,
+    )
+    result = resolve_night({
+        "game_state": gs,
+        "engine": engine,
+        "wolf_kill_target_id": "good",
+        "use_antidote": False,
+        "poison_target_id": "wolf",
+        "seer_target_id": None,
+    })
+
+    assert result["game_state"].winning_faction == "good"
+    assert len([e for e in result["game_state"].events if e.type == "victory"]) == 1
+    assert route_after_resolve_night({**result, "engine": engine}) == "reflection"
 
 
 class _WitchMockAgent:

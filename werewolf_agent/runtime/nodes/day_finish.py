@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-检查胜利条件并结束日间阶段游戏。
+原子提交胜利条件并结束日间阶段游戏。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     内部运行时节点模块。
@@ -23,11 +24,25 @@ from werewolf_agent.runtime.nodes._shared import (
 )
 
 
-def check_victory(state: RuntimeState) -> dict[str, Any]:
+def _commit_victory(state: RuntimeState) -> dict[str, Any]:
+    """通过 RuleEngine 原子检查并提交唯一的胜负事件。"""
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
+    if gs.winning_faction is not None:
+        return {"game_state": gs}
+    alive_player_ids = sorted(pid for pid, player in gs.players.items() if player.alive)
+    for event in reversed(gs.events):
+        if event.type != "victory_checked":
+            continue
+        if event.payload.get("alive_player_ids") == alive_player_ids:
+            return {"game_state": gs}
+        break
     result = engine.check_victory(gs)
-    checked_payload = {"winner": result.winner, "reason": result.reason}
+    checked_payload = {
+        "winner": result.winner,
+        "reason": result.reason,
+        "alive_player_ids": alive_player_ids,
+    }
     gs = replace(gs, events=gs.events + [GameEvent(type="victory_checked", payload=checked_payload)])
 
     if result.winner is not None:
@@ -74,6 +89,11 @@ def check_victory(state: RuntimeState) -> dict[str, Any]:
                          },
                      )])
     return {"game_state": gs, "_victory_result": result}
+
+
+def check_victory(state: RuntimeState) -> dict[str, Any]:
+    """兼容图节点入口；胜负已提交时保持幂等。"""
+    return _commit_victory(state)
 
 
 def finish_game(state: RuntimeState) -> dict[str, Any]:

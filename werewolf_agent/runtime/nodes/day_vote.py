@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     内部运行时节点模块。
@@ -26,12 +27,14 @@ from werewolf_agent.runtime.nodes._shared import (
     _allocate_decision_identity,
     _dispatch_agent,
     _judge_broadcast,
+    _has_pending_hunter_shot,
     _jb,
     _ensure_runtime_audit_state,
     _player_display,
     _public_vote_reason,
     _with_vote_target_in_trace,
 )
+from werewolf_agent.runtime.nodes.day_finish import _commit_victory
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.evaluation.balance_public_claims import (
@@ -400,4 +403,7 @@ def resolve_exile(state: RuntimeState) -> dict[str, Any]:
             visibility="public",
         )
         logger.debug(f"  [放逐] {_player_display(state, exiled_id)}({role_str}) 被放逐出局")
+    # 猎人死亡反应必须先完成；其余放逐在当前 step 原子提交胜负。
+    if not _has_pending_hunter_shot(gs):
+        gs = _commit_victory({**state, "game_state": gs})["game_state"]
     return {"game_state": gs}

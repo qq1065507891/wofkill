@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证猎人死亡触发、开枪结算与终局路由顺序。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -233,6 +241,84 @@ class TestHunterShotOrdering:
         )
 
         assert route_after_post_exile({"game_state": gs, "engine": engine}) == "resolve_hunter_shot"
+
+    def test_pending_hunter_shot_precedes_victory_commit(self) -> None:
+        from werewolf_agent.runtime.graph import resolve_exile, route_after_post_exile
+        from werewolf_agent.runtime.graph_registration import add_game_graph_edges
+
+        engine = _new_engine()
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter"),
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "good": PlayerState(id="good", role="villager"),
+        }
+        gs = GameState(
+            game_id="hunter_before_terminal",
+            players=players,
+            phase="day",
+            day_number=1,
+            events=[GameEvent(type="vote_resolved", payload={"exiled": "hunter"})],
+        )
+
+        result = resolve_exile({"game_state": gs, "engine": engine})
+
+        assert result["game_state"].winning_faction is None
+        assert not [e for e in result["game_state"].events if e.type == "victory"]
+        assert route_after_post_exile({"game_state": result["game_state"], "engine": engine}) == "resolve_hunter_shot"
+
+        class EdgeProbe:
+            def __init__(self):
+                self.fixed_edges = []
+
+            def __getattr__(self, name):
+                if name == "add_edge":
+                    return lambda source, target: self.fixed_edges.append((source, target))
+                return lambda *_args, **_kwargs: None
+
+        probe = EdgeProbe()
+        add_game_graph_edges(probe)
+        assert ("resolve_exile", "exile_last_words") not in probe.fixed_edges
+
+    def test_no_shot_hunter_checks_victory_once(self) -> None:
+        from werewolf_agent.runtime.graph import (
+            check_victory,
+            resolve_exile,
+            resolve_hunter_shot,
+            route_after_hunter_shot,
+        )
+
+        engine = _new_engine()
+        original = engine.check_victory
+        calls = 0
+
+        def counted(gs):
+            nonlocal calls
+            calls += 1
+            return original(gs)
+
+        engine.check_victory = counted
+        players = {
+            "hunter": PlayerState(id="hunter", role="hunter"),
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "good": PlayerState(id="good", role="villager"),
+        }
+        gs = GameState(
+            game_id="hunter_no_shot_once",
+            players=players,
+            phase="day",
+            events=[GameEvent(type="vote_resolved", payload={"exiled": "hunter"})],
+        )
+        exiled = resolve_exile({"game_state": gs, "engine": engine})["game_state"]
+        shot = resolve_hunter_shot({
+            "game_state": exiled,
+            "engine": engine,
+            "hunter_shot_target_id": None,
+        })["game_state"]
+        assert route_after_hunter_shot({"game_state": shot, "engine": engine}) == "reflection"
+        terminal = check_victory({"game_state": shot, "engine": engine})["game_state"]
+
+        assert calls == 1
+        assert len([e for e in terminal.events if e.type == "victory"]) == 1
 
     def test_daytime_hunter_shot_returns_to_victory_check_not_night_announcement(self) -> None:
         engine = _new_engine()

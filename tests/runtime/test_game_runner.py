@@ -1,4 +1,10 @@
-"""Tests for GameRunner: full game orchestration via LangGraph + RuleEngine."""
+# -*- coding: utf-8 -*-
+"""
+验证 GameRunner 编排、终局边界与持久化行为。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,39 @@ from werewolf_agent.core.models import GameState, PlayerState, GameEvent
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.graph import RuntimeState, build_game_graph, _new_engine
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+
+
+def test_terminal_state_is_committed_at_step_boundary() -> None:
+    from werewolf_agent.runtime.nodes._shared import _dispatch_agent
+
+    engine = _new_engine()
+    gs = GameState(
+        game_id="terminal_dispatch",
+        players={
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "good": PlayerState(id="good", role="villager"),
+        },
+        winning_faction="werewolf",
+    )
+
+    class Registry:
+        def get_agent(self, _player_id):
+            return object()
+
+    called = False
+
+    def in_game_agent(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {"action_trace": {"final_action_type": "vote"}}
+
+    result = _dispatch_agent(
+        {"game_state": gs, "engine": engine, "agent_registry": Registry()},
+        in_game_agent,
+    )
+
+    assert result is None
+    assert called is False
 
 
 def test_game_runner_runtime_state_includes_rag_service() -> None:
