@@ -158,19 +158,37 @@ def test_event_registry_rejects_mismatched_supported_fact() -> None:
     assert result.rejected_fact_count == 1
 
 
-def test_fact_independent_general_strategy_is_allowed_but_concrete_fact_is_rejected() -> None:
+@pytest.mark.parametrize(
+    "abstraction",
+    [
+        "证据不足时降低结论强度并比较替代方案。",
+        "投票前先复核公开证据链。",
+        "查验前比较多个候选方案。",
+    ],
+)
+def test_fact_independent_general_strategy_accepts_target_free_methods(
+    abstraction: str,
+) -> None:
     safe = ReflectionLesson(
-        lesson_id="general", abstraction="证据不足时降低结论强度并比较替代方案。",
+        lesson_id="general", abstraction=abstraction,
         claim_dependencies=[], lesson_kind="general_strategy",
     )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[safe]), _state())
+
+    assert result.verified_lessons == [safe]
+    assert result.rejected_lesson_count == 0
+
+
+def test_fact_independent_general_strategy_rejects_concrete_fact() -> None:
     unsafe = ReflectionLesson(
         lesson_id="masked-fact", abstraction="预言家是 p01，狼人阵营获胜。",
         claim_dependencies=[], fact_independent=True,
     )
 
-    result = verify_reflection_draft(ReflectionDraft(lessons=[safe, unsafe]), _state())
+    result = verify_reflection_draft(ReflectionDraft(lessons=[unsafe]), _state())
 
-    assert result.verified_lessons == [safe]
+    assert result.verified_lessons == []
     assert result.rejected_lesson_count == 1
 
 
@@ -181,7 +199,13 @@ def test_fact_independent_general_strategy_is_allowed_but_concrete_fact_is_rejec
         "3号是预言家，应当相信他。",
         "player_3 是女巫。",
         "狼人阵营获胜，下次优先找猎人。",
-        "投票前先查验，再用毒救人。",
+        "投他。",
+        "投3号。",
+        "查验结果是狼人。",
+        "毒了p02。",
+        "救了3号。",
+        "某人死亡。",
+        "狼人获胜。",
         "玩家死亡后判断胜负。",
         "参考 g-final:42 的结论。",
     ],
