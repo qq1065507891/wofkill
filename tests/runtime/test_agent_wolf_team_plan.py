@@ -18,8 +18,6 @@ import json
 from dataclasses import replace
 from typing import Any
 
-import pytest
-
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.runtime.agent_adapter import (
     _extract_first_balanced_json_object,
@@ -263,6 +261,20 @@ class TestRetryAndFailure:
         registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
 
         assert agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry) is None
+
+    def test_repair_metadata_survives_later_membership_failure(self):
+        gs = _make_gs()
+        payload = json.loads(_valid_plan_json())
+        payload["night_kill_primary"] = "p04"
+        wrapped = json.dumps({"night_plan": payload})
+        router = _FakeModelRouter([(wrapped, None), (wrapped, None), (wrapped, None)])
+        registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+        state = {"game_state": gs}
+
+        assert agent_wolf_team_plan(state, engine=None, registry=registry) is None
+        failure = state["wolf_team_plan_failure"]
+        assert failure["normalization_triggered"] is True
+        assert failure["normalization_repairs"] == ["unwrap:night_plan"]
 
     def test_invalid_json_triggers_retry_eventually_returns_none(self):
         gs = _make_gs()

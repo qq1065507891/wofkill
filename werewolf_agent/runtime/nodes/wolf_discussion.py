@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-09
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.wolf_discussion import wolf_discussion
@@ -439,9 +439,22 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
             "reason": fallback_reason,
             "visibility": "werewolf_team_only",
         }
-        for key in ("stage", "attempts", "last_error", "captain_id"):
+        for key in (
+            "stage",
+            "attempts",
+            "last_error",
+            "captain_id",
+            "normalization_triggered",
+            "normalization_repairs",
+        ):
             if key in failure_meta:
                 fallback_payload[key] = failure_meta[key]
+
+        if failure_meta.get("normalization_triggered") is True:
+            plan["normalization_triggered"] = True
+            plan["normalization_repairs"] = list(
+                failure_meta.get("normalization_repairs") or []
+            )
 
         events.append(GameEvent(
 

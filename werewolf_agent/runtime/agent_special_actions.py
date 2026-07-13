@@ -92,6 +92,28 @@ def _context_audit_dependencies(
     )
 
 
+def _damage_decision_evidence(
+    base: dict[str, Any],
+    *,
+    target_id: str,
+) -> dict[str, Any]:
+    """把提示期候选证据投影为带最终目标的伤害决策审计。"""
+    evidence = dict(base)
+    comparison = dict(evidence.get("alternative_comparison") or {})
+    legal = [
+        target for target in comparison.get("legal_alternatives", [])
+        if target and target != target_id
+    ]
+    comparison.update({
+        "legal_alternatives": legal,
+        "alternative_target": legal[0] if legal else None,
+        "no_legal_alternative": not legal,
+    })
+    evidence["target_id"] = target_id
+    evidence["alternative_comparison"] = comparison
+    return evidence
+
+
 def agent_night_witch(
     state: dict[str, Any],
     engine: RuleEngine,
@@ -175,7 +197,7 @@ def agent_night_witch(
                 alive_count=alive,
             )
         )
-    witch_directive["witch_action_evidence"] = build_witch_action_evidence(
+    witch_evidence = build_witch_action_evidence(
         legal_targets=legal_targets,
         antidote_targets=(
             [wolf_kill_target_id]
@@ -192,6 +214,7 @@ def agent_night_witch(
         poison_candidates=cands,
         wolf_kill_target_id=wolf_kill_target_id,
     )
+    witch_directive["witch_action_evidence"] = witch_evidence
 
     first_night_killed = build_witch_first_night_killed_directive(
         wolf_kill_target_id=wolf_kill_target_id,
@@ -213,10 +236,17 @@ def agent_night_witch(
         action.target_id if action.action_type == ActionType.USE_POISON else None
     )
 
+    action_trace = _action_trace_payload(action) or {}
+    if poison_target_id:
+        action_trace.setdefault("final_action_type", ActionType.USE_POISON.value)
+        action_trace["power_role_evidence"] = _damage_decision_evidence(
+            witch_evidence,
+            target_id=poison_target_id,
+        )
     return {
         "use_antidote": use_antidote,
         "poison_target_id": poison_target_id,
-        "witch_action_trace": _action_trace_payload(action),
+        "witch_action_trace": action_trace,
     }
 
 
@@ -428,10 +458,21 @@ def agent_hunter_shot(
     context = _merge_strategy_directive(context, strategy_directive)
 
     action, retry_info = agent.act(context)
+    action_trace = _action_trace_payload(action) or {}
+    if action.action_type == ActionType.HUNTER_SHOT and action.target_id:
+        action_trace.setdefault("final_action_type", ActionType.HUNTER_SHOT.value)
+        action_trace["power_role_evidence"] = _damage_decision_evidence(
+            {
+                "alternative_comparison": strategy_directive["alternative_comparison"],
+                "friendly_fire_risk": strategy_directive["friendly_fire_risk"],
+                "retain_option": strategy_directive["retain_option"],
+            },
+            target_id=action.target_id,
+        )
     return build_hunter_shot_result(
         action_type=action.action_type,
         target_id=action.target_id,
-        action_trace=_action_trace_payload(action),
+        action_trace=action_trace,
     )
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 
 def test_recent_balance_report_includes_new_guardrails(tmp_path):
@@ -57,3 +58,17 @@ def test_recent_balance_report_includes_new_guardrails(tmp_path):
     assert report["wolf_team_plan_fallback_rate"] == 1.0
     assert report["weak_plan_kill_rate"] == 1.0
     assert "hunter_friendly_fire_rate" in report
+
+
+def test_soak_script_is_isolated_and_uses_exact_default_seeds() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "run_audit_closure_soak.ps1"
+
+    text = script.read_text(encoding="utf-8")
+
+    assert "[int]$GameCount = 10" in text
+    assert "[int]$StartSeed = 713001" in text
+    assert "$env:WEREWOLF_GAME_LOG_PATH" in text
+    assert "scripts/analyze_recent_balance.py" in text
+    assert "audit-closure-report.json" in text
+    assert "Get-ChildItem" not in text

@@ -28,6 +28,10 @@ from werewolf_agent.model_gateway.execution_records import (
     ReasoningStatus,
     RouteKind,
 )
+from werewolf_agent.model_gateway.reasoning_policy import (
+    minimum_reasoning_level,
+    reasoning_capability_satisfies,
+)
 from werewolf_agent.runtime.decision_outcomes import (
     DecisionOutcome,
     translate_decision_outcome,
@@ -207,6 +211,7 @@ def compute_decision_execution_metrics(
     fallback_keep_count = 0
     critical_request_count = 0
     critical_request_covered_count = 0
+    missing_task_type_count = 0
 
     for record in _iter_action_trace_records(games):
         trace = record["trace"]
@@ -225,10 +230,25 @@ def compute_decision_execution_metrics(
             continue
 
         decision_count += 1
-        critical_request_count += 1
+        task_type = record.get("explicit_task_type")
+        minimum_level: ReasoningLevel | None = None
+        if task_type:
+            try:
+                candidate_minimum = minimum_reasoning_level(str(task_type))
+            except ValueError:
+                candidate_minimum = None
+            if candidate_minimum is not ReasoningLevel.NONE:
+                minimum_level = candidate_minimum
+        else:
+            missing_task_type_count += 1
         first_attempt = translated.attempts[0]
-        if first_attempt.requested_reasoning_level is not ReasoningLevel.NONE:
-            critical_request_covered_count += 1
+        if minimum_level is not None:
+            critical_request_count += 1
+            if reasoning_capability_satisfies(
+                first_attempt.requested_reasoning_level.value,
+                minimum_level.value,
+            ):
+                critical_request_covered_count += 1
         decision_outcomes[translated.outcome.value] += 1
         attempt_count += len(translated.attempts)
         retry_count += translated.retry_count
@@ -245,9 +265,9 @@ def compute_decision_execution_metrics(
                 ):
                     fallback_disabled_count += 1
 
-        expected_attempt_count = len(translated.attempts)
+        expected_retry_count = len(translated.attempts) - 1
         if trace.get("retry_count") is not None:
-            consistency_errors += int(trace["retry_count"] != expected_attempt_count)
+            consistency_errors += int(trace["retry_count"] != expected_retry_count)
         expected_success_retries = (
             None
             if translated.outcome is DecisionOutcome.TERMINAL_FALLBACK
@@ -293,6 +313,7 @@ def compute_decision_execution_metrics(
         "reasoning_confirmation_rate": (
             confirmed_count / requested_count if requested_count else None
         ),
+        "reasoning_confirmation_supported": requested_count > 0,
         "reasoning_fallback_keep_metrics_supported": fallback_request_count > 0,
         "reasoning_fallback_request_count": fallback_request_count,
         "reasoning_fallback_keep_count": fallback_keep_count,
@@ -309,6 +330,7 @@ def compute_decision_execution_metrics(
             critical_request_covered_count / critical_request_count
             if critical_request_count else None
         ),
+        "reasoning_task_type_missing_count": missing_task_type_count,
     }
 
 
@@ -325,7 +347,7 @@ def compute_acceptance_audit_metrics(
 def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
     """汇总不依赖模型调用的最终验收指标。"""
     semantic_rows: list[dict[str, Any]] = []
-    worlds: list[dict[str, Any]] = []
+    world_groups: list[list[dict[str, Any]]] = []
     power_decisions: list[dict[str, Any]] = []
     post_win_calls = 0
     rejected_facts = 0
@@ -370,7 +392,9 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
             possible = audit.get("possible_worlds") if isinstance(audit, dict) else None
             top_worlds = possible.get("top_worlds") if isinstance(possible, dict) else None
             if isinstance(top_worlds, list):
-                worlds.extend(item for item in top_worlds if isinstance(item, dict))
+                world_groups.append([
+                    item for item in top_worlds if isinstance(item, dict)
+                ])
             if trace.get("final_action_type") in {"hunter_shot", "use_poison"}:
                 evidence = trace.get("power_role_evidence")
                 power_decisions.append(evidence if isinstance(evidence, dict) else {})
@@ -381,22 +405,33 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
             )
 
     semantic_count = len(semantic_rows)
-    semantic_success = sum(row.get("success") is True for row in semantic_rows)
+    semantic_success = sum(
+        row.get("success") is True and row.get("target_preserved") is True
+        for row in semantic_rows
+    )
     target_preserved = sum(row.get("target_preserved") is True for row in semantic_rows)
     no_new_claim = sum(
         _non_negative_int(row.get("introduced_claim_count")) == 0
         for row in semantic_rows
     )
-    world_count = len(worlds)
-    unique_assignments = {
-        json.dumps(world.get("key_assignments") or {}, ensure_ascii=False, sort_keys=True)
-        for world in worlds
-    }
+    world_count = sum(len(group) for group in world_groups)
+    unique_world_count = sum(
+        len({
+            json.dumps(
+                world.get("key_assignments") or {},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for world in group
+        })
+        for group in world_groups
+    )
     evidence_covered = sum(
         isinstance(world.get("why"), list)
         and bool(world["why"])
         and all(isinstance(ref, str) and bool(ref) for ref in world["why"])
-        for world in worlds
+        for group in world_groups
+        for world in group
     )
     complete_power_decisions = sum(
         _power_role_evidence_complete(evidence) for evidence in power_decisions
@@ -417,10 +452,11 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
             no_new_claim / semantic_count if semantic_count else None
         ),
         "possible_world_metrics_supported": world_count > 0,
-        "possible_world_prompt_count": world_count,
-        "possible_world_unique_count": len(unique_assignments),
+        "possible_world_prompt_count": len(world_groups),
+        "possible_world_total_count": world_count,
+        "possible_world_unique_count": unique_world_count,
         "possible_world_unique_rate": (
-            len(unique_assignments) / world_count if world_count else None
+            unique_world_count / world_count if world_count else None
         ),
         "possible_world_evidence_covered_count": evidence_covered,
         "possible_world_evidence_coverage_rate": (
@@ -444,14 +480,24 @@ def _non_negative_int(value: Any) -> int:
 def _power_role_evidence_complete(evidence: dict[str, Any]) -> bool:
     comparison = evidence.get("alternative_comparison")
     risk = evidence.get("friendly_fire_risk")
-    if not evidence.get("target_id") or not isinstance(risk, dict):
+    retain = evidence.get("retain_option")
+    if (
+        not evidence.get("target_id")
+        or not isinstance(risk, dict)
+        or not isinstance(retain, dict)
+    ):
         return False
     if not isinstance(comparison, dict):
         return False
     alternatives = comparison.get("legal_alternatives")
     if not isinstance(alternatives, list):
         return False
-    return bool(alternatives) or comparison.get("no_legal_alternative") is True
+    if "alternative_target" not in comparison:
+        return False
+    alternative_target = comparison["alternative_target"]
+    if comparison.get("no_legal_alternative") is True:
+        return alternative_target is None
+    return alternative_target is not None and alternative_target in alternatives
 
 
 def _iter_action_traces(games: list[dict[str, Any]]):
@@ -469,6 +515,7 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
                     "trace": trace,
                     "actor": _trace_actor(payload, trace),
                     "task": _trace_task(payload, trace, event.get("type")),
+                    "explicit_task_type": _explicit_trace_task(payload, trace),
                     "game": game,
                 }
             traces = payload.get("action_traces")
@@ -479,6 +526,7 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
                             "trace": item,
                             "actor": _trace_actor(payload, item) or actor_id,
                             "task": _trace_task(payload, item, event.get("type")),
+                            "explicit_task_type": _explicit_trace_task(payload, item),
                             "game": game,
                         }
 
@@ -523,7 +571,24 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
 
             decision = decisions.setdefault(
                 key,
-                {"plan": None, "fallback_present": False, "fallback_reason": None},
+                {
+                    "plan": None,
+                    "fallback_present": False,
+                    "fallback_reason": None,
+                    "normalization_triggered": False,
+                    "normalization_repairs": [],
+                },
+            )
+            repairs = payload.get("normalization_repairs")
+            if isinstance(repairs, list):
+                decision["normalization_repairs"] = list(dict.fromkeys([
+                    *decision["normalization_repairs"],
+                    *(str(item) for item in repairs if item),
+                ]))
+            decision["normalization_triggered"] = bool(
+                decision["normalization_triggered"]
+                or payload.get("normalization_triggered") is True
+                or decision["normalization_repairs"]
             )
             if event_type == "wolf_team_plan_fallback":
                 decision["fallback_present"] = True
@@ -556,7 +621,7 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
             outcomes.append("strategy_terminal_fallback")
         elif decision["fallback_present"] or plan.get("consensus_method") == "fallback":
             outcomes.append("other_terminal_fallback")
-        elif plan.get("normalization_repairs"):
+        elif decision["normalization_triggered"]:
             outcomes.append("normalization_success")
         else:
             outcomes.append("llm_success")
@@ -569,7 +634,7 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
     other_fallback = outcomes.count("other_terminal_fallback")
     terminal_fallback = schema_fallback + strategy_fallback + other_fallback
     normalization_triggered = sum(
-        bool((decision["plan"] or {}).get("normalization_repairs"))
+        bool(decision["normalization_triggered"])
         for decision in decisions.values()
     )
     denominator = total or None
@@ -643,6 +708,18 @@ def _trace_task(
             if value:
                 return str(value).lower()
     return str(event_type or "").lower()
+
+
+def _explicit_trace_task(
+    payload: dict[str, Any],
+    trace: dict[str, Any],
+) -> str | None:
+    """只读取明确的 task_type，避免把 phase 猜测成推理策略任务。"""
+    for source in (trace, payload):
+        value = source.get("task_type")
+        if value:
+            return str(value).lower()
+    return None
 
 
 def _trace_failed(trace: dict[str, Any]) -> bool:

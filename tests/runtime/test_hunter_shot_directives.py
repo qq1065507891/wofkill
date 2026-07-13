@@ -70,6 +70,7 @@ def test_hunter_directive_exposes_structured_alternative_and_friendly_fire_evide
         death_reason="exile", shot_assessment=shot_assessment
     )
     assert directive["alternative_comparison"]["legal_alternatives"] == ["p02", "p03"]
+    assert directive["alternative_comparison"]["alternative_target"] == "p03"
     assert directive["friendly_fire_risk"]["targets"] == ["p03"]
     assert "alternative_comparison" not in directive["shot_value_assessment"]
     assert "friendly_fire_risk" not in directive["shot_value_assessment"]
@@ -84,6 +85,7 @@ def test_hunter_directive_marks_single_target_as_no_legal_alternative() -> None:
         death_reason="exile", shot_assessment=assessment
     )
     assert directive["alternative_comparison"]["no_legal_alternative"] is True
+    assert directive["alternative_comparison"]["alternative_target"] is None
 
 
 def test_hunter_zero_targets_still_emits_structured_retain_directive() -> None:
@@ -95,6 +97,7 @@ def test_hunter_zero_targets_still_emits_structured_retain_directive() -> None:
     assert directive["alternative_comparison"] == {
         "legal_alternatives": [],
         "no_legal_alternative": True,
+        "alternative_target": None,
     }
     assert directive["friendly_fire_risk"] == {
         "status": "not_applicable",

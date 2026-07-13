@@ -70,15 +70,22 @@ def _record_wolf_team_plan_failure(
     attempts: int,
     last_error: str,
     captain_id: str | None,
+    normalization_repairs: tuple[str, ...] = (),
 ) -> None:
     """记录狼队计划失败元数据，供审计事件下钻原因。"""
-    state[_WOLF_TEAM_PLAN_FAILURE_KEY] = {
+    failure = {
         "reason": reason,
         "stage": stage,
         "attempts": attempts,
         "last_error": last_error,
         "captain_id": captain_id,
     }
+    if normalization_repairs:
+        failure.update({
+            "normalization_triggered": True,
+            "normalization_repairs": list(normalization_repairs),
+        })
+    state[_WOLF_TEAM_PLAN_FAILURE_KEY] = failure
 
 
 def agent_wolf_team_plan(
@@ -185,6 +192,7 @@ def agent_wolf_team_plan(
     last_reason = "retry_exhausted"
     last_stage = "unknown"
     use_tool_choice = True
+    observed_normalization_repairs: list[str] = []
 
     for attempt in range(1, max_retries + 1):
         retry_suffix = (
@@ -275,6 +283,10 @@ def agent_wolf_team_plan(
             last_stage = "protocol"
             continue
         data, normalization_repairs = normalize_wolf_team_plan_payload(data)
+        observed_normalization_repairs = list(dict.fromkeys([
+            *observed_normalization_repairs,
+            *normalization_repairs,
+        ]))
         data.setdefault("night_number", night_num)
 
         try:
@@ -324,6 +336,7 @@ def agent_wolf_team_plan(
         attempts=max_retries,
         last_error=last_err or "retry exhausted",
         captain_id=captain_id,
+        normalization_repairs=tuple(observed_normalization_repairs),
     )
     return None
 

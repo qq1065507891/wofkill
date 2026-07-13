@@ -15,6 +15,18 @@ from werewolf_agent.agents.schemas import AgentContext, TaskType
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 
 
+def test_action_audit_event_always_carries_explicit_task_type() -> None:
+    from werewolf_agent.runtime.nodes.action_audit import _action_trace_event
+
+    event = _action_trace_event(
+        player_id="p01",
+        phase="vote",
+        action_trace={"execution_attempts": []},
+    )
+
+    assert event.payload["task_type"] == "vote"
+
+
 def test_audit_context_kwargs_requires_identity_and_collector() -> None:
     from werewolf_agent.runtime.agent_action_audit import _audit_context_kwargs
 

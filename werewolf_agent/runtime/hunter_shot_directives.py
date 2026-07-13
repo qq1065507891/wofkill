@@ -67,6 +67,7 @@ def build_hunter_shot_directive(
         "alternative_comparison": {
             "legal_alternatives": [],
             "no_legal_alternative": True,
+            "alternative_target": None,
         },
         "friendly_fire_risk": {
             "status": "not_applicable",
@@ -87,13 +88,17 @@ def build_hunter_shot_directive(
             if key not in {"alternative_comparison", "friendly_fire_risk"}
         }
         ranked = list(shot_assessment.get("ranked_targets") or [])
-        strategy_directive["alternative_comparison"] = shot_assessment.get(
+        comparison = dict(shot_assessment.get(
             "alternative_comparison",
             {
                 "legal_alternatives": [item.get("target") for item in ranked],
                 "no_legal_alternative": len(ranked) <= 1,
             },
+        ))
+        comparison["alternative_target"] = (
+            ranked[1].get("target") if len(ranked) > 1 else None
         )
+        strategy_directive["alternative_comparison"] = comparison
         strategy_directive["friendly_fire_risk"] = shot_assessment.get(
             "friendly_fire_risk",
             {

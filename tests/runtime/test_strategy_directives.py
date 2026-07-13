@@ -494,6 +494,20 @@ class TestHunterStrategyDirectives:
         assert "recommendation" in sv
         assert len(sv["ranked_targets"]) > 0
 
+    def test_hunter_shot_trace_carries_complete_power_role_evidence(self) -> None:
+        state, engine, registry = self._make_hunter_state()
+        from werewolf_agent.runtime.agent_adapter import agent_hunter_shot
+
+        result = agent_hunter_shot(state, engine, registry, "hunter")
+
+        assert result["action_trace"]["final_action_type"] == "hunter_shot"
+        evidence = result["action_trace"]["power_role_evidence"]
+        assert evidence["target_id"] == "w1"
+        assert "friendly_fire_risk" in evidence
+        assert "retain_option" in evidence
+        comparison = evidence["alternative_comparison"]
+        assert comparison["alternative_target"] in comparison["legal_alternatives"]
+
     def test_hunter_zero_legal_targets_skips_target_evaluation(self, monkeypatch) -> None:
         state, engine, registry = self._make_hunter_state()
         for player_id, player in state["game_state"].players.items():

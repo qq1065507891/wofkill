@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-10
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.action_audit import _allocate_decision_identity
@@ -77,6 +77,7 @@ def _action_trace_event(
     payload = {
         "player_id": decision_identity.player_id if decision_identity else player_id,
         "phase": decision_identity.phase if decision_identity else phase,
+        "task_type": decision_identity.task_type if decision_identity else phase,
         "day_number": decision_identity.day_number if decision_identity else day_number,
         "night_number": decision_identity.night_number if decision_identity else night_number,
         "visibility": "moderator_only",
@@ -87,7 +88,6 @@ def _action_trace_event(
         payload.update({
             "trace_id": decision_identity.trace_id(),
             "game_id": decision_identity.game_id,
-            "task_type": decision_identity.task_type,
             "action_index": decision_identity.action_index,
         })
     if phase == "vote":

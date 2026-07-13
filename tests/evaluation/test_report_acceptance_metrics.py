@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from werewolf_agent.model_gateway.execution_records import (
@@ -153,7 +155,7 @@ def test_execution_report_taxonomy_is_consistent(
         "execution_attempts": attempts,
         # 故意放入错误的历史投影，证明报告重新消费 translator，而不是信任自由文本。
         "decision_outcome": "legacy_free_text",
-        "retry_count": len(attempts),
+        "retry_count": len(attempts) - 1,
         "total_retry_count_until_success": (
             None if decision == "terminal_fallback" else len(attempts) - 1
         ),
@@ -175,6 +177,7 @@ def test_execution_report_taxonomy_is_consistent(
     assert metrics["reasoning_requested_count"] == len(attempts)
     assert metrics["reasoning_confirmed_count"] == len(attempts)
     assert metrics["reasoning_confirmation_rate"] == 1.0
+    assert metrics["reasoning_confirmation_supported"] is True
     if fallback_kept is None:
         assert metrics["reasoning_fallback_keep_metrics_supported"] is False
         assert metrics["reasoning_fallback_keep_rate"] is None
@@ -217,6 +220,95 @@ def test_execution_report_accepts_json_normalized_attempts() -> None:
     assert metrics["retry_count"] == 1
 
 
+def test_retry_consistency_accepts_two_attempts_with_one_retry_and_no_errors() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    attempts = (
+        _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
+        _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS),
+    )
+    metrics = compute_decision_execution_metrics([{
+        "events": [{"type": "action_trace_audit", "payload": {
+            "task_type": "vote",
+            "action_trace": {
+                "execution_attempts": attempts,
+                "retry_count": 1,
+                "total_retry_count_until_success": 1,
+            },
+        }}],
+    }])
+
+    assert metrics["attempt_retry_consistency_error_count"] == 0
+
+
+def test_critical_reasoning_coverage_uses_policy_minimum_and_requires_task_type() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    medium_attempt = replace(_attempt(
+        1,
+        RouteKind.PRIMARY,
+        AttemptOutcome.SUCCESS,
+        reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+    ),
+        requested_reasoning_level=ReasoningLevel.MEDIUM,
+    )
+    none_attempt = replace(
+        medium_attempt,
+        requested_reasoning_level=ReasoningLevel.NONE,
+        normalized_reasoning_status=ReasoningStatus.NOT_REQUESTED,
+        evidence_kind=EvidenceKind.NONE,
+    )
+    games = [{"events": [
+        {"type": "action_trace_audit", "payload": {
+            "task_type": "wolf_team_plan",
+            "action_trace": {"execution_attempts": (medium_attempt,)},
+        }},
+        {"type": "action_trace_audit", "payload": {
+            "task_type": "speech",
+            "action_trace": {"execution_attempts": (medium_attempt,)},
+        }},
+        {"type": "action_trace_audit", "payload": {
+            "task_type": "judge_phase",
+            "action_trace": {"execution_attempts": (none_attempt,)},
+        }},
+        {"type": "action_trace_audit", "payload": {
+            "action_trace": {"execution_attempts": (medium_attempt,)},
+        }},
+    ]}]
+
+    metrics = compute_decision_execution_metrics(games)
+
+    assert metrics["critical_task_reasoning_request_count"] == 2
+    assert metrics["critical_task_reasoning_requested_count"] == 1
+    assert metrics["critical_task_reasoning_request_coverage"] == 0.5
+    assert metrics["reasoning_confirmation_supported"] is True
+    assert metrics["reasoning_confirmation_rate"] == 0.0
+    assert metrics["reasoning_task_type_missing_count"] == 1
+
+
+def test_none_only_reasoning_has_independent_unsupported_confirmation_rate() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    attempt = replace(
+        _attempt(1, RouteKind.PRIMARY, AttemptOutcome.SUCCESS),
+        requested_reasoning_level=ReasoningLevel.NONE,
+        normalized_reasoning_status=ReasoningStatus.NOT_REQUESTED,
+        reasoning_token_count=0,
+        evidence_kind=EvidenceKind.NONE,
+    )
+    metrics = compute_decision_execution_metrics([{"events": [{
+        "type": "action_trace_audit",
+        "payload": {
+            "task_type": "judge_phase",
+            "action_trace": {"execution_attempts": (attempt,)},
+        },
+    }]}])
+
+    assert metrics["reasoning_confirmation_supported"] is False
+    assert metrics["reasoning_confirmation_rate"] is None
+    assert metrics["critical_task_reasoning_request_coverage_supported"] is False
+
+
 def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 
@@ -239,9 +331,11 @@ def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> Non
                     "power_role_evidence": {
                         "target_id": "p02",
                         "friendly_fire_risk": {"targets": []},
+                        "retain_option": {"available": True},
                         "alternative_comparison": {
                             "legal_alternatives": [],
                             "no_legal_alternative": True,
+                            "alternative_target": None,
                         },
                     },
                     "world_model_audit": {"possible_worlds": {"top_worlds": [
@@ -305,6 +399,96 @@ def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> Non
         assert all(empty[key] is None for key in rate_keys)
 
 
+def test_semantic_repair_rates_keep_invariants_as_independent_numerators() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    metrics = compute_acceptance_audit_metrics([{"events": [
+        {"type": "semantic_repair_audit", "payload": {
+            "repairable": True, "success": True,
+            "target_preserved": False, "introduced_claim_count": 0,
+        }},
+        {"type": "semantic_repair_audit", "payload": {
+            "repairable": True, "success": False,
+            "target_preserved": True, "introduced_claim_count": 1,
+        }},
+    ]}])
+
+    assert metrics["semantic_repair_success_count"] == 0
+    assert metrics["semantic_repair_success_rate"] == 0.0
+    assert metrics["semantic_repair_target_preservation_rate"] == 0.5
+    assert metrics["semantic_repair_no_new_claim_rate"] == 0.5
+
+
+def test_possible_world_uniqueness_is_grouped_per_prompt() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    shared = {"key_assignments": {"p02": "werewolf"}, "why": ["event:1"]}
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+        {"type": "action_trace_audit", "payload": {
+            "trace_id": "prompt-1", "action_trace": {"world_model_audit": {
+                "possible_worlds": {"top_worlds": [shared, shared]}
+            }},
+        }},
+        {"type": "action_trace_audit", "payload": {
+            "trace_id": "prompt-2", "action_trace": {"world_model_audit": {
+                "possible_worlds": {"top_worlds": [shared]}
+            }},
+        }},
+    ]}])
+
+    assert metrics["possible_world_prompt_count"] == 2
+    assert metrics["possible_world_total_count"] == 3
+    assert metrics["possible_world_unique_count"] == 2
+    assert metrics["possible_world_unique_rate"] == 2 / 3
+
+
+def test_power_role_evidence_requires_explicit_legal_alternative_target() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    def event(comparison, *, retain=True):
+        evidence = {
+            "target_id": "p02",
+            "friendly_fire_risk": {"targets": []},
+            "alternative_comparison": comparison,
+        }
+        if retain:
+            evidence["retain_option"] = {"available": True}
+        return {"type": "action_trace_audit", "payload": {"action_trace": {
+            "final_action_type": "hunter_shot",
+            "power_role_evidence": evidence,
+        }}}
+
+    metrics = compute_acceptance_audit_metrics([{"events": [
+        event({
+            "legal_alternatives": ["p03"],
+            "no_legal_alternative": False,
+            "alternative_target": "p03",
+        }),
+        event({
+            "legal_alternatives": ["p03"],
+            "no_legal_alternative": False,
+            "alternative_target": None,
+        }),
+        event({
+            "legal_alternatives": [],
+            "no_legal_alternative": True,
+            "alternative_target": None,
+        }),
+        event({
+            "legal_alternatives": [],
+            "no_legal_alternative": True,
+        }),
+        event({
+            "legal_alternatives": [],
+            "no_legal_alternative": True,
+            "alternative_target": None,
+        }, retain=False),
+    ]}])
+
+    assert metrics["power_role_evidence_complete_count"] == 2
+    assert metrics["power_role_evidence_completeness_rate"] == 0.4
+
+
 def test_wolf_normalization_rate_uses_triggered_normalization_denominator() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_wolf_plan_outcome_metrics
 
@@ -324,3 +508,26 @@ def test_wolf_normalization_rate_uses_triggered_normalization_denominator() -> N
     assert metrics["wolf_team_plan_normalization_success_rate"] == 1.0
     assert metrics["wolf_plan_schema_fallback_rate"] == 1 / 3
     assert metrics["wolf_plan_strategy_fallback_rate"] == 0.0
+
+
+def test_wolf_normalization_failed_after_repair_stays_in_triggered_denominator() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_wolf_plan_outcome_metrics
+
+    metrics = compute_wolf_plan_outcome_metrics([{"game_id": "g1", "events": [
+        {"type": "wolf_team_plan_fallback", "payload": {
+            "decision_id": "failed-normalized",
+            "reason": "schema_validation_failed",
+            "normalization_triggered": True,
+            "normalization_repairs": ["unwrap:night_plan"],
+        }},
+        {"type": "wolf_team_plan", "payload": {
+            "decision_id": "failed-normalized",
+            "consensus_method": "fallback",
+            "normalization_triggered": True,
+            "normalization_repairs": ["unwrap:night_plan"],
+        }},
+    ]}])
+
+    assert metrics["wolf_team_plan_normalization_triggered_count"] == 1
+    assert metrics["wolf_team_plan_normalization_success_count"] == 0
+    assert metrics["wolf_team_plan_normalization_success_rate"] == 0.0

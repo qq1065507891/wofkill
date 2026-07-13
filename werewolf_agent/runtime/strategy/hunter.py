@@ -159,6 +159,7 @@ def evaluate_hunter_shot_target(
         "alternative_comparison": {
             "legal_alternatives": [target for target, _ in ranked],
             "no_legal_alternative": len(ranked) <= 1,
+            "alternative_target": ranked[1][0] if len(ranked) > 1 else None,
         },
         "friendly_fire_risk": {
             "targets": [target for target, data in ranked if data["value"] < 0],

@@ -37,6 +37,7 @@ def test_witch_action_evidence_compares_multiple_legal_alternatives() -> None:
 
     assert evidence["alternative_comparison"]["legal_alternatives"] == ["p02", "p03"]
     assert evidence["alternative_comparison"]["no_legal_alternative"] is False
+    assert evidence["alternative_comparison"]["alternative_target"] == "p03"
     assert evidence["retain_skill_evidence"]["available"] is True
     assert evidence["friendly_fire_risk"]["targets"] == ["p03"]
 
@@ -52,8 +53,10 @@ def test_witch_action_evidence_handles_single_and_zero_targets() -> None:
     )
 
     assert single["alternative_comparison"]["no_legal_alternative"] is True
+    assert single["alternative_comparison"]["alternative_target"] is None
     assert empty["alternative_comparison"]["legal_alternatives"] == []
     assert empty["alternative_comparison"]["no_legal_alternative"] is True
+    assert empty["alternative_comparison"]["alternative_target"] is None
 
 
 def test_witch_action_evidence_separates_action_specific_targets() -> None:
@@ -255,6 +258,22 @@ class TestWitchDecisionFlow:
         assert ctx.visible_world_state.get("wolf_kill_target") is None
         assert ActionType.USE_ANTIDOTE not in ctx.legal_actions
         assert ActionType.USE_POISON in ctx.legal_actions
+
+    def test_witch_poison_trace_carries_complete_power_role_evidence(self) -> None:
+        from werewolf_agent.runtime.agent_adapter import agent_night_witch
+
+        state, engine = self._make_witch_state(wolf_kill_target_id=None)
+        registry = _WitchMockRegistry(poison_target_id="w1")
+
+        result = agent_night_witch(state, engine, registry)
+
+        assert result["witch_action_trace"]["final_action_type"] == "use_poison"
+        evidence = result["witch_action_trace"]["power_role_evidence"]
+        assert evidence["target_id"] == "w1"
+        assert "friendly_fire_risk" in evidence
+        assert "retain_option" in evidence
+        comparison = evidence["alternative_comparison"]
+        assert comparison["alternative_target"] in comparison["legal_alternatives"]
 
     def test_witch_cannot_self_save_antidote_not_offered(self) -> None:
         """When witch is the wolf kill target, antidote is NOT in legal_actions."""

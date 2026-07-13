@@ -97,6 +97,7 @@ def build_witch_action_evidence(
         "alternative_comparison": {
             "legal_alternatives": targets,
             "no_legal_alternative": len(targets) <= 1,
+            "alternative_target": targets[1] if len(targets) > 1 else None,
         },
         "retain_option": retain_option,
         # 保留旧字段供已有报表读取，值始终派生自 retain_option。
