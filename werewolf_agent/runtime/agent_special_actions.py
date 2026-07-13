@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_special_actions import agent_night_witch
@@ -56,6 +57,7 @@ from werewolf_agent.runtime.strategy.seer import (
     public_seer_claimants as _public_seer_claimants,
 )
 from werewolf_agent.runtime.witch_night_directives import (
+    build_witch_action_evidence,
     build_witch_first_night_killed_directive,
     build_witch_legal_actions,
     build_witch_night_action_directive,
@@ -156,6 +158,7 @@ def agent_night_witch(
         alive = sum(1 for p in gs.players.values() if p.alive)
         witch_directive["witch_poison_strategy"] = build_witch_poison_strategy(alive)
 
+    cands: list[dict[str, Any]] = []
     if not gs.poison_used:
         try:
             from werewolf_agent.runtime.strategy.poison import (
@@ -172,6 +175,11 @@ def agent_night_witch(
                 alive_count=alive,
             )
         )
+    witch_directive["witch_action_evidence"] = build_witch_action_evidence(
+        legal_targets=legal_targets,
+        poison_candidates=cands,
+        wolf_kill_target_id=wolf_kill_target_id,
+    )
 
     first_night_killed = build_witch_first_night_killed_directive(
         wolf_kill_target_id=wolf_kill_target_id,

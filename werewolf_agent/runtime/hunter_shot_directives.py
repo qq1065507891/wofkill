@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.hunter_shot_directives import build_hunter_death_label
@@ -67,6 +67,23 @@ def build_hunter_shot_directive(
     }
     if shot_assessment:
         strategy_directive["shot_value_assessment"] = shot_assessment
+        ranked = list(shot_assessment.get("ranked_targets") or [])
+        strategy_directive["alternative_comparison"] = shot_assessment.get(
+            "alternative_comparison",
+            {
+                "legal_alternatives": [item.get("target") for item in ranked],
+                "no_legal_alternative": len(ranked) <= 1,
+            },
+        )
+        strategy_directive["friendly_fire_risk"] = shot_assessment.get(
+            "friendly_fire_risk",
+            {
+                "targets": [
+                    item.get("target") for item in ranked
+                    if int(item.get("value", 0)) < 0
+                ],
+            },
+        )
     return strategy_directive
 
 

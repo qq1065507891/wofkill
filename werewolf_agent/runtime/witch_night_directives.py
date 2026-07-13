@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.witch_night_directives import build_witch_potion_status
@@ -56,6 +56,36 @@ def build_witch_potion_status(*, antidote_used: bool, poison_used: bool) -> str:
     elif not antidote_used and poison_used:
         potion_status += "你只剩解药，只能选择救人或不用。"
     return potion_status
+
+
+def build_witch_action_evidence(
+    *,
+    legal_targets: Sequence[str],
+    poison_candidates: Sequence[Mapping[str, Any]],
+    wolf_kill_target_id: str | None,
+) -> dict[str, Any]:
+    """构造替代比较、保留药水收益与误伤风险证据，不替代模型决策。"""
+    targets = list(dict.fromkeys(legal_targets))
+    supported = {
+        str(candidate.get("player_id"))
+        for candidate in poison_candidates
+        if candidate.get("player_id")
+    }
+    poison_targets = [target for target in targets if target != wolf_kill_target_id]
+    return {
+        "alternative_comparison": {
+            "legal_alternatives": targets,
+            "no_legal_alternative": len(targets) <= 1,
+        },
+        "retain_skill_evidence": {
+            "available": bool(targets),
+            "reason": "保留药水可等待更强公开证据并避免本夜误伤",
+        },
+        "friendly_fire_risk": {
+            "targets": [target for target in poison_targets if target not in supported],
+            "basis": "缺少结构化公开毒杀依据",
+        },
+    }
 
 
 def build_witch_night_action_directive(

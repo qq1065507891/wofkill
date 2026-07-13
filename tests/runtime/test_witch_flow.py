@@ -47,6 +47,36 @@ from werewolf_agent.runtime.checkpoints import make_checkpointer
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
 
 
+def test_witch_action_evidence_compares_multiple_legal_alternatives() -> None:
+    from werewolf_agent.runtime.witch_night_directives import build_witch_action_evidence
+
+    evidence = build_witch_action_evidence(
+        legal_targets=["p02", "p03"],
+        poison_candidates=[{"player_id": "p02", "reason": "公开查杀"}],
+        wolf_kill_target_id=None,
+    )
+
+    assert evidence["alternative_comparison"]["legal_alternatives"] == ["p02", "p03"]
+    assert evidence["alternative_comparison"]["no_legal_alternative"] is False
+    assert evidence["retain_skill_evidence"]["available"] is True
+    assert evidence["friendly_fire_risk"]["targets"] == ["p03"]
+
+
+def test_witch_action_evidence_handles_single_and_zero_targets() -> None:
+    from werewolf_agent.runtime.witch_night_directives import build_witch_action_evidence
+
+    single = build_witch_action_evidence(
+        legal_targets=["p02"], poison_candidates=[], wolf_kill_target_id=None
+    )
+    empty = build_witch_action_evidence(
+        legal_targets=[], poison_candidates=[], wolf_kill_target_id=None
+    )
+
+    assert single["alternative_comparison"]["no_legal_alternative"] is True
+    assert empty["alternative_comparison"]["legal_alternatives"] == []
+    assert empty["alternative_comparison"]["no_legal_alternative"] is True
+
+
 def test_poison_resolution_commits_victory_after_forced_death_reactions() -> None:
     from werewolf_agent.runtime.graph import resolve_night, route_after_resolve_night
 

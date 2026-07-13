@@ -3,7 +3,7 @@
 功能描述：猎人策略评估函数。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-09
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
@@ -156,6 +156,14 @@ def evaluate_hunter_shot_target(
             if ranked else "无可用开枪目标"
         ),
         "shoot_advisory": advisory,
+        "alternative_comparison": {
+            "legal_alternatives": [target for target, _ in ranked],
+            "no_legal_alternative": len(ranked) <= 1,
+        },
+        "friendly_fire_risk": {
+            "targets": [target for target, data in ranked if data["value"] < 0],
+            "basis": "公开认好或金水声明会提高误伤风险",
+        },
     }
 
 

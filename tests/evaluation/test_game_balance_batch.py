@@ -41,6 +41,41 @@ def test_public_fact_guard_preserves_supported_role_claims():
     assert sanitized == text
 
 
+def test_public_fact_guard_repairs_only_invalid_mixed_claim() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    history = [("p05", "我是女巫，但暂时不公开药水。")]
+    text = "我怀疑p08；p05刚才声称自己是女巫；系统确认p08是狼人。"
+    sanitized, count = sanitize_public_text(text, history)
+    assert count == 1
+    assert "p05刚才声称自己是女巫" in sanitized
+    assert "p08" in sanitized
+    assert "系统确认p08是狼人" not in sanitized
+    assert "我怀疑p08" in sanitized
+
+
+def test_public_fact_guard_preserves_negated_system_fact() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    text = "我并不认为系统确认p08是狼人，我只是怀疑p08。"
+    sanitized, count = sanitize_public_text(text, [])
+    assert (sanitized, count) == (text, 0)
+
+
+def test_public_claim_classifier_separates_semantic_types() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    claims = classify_public_claims(
+        "p05声称自己是女巫；系统确认p08是狼人；我认为p09更可疑。"
+    )
+
+    assert [claim.claim_type.value for claim in claims] == [
+        "player_claim",
+        "system_fact",
+        "current_player_inference",
+    ]
+
+
 def test_balance_audit_flags_high_wolf_win_rate():
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 

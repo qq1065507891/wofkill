@@ -52,6 +52,33 @@ def test_build_hunter_shot_directive_adds_assessment_when_present() -> None:
     assert directive["shot_value_assessment"] == shot_assessment
 
 
+def test_hunter_directive_exposes_structured_alternative_and_friendly_fire_evidence() -> None:
+    shot_assessment = {
+        "ranked_targets": [
+            {"target": "p02", "value": 6, "signals": ["public_suspect_by_p04"]},
+            {"target": "p03", "value": -6, "signals": ["public_good_claim_by_p05"]},
+        ],
+        "alternative_comparison": {
+            "legal_alternatives": ["p02", "p03"],
+            "no_legal_alternative": False,
+        },
+        "friendly_fire_risk": {"targets": ["p03"]},
+    }
+    directive = build_hunter_shot_directive(
+        death_reason="exile", shot_assessment=shot_assessment
+    )
+    assert directive["alternative_comparison"]["legal_alternatives"] == ["p02", "p03"]
+    assert directive["friendly_fire_risk"]["targets"] == ["p03"]
+
+
+def test_hunter_directive_marks_single_target_as_no_legal_alternative() -> None:
+    assessment = {"ranked_targets": [{"target": "p02", "value": 1, "signals": []}]}
+    directive = build_hunter_shot_directive(
+        death_reason="exile", shot_assessment=assessment
+    )
+    assert directive["alternative_comparison"]["no_legal_alternative"] is True
+
+
 def test_build_hunter_shot_result_maps_action_type() -> None:
     """猎人行动结果应仅在 hunter_shot 且有目标时返回目标。"""
     shot = build_hunter_shot_result(

@@ -302,6 +302,34 @@ class TestPublicRecordGrounding:
 
         assert result["valid"] is True
 
+    def test_accepts_attributed_restatement_of_public_player_claim(self):
+        """p11 转述 p05 的公开声明，不应被误判为系统确认事实。"""
+        speech = (
+            "我是好人阵营。我怀疑p08，因为p05刚才声称自己是女巫，"
+            "而p08无视这条公开声明，逻辑矛盾，我倾向投p08。"
+        )
+        context = {
+            "recent_transcript": [
+                {"speaker": "p05", "text": "我是女巫，但暂时不公开药水。"},
+            ],
+        }
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+        assert result["valid"] is True
+
+    def test_rejects_unsupported_system_fact_but_preserves_valid_attribution(self):
+        speech = (
+            "我是好人阵营。我怀疑p08，因为p05刚才声称自己是女巫，"
+            "而且系统确认p08是狼人，这个逻辑矛盾，我倾向投p08。"
+        )
+        context = {
+            "recent_transcript": [
+                {"speaker": "p05", "text": "我是女巫，但暂时不公开药水。"},
+            ],
+        }
+        result = validate_public_speech(speech, phase="day_discussion", context=context)
+        assert result["valid"] is False
+        assert "public_record_grounding" in result["missing_fields"]
+
 
 class TestSpeechQualityExtraction:
     """extract_speech_quality identifies speech components."""

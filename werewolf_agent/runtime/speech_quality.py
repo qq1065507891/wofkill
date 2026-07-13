@@ -2,7 +2,7 @@
 """公开发言质量校验。
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-09
+    修改日期: 2026-07-13
     使用示例: 内部模块，无对外接口
 Validates that speeches include required components:
 - Identity perspective / stance
@@ -100,7 +100,8 @@ _PEACE_NIGHT_SEER_FALLACY_PATTERNS = [
 
 _ROLE_CLAIM_PATTERNS = [
     re.compile(
-        r"(p\d{2}).{0,12}(?:声称自己是|说自己是|自称|认|跳)(狼人|预言家|女巫|猎人|白痴|村民|民|混血儿|hybrid)"
+        r"(p\d{2})[^，。；;]{0,12}(?:声称自己是|说自己是|自称|认|跳)"
+        r"(狼人|预言家|女巫|猎人|白痴|村民|民|混血儿|hybrid)"
     ),
 ]
 
@@ -114,6 +115,10 @@ _PUBLIC_DEATH_CLAIM_PATTERNS = [
         r"(?:(?!p\d{2}).){0,20}(p\d{2}).{0,12}(?:被狼刀|被刀|被狼人(?:杀|击杀))"
     ),
 ]
+_SYSTEM_ROLE_FACT_PATTERN = re.compile(
+    r"(?:系统|主持人|法官)(?:已经|已)?确认(p\d{2})是"
+    r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
+)
 
 _ROLE_EVIDENCE_MARKERS = {
     "狼人": ("我是狼人", "认狼", "狼队视角", "我们狼队"),
@@ -165,6 +170,11 @@ def _public_text_supports_death_claim(
 def _has_unsupported_public_record_claim(text: str, context: dict[str, Any]) -> bool:
     """Return True when a speech cites a public claim not in public text."""
     public_texts = _context_public_texts(context)
+    for match in _SYSTEM_ROLE_FACT_PATTERN.finditer(text):
+        prefix = text[max(0, match.start() - 12):match.start()]
+        clause = re.split(r"[，。；;]", prefix)[-1]
+        if not any(marker in clause for marker in ("不认为", "并非", "没有", "未", "不能")):
+            return True
     if not public_texts:
         return False
     for pattern in _ROLE_CLAIM_PATTERNS:
