@@ -38,6 +38,105 @@ def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():
     }
 
 
+def test_reasoning_summary_canonicalizes_snapshots_and_prefers_action_projection():
+    from dataclasses import replace
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord, AttemptOutcome, EvidenceKind, OpaqueRequestId,
+        ReasoningLevel, ReasoningStatus, RootCause, RouteKind,
+    )
+    from werewolf_agent.model_gateway.usage_records import UsageRecord
+    from scripts.run_real_game_reports import _reasoning_evidence_summary
+
+    request_id = OpaqueRequestId.new("game", "1234abcd")
+    success = AttemptExecutionRecord(
+        opaque_request_id=request_id, ordinal=1, provider="openai", model="m",
+        route_kind=RouteKind.PRIMARY, root_cause=RootCause.NONE,
+        attempt_outcome=AttemptOutcome.SUCCESS,
+        requested_reasoning_level=ReasoningLevel.HIGH,
+        normalized_reasoning_status=ReasoningStatus.CONFIRMED,
+        reasoning_token_count=2, evidence_kind=EvidenceKind.TOKEN_COUNT,
+    )
+    repaired = replace(success, root_cause=RootCause.INVALID_OUTPUT, attempt_outcome=AttemptOutcome.FAILURE)
+    final = replace(success, ordinal=2, route_kind=RouteKind.REPAIR)
+    usage = [
+        UsageRecord(agent_id="p01", task_type="vote", provider="openai", model="m", attempts=(success,)),
+        UsageRecord(agent_id="p01", task_type="vote", provider="openai", model="m", attempts=(success, final)),
+    ]
+    summary = _reasoning_evidence_summary(usage, action_attempts=(repaired, final))
+    assert summary["requested_denominator"] == 2
+    assert len(summary["attempts"]) == 2
+    assert summary["attempts"][0]["root_cause"] == "invalid_output"
+    assert summary["attempts"][0]["outcome"] == "attempt_failure"
+
+
+def test_real_player_repair_usage_does_not_duplicate_reasoning_denominator():
+    from werewolf_agent.agents.player import PlayerAgent
+    from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
+    from werewolf_agent.model_gateway.router import GenerateResult, ModelRouter, UsageRecord
+    from scripts.run_real_game_reports import _reasoning_evidence_summary
+
+    class SequenceProvider:
+        def __init__(self):
+            self.responses = [
+                "not-json",
+                '{"action_type":"no_action","target_id":null,'
+                '"speech":"我暂不投票，继续观察公开发言。",'
+                '"reason":"当前证据不足以支持投票。","confidence":0.5}',
+            ]
+
+        @property
+        def name(self):
+            return "sequence"
+
+        def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+            text = self.responses.pop(0)
+            return GenerateResult(
+                text=text,
+                provider=self.name,
+                model=config.model,
+                tool_call_received=bool(tool_choice),
+                usage=UsageRecord(
+                    agent_id="p01", task_type="vote",
+                    provider=self.name, model=config.model,
+                ),
+            )
+
+    router = ModelRouter(
+        model_profiles={
+            "primary": {
+                "provider": "sequence", "model": "m", "retry_count": 0,
+                "reasoning": {"level": "high"},
+            },
+        },
+        llm_profiles={
+            "profile": {
+                "default": {"provider": "sequence", "model_profile": "primary"},
+            },
+        },
+        player_assignments={"p01": "profile"},
+        providers={"sequence": SequenceProvider()},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    action, _ = agent.act(AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.VOTE, ActionType.NO_ACTION],
+        legal_targets=["p02"],
+    ))
+
+    assert action.trace is not None
+    summary = _reasoning_evidence_summary(
+        router.get_usage_log(),
+        action_attempts=action.trace.execution_attempts,
+    )
+    assert summary["requested_denominator"] == 2
+    assert [item["route"] for item in summary["attempts"]] == ["primary", "repair"]
+    assert summary["attempts"][0]["root_cause"] == "invalid_output"
+    assert summary["attempts"][0]["outcome"] == "attempt_failure"
+
+
 def test_report_helpers_are_split_from_run_real_game_facade() -> None:
     from scripts import run_real_game, run_real_game_reports
 

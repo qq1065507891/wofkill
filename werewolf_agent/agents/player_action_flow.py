@@ -199,6 +199,7 @@ def run_player_action_flow(
                         "using fallback action."
                     ),
                 )
+                generation_attempt_context.append_terminal_fallback()
                 fallback = finalize_fallback_player_action(
                     agent=agent,
                     context=context,
@@ -215,6 +216,7 @@ def run_player_action_flow(
                     structured_output_mode=structured_output_mode,
                     structured_failure_stage=structured_failure_stage,
                     metrics_error_code="model_generation_failed",
+                    execution_attempts=generation_attempt_context.attempts,
                 )
                 return fallback, retry
             failure_category = _categorize_failure_category(

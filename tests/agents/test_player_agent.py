@@ -1296,6 +1296,79 @@ class TestPlayerAgentRetryFallback:
         assert action.trace is not None
         assert action.trace.retry_count == 1
 
+    def test_provider_failure_trace_appends_terminal_safe_fallback(self) -> None:
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary",
+                    "model": "p",
+                    "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={
+                "profile": {
+                    "default": {"provider": "primary", "model_profile": "primary"},
+                },
+            },
+            player_assignments={"p01": "profile"},
+            providers={"primary": _FailProvider()},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+
+        action, _ = agent.act(self._make_context())
+
+        assert isinstance(action, FallbackAction)
+        assert action.trace is not None
+        assert [item.route_kind.value for item in action.trace.execution_attempts] == [
+            "primary",
+            "safe_fallback",
+        ]
+        assert action.trace.execution_attempts[0].root_cause.value == "provider_error"
+        assert action.trace.decision_outcome == "terminal_fallback"
+
+    def test_exhausted_provider_fallback_trace_keeps_every_failure(self) -> None:
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary",
+                    "model": "p",
+                    "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback",
+                    "model": "f",
+                    "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={
+                "profile": {
+                    "default": {"provider": "primary", "model_profile": "primary"},
+                    "fallback": {"provider": "fallback", "model_profile": "fallback"},
+                },
+            },
+            player_assignments={"p01": "profile"},
+            providers={"primary": _FailProvider(), "fallback": _FailProvider()},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+
+        action, _ = agent.act(self._make_context())
+
+        assert isinstance(action, FallbackAction)
+        assert action.trace is not None
+        assert [item.route_kind.value for item in action.trace.execution_attempts] == [
+            "primary",
+            "provider_fallback",
+            "safe_fallback",
+        ]
+        assert all(
+            item.root_cause.value == "provider_error"
+            for item in action.trace.execution_attempts[:-1]
+        )
+        assert action.trace.decision_outcome == "terminal_fallback"
+
     def test_private_intent_in_valid_action(self) -> None:
         json_resp = (
             '{"action_type":"vote","target_id":"p07","speech":"归7",'

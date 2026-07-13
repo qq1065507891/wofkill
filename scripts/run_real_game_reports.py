@@ -104,7 +104,18 @@ def print_usage_stats(runner: Any) -> None:
         f"{prompt_tokens + completion_tokens:,}"
     )
     print(f"  Latency: {latency_ms / 1000:.1f}s total")
-    reasoning = _reasoning_evidence_summary(usage_log)
+    action_attempts = [
+        attempt
+        for event in runner.state.events
+        if event.type == "action_trace_audit"
+        for attempt in (event.payload.get("action_trace") or {}).get(
+            "execution_attempts", ()
+        )
+    ]
+    reasoning = _reasoning_evidence_summary(
+        usage_log,
+        action_attempts=action_attempts,
+    )
     print(
         "  Reasoning confirmed: "
         f"{reasoning['confirmed_numerator']}/{reasoning['requested_denominator']}"
@@ -142,42 +153,63 @@ def print_usage_stats(runner: Any) -> None:
     _sep()
 
 
-def _reasoning_evidence_summary(usage_log: list[Any]) -> dict[str, Any]:
-    """仅投影允许公开的强类型执行字段，并给出精确支持分母。"""
-    attempts = [attempt for usage in usage_log for attempt in usage.attempts]
+def _reasoning_evidence_summary(
+    usage_log: list[Any],
+    *,
+    action_attempts: tuple[Any, ...] | list[Any] = (),
+) -> dict[str, Any]:
+    """按请求与序号去重累计快照，并让最终行动投影覆盖 provider 快照。"""
+
+    def field(attempt: Any, name: str) -> Any:
+        value = attempt.get(name) if isinstance(attempt, dict) else getattr(attempt, name)
+        if name == "opaque_request_id" and isinstance(value, dict):
+            value = value.get("value", "")
+        return getattr(value, "value", value)
+
+    canonical: dict[tuple[str, int], Any] = {}
+    for usage in usage_log:
+        for attempt in usage.attempts:
+            key = (field(attempt, "opaque_request_id"), field(attempt, "ordinal"))
+            canonical[key] = attempt
+    # ActionTrace 包含 parser/validator 完成后的最终投影；同键冲突时，
+    # 它必须覆盖较早的 provider usage 快照。
+    for attempt in action_attempts:
+        key = (field(attempt, "opaque_request_id"), field(attempt, "ordinal"))
+        canonical[key] = attempt
+    attempts = list(canonical.values())
     requested = [
         attempt for attempt in attempts
-        if attempt.requested_reasoning_level.value != "none"
+        if field(attempt, "requested_reasoning_level") != "none"
     ]
     confirmed = [
         attempt for attempt in requested
-        if attempt.normalized_reasoning_status.value == "confirmed"
+        if field(attempt, "normalized_reasoning_status") == "confirmed"
     ]
     return {
         "requested_denominator": len(requested),
         "confirmed_numerator": len(confirmed),
         "support_flags": {
             "reasoning_token_evidence": any(
-                attempt.evidence_kind.value == "token_count" for attempt in attempts
+                field(attempt, "evidence_kind") == "token_count" for attempt in attempts
             ),
             "provider_status_evidence": any(
-                attempt.evidence_kind.value == "authoritative_provider_execution"
+                field(attempt, "evidence_kind") == "authoritative_provider_execution"
                 for attempt in attempts
             ),
         },
         "attempts": [
             {
-                "opaque_request_id": attempt.opaque_request_id.value,
-                "ordinal": attempt.ordinal,
-                "provider": attempt.provider,
-                "model": attempt.model,
-                "requested_level": attempt.requested_reasoning_level.value,
-                "status": attempt.normalized_reasoning_status.value,
-                "reasoning_tokens": attempt.reasoning_token_count,
-                "evidence": attempt.evidence_kind.value,
-                "route": attempt.route_kind.value,
-                "root_cause": attempt.root_cause.value,
-                "outcome": attempt.attempt_outcome.value,
+                "opaque_request_id": field(attempt, "opaque_request_id"),
+                "ordinal": field(attempt, "ordinal"),
+                "provider": field(attempt, "provider"),
+                "model": field(attempt, "model"),
+                "requested_level": field(attempt, "requested_reasoning_level"),
+                "status": field(attempt, "normalized_reasoning_status"),
+                "reasoning_tokens": field(attempt, "reasoning_token_count"),
+                "evidence": field(attempt, "evidence_kind"),
+                "route": field(attempt, "route_kind"),
+                "root_cause": field(attempt, "root_cause"),
+                "outcome": field(attempt, "attempt_outcome"),
             }
             for attempt in attempts
         ],
