@@ -384,16 +384,17 @@ def agent_hunter_shot(
         pid for pid, p in gs.players.items() if p.alive and pid != hunter_id
     ]
 
-    try:
-        shot_assessment = _evaluate_hunter_shot_target(
-            gs,
-            hunter_id,
-            legal_targets,
-            death_reason,
-        )
-    except Exception:
-        logger.warning("Hunter shot target evaluation failed", exc_info=True)
-        shot_assessment = None
+    shot_assessment = None
+    if legal_targets:
+        try:
+            shot_assessment = _evaluate_hunter_shot_target(
+                gs,
+                hunter_id,
+                legal_targets,
+                death_reason,
+            )
+        except Exception:
+            logger.warning("Hunter shot target evaluation failed", exc_info=True)
 
     strategy_directive = build_hunter_shot_directive(
         death_reason=death_reason,

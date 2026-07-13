@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.hunter_shot_directives import build_hunter_death_label
@@ -77,6 +77,28 @@ def test_hunter_directive_marks_single_target_as_no_legal_alternative() -> None:
         death_reason="exile", shot_assessment=assessment
     )
     assert directive["alternative_comparison"]["no_legal_alternative"] is True
+
+
+def test_hunter_zero_targets_still_emits_structured_retain_directive() -> None:
+    directive = build_hunter_shot_directive(
+        death_reason="exile",
+        shot_assessment=None,
+    )
+
+    assert directive["alternative_comparison"] == {
+        "legal_alternatives": [],
+        "no_legal_alternative": True,
+    }
+    assert directive["friendly_fire_risk"] == {
+        "status": "not_applicable",
+        "targets": [],
+        "basis": "无合法目标",
+    }
+    assert directive["retain_option"] == {
+        "action": "no_action",
+        "required": True,
+        "reason": "无合法开枪目标",
+    }
 
 
 def test_build_hunter_shot_result_maps_action_type() -> None:

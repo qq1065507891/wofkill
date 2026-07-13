@@ -26,7 +26,8 @@ def test_public_fact_guard_redacts_unsupported_night_claims():
 
     assert count == 1
     assert "p04知道首夜刀口信息" not in sanitized
-    assert "未公开事实" in sanitized
+    assert "未公开事实" not in sanitized
+    assert sanitized == "对p04的身份声明暂不采信，需继续核验，所以我不信任p04。"
 
 
 def test_public_fact_guard_preserves_supported_role_claims():
@@ -74,6 +75,44 @@ def test_public_claim_classifier_separates_semantic_types() -> None:
         "system_fact",
         "current_player_inference",
     ]
+
+
+def test_public_fact_guard_is_driven_by_authoritative_classifier(monkeypatch) -> None:
+    from werewolf_agent.evaluation import balance_public_claims as claims_module
+
+    text = "裁判锚定p05；我仍然怀疑p05。"
+    classified = claims_module.ClassifiedPublicClaim(
+        claims_module.PublicClaimType.SYSTEM_FACT,
+        "裁判锚定p05",
+        0,
+        len("裁判锚定p05"),
+        target="p05",
+    )
+    monkeypatch.setattr(claims_module, "classify_public_claims", lambda _: [classified])
+
+    sanitized, count = claims_module.sanitize_public_text(text, [])
+
+    assert count == 1
+    assert sanitized == "对p05的身份声明暂不采信，需继续核验；我仍然怀疑p05。"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "p05声称自己是女巫，所以我投p05。",
+        "p05声称知道首夜刀口信息，所以我投p05。",
+    ],
+)
+def test_public_fact_guard_keeps_target_in_zero_support_repair(text: str) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    sanitized, count = sanitize_public_text(text, [])
+
+    assert count == 1
+    assert "p05" in sanitized
+    assert "投p05" in sanitized
+    assert "[未公开事实]" not in sanitized
+    assert "对p05的身份声明暂不采信" in sanitized
 
 
 def test_balance_audit_flags_high_wolf_win_rate():

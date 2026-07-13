@@ -494,6 +494,31 @@ class TestHunterStrategyDirectives:
         assert "recommendation" in sv
         assert len(sv["ranked_targets"]) > 0
 
+    def test_hunter_zero_legal_targets_skips_target_evaluation(self, monkeypatch) -> None:
+        state, engine, registry = self._make_hunter_state()
+        for player_id, player in state["game_state"].players.items():
+            if player_id != "hunter":
+                state["game_state"].players[player_id] = PlayerState(
+                    id=player.id,
+                    role=player.role,
+                    alive=False,
+                )
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("零合法目标时不得调用确定性目标评估")
+
+        monkeypatch.setattr(
+            "werewolf_agent.runtime.agent_special_actions._evaluate_hunter_shot_target",
+            fail_if_called,
+        )
+        from werewolf_agent.runtime.agent_adapter import agent_hunter_shot
+
+        agent_hunter_shot(state, engine, registry, "hunter")
+
+        directive = registry.agent.last_context.strategy_directive
+        assert directive["alternative_comparison"]["legal_alternatives"] == []
+        assert directive["retain_option"]["required"] is True
+
     def test_seer_checked_wolf_gets_highest_score(self) -> None:
         """A player publicly accused of being wolf should get scored higher."""
         events = [

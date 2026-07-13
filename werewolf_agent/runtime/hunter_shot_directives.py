@@ -64,6 +64,20 @@ def build_hunter_shot_directive(
             "注意：本局没有守卫，如果你被女巫毒杀（而非被狼杀或放逐），你无法开枪。\n"
             "speech字段留空。"
         ),
+        "alternative_comparison": {
+            "legal_alternatives": [],
+            "no_legal_alternative": True,
+        },
+        "friendly_fire_risk": {
+            "status": "not_applicable",
+            "targets": [],
+            "basis": "无合法目标",
+        },
+        "retain_option": {
+            "action": "no_action",
+            "required": True,
+            "reason": "无合法开枪目标",
+        },
     }
     if shot_assessment:
         strategy_directive["shot_value_assessment"] = shot_assessment
@@ -84,6 +98,11 @@ def build_hunter_shot_directive(
                 ],
             },
         )
+        strategy_directive["retain_option"] = {
+            "action": "no_action",
+            "required": False,
+            "reason": "可在误伤风险过高时保留不开枪选项",
+        }
     return strategy_directive
 
 

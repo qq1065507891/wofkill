@@ -53,20 +53,62 @@ class ClassifiedPublicClaim:
     text: str
     start: int
     end: int
+    target: str | None = None
+    role: str | None = None
+    support_kind: str | None = None
+    negated: bool = False
 
 
 def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
     """按语义来源分类，不把玩家归因或当前推断提升为系统事实。"""
     found: list[ClassifiedPublicClaim] = []
-    for pattern, claim_type in (
-        (_PUBLIC_ROLE_CLAIM_REF, PublicClaimType.PLAYER_CLAIM),
-        (_PUBLIC_NIGHT_INFO_REF, PublicClaimType.PLAYER_CLAIM),
-        (_SYSTEM_ROLE_FACT_REF, PublicClaimType.SYSTEM_FACT),
-        (_CURRENT_PLAYER_INFERENCE_REF, PublicClaimType.CURRENT_PLAYER_INFERENCE),
-    ):
-        found.extend(
-            ClassifiedPublicClaim(claim_type, match.group(0), match.start(), match.end())
-            for match in pattern.finditer(text)
+    for match in _PUBLIC_ROLE_CLAIM_REF.finditer(text):
+        found.append(
+            ClassifiedPublicClaim(
+                PublicClaimType.PLAYER_CLAIM,
+                match.group(0),
+                match.start(),
+                match.end(),
+                target=match.group(1),
+                role=match.group(2),
+                support_kind="role",
+            )
+        )
+    for match in _PUBLIC_NIGHT_INFO_REF.finditer(text):
+        end = match.end()
+        if text.startswith("信息", end):
+            end += len("信息")
+        found.append(
+            ClassifiedPublicClaim(
+                PublicClaimType.PLAYER_CLAIM,
+                text[match.start():end],
+                match.start(),
+                end,
+                target=match.group(1),
+                support_kind="night_info",
+            )
+        )
+    for match in _SYSTEM_ROLE_FACT_REF.finditer(text):
+        found.append(
+            ClassifiedPublicClaim(
+                PublicClaimType.SYSTEM_FACT,
+                match.group(0),
+                match.start(),
+                match.end(),
+                target=match.group(1),
+                role=match.group(2),
+                negated=_match_is_negated(text, match),
+            )
+        )
+    for match in _CURRENT_PLAYER_INFERENCE_REF.finditer(text):
+        found.append(
+            ClassifiedPublicClaim(
+                PublicClaimType.CURRENT_PLAYER_INFERENCE,
+                match.group(0),
+                match.start(),
+                match.end(),
+                target=match.group(1),
+            )
         )
     return sorted(found, key=lambda claim: (claim.start, claim.end))
 _ROLE_MARKERS = {
@@ -125,19 +167,11 @@ def unsupported_claims_in_text(
     public_speeches: list[tuple[str, str]],
 ) -> int:
     """统计一段文本里没有历史公开材料支持的角色或夜间信息引用。"""
-    count = 0
-    for match in _PUBLIC_ROLE_CLAIM_REF.finditer(text):
-        player_id, role = match.group(1), match.group(2)
-        if not role_claim_supported(player_id, role, public_speeches):
-            count += 1
-    for match in _PUBLIC_NIGHT_INFO_REF.finditer(text):
-        player_id = match.group(1)
-        if not night_info_claim_supported(player_id, public_speeches):
-            count += 1
-    for match in _SYSTEM_ROLE_FACT_REF.finditer(text):
-        if not _match_is_negated(text, match):
-            count += 1
-    return count
+    return sum(
+        not _claim_is_supported(claim, public_speeches)
+        for claim in classify_public_claims(text)
+        if claim.claim_type != PublicClaimType.CURRENT_PLAYER_INFERENCE
+    )
 
 
 def sanitize_public_text(
@@ -145,35 +179,34 @@ def sanitize_public_text(
     public_speeches: list[tuple[str, str]],
 ) -> tuple[str, int]:
     """在公开事件写入前屏蔽没有公开来源支撑的事实引用。"""
-    redacted = 0
+    unsupported = [
+        claim
+        for claim in classify_public_claims(text)
+        if claim.claim_type != PublicClaimType.CURRENT_PLAYER_INFERENCE
+        and not _claim_is_supported(claim, public_speeches)
+    ]
+    sanitized = text
+    for claim in reversed(unsupported):
+        target = claim.target or "该玩家"
+        replacement = f"对{target}的身份声明暂不采信，需继续核验"
+        sanitized = sanitized[:claim.start] + replacement + sanitized[claim.end:]
+    return sanitized, len(unsupported)
 
-    def replace_role(match: re.Match[str]) -> str:
-        nonlocal redacted
-        player_id, role = match.group(1), match.group(2)
-        if role_claim_supported(player_id, role, public_speeches):
-            return match.group(0)
-        redacted += 1
-        return "[未公开事实]"
 
-    def replace_night(match: re.Match[str]) -> str:
-        nonlocal redacted
-        player_id = match.group(1)
-        if night_info_claim_supported(player_id, public_speeches):
-            return match.group(0)
-        redacted += 1
-        return "[未公开事实]"
-
-    def replace_system_fact(match: re.Match[str]) -> str:
-        nonlocal redacted
-        if _match_is_negated(text, match):
-            return match.group(0)
-        redacted += 1
-        return f"对{match.group(1)}的身份仅作公开推测"
-
-    sanitized = _PUBLIC_ROLE_CLAIM_REF.sub(replace_role, text)
-    sanitized = _PUBLIC_NIGHT_INFO_REF.sub(replace_night, sanitized)
-    sanitized = _SYSTEM_ROLE_FACT_REF.sub(replace_system_fact, sanitized)
-    return sanitized, redacted
+def _claim_is_supported(
+    claim: ClassifiedPublicClaim,
+    public_speeches: list[tuple[str, str]],
+) -> bool:
+    """依据分类结果校验公开支撑，避免清洗器维护第二套识别规则。"""
+    if claim.claim_type == PublicClaimType.SYSTEM_FACT:
+        return claim.negated
+    if claim.claim_type == PublicClaimType.CURRENT_PLAYER_INFERENCE:
+        return True
+    if claim.support_kind == "role" and claim.target and claim.role:
+        return role_claim_supported(claim.target, claim.role, public_speeches)
+    if claim.support_kind == "night_info" and claim.target:
+        return night_info_claim_supported(claim.target, public_speeches)
+    return False
 
 
 def _match_is_negated(text: str, match: re.Match[str]) -> bool:
