@@ -309,6 +309,32 @@ def test_fact_independent_contract_rejects_single_character_marker_false_positiv
     assert result.verified_lessons == []
 
 
+def test_fact_independent_contract_accepts_generic_player_process_rule() -> None:
+    lesson = ReflectionLesson(
+        lesson_id="generic-player",
+        abstraction="玩家发言时应当区分公开事实与推测。",
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[lesson]), _state())
+
+    assert result.verified_lessons == [lesson]
+
+
+@pytest.mark.parametrize("abstraction", ["公开信息比较混乱。", "复核失败。"])
+def test_fact_independent_contract_rejects_bare_process_verbs(
+    abstraction: str,
+) -> None:
+    lesson = ReflectionLesson(
+        lesson_id="bare-verb", abstraction=abstraction,
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[lesson]), _state())
+
+    assert result.verified_lessons == []
+
+
 @pytest.mark.parametrize(
     ("model", "payload"),
     [

@@ -280,7 +280,7 @@ _PLAYER_ID_TOKEN_RE = re.compile(
 _EVENT_REF_RE = re.compile(r"\b[\w-]+:\d+\b")
 _CHINESE_SEAT_RE = re.compile(r"(?<!\d)\d+\s*号(?:玩家)?")
 _CONCRETE_PLAYER_ENTITY_TOKENS = (
-    "玩家", "某人", "某位玩家", "某玩家",
+    "某人", "某位玩家", "某玩家", "该玩家", "这名玩家",
 )
 _ROLE_OR_FACTION_PATTERN = r"(?:狼人|预言家|女巫|猎人|好人|村民|平民|白痴|混血儿|神职|阵营)"
 _ROLE_FACT_ASSERTION_PATTERNS = (
@@ -302,9 +302,16 @@ _FIRST_PERSON_RE = re.compile(r"(?<!自)(?:我们|本人|我)")
 _PERSONAL_NARRATIVE_TOKENS = ("本局", "这局", "已经", "曾经")
 _NORMATIVE_MARKERS = (
     "应该", "应当", "需要", "建议", "避免", "优先", "保持", "不要",
-    "不可", "可以", "比较", "复核", "区分", "降低", "核验",
+    "不可", "可以", "务必", "必须",
 )
-_NORMATIVE_STRUCTURE_PATTERNS = (re.compile(r"先.+再"),)
+_NORMATIVE_STRUCTURE_PATTERNS = (
+    re.compile(r"先.+再"),
+    re.compile(
+        r"(?:投票|查验|发言|行动|决策|归票|对跳|证据)"
+        r".{0,16}(?:前|时).{0,4}(?:先|应)?"
+        r"(?:比较|复核|区分|核对|评估|降低|保留)"
+    ),
+)
 
 
 def _safe_fact_independent_lesson(lesson: ReflectionLesson) -> bool:
