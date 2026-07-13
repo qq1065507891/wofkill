@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：从可见结构化事实中提取公开声明/投票锚点，绝不读取真实身份，
+功能描述：从可见结构化事实中增量提取投票锚点及窄化的身份/阵营声明证据，绝不读取真实身份，
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -52,8 +52,9 @@ class PublicEvidenceIndex:
     seer_claimants: dict[str, list[EvidenceRef]] = field(default_factory=dict)
     public_suspects: dict[str, list[EvidenceRef]] = field(default_factory=dict)
     votes: list[VoteRef] = field(default_factory=list)
+    assignment_refs: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
-    def observe(self, fact: StructuredFact) -> None:
+    def observe(self, fact: StructuredFact, evidence_id: str = "") -> None:
         source = fact.source_player or ""
         target = fact.target_player or ""
         value = fact.value or ""
@@ -70,6 +71,44 @@ class PublicEvidenceIndex:
             self._add(self.public_suspects, target, fact)
         elif fact.fact_type == "vote" and source and target:
             self.votes.append(VoteRef(voter=source, target=target, day=fact.day))
+        if evidence_id:
+            self._observe_assignment_ref(fact, evidence_id)
+
+    def _observe_assignment_ref(self, fact: StructuredFact, evidence_id: str) -> None:
+        """只索引语义上能支撑身份或阵营分配的公开事实。"""
+        source = fact.source_player or ""
+        target = fact.target_player or ""
+        value = (fact.value or "").strip().casefold()
+        if fact.fact_type == "claimed_role" and source and value:
+            self._add_assignment_ref(source, f"role:{value}", evidence_id)
+        elif fact.fact_type == "seer_check_claim" and target:
+            if is_wolf_result(value):
+                self._add_assignment_ref(target, "faction:werewolf", evidence_id)
+            elif is_good_result(value):
+                self._add_assignment_ref(target, "faction:good", evidence_id)
+        elif fact.fact_type == "claimed_good" and target:
+            self._add_assignment_ref(target, "faction:good", evidence_id)
+        elif fact.fact_type == "idiot_revealed" and target:
+            self._add_assignment_ref(target, "role:idiot", evidence_id)
+
+    def observe_assignment_reference(self, fact: StructuredFact, evidence_id: str) -> None:
+        """为已观察事实补充可追溯 ID，不重复更新投票/置信状态。"""
+        self._observe_assignment_ref(fact, evidence_id)
+
+    def assignment_evidence(self) -> dict[str, dict[str, tuple[str, ...]]]:
+        """返回只读消费快照；不暴露内部可变容器。"""
+        return {
+            player: {concept: tuple(refs) for concept, refs in concepts.items()}
+            for player, concepts in self.assignment_refs.items()
+        }
+
+    def assignment_evidence_ids(self) -> set[str]:
+        return {
+            ref
+            for concepts in self.assignment_refs.values()
+            for refs in concepts.values()
+            for ref in refs
+        }
 
     def vote_delta(self, vote: StructuredFact) -> float:
         target = vote.target_player or ""
@@ -107,6 +146,10 @@ class PublicEvidenceIndex:
             "seer_claimants": self._refs_to_json(self.seer_claimants),
             "public_suspects": self._refs_to_json(self.public_suspects),
             "votes": [vote.to_json_dict() for vote in self.votes],
+            "assignment_refs": {
+                player: {concept: list(refs) for concept, refs in concepts.items()}
+                for player, concepts in self.assignment_refs.items()
+            },
         }
 
     @classmethod
@@ -124,7 +167,21 @@ class PublicEvidenceIndex:
                 )
                 for v in snap.get("votes", [])
             ],
+            assignment_refs={
+                str(player): {
+                    str(concept): [str(ref) for ref in refs]
+                    for concept, refs in concepts.items()
+                    if isinstance(refs, list)
+                }
+                for player, concepts in snap.get("assignment_refs", {}).items()
+                if isinstance(concepts, dict)
+            },
         )
+
+    def _add_assignment_ref(self, player: str, concept: str, evidence_id: str) -> None:
+        refs = self.assignment_refs.setdefault(player, {}).setdefault(concept, [])
+        if evidence_id not in refs:
+            refs.append(evidence_id)
 
     @staticmethod
     def _add(bucket: dict[str, list[EvidenceRef]], key: str, fact: StructuredFact) -> None:

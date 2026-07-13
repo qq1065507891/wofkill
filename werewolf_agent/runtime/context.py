@@ -102,27 +102,26 @@ from werewolf_agent.runtime.context_strategy_directives import (
 logger = logging.getLogger(__name__)
 
 
-def _public_world_evidence(gs: GameState) -> tuple[dict[str, list[str]], set[str]]:
-    """为可能世界收集可追溯的公开事件/声明 ID。"""
+def _public_world_evidence(
+    gs: GameState,
+) -> tuple[dict[str, dict[str, tuple[str, ...]]], set[str]]:
+    """使用认知层索引构建窄化的公开身份/阵营证据。"""
+    from werewolf_agent.cognition.public_evidence import PublicEvidenceIndex
     from werewolf_agent.cognition.visibility import VisibilityPolicy
     from werewolf_agent.cognition.world_state import extract_facts
 
     policy = VisibilityPolicy()
-    by_player: dict[str, list[str]] = {}
-    all_ids: set[str] = set()
+    index = PublicEvidenceIndex()
     for event_index, event in enumerate(gs.events):
         for fact in extract_facts(event, gs):
             if policy.compute_fact_visibility(fact, event_index).visibility != "public":
                 continue
-            prefix = "claim" if "claim" in fact.fact_type else "event"
+            prefix = "claim" if fact.fact_type in {
+                "claimed_role", "claimed_good", "seer_check_claim"
+            } else "event"
             evidence_id = f"{prefix}:{gs.game_id}:{event_index}"
-            all_ids.add(evidence_id)
-            players = {fact.source_player, fact.target_player} - {None, ""}
-            for player_id in players:
-                refs = by_player.setdefault(str(player_id), [])
-                if evidence_id not in refs:
-                    refs.append(evidence_id)
-    return by_player, all_ids
+            index.observe_assignment_reference(fact, evidence_id)
+    return index.assignment_evidence(), index.assignment_evidence_ids()
 
 
 def build_agent_context(
@@ -348,14 +347,19 @@ def build_agent_context(
                 for pid, p in gs.players.items()
                 if p.role == "werewolf"
             })
-        public_evidence_by_player, public_evidence_ids = _public_world_evidence(gs)
+        if cognition_state_manager is not None and hasattr(
+            cognition_state_manager, "public_world_evidence"
+        ):
+            assignment_evidence, public_evidence_ids = (
+                cognition_state_manager.public_world_evidence(player_id)
+            )
+        else:
+            assignment_evidence, public_evidence_ids = _public_world_evidence(gs)
         grounded_belief = {
             key: [
                 {
                     **item,
-                    "evidence_ids": public_evidence_by_player.get(
-                        str(item.get("player", "")), []
-                    ),
+                    "evidence_ids": [],
                 }
                 for item in belief_dict.get(key, [])
             ]
@@ -371,6 +375,7 @@ def build_agent_context(
             generated_at_event_index=len(gs.events),
             top_k=3,
             public_evidence_ids=public_evidence_ids,
+            assignment_evidence=assignment_evidence,
         )
         if worlds.worlds:
             possible_worlds_set = worlds

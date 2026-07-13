@@ -26,7 +26,14 @@ class FutureEventPrediction:
     rationale: str = ""
     world_ids: list[str] = field(default_factory=list)
 
-    def to_prompt_dict(self) -> dict[str, Any]:
+    def to_prompt_dict(
+        self,
+        allowed_world_ids: set[str] | frozenset[str] | None = None,
+    ) -> dict[str, Any]:
+        if not allowed_world_ids:
+            raise ValueError("allowed world IDs are required for prediction export")
+        if not self.world_ids or not set(self.world_ids).issubset(allowed_world_ids):
+            raise ValueError("prediction world IDs must be nonempty and allowed")
         return {
             "event": self.event_type,
             "probability": round(_clamp(self.probability), 3),
@@ -48,7 +55,11 @@ class SimulationResult:
         allowed = set(self.retained_promptable_world_ids)
         exported: list[dict[str, Any]] = []
         rejected_unknown_world_id_count = 0
+        rejected_missing_world_id_count = 0
         for prediction in self.predictions:
+            if not prediction.world_ids:
+                rejected_missing_world_id_count += 1
+                continue
             unknown_ids = [
                 world_id for world_id in prediction.world_ids
                 if world_id not in allowed
@@ -56,7 +67,7 @@ class SimulationResult:
             if unknown_ids:
                 rejected_unknown_world_id_count += len(unknown_ids)
                 continue
-            item = prediction.to_prompt_dict()
+            item = prediction.to_prompt_dict(allowed)
             item["world_ids"] = list(dict.fromkeys(prediction.world_ids))[:3]
             exported.append(item)
         return {
@@ -65,6 +76,7 @@ class SimulationResult:
             "predictions": exported,
             "warning": "Prediction, not fact.",
             "rejected_unknown_world_id_count": rejected_unknown_world_id_count,
+            "rejected_missing_world_id_count": rejected_missing_world_id_count,
         }
 
 

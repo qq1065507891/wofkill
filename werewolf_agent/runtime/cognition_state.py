@@ -11,7 +11,7 @@ while restored memory remains historical learning context.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from werewolf_agent.cognition.belief import BeliefState, BeliefUpdater
@@ -126,6 +126,16 @@ class CognitionStateManager:
                 )
                 if self._private_fact_allowed_for_viewer(fact, viewer_id)
             ]
+            for fact in visible_facts:
+                event_index = fact.metadata.get("source_event_index")
+                if isinstance(event_index, int):
+                    prefix = "claim" if fact.fact_type in {
+                        "claimed_role", "claimed_good", "seer_check_claim"
+                    } else "event"
+                    evidence_index.observe_assignment_reference(
+                        fact,
+                        f"{prefix}:{game_state.game_id}:{event_index}",
+                    )
 
             before = self._belief_snapshot(belief_state)
             belief_state = updater.update(
@@ -187,6 +197,16 @@ class CognitionStateManager:
             "my_trusted": sorted(trusted, key=lambda x: -x["trust"]),
         }
 
+    def public_world_evidence(
+        self,
+        viewer_id: str,
+    ) -> tuple[dict[str, dict[str, tuple[str, ...]]], set[str]]:
+        """复用增量公开证据索引，避免上下文构建重扫事件。"""
+        index = self._public_evidence.get(viewer_id)
+        if index is None:
+            return {}, set()
+        return index.assignment_evidence(), index.assignment_evidence_ids()
+
     @staticmethod
     def _world_state_for_events(
         game_state: GameState,
@@ -194,8 +214,14 @@ class CognitionStateManager:
         event_end: int,
     ) -> StructuredWorldState:
         world_state = StructuredWorldState()
-        for event in game_state.events[event_start:event_end]:
-            world_state.extend(extract_facts(event, game_state))
+        for event_index, event in enumerate(
+            game_state.events[event_start:event_end],
+            start=event_start,
+        ):
+            for fact in extract_facts(event, game_state):
+                metadata = dict(fact.metadata)
+                metadata["source_event_index"] = event_index
+                world_state.append(replace(fact, metadata=metadata))
         return world_state
 
     @staticmethod

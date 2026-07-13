@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from werewolf_agent.cognition.worlds import PossibleWorld, PossibleWorldSet
 
 
@@ -192,3 +194,32 @@ def test_bounded_simulator_exports_only_retained_promptable_world_ids() -> None:
         for prediction in exported["predictions"]
     )
     assert exported["rejected_unknown_world_id_count"] == 0
+
+
+def test_prediction_export_requires_nonempty_allowed_world_ids() -> None:
+    from werewolf_agent.cognition.simulator import FutureEventPrediction
+
+    prediction = FutureEventPrediction(
+        event_type="next_day_vote_pressure",
+        probability=0.7,
+        affected_players=["p02"],
+        world_ids=[],
+    )
+
+    with pytest.raises(ValueError, match="allowed world IDs"):
+        prediction.to_prompt_dict()
+
+
+def test_simulation_export_rejects_prediction_without_world_ids() -> None:
+    from werewolf_agent.cognition.simulator import FutureEventPrediction, SimulationResult
+
+    result = SimulationResult(
+        viewer_id="p01",
+        horizon="next_turn",
+        predictions=[FutureEventPrediction("pressure", 0.5, world_ids=[])],
+        retained_promptable_world_ids=["world_a"],
+    )
+
+    exported = result.to_prompt_dict()
+    assert exported["predictions"] == []
+    assert exported["rejected_missing_world_id_count"] == 1

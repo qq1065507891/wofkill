@@ -1,4 +1,9 @@
-"""Tests for werewolf_agent.runtime.context reflection and profile memory hints."""
+# -*- coding: utf-8 -*-
+"""验证运行时上下文的可见性、认知、记忆与提示组装边界。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
 
 from __future__ import annotations
 
@@ -3373,6 +3378,93 @@ def test_build_agent_context_populates_simulation_predictions() -> None:
     assert ctx.simulation_predictions["warning"] == "Prediction, not fact."
     assert len(ctx.simulation_predictions["predictions"]) <= 2
     assert "roles" not in str(ctx.simulation_predictions)
+
+
+def test_vote_death_and_general_speech_do_not_support_role_assignment_worlds() -> None:
+    """投票、死亡和一般发言不能被误当作 p02 的具体身份证据。"""
+    from werewolf_agent.runtime.graph import _new_engine
+
+    roles = ["seer", "werewolf", "hunter", "idiot", "hybrid", "werewolf", "werewolf", "witch", "villager", "villager", "villager", "villager"]
+    players = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=i != 2) for i, role in enumerate(roles, 1)}
+    gs = GameState(
+        game_id="narrow-role-evidence",
+        phase="day",
+        day_number=2,
+        players=players,
+        events=[
+            GameEvent(type="speech", payload={"speaker": "p03", "text": "p02发言很可疑", "day_number": 1}),
+            GameEvent(type="vote_resolved", payload={"votes": [{"voter": "p03", "target": "p02"}], "day_number": 1}),
+            GameEvent(type="player_died", payload={"player_id": "p02", "reason": "exile"}),
+        ],
+    )
+
+    ctx = build_agent_context(
+        _new_engine(), gs, "p01", TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+
+    assert ctx.possible_worlds["top_worlds"] == []
+    assert "p02" not in str(ctx.possible_worlds)
+
+
+def test_explicit_public_role_claim_can_support_matching_assignment() -> None:
+    """只有明确公开身份声明可以为匹配的具体身份分配提供 why。"""
+    from werewolf_agent.runtime.graph import _new_engine
+
+    roles = ["villager", "seer", "hunter", "idiot", "hybrid", "werewolf", "werewolf", "werewolf", "witch", "villager", "villager", "villager"]
+    players = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=True) for i, role in enumerate(roles, 1)}
+    gs = GameState(
+        game_id="explicit-role-claim",
+        phase="day",
+        day_number=1,
+        players=players,
+        events=[GameEvent(type="speech", payload={
+            "speaker": "p02", "text": "我是预言家", "day_number": 1,
+            "claims": [{"type": "role", "value": "seer"}],
+        })],
+    )
+
+    ctx = build_agent_context(
+        _new_engine(), gs, "p01", TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+    )
+
+    assert ctx.possible_worlds["top_worlds"]
+    assert ctx.possible_worlds["top_worlds"][0]["why"] == [
+        "claim:explicit-role-claim:0"
+    ]
+
+
+def test_build_agent_context_reuses_manager_public_evidence_index(monkeypatch) -> None:
+    """传入实时认知管理器时，上下文不得再全量扫描事件。"""
+    from werewolf_agent.runtime import context as context_module
+    from werewolf_agent.runtime.graph import _new_engine
+
+    roles = ["villager", "seer", "hunter", "idiot", "hybrid", "werewolf", "werewolf", "werewolf", "witch", "villager", "villager", "villager"]
+    players = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=True) for i, role in enumerate(roles, 1)}
+    gs = GameState(game_id="cached-evidence", phase="day", day_number=1, players=players)
+
+    class _Manager:
+        def prompt_belief_summary(self, _viewer_id, _game_state):
+            return {"my_suspects": [], "my_trusted": []}
+
+        def public_world_evidence(self, _viewer_id):
+            return (
+                {"p02": {"role:seer": ("claim:cached-evidence:0",)}},
+                {"claim:cached-evidence:0"},
+            )
+
+    monkeypatch.setattr(
+        context_module,
+        "_public_world_evidence",
+        lambda _state: (_ for _ in ()).throw(AssertionError("full scan must not run")),
+    )
+
+    ctx = build_agent_context(
+        _new_engine(), gs, "p01", TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH], cognition_state_manager=_Manager(),
+    )
+    assert ctx.possible_worlds["type"] == "possible_worlds"
 
 
 def test_agent_reflection_passes_memory_context_managers() -> None:

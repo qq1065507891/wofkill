@@ -12,47 +12,60 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
-from typing import Any
+import math
+from types import MappingProxyType
+from typing import Any, Mapping
+import unicodedata
 
 
 @dataclass(frozen=True)
 class PossibleWorld:
     world_id: str
     probability: float
-    roles: dict[str, str]
-    score_breakdown: dict[str, float] = field(default_factory=dict)
-    supporting_evidence: list[str] = field(default_factory=list)
-    contradictions: list[str] = field(default_factory=list)
+    roles: Mapping[str, str]
+    score_breakdown: Mapping[str, float] = field(default_factory=dict)
+    supporting_evidence: tuple[str, ...] = field(default_factory=tuple)
+    contradictions: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        """在值对象边界做防御性转换，避免世界 ID 生成后被外部篡改。"""
+        object.__setattr__(self, "roles", MappingProxyType(dict(self.roles)))
+        object.__setattr__(self, "score_breakdown", MappingProxyType(dict(self.score_breakdown)))
+        object.__setattr__(self, "supporting_evidence", tuple(self.supporting_evidence))
+        object.__setattr__(self, "contradictions", tuple(self.contradictions))
 
 
 @dataclass(frozen=True)
 class PossibleWorldSet:
     viewer_id: str
     generated_at_event_index: int
-    worlds: list[PossibleWorld]
-    marginal_role_probs: dict[str, dict[str, float]]
-    public_evidence_ids: set[str] = field(default_factory=set)
+    worlds: tuple[PossibleWorld, ...]
+    marginal_role_probs: Mapping[str, Mapping[str, float]]
+    public_evidence_ids: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         """按规范化身份分配合并重复世界并重新归一化概率。"""
-        merged: dict[str, PossibleWorld] = {}
+        merged: dict[bytes, PossibleWorld] = {}
         for world in self.worlds:
-            canonical = _canonical_assignment(world.roles)
-            world_id = _world_id(canonical)
-            previous = merged.get(world_id)
+            probability = float(world.probability)
+            if not math.isfinite(probability) or probability < 0.0:
+                raise ValueError("world probability must be finite and non-negative")
+            roles = _normalize_assignment(world.roles)
+            canonical = _canonical_assignment(roles)
+            previous = merged.get(canonical)
             if previous is None:
-                merged[world_id] = PossibleWorld(
-                    world_id=world_id,
-                    probability=world.probability,
-                    roles=dict(sorted(world.roles.items())),
+                merged[canonical] = PossibleWorld(
+                    world_id="",
+                    probability=probability,
+                    roles=roles,
                     score_breakdown=world.score_breakdown,
                     supporting_evidence=list(dict.fromkeys(world.supporting_evidence)),
                     contradictions=world.contradictions,
                 )
             else:
-                merged[world_id] = PossibleWorld(
-                    world_id=world_id,
-                    probability=previous.probability + world.probability,
+                merged[canonical] = PossibleWorld(
+                    world_id="",
+                    probability=previous.probability + probability,
                     roles=previous.roles,
                     score_breakdown=previous.score_breakdown,
                     supporting_evidence=list(dict.fromkeys(
@@ -60,33 +73,45 @@ class PossibleWorldSet:
                     )),
                     contradictions=previous.contradictions,
                 )
-        total = sum(max(0.0, world.probability) for world in merged.values()) or 1.0
+        total = sum(world.probability for world in merged.values())
+        uniform_probability = 1.0 / len(merged) if merged and total == 0.0 else 0.0
+        base_ids = {canonical: _world_id(canonical) for canonical in merged}
+        id_counts: dict[str, int] = {}
+        for world_id in base_ids.values():
+            id_counts[world_id] = id_counts.get(world_id, 0) + 1
         normalized = [
             PossibleWorld(
-                world_id=world.world_id,
-                probability=max(0.0, world.probability) / total,
+                world_id=(
+                    base_ids[canonical]
+                    if id_counts[base_ids[canonical]] == 1
+                    else f"{base_ids[canonical]}_{canonical.hex()}"
+                ),
+                probability=(world.probability / total if total > 0.0 else uniform_probability),
                 roles=world.roles,
                 score_breakdown=world.score_breakdown,
                 supporting_evidence=world.supporting_evidence,
                 contradictions=world.contradictions,
             )
-            for world in merged.values()
+            for canonical, world in merged.items()
         ]
         normalized.sort(key=lambda world: (-world.probability, world.world_id))
-        object.__setattr__(self, "worlds", normalized)
+        object.__setattr__(self, "viewer_id", _normalize_text(self.viewer_id))
+        object.__setattr__(self, "worlds", tuple(normalized))
+        object.__setattr__(self, "public_evidence_ids", frozenset(self.public_evidence_ids))
+        object.__setattr__(self, "marginal_role_probs", _immutable_marginals(normalized))
 
-    def promptable_worlds(self) -> list[PossibleWorld]:
+    def promptable_worlds(self) -> tuple[PossibleWorld, ...]:
         """仅返回由唯一且已知公开证据支撑的世界。"""
-        return [
+        return tuple(
             world for world in self.worlds
             if world.supporting_evidence
             and len(world.roles) == len(set(world.roles))
             and all(ref in self.public_evidence_ids for ref in world.supporting_evidence)
-        ]
+        )
 
     def to_prompt_dict(self, max_assignments: int = 4) -> dict[str, Any]:
         promptable = self.promptable_worlds()
-        return {
+        result = {
             "type": "possible_worlds",
             "top_worlds": [
                 {
@@ -108,6 +133,13 @@ class PossibleWorldSet:
             ),
             "warning": "These are hypotheses from visible evidence, not ground truth.",
         }
+        if not promptable:
+            result["faction_hypothesis"] = {
+                "good": 0.5,
+                "werewolf": 0.5,
+                "basis": "uniform evidence-insufficient prior",
+            }
+        return result
 
 
 class PossibleWorldsEngine:
@@ -126,6 +158,7 @@ class PossibleWorldsEngine:
         top_k: int = 3,
         max_candidates: int = 500,
         public_evidence_ids: set[str] | None = None,
+        assignment_evidence: Mapping[str, Mapping[str, tuple[str, ...]]] | None = None,
     ) -> PossibleWorldSet:
         fixed_roles = dict(known_roles or {})
         fixed_roles[viewer_id] = viewer_role
@@ -134,9 +167,15 @@ class PossibleWorldsEngine:
             role_counts=role_counts,
             fixed_roles=fixed_roles,
             max_candidates=max_candidates,
+            assignment_evidence=assignment_evidence or {},
         )
         scored = [
-            self._score_roles(roles, belief_summary or {}, public_evidence_ids or set())
+            self._score_roles(
+                roles,
+                belief_summary or {},
+                public_evidence_ids or set(),
+                assignment_evidence or {},
+            )
             for roles in candidates
         ]
         scored.sort(key=lambda item: (-item[0], sorted(item[1].items())))
@@ -168,6 +207,7 @@ class PossibleWorldsEngine:
         role_counts: dict[str, int],
         fixed_roles: dict[str, str],
         max_candidates: int,
+        assignment_evidence: Mapping[str, Mapping[str, tuple[str, ...]]],
     ) -> list[dict[str, str]]:
         remaining_counts = dict(role_counts)
         for role in fixed_roles.values():
@@ -188,7 +228,17 @@ class PossibleWorldsEngine:
                     candidates.append(roles)
                 return
             player_id = remaining_players[index]
-            for role in sorted(remaining_counts):
+            concepts = assignment_evidence.get(player_id, {})
+            preferred_roles = {
+                concept.removeprefix("role:")
+                for concept in concepts
+                if concept.startswith("role:")
+            }
+            role_order = sorted(
+                remaining_counts,
+                key=lambda role: (role not in preferred_roles, role),
+            )
+            for role in role_order:
                 if remaining_counts[role] <= 0:
                     continue
                 remaining_counts[role] -= 1
@@ -205,11 +255,20 @@ class PossibleWorldsEngine:
         roles: dict[str, str],
         belief_summary: dict[str, Any],
         public_evidence_ids: set[str],
+        assignment_evidence: Mapping[str, Mapping[str, tuple[str, ...]]],
     ) -> tuple[float, dict[str, str], dict[str, float], list[str], list[str]]:
         score = 1.0
         evidence: list[str] = []
         contradictions: list[str] = []
         belief_score = 0.0
+        for player_id, role in roles.items():
+            concepts = assignment_evidence.get(player_id, {})
+            matching_refs = list(concepts.get(f"role:{role}", ()))
+            faction = "werewolf" if role == "werewolf" else "good"
+            matching_refs.extend(concepts.get(f"faction:{faction}", ()))
+            evidence.extend(matching_refs)
+            score += 0.25 * len(matching_refs)
+            belief_score += 0.25 * len(matching_refs)
         for item in belief_summary.get("my_suspects", []):
             player_id = str(item.get("player", ""))
             guessed_role = str(item.get("top_role_guess", ""))
@@ -241,6 +300,9 @@ class PossibleWorldsEngine:
                 score += boost
                 belief_score += boost
         score = max(score, 0.01)
+        evidence = list(dict.fromkeys(
+            ref for ref in evidence if ref in public_evidence_ids
+        ))
         return (
             score,
             roles,
@@ -272,11 +334,43 @@ def _float(value: Any, default: float) -> float:
         return default
 
 
-def _canonical_assignment(roles: dict[str, str]) -> bytes:
+def _normalize_text(value: Any) -> str:
+    return unicodedata.normalize("NFKC", str(value)).strip().casefold()
+
+
+def _normalize_assignment(roles: Mapping[Any, Any]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for raw_player, raw_role in roles.items():
+        player = _normalize_text(raw_player)
+        role = _normalize_text(raw_role)
+        if player in normalized:
+            raise ValueError(f"duplicate player after normalization: {player}")
+        normalized[player] = role
+    return dict(sorted(normalized.items()))
+
+
+def _immutable_marginals(
+    worlds: list[PossibleWorld],
+) -> Mapping[str, Mapping[str, float]]:
+    marginals: dict[str, dict[str, float]] = {}
+    for world in worlds:
+        for player, role in world.roles.items():
+            role_probs = marginals.setdefault(player, {})
+            role_probs[role] = role_probs.get(role, 0.0) + world.probability
+    return MappingProxyType({
+        player: MappingProxyType({
+            role: round(probability, 12)
+            for role, probability in sorted(role_probs.items())
+        })
+        for player, role_probs in sorted(marginals.items())
+    })
+
+
+def _canonical_assignment(roles: Mapping[str, str]) -> bytes:
     """只序列化规范化 player-role 对，避免输入顺序影响身份。"""
-    pairs = [[str(player), str(role)] for player, role in sorted(roles.items())]
+    pairs = [[player, role] for player, role in sorted(roles.items())]
     return json.dumps(pairs, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def _world_id(canonical: bytes) -> str:
-    return f"world_{hashlib.sha256(canonical).hexdigest()[:16]}"
+    return f"world_{hashlib.sha256(canonical).hexdigest()}"
