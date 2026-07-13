@@ -75,12 +75,17 @@ def build_hunter_shot_directive(
         },
         "retain_option": {
             "action": "no_action",
+            "available": True,
             "required": True,
             "reason": "无合法开枪目标",
         },
     }
     if shot_assessment:
-        strategy_directive["shot_value_assessment"] = shot_assessment
+        strategy_directive["shot_value_assessment"] = {
+            key: value
+            for key, value in shot_assessment.items()
+            if key not in {"alternative_comparison", "friendly_fire_risk"}
+        }
         ranked = list(shot_assessment.get("ranked_targets") or [])
         strategy_directive["alternative_comparison"] = shot_assessment.get(
             "alternative_comparison",
@@ -100,6 +105,7 @@ def build_hunter_shot_directive(
         )
         strategy_directive["retain_option"] = {
             "action": "no_action",
+            "available": True,
             "required": False,
             "reason": "可在误伤风险过高时保留不开枪选项",
         }

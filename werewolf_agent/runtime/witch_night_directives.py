@@ -61,6 +61,8 @@ def build_witch_potion_status(*, antidote_used: bool, poison_used: bool) -> str:
 def build_witch_action_evidence(
     *,
     legal_targets: Sequence[str],
+    antidote_targets: Sequence[str] | None = None,
+    poison_targets: Sequence[str] | None = None,
     poison_candidates: Sequence[Mapping[str, Any]],
     wolf_kill_target_id: str | None,
 ) -> dict[str, Any]:
@@ -71,18 +73,39 @@ def build_witch_action_evidence(
         for candidate in poison_candidates
         if candidate.get("player_id")
     }
-    poison_targets = [target for target in targets if target != wolf_kill_target_id]
+    antidote = list(dict.fromkeys(
+        antidote_targets
+        if antidote_targets is not None
+        else ([wolf_kill_target_id] if wolf_kill_target_id in targets else [])
+    ))
+    poison = list(dict.fromkeys(
+        poison_targets if poison_targets is not None else targets
+    ))
+    has_action_target = bool(antidote or poison)
+    retain_option = {
+        "action": "no_action",
+        "available": True,
+        "required": not has_action_target,
+        "reason": (
+            "保留药水可等待更强公开证据并避免本夜误伤"
+            if has_action_target else "无合法用药目标"
+        ),
+    }
     return {
+        "antidote_targets": antidote,
+        "poison_targets": poison,
         "alternative_comparison": {
             "legal_alternatives": targets,
             "no_legal_alternative": len(targets) <= 1,
         },
+        "retain_option": retain_option,
+        # 保留旧字段供已有报表读取，值始终派生自 retain_option。
         "retain_skill_evidence": {
-            "available": bool(targets),
-            "reason": "保留药水可等待更强公开证据并避免本夜误伤",
+            "available": retain_option["available"],
+            "reason": retain_option["reason"],
         },
         "friendly_fire_risk": {
-            "targets": [target for target in poison_targets if target not in supported],
+            "targets": [target for target in poison if target not in supported],
             "basis": "缺少结构化公开毒杀依据",
         },
     }

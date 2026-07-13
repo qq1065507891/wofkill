@@ -177,6 +177,18 @@ def agent_night_witch(
         )
     witch_directive["witch_action_evidence"] = build_witch_action_evidence(
         legal_targets=legal_targets,
+        antidote_targets=(
+            [wolf_kill_target_id]
+            if ActionType.USE_ANTIDOTE in legal_actions and wolf_kill_target_id
+            else []
+        ),
+        poison_targets=(
+            [
+                pid for pid, player in gs.players.items()
+                if player.alive and pid != witch_id
+            ]
+            if ActionType.USE_POISON in legal_actions else []
+        ),
         poison_candidates=cands,
         wolf_kill_target_id=wolf_kill_target_id,
     )

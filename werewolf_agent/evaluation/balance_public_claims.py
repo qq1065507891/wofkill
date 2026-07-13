@@ -20,18 +20,27 @@ from enum import Enum
 from typing import Any
 
 _PUBLIC_ROLE_CLAIM_REF = re.compile(
-    r"(p\d{2})[^，。；;]{0,10}(?:已?自认|认了?|自称|声称自己是|说自己是|跳)"
+    r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,10}"
+    r"(?:已?自认|认了?|自称|声称自己是|说自己是|(?<!对)跳)"
     r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
 )
 _PUBLIC_NIGHT_INFO_REF = re.compile(
-    r"(p\d{2}).{0,14}(?:声称|说|表示|宣称)?.{0,8}"
-    r"(?:知道|获知|掌握).{0,10}(?:狼刀|刀口|狼队刀|被刀)"
+    r"(p\d{2})[^，。；;]{0,14}(?:声称|说|表示|宣称)?[^，。；;]{0,8}"
+    r"(?:知道|获知|掌握)[^，。；;]{0,10}(?:狼刀|刀口|狼队刀|被刀)"
 )
 _SYSTEM_ROLE_FACT_REF = re.compile(
-    r"(?:系统|主持人|法官)(?:已经|已)?确认(p\d{2})是"
+    r"(?:系统|主持人|法官)(?:(没有|并未|尚未|未))?(?:已经|已)?确认(p\d{2})是"
     r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
 )
-_NEGATION_MARKERS = ("不认为", "并非", "没有", "未", "不能")
+_ASSERTIVE_NEGATION_PREFIXES = (
+    re.compile(r"(?:不能|无法|不可)否认$"),
+    re.compile(r"没有理由不信$"),
+)
+_NEGATING_PREFIXES = (
+    re.compile(r"(?:不能|无法|不可|不应)说$"),
+    re.compile(r"(?:并不|不)认为$"),
+    re.compile(r"(?:并非|不是|不代表)$"),
+)
 _CURRENT_PLAYER_INFERENCE_REF = re.compile(
     r"(?:我认为|我怀疑|我推测)(p\d{2})[^，。；;]{0,12}(?:是狼人|更可疑|有问题|像狼)?"
 )
@@ -95,9 +104,11 @@ def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
                 match.group(0),
                 match.start(),
                 match.end(),
-                target=match.group(1),
-                role=match.group(2),
-                negated=_match_is_negated(text, match),
+                target=match.group(2),
+                role=match.group(3),
+                negated=bool(match.group(1)) or public_claim_is_negated(
+                    text, match.start()
+                ),
             )
         )
     for match in _CURRENT_PLAYER_INFERENCE_REF.finditer(text):
@@ -110,7 +121,7 @@ def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
                 target=match.group(1),
             )
         )
-    return sorted(found, key=lambda claim: (claim.start, claim.end))
+    return _resolve_overlapping_claims(found)
 _ROLE_MARKERS = {
     "狼人": ("我是狼人", "认狼", "自认狼人", "我们狼队"),
     "预言家": ("我是预言家", "我跳预言家", "认预言家", "跳预言家", "悍跳预言家"),
@@ -193,6 +204,44 @@ def sanitize_public_text(
     return sanitized, len(unsupported)
 
 
+def _resolve_overlapping_claims(
+    claims: list[ClassifiedPublicClaim],
+) -> list[ClassifiedPublicClaim]:
+    """将分类器的重叠 span 解析为互不重叠的确定性结果。
+
+    同一文本区间只能修复一次；优先保留覆盖信息更完整的长 span。
+    """
+    ordered = sorted(claims, key=lambda claim: (claim.start, -claim.end))
+    resolved: list[ClassifiedPublicClaim] = []
+    cluster: list[ClassifiedPublicClaim] = []
+    cluster_end = -1
+    for claim in ordered:
+        if cluster and claim.start >= cluster_end:
+            resolved.append(_most_specific_claim(cluster))
+            cluster = []
+            cluster_end = -1
+        cluster.append(claim)
+        cluster_end = max(cluster_end, claim.end)
+    if cluster:
+        resolved.append(_most_specific_claim(cluster))
+    return sorted(resolved, key=lambda claim: (claim.start, claim.end))
+
+
+def _most_specific_claim(
+    claims: list[ClassifiedPublicClaim],
+) -> ClassifiedPublicClaim:
+    """选择最长、语义字段最完整的声明。"""
+    return max(
+        claims,
+        key=lambda claim: (
+            claim.end - claim.start,
+            bool(claim.support_kind),
+            bool(claim.role),
+            -claim.start,
+        ),
+    )
+
+
 def _claim_is_supported(
     claim: ClassifiedPublicClaim,
     public_speeches: list[tuple[str, str]],
@@ -209,11 +258,12 @@ def _claim_is_supported(
     return False
 
 
-def _match_is_negated(text: str, match: re.Match[str]) -> bool:
-    """仅检查同一短分句中的否定词，避免否定范围跨句扩散。"""
-    prefix = text[max(0, match.start() - 12):match.start()]
-    clause = re.split(r"[，。；;]", prefix)[-1]
-    return any(marker in clause for marker in _NEGATION_MARKERS)
+def public_claim_is_negated(text: str, claim_start: int) -> bool:
+    """按同一分句的权威语法范围判断声明是否被否定。"""
+    clause = re.split(r"[，。；;！？]", text[:claim_start])[-1].strip()
+    if any(pattern.search(clause) for pattern in _ASSERTIVE_NEGATION_PREFIXES):
+        return False
+    return any(pattern.search(clause) for pattern in _NEGATING_PREFIXES)
 
 
 def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:

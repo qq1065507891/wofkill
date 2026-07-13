@@ -8,39 +8,18 @@
 
 from __future__ import annotations
 
-import pytest
-from dataclasses import replace
-
 from typing import Any
 
-from werewolf_agent.core.models import Death, GameState, PlayerState, GameEvent
+from werewolf_agent.core.models import GameState, PlayerState, GameEvent
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.agents.schemas import (
-    ActionType, AgentContext, PlayerAction, RetryInfo, FallbackAction,
+    ActionType, AgentContext, PlayerAction, RetryInfo,
     TaskType,
 )
 from werewolf_agent.runtime.graph import (
     RuntimeState,
-    build_game_graph,
-    build_game_graph_with_checkpoint,
     _new_engine,
-    _alive_wolves,
-    _alive_non_wolves,
-    _find_role,
-    _stable_seed,
-    check_victory,
-    free_discussion,
-    wolf_consensus,
-    route_after_resolve_night,
-    route_after_hunter_shot,
-    route_after_post_exile,
-    _sheriff_died_this_batch,
-    _route_after_badge_transfer,
-    _action_trace_event,
 )
-from werewolf_agent.runtime.agent_adapter import _single_wolf_vote
-from werewolf_agent.runtime.replay import replay_from_events, extract_event_log
-from werewolf_agent.runtime.checkpoints import make_checkpointer
 
 
 
@@ -75,6 +54,49 @@ def test_witch_action_evidence_handles_single_and_zero_targets() -> None:
     assert single["alternative_comparison"]["no_legal_alternative"] is True
     assert empty["alternative_comparison"]["legal_alternatives"] == []
     assert empty["alternative_comparison"]["no_legal_alternative"] is True
+
+
+def test_witch_action_evidence_separates_action_specific_targets() -> None:
+    import json
+
+    from werewolf_agent.runtime.witch_night_directives import build_witch_action_evidence
+
+    evidence = build_witch_action_evidence(
+        legal_targets=["p02", "p03"],
+        antidote_targets=["p02"],
+        poison_targets=["p02", "p03"],
+        poison_candidates=[{"player_id": "p03", "reason": "公开查杀"}],
+        wolf_kill_target_id="p02",
+    )
+
+    assert evidence["antidote_targets"] == ["p02"]
+    assert evidence["poison_targets"] == ["p02", "p03"]
+    assert "p02" in evidence["friendly_fire_risk"]["targets"]
+    assert evidence["retain_option"]["available"] is True
+    assert evidence["retain_option"]["required"] is False
+    serialized = json.dumps(evidence, ensure_ascii=False)
+    assert serialized.count('"antidote_targets"') == 1
+    assert serialized.count('"poison_targets"') == 1
+    assert serialized.count('"friendly_fire_risk"') == 1
+
+
+def test_witch_only_no_action_requires_retain_option() -> None:
+    from werewolf_agent.runtime.witch_night_directives import build_witch_action_evidence
+
+    evidence = build_witch_action_evidence(
+        legal_targets=[],
+        antidote_targets=[],
+        poison_targets=[],
+        poison_candidates=[],
+        wolf_kill_target_id=None,
+    )
+
+    assert evidence["retain_option"] == {
+        "action": "no_action",
+        "available": True,
+        "required": True,
+        "reason": "无合法用药目标",
+    }
 
 
 def test_poison_resolution_commits_victory_after_forced_death_reactions() -> None:

@@ -11,6 +11,8 @@
     >>> build_hunter_death_label("exile")
 """
 
+import json
+
 from werewolf_agent.agents.schemas import ActionType
 from werewolf_agent.runtime.hunter_shot_directives import (
     build_hunter_death_label,
@@ -69,6 +71,11 @@ def test_hunter_directive_exposes_structured_alternative_and_friendly_fire_evide
     )
     assert directive["alternative_comparison"]["legal_alternatives"] == ["p02", "p03"]
     assert directive["friendly_fire_risk"]["targets"] == ["p03"]
+    assert "alternative_comparison" not in directive["shot_value_assessment"]
+    assert "friendly_fire_risk" not in directive["shot_value_assessment"]
+    serialized = json.dumps(directive, ensure_ascii=False)
+    assert serialized.count('"alternative_comparison"') == 1
+    assert serialized.count('"friendly_fire_risk"') == 1
 
 
 def test_hunter_directive_marks_single_target_as_no_legal_alternative() -> None:
@@ -96,6 +103,7 @@ def test_hunter_zero_targets_still_emits_structured_retain_directive() -> None:
     }
     assert directive["retain_option"] == {
         "action": "no_action",
+        "available": True,
         "required": True,
         "reason": "无合法开枪目标",
     }

@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""验证多局平衡审计与公开声明安全修复。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 import json
@@ -113,6 +120,54 @@ def test_public_fact_guard_keeps_target_in_zero_support_repair(text: str) -> Non
     assert "投p05" in sanitized
     assert "[未公开事实]" not in sanitized
     assert "对p05的身份声明暂不采信" in sanitized
+
+
+def test_public_fact_guard_resolves_overlapping_claim_spans_once() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    text = "p04声称自己是女巫并表示知道狼刀信息，所以投p04。"
+    sanitized, count = sanitize_public_text(text, [])
+
+    assert count == 1
+    assert sanitized.count("对p04的身份声明暂不采信") == 1
+    assert "投p04" in sanitized
+
+
+def test_public_fact_guard_repairs_non_overlapping_claims_stably() -> None:
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    text = "p04声称自己是女巫；p05声称知道狼刀信息；所以投p04。"
+    sanitized, count = sanitize_public_text(text, [])
+
+    assert count == 2
+    assert sanitized.count("暂不采信") == 2
+    assert "投p04" in sanitized
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "不能否认系统确认p08是狼人。",
+        "没有理由不信系统确认p08是狼人。",
+    ],
+)
+def test_public_fact_guard_treats_double_negation_as_assertive(text: str) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import unsupported_claims_in_text
+
+    assert unsupported_claims_in_text(text, []) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "系统没有确认p08是狼人。",
+        "不能说系统确认p08是狼人。",
+    ],
+)
+def test_public_fact_guard_accepts_authoritative_negation_scope(text: str) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import unsupported_claims_in_text
+
+    assert unsupported_claims_in_text(text, []) == 0
 
 
 def test_balance_audit_flags_high_wolf_win_rate():
