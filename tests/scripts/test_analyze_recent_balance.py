@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 
 def test_recent_balance_report_includes_new_guardrails(tmp_path):
@@ -66,9 +67,36 @@ def test_soak_script_is_isolated_and_uses_exact_default_seeds() -> None:
 
     text = script.read_text(encoding="utf-8")
 
-    assert "[int]$GameCount = 10" in text
-    assert "[int]$StartSeed = 713001" in text
+    assert "[int[]]$Seeds = (713001..713010)" in text
+    assert "$Seeds.Count -ne 10" in text
     assert "$env:WEREWOLF_GAME_LOG_PATH" in text
-    assert "scripts/analyze_recent_balance.py" in text
+    assert "$PSScriptRoot" in text
+    assert "$runnerScript" in text
+    assert "$analyzerScript" in text
+    assert "Push-Location" in text
+    assert "try {" in text
+    assert "finally {" in text
+    assert "Pop-Location" in text
+    assert "--output-dir $outputDir" in text
     assert "audit-closure-report.json" in text
     assert "Get-ChildItem" not in text
+
+
+def test_soak_script_has_valid_powershell_ast() -> None:
+    root = Path(__file__).resolve().parents[2]
+    script = root / "scripts" / "run_audit_closure_soak.ps1"
+    command = (
+        "$errors=$null; "
+        "[System.Management.Automation.Language.Parser]::ParseFile("
+        f"'{script}', [ref]$null, [ref]$errors) | Out-Null; "
+        "if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }"
+    )
+
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
