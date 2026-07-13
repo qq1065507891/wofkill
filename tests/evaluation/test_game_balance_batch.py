@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def test_public_fact_claim_helpers_are_split_from_balance_audit_facade():
     from werewolf_agent.evaluation import balance_audit, balance_public_claims
@@ -125,10 +127,12 @@ def test_balance_audit_reports_disjoint_wolf_plan_outcomes_with_exact_denominato
     assert audit["wolf_team_plan_total_count"] == 3
     assert audit["wolf_team_plan_normalization_success_count"] == 1
     assert audit["wolf_team_plan_schema_terminal_fallback_count"] == 1
-    assert audit["wolf_team_plan_strategy_terminal_fallback_count"] == 1
+    assert audit["wolf_team_plan_strategy_terminal_fallback_count"] == 0
+    assert audit["wolf_team_plan_other_terminal_fallback_count"] == 1
     assert audit["wolf_team_plan_normalization_success_rate"] == 1 / 3
     assert audit["wolf_team_plan_schema_terminal_fallback_rate"] == 1 / 3
-    assert audit["wolf_team_plan_strategy_terminal_fallback_rate"] == 1 / 3
+    assert audit["wolf_team_plan_strategy_terminal_fallback_rate"] == 0
+    assert audit["wolf_team_plan_other_terminal_fallback_rate"] == 1 / 3
 
 
 def test_balance_audit_marks_wolf_plan_outcomes_unsupported_without_denominator():
@@ -141,6 +145,49 @@ def test_balance_audit_marks_wolf_plan_outcomes_unsupported_without_denominator(
     assert audit["wolf_team_plan_normalization_success_rate"] is None
     assert audit["wolf_team_plan_schema_terminal_fallback_rate"] is None
     assert audit["wolf_team_plan_strategy_terminal_fallback_rate"] is None
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        (
+            [
+                {"type": "wolf_team_plan_fallback", "payload": {"night_number": 1, "reason": "schema_validation_failed"}},
+                {"type": "wolf_team_plan_fallback", "payload": {"night_number": 1, "reason": "schema_validation_failed"}},
+                {"type": "wolf_team_plan", "payload": {"night_number": 1, "consensus_method": "fallback"}},
+            ],
+            {"total": 1, "schema": 1, "strategy": 0, "other": 0},
+        ),
+        (
+            [{"type": "wolf_team_plan_fallback", "payload": {"night_number": 2, "reason": "quorum_not_met"}}],
+            {"total": 1, "schema": 0, "strategy": 1, "other": 0},
+        ),
+        (
+            [{"type": "wolf_team_plan_fallback", "payload": {"night_number": 3, "reason": "provider_error"}}],
+            {"total": 1, "schema": 0, "strategy": 0, "other": 1},
+        ),
+        (
+            [
+                {"type": "wolf_team_plan", "payload": {"night_number": 4, "decision_id": "d1"}},
+                {"type": "wolf_team_plan", "payload": {"night_number": 4, "decision_id": "d2"}},
+            ],
+            {"total": 2, "schema": 0, "strategy": 0, "other": 0},
+        ),
+    ],
+)
+def test_wolf_plan_outcomes_pair_and_classify_each_decision_once(events, expected):
+    from werewolf_agent.evaluation.balance_audit import compute_wolf_plan_outcome_metrics
+
+    metrics = compute_wolf_plan_outcome_metrics([{"game_id": "g1", "events": events}])
+
+    assert metrics["wolf_team_plan_outcome_metrics_supported"] is True
+    assert metrics["wolf_team_plan_total_count"] == expected["total"]
+    assert metrics["wolf_team_plan_schema_terminal_fallback_count"] == expected["schema"]
+    assert metrics["wolf_team_plan_strategy_terminal_fallback_count"] == expected["strategy"]
+    assert metrics["wolf_team_plan_other_terminal_fallback_count"] == expected["other"]
+    for name, value in metrics.items():
+        if name.endswith("_rate") and value is not None:
+            assert 0 <= value <= 1
 
 
 def test_load_game_logs_reads_json_files(tmp_path):

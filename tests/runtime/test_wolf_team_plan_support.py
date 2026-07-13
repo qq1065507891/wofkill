@@ -175,9 +175,17 @@ def test_normalize_wolf_team_plan_payload_preserves_target_and_evidence() -> Non
 
     normalized, _repairs = normalize_wolf_team_plan_payload(payload)
 
-    assert normalized["night_kill_primary"] is payload["night_kill_primary"]
-    assert normalized["night_kill_backup"] is payload["night_kill_backup"]
-    assert normalized["evidence_from_discussion"] is evidence
+    assert normalized["night_kill_primary"] == payload["night_kill_primary"]
+    assert normalized["night_kill_backup"] == payload["night_kill_backup"]
+    assert normalized["evidence_from_discussion"] == evidence
+
+    normalized["night_kill_primary"] = "p09"
+    normalized["evidence_from_discussion"][0]["target"] = "p09"
+
+    assert payload["night_kill_primary"] == "p03"
+    assert payload["evidence_from_discussion"] == [
+        {"target": "p03", "quote": "逐字证据", "offset": 7}
+    ]
 
 
 def test_normalize_wolf_team_plan_payload_does_not_unwrap_nested_wrapper() -> None:

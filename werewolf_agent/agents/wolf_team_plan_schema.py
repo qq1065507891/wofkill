@@ -4,13 +4,11 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-08
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.agents.wolf_team_plan_schema import WolfTeamPlan
     >>> WolfTeamPlan.model_validate({"night_number": 1, "public_story": "白天统一口径", "reasoning": "夜聊共识"})
-
-修改日期: 2026-07-13
 """
 
 from __future__ import annotations

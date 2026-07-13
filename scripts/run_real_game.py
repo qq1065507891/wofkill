@@ -24,12 +24,12 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from werewolf_agent.model_gateway.providers import load_local_dotenv
+from werewolf_agent.model_gateway.providers import load_local_dotenv  # noqa: E402
 from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
     compute_wolf_plan_outcome_metrics,
 )
-from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
-from scripts.run_real_game_reports import (
+from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
+from scripts.run_real_game_reports import (  # noqa: E402
     _sep,
     check_leakage,
     print_game_summary,
@@ -85,18 +85,18 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
         1 for e in traces
         if e.payload.get("action_trace", {}).get("fallback_reason")
     )
-    wolf_plan_fallback_count = len(wolf_plan_fallbacks)
-    wolf_plan_attempts = max(
-        sum(1 for e in gs.events if e.type == "wolf_team_plan"),
-        wolf_plan_fallback_count,
-    )
     wolf_plan_outcomes = compute_wolf_plan_outcome_metrics([{
+        "game_id": gs.game_id,
         "events": [
             {"type": event.type, "payload": event.payload}
             for event in gs.events
             if event.type in {"wolf_team_plan", "wolf_team_plan_fallback"}
         ]
     }])
+    wolf_plan_fallback_count = wolf_plan_outcomes[
+        "wolf_team_plan_terminal_fallback_count"
+    ]
+    wolf_plan_attempts = wolf_plan_outcomes["wolf_team_plan_total_count"]
     structured_fail = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("structured_failure_reason")

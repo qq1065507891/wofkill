@@ -50,9 +50,11 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         1 for trace in action_traces
         if trace.get("parse_error") or trace.get("structured_failure_reason")
     )
-    wolf_plan_fallback_count = sum(_wolf_plan_fallback_count(game) for game in games)
-    wolf_plan_count = sum(_wolf_plan_attempt_count(game) for game in games)
     wolf_plan_outcomes = compute_wolf_plan_outcome_metrics(games)
+    wolf_plan_fallback_count = wolf_plan_outcomes[
+        "wolf_team_plan_terminal_fallback_count"
+    ]
+    wolf_plan_count = wolf_plan_outcomes["wolf_team_plan_total_count"]
 
     weak_wolf_plan_kill_count = sum(_weak_wolf_plan_kills(game) for game in games)
     fallback_plan_kill_without_target_evidence_count = sum(
@@ -194,29 +196,91 @@ def _wolf_plan_attempt_count(game: dict[str, Any]) -> int:
 
 
 def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
-    """按实际计划事件计算 normalization 与终止 fallback 的互斥结果。"""
-    events = [event for game in games for event in game.get("events", [])]
-    total = sum(1 for event in events if event.get("type") == "wolf_team_plan")
-    normalization_success = sum(
-        1
-        for event in events
-        if event.get("type") == "wolf_team_plan"
-        and bool((event.get("payload") or {}).get("normalization_repairs"))
-    )
-    fallback_reasons = [
-        (event.get("payload") or {}).get("reason")
-        for event in events
-        if event.get("type") == "wolf_team_plan_fallback"
-    ]
-    schema_fallback = sum(reason == "schema_validation_failed" for reason in fallback_reasons)
-    strategy_fallback = len(fallback_reasons) - schema_fallback
+    """按稳定决策键汇总每次计划的唯一终态结果。"""
+    decisions: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for game_index, game in enumerate(games):
+        game_id = game.get("game_id") or f"game-index:{game_index}"
+        pending_key: tuple[Any, ...] | None = None
+        pending_reason: Any = None
+        for event_index, event in enumerate(game.get("events", [])):
+            event_type = event.get("type")
+            if event_type not in {"wolf_team_plan", "wolf_team_plan_fallback"}:
+                continue
+            payload = event.get("payload") or {}
+            decision_id = payload.get("decision_id") or payload.get("trace_id")
+            night_number = payload.get("night_number")
+            if decision_id is not None:
+                key = ("decision", game_id, str(decision_id))
+            elif night_number is not None:
+                key = ("legacy-night", game_id, night_number)
+            elif event_type == "wolf_team_plan" and pending_key is not None:
+                key = pending_key
+            elif (
+                event_type == "wolf_team_plan_fallback"
+                and pending_key is not None
+                and pending_reason == payload.get("reason")
+            ):
+                key = pending_key
+            else:
+                key = ("legacy-event", game_id, event_index)
+
+            decision = decisions.setdefault(
+                key,
+                {"plan": None, "fallback_present": False, "fallback_reason": None},
+            )
+            if event_type == "wolf_team_plan_fallback":
+                decision["fallback_present"] = True
+                decision["fallback_reason"] = payload.get("reason")
+                pending_key = key
+                pending_reason = payload.get("reason")
+            else:
+                decision["plan"] = payload
+                if pending_key == key:
+                    pending_key = None
+                    pending_reason = None
+
+    strategy_reasons = {
+        "strategy_validation_failed",
+        "weak_plan",
+        "weak_plan_evidence",
+        "weak_evidence",
+        "quorum_not_met",
+        "insufficient_quorum",
+        "consensus_not_reached",
+        "no_valid_supporters",
+    }
+    outcomes: list[str] = []
+    for decision in decisions.values():
+        reason = decision["fallback_reason"]
+        plan = decision["plan"] or {}
+        if reason == "schema_validation_failed":
+            outcomes.append("schema_terminal_fallback")
+        elif reason in strategy_reasons:
+            outcomes.append("strategy_terminal_fallback")
+        elif decision["fallback_present"] or plan.get("consensus_method") == "fallback":
+            outcomes.append("other_terminal_fallback")
+        elif plan.get("normalization_repairs"):
+            outcomes.append("normalization_success")
+        else:
+            outcomes.append("llm_success")
+
+    total = len(decisions)
+    normalization_success = outcomes.count("normalization_success")
+    llm_success = outcomes.count("llm_success")
+    schema_fallback = outcomes.count("schema_terminal_fallback")
+    strategy_fallback = outcomes.count("strategy_terminal_fallback")
+    other_fallback = outcomes.count("other_terminal_fallback")
+    terminal_fallback = schema_fallback + strategy_fallback + other_fallback
     denominator = total or None
     return {
         "wolf_team_plan_outcome_metrics_supported": denominator is not None,
         "wolf_team_plan_total_count": total,
         "wolf_team_plan_normalization_success_count": normalization_success,
+        "wolf_team_plan_llm_success_count": llm_success,
         "wolf_team_plan_schema_terminal_fallback_count": schema_fallback,
         "wolf_team_plan_strategy_terminal_fallback_count": strategy_fallback,
+        "wolf_team_plan_other_terminal_fallback_count": other_fallback,
+        "wolf_team_plan_terminal_fallback_count": terminal_fallback,
         "wolf_team_plan_normalization_success_rate": (
             normalization_success / denominator if denominator else None
         ),
@@ -225,6 +289,12 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
         ),
         "wolf_team_plan_strategy_terminal_fallback_rate": (
             strategy_fallback / denominator if denominator else None
+        ),
+        "wolf_team_plan_other_terminal_fallback_rate": (
+            other_fallback / denominator if denominator else None
+        ),
+        "wolf_team_plan_terminal_fallback_rate": (
+            terminal_fallback / denominator if denominator else None
         ),
     }
 

@@ -4,18 +4,17 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.wolf_team_plan_support import build_prior_plan_summary
     >>> build_prior_plan_summary({})
-
-修改日期: 2026-07-13
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any
 
 from werewolf_agent.core.models import GameState
@@ -28,12 +27,13 @@ def normalize_wolf_team_plan_payload(
     payload: Mapping[str, Any],
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     """在 schema 校验前修复确定且不涉及目标证据的格式问题。"""
-    normalized = dict(payload)
+    # payload 是 JSON-like 结构，深拷贝避免计划证据与原始模型输出共享引用。
+    normalized = deepcopy(dict(payload))
     repairs: list[str] = []
     for wrapper in _RECOGNIZED_PLAN_WRAPPERS:
         wrapped = normalized.get(wrapper)
         if len(normalized) == 1 and isinstance(wrapped, Mapping):
-            normalized = dict(wrapped)
+            normalized = deepcopy(dict(wrapped))
             repairs.append(f"unwrap:{wrapper}")
             break
 
