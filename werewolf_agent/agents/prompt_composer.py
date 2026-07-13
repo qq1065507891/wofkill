@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-封装玩家提示词的系统提示和用户提示组合顺序。
+组合玩家提示词，并把 persona 固定在最终 system 消息中。
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_composer import compose_system_prompt
@@ -21,7 +22,8 @@ def compose_system_prompt(builder: Any) -> str:
     """按稳定区段顺序组合 system prompt。"""
     parts: list[str] = []
     parts.append(builder._build_core_identity())
-    # persona 是动态提示，保留在 user prompt 中。
+    # Persona 必须位于最终 system 消息；request 层会在完整组装后取证。
+    parts.append(builder._build_persona())
     parts.append(builder._build_game_rules())
     parts.append(builder._build_role_guide())
     parts.append(builder._build_information_boundaries())
@@ -55,10 +57,6 @@ def compose_user_prompt(builder: Any, retry: RetryInfo) -> str:
     parts.append((
         "_build_recent_transcript",
         builder._label_section("_build_recent_transcript", builder._build_recent_transcript()),
-    ))
-    parts.append((
-        "_build_persona",
-        builder._label_section("_build_persona", builder._build_persona()),
     ))
     parts.append((
         "_build_belief_state",

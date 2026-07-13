@@ -205,6 +205,114 @@ def test_inject_vote_basis_helper_centralized():
     assert "speech_logic" in sd["vote_basis_hint"] or "vote_basis" in sd["vote_basis_hint"].lower()
 
 
+def test_generation_request_records_final_persona_system_message_for_retries():
+    """Initial、structured retry、semantic retry 都从最终 messages 组装取证。"""
+    from werewolf_agent.agents.player_generation_request import build_player_generation_request
+    from werewolf_agent.agents.schemas import AgentContext, RetryInfo, TaskType
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.model_gateway.structured_output import StructuredOutputMode
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    class _Agent:
+        def _player_action_tool(self, context):
+            return {"name": "submit_player_action"}
+
+        def _build_prompt(self, context, retry):
+            return f"user attempt {retry.attempt}"
+
+        def _build_system_prompt(self, context):
+            return "system rules\npersona-final-fragment"
+
+        def _build_persona_prompt(self, context):
+            return "persona-final-fragment"
+
+    collector = ModuleExposureAuditCollector()
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=1,
+        persona_snapshot={"profile_id": "calm"},
+        decision_identity=DecisionIdentity("g1", "p01", "day", 1, 0, "speech", 1),
+        exposure_collector=collector,
+    )
+    retries = (
+        RetryInfo(attempt=1),
+        RetryInfo(attempt=2, error_code="missing_tool_call"),
+        RetryInfo(attempt=3, error_code="speech_quality"),
+    )
+
+    requests = [
+        build_player_generation_request(_Agent(), context, retry, StructuredOutputMode.NATIVE_TOOL)
+        for retry in retries
+    ]
+    proofs = [event.payload["proof"] for event in collector.flush_events()]
+
+    assert all(request.messages[0]["role"] == "system" for request in requests)
+    assert all(request.messages[0]["content"] == request.system_prompt for request in requests)
+    assert all(request.persona_confirmed_in_system for request in requests)
+    assert [proof["attempt_kind"] for proof in proofs] == [
+        "initial", "structured_retry", "semantic_retry",
+    ]
+
+
+def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch):
+    from types import SimpleNamespace
+
+    from werewolf_agent.agents import player_generation_request as generation_request
+    from werewolf_agent.agents.schemas import AgentContext, RetryInfo, TaskType
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
+    from werewolf_agent.model_gateway.structured_output import StructuredOutputMode
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    class _Agent:
+        agent_id = "p01"
+        model_router = object()
+
+        def _player_action_tool(self, context):
+            return {"name": "submit_player_action"}
+
+        def _build_prompt(self, context, retry):
+            return "user action"
+
+        def _build_system_prompt(self, context):
+            return "system rules\npersona-final-fragment"
+
+        def _build_persona_prompt(self, context):
+            return "persona-final-fragment"
+
+    collector = ModuleExposureAuditCollector()
+    identity = DecisionIdentity("g1", "p01", "day", 1, 0, "speech", 2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=1,
+        persona_snapshot={"profile_id": "calm"},
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+    request = generation_request.build_player_generation_request(
+        _Agent(), context, RetryInfo(attempt=1), StructuredOutputMode.NATIVE_TOOL,
+    )
+    collector.flush_events()
+    attempt_context = GenerationAttemptContext(run_scope="p001")
+
+    def _fake_generate(*args, **kwargs):
+        attempt_context.attempts = (
+            SimpleNamespace(route_kind=SimpleNamespace(value="primary"), ordinal=1),
+            SimpleNamespace(route_kind=SimpleNamespace(value="provider_fallback"), ordinal=2),
+        )
+        return SimpleNamespace(text="ok")
+
+    monkeypatch.setattr(generation_request, "_generate_player_response", _fake_generate)
+
+    generation_request.call_player_generation_request(
+        _Agent(), context, request, attempt_context,
+    )
+
+    events = collector.flush_events()
+    assert len(events) == 1
+    assert events[0].payload["trace_id"] == identity.trace_id()
+    assert events[0].payload["proof"]["attempt_kind"] == "provider_fallback"
+    assert events[0].payload["proof"]["confirmed_injection"] is True
+
+
 def test_villager_role_guide_is_concise():
     """M2-1: villager guide was 4 paragraphs (~400 chars), other
     roles are 1 paragraph. Token waste + over-guidance."""

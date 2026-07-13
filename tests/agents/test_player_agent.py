@@ -178,6 +178,7 @@ class _SequenceJsonProvider:
         self._responses = list(responses)
         self.calls = 0
         self.prompts: list[str] = []
+        self.system_prompts: list[str] = []
 
     @property
     def name(self) -> str:
@@ -186,6 +187,7 @@ class _SequenceJsonProvider:
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
         self.calls += 1
         self.prompts.append(prompt)
+        self.system_prompts.append(system_prompt or "")
         response = self._responses[min(self.calls - 1, len(self._responses) - 1)]
         return GenerateResult(
             text=response,
@@ -1038,8 +1040,8 @@ class TestPlayerAgentRetryFallback:
 
         assert isinstance(action, PlayerAction)
         assert retry.error_code is None
-        assert provider.prompts
-        prompt = provider.prompts[0]
+        assert provider.system_prompts
+        prompt = provider.system_prompts[0]
         assert "人格设定" in prompt
         assert '"profile_id":"aggressive_bluffer"' not in prompt
         assert "人格核心: dominant_pressurer" in prompt

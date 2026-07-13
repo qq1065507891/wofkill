@@ -2,13 +2,15 @@
 """Runtime audit events for module exposure, call monitoring, and prompt injection.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-10
+    修改日期: 2026-07-13
     使用示例: 内部模块，无对外接口
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
+import secrets
 from collections.abc import Mapping
 from typing import Any
 
@@ -91,6 +93,15 @@ _PROMPT_INJECTION_KEYS = frozenset({
     "char_count",
     "content_hash",
     "decision_usage",
+    "sanitized",
+})
+_PERSONA_PROOF_KEYS = frozenset({
+    "final_system_message_index",
+    "message_char_count",
+    "run_scoped_fingerprint",
+    "confirmed_injection",
+    "attempt_kind",
+    "attempt_ordinal",
     "sanitized",
 })
 _PROMPT_INJECTION_FIELDS = (
@@ -276,6 +287,8 @@ class ModuleExposureAuditCollector:
 
     def __init__(self) -> None:
         self._events: list[GameEvent] = []
+        self._persona_proof_secret = secrets.token_bytes(32)
+        self._persona_proof_keys: set[tuple[str, str, int | None, str]] = set()
 
     def record_rag(self, identity: DecisionIdentity, hits: list[dict[str, Any]] | None) -> None:
         if not hits:
@@ -414,6 +427,61 @@ class ModuleExposureAuditCollector:
         sanitized.setdefault("sanitized", True)
         self._append("persona_exposure_audit", identity, {"snapshot": sanitized})
 
+    def record_persona_prompt_proof(
+        self,
+        identity: DecisionIdentity,
+        messages: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+        persona_text: str | None,
+        attempt_kind: str,
+        *,
+        attempt_ordinal: int | None = None,
+        confirmed_injection: bool | None = None,
+    ) -> None:
+        """根据最终 messages 生成不可跨 run 关联的 persona 注入证明。"""
+        system_index: int | None = None
+        system_content = ""
+        for index, message in enumerate(messages):
+            if message.get("role") == "system":
+                system_index = index
+                system_content = str(message.get("content") or "")
+        if confirmed_injection is None:
+            confirmed_injection = bool(
+                system_index is not None
+                and persona_text
+                and persona_text in system_content
+            )
+        fingerprint = ""
+        if system_index is not None:
+            digest = hmac.new(
+                self._persona_proof_secret,
+                system_content.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()[:24]
+            fingerprint = f"run_hmac_{digest}"
+        proof = {
+            "final_system_message_index": system_index,
+            "message_char_count": len(system_content),
+            "run_scoped_fingerprint": fingerprint,
+            "confirmed_injection": bool(confirmed_injection),
+            "attempt_kind": str(attempt_kind),
+            "attempt_ordinal": attempt_ordinal,
+            "sanitized": True,
+        }
+        dedupe_key = (
+            identity.trace_id(),
+            str(attempt_kind),
+            attempt_ordinal,
+            fingerprint,
+        )
+        if dedupe_key in self._persona_proof_keys:
+            return
+        self._persona_proof_keys.add(dedupe_key)
+        self._append(
+            "persona_prompt_injection_audit",
+            identity,
+            {"proof": _sanitize_allowed(proof, _PERSONA_PROOF_KEYS)},
+        )
+
     def flush_events(self) -> list[GameEvent]:
         events = list(self._events)
         self._events.clear()
@@ -428,3 +496,29 @@ class ModuleExposureAuditCollector:
         payload = _identity_payload(identity)
         payload.update(module_payload)
         self._events.append(GameEvent(type=event_type, payload=payload))
+
+
+def summarize_persona_prompt_confirmation(
+    events: list[GameEvent],
+) -> dict[str, Any]:
+    """按 decision identity 连接 persona 曝光和最终 system 注入证明。"""
+    configured = {
+        str(event.payload.get("trace_id") or "")
+        for event in events
+        if event.type == "persona_exposure_audit"
+        and event.payload.get("trace_id")
+    }
+    confirmed = {
+        str(event.payload.get("trace_id") or "")
+        for event in events
+        if event.type == "persona_prompt_injection_audit"
+        and event.payload.get("trace_id") in configured
+        and bool((event.payload.get("proof") or {}).get("confirmed_injection"))
+    }
+    denominator = len(configured)
+    return {
+        "supported": denominator > 0,
+        "configured_action_count": denominator,
+        "confirmed_action_count": len(confirmed),
+        "confirmation_rate": len(confirmed) / denominator if denominator else None,
+    }

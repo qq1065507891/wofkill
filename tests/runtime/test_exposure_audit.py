@@ -10,6 +10,7 @@ from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+from werewolf_agent.runtime import exposure_audit
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime import agent_adapter
 from werewolf_agent.runtime.nodes._shared import _allocate_decision_identity
@@ -258,6 +259,67 @@ def test_persona_exposure_can_be_recorded_after_prompt_visible_attachment() -> N
     assert snapshot["sanitized"] is True
     assert "effective_params" not in snapshot
     assert "deception_skill" not in str(snapshot)
+
+
+def test_persona_final_message_proof_is_private_and_run_scoped() -> None:
+    identity = _identity()
+    persona_text = "persona-secret-text"
+    messages = (
+        {"role": "system", "content": f"rules\n{persona_text}"},
+        {"role": "user", "content": "public action context"},
+    )
+    first = ModuleExposureAuditCollector()
+    second = ModuleExposureAuditCollector()
+
+    first.record_persona_prompt_proof(identity, messages, persona_text, "initial")
+    first.record_persona_prompt_proof(identity, messages, persona_text, "semantic_retry")
+    second.record_persona_prompt_proof(identity, messages, persona_text, "initial")
+
+    first_rows = [
+        event.payload["proof"] for event in first.flush_events()
+        if event.type == "persona_prompt_injection_audit"
+    ]
+    second_row = second.flush_events()[0].payload["proof"]
+    assert [row["attempt_kind"] for row in first_rows] == ["initial", "semantic_retry"]
+    assert all(row["final_system_message_index"] == 0 for row in first_rows)
+    assert all(row["message_char_count"] == len(messages[0]["content"]) for row in first_rows)
+    assert all(row["confirmed_injection"] is True for row in first_rows)
+    assert first_rows[0]["run_scoped_fingerprint"] == first_rows[1]["run_scoped_fingerprint"]
+    assert first_rows[0]["run_scoped_fingerprint"] != second_row["run_scoped_fingerprint"]
+    serialized = str(first_rows + [second_row]).lower()
+    assert persona_text not in serialized
+    assert "prompt" not in serialized
+    assert "sha" not in serialized
+    assert "md5" not in serialized
+
+
+def test_persona_confirmation_summary_joins_by_decision_identity() -> None:
+    collector = ModuleExposureAuditCollector()
+    collector.record_persona(_identity(), {"profile_id": "calm"})
+    collector.record_persona_prompt_proof(
+        _identity(),
+        ({"role": "system", "content": "rules persona"},),
+        "persona",
+        "structured_retry",
+    )
+
+    summary = exposure_audit.summarize_persona_prompt_confirmation(collector.flush_events())
+
+    assert summary == {
+        "supported": True,
+        "configured_action_count": 1,
+        "confirmed_action_count": 1,
+        "confirmation_rate": 1.0,
+    }
+
+
+def test_persona_confirmation_summary_marks_zero_denominator_unsupported() -> None:
+    assert exposure_audit.summarize_persona_prompt_confirmation([]) == {
+        "supported": False,
+        "configured_action_count": 0,
+        "confirmed_action_count": 0,
+        "confirmation_rate": None,
+    }
 
 
 class _Registry:

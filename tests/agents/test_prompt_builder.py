@@ -593,14 +593,15 @@ def test_user_prompt_groups_current_public_context_before_private_and_strategy_b
         }
     )
 
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    builder = PlayerPromptBuilder(ctx)
+    prompt = builder.build_user_prompt(RetryInfo())
+    system_prompt = builder.build_system_prompt()
 
     phase_idx = prompt.index("当前阶段:")
     public_idx = prompt.index("当前局公开事实")
     visible_idx = prompt.index("可见状态")
     salience_idx = prompt.index("关键事件")
     transcript_idx = prompt.index("近期发言")
-    persona_idx = prompt.index("人格设定")
     belief_idx = prompt.index("我的判断")
     private_idx = prompt.index("本局·第2轮·私有记忆")
     learning_idx = prompt.index("跨局学习参考")
@@ -613,7 +614,6 @@ def test_user_prompt_groups_current_public_context_before_private_and_strategy_b
         < visible_idx
         < salience_idx
         < transcript_idx
-        < persona_idx
         < belief_idx
         < private_idx
         < learning_idx
@@ -621,6 +621,8 @@ def test_user_prompt_groups_current_public_context_before_private_and_strategy_b
         < task_idx
         < output_idx
     )
+    assert "人格设定" in system_prompt
+    assert "人格设定" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -2165,7 +2167,7 @@ def test_sections_have_priority_labels():
         f"sections. "
         f"Got {auxiliary_label_count}."
     )
-    assert "【人格】 人格设定:" in prompt
+    assert "人格设定:" in PlayerPromptBuilder(ctx).build_system_prompt()
     assert "【参考】 跨局学习参考:" in prompt
 
     assert "【可选】" not in prompt, (
@@ -3396,16 +3398,8 @@ def test_other_roles_still_have_their_guides():
 # per-turn dynamic context.
 
 
-def test_persona_in_user_prompt_not_system():
-    """P2-S10: persona must live in user_prompt, not system_prompt.
-
-    The `persona_snapshot` field is per-turn (situation-driven) and
-    should be a dynamic section in the user message, not a stable
-    section in the system prompt. Pre-fix, `_build_persona()` was
-    called from `build_system_prompt()`, so every persona change
-    invalidated the system-prompt cache and could change role
-    behavior mid-game.
-    """
+def test_persona_in_final_system_prompt_not_user():
+    """Persona 必须只进入最终 system prompt，避免 user 侧重复注入。"""
     ctx = AgentContext(
         agent_id="p08",
         task_type=TaskType.SPEECH,
@@ -3421,22 +3415,8 @@ def test_persona_in_user_prompt_not_system():
     system_prompt = builder.build_system_prompt()
     user_prompt = builder.build_user_prompt(RetryInfo())
 
-    # Persona MUST be in the user prompt.
-    assert "人格设定" in user_prompt, (
-        "persona must appear in user_prompt after P2-S10. "
-        f"user_prompt[:500]={user_prompt[:500]!r}"
-    )
-    # Persona MUST NOT be in the system prompt.
-    # P3-2: the info_boundaries text now lists "人格设定" as one
-    # of the 11 user-prompt sections.  Use the persona section's
-    # section-header marker ("人格设定: " with colon) to avoid a
-    # substring collision — only the persona section uses this
-    # exact prefix; the info_boundaries list has it without colon.
-    assert "人格设定: " not in system_prompt, (
-        "persona must NOT appear in system_prompt after P2-S10 "
-        "(per s10 architecture, system_prompt holds stable sections only). "
-        f"system_prompt={system_prompt!r}"
-    )
+    assert "人格设定:" in system_prompt
+    assert "人格设定:" not in user_prompt
 
 
 def test_persona_empty_snapshot_is_noop():
@@ -3492,7 +3472,7 @@ def test_good_role_persona_prompt_renders_only_sanitized_expression_fields():
         },
     )
 
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    prompt = PlayerPromptBuilder(ctx).build_system_prompt()
 
     assert "bold_pretender" not in prompt
     assert "悍跳进攻型" not in prompt
@@ -4487,7 +4467,9 @@ def _make_budget_pressure_context() -> AgentContext:
 def test_current_game_grounding_survives_with_expanded_budget() -> None:
     """Current facts stay present while the 20k budget may retain history."""
     ctx = _make_budget_pressure_context()
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    builder = PlayerPromptBuilder(ctx)
+    prompt = builder.build_user_prompt(RetryInfo())
+    system_prompt = builder.build_system_prompt()
     assert len(prompt) <= _USER_PROMPT_BUDGET_CHARS + 750, (
         f"budget trimmer should keep joined prompt under "
         f"~6_250 + 750 chars; got {len(prompt)} chars."
@@ -4502,8 +4484,8 @@ def test_current_game_grounding_survives_with_expanded_budget() -> None:
             f"current-game grounding marker {marker!r} was dropped before "
             f"style/history context. prompt[:500]={prompt[:500]!r}"
         )
-    assert "人格设定" in prompt
-    assert "budget-pressure-persona" in prompt
+    assert "人格设定" in system_prompt
+    assert "budget-pressure-persona" in system_prompt
     assert "长期能力画像" not in prompt
     assert "我的认知矩阵" not in prompt
 
@@ -4543,15 +4525,14 @@ def test_phase_and_legal_context_survives_extreme_budget_pressure() -> None:
 
 
 def test_persona_core_survives_under_budget_pressure() -> None:
-    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
-
-    assert "_build_persona" in PlayerPromptBuilder._NEVER_DROP
-
     ctx = _make_budget_pressure_context()
-    prompt = PlayerPromptBuilder(ctx).build_user_prompt(RetryInfo())
+    builder = PlayerPromptBuilder(ctx)
+    system_prompt = builder.build_system_prompt()
+    user_prompt = builder.build_user_prompt(RetryInfo())
 
-    assert "人格设定" in prompt
-    assert "budget-pressure-persona" in prompt
+    assert "人格设定" in system_prompt
+    assert "budget-pressure-persona" in system_prompt
+    assert "人格设定" not in user_prompt
 
 
 # ---------------------------------------------------------------------------
