@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：基于可能世界集合，生成紧凑的启发式预测（夜间刀杀压力、投票压力等），
+功能描述：基于可能世界集合生成紧凑预测，并在导出边界校验世界引用。
 作者：Mike
 创建日期：2025-01-15
 修改日期：2026-07-13
@@ -41,16 +41,30 @@ class SimulationResult:
     viewer_id: str
     horizon: str
     predictions: list[FutureEventPrediction] = field(default_factory=list)
+    retained_promptable_world_ids: list[str] = field(default_factory=list)
 
     def to_prompt_dict(self) -> dict[str, Any]:
+        """导出经过边界校验的预测；审计计数按未知 world ID 引用次数累计。"""
+        allowed = set(self.retained_promptable_world_ids)
+        exported: list[dict[str, Any]] = []
+        rejected_unknown_world_id_count = 0
+        for prediction in self.predictions:
+            unknown_ids = [
+                world_id for world_id in prediction.world_ids
+                if world_id not in allowed
+            ]
+            if unknown_ids:
+                rejected_unknown_world_id_count += len(unknown_ids)
+                continue
+            item = prediction.to_prompt_dict()
+            item["world_ids"] = list(dict.fromkeys(prediction.world_ids))[:3]
+            exported.append(item)
         return {
             "type": "simulation",
             "horizon": self.horizon,
-            "predictions": [
-                prediction.to_prompt_dict()
-                for prediction in self.predictions
-            ],
+            "predictions": exported,
             "warning": "Prediction, not fact.",
+            "rejected_unknown_world_id_count": rejected_unknown_world_id_count,
         }
 
 
@@ -103,6 +117,9 @@ class BoundedSimulator:
             viewer_id=viewer_id,
             horizon="next_turn",
             predictions=predictions[:max(0, top_k)],
+            retained_promptable_world_ids=[
+                world.world_id for world in possible_worlds.promptable_worlds()
+            ],
         )
 
     def _pressure_prediction(

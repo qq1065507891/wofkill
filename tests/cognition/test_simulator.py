@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证有界模拟器仅导出有公开证据支撑的可能世界引用。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 from werewolf_agent.cognition.worlds import PossibleWorld, PossibleWorldSet
@@ -99,3 +107,88 @@ def test_simulator_rejects_worlds_without_known_public_evidence() -> None:
     )
 
     assert result.predictions == []
+
+
+def test_simulation_export_drops_prediction_with_any_unknown_world_id() -> None:
+    from werewolf_agent.cognition.simulator import (
+        FutureEventPrediction,
+        SimulationResult,
+    )
+
+    result = SimulationResult(
+        viewer_id="p01",
+        horizon="next_turn",
+        predictions=[
+            FutureEventPrediction(
+                event_type="next_day_vote_pressure",
+                probability=0.8,
+                affected_players=["p02"],
+                world_ids=["World A", "unknown", "unknown"],
+            ),
+            FutureEventPrediction(
+                event_type="night_kill_pressure",
+                probability=0.6,
+                affected_players=["p03"],
+                world_ids=["World B", "World A", "World B"],
+            ),
+        ],
+        retained_promptable_world_ids=["World A", "World B"],
+    )
+
+    exported = result.to_prompt_dict()
+
+    assert [item["event"] for item in exported["predictions"]] == [
+        "night_kill_pressure"
+    ]
+    assert exported["predictions"][0]["world_ids"] == ["World B", "World A"]
+    assert exported["rejected_unknown_world_id_count"] == 2
+
+
+def test_simulation_export_drops_unknown_only_prediction() -> None:
+    from werewolf_agent.cognition.simulator import (
+        FutureEventPrediction,
+        SimulationResult,
+    )
+
+    result = SimulationResult(
+        viewer_id="p01",
+        horizon="next_turn",
+        predictions=[
+            FutureEventPrediction(
+                event_type="next_day_vote_pressure",
+                probability=0.7,
+                affected_players=["p02"],
+                world_ids=["unknown"],
+            )
+        ],
+        retained_promptable_world_ids=["World A"],
+    )
+
+    exported = result.to_prompt_dict()
+
+    assert exported["predictions"] == []
+    assert exported["rejected_unknown_world_id_count"] == 1
+
+
+def test_bounded_simulator_exports_only_retained_promptable_world_ids() -> None:
+    from werewolf_agent.cognition.simulator import BoundedSimulator
+
+    result = BoundedSimulator().simulate(
+        viewer_id="p01",
+        possible_worlds=_worlds(),
+        alive_players=["p01", "p02", "p03", "p04"],
+        day_number=2,
+        pressure_summaries={"p02": {"pressure_score": 1.4}},
+        top_k=2,
+    )
+
+    exported = result.to_prompt_dict()
+    allowed_order = [world.world_id for world in _worlds().promptable_worlds()]
+    allowed = set(allowed_order)
+
+    assert result.retained_promptable_world_ids == allowed_order
+    assert all(
+        set(prediction["world_ids"]).issubset(allowed)
+        for prediction in exported["predictions"]
+    )
+    assert exported["rejected_unknown_world_id_count"] == 0
