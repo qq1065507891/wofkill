@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT))
 
 from werewolf_agent.model_gateway.providers import load_local_dotenv  # noqa: E402
 from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
+    compute_acceptance_audit_metrics,
     compute_wolf_plan_outcome_metrics,
 )
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
@@ -98,6 +99,13 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
             if event.type in {"wolf_team_plan", "wolf_team_plan_fallback"}
         ]
     }])
+    acceptance_metrics = compute_acceptance_audit_metrics([{
+        "game_id": gs.game_id,
+        "events": [
+            {"type": event.type, "payload": event.payload}
+            for event in gs.events
+        ],
+    }])
     wolf_plan_fallback_count = wolf_plan_outcomes[
         "wolf_team_plan_terminal_fallback_count"
     ]
@@ -166,6 +174,7 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
         "total_action_traces": total,
         "total_wolf_team_plans": wolf_plan_attempts,
         **wolf_plan_outcomes,
+        **acceptance_metrics,
         "total_quality_events": total_quality_events,
         "speech_count": len(speeches),
         "non_empty_speech_count": non_empty_speeches,

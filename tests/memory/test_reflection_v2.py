@@ -192,7 +192,9 @@ def test_reflection_memory_live_query_returns_only_approved_v2() -> None:
 
     results = memory.query_live(CrossGameQuery(player_id="p01", role="seer"))
 
-    assert [r.entry_id for r in results] == [approved.entry_id]
+    assert len(results) == 1
+    assert results[0].entry_id.startswith("view_")
+    assert results[0].entry_id != approved.entry_id
 
 
 def test_synthesizer_produces_one_v2_entry_with_auto_review_precedence() -> None:

@@ -69,6 +69,66 @@ def test_quality_score_exports_persona_confirmation_from_real_events() -> None:
     }
 
 
+def test_quality_score_exports_translated_execution_acceptance_metrics() -> None:
+    from scripts import run_real_game
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord,
+        AttemptOutcome,
+        EvidenceKind,
+        OpaqueRequestId,
+        ReasoningLevel,
+        ReasoningStatus,
+        RootCause,
+        RouteKind,
+    )
+
+    request_id = OpaqueRequestId.new("game", "feedbeef")
+    attempts = (
+        AttemptExecutionRecord(
+            opaque_request_id=request_id,
+            ordinal=1,
+            provider="primary",
+            model="m",
+            route_kind=RouteKind.PRIMARY,
+            root_cause=RootCause.TIMEOUT,
+            attempt_outcome=AttemptOutcome.FAILURE,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+            reasoning_token_count=0,
+            evidence_kind=EvidenceKind.NONE,
+        ),
+        AttemptExecutionRecord(
+            opaque_request_id=request_id,
+            ordinal=2,
+            provider="primary",
+            model="m",
+            route_kind=RouteKind.RETRY,
+            root_cause=RootCause.NONE,
+            attempt_outcome=AttemptOutcome.SUCCESS,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.CONFIRMED,
+            reasoning_token_count=2,
+            evidence_kind=EvidenceKind.TOKEN_COUNT,
+        ),
+    )
+    gs = GameState(game_id="g-execution", events=[GameEvent(
+        type="action_trace_audit",
+        payload={
+            "task_type": "vote",
+            "action_trace": {"execution_attempts": attempts},
+        },
+    )])
+
+    quality = run_real_game.compute_game_quality_score(
+        SimpleNamespace(state=gs, step_count=1)
+    )
+
+    assert quality["decision_outcome_counts"] == {"retry_success": 1}
+    assert quality["attempt_count"] == 2
+    assert quality["retry_count"] == 1
+    assert quality["reasoning_confirmation_rate"] == 0.5
+
+
 def test_reflection_metrics_count_only_latest_canonical_decision_per_player() -> None:
     from scripts.run_real_game_reports import reflection_verification_metrics
 
@@ -419,7 +479,8 @@ def test_quality_score_reports_wolf_plan_outcomes_and_null_rates_without_plans()
     assert quality["wolf_team_plan_normalization_success_count"] == 1
     assert quality["wolf_team_plan_schema_terminal_fallback_count"] == 1
     assert quality["wolf_team_plan_strategy_terminal_fallback_count"] == 0
-    assert quality["wolf_team_plan_normalization_success_rate"] == 0.5
+    assert quality["wolf_team_plan_normalization_triggered_count"] == 1
+    assert quality["wolf_team_plan_normalization_success_rate"] == 1.0
 
     empty = run_real_game.compute_game_quality_score(SimpleNamespace(
         state=GameState(game_id="g_quality_no_wolf_plans"),

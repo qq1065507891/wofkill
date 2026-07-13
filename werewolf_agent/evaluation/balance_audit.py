@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：消费已保存的JSON格式对局字典，纯函数实现，不调用模型提供方也不变更对局状态
+功能描述：消费已保存的 JSON 对局和强类型运行时审计，汇总平衡与验收指标。
 作者：Mike
 创建日期：2025-01-15
 修改日期：2026-07-13
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,6 +22,17 @@ from werewolf_agent.evaluation.balance_public_claims import (
     unsupported_public_fact_claim_count as _unsupported_public_fact_claim_count,
 )
 from werewolf_agent.runtime.exposure_audit import summarize_persona_prompt_confirmation
+from werewolf_agent.model_gateway.execution_records import (
+    AttemptExecutionRecord,
+    ReasoningLevel,
+    ReasoningStatus,
+    RouteKind,
+)
+from werewolf_agent.runtime.decision_outcomes import (
+    DecisionOutcome,
+    translate_decision_outcome,
+    translate_serialized_decision_outcome,
+)
 
 _FAILURE_TRACE_FIELDS = ("fallback_reason", "parse_error", "structured_failure_reason")
 _POWER_ROLES = {"seer", "witch", "hunter", "idiot"}
@@ -71,7 +83,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     fallback_action_rate = fallback_count / len(action_traces) if action_traces else 0.0
     wolf_team_plan_fallback_rate = (
         wolf_plan_fallback_count / wolf_plan_count
-        if wolf_plan_count else 0.0
+        if wolf_plan_count else None
     )
     schema_failure_rate = schema_failures / len(action_traces) if action_traces else 0.0
     seer_day1_exile_rate = _seer_day1_exile_rate(games)
@@ -100,6 +112,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         for event in game.get("events", [])
         if isinstance(event, dict)
     ])
+    acceptance_metrics = compute_acceptance_audit_metrics(games)
     mean_vote_concentration = (
         sum(vote_concentrations) / len(vote_concentrations)
         if vote_concentrations else 0.0
@@ -109,7 +122,10 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         warnings.append("wolf_win_rate_high")
     if schema_failure_rate > 0.05:
         warnings.append("schema_failure_high")
-    if wolf_team_plan_fallback_rate > 0.5:
+    if (
+        wolf_team_plan_fallback_rate is not None
+        and wolf_team_plan_fallback_rate > 0.5
+    ):
         warnings.append("wolf_team_plan_fallback_high")
     if game_count >= 3 and seer_day1_exile_rate > 0.35:
         warnings.append("seer_day1_exile_high")
@@ -161,8 +177,281 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         "unsupported_public_fact_claim_count": unsupported_public_fact_claim_count,
         "weak_wolf_plan_kill_count": weak_wolf_plan_kill_count,
         "persona_prompt_confirmation": persona_prompt_confirmation,
+        "persona_injection_confirmation_metrics_supported": (
+            persona_prompt_confirmation["supported"]
+        ),
+        "persona_injection_confirmation_rate": (
+            persona_prompt_confirmation["confirmation_rate"]
+        ),
+        **acceptance_metrics,
         "warnings": warnings,
     }
+
+
+def compute_decision_execution_metrics(
+    games: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """通过唯一 translator 汇总请求级 taxonomy，不解析错误自由文本。"""
+    root_causes: Counter[str] = Counter()
+    attempt_outcomes: Counter[str] = Counter()
+    decision_outcomes: Counter[str] = Counter()
+    attempt_count = 0
+    retry_count = 0
+    decision_count = 0
+    invalid_sequence_count = 0
+    consistency_errors = 0
+    requested_count = 0
+    confirmed_count = 0
+    fallback_disabled_count = 0
+    fallback_request_count = 0
+    fallback_keep_count = 0
+    critical_request_count = 0
+    critical_request_covered_count = 0
+
+    for record in _iter_action_trace_records(games):
+        trace = record["trace"]
+        raw_attempts = trace.get("execution_attempts")
+        if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
+            continue
+        try:
+            if all(isinstance(item, AttemptExecutionRecord) for item in raw_attempts):
+                translated = translate_decision_outcome(tuple(raw_attempts))
+            elif all(isinstance(item, dict) for item in raw_attempts):
+                translated = translate_serialized_decision_outcome(raw_attempts)
+            else:
+                raise TypeError("execution attempts must share one schema")
+        except (KeyError, TypeError, ValueError):
+            invalid_sequence_count += 1
+            continue
+
+        decision_count += 1
+        critical_request_count += 1
+        first_attempt = translated.attempts[0]
+        if first_attempt.requested_reasoning_level is not ReasoningLevel.NONE:
+            critical_request_covered_count += 1
+        decision_outcomes[translated.outcome.value] += 1
+        attempt_count += len(translated.attempts)
+        retry_count += translated.retry_count
+        for attempt in translated.attempts:
+            root_causes[attempt.root_cause.value] += 1
+            attempt_outcomes[attempt.attempt_outcome.value] += 1
+            if attempt.requested_reasoning_level is not ReasoningLevel.NONE:
+                requested_count += 1
+                if attempt.normalized_reasoning_status is ReasoningStatus.CONFIRMED:
+                    confirmed_count += 1
+                if (
+                    attempt.normalized_reasoning_status
+                    is ReasoningStatus.FALLBACK_DISABLED
+                ):
+                    fallback_disabled_count += 1
+
+        expected_attempt_count = len(translated.attempts)
+        if trace.get("retry_count") is not None:
+            consistency_errors += int(trace["retry_count"] != expected_attempt_count)
+        expected_success_retries = (
+            None
+            if translated.outcome is DecisionOutcome.TERMINAL_FALLBACK
+            else translated.retry_count
+        )
+        if "total_retry_count_until_success" in trace:
+            consistency_errors += int(
+                trace["total_retry_count_until_success"] != expected_success_retries
+            )
+
+        has_provider_fallback = any(
+            attempt.route_kind is RouteKind.PROVIDER_FALLBACK
+            for attempt in translated.attempts
+        )
+        if has_provider_fallback and translated.outcome is not DecisionOutcome.TERMINAL_FALLBACK:
+            fallback_request_count += 1
+            final = translated.final_attempt
+            if (
+                final.requested_reasoning_level is not ReasoningLevel.NONE
+                and final.normalized_reasoning_status
+                not in {ReasoningStatus.UNSUPPORTED, ReasoningStatus.FALLBACK_DISABLED}
+            ):
+                fallback_keep_count += 1
+
+    unconfirmed_count = requested_count - confirmed_count - fallback_disabled_count
+    return {
+        "decision_execution_metrics_supported": decision_count > 0,
+        "decision_count": decision_count,
+        "attempt_count": attempt_count,
+        "retry_count": retry_count,
+        "root_cause_counts": dict(sorted(root_causes.items())),
+        "attempt_outcome_counts": dict(sorted(attempt_outcomes.items())),
+        "decision_outcome_counts": dict(sorted(decision_outcomes.items())),
+        "decision_execution_invalid_sequence_count": invalid_sequence_count,
+        "attempt_retry_consistency_error_count": consistency_errors,
+        "reasoning_requested_count": requested_count,
+        "reasoning_confirmed_count": confirmed_count,
+        "reasoning_unconfirmed_count": unconfirmed_count,
+        "reasoning_fallback_disabled_count": fallback_disabled_count,
+        "reasoning_request_rate": (
+            requested_count / attempt_count if attempt_count else None
+        ),
+        "reasoning_confirmation_rate": (
+            confirmed_count / requested_count if requested_count else None
+        ),
+        "reasoning_fallback_keep_metrics_supported": fallback_request_count > 0,
+        "reasoning_fallback_request_count": fallback_request_count,
+        "reasoning_fallback_keep_count": fallback_keep_count,
+        "reasoning_fallback_keep_rate": (
+            fallback_keep_count / fallback_request_count
+            if fallback_request_count else None
+        ),
+        "critical_task_reasoning_request_coverage_supported": (
+            critical_request_count > 0
+        ),
+        "critical_task_reasoning_request_count": critical_request_count,
+        "critical_task_reasoning_requested_count": critical_request_covered_count,
+        "critical_task_reasoning_request_coverage": (
+            critical_request_covered_count / critical_request_count
+            if critical_request_count else None
+        ),
+    }
+
+
+def compute_acceptance_audit_metrics(
+    games: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """组合执行 taxonomy 与跨责任域验收指标，供单局和批量报告复用。"""
+    return {
+        **compute_decision_execution_metrics(games),
+        **_compute_acceptance_metrics(games),
+    }
+
+
+def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
+    """汇总不依赖模型调用的最终验收指标。"""
+    semantic_rows: list[dict[str, Any]] = []
+    worlds: list[dict[str, Any]] = []
+    power_decisions: list[dict[str, Any]] = []
+    post_win_calls = 0
+    rejected_facts = 0
+    rejected_lessons = 0
+
+    for game in games:
+        events = game.get("events", [])
+        victory_seen = False
+        latest_reflections: dict[str, tuple[int, dict[str, Any]]] = {}
+        for event_index, event in enumerate(events):
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            payload = event.get("payload") or {}
+            if event_type == "victory":
+                victory_seen = True
+                continue
+            if victory_seen and event_type in {
+                "action_trace_audit",
+                "model_execution_audit",
+                "wolf_team_plan",
+            }:
+                task = str(payload.get("task_type") or payload.get("phase") or "")
+                if task not in {"reflection", "post_game_reflection"}:
+                    post_win_calls += 1
+            if event_type == "semantic_repair_audit" and payload.get("repairable") is True:
+                semantic_rows.append(payload)
+            if event_type == "reflection_complete":
+                for entry in payload.get("entries", []):
+                    if not isinstance(entry, dict):
+                        continue
+                    player_id = entry.get("player_id")
+                    verification = entry.get("verification")
+                    if isinstance(player_id, str) and isinstance(verification, dict):
+                        latest_reflections[player_id] = (event_index, verification)
+            if event_type != "action_trace_audit":
+                continue
+            trace = payload.get("action_trace")
+            if not isinstance(trace, dict):
+                continue
+            audit = trace.get("world_model_audit")
+            possible = audit.get("possible_worlds") if isinstance(audit, dict) else None
+            top_worlds = possible.get("top_worlds") if isinstance(possible, dict) else None
+            if isinstance(top_worlds, list):
+                worlds.extend(item for item in top_worlds if isinstance(item, dict))
+            if trace.get("final_action_type") in {"hunter_shot", "use_poison"}:
+                evidence = trace.get("power_role_evidence")
+                power_decisions.append(evidence if isinstance(evidence, dict) else {})
+        for _, verification in latest_reflections.values():
+            rejected_facts += _non_negative_int(verification.get("rejected_fact_count"))
+            rejected_lessons += _non_negative_int(
+                verification.get("rejected_lesson_count")
+            )
+
+    semantic_count = len(semantic_rows)
+    semantic_success = sum(row.get("success") is True for row in semantic_rows)
+    target_preserved = sum(row.get("target_preserved") is True for row in semantic_rows)
+    no_new_claim = sum(
+        _non_negative_int(row.get("introduced_claim_count")) == 0
+        for row in semantic_rows
+    )
+    world_count = len(worlds)
+    unique_assignments = {
+        json.dumps(world.get("key_assignments") or {}, ensure_ascii=False, sort_keys=True)
+        for world in worlds
+    }
+    evidence_covered = sum(
+        isinstance(world.get("why"), list)
+        and bool(world["why"])
+        and all(isinstance(ref, str) and bool(ref) for ref in world["why"])
+        for world in worlds
+    )
+    complete_power_decisions = sum(
+        _power_role_evidence_complete(evidence) for evidence in power_decisions
+    )
+    power_count = len(power_decisions)
+    return {
+        "terminal_post_win_game_model_call_count": post_win_calls,
+        "semantic_repair_metrics_supported": semantic_count > 0,
+        "semantic_repair_eligible_count": semantic_count,
+        "semantic_repair_success_count": semantic_success,
+        "semantic_repair_success_rate": (
+            semantic_success / semantic_count if semantic_count else None
+        ),
+        "semantic_repair_target_preservation_rate": (
+            target_preserved / semantic_count if semantic_count else None
+        ),
+        "semantic_repair_no_new_claim_rate": (
+            no_new_claim / semantic_count if semantic_count else None
+        ),
+        "possible_world_metrics_supported": world_count > 0,
+        "possible_world_prompt_count": world_count,
+        "possible_world_unique_count": len(unique_assignments),
+        "possible_world_unique_rate": (
+            len(unique_assignments) / world_count if world_count else None
+        ),
+        "possible_world_evidence_covered_count": evidence_covered,
+        "possible_world_evidence_coverage_rate": (
+            evidence_covered / world_count if world_count else None
+        ),
+        "power_role_evidence_metrics_supported": power_count > 0,
+        "power_role_damage_decision_count": power_count,
+        "power_role_evidence_complete_count": complete_power_decisions,
+        "power_role_evidence_completeness_rate": (
+            complete_power_decisions / power_count if power_count else None
+        ),
+        "reflection_rejected_fact_count": rejected_facts,
+        "reflection_rejected_lesson_count": rejected_lessons,
+    }
+
+
+def _non_negative_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _power_role_evidence_complete(evidence: dict[str, Any]) -> bool:
+    comparison = evidence.get("alternative_comparison")
+    risk = evidence.get("friendly_fire_risk")
+    if not evidence.get("target_id") or not isinstance(risk, dict):
+        return False
+    if not isinstance(comparison, dict):
+        return False
+    alternatives = comparison.get("legal_alternatives")
+    if not isinstance(alternatives, list):
+        return False
+    return bool(alternatives) or comparison.get("no_legal_alternative") is True
 
 
 def _iter_action_traces(games: list[dict[str, Any]]):
@@ -279,10 +568,19 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
     strategy_fallback = outcomes.count("strategy_terminal_fallback")
     other_fallback = outcomes.count("other_terminal_fallback")
     terminal_fallback = schema_fallback + strategy_fallback + other_fallback
+    normalization_triggered = sum(
+        bool((decision["plan"] or {}).get("normalization_repairs"))
+        for decision in decisions.values()
+    )
     denominator = total or None
+    normalization_denominator = normalization_triggered or None
     return {
         "wolf_team_plan_outcome_metrics_supported": denominator is not None,
         "wolf_team_plan_total_count": total,
+        "wolf_team_plan_normalization_metrics_supported": (
+            normalization_denominator is not None
+        ),
+        "wolf_team_plan_normalization_triggered_count": normalization_triggered,
         "wolf_team_plan_normalization_success_count": normalization_success,
         "wolf_team_plan_llm_success_count": llm_success,
         "wolf_team_plan_schema_terminal_fallback_count": schema_fallback,
@@ -290,7 +588,8 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
         "wolf_team_plan_other_terminal_fallback_count": other_fallback,
         "wolf_team_plan_terminal_fallback_count": terminal_fallback,
         "wolf_team_plan_normalization_success_rate": (
-            normalization_success / denominator if denominator else None
+            normalization_success / normalization_denominator
+            if normalization_denominator else None
         ),
         "wolf_team_plan_schema_terminal_fallback_rate": (
             schema_fallback / denominator if denominator else None
@@ -303,6 +602,12 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
         ),
         "wolf_team_plan_terminal_fallback_rate": (
             terminal_fallback / denominator if denominator else None
+        ),
+        "wolf_plan_schema_fallback_rate": (
+            schema_fallback / denominator if denominator else None
+        ),
+        "wolf_plan_strategy_fallback_rate": (
+            strategy_fallback / denominator if denominator else None
         ),
     }
 

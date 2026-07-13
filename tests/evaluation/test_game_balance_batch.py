@@ -258,7 +258,8 @@ def test_balance_audit_reports_disjoint_wolf_plan_outcomes_with_exact_denominato
     assert audit["wolf_team_plan_schema_terminal_fallback_count"] == 1
     assert audit["wolf_team_plan_strategy_terminal_fallback_count"] == 0
     assert audit["wolf_team_plan_other_terminal_fallback_count"] == 1
-    assert audit["wolf_team_plan_normalization_success_rate"] == 1 / 3
+    assert audit["wolf_team_plan_normalization_triggered_count"] == 1
+    assert audit["wolf_team_plan_normalization_success_rate"] == 1.0
     assert audit["wolf_team_plan_schema_terminal_fallback_rate"] == 1 / 3
     assert audit["wolf_team_plan_strategy_terminal_fallback_rate"] == 0
     assert audit["wolf_team_plan_other_terminal_fallback_rate"] == 1 / 3
