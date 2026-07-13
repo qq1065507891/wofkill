@@ -279,9 +279,17 @@ _PLAYER_ID_TOKEN_RE = re.compile(
 )
 _EVENT_REF_RE = re.compile(r"\b[\w-]+:\d+\b")
 _CHINESE_SEAT_RE = re.compile(r"(?<!\d)\d+\s*号(?:玩家)?")
-_CONCRETE_ENTITY_TOKENS = (
-    "玩家", "狼人", "预言家", "女巫", "猎人", "好人", "村民", "平民",
-    "白痴", "混血儿", "神职", "阵营", "某人", "某位玩家", "某玩家",
+_CONCRETE_PLAYER_ENTITY_TOKENS = (
+    "玩家", "某人", "某位玩家", "某玩家",
+)
+_ROLE_OR_FACTION_PATTERN = r"(?:狼人|预言家|女巫|猎人|好人|村民|平民|白痴|混血儿|神职|阵营)"
+_ROLE_FACT_ASSERTION_PATTERNS = (
+    re.compile(_ROLE_OR_FACTION_PATTERN + r".{0,6}(?:是|身份为|属于)"),
+    re.compile(_ROLE_OR_FACTION_PATTERN + r".{0,8}(?:获胜了|失败了|死亡了|出局了|被放逐)"),
+    re.compile(
+        r"(?:^|[。！？；，])" + _ROLE_OR_FACTION_PATTERN
+        + r".{0,6}(?:获胜|失败|死亡|出局)(?:[，。！？；]|$)"
+    ),
 )
 _CONCRETE_ACTION_FACT_PATTERNS = (
     re.compile(r"(?:投|投给|票投)\s*(?:他|她|某人|某玩家|\d+\s*号)"),
@@ -290,13 +298,13 @@ _CONCRETE_ACTION_FACT_PATTERNS = (
     re.compile(r"(?:投(?:给)?|救(?:下)?|毒(?:死)?|查(?:验)?|验|刀)[^。！？]{0,4}[了过]"),
     re.compile(r"(?:某人|某玩家|他|她|\d+\s*号(?:玩家)?).{0,4}(?:死亡|出局|被放逐|获胜|失败)"),
 )
-_PERSONAL_NARRATIVE_TOKENS = (
-    "我", "本人", "我们", "本局", "这局", "已经", "曾经",
-)
+_FIRST_PERSON_RE = re.compile(r"(?<!自)(?:我们|本人|我)")
+_PERSONAL_NARRATIVE_TOKENS = ("本局", "这局", "已经", "曾经")
 _NORMATIVE_MARKERS = (
-    "前", "时", "应", "需要", "避免", "建议", "先", "再", "不要",
-    "保持", "优先",
+    "应该", "应当", "需要", "建议", "避免", "优先", "保持", "不要",
+    "不可", "可以", "比较", "复核", "区分", "降低", "核验",
 )
+_NORMATIVE_STRUCTURE_PATTERNS = (re.compile(r"先.+再"),)
 
 
 def _safe_fact_independent_lesson(lesson: ReflectionLesson) -> bool:
@@ -305,11 +313,17 @@ def _safe_fact_independent_lesson(lesson: ReflectionLesson) -> bool:
         _PLAYER_ID_TOKEN_RE.search(text)
         or _EVENT_REF_RE.search(text)
         or _CHINESE_SEAT_RE.search(text)
-        or any(token in text for token in _CONCRETE_ENTITY_TOKENS)
+        or any(token in text for token in _CONCRETE_PLAYER_ENTITY_TOKENS)
+        or any(pattern.search(text) for pattern in _ROLE_FACT_ASSERTION_PATTERNS)
         or any(pattern.search(text) for pattern in _CONCRETE_ACTION_FACT_PATTERNS)
+        or _FIRST_PERSON_RE.search(text)
         or any(token in text for token in _PERSONAL_NARRATIVE_TOKENS)
     )
-    return not unsafe and any(marker in text for marker in _NORMATIVE_MARKERS)
+    normative = (
+        any(marker in text for marker in _NORMATIVE_MARKERS)
+        or any(pattern.search(text) for pattern in _NORMATIVE_STRUCTURE_PATTERNS)
+    )
+    return not unsafe and normative
 
 
 def verify_reflection_draft(

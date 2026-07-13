@@ -275,6 +275,41 @@ def test_fact_independent_contract_rejects_personal_narrative_or_non_normative_l
 
 
 @pytest.mark.parametrize(
+    "abstraction",
+    [
+        "面对预言家对跳时先比较公开查验链。",
+        "保持自我修正并避免单线推断。",
+        "发言时优先区分阵营推测与公开事实。",
+    ],
+)
+def test_fact_independent_contract_allows_generic_role_terms_and_self_correction(
+    abstraction: str,
+) -> None:
+    lesson = ReflectionLesson(
+        lesson_id="generic-role", abstraction=abstraction,
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[lesson]), _state())
+
+    assert result.verified_lessons == [lesson]
+
+
+@pytest.mark.parametrize("abstraction", ["当前信息不足。", "时间线很乱。"])
+def test_fact_independent_contract_rejects_single_character_marker_false_positives(
+    abstraction: str,
+) -> None:
+    lesson = ReflectionLesson(
+        lesson_id="not-normative", abstraction=abstraction,
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[lesson]), _state())
+
+    assert result.verified_lessons == []
+
+
+@pytest.mark.parametrize(
     ("model", "payload"),
     [
         (ReflectionClaim, {"claim_id": "c", "event_ref": "g1:0", "claim_type": "vote", "subject_id": 1}),
