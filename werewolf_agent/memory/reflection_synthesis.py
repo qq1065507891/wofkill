@@ -281,25 +281,35 @@ _EVENT_REF_RE = re.compile(r"\b[\w-]+:\d+\b")
 _CHINESE_SEAT_RE = re.compile(r"(?<!\d)\d+\s*号(?:玩家)?")
 _CONCRETE_ENTITY_TOKENS = (
     "玩家", "狼人", "预言家", "女巫", "猎人", "好人", "村民", "平民",
-    "白痴", "混血儿", "神职", "阵营",
+    "白痴", "混血儿", "神职", "阵营", "某人", "某位玩家", "某玩家",
 )
 _CONCRETE_ACTION_FACT_PATTERNS = (
     re.compile(r"(?:投|投给|票投)\s*(?:他|她|某人|某玩家|\d+\s*号)"),
+    re.compile(r"(?:救|毒|查验?|刀)\s*(?:他|她)"),
     re.compile(r"(?:查验|验人)(?:结果|显示|证明|发现|查出|验出|为|是)"),
-    re.compile(r"(?:毒|救|刀|投|查验|验)[了过](?:他|她|某人|某玩家)?"),
+    re.compile(r"(?:投(?:给)?|救(?:下)?|毒(?:死)?|查(?:验)?|验|刀)[^。！？]{0,4}[了过]"),
     re.compile(r"(?:某人|某玩家|他|她|\d+\s*号(?:玩家)?).{0,4}(?:死亡|出局|被放逐|获胜|失败)"),
+)
+_PERSONAL_NARRATIVE_TOKENS = (
+    "我", "本人", "我们", "本局", "这局", "已经", "曾经",
+)
+_NORMATIVE_MARKERS = (
+    "前", "时", "应", "需要", "避免", "建议", "先", "再", "不要",
+    "保持", "优先",
 )
 
 
 def _safe_fact_independent_lesson(lesson: ReflectionLesson) -> bool:
     text = lesson.abstraction
-    return not (
+    unsafe = (
         _PLAYER_ID_TOKEN_RE.search(text)
         or _EVENT_REF_RE.search(text)
         or _CHINESE_SEAT_RE.search(text)
         or any(token in text for token in _CONCRETE_ENTITY_TOKENS)
         or any(pattern.search(text) for pattern in _CONCRETE_ACTION_FACT_PATTERNS)
+        or any(token in text for token in _PERSONAL_NARRATIVE_TOKENS)
     )
+    return not unsafe and any(marker in text for marker in _NORMATIVE_MARKERS)
 
 
 def verify_reflection_draft(

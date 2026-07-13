@@ -225,6 +225,56 @@ def test_fact_independent_lesson_rejects_specific_entities_roles_actions_and_ref
 
 
 @pytest.mark.parametrize(
+    "abstraction",
+    [
+        "投票前先复核公开证据链。",
+        "查验前比较多个候选方案。",
+        "证据不足时应降低结论强度。",
+        "需要在证据冲突时比较替代解释。",
+        "保持结论可修正并避免单线推断。",
+    ],
+)
+def test_fact_independent_contract_accepts_depersonalized_normative_language(
+    abstraction: str,
+) -> None:
+    lesson = ReflectionLesson(
+        lesson_id="normative", abstraction=abstraction,
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[lesson]), _state())
+
+    assert result.verified_lessons == [lesson]
+
+
+@pytest.mark.parametrize(
+    "abstraction",
+    [
+        "我本局投给了3号。",
+        "本人曾经救下了某位玩家。",
+        "我们这局毒死了狼人。",
+        "已经查过他。",
+        "刀过某人后获胜。",
+        "我应先复核证据。",
+        "某人需要先比较证据。",
+        "投给他前先核验证据。",
+        "天气很好。",
+    ],
+)
+def test_fact_independent_contract_rejects_personal_narrative_or_non_normative_language(
+    abstraction: str,
+) -> None:
+    lesson = ReflectionLesson(
+        lesson_id="narrative", abstraction=abstraction,
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[lesson]), _state())
+
+    assert result.verified_lessons == []
+
+
+@pytest.mark.parametrize(
     ("model", "payload"),
     [
         (ReflectionClaim, {"claim_id": "c", "event_ref": "g1:0", "claim_type": "vote", "subject_id": 1}),
