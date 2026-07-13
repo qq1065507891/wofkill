@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import math
+import json
 
 import pytest
 
@@ -73,6 +74,28 @@ def test_worlds_respect_role_counts() -> None:
         assert counts == {"seer": 1, "villager": 2, "werewolf": 1}
         assert world.roles["p01"] == "seer"
     assert round(sum(world.probability for world in worlds.worlds), 6) == 1.0
+
+
+def test_candidate_cap_is_independent_of_public_claim_evidence() -> None:
+    """候选枚举顺序不能被公开声明改变，否则小上限会把证据变成身份硬约束。"""
+    engine = PossibleWorldsEngine()
+    common = {
+        "viewer_id": "p01",
+        "viewer_role": "villager",
+        "player_ids": ["p01", "p02", "p03"],
+        "role_counts": {"villager": 2, "werewolf": 1},
+        "top_k": 1,
+        "max_candidates": 1,
+    }
+
+    without_claim = engine.generate(**common)
+    with_claim = engine.generate(
+        **common,
+        public_evidence_ids={"claim:g:1"},
+        assignment_evidence={"p02": {"role:werewolf": ("claim:g:1",)}},
+    )
+
+    assert dict(with_claim.worlds[0].roles) == dict(without_claim.worlds[0].roles)
 
 
 def test_worlds_rank_belief_aligned_assignments_higher() -> None:
@@ -194,7 +217,45 @@ def test_zero_total_is_uniform_and_marginals_are_recomputed_after_dedup() -> Non
     assert result.marginal_role_probs["p02"] == {"villager": 0.5, "werewolf": 0.5}
 
 
+def test_finite_overflowing_weights_are_stably_normalized() -> None:
+    result = PossibleWorldSet(
+        viewer_id="p01",
+        generated_at_event_index=1,
+        worlds=[
+            PossibleWorld("a", 1e308, {"p01": "seer", "p02": "werewolf"}),
+            PossibleWorld("b", 1e308, {"p01": "seer", "p02": "villager"}),
+        ],
+        marginal_role_probs={},
+    )
+
+    assert [world.probability for world in result.worlds] == [0.5, 0.5]
+    assert math.fsum(world.probability for world in result.worlds) == 1.0
+    assert result.marginal_role_probs["p02"] == {"villager": 0.5, "werewolf": 0.5}
+
+
 def test_possible_world_values_are_deeply_immutable() -> None:
+    role_details = {"p01": {"role": "seer", "evidence_ids": ["claim:g:1"]}}
+    score_details = {"belief": {"weights": [0.7], "sources": {"claim:g:1"}}}
+    evidence_details = [{"id": "claim:g:1", "tags": ["role"]}]
+    standalone = PossibleWorld(
+        "nested",
+        1.0,
+        role_details,
+        score_breakdown=score_details,
+        supporting_evidence=evidence_details,
+    )
+    role_details["p01"]["evidence_ids"].append("claim:g:2")
+    score_details["belief"]["weights"].append(0.3)
+    evidence_details[0]["tags"].append("faction")
+
+    assert standalone.roles["p01"]["evidence_ids"] == ("claim:g:1",)
+    assert standalone.score_breakdown["belief"]["weights"] == (0.7,)
+    assert standalone.supporting_evidence[0]["tags"] == ("role",)
+    with pytest.raises(AttributeError):
+        standalone.roles["p01"]["evidence_ids"].append("claim:g:3")
+    with pytest.raises(TypeError):
+        standalone.score_breakdown["belief"]["sources"] |= {"claim:g:2"}
+
     result = PossibleWorldSet(
         viewer_id="p01",
         generated_at_event_index=1,
@@ -217,6 +278,8 @@ def test_possible_world_values_are_deeply_immutable() -> None:
         result.public_evidence_ids.add("claim:g:2")
     with pytest.raises(TypeError):
         result.marginal_role_probs["p01"]["seer"] = 0.0
+
+    json.dumps(result.to_prompt_dict())
 
 
 def test_no_public_evidence_exports_uniform_faction_hypothesis_only() -> None:

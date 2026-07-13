@@ -3409,9 +3409,10 @@ def test_vote_death_and_general_speech_do_not_support_role_assignment_worlds() -
 
 def test_explicit_public_role_claim_can_support_matching_assignment() -> None:
     """只有明确公开身份声明可以为匹配的具体身份分配提供 why。"""
-    from werewolf_agent.runtime.graph import _new_engine
+    from werewolf_agent.cognition.worlds import PossibleWorldsEngine
+    from werewolf_agent.runtime.context import _public_world_evidence
 
-    roles = ["villager", "seer", "hunter", "idiot", "hybrid", "werewolf", "werewolf", "werewolf", "witch", "villager", "villager", "villager"]
+    roles = ["villager", "seer", "werewolf", "villager"]
     players = {f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=True) for i, role in enumerate(roles, 1)}
     gs = GameState(
         game_id="explicit-role-claim",
@@ -3424,13 +3425,21 @@ def test_explicit_public_role_claim_can_support_matching_assignment() -> None:
         })],
     )
 
-    ctx = build_agent_context(
-        _new_engine(), gs, "p01", TaskType.SPEECH,
-        legal_actions=[ActionType.SPEECH],
+    assignment_evidence, public_evidence_ids = _public_world_evidence(gs)
+    worlds = PossibleWorldsEngine().generate(
+        viewer_id="p01",
+        viewer_role="villager",
+        player_ids=list(players),
+        role_counts={"villager": 2, "seer": 1, "werewolf": 1},
+        top_k=6,
+        max_candidates=100,
+        assignment_evidence=assignment_evidence,
+        public_evidence_ids=public_evidence_ids,
     )
+    prompt = worlds.to_prompt_dict()
 
-    assert ctx.possible_worlds["top_worlds"]
-    assert ctx.possible_worlds["top_worlds"][0]["why"] == [
+    assert prompt["top_worlds"]
+    assert prompt["top_worlds"][0]["why"] == [
         "claim:explicit-role-claim:0"
     ]
 

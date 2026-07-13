@@ -29,10 +29,10 @@ class PossibleWorld:
 
     def __post_init__(self) -> None:
         """在值对象边界做防御性转换，避免世界 ID 生成后被外部篡改。"""
-        object.__setattr__(self, "roles", MappingProxyType(dict(self.roles)))
-        object.__setattr__(self, "score_breakdown", MappingProxyType(dict(self.score_breakdown)))
-        object.__setattr__(self, "supporting_evidence", tuple(self.supporting_evidence))
-        object.__setattr__(self, "contradictions", tuple(self.contradictions))
+        object.__setattr__(self, "roles", _deep_freeze(self.roles))
+        object.__setattr__(self, "score_breakdown", _deep_freeze(self.score_breakdown))
+        object.__setattr__(self, "supporting_evidence", _deep_freeze(self.supporting_evidence))
+        object.__setattr__(self, "contradictions", _deep_freeze(self.contradictions))
 
 
 @dataclass(frozen=True)
@@ -45,18 +45,23 @@ class PossibleWorldSet:
 
     def __post_init__(self) -> None:
         """按规范化身份分配合并重复世界并重新归一化概率。"""
+        raw_worlds = tuple(self.worlds)
+        probabilities = [float(world.probability) for world in raw_worlds]
+        if any(not math.isfinite(value) or value < 0.0 for value in probabilities):
+            raise ValueError("world probability must be finite and non-negative")
+        max_probability = max(probabilities, default=0.0)
         merged: dict[bytes, PossibleWorld] = {}
-        for world in self.worlds:
-            probability = float(world.probability)
-            if not math.isfinite(probability) or probability < 0.0:
-                raise ValueError("world probability must be finite and non-negative")
+        for world, probability in zip(raw_worlds, probabilities, strict=True):
+            scaled_probability = (
+                probability / max_probability if max_probability > 0.0 else 0.0
+            )
             roles = _normalize_assignment(world.roles)
             canonical = _canonical_assignment(roles)
             previous = merged.get(canonical)
             if previous is None:
                 merged[canonical] = PossibleWorld(
                     world_id="",
-                    probability=probability,
+                    probability=scaled_probability,
                     roles=roles,
                     score_breakdown=world.score_breakdown,
                     supporting_evidence=list(dict.fromkeys(world.supporting_evidence)),
@@ -65,7 +70,7 @@ class PossibleWorldSet:
             else:
                 merged[canonical] = PossibleWorld(
                     world_id="",
-                    probability=previous.probability + probability,
+                    probability=previous.probability + scaled_probability,
                     roles=previous.roles,
                     score_breakdown=previous.score_breakdown,
                     supporting_evidence=list(dict.fromkeys(
@@ -73,7 +78,7 @@ class PossibleWorldSet:
                     )),
                     contradictions=previous.contradictions,
                 )
-        total = sum(world.probability for world in merged.values())
+        total = math.fsum(world.probability for world in merged.values())
         uniform_probability = 1.0 / len(merged) if merged and total == 0.0 else 0.0
         base_ids = {canonical: _world_id(canonical) for canonical in merged}
         id_counts: dict[str, int] = {}
@@ -118,12 +123,12 @@ class PossibleWorldSet:
                     "label": world.world_id,
                     "probability": round(world.probability, 3),
                     "key_assignments": {
-                        pid: role
+                        pid: _deep_thaw(role)
                         for pid, role in sorted(world.roles.items())[:max_assignments]
                         if pid != self.viewer_id
                     },
-                    "why": list(world.supporting_evidence[:3]),
-                    "watch_for": list(world.contradictions[:3]),
+                    "why": _deep_thaw(world.supporting_evidence[:3]),
+                    "watch_for": _deep_thaw(world.contradictions[:3]),
                 }
                 for world in promptable[:3]
             ],
@@ -167,7 +172,6 @@ class PossibleWorldsEngine:
             role_counts=role_counts,
             fixed_roles=fixed_roles,
             max_candidates=max_candidates,
-            assignment_evidence=assignment_evidence or {},
         )
         scored = [
             self._score_roles(
@@ -207,7 +211,6 @@ class PossibleWorldsEngine:
         role_counts: dict[str, int],
         fixed_roles: dict[str, str],
         max_candidates: int,
-        assignment_evidence: Mapping[str, Mapping[str, tuple[str, ...]]],
     ) -> list[dict[str, str]]:
         remaining_counts = dict(role_counts)
         for role in fixed_roles.values():
@@ -228,17 +231,7 @@ class PossibleWorldsEngine:
                     candidates.append(roles)
                 return
             player_id = remaining_players[index]
-            concepts = assignment_evidence.get(player_id, {})
-            preferred_roles = {
-                concept.removeprefix("role:")
-                for concept in concepts
-                if concept.startswith("role:")
-            }
-            role_order = sorted(
-                remaining_counts,
-                key=lambda role: (role not in preferred_roles, role),
-            )
-            for role in role_order:
+            for role in sorted(remaining_counts):
                 if remaining_counts[role] <= 0:
                     continue
                 remaining_counts[role] -= 1
@@ -332,6 +325,28 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _deep_freeze(value: Any) -> Any:
+    """递归复制并冻结 JSON-like 容器，切断调用方持有的可变引用。"""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
+
+
+def _deep_thaw(value: Any) -> Any:
+    """将冻结快照递归还原为可 JSON 序列化的普通容器。"""
+    if isinstance(value, Mapping):
+        return {key: _deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_deep_thaw(item) for item in value]
+    if isinstance(value, frozenset):
+        return [_deep_thaw(item) for item in sorted(value, key=repr)]
+    return value
 
 
 def _normalize_text(value: Any) -> str:
