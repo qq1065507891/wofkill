@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-12
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.context import build_agent_context
@@ -15,7 +15,7 @@
 # 将 GameState 转换为 PlayerAgent 可用的 AgentContext。
 # 作者: Mike
 # 创建日期: 2025-01-15
-# 修改日期: 2026-07-12
+# 修改日期: 2026-07-13
 # 使用示例: 内部模块，无对外接口
 # 从 agent_adapter.py 拆出，用于降低大型适配器的职责复杂度。
 # 本模块负责：
@@ -100,6 +100,29 @@ from werewolf_agent.runtime.context_strategy_directives import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _public_world_evidence(gs: GameState) -> tuple[dict[str, list[str]], set[str]]:
+    """为可能世界收集可追溯的公开事件/声明 ID。"""
+    from werewolf_agent.cognition.visibility import VisibilityPolicy
+    from werewolf_agent.cognition.world_state import extract_facts
+
+    policy = VisibilityPolicy()
+    by_player: dict[str, list[str]] = {}
+    all_ids: set[str] = set()
+    for event_index, event in enumerate(gs.events):
+        for fact in extract_facts(event, gs):
+            if policy.compute_fact_visibility(fact, event_index).visibility != "public":
+                continue
+            prefix = "claim" if "claim" in fact.fact_type else "event"
+            evidence_id = f"{prefix}:{gs.game_id}:{event_index}"
+            all_ids.add(evidence_id)
+            players = {fact.source_player, fact.target_player} - {None, ""}
+            for player_id in players:
+                refs = by_player.setdefault(str(player_id), [])
+                if evidence_id not in refs:
+                    refs.append(evidence_id)
+    return by_player, all_ids
 
 
 def build_agent_context(
@@ -325,15 +348,29 @@ def build_agent_context(
                 for pid, p in gs.players.items()
                 if p.role == "werewolf"
             })
+        public_evidence_by_player, public_evidence_ids = _public_world_evidence(gs)
+        grounded_belief = {
+            key: [
+                {
+                    **item,
+                    "evidence_ids": public_evidence_by_player.get(
+                        str(item.get("player", "")), []
+                    ),
+                }
+                for item in belief_dict.get(key, [])
+            ]
+            for key in ("my_suspects", "my_trusted")
+        }
         worlds = PossibleWorldsEngine().generate(
             viewer_id=player_id,
             viewer_role=player.role,
             player_ids=list(gs.players.keys()),
             role_counts=role_counts,
-            belief_summary=belief_dict,
+            belief_summary=grounded_belief,
             known_roles=known_roles,
             generated_at_event_index=len(gs.events),
             top_k=3,
+            public_evidence_ids=public_evidence_ids,
         )
         if worlds.worlds:
             possible_worlds_set = worlds

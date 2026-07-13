@@ -3,7 +3,7 @@
 功能描述：基于可能世界集合，生成紧凑的启发式预测（夜间刀杀压力、投票压力等），
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -67,7 +67,7 @@ class BoundedSimulator:
         pressure_summaries: dict[str, dict[str, Any]] | None = None,
         top_k: int = 2,
     ) -> SimulationResult:
-        if not possible_worlds or not possible_worlds.worlds or not alive_players:
+        if not possible_worlds or not possible_worlds.promptable_worlds() or not alive_players:
             return SimulationResult(viewer_id=viewer_id, horizon="next_turn")
 
         alive = set(alive_players)
@@ -143,7 +143,7 @@ class BoundedSimulator:
     ) -> FutureEventPrediction | None:
         scores: dict[str, float] = {}
         world_ids: dict[str, list[str]] = {}
-        for world in possible_worlds.worlds:
+        for world in possible_worlds.promptable_worlds():
             for player_id, role in world.roles.items():
                 if player_id == viewer_id or player_id not in alive:
                     continue
@@ -170,7 +170,7 @@ class BoundedSimulator:
     ) -> FutureEventPrediction | None:
         scores: dict[str, float] = {}
         world_ids: dict[str, list[str]] = {}
-        for world in possible_worlds.worlds:
+        for world in possible_worlds.promptable_worlds():
             for player_id, role in world.roles.items():
                 if player_id == viewer_id or player_id not in alive:
                     continue
@@ -190,7 +190,7 @@ class BoundedSimulator:
 
 
 def _top_world_ids(possible_worlds: PossibleWorldSet) -> list[str]:
-    return [world.world_id for world in possible_worlds.worlds[:3]]
+    return [world.world_id for world in possible_worlds.promptable_worlds()[:3]]
 
 
 def _float(value: Any, default: float) -> float:

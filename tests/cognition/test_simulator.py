@@ -17,7 +17,7 @@ def _worlds() -> PossibleWorldSet:
                     "p03": "seer",
                     "p04": "villager",
                 },
-                supporting_evidence=["p02 pressure aligns"],
+                supporting_evidence=["event:g:1"],
             ),
             PossibleWorld(
                 world_id="World B",
@@ -28,9 +28,11 @@ def _worlds() -> PossibleWorldSet:
                     "p03": "seer",
                     "p04": "werewolf",
                 },
+                supporting_evidence=["event:g:1"],
             ),
         ],
         marginal_role_probs={},
+        public_evidence_ids={"event:g:1"},
     )
 
 
@@ -62,7 +64,7 @@ def test_simulator_returns_bounded_prediction_cards() -> None:
     assert prompt_dict["type"] == "simulation"
     assert prompt_dict["warning"] == "Prediction, not fact."
     assert "roles" not in str(prompt_dict)
-    assert "World A" in str(prompt_dict)
+    assert "world_" in str(prompt_dict)
 
 
 def test_simulator_omits_invalid_or_empty_inputs() -> None:
@@ -77,3 +79,23 @@ def test_simulator_omits_invalid_or_empty_inputs() -> None:
 
     assert result.predictions == []
     assert result.to_prompt_dict()["predictions"] == []
+
+
+def test_simulator_rejects_worlds_without_known_public_evidence() -> None:
+    from werewolf_agent.cognition.simulator import BoundedSimulator
+
+    worlds = PossibleWorldSet(
+        viewer_id="p01",
+        generated_at_event_index=1,
+        worlds=[PossibleWorld("unknown", 1.0, {"p01": "villager", "p02": "werewolf"}, supporting_evidence=["event:g:404"])],
+        marginal_role_probs={},
+        public_evidence_ids={"event:g:1"},
+    )
+    result = BoundedSimulator().simulate(
+        viewer_id="p01",
+        possible_worlds=worlds,
+        alive_players=["p01", "p02", "p03", "p04"],
+        day_number=1,
+    )
+
+    assert result.predictions == []

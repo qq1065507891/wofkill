@@ -2,7 +2,7 @@
 """Seer day-speech directive builder.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-13
     使用示例: 内部模块，无对外接口
 """
 
@@ -78,6 +78,8 @@ def build_seer_directive(
     # Build reporting guidance
     reporting_parts: list[str] = [
         "你是预言家。你的白天发言需要传递验人信息，带领好人阵营。核心原则：",
+        "不得把没有公开事件或公开声明 ID 支撑的可能世界身份分配作为验人理由；"
+        "证据不足时只说明信息不足，不得猜测具体神职身份。",
     ]
 
     if unreported:

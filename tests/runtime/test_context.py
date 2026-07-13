@@ -3277,6 +3277,43 @@ def test_build_agent_context_populates_possible_worlds_from_belief_summary() -> 
     assert "warning" in ctx.possible_worlds
 
 
+def test_first_night_context_has_no_evidence_free_role_guesses() -> None:
+    """首夜没有公开证据时，不向提示词暴露具体身份猜测。"""
+    from werewolf_agent.runtime.graph import _new_engine
+
+    roles = [
+        "seer", "witch", "hunter", "idiot", "hybrid",
+        "werewolf", "werewolf", "werewolf",
+        "villager", "villager", "villager", "villager",
+    ]
+    players = {
+        f"p{i:02d}": PlayerState(id=f"p{i:02d}", role=role, alive=True)
+        for i, role in enumerate(roles, start=1)
+    }
+    gs = GameState(
+        game_id="first_night_world_gate",
+        phase="night",
+        day_number=0,
+        night_number=1,
+        players=players,
+        events=[],
+    )
+
+    ctx = build_agent_context(
+        _new_engine(),
+        gs,
+        "p01",
+        TaskType.NIGHT_ACTION,
+        legal_actions=[ActionType.CHECK_ALIGNMENT],
+        legal_targets=["p02", "p03"],
+    )
+
+    assert ctx.legal_targets == ["p02", "p03"]
+    assert ctx.possible_worlds["top_worlds"] == []
+    assert "Evidence-insufficient" in ctx.possible_worlds["summary"]
+    assert "p02" not in str(ctx.possible_worlds)
+
+
 def test_build_agent_context_populates_simulation_predictions() -> None:
     """Phase 5: context carries bounded prompt-safe simulator predictions."""
     from werewolf_agent.runtime.cognition_state import CognitionStateManager
