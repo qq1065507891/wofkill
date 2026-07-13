@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 _PLAYER_ID_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:p\d{1,3}|player[_-]?\d{1,3}|agent[_-]?\d{1,3})(?![A-Za-z0-9_])",
@@ -64,19 +65,40 @@ def _scrub_ids(text: str) -> str:
     return _PLAYER_ID_RE.sub("[玩家ID已省略]", str(text or ""))
 
 
-def anonymize_player_ids(text: str) -> str:
+def anonymize_player_ids(
+    text: str,
+    labels: dict[str, str] | None = None,
+) -> str:
     """按首次出现顺序把上一局玩家 ID 替换为稳定匿名标签。"""
-    labels: dict[str, str] = {}
+    shared_labels = labels if labels is not None else {}
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(0).lower()
-        if key not in labels:
-            ordinal = len(labels)
+        if key not in shared_labels:
+            ordinal = len(shared_labels)
             suffix = chr(ord("A") + ordinal) if ordinal < 26 else str(ordinal + 1)
-            labels[key] = f"历史玩家{suffix}"
-        return labels[key]
+            shared_labels[key] = f"历史玩家{suffix}"
+        return shared_labels[key]
 
     return _PLAYER_ID_RE.sub(replace, str(text or ""))
+
+
+def anonymize_player_ids_recursive(
+    value: Any,
+    labels: dict[str, str] | None = None,
+) -> Any:
+    """对一个完整条目递归匿名化，并在所有字段间共享同一标签映射。"""
+    shared_labels = labels if labels is not None else {}
+    if isinstance(value, str):
+        return anonymize_player_ids(value, shared_labels)
+    if isinstance(value, list):
+        return [anonymize_player_ids_recursive(item, shared_labels) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: anonymize_player_ids_recursive(item, shared_labels)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _cap_source_text(text: str, max_chars: int = _SOURCE_TEXT_CAP) -> str:

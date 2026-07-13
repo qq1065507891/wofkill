@@ -124,6 +124,66 @@ def test_reflection_complete_contains_only_moderator_safe_verification(monkeypat
 
     assert event.type == "reflection_complete"
     assert event.payload["visibility"] == "moderator_only"
-    assert event.payload["entries"][0]["verification"] == safe
+    assert event.payload["entries"][0]["verification"] == {
+        **safe,
+        "decision_id": "reflection:g-live:p01",
+    }
     assert "reflection_text" not in serialized
     assert "provider_response" not in serialized
+
+
+def test_prompt_refs_and_verifier_share_supported_fact_registry() -> None:
+    state = GameState(
+        game_id="g-registry", phase="finished", winning_faction="good",
+        players={
+            "p01": PlayerState(id="p01", role="seer"),
+            "p02": PlayerState(id="p02", role="werewolf", alive=False),
+            "p03": PlayerState(id="p03", role="hunter", alive=False),
+        },
+        events=[
+            GameEvent(type="seer_check", payload={"target_id": "p02", "alignment": "werewolf"}),
+            GameEvent(type="sheriff_vote_record", payload={"votes": [{"voter": "p01", "target": "p03"}]}),
+            GameEvent(type="hunter_shot_public", payload={"hunter_id": "p03", "target_id": "p02"}),
+            GameEvent(type="victory", payload={"winner": "good", "winning_faction": "good", "reason": "all_werewolves_out"}),
+        ],
+    )
+    prompt = build_reflection_prompt(state.players["p01"], "good", None, state)
+    refs = json.loads(prompt.split("VERIFIABLE_EVENT_REFS_JSON=", 1)[1].splitlines()[0])
+
+    assert {ref["claim_type"] for ref in refs} >= {"seer_check", "vote", "skill", "victory"}
+    for index, ref in enumerate(refs):
+        claim = ReflectionClaim(
+            claim_id=f"c{index}", event_ref=ref["event_ref"],
+            claim_type=ref["claim_type"], subject_id=ref["subject_id"],
+            target_id=ref.get("target_id", ""), value=ref.get("value", ""),
+        )
+        assert verify_reflection_draft(ReflectionDraft(claims=[claim]), state).verified_claims == [claim]
+
+
+def test_reflection_complete_rebuilds_strict_allowlist_from_untrusted_adapter_result(monkeypatch) -> None:
+    poisoned = {
+        "status": "verified", "decision_id": "reflection:p01:1",
+        "verified_fact_count": 1,
+        "verified_lessons": [{
+            "lesson_id": "l1", "abstraction": "p01 应先复核 p02 的票型",
+            "provider_response": "SECRET_IN_LESSON",
+        }],
+        "rejected_fact_count": 0, "rejected_lesson_count": 0,
+        "provider_response": "SECRET_PROVIDER", "raw": "SECRET_RAW", "prompt": "SECRET_PROMPT",
+    }
+    monkeypatch.setattr(
+        summary, "_dispatch_agent",
+        lambda *args, **kwargs: {"reflection_verification": poisoned},
+    )
+
+    event = summary.reflection({"game_state": _state(), "engine": None})["game_state"].events[-1]
+    serialized = json.dumps(event.payload, ensure_ascii=False)
+    verification = event.payload["entries"][0]["verification"]
+
+    assert set(verification) == {
+        "status", "decision_id", "verified_fact_count", "verified_lessons",
+        "rejected_fact_count", "rejected_lesson_count",
+    }
+    assert set(verification["verified_lessons"][0]) == {"lesson_id", "abstraction"}
+    assert verification["verified_lessons"][0]["abstraction"] == "历史玩家A 应先复核 历史玩家B 的票型"
+    assert "SECRET" not in serialized

@@ -13,8 +13,8 @@
 
 from __future__ import annotations
 
-import re
 import json
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -61,11 +61,14 @@ _LLM_MISTAKE_HEADER_CATEGORY = {
 class ReflectionClaim(BaseModel):
     """LLM 提出的单条可由终局事件核验的事实声明。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     claim_id: str = Field(min_length=1)
     event_ref: str = Field(min_length=1)
-    claim_type: Literal["role", "vote", "death", "potion"]
+    claim_type: Literal[
+        "role", "faction", "vote", "death", "potion",
+        "seer_check", "skill", "victory",
+    ]
     subject_id: str = Field(min_length=1)
     target_id: str = ""
     value: str = ""
@@ -74,17 +77,29 @@ class ReflectionClaim(BaseModel):
 class ReflectionLesson(BaseModel):
     """只在全部依赖事实通过后才可跨局保存的抽象经验。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     lesson_id: str = Field(min_length=1)
     abstraction: str = Field(min_length=1)
-    claim_dependencies: list[str] = Field(min_length=1)
+    claim_dependencies: list[str] = Field(default_factory=list)
+    lesson_kind: Literal["fact_dependent", "general_strategy"] = "fact_dependent"
+    fact_independent: bool = False
+
+    @model_validator(mode="after")
+    def _require_fact_basis_or_explicit_independence(self) -> "ReflectionLesson":
+        if (
+            not self.claim_dependencies
+            and self.lesson_kind != "general_strategy"
+            and not self.fact_independent
+        ):
+            raise ValueError("dependency-free lessons must declare general_strategy or fact_independent")
+        return self
 
 
 class ReflectionDraft(BaseModel):
     """赛后模型输出的 moderator-only 结构化草稿。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     claims: list[ReflectionClaim] = Field(default_factory=list)
     lessons: list[ReflectionLesson] = Field(default_factory=list)
@@ -100,7 +115,7 @@ class ReflectionDraft(BaseModel):
 class ReflectionVerification(BaseModel):
     """确定性事实门的结果，不包含原始草稿。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     verified_claims: list[ReflectionClaim] = Field(default_factory=list)
     verified_lessons: list[ReflectionLesson] = Field(default_factory=list)
@@ -119,65 +134,163 @@ def parse_reflection_draft(text: str) -> ReflectionDraft | None:
         return None
 
 
-def _event_for_ref(claim: ReflectionClaim, state: GameState):
-    prefix, separator, raw_index = claim.event_ref.rpartition(":")
-    if not separator or prefix != state.game_id or not raw_index.isdigit():
-        return None
-    index = int(raw_index)
-    if index >= len(state.events):
-        return None
-    return state.events[index]
+def _descriptor(
+    *, event_ref: str, event_type: str, claim_type: str,
+    subject_id: str, target_id: str = "", value: str = "",
+) -> dict[str, str]:
+    return {
+        "event_ref": event_ref,
+        "event_type": event_type,
+        "visibility": "moderator_postgame",
+        "claim_type": claim_type,
+        "subject_id": subject_id,
+        "target_id": target_id,
+        "value": value,
+    }
+
+
+def _valid_death(state: GameState, player_id: str, reason: str) -> bool:
+    return any(
+        death.player_id == player_id and death.reason == reason
+        for death in state.deaths
+    )
+
+
+def _player_faction(state: GameState, player_id: str) -> str:
+    player = state.players[player_id]
+    if player.role == "hybrid":
+        return str(state.hybrid_master_faction or "")
+    return str(player.faction or "")
+
+
+def iter_verifiable_claim_descriptors(state: GameState) -> list[dict[str, str]]:
+    """按真实事件 schema 生成唯一的可核验事实注册表。"""
+    refs: list[dict[str, str]] = []
+    witch_ids = sorted(
+        pid for pid, player in state.players.items() if player.role == "witch"
+    )
+    seer_ids = sorted(
+        pid for pid, player in state.players.items() if player.role == "seer"
+    )
+    for index, event in enumerate(state.events):
+        event_ref = f"{state.game_id}:{index}"
+        payload = event.payload or {}
+
+        def add(claim_type: str, subject_id: object, target_id: object = "", value: object = "") -> None:
+            subject = str(subject_id or "")
+            target = str(target_id or "")
+            normalized_value = str(value or "")
+            if subject:
+                refs.append(_descriptor(
+                    event_ref=event_ref, event_type=event.type,
+                    claim_type=claim_type, subject_id=subject,
+                    target_id=target, value=normalized_value,
+                ))
+
+        if event.type == "roles_assigned":
+            for pid, player in sorted(state.players.items()):
+                add("role", pid, value=player.role)
+                faction = _player_faction(state, pid)
+                if faction:
+                    add("faction", pid, value=faction)
+        elif event.type == "role_revealed":
+            pid = str(payload.get("player_id") or "")
+            role = str(payload.get("role") or "")
+            player = state.players.get(pid)
+            if player is not None and player.role == role:
+                add("role", pid, value=role)
+                faction = _player_faction(state, pid)
+                if faction:
+                    add("faction", pid, value=faction)
+        elif event.type == "vote":
+            add("vote", payload.get("voter"), payload.get("target"))
+        elif event.type in {"vote_resolved", "sheriff_vote_record", "sheriff_vote_resolved"}:
+            for vote in payload.get("votes", []):
+                if isinstance(vote, dict):
+                    add("vote", vote.get("voter"), vote.get("target"))
+        elif event.type == "player_died":
+            pid = str(payload.get("player_id") or "")
+            reason = str(payload.get("reason") or "")
+            if _valid_death(state, pid, reason):
+                add("death", pid, value=reason)
+        elif event.type in {"witch_antidote_used", "witch_poison_used"} and len(witch_ids) == 1:
+            add(
+                "potion", witch_ids[0], payload.get("target_id"),
+                "antidote" if event.type == "witch_antidote_used" else "poison",
+            )
+        elif event.type == "seer_check":
+            seer_id = str(payload.get("seer_id") or "")
+            if not seer_id and len(seer_ids) == 1:
+                seer_id = seer_ids[0]
+            player = state.players.get(seer_id)
+            target_id = str(payload.get("target_id") or "")
+            alignment = str(payload.get("alignment") or payload.get("result") or "")
+            if player is not None and player.role == "seer" and target_id and alignment:
+                add(
+                    "seer_check", seer_id, target_id, alignment,
+                )
+        elif event.type == "hunter_shot_public":
+            hunter_id = str(payload.get("hunter_id") or "")
+            hunter = state.players.get(hunter_id)
+            target_id = str(payload.get("target_id") or "")
+            if hunter is not None and hunter.role == "hunter" and target_id:
+                add("skill", hunter_id, target_id, "hunter_shot")
+        elif event.type == "idiot_revealed":
+            idiot_id = str(payload.get("player_id") or "")
+            idiot = state.players.get(idiot_id)
+            if idiot is not None and idiot.role == "idiot":
+                add("skill", idiot_id, value="idiot_reveal")
+        elif event.type == "hybrid_master_chosen":
+            hybrid_id = str(payload.get("hybrid_id") or "")
+            hybrid = state.players.get(hybrid_id)
+            master_id = str(payload.get("master_id") or "")
+            if (
+                hybrid is not None
+                and hybrid.role == "hybrid"
+                and master_id
+                and master_id == state.hybrid_master_id
+            ):
+                add("skill", hybrid_id, master_id, "hybrid_bind")
+        elif event.type == "victory":
+            winner = str(payload.get("winner") or payload.get("winning_faction") or "")
+            reason = str(payload.get("reason") or "")
+            if winner and winner == state.winning_faction:
+                add("victory", winner, value=reason)
+    return refs
 
 
 def _claim_matches(claim: ReflectionClaim, state: GameState) -> bool:
-    event = _event_for_ref(claim, state)
-    if event is None:
-        return False
-    payload = event.payload or {}
-    if claim.claim_type == "role":
-        player = state.players.get(claim.subject_id)
-        return (
-            event.type in {"roles_assigned", "role_revealed"}
-            and (
-                event.type == "roles_assigned"
-                or (
-                    payload.get("player_id") == claim.subject_id
-                    and payload.get("role") == claim.value
-                )
-            )
-            and player is not None
-            and player.role == claim.value
-        )
-    if claim.claim_type == "vote":
-        if event.type == "vote":
-            return payload.get("voter") == claim.subject_id and payload.get("target") == claim.target_id
-        if event.type == "vote_resolved":
-            return any(
-                vote.get("voter") == claim.subject_id and vote.get("target") == claim.target_id
-                for vote in payload.get("votes", []) if isinstance(vote, dict)
-            )
-        return False
-    if claim.claim_type == "death":
-        return (
-            event.type == "player_died"
-            and payload.get("player_id") == claim.subject_id
-            and payload.get("reason") == claim.value
-            and any(
-                death.player_id == claim.subject_id and death.reason == claim.value
-                for death in state.deaths
-            )
-        )
-    expected_type = {
-        "antidote": "witch_antidote_used",
-        "poison": "witch_poison_used",
-    }.get(claim.value)
-    actor = state.players.get(claim.subject_id)
-    return (
-        expected_type is not None
-        and event.type == expected_type
-        and payload.get("target_id") == claim.target_id
-        and actor is not None
-        and actor.role == "witch"
+    expected = {
+        "event_ref": claim.event_ref,
+        "claim_type": claim.claim_type,
+        "subject_id": claim.subject_id,
+        "target_id": claim.target_id,
+        "value": claim.value,
+    }
+    return any(
+        all(descriptor.get(key) == value for key, value in expected.items())
+        for descriptor in iter_verifiable_claim_descriptors(state)
+    )
+
+
+_PLAYER_ID_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:p\d{1,3}|player[_-]?\d{1,3}|agent[_-]?\d{1,3})(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_EVENT_REF_RE = re.compile(r"\b[\w-]+:\d+\b")
+_CONCRETE_FACT_RE = re.compile(
+    r"(?:预言家|女巫|猎人|狼人|村民|平民|白痴|混血儿).{0,8}(?:是|身份|阵营|获胜|死亡|被放逐|被毒|开枪)"
+    r"|(?:好人|狼人)阵营.{0,4}获胜"
+    r"|(?:解药|毒药).{0,8}(?:救了|毒了|使用|目标)"
+)
+
+
+def _safe_fact_independent_lesson(lesson: ReflectionLesson) -> bool:
+    text = lesson.abstraction
+    return not (
+        _PLAYER_ID_TOKEN_RE.search(text)
+        or _EVENT_REF_RE.search(text)
+        or _CONCRETE_FACT_RE.search(text)
     )
 
 
@@ -191,10 +304,13 @@ def verify_reflection_draft(
     ]
     accepted = {claim.claim_id for claim in verified_claims}
     rejected_fact_count = len(draft.claims) - len(accepted)
-    verified_lessons = [
-        lesson for lesson in draft.lessons
-        if all(dependency in accepted for dependency in lesson.claim_dependencies)
-    ]
+    verified_lessons = []
+    for lesson in draft.lessons:
+        if lesson.claim_dependencies:
+            if all(dependency in accepted for dependency in lesson.claim_dependencies):
+                verified_lessons.append(lesson)
+        elif _safe_fact_independent_lesson(lesson):
+            verified_lessons.append(lesson)
     return ReflectionVerification(
         verified_claims=verified_claims,
         verified_lessons=verified_lessons,

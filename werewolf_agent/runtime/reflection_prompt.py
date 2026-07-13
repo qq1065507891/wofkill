@@ -60,8 +60,8 @@ def _build_reflection_prompt_text(
 
 
 STRUCTURED_REFLECTION_PROTOCOL = """只输出 JSON，禁止附加解释。格式：
-{"claims":[{"claim_id":"c1","event_ref":"<game_id>:<绝对事件索引>","claim_type":"role|vote|death|potion","subject_id":"p01","target_id":"p02","value":"seer|exile|poison|antidote"}],"lessons":[{"lesson_id":"l1","abstraction":"不含当前玩家 ID 的可迁移经验","claim_dependencies":["c1"]}]}
-每条事实必须引用一个真实事件；每条 lesson 必须列出支撑它的全部 claim_id。不要猜测未知事实。"""
+{"claims":[{"claim_id":"c1","event_ref":"<game_id>:<绝对事件索引>","claim_type":"role|faction|vote|death|potion|seer_check|skill|victory","subject_id":"p01","target_id":"p02","value":"事件引用中的精确值"}],"lessons":[{"lesson_id":"l1","abstraction":"不含当前玩家 ID 的可迁移经验","claim_dependencies":["c1"],"lesson_kind":"fact_dependent","fact_independent":false}]}
+每条事实必须逐字段引用一个真实事件；依赖事实的 lesson 必须列出全部 claim_id。与具体事实无关的安全策略可使用空 dependencies，但必须显式声明 lesson_kind="general_strategy" 或 fact_independent=true。不要猜测未知事实。"""
 
 
 def build_reflection_prompt(
@@ -85,63 +85,11 @@ def build_reflection_prompt(
 
 def build_verifiable_event_refs(state: GameState) -> list[dict[str, Any]]:
     """生成与核验器同源的赛后绝对事件引用，不包含模型原文。"""
-    refs: list[dict[str, Any]] = []
-    witch_id = next(
-        (pid for pid, candidate in state.players.items() if candidate.role == "witch"),
-        "",
+    from werewolf_agent.memory.reflection_synthesis import (
+        iter_verifiable_claim_descriptors,
     )
-    for index, event in enumerate(state.events):
-        event_ref = f"{state.game_id}:{index}"
-        payload = event.payload or {}
-        common = {
-            "event_ref": event_ref,
-            "event_type": event.type,
-            "visibility": "moderator_postgame",
-        }
-        if event.type == "roles_assigned":
-            refs.extend({
-                **common,
-                "claim_type": "role",
-                "subject_id": pid,
-                "value": candidate.role,
-            } for pid, candidate in sorted(state.players.items()))
-        elif event.type == "role_revealed":
-            refs.append({
-                **common,
-                "claim_type": "role",
-                "subject_id": str(payload.get("player_id") or ""),
-                "value": str(payload.get("role") or ""),
-            })
-        elif event.type == "vote":
-            refs.append({
-                **common,
-                "claim_type": "vote",
-                "subject_id": str(payload.get("voter") or ""),
-                "target_id": str(payload.get("target") or ""),
-            })
-        elif event.type == "vote_resolved":
-            refs.extend({
-                **common,
-                "claim_type": "vote",
-                "subject_id": str(vote.get("voter") or ""),
-                "target_id": str(vote.get("target") or ""),
-            } for vote in payload.get("votes", []) if isinstance(vote, dict))
-        elif event.type == "player_died":
-            refs.append({
-                **common,
-                "claim_type": "death",
-                "subject_id": str(payload.get("player_id") or ""),
-                "value": str(payload.get("reason") or ""),
-            })
-        elif event.type in {"witch_antidote_used", "witch_poison_used"}:
-            refs.append({
-                **common,
-                "claim_type": "potion",
-                "subject_id": witch_id,
-                "target_id": str(payload.get("target_id") or ""),
-                "value": "antidote" if event.type == "witch_antidote_used" else "poison",
-            })
-    return refs
+
+    return iter_verifiable_claim_descriptors(state)
 
 
 GOOD_REFLECTION_TEMPLATE = """你是{role},本局好人阵营{faction_result}。请按以下结构复盘:

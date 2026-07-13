@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_reflection_support import _strip_in_game_directives
@@ -103,6 +104,7 @@ def _agent_reflection(
         verification = verify_reflection_draft(draft, gs)
         return {"reflection_verification": {
             "status": "verified",
+            "decision_id": f"reflection:{gs.game_id}:{player_id}",
             "verified_fact_count": len(verification.verified_claims),
             "verified_lessons": [
                 {

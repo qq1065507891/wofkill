@@ -224,32 +224,27 @@ def _safe_event_payload(event_type: str, payload: dict) -> dict:
     """过滤日志中的反思原始草稿和 provider 响应，仅保留核验摘要。"""
     if event_type != "reflection_complete":
         return payload
+    from werewolf_agent.runtime.reflection_events import safe_reflection_verification
+
     safe_entries: list[dict] = []
     for entry in payload.get("entries", []):
         if not isinstance(entry, dict):
             continue
         verification = entry.get("verification", {})
-        if not isinstance(verification, dict):
-            verification = {}
-        lessons = [
-            {
-                "lesson_id": str(lesson.get("lesson_id") or ""),
-                "abstraction": str(lesson.get("abstraction") or ""),
-            }
-            for lesson in verification.get("verified_lessons", [])
-            if isinstance(lesson, dict)
-        ]
+        player_id = str(entry.get("player_id") or "")
+        decision_id = entry.get("decision_id")
+        if not isinstance(decision_id, str) or not decision_id:
+            decision_id = f"legacy-reflection:{player_id}"
+        safe_verification = safe_reflection_verification(
+            verification,
+            decision_id=decision_id,
+        )
         safe_entries.append({
-            "player_id": str(entry.get("player_id") or ""),
+            "player_id": player_id,
             "role": str(entry.get("role") or ""),
             "alive": bool(entry.get("alive", False)),
-            "verification": {
-                "status": str(verification.get("status") or ""),
-                "verified_fact_count": int(verification.get("verified_fact_count") or 0),
-                "verified_lessons": lessons,
-                "rejected_fact_count": int(verification.get("rejected_fact_count") or 0),
-                "rejected_lesson_count": int(verification.get("rejected_lesson_count") or 0),
-            },
+            "decision_id": safe_verification["decision_id"],
+            "verification": safe_verification,
         })
     return {
         "visibility": "moderator_only",

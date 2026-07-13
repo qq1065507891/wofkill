@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 
 from werewolf_agent.memory.store import MemoryStore
+from werewolf_agent.runtime.reflection_events import canonical_verified_reflections
 
 
 logger = logging.getLogger("werewolf_agent.runtime.game_runner")
@@ -142,20 +143,7 @@ class GameRunnerMemoryMixin:
             )
 
     def _latest_verified_reflections(self) -> dict[str, dict]:
-        for event in reversed(self._state.events):
-            if event.type != "reflection_complete":
-                continue
-            entries = event.payload.get("entries", [])
-            result: dict[str, dict] = {}
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                pid = str(entry.get("player_id", ""))
-                verification = entry.get("verification")
-                if pid and isinstance(verification, dict):
-                    result[pid] = verification
-            return result
-        return {}
+        return canonical_verified_reflections(self._state.events)
 
     def _latest_self_reviews(self) -> dict[str, dict]:
         """兼容旧调用名；只返回已核验的安全摘要，不返回 provider 草稿。"""

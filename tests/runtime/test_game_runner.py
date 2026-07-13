@@ -1063,6 +1063,24 @@ class TestGameRunnerMemoryLifecycle:
 
         assert repo.load_all_reflections() == []
 
+    def test_latest_verified_reflections_uses_latest_canonical_decision_per_player(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+
+        runner = GameRunner(GameRunnerConfig(seed=126))
+        old = {"status": "verified", "decision_id": "d1", "verified_lessons": [{"lesson_id": "old", "abstraction": "旧策略"}]}
+        latest = {"status": "verified", "decision_id": "d2", "verified_lessons": [{"lesson_id": "new", "abstraction": "新策略"}]}
+        runner._state = GameState(
+            game_id=runner.game_id,
+            players={"p01": PlayerState(id="p01", role="seer")},
+            events=[
+                GameEvent(type="reflection_complete", payload={"entries": [{"player_id": "p01", "decision_id": "d1", "verification": old}]}),
+                GameEvent(type="reflection_complete", payload={"entries": [{"player_id": "p01", "decision_id": "d1", "verification": old}]}),
+                GameEvent(type="reflection_complete", payload={"entries": [{"player_id": "p01", "decision_id": "d2", "verification": latest}]}),
+            ],
+        )
+
+        assert runner._latest_verified_reflections() == {"p01": latest}
+
     def test_save_memory_snapshot_does_not_rewrite_legacy_v1_reflections(self) -> None:
         from werewolf_agent.core.models import GameEvent, GameState, PlayerState
         from werewolf_agent.storage.memory_store import InMemoryGameRepository

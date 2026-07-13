@@ -12,11 +12,15 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.memory.reflection_synthesis import (
     ReflectionClaim,
     ReflectionDraft,
     ReflectionLesson,
+    ReflectionVerification,
     verify_reflection_draft,
 )
 
@@ -85,3 +89,100 @@ def test_verify_reflection_rejects_unknown_ref_type_and_partially_false_lesson()
     assert result.rejected_fact_count == 2
     assert result.rejected_lesson_count == 1
     assert [lesson.lesson_id for lesson in result.verified_lessons] == ["valid-lesson"]
+
+
+def test_event_registry_verifies_real_seer_victory_hunter_and_sheriff_vote() -> None:
+    state = GameState(
+        game_id="g-rich", phase="finished", winning_faction="good",
+        players={
+            "p01": PlayerState(id="p01", role="seer"),
+            "p02": PlayerState(id="p02", role="werewolf", alive=False),
+            "p03": PlayerState(id="p03", role="hunter", alive=False),
+            "p04": PlayerState(id="p04", role="hybrid"),
+            "p05": PlayerState(id="p05", role="villager"),
+        },
+        hybrid_master_id="p05", hybrid_master_faction="good",
+        events=[
+            GameEvent(type="roles_assigned", payload={}),
+            GameEvent(type="seer_check", payload={
+                "target_id": "p02", "alignment": "werewolf",
+            }),
+            GameEvent(type="sheriff_vote_record", payload={
+                "votes": [{"voter": "p01", "target": "p03"}],
+            }),
+            GameEvent(type="hunter_shot_public", payload={
+                "hunter_id": "p03", "target_id": "p02",
+            }),
+            GameEvent(type="victory", payload={
+                "winner": "good", "winning_faction": "good", "reason": "all_werewolves_out",
+            }),
+            GameEvent(type="hybrid_master_chosen", payload={
+                "hybrid_id": "p04", "master_id": "p05",
+            }),
+        ],
+    )
+    claims = [
+        ReflectionClaim(claim_id="faction", event_ref="g-rich:0", claim_type="faction", subject_id="p01", value="good"),
+        ReflectionClaim(claim_id="seer", event_ref="g-rich:1", claim_type="seer_check", subject_id="p01", target_id="p02", value="werewolf"),
+        ReflectionClaim(claim_id="sheriff", event_ref="g-rich:2", claim_type="vote", subject_id="p01", target_id="p03"),
+        ReflectionClaim(claim_id="hunter", event_ref="g-rich:3", claim_type="skill", subject_id="p03", target_id="p02", value="hunter_shot"),
+        ReflectionClaim(claim_id="win", event_ref="g-rich:4", claim_type="victory", subject_id="good", value="all_werewolves_out"),
+        ReflectionClaim(claim_id="hybrid", event_ref="g-rich:5", claim_type="skill", subject_id="p04", target_id="p05", value="hybrid_bind"),
+    ]
+
+    result = verify_reflection_draft(ReflectionDraft(claims=claims), state)
+
+    assert result.verified_claims == claims
+    assert result.rejected_fact_count == 0
+
+
+def test_event_registry_rejects_mismatched_supported_fact() -> None:
+    state = GameState(
+        game_id="g-seer",
+        players={
+            "p01": PlayerState(id="p01", role="seer"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        },
+        events=[GameEvent(type="seer_check", payload={
+            "seer_id": "p01", "target_id": "p02", "alignment": "werewolf",
+        })],
+    )
+    wrong = ReflectionClaim(
+        claim_id="wrong", event_ref="g-seer:0", claim_type="seer_check",
+        subject_id="p01", target_id="p02", value="good",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(claims=[wrong]), state)
+
+    assert result.verified_claims == []
+    assert result.rejected_fact_count == 1
+
+
+def test_fact_independent_general_strategy_is_allowed_but_concrete_fact_is_rejected() -> None:
+    safe = ReflectionLesson(
+        lesson_id="general", abstraction="投票前先复核公开证据链。",
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+    unsafe = ReflectionLesson(
+        lesson_id="masked-fact", abstraction="预言家是 p01，狼人阵营获胜。",
+        claim_dependencies=[], fact_independent=True,
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[safe, unsafe]), _state())
+
+    assert result.verified_lessons == [safe]
+    assert result.rejected_lesson_count == 1
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (ReflectionClaim, {"claim_id": "c", "event_ref": "g1:0", "claim_type": "vote", "subject_id": 1}),
+        (ReflectionLesson, {"lesson_id": "l", "abstraction": "先核验", "claim_dependencies": ("c",)}),
+        (ReflectionDraft, {"claims": (), "lessons": []}),
+        (ReflectionVerification, {"rejected_fact_count": "1"}),
+    ],
+)
+def test_reflection_contracts_are_strict_and_forbid_coercion(model, payload) -> None:
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)

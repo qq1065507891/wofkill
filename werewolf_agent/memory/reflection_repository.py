@@ -28,7 +28,7 @@ from werewolf_agent.memory.schemas import (
     ReflectionEntryV2,
     ReflectionQualityStatus,
 )
-from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids
+from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids_recursive
 
 _LOG = logging.getLogger("werewolf_agent.memory.reflection")
 
@@ -89,11 +89,12 @@ class ReflectionMemory:
         self,
         entry: ReflectionEntryV2,
         raise_on_failure: bool = False,
-    ) -> None:
+    ) -> bool:
         if self._repo is None:
-            return
+            return True
         try:
             self._repo.save_reflection(entry.to_dict())
+            return True
         except Exception:
             if raise_on_failure:
                 raise
@@ -101,6 +102,7 @@ class ReflectionMemory:
                 "Failed to persist V2 reflection %s for player %s",
                 entry.entry_id, entry.player_id, exc_info=True,
             )
+            return False
 
     # -- CRUD ---------------------------------------------------------------
 
@@ -156,8 +158,8 @@ class ReflectionMemory:
         *,
         raise_on_failure: bool = False,
     ) -> None:
-        self._v2_entries[entry.entry_id] = entry
-        self._persist_v2(entry, raise_on_failure=raise_on_failure)
+        if self._persist_v2(entry, raise_on_failure=raise_on_failure):
+            self._v2_entries[entry.entry_id] = entry
 
     def get(self, entry_id: str) -> ReflectionEntry | None:
         return self._entries.get(entry_id)
@@ -343,7 +345,7 @@ class ReflectionMemory:
 
     def _cross_game_view(self, entry: ReflectionEntryV2) -> ReflectionEntryV2:
         """返回保留聚合字段的匿名化视图，并使用本次运行专属 opaque ID。"""
-        payload = self._anonymize_value(entry.model_dump(mode="json"))
+        payload = anonymize_player_ids_recursive(entry.model_dump(mode="json"))
         identity = f"{entry.game_id}\0{entry.entry_id}\0{entry.player_id}".encode("utf-8")
         digest = hmac.new(self._view_id_key, identity, hashlib.sha256).hexdigest()[:24]
         payload["entry_id"] = f"view_{digest}"
@@ -351,17 +353,6 @@ class ReflectionMemory:
         payload["source"]["llm_self_review"] = ""
         payload["source"]["auto_review_summary"] = ""
         return ReflectionEntryV2.model_validate(payload)
-
-    @classmethod
-    def _anonymize_value(cls, value: Any) -> Any:
-        """递归匿名化所有可进入 live view 的文本字段。"""
-        if isinstance(value, str):
-            return anonymize_player_ids(value)
-        if isinstance(value, list):
-            return [cls._anonymize_value(item) for item in value]
-        if isinstance(value, dict):
-            return {key: cls._anonymize_value(item) for key, item in value.items()}
-        return value
 
     @staticmethod
     def _v2_has_tag(entry: ReflectionEntryV2, tag: str) -> bool:

@@ -21,6 +21,7 @@ from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.runtime.context import build_agent_context
 from werewolf_agent.runtime.agent_adapter import _agent_reflection
+from werewolf_agent.runtime.reflection_events import safe_reflection_verification
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     _dispatch_agent,
@@ -276,19 +277,17 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
     for i, (pid, player) in enumerate(gs.players.items()):
         if i > 0:
             _sleep_between_agent_calls(state, default_ms=20000)
-        verification: dict[str, Any] = {
-            "status": "not_generated",
-            "verified_fact_count": 0,
-            "verified_lessons": [],
-            "rejected_fact_count": 0,
-            "rejected_lesson_count": 0,
-        }
+        decision_id = f"reflection:{gs.game_id}:{pid}"
+        verification = safe_reflection_verification(
+            {"status": "not_generated"}, decision_id=decision_id,
+        )
         try:
             result = _dispatch_agent(state, _agent_reflection, pid, post_game=True)
             if result:
-                candidate = result.get("reflection_verification", {})
-                if isinstance(candidate, dict):
-                    verification = candidate
+                verification = safe_reflection_verification(
+                    result.get("reflection_verification"),
+                    decision_id=decision_id,
+                )
         except Exception:
             logger.warning(
                 "Failed to generate reflection for %s", _player_display(state, pid),
@@ -299,6 +298,7 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
             "player_id": pid,
             "role": player.role,
             "alive": player.alive,
+            "decision_id": verification["decision_id"],
             "verification": verification,
         }
         reflection_entries.append(entry)

@@ -45,6 +45,29 @@ def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately(
     assert quality["reflection_rejected_lesson_count"] == 1
 
 
+def test_reflection_metrics_count_only_latest_canonical_decision_per_player() -> None:
+    from scripts.run_real_game_reports import reflection_verification_metrics
+
+    def event(decision_id: str, rejected: int) -> GameEvent:
+        return GameEvent(type="reflection_complete", payload={"entries": [{
+            "player_id": "p01", "decision_id": decision_id,
+            "verification": {
+                "status": "verified", "decision_id": decision_id,
+                "verified_fact_count": 0, "verified_lessons": [],
+                "rejected_fact_count": rejected, "rejected_lesson_count": rejected,
+            },
+        }]})
+
+    gs = GameState(game_id="g-canonical", events=[
+        event("d1", 1), event("d1", 1), event("d2", 3),
+    ])
+
+    assert reflection_verification_metrics(gs) == {
+        "reflection_rejected_fact_count": 3,
+        "reflection_rejected_lesson_count": 3,
+    }
+
+
 def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
     payload = {
         "visibility": "moderator_only",
@@ -52,10 +75,12 @@ def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
         "entries": [{
             "player_id": "p01",
             "role": "seer",
+            "decision_id": "reflection:g1:p01",
             "reflection": "RAW_PROVIDER_DRAFT",
             "provider_response": {"thinking": "SECRET"},
             "verification": {
-                "status": "verified", "verified_fact_count": 1,
+                "status": "verified", "decision_id": "reflection:g1:p01",
+                "verified_fact_count": 1,
                 "verified_lessons": [{"lesson_id": "l1", "abstraction": "先复核公开票型"}],
                 "rejected_fact_count": 0, "rejected_lesson_count": 0,
             },
@@ -68,6 +93,8 @@ def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
     assert "RAW_PROVIDER_DRAFT" not in serialized
     assert "SECRET" not in serialized
     assert safe["entries"][0]["verification"]["verified_fact_count"] == 1
+    assert safe["entries"][0]["decision_id"] == "reflection:g1:p01"
+    assert safe["entries"][0]["verification"]["decision_id"] == "reflection:g1:p01"
 
 
 def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():

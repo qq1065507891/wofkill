@@ -18,19 +18,13 @@ from typing import Any
 
 def reflection_verification_metrics(game_state: Any) -> dict[str, int]:
     """对结构化复盘草稿复用终局事实门，并分别累计事实与经验拒绝数。"""
+    from werewolf_agent.runtime.reflection_events import canonical_verified_reflections
+
     rejected_facts = 0
     rejected_lessons = 0
-    for event in game_state.events:
-        if event.type != "reflection_complete":
-            continue
-        for entry in event.payload.get("entries", []):
-            if not isinstance(entry, dict):
-                continue
-            verification = entry.get("verification")
-            if not isinstance(verification, dict):
-                continue
-            rejected_facts += int(verification.get("rejected_fact_count") or 0)
-            rejected_lessons += int(verification.get("rejected_lesson_count") or 0)
+    for verification in canonical_verified_reflections(game_state.events).values():
+        rejected_facts += int(verification.get("rejected_fact_count") or 0)
+        rejected_lessons += int(verification.get("rejected_lesson_count") or 0)
     return {
         "reflection_rejected_fact_count": rejected_facts,
         "reflection_rejected_lesson_count": rejected_lessons,
