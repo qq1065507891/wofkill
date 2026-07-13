@@ -9,6 +9,8 @@
 使用示例:
     >>> from werewolf_agent.runtime.wolf_team_plan_support import build_prior_plan_summary
     >>> build_prior_plan_summary({})
+
+修改日期: 2026-07-13
 """
 
 from __future__ import annotations
@@ -17,6 +19,36 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from werewolf_agent.core.models import GameState
+
+_RECOGNIZED_PLAN_WRAPPERS = ("night_plan",)
+_NEUTRAL_PUBLIC_STORY = "白天仅根据公开信息判断，不披露夜间信息。"
+
+
+def normalize_wolf_team_plan_payload(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """在 schema 校验前修复确定且不涉及目标证据的格式问题。"""
+    normalized = dict(payload)
+    repairs: list[str] = []
+    for wrapper in _RECOGNIZED_PLAN_WRAPPERS:
+        wrapped = normalized.get(wrapper)
+        if len(normalized) == 1 and isinstance(wrapped, Mapping):
+            normalized = dict(wrapped)
+            repairs.append(f"unwrap:{wrapper}")
+            break
+
+    # 仅允许一层受认可包装；保留第二层原样，让严格 schema 明确拒绝。
+    if any(wrapper in normalized for wrapper in _RECOGNIZED_PLAN_WRAPPERS):
+        return normalized, tuple(repairs)
+
+    reasoning = normalized.get("reasoning")
+    if isinstance(reasoning, str) and len(reasoning) > 200:
+        normalized["reasoning"] = reasoning[:200]
+        repairs.append("truncate:reasoning")
+    if "public_story" not in normalized:
+        normalized["public_story"] = _NEUTRAL_PUBLIC_STORY
+        repairs.append("synthesize:public_story")
+    return normalized, tuple(repairs)
 
 
 def collect_current_wolf_discussion_text(gs: GameState) -> str:

@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from werewolf_agent.model_gateway.providers import load_local_dotenv
+from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
+    compute_wolf_plan_outcome_metrics,
+)
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 from scripts.run_real_game_reports import (
     _sep,
@@ -87,6 +90,13 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
         sum(1 for e in gs.events if e.type == "wolf_team_plan"),
         wolf_plan_fallback_count,
     )
+    wolf_plan_outcomes = compute_wolf_plan_outcome_metrics([{
+        "events": [
+            {"type": event.type, "payload": event.payload}
+            for event in gs.events
+            if event.type in {"wolf_team_plan", "wolf_team_plan_fallback"}
+        ]
+    }])
     structured_fail = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("structured_failure_reason")
@@ -146,6 +156,7 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
         "structured_fail_count": structured_fail,
         "total_action_traces": total,
         "total_wolf_team_plans": wolf_plan_attempts,
+        **wolf_plan_outcomes,
         "total_quality_events": total_quality_events,
         "speech_count": len(speeches),
         "non_empty_speech_count": non_empty_speeches,

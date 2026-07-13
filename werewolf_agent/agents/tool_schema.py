@@ -3,7 +3,7 @@
 功能描述：**：为 LLM function calling 生成符合 OpenAI tool 格式的 JSON Schema，以及发言/投票质量错误提示。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -63,6 +63,12 @@ def wolf_team_plan_tool(
     parse — the enum constraints here help the LLM choose well-formed
     values up-front, reducing retry cost.
     """
+    from werewolf_agent.agents.wolf_team_plan_schema import (
+        WolfTeamPlan,
+        wolf_team_plan_contract,
+    )
+
+    contract = wolf_team_plan_contract()
     wolf_enum: list[str | None] = [*alive_wolves, None]
     target_enum: list[str | None] = [*alive_non_wolves, None]
     return {
@@ -113,9 +119,13 @@ def wolf_team_plan_tool(
                 },
                 "public_story": {
                     "type": "string",
-                    "minLength": 1,
-                    "maxLength": 120,
-                    "description": "白天对外统一口径 / 抗推叙事 (1~120 字)",
+                    "minLength": contract["public_story"]["min_length"],
+                    "maxLength": contract["public_story"]["max_length"],
+                    "description": (
+                        "白天对外统一口径 / 抗推叙事 "
+                        f"({contract['public_story']['min_length']}~"
+                        f"{contract['public_story']['max_length']} 字)"
+                    ),
                 },
                 "evidence_quality": {
                     "type": "string",
@@ -124,23 +134,17 @@ def wolf_team_plan_tool(
                 },
                 "reasoning": {
                     "type": "string",
-                    "minLength": 1,
-                    "maxLength": 200,
-                    "description": "队长决策依据 (1~200 字, werewolf_team_only)",
+                    "minLength": contract["reasoning"]["min_length"],
+                    "maxLength": contract["reasoning"]["max_length"],
+                    "description": (
+                        "队长决策依据 "
+                        f"({contract['reasoning']['min_length']}~"
+                        f"{contract['reasoning']['max_length']} 字, "
+                        "werewolf_team_only)"
+                    ),
                 },
             },
-            "required": [
-                "night_number",
-                "night_kill_primary",
-                "night_kill_backup",
-                "fake_seer",
-                "pusher",
-                "hooker",
-                "deep_cover",
-                "public_story",
-                "evidence_quality",
-                "reasoning",
-            ],
+            "required": list(WolfTeamPlan.model_json_schema().get("required", [])),
         },
     }
 

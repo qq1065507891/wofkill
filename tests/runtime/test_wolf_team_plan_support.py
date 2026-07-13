@@ -21,6 +21,7 @@ from werewolf_agent.runtime.wolf_team_plan_support import (
     build_wolf_role_definitions,
     build_wolf_team_plan_evidence,
     collect_current_wolf_discussion_text,
+    normalize_wolf_team_plan_payload,
     validate_wolf_team_plan_membership,
 )
 
@@ -131,3 +132,58 @@ def test_build_wolf_team_plan_evidence_uses_llm_reason_tags() -> None:
         {"target": "p1", "wolf_id": "w1", "reason": "llm_captain_decision"},
         {"target": "p2", "wolf_id": "w1", "reason": "llm_captain_backup"},
     ]
+
+
+def test_normalize_wolf_team_plan_payload_unwraps_one_recognized_wrapper() -> None:
+    payload = {
+        "night_plan": {
+            "night_kill_primary": "p01",
+            "evidence_from_discussion": [{"target": "p01", "text": "原始证据"}],
+            "reasoning": "共识",
+        }
+    }
+
+    normalized, repairs = normalize_wolf_team_plan_payload(payload)
+
+    assert normalized["night_kill_primary"] == "p01"
+    assert normalized["evidence_from_discussion"] == [
+        {"target": "p01", "text": "原始证据"}
+    ]
+    assert repairs == ("unwrap:night_plan", "synthesize:public_story")
+
+
+def test_normalize_wolf_team_plan_payload_truncates_unicode_reasoning() -> None:
+    reasoning = "狼" * 199 + "🐺结尾"
+
+    normalized, repairs = normalize_wolf_team_plan_payload({
+        "reasoning": reasoning,
+        "public_story": "公开信息判断",
+    })
+
+    assert normalized["reasoning"] == reasoning[:200]
+    assert repairs == ("truncate:reasoning",)
+
+
+def test_normalize_wolf_team_plan_payload_preserves_target_and_evidence() -> None:
+    evidence = [{"target": "p03", "quote": "逐字证据", "offset": 7}]
+    payload = {
+        "night_kill_primary": "p03",
+        "night_kill_backup": "p07",
+        "evidence_from_discussion": evidence,
+        "reasoning": "已有理由",
+    }
+
+    normalized, _repairs = normalize_wolf_team_plan_payload(payload)
+
+    assert normalized["night_kill_primary"] is payload["night_kill_primary"]
+    assert normalized["night_kill_backup"] is payload["night_kill_backup"]
+    assert normalized["evidence_from_discussion"] is evidence
+
+
+def test_normalize_wolf_team_plan_payload_does_not_unwrap_nested_wrapper() -> None:
+    payload = {"night_plan": {"night_plan": {"reasoning": "共识"}}}
+
+    normalized, repairs = normalize_wolf_team_plan_payload(payload)
+
+    assert normalized == {"night_plan": {"reasoning": "共识"}}
+    assert repairs == ("unwrap:night_plan",)

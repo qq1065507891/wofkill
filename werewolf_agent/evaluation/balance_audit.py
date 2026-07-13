@@ -3,7 +3,7 @@
 功能描述：**：消费已保存的JSON格式对局字典，纯函数实现，不调用模型提供方也不变更对局状态
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-09
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -52,6 +52,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     )
     wolf_plan_fallback_count = sum(_wolf_plan_fallback_count(game) for game in games)
     wolf_plan_count = sum(_wolf_plan_attempt_count(game) for game in games)
+    wolf_plan_outcomes = compute_wolf_plan_outcome_metrics(games)
 
     weak_wolf_plan_kill_count = sum(_weak_wolf_plan_kills(game) for game in games)
     fallback_plan_kill_without_target_evidence_count = sum(
@@ -128,6 +129,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         "wolf_team_plan_fallback_rate": wolf_team_plan_fallback_rate,
         "wolf_team_plan_fallback_count": wolf_plan_fallback_count,
         "wolf_team_plan_count": wolf_plan_count,
+        **wolf_plan_outcomes,
         "schema_failure_rate": schema_failure_rate,
         "seer_day1_exile_rate": seer_day1_exile_rate,
         "d1_seer_exile_rate": seer_day1_exile_rate,
@@ -189,6 +191,42 @@ def _wolf_plan_fallback_count(game: dict[str, Any]) -> int:
 def _wolf_plan_attempt_count(game: dict[str, Any]) -> int:
     plan_count = sum(1 for event in game.get("events", []) if event.get("type") == "wolf_team_plan")
     return max(plan_count, _wolf_plan_fallback_count(game))
+
+
+def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
+    """按实际计划事件计算 normalization 与终止 fallback 的互斥结果。"""
+    events = [event for game in games for event in game.get("events", [])]
+    total = sum(1 for event in events if event.get("type") == "wolf_team_plan")
+    normalization_success = sum(
+        1
+        for event in events
+        if event.get("type") == "wolf_team_plan"
+        and bool((event.get("payload") or {}).get("normalization_repairs"))
+    )
+    fallback_reasons = [
+        (event.get("payload") or {}).get("reason")
+        for event in events
+        if event.get("type") == "wolf_team_plan_fallback"
+    ]
+    schema_fallback = sum(reason == "schema_validation_failed" for reason in fallback_reasons)
+    strategy_fallback = len(fallback_reasons) - schema_fallback
+    denominator = total or None
+    return {
+        "wolf_team_plan_outcome_metrics_supported": denominator is not None,
+        "wolf_team_plan_total_count": total,
+        "wolf_team_plan_normalization_success_count": normalization_success,
+        "wolf_team_plan_schema_terminal_fallback_count": schema_fallback,
+        "wolf_team_plan_strategy_terminal_fallback_count": strategy_fallback,
+        "wolf_team_plan_normalization_success_rate": (
+            normalization_success / denominator if denominator else None
+        ),
+        "wolf_team_plan_schema_terminal_fallback_rate": (
+            schema_fallback / denominator if denominator else None
+        ),
+        "wolf_team_plan_strategy_terminal_fallback_rate": (
+            strategy_fallback / denominator if denominator else None
+        ),
+    }
 
 
 def _trace_actor(payload: dict[str, Any], trace: dict[str, Any]) -> Any:

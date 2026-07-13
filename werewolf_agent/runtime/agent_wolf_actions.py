@@ -9,6 +9,8 @@
 使用示例:
     >>> from werewolf_agent.runtime.agent_wolf_actions import agent_wolf_discussion
     >>> agent_wolf_discussion(...)
+
+修改日期: 2026-07-13
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from werewolf_agent.runtime.wolf_team_plan_support import (
     build_wolf_role_definitions,
     build_wolf_team_plan_evidence,
     collect_current_wolf_discussion_text,
+    normalize_wolf_team_plan_payload,
     validate_wolf_team_plan_membership,
 )
 
@@ -100,6 +103,7 @@ def agent_wolf_team_plan(
     `consensus_method="llm"` and `captain_id` for audit/replay.
     """
     from werewolf_agent.agents.schemas import WolfTeamPlan
+    from werewolf_agent.agents.wolf_team_plan_schema import wolf_team_plan_contract
     from werewolf_agent.agents.tool_schema import wolf_team_plan_tool
     from werewolf_agent.runtime.directives.wolf import _WOLF_ROLE_STRATEGY
 
@@ -143,6 +147,7 @@ def agent_wolf_team_plan(
     discussion_text = collect_current_wolf_discussion_text(gs)
     prior_summary = build_prior_plan_summary(state.get("wolf_team_plan") or {})
     role_defs = build_wolf_role_definitions(_WOLF_ROLE_STRATEGY)
+    contract = wolf_team_plan_contract()
 
     system_prompt = (
         f"你是狼队队长 {captain_id}。本夜是 N{night_num}。"
@@ -153,10 +158,15 @@ def agent_wolf_team_plan(
         f"alive_wolves={alive_wolves} 中选; 任一字段可填 null (本夜不分配该位置)\n"
         f"- 击杀目标 (night_kill_primary/backup) 必须从 alive_non_wolves 中选 "
         f"或填 null (空刀); 不能是狼队成员\n"
-        f"- public_story 1~120 字 (白天对外口径, 例: '昨夜平安, 我跟刀口去推 p01')\n"
-        f"- reasoning 1~200 字 (审计用, 仅狼队可见, 不要泄露身份给好人)\n\n"
         f"【输出协议】必须通过 submit_wolf_team_plan 工具一次性提交完整 JSON, "
         f"不要在 reasoning / public_story 之外输出额外文字。"
+    )
+    system_prompt += (
+        "\n\n【Schema 字段边界（权威）】\n"
+        f"- public_story: {contract['public_story']['min_length']}~"
+        f"{contract['public_story']['max_length']} 字\n"
+        f"- reasoning: {contract['reasoning']['min_length']}~"
+        f"{contract['reasoning']['max_length']} 字"
     )
 
     user_prompt = (
@@ -264,6 +274,7 @@ def agent_wolf_team_plan(
             last_reason = "json_parse_failed"
             last_stage = "protocol"
             continue
+        data, normalization_repairs = normalize_wolf_team_plan_payload(data)
         data.setdefault("night_number", night_num)
 
         try:
@@ -288,6 +299,8 @@ def agent_wolf_team_plan(
         plan_dict: dict[str, Any] = plan.model_dump()
         plan_dict["consensus_method"] = "llm"
         plan_dict["captain_id"] = captain_id
+        if normalization_repairs:
+            plan_dict["normalization_repairs"] = list(normalization_repairs)
         plan_dict["evidence_from_discussion"] = build_wolf_team_plan_evidence(
             plan_dict,
             captain_id,

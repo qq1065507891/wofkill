@@ -9,11 +9,13 @@
 使用示例:
     >>> from werewolf_agent.agents.wolf_team_plan_schema import WolfTeamPlan
     >>> WolfTeamPlan.model_validate({"night_number": 1, "public_story": "白天统一口径", "reasoning": "夜聊共识"})
+
+修改日期: 2026-07-13
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -86,4 +88,19 @@ class WolfTeamPlan(BaseModel):
         return self
 
 
-__all__ = ["WolfTeamPlan"]
+def wolf_team_plan_contract() -> dict[str, dict[str, Any]]:
+    """从 Pydantic schema 导出 prompt/tool 共用的字段约束。"""
+    properties = WolfTeamPlan.model_json_schema()["properties"]
+    return {
+        "public_story": {
+            "min_length": properties["public_story"]["minLength"],
+            "max_length": properties["public_story"]["maxLength"],
+        },
+        "reasoning": {
+            "min_length": properties["reasoning"]["minLength"],
+            "max_length": properties["reasoning"]["maxLength"],
+        },
+    }
+
+
+__all__ = ["WolfTeamPlan", "wolf_team_plan_contract"]

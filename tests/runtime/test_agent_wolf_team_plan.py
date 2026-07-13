@@ -234,6 +234,36 @@ class TestHappyPath:
 # ---------------------------------------------------------------------------
 
 class TestRetryAndFailure:
+    def test_repairable_wrapped_payload_is_normalized_before_schema_validation(self):
+        gs = _make_gs()
+        payload = json.loads(_valid_plan_json())
+        payload.pop("public_story")
+        payload["reasoning"] = "狼" * 201
+        router = _FakeModelRouter([(
+            json.dumps({"night_plan": payload}, ensure_ascii=False),
+            None,
+        )])
+        registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+        plan = agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
+
+        assert plan is not None
+        assert plan["night_kill_primary"] == payload["night_kill_primary"]
+        assert plan["reasoning"] == payload["reasoning"][:200]
+        assert plan["normalization_repairs"] == [
+            "unwrap:night_plan",
+            "truncate:reasoning",
+            "synthesize:public_story",
+        ]
+
+    def test_nested_wrapper_remains_schema_invalid(self):
+        gs = _make_gs()
+        nested = json.dumps({"night_plan": {"night_plan": json.loads(_valid_plan_json())}})
+        router = _FakeModelRouter([(nested, None), (nested, None), (nested, None)])
+        registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+        assert agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry) is None
+
     def test_invalid_json_triggers_retry_eventually_returns_none(self):
         gs = _make_gs()
         router = _FakeModelRouter([

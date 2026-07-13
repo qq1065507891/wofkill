@@ -19,6 +19,17 @@ def test_wolf_team_plan_schema_is_split_from_action_schemas_facade():
     assert action_schemas.WolfTeamPlan is wolf_team_plan_schema.WolfTeamPlan
 
 
+def test_wolf_team_plan_contract_descriptor_matches_model_bounds():
+    from werewolf_agent.agents.wolf_team_plan_schema import wolf_team_plan_contract
+
+    contract = wolf_team_plan_contract()
+    schema = WolfTeamPlan.model_json_schema()
+
+    assert contract["public_story"]["min_length"] == schema["properties"]["public_story"]["minLength"]
+    assert contract["public_story"]["max_length"] == schema["properties"]["public_story"]["maxLength"]
+    assert contract["reasoning"]["max_length"] == schema["properties"]["reasoning"]["maxLength"]
+
+
 def _make_plan(**overrides):
     base = dict(
         night_number=1,

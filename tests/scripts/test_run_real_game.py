@@ -283,6 +283,40 @@ def test_quality_score_counts_wolf_team_plan_fallbacks() -> None:
     assert quality["fallback_rate"] == 1.0
 
 
+def test_quality_score_reports_wolf_plan_outcomes_and_null_rates_without_plans() -> None:
+    from scripts import run_real_game
+
+    gs = GameState(
+        game_id="g_quality_wolf_outcomes",
+        events=[
+            GameEvent(
+                type="wolf_team_plan",
+                payload={"normalization_repairs": ["synthesize:public_story"]},
+            ),
+            GameEvent(
+                type="wolf_team_plan_fallback",
+                payload={"reason": "schema_validation_failed"},
+            ),
+            GameEvent(type="wolf_team_plan", payload={"consensus_method": "fallback"}),
+        ],
+    )
+    quality = run_real_game.compute_game_quality_score(SimpleNamespace(state=gs, step_count=2))
+
+    assert quality["wolf_team_plan_outcome_metrics_supported"] is True
+    assert quality["wolf_team_plan_total_count"] == 2
+    assert quality["wolf_team_plan_normalization_success_count"] == 1
+    assert quality["wolf_team_plan_schema_terminal_fallback_count"] == 1
+    assert quality["wolf_team_plan_strategy_terminal_fallback_count"] == 0
+    assert quality["wolf_team_plan_normalization_success_rate"] == 0.5
+
+    empty = run_real_game.compute_game_quality_score(SimpleNamespace(
+        state=GameState(game_id="g_quality_no_wolf_plans"),
+        step_count=0,
+    ))
+    assert empty["wolf_team_plan_outcome_metrics_supported"] is False
+    assert empty["wolf_team_plan_normalization_success_rate"] is None
+
+
 def test_quality_score_groups_fallbacks_by_reason_and_stage() -> None:
     from scripts import run_real_game
 

@@ -104,6 +104,45 @@ def test_balance_audit_counts_schema_failures_and_weak_wolf_plan_kills():
     assert "wolf_team_plan_fallback_high" in audit["warnings"]
 
 
+def test_balance_audit_reports_disjoint_wolf_plan_outcomes_with_exact_denominator():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [{
+        "winning_faction": "good",
+        "events": [
+            {"type": "wolf_team_plan", "payload": {"normalization_repairs": ["truncate:reasoning"]}},
+            {"type": "wolf_team_plan_fallback", "payload": {"reason": "schema_validation_failed"}},
+            {"type": "wolf_team_plan", "payload": {"consensus_method": "fallback"}},
+            {"type": "wolf_team_plan_fallback", "payload": {"reason": "captain_agent_missing"}},
+            {"type": "wolf_team_plan", "payload": {"consensus_method": "fallback"}},
+        ],
+        "deaths": [],
+    }]
+
+    audit = compute_balance_audit(games)
+
+    assert audit["wolf_team_plan_outcome_metrics_supported"] is True
+    assert audit["wolf_team_plan_total_count"] == 3
+    assert audit["wolf_team_plan_normalization_success_count"] == 1
+    assert audit["wolf_team_plan_schema_terminal_fallback_count"] == 1
+    assert audit["wolf_team_plan_strategy_terminal_fallback_count"] == 1
+    assert audit["wolf_team_plan_normalization_success_rate"] == 1 / 3
+    assert audit["wolf_team_plan_schema_terminal_fallback_rate"] == 1 / 3
+    assert audit["wolf_team_plan_strategy_terminal_fallback_rate"] == 1 / 3
+
+
+def test_balance_audit_marks_wolf_plan_outcomes_unsupported_without_denominator():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    audit = compute_balance_audit([{"winning_faction": "good", "events": [], "deaths": []}])
+
+    assert audit["wolf_team_plan_outcome_metrics_supported"] is False
+    assert audit["wolf_team_plan_total_count"] == 0
+    assert audit["wolf_team_plan_normalization_success_rate"] is None
+    assert audit["wolf_team_plan_schema_terminal_fallback_rate"] is None
+    assert audit["wolf_team_plan_strategy_terminal_fallback_rate"] is None
+
+
 def test_load_game_logs_reads_json_files(tmp_path):
     from werewolf_agent.evaluation.balance_audit import load_game_logs
 
