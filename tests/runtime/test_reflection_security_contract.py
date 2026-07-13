@@ -80,6 +80,9 @@ def test_agent_reflection_verifies_real_ids_before_anonymization(monkeypatch) ->
         "lessons": [{
             "lesson_id": "l1", "abstraction": "p01 投 p02 前应复核公开票型",
             "claim_dependencies": ["c1"],
+        }, {
+            "lesson_id": "l2", "abstraction": "p02 质疑 p01 时应先比较替代解释",
+            "claim_dependencies": ["c1"],
         }],
     }, ensure_ascii=False)
 
@@ -102,8 +105,11 @@ def test_agent_reflection_verifies_real_ids_before_anonymization(monkeypatch) ->
     verification = result["reflection_verification"]
     assert verification["verified_fact_count"] == 1
     assert verification["rejected_fact_count"] == 0
-    abstraction = verification["verified_lessons"][0]["abstraction"]
-    assert "p01" not in abstraction and "p02" not in abstraction
+    abstractions = [lesson["abstraction"] for lesson in verification["verified_lessons"]]
+    assert abstractions == [
+        "历史玩家A 投 历史玩家B 前应复核公开票型",
+        "历史玩家B 质疑 历史玩家A 时应先比较替代解释",
+    ]
     assert draft not in json.dumps(result, ensure_ascii=False)
 
 

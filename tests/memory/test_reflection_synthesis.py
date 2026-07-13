@@ -160,7 +160,7 @@ def test_event_registry_rejects_mismatched_supported_fact() -> None:
 
 def test_fact_independent_general_strategy_is_allowed_but_concrete_fact_is_rejected() -> None:
     safe = ReflectionLesson(
-        lesson_id="general", abstraction="投票前先复核公开证据链。",
+        lesson_id="general", abstraction="证据不足时降低结论强度并比较替代方案。",
         claim_dependencies=[], lesson_kind="general_strategy",
     )
     unsafe = ReflectionLesson(
@@ -171,6 +171,32 @@ def test_fact_independent_general_strategy_is_allowed_but_concrete_fact_is_rejec
     result = verify_reflection_draft(ReflectionDraft(lessons=[safe, unsafe]), _state())
 
     assert result.verified_lessons == [safe]
+    assert result.rejected_lesson_count == 1
+
+
+@pytest.mark.parametrize(
+    "abstraction",
+    [
+        "3号玩家是狼人，下局直接投他。",
+        "3号是预言家，应当相信他。",
+        "player_3 是女巫。",
+        "狼人阵营获胜，下次优先找猎人。",
+        "投票前先查验，再用毒救人。",
+        "玩家死亡后判断胜负。",
+        "参考 g-final:42 的结论。",
+    ],
+)
+def test_fact_independent_lesson_rejects_specific_entities_roles_actions_and_refs(
+    abstraction: str,
+) -> None:
+    lesson = ReflectionLesson(
+        lesson_id="unsafe", abstraction=abstraction,
+        claim_dependencies=[], lesson_kind="general_strategy",
+    )
+
+    result = verify_reflection_draft(ReflectionDraft(lessons=[lesson]), _state())
+
+    assert result.verified_lessons == []
     assert result.rejected_lesson_count == 1
 
 

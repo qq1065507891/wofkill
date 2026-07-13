@@ -86,7 +86,9 @@ def _agent_reflection(
 
         action, _retry_info = agent.act(context)
         raw_draft = getattr(action, "speech", "") or ""
-        from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids
+        from werewolf_agent.memory.reflection_sanitization import (
+            anonymize_player_ids_recursive,
+        )
         from werewolf_agent.memory.reflection_synthesis import (
             parse_reflection_draft,
             verify_reflection_draft,
@@ -106,13 +108,13 @@ def _agent_reflection(
             "status": "verified",
             "decision_id": f"reflection:{gs.game_id}:{player_id}",
             "verified_fact_count": len(verification.verified_claims),
-            "verified_lessons": [
+            "verified_lessons": anonymize_player_ids_recursive([
                 {
                     "lesson_id": lesson.lesson_id,
-                    "abstraction": anonymize_player_ids(lesson.abstraction),
+                    "abstraction": lesson.abstraction,
                 }
                 for lesson in verification.verified_lessons
-            ],
+            ]),
             "rejected_fact_count": verification.rejected_fact_count,
             "rejected_lesson_count": verification.rejected_lesson_count,
         }}

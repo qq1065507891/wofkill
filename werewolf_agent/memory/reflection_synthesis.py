@@ -278,10 +278,14 @@ _PLAYER_ID_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 _EVENT_REF_RE = re.compile(r"\b[\w-]+:\d+\b")
-_CONCRETE_FACT_RE = re.compile(
-    r"(?:预言家|女巫|猎人|狼人|村民|平民|白痴|混血儿).{0,8}(?:是|身份|阵营|获胜|死亡|被放逐|被毒|开枪)"
-    r"|(?:好人|狼人)阵营.{0,4}获胜"
-    r"|(?:解药|毒药).{0,8}(?:救了|毒了|使用|目标)"
+_CHINESE_SEAT_RE = re.compile(r"(?<!\d)\d+\s*号(?:玩家)?")
+_CONCRETE_ENTITY_TOKENS = (
+    "玩家", "狼人", "预言家", "女巫", "猎人", "好人", "村民", "平民",
+    "白痴", "混血儿", "神职", "阵营",
+)
+_CONCRETE_ACTION_TOKENS = (
+    "投票", "投他", "投她", "查验", "验人", "毒", "救", "刀", "死亡",
+    "出局", "放逐", "胜负", "获胜", "失败", "开枪", "解药", "毒药",
 )
 
 
@@ -290,7 +294,9 @@ def _safe_fact_independent_lesson(lesson: ReflectionLesson) -> bool:
     return not (
         _PLAYER_ID_TOKEN_RE.search(text)
         or _EVENT_REF_RE.search(text)
-        or _CONCRETE_FACT_RE.search(text)
+        or _CHINESE_SEAT_RE.search(text)
+        or any(token in text for token in _CONCRETE_ENTITY_TOKENS)
+        or any(token in text for token in _CONCRETE_ACTION_TOKENS)
     )
 
 
