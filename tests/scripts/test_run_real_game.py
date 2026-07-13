@@ -69,6 +69,41 @@ def test_reasoning_summary_canonicalizes_snapshots_and_prefers_action_projection
     assert summary["attempts"][0]["outcome"] == "attempt_failure"
 
 
+def test_reasoning_summary_groups_interleaved_requests_by_first_seen_order():
+    from dataclasses import replace
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord, AttemptOutcome, EvidenceKind, OpaqueRequestId,
+        ReasoningLevel, ReasoningStatus, RootCause, RouteKind,
+    )
+    from werewolf_agent.model_gateway.usage_records import UsageRecord
+    from scripts.run_real_game_reports import _reasoning_evidence_summary
+
+    request_a = OpaqueRequestId.new("game", "aaaabbbb")
+    request_b = OpaqueRequestId.new("game", "ccccdddd")
+    a1 = AttemptExecutionRecord(
+        opaque_request_id=request_a, ordinal=1, provider="a", model="m",
+        route_kind=RouteKind.PRIMARY, root_cause=RootCause.NONE,
+        attempt_outcome=AttemptOutcome.SUCCESS,
+        requested_reasoning_level=ReasoningLevel.HIGH,
+        normalized_reasoning_status=ReasoningStatus.CONFIRMED,
+        reasoning_token_count=1, evidence_kind=EvidenceKind.TOKEN_COUNT,
+    )
+    b1 = replace(a1, opaque_request_id=request_b, provider="b")
+    a2 = replace(a1, ordinal=2, route_kind=RouteKind.REPAIR)
+    usage = [
+        UsageRecord(agent_id="p01", task_type="vote", provider="a", model="m", attempts=(a1,)),
+        UsageRecord(agent_id="p02", task_type="vote", provider="b", model="m", attempts=(b1,)),
+        UsageRecord(agent_id="p01", task_type="vote", provider="a", model="m", attempts=(a1, a2)),
+    ]
+
+    summary = _reasoning_evidence_summary(usage)
+
+    assert [
+        (item["opaque_request_id"], item["ordinal"])
+        for item in summary["attempts"]
+    ] == [(request_a.value, 1), (request_a.value, 2), (request_b.value, 1)]
+
+
 def test_real_player_repair_usage_does_not_duplicate_reasoning_denominator():
     from werewolf_agent.agents.player import PlayerAgent
     from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType

@@ -167,16 +167,27 @@ def _reasoning_evidence_summary(
         return getattr(value, "value", value)
 
     canonical: dict[tuple[str, int], Any] = {}
+    request_order: dict[str, int] = {}
     for usage in usage_log:
         for attempt in usage.attempts:
-            key = (field(attempt, "opaque_request_id"), field(attempt, "ordinal"))
+            opaque_request_id = field(attempt, "opaque_request_id")
+            request_order.setdefault(opaque_request_id, len(request_order))
+            key = (opaque_request_id, field(attempt, "ordinal"))
             canonical[key] = attempt
     # ActionTrace 包含 parser/validator 完成后的最终投影；同键冲突时，
     # 它必须覆盖较早的 provider usage 快照。
     for attempt in action_attempts:
-        key = (field(attempt, "opaque_request_id"), field(attempt, "ordinal"))
+        opaque_request_id = field(attempt, "opaque_request_id")
+        request_order.setdefault(opaque_request_id, len(request_order))
+        key = (opaque_request_id, field(attempt, "ordinal"))
         canonical[key] = attempt
-    attempts = list(canonical.values())
+    attempts = sorted(
+        canonical.values(),
+        key=lambda item: (
+            request_order[field(item, "opaque_request_id")],
+            field(item, "ordinal"),
+        ),
+    )
     requested = [
         attempt for attempt in attempts
         if field(attempt, "requested_reasoning_level") != "none"

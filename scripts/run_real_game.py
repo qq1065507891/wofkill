@@ -3,7 +3,7 @@
 运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
 作者: Project contributors
-修改日期: 2026-07-09
+修改日期: 2026-07-13
 
 使用示例:
     python scripts/run_real_game.py --seed 42 --max-steps 500

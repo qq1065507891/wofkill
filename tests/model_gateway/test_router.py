@@ -74,6 +74,34 @@ class _ReasoningStatusProvider(_StaticTextProvider):
         return replace(result, reasoning_status=self.status, reasoning_tokens=(3 if self.status == "confirmed" else 0))
 
 
+class _SequenceProvider:
+    def __init__(self, responses, name: str) -> None:
+        self._responses = list(responses)
+        self._name = name
+        self.calls = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        from werewolf_agent.model_gateway.router import GenerateResult, UsageRecord
+
+        self.calls += 1
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return GenerateResult(
+            text=response,
+            provider=self.name,
+            model=config.model,
+            tool_call_received=bool(tool_choice),
+            usage=UsageRecord(
+                agent_id="", task_type="", provider=self.name, model=config.model,
+            ),
+        )
+
+
 def _make_router(*, providers: dict | None = None):
     from werewolf_agent.model_gateway.router import ModelRouter
     profiles = providers or {}
@@ -360,6 +388,51 @@ class TestGenerateWithMockProvider:
         assert first.calls == second.calls == 1
         assert [attempt.provider for attempt in result.attempts] == ["first", "second"]
         assert result.text == "ok"
+
+    @pytest.mark.parametrize(
+        ("responses", "expected_root"),
+        [
+            (["", "ok"], "invalid_output"),
+            ([RuntimeError("HTTP 503 service unavailable"), "ok"], "provider_error"),
+        ],
+    )
+    def test_fallback_retry_uses_backoff_and_candidate_warning(
+        self, responses, expected_root, monkeypatch, caplog,
+    ) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        provider = _SequenceProvider(responses, "fallback")
+        sleeps: list[float] = []
+        monkeypatch.setattr(router_module, "_retry_delay_for_exception", lambda exc, attempt: 1.75)
+        monkeypatch.setattr(router_module.time, "sleep", sleeps.append)
+        router = ModelRouter(
+            model_profiles={
+                "primary": {"provider": "missing", "model": "p", "reasoning": {"level": "high"}},
+                "fallback": {"provider": "fallback", "model": "f", "retry_count": 1, "reasoning": {"level": "high"}},
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "missing", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"fallback": provider},
+            validate_reasoning=False,
+        )
+
+        with caplog.at_level("WARNING"):
+            result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
+
+        assert result.text == "ok"
+        assert provider.calls == 2
+        assert sleeps == [1.75]
+        assert result.attempts[0].root_cause.value == expected_root
+        assert [item.ordinal for item in result.attempts] == [1, 2]
+        warning = "\n".join(record.getMessage() for record in caplog.records)
+        assert "provider=fallback" in warning
+        assert "model=f" in warning
+        assert "attempt 1/2" in warning
+        assert "retry in 1.8s" in warning
 
     @pytest.mark.parametrize(
         ("statuses", "expected_provider"),

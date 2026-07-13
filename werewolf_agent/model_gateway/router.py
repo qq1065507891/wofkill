@@ -444,151 +444,11 @@ class ModelRouter:
             primary_error=primary_error,
             request_id=opaque_request_id,
             attempts=attempts,
+            generation_attempt_context=generation_attempt_context,
         )
         if chain_result is not None:
             return chain_result
         fallback_provider = None
-        if fallback_provider and fallback_provider in self._providers:
-            fb_provider = self._providers[fallback_provider]
-            fallback_model_profile = self._resolve_fallback_model(
-                llm_profile_id=self._player_assignments.get(agent_id, ""),
-                required_reasoning_level=config.reasoning_level,
-            )
-            fb_config = fallback_model_profile or ModelConfig(
-                provider=fallback_provider, model="fallback"
-            )
-            fb_config = replace(
-                fb_config,
-                reasoning_level=config.reasoning_level,
-                reasoning_requested=config.reasoning_requested,
-            )
-            if not reasoning_capability_satisfies(
-                fb_config.reasoning_capability,
-                fb_config.reasoning_level,
-            ):
-                fallback_provider = None
-            fb_mode = resolve_structured_output_mode(
-                provider=fb_config.provider,
-                configured_mode=fb_config.structured_output_mode,
-                allow_text_tool_fallback=fb_config.allow_text_tool_fallback,
-            )
-            fb_config = replace(
-                fb_config,
-                structured_output_mode=fb_mode.value,
-            )
-            fb_max_retries = getattr(fb_config, "retry_count", 1) or 0
-            fallback_attempts = 0
-            for fb_attempt in range(fb_max_retries + 1):
-                fallback_attempts += 1
-                try:
-                    fb_effective_tool_choice = (
-                        tool_choice
-                        if fb_mode == StructuredOutputMode.NATIVE_TOOL
-                        else None
-                    )
-                    result = _call_provider_generate(
-                        fb_provider,
-                        prompt,
-                        fb_config,
-                        system_prompt,
-                        tools=tools,
-                        tool_choice=fb_effective_tool_choice,
-                    )
-                    result = replace(
-                        result,
-                        allow_text_tool_fallback=fb_config.allow_text_tool_fallback,
-                        structured_output_mode=fb_mode.value,
-                        reasoning_level=fb_config.reasoning_level,
-                        reasoning_status=(
-                            result.reasoning_status
-                            if result.reasoning_status in {"confirmed", "unsupported"}
-                            else "requested_unconfirmed" if fb_config.reasoning_requested
-                            else "not_requested"
-                        ),
-                    )
-                    result = _normalize_tool_metadata(result, fb_effective_tool_choice)
-                    if not result.text:
-                        attempts.append(_attempt_record(
-                            opaque_request_id, len(attempts) + 1, fb_config, result,
-                            RouteKind.PROVIDER_FALLBACK,
-                            AttemptOutcome.FAILURE, RootCause.INVALID_OUTPUT,
-                        ))
-                        result = replace(result, attempts=tuple(attempts))
-                        last_empty_result = result
-                        fallback_error = EmptyModelResponseError("empty_response")
-                        logger.warning(
-                            "Fallback model generation returned empty text for agent=%s task=%s provider=%s model=%s",
-                            agent_id,
-                            task_type,
-                            fb_config.provider,
-                            fb_config.model,
-                        )
-                        break
-                    attempts.append(_attempt_record(
-                        opaque_request_id, len(attempts) + 1, fb_config, result,
-                        RouteKind.PROVIDER_FALLBACK,
-                        AttemptOutcome.SUCCESS, RootCause.NONE,
-                    ))
-                    result = replace(result, attempts=tuple(attempts))
-                    if result.usage is None:
-                        result = replace(
-                            result,
-                            usage=UsageRecord(
-                                agent_id=agent_id,
-                                task_type=task_type,
-                                provider=result.provider,
-                                model=result.model,
-                                attempts=tuple(attempts),
-                            ),
-                        )
-                    if result.usage:
-                        _record_success_usage(
-                            usage_log=self._usage_log,
-                            usage_lock=self._usage_lock,
-                            agent_id=agent_id,
-                            task_type=task_type,
-                            result=result,
-                            fallback_reason=f"primary_failed:{_format_exception(primary_error)}",
-                            structured_output_mode=fb_mode.value,
-                            request_id=request_id,
-                            primary_provider=config.provider,
-                            primary_model=config.model,
-                            fallback_provider=fb_config.provider,
-                            fallback_model=fb_config.model,
-                            retry_count=primary_attempts - 1 + fallback_attempts - 1,
-                            failure_category="unknown" if primary_error else None,
-                            reasoning_level=fb_config.reasoning_level,
-                            reasoning_status=result.reasoning_status,
-                            reasoning_tokens=result.reasoning_tokens,
-                        )
-                    return result
-                except Exception as exc:
-                    fallback_error = exc
-                    attempts.append(_attempt_record(
-                        opaque_request_id, len(attempts) + 1, fb_config, None,
-                        RouteKind.PROVIDER_FALLBACK,
-                        AttemptOutcome.FAILURE, _root_cause(exc),
-                    ))
-                    if fb_attempt < fb_max_retries and _is_retryable_exception(exc):
-                        delay = _retry_delay_for_exception(exc, fb_attempt)
-                        logger.warning(
-                            "Retryable fallback error for agent=%s task=%s (attempt %d/%d, retry in %.1fs): %s",
-                            agent_id, task_type,
-                            fb_attempt + 1, fb_max_retries + 1, delay,
-                            _format_exception(exc),
-                        )
-                        # Rate-limit backoff: wait before retrying
-                        time.sleep(delay)
-                        continue
-                    logger.warning(
-                        "Fallback model generation failed for agent=%s task=%s provider=%s model=%s: %s",
-                        agent_id,
-                        task_type,
-                        fb_config.provider,
-                        fb_config.model,
-                        _format_exception(exc),
-                    )
-                    break
 
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
@@ -669,6 +529,7 @@ class ModelRouter:
         primary_error: Exception | None,
         request_id: OpaqueRequestId,
         attempts: list[AttemptExecutionRecord],
+        generation_attempt_context: GenerationAttemptContext | None,
     ) -> GenerateResult | None:
         """按配置顺序尝试所有能力合格的 fallback 候选。"""
         profile_id = self._player_assignments.get(agent_id, "")
@@ -725,12 +586,22 @@ class ModelRouter:
                         ))
                         break
                     if not result.text:
+                        empty_error = EmptyModelResponseError("empty_response")
                         attempts.append(_attempt_record(
                             request_id, len(attempts) + 1, config, result,
                             RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE,
                             RootCause.INVALID_OUTPUT,
                         ))
                         if retry_index < retries:
+                            delay = _retry_delay_for_exception(empty_error, retry_index)
+                            logger.warning(
+                                "Retryable fallback error for agent=%s task=%s "
+                                "provider=%s model=%s (attempt %d/%d, retry in %.1fs): %s",
+                                agent_id, task_type, config.provider, config.model,
+                                retry_index + 1, retries + 1, delay,
+                                _format_exception(empty_error),
+                            )
+                            time.sleep(delay)
                             continue
                         break
                     attempts.append(_attempt_record(
@@ -745,6 +616,8 @@ class ModelRouter:
                             attempts=tuple(attempts),
                         ))
                     result = replace(result, attempts=tuple(attempts))
+                    if generation_attempt_context:
+                        generation_attempt_context.accept(tuple(attempts))
                     _record_success_usage(
                         usage_log=self._usage_log,
                         usage_lock=self._usage_lock,
@@ -769,6 +642,15 @@ class ModelRouter:
                         _root_cause(exc),
                     ))
                     if retry_index < retries and _is_retryable_exception(exc):
+                        delay = _retry_delay_for_exception(exc, retry_index)
+                        logger.warning(
+                            "Retryable fallback error for agent=%s task=%s "
+                            "provider=%s model=%s (attempt %d/%d, retry in %.1fs): %s",
+                            agent_id, task_type, config.provider, config.model,
+                            retry_index + 1, retries + 1, delay,
+                            _format_exception(exc),
+                        )
+                        time.sleep(delay)
                         continue
                     break
 

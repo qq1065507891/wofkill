@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-13
 """
 
 from __future__ import annotations
@@ -80,10 +81,10 @@ def translate_decision_outcome(
     route_history = {item.route_kind for item in attempts}
     if RouteKind.SAFE_FALLBACK in route_history:
         outcome = DecisionOutcome.TERMINAL_FALLBACK
-    elif RouteKind.PROVIDER_FALLBACK in route_history:
-        outcome = DecisionOutcome.PROVIDER_FALLBACK_SUCCESS
     elif RouteKind.REPAIR in route_history:
         outcome = DecisionOutcome.REPAIRED_SUCCESS
+    elif RouteKind.PROVIDER_FALLBACK in route_history:
+        outcome = DecisionOutcome.PROVIDER_FALLBACK_SUCCESS
     elif RouteKind.RETRY in route_history:
         outcome = DecisionOutcome.RETRY_SUCCESS
     else:

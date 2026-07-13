@@ -3,7 +3,7 @@
 测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
 
 作者: Project contributors
-修改日期: 2026-07-09
+修改日期: 2026-07-13
 """
 
 from __future__ import annotations
@@ -48,6 +48,77 @@ class ModelRouter(_ProductionModelRouter):
             for profile in (kwargs.get("model_profiles") or {}).values():
                 profile.setdefault("reasoning", {"level": "high"})
         super().__init__(*args, **kwargs)
+
+
+def test_provider_fallback_parser_rejection_updates_shared_attempt_chain() -> None:
+    """fallback 文本解析失败后，应修改实际 fallback attempt，再连续进入 repair。"""
+
+    class SequenceProvider:
+        def __init__(self, responses, name: str) -> None:
+            self.responses = list(responses)
+            self._name = name
+
+        @property
+        def name(self) -> str:
+            return self._name
+
+        def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+            response = self.responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return GenerateResult(
+                text=response,
+                provider=self.name,
+                model=config.model,
+                tool_call_received=bool(tool_choice),
+                usage=UsageRecord(
+                    agent_id="p01", task_type="vote", provider=self.name, model=config.model,
+                ),
+            )
+
+    repaired_json = json.dumps({
+        "action_type": "no_action",
+        "target_id": None,
+        "speech": "继续观察公开发言。",
+        "reason": "当前证据不足。",
+        "confidence": 0.5,
+    }, ensure_ascii=False)
+    primary = SequenceProvider([RuntimeError("primary failed"), repaired_json], "primary")
+    fallback = SequenceProvider(["not-json"], "fallback")
+    router = ModelRouter(
+        model_profiles={
+            "primary": {"provider": "primary", "model": "p", "retry_count": 0, "reasoning": {"level": "high"}},
+            "fallback": {"provider": "fallback", "model": "f", "retry_count": 0, "reasoning": {"level": "high"}},
+        },
+        llm_profiles={"profile": {
+            "default": {"provider": "primary", "model_profile": "primary"},
+            "fallback": {"provider": "fallback", "model_profile": "fallback"},
+        }},
+        player_assignments={"p01": "profile"},
+        providers={"primary": primary, "fallback": fallback},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+
+    action, _ = agent.act(AgentContext(
+        agent_id="p01",
+        task_type=TaskType.VOTE,
+        phase="day",
+        own_role="villager",
+        legal_actions=[ActionType.NO_ACTION],
+        legal_targets=[],
+    ))
+
+    assert action.trace is not None
+    attempts = action.trace.execution_attempts
+    assert [item.ordinal for item in attempts] == [1, 2, 3]
+    assert [item.provider for item in attempts] == ["primary", "fallback", "primary"]
+    assert attempts[0].root_cause.value == "provider_error"
+    assert attempts[0].attempt_outcome.value == "attempt_failure"
+    assert attempts[1].root_cause.value == "invalid_output"
+    assert attempts[1].attempt_outcome.value == "attempt_failure"
+    assert attempts[2].route_kind.value == "repair"
+    assert attempts[2].attempt_outcome.value == "attempt_success"
+    assert action.trace.decision_outcome == "repaired_success"
 
 
 # ---------------------------------------------------------------------------
