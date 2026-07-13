@@ -3,7 +3,7 @@
 功能描述：**：从评估对局结果构建归一化反馈回路轨迹，并汇总模块、调用与 prompt 注入监控。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-10
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -71,6 +71,18 @@ _PROMPT_INJECTION_METADATA_KEYS = frozenset({
     "char_count",
     "content_hash",
     "decision_usage",
+    "sanitized",
+})
+_PERSONA_PROOF_METADATA_KEYS = frozenset({
+    "final_system_location",
+    "final_system_message_index",
+    "message_char_count",
+    "run_scoped_fingerprint",
+    "confirmed_injection",
+    "attempt_kind",
+    "attempt_ordinal",
+    "provider",
+    "model",
     "sanitized",
 })
 
@@ -205,6 +217,8 @@ class EvaluationTraceBuilder:
                 grouped[trace_id].extend(_prompt_injection_exposures(audit))
             elif audit_type == "persona_exposure_audit":
                 grouped[trace_id].extend(_persona_exposures(audit))
+            elif audit_type == "persona_prompt_injection_audit":
+                grouped[trace_id].extend(_persona_prompt_proof_exposures(audit))
         return grouped
 
     @staticmethod
@@ -219,6 +233,7 @@ class EvaluationTraceBuilder:
                 "skill_tool_call_audit",
                 "prompt_injection_audit",
                 "persona_exposure_audit",
+                "persona_prompt_injection_audit",
             }:
                 continue
             payload = _event_payload(event)
@@ -393,6 +408,25 @@ def _persona_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
             },
         )
     ]
+
+
+def _persona_prompt_proof_exposures(audit: dict[str, Any]) -> list[ModuleExposure]:
+    proof = audit.get("proof")
+    if not isinstance(proof, dict):
+        return []
+    ordinal = _int(proof.get("attempt_ordinal"))
+    provider = str(proof.get("provider") or "unknown")
+    return [ModuleExposure(
+        module="persona_prompt_confirmation",
+        item_id=f"{provider}:{ordinal if ordinal is not None else 'unknown'}",
+        score=1.0 if proof.get("confirmed_injection") is True else 0.0,
+        prompt_visible=False,
+        metadata={
+            key: proof[key]
+            for key in _PERSONA_PROOF_METADATA_KEYS
+            if key in proof
+        },
+    )]
 
 
 def _world_model_exposures(audit: Any) -> list[ModuleExposure]:

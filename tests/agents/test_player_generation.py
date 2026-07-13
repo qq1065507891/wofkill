@@ -63,3 +63,22 @@ def test_latest_generation_failure_reason_reads_last_failed_usage_record() -> No
     from werewolf_agent.agents.player_generation import latest_generation_failure_reason
 
     assert latest_generation_failure_reason(_Router()) == "primary_failed:timeout"
+
+
+def test_final_prompt_observer_keeps_legacy_router_test_double_compatible() -> None:
+    from werewolf_agent.agents.player_generation import generate_player_response
+
+    class _LegacyRouter:
+        def generate(
+            self, *, agent_id, task_type, prompt, system_prompt, tools,
+            tool_choice, structured_output_mode,
+        ):
+            return GenerateResult(text="{}", provider="legacy", model="m")
+
+    result = generate_player_response(
+        _LegacyRouter(), agent_id="p01", task_type="vote", prompt="user",
+        system_prompt="system", tools=[], tool_choice=None,
+        structured_output_mode="json_object", final_prompt_observer=lambda _: None,
+    )
+
+    assert result.text == "{}"

@@ -35,6 +35,7 @@ from werewolf_agent.model_gateway.execution_records import (
     RouteKind,
 )
 from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
+from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver, bind_attempt
 from werewolf_agent.model_gateway.retry_policy import (
     _failure_reason,
     _format_exception,
@@ -256,6 +257,7 @@ class ModelRouter:
         structured_output_mode: str | None = None,
         jitter_seconds: tuple[float, float] = (0.0, 0.8),
         generation_attempt_context: GenerationAttemptContext | None = None,
+        final_prompt_observer: FinalPromptObserver | None = None,
     ) -> GenerateResult:
         """Generate via routed provider with fallback.
 
@@ -323,6 +325,11 @@ class ModelRouter:
                     system_prompt,
                     tools=tools,
                     tool_choice=effective_tool_choice,
+                    final_prompt_observer=bind_attempt(
+                        final_prompt_observer,
+                        attempt_kind=(first_route.value if attempt == 0 else RouteKind.RETRY.value),
+                        attempt_ordinal=len(attempts) + 1,
+                    ),
                 )
                 result = replace(
                     result,
@@ -445,6 +452,7 @@ class ModelRouter:
             request_id=opaque_request_id,
             attempts=attempts,
             generation_attempt_context=generation_attempt_context,
+            final_prompt_observer=final_prompt_observer,
         )
         if chain_result is not None:
             return chain_result
@@ -530,6 +538,7 @@ class ModelRouter:
         request_id: OpaqueRequestId,
         attempts: list[AttemptExecutionRecord],
         generation_attempt_context: GenerationAttemptContext | None,
+        final_prompt_observer: FinalPromptObserver | None,
     ) -> GenerateResult | None:
         """按配置顺序尝试所有能力合格的 fallback 候选。"""
         profile_id = self._player_assignments.get(agent_id, "")
@@ -566,6 +575,11 @@ class ModelRouter:
                     result = _call_provider_generate(
                         provider, prompt, config, system_prompt,
                         tools=tools, tool_choice=effective_choice,
+                        final_prompt_observer=bind_attempt(
+                            final_prompt_observer,
+                            attempt_kind=RouteKind.PROVIDER_FALLBACK.value,
+                            attempt_ordinal=len(attempts) + 1,
+                        ),
                     )
                     result = replace(
                         result,

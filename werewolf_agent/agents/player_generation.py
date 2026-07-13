@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.agents.player_generation import generate_player_response
@@ -12,6 +13,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 
@@ -26,6 +28,7 @@ def generate_player_response(
     tool_choice: dict[str, Any] | None,
     structured_output_mode: str,
     generation_attempt_context: Any | None = None,
+    final_prompt_observer: Any | None = None,
 ) -> Any:
     kwargs = dict(
         agent_id=agent_id,
@@ -38,6 +41,15 @@ def generate_player_response(
     )
     if generation_attempt_context is not None:
         kwargs["generation_attempt_context"] = generation_attempt_context
+    router_parameters = inspect.signature(model_router.generate).parameters
+    accepts_extra_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in router_parameters.values()
+    )
+    if final_prompt_observer is not None and (
+        "final_prompt_observer" in router_parameters or accepts_extra_kwargs
+    ):
+        kwargs["final_prompt_observer"] = final_prompt_observer
     return model_router.generate(**kwargs)
 
 

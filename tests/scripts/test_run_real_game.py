@@ -45,6 +45,30 @@ def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately(
     assert quality["reflection_rejected_lesson_count"] == 1
 
 
+def test_quality_score_exports_persona_confirmation_from_real_events() -> None:
+    from scripts import run_real_game
+
+    trace_id = "g1:p01:vote:D1:N0:vote:1"
+    gs = GameState(game_id="g1", events=[
+        GameEvent(type="persona_exposure_audit", payload={
+            "trace_id": trace_id, "snapshot": {"profile_id": "calm"},
+        }),
+        GameEvent(type="persona_prompt_injection_audit", payload={
+            "trace_id": trace_id,
+            "proof": {"confirmed_injection": True, "attempt_ordinal": 1},
+        }),
+    ])
+
+    quality = run_real_game.compute_game_quality_score(SimpleNamespace(state=gs, step_count=1))
+
+    assert quality["persona_prompt_confirmation"] == {
+        "supported": True,
+        "configured_action_count": 1,
+        "confirmed_action_count": 1,
+        "confirmation_rate": 1.0,
+    }
+
+
 def test_reflection_metrics_count_only_latest_canonical_decision_per_player() -> None:
     from scripts.run_real_game_reports import reflection_verification_metrics
 

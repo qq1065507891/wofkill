@@ -14,6 +14,7 @@ from typing import Any
 from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.providers.openai import _generate_openai_compatible
+from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
 
 
@@ -44,6 +45,7 @@ class GLMProvider(_BaseHttpProvider):
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        final_prompt_observer: FinalPromptObserver | None = None,
     ) -> GenerateResult:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -58,4 +60,5 @@ class GLMProvider(_BaseHttpProvider):
             config=config,
             tools=tools,
             tool_choice=tool_choice,
+            final_prompt_observer=final_prompt_observer,
         )

@@ -13,6 +13,10 @@ import time
 from typing import Any
 
 from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptAssembly,
+    FinalPromptObserver,
+)
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
 from werewolf_agent.model_gateway.structured_output import (
@@ -48,6 +52,7 @@ class OpenAIProvider(_BaseHttpProvider):
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        final_prompt_observer: FinalPromptObserver | None = None,
     ) -> GenerateResult:
         messages: list[dict[str, str]] = []
         if system_prompt:
@@ -62,6 +67,7 @@ class OpenAIProvider(_BaseHttpProvider):
             config=config,
             tools=tools,
             tool_choice=tool_choice,
+            final_prompt_observer=final_prompt_observer,
         )
 
 
@@ -78,6 +84,7 @@ def _generate_openai_compatible(
     config: ModelConfig,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: dict[str, Any] | None = None,
+    final_prompt_observer: FinalPromptObserver | None = None,
 ) -> GenerateResult:
     payload: dict[str, Any] = {
         "model": config.model,
@@ -130,6 +137,23 @@ def _generate_openai_compatible(
                 "type": "function",
                 "function": {"name": tool_choice["name"]},
             }
+    if final_prompt_observer is not None:
+        system_index = next(
+            (index for index, message in enumerate(payload["messages"])
+             if message.get("role") == "system"),
+            None,
+        )
+        system_content = (
+            str(payload["messages"][system_index].get("content") or "")
+            if system_index is not None else ""
+        )
+        final_prompt_observer(FinalPromptAssembly(
+            system_bytes=system_content.encode("utf-8"),
+            final_system_location="messages",
+            final_system_message_index=system_index,
+            provider=provider.name,
+            model=config.model,
+        ))
     start = time.monotonic()
     response = http_client.post(
         _openai_chat_completions_url(base_url),

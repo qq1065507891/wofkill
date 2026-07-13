@@ -14,6 +14,10 @@ import time
 from typing import Any
 
 from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptAssembly,
+    FinalPromptObserver,
+)
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
 from werewolf_agent.model_gateway.structured_output import (
@@ -49,6 +53,7 @@ class AnthropicProvider(_BaseHttpProvider):
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        final_prompt_observer: FinalPromptObserver | None = None,
     ) -> GenerateResult:
         messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
         mode = resolve_structured_output_mode(
@@ -91,6 +96,16 @@ class AnthropicProvider(_BaseHttpProvider):
             payload["tools"] = tools
         if tool_choice and mode == StructuredOutputMode.NATIVE_TOOL:
             payload["tool_choice"] = tool_choice
+
+        if final_prompt_observer is not None:
+            system_content = str(payload.get("system") or "")
+            final_prompt_observer(FinalPromptAssembly(
+                system_bytes=system_content.encode("utf-8"),
+                final_system_location="system",
+                final_system_message_index=None,
+                provider=self.name,
+                model=config.model,
+            ))
 
         start = time.monotonic()
         response = self._http_client.post(

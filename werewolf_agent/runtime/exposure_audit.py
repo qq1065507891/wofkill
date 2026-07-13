@@ -96,12 +96,15 @@ _PROMPT_INJECTION_KEYS = frozenset({
     "sanitized",
 })
 _PERSONA_PROOF_KEYS = frozenset({
+    "final_system_location",
     "final_system_message_index",
     "message_char_count",
     "run_scoped_fingerprint",
     "confirmed_injection",
     "attempt_kind",
     "attempt_ordinal",
+    "provider",
+    "model",
     "sanitized",
 })
 _PROMPT_INJECTION_FIELDS = (
@@ -437,34 +440,78 @@ class ModuleExposureAuditCollector:
         attempt_ordinal: int | None = None,
         confirmed_injection: bool | None = None,
     ) -> None:
-        """根据最终 messages 生成不可跨 run 关联的 persona 注入证明。"""
+        """兼容旧调用：只记录 request assembly 调试证据，不确认 provider 注入。"""
+        self.record_persona_request_assembly(
+            identity,
+            messages,
+            persona_text,
+            attempt_kind,
+            attempt_ordinal=attempt_ordinal,
+        )
+
+    def record_persona_request_assembly(
+        self,
+        identity: DecisionIdentity,
+        messages: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+        persona_text: str | None,
+        attempt_kind: str,
+        *,
+        attempt_ordinal: int | None = None,
+    ) -> None:
+        """记录 provider 之前的组装调试信息；该事件不进入 confirmed 指标。"""
         system_index: int | None = None
         system_content = ""
         for index, message in enumerate(messages):
             if message.get("role") == "system":
                 system_index = index
                 system_content = str(message.get("content") or "")
-        if confirmed_injection is None:
-            confirmed_injection = bool(
-                system_index is not None
-                and persona_text
-                and persona_text in system_content
-            )
-        fingerprint = ""
-        if system_index is not None:
-            digest = hmac.new(
-                self._persona_proof_secret,
-                system_content.encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()[:24]
-            fingerprint = f"run_hmac_{digest}"
         proof = {
+            "final_system_location": "messages",
             "final_system_message_index": system_index,
             "message_char_count": len(system_content),
-            "run_scoped_fingerprint": fingerprint,
-            "confirmed_injection": bool(confirmed_injection),
+            "run_scoped_fingerprint": "",
+            "confirmed_injection": False,
             "attempt_kind": str(attempt_kind),
             "attempt_ordinal": attempt_ordinal,
+            "sanitized": True,
+        }
+        self._append(
+            "persona_request_assembly_audit",
+            identity,
+            {"proof": _sanitize_allowed(proof, _PERSONA_PROOF_KEYS)},
+        )
+
+    def record_provider_persona_prompt_proof(
+        self,
+        identity: DecisionIdentity,
+        system_bytes: bytes,
+        persona_text: str,
+        attempt_kind: str,
+        *,
+        attempt_ordinal: int | None,
+        provider: str,
+        model: str,
+        final_system_location: str,
+        final_system_message_index: int | None,
+    ) -> None:
+        """在 provider HTTP 前把真实 system 字节转为 run-scoped HMAC 证明。"""
+        digest = hmac.new(
+            self._persona_proof_secret,
+            system_bytes,
+            hashlib.sha256,
+        ).hexdigest()[:24]
+        fingerprint = f"run_hmac_{digest}"
+        persona_bytes = persona_text.encode("utf-8") if persona_text else b""
+        proof = {
+            "final_system_location": str(final_system_location),
+            "final_system_message_index": final_system_message_index,
+            "message_char_count": len(system_bytes.decode("utf-8")),
+            "run_scoped_fingerprint": fingerprint,
+            "confirmed_injection": bool(persona_bytes and persona_bytes in system_bytes),
+            "attempt_kind": str(attempt_kind),
+            "attempt_ordinal": attempt_ordinal,
+            "provider": str(provider),
+            "model": str(model),
             "sanitized": True,
         }
         dedupe_key = (
@@ -499,22 +546,59 @@ class ModuleExposureAuditCollector:
 
 
 def summarize_persona_prompt_confirmation(
-    events: list[GameEvent],
+    events: list[Any],
 ) -> dict[str, Any]:
     """按 decision identity 连接 persona 曝光和最终 system 注入证明。"""
+    if events and hasattr(events[0], "module_exposures"):
+        configured = {
+            str(trace.trace_id)
+            for trace in events
+            if any(exposure.module == "persona" for exposure in trace.module_exposures)
+        }
+        confirmed = {
+            str(trace.trace_id)
+            for trace in events
+            if str(trace.trace_id) in configured
+            and any(
+                exposure.module == "persona_prompt_confirmation"
+                and exposure.score == 1.0
+                for exposure in trace.module_exposures
+            )
+        }
+        return _persona_confirmation_summary(configured, confirmed)
+
+    def _type(event: Any) -> str:
+        if isinstance(event, dict):
+            return str(event.get("type") or "")
+        return str(getattr(event, "type", ""))
+
+    def _payload(event: Any) -> dict[str, Any]:
+        if isinstance(event, dict):
+            payload = event.get("payload", event)
+        else:
+            payload = getattr(event, "payload", {})
+        return payload if isinstance(payload, dict) else {}
+
     configured = {
-        str(event.payload.get("trace_id") or "")
+        str(_payload(event).get("trace_id") or "")
         for event in events
-        if event.type == "persona_exposure_audit"
-        and event.payload.get("trace_id")
+        if _type(event) == "persona_exposure_audit"
+        and _payload(event).get("trace_id")
     }
     confirmed = {
-        str(event.payload.get("trace_id") or "")
+        str(_payload(event).get("trace_id") or "")
         for event in events
-        if event.type == "persona_prompt_injection_audit"
-        and event.payload.get("trace_id") in configured
-        and bool((event.payload.get("proof") or {}).get("confirmed_injection"))
+        if _type(event) == "persona_prompt_injection_audit"
+        and _payload(event).get("trace_id") in configured
+        and bool((_payload(event).get("proof") or {}).get("confirmed_injection"))
     }
+    return _persona_confirmation_summary(configured, confirmed)
+
+
+def _persona_confirmation_summary(
+    configured: set[str],
+    confirmed: set[str],
+) -> dict[str, Any]:
     denominator = len(configured)
     return {
         "supported": denominator > 0,

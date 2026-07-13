@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-构建 PlayerAgent 每次生成尝试的最终消息，并记录 persona 注入证明。
+构建 PlayerAgent 生成请求，并把 provider 最终 system 观察器接入模型路由。
 
 作者: Project contributors
 创建日期: 2026-07-08
@@ -24,6 +24,7 @@ from werewolf_agent.agents.schemas import AgentContext, RetryInfo
 from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
 )
+from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ def _record_final_persona_proof(
     collector = getattr(context, "exposure_collector", None)
     if identity is None or collector is None or not context.persona_snapshot:
         return
-    collector.record_persona_prompt_proof(
+    collector.record_persona_request_assembly(
         identity,
         request.messages,
         persona_text,
@@ -125,49 +126,42 @@ def call_player_generation_request(
     generation_attempt_context: Any | None = None,
 ) -> Any:
     """使用已构建的请求调用模型路由。"""
-    before_count = len(getattr(generation_attempt_context, "attempts", ()))
-    try:
-        return _generate_player_response(
-            agent.model_router,
-            agent_id=agent.agent_id,
-            task_type=context.task_type.value,
-            prompt=request.prompt,
-            system_prompt=request.system_prompt,
-            tools=request.tools,
-            tool_choice=request.tool_choice,
-            structured_output_mode=request.structured_output_mode,
-            generation_attempt_context=generation_attempt_context,
-        )
-    finally:
-        _record_provider_fallback_proofs(
-            context,
-            request,
-            generation_attempt_context,
-            before_count,
-        )
+    persona_text = _render_persona_text(agent, context)
+    return _generate_player_response(
+        agent.model_router,
+        agent_id=agent.agent_id,
+        task_type=context.task_type.value,
+        prompt=request.prompt,
+        system_prompt=request.system_prompt,
+        tools=request.tools,
+        tool_choice=request.tool_choice,
+        structured_output_mode=request.structured_output_mode,
+        generation_attempt_context=generation_attempt_context,
+        final_prompt_observer=_build_provider_persona_observer(context, persona_text),
+    )
 
 
-def _record_provider_fallback_proofs(
+def _build_provider_persona_observer(
     context: AgentContext,
-    request: PlayerGenerationRequest,
-    generation_attempt_context: Any | None,
-    before_count: int,
-) -> None:
-    """为同一最终 messages 的 provider fallback 尝试补充证明。"""
+    persona_text: str,
+) -> Any | None:
+    """为本次玩家请求创建 provider 最终 system 观察回调。"""
     identity = getattr(context, "decision_identity", None)
     collector = getattr(context, "exposure_collector", None)
     if identity is None or collector is None or not context.persona_snapshot:
-        return
-    attempts = getattr(generation_attempt_context, "attempts", ())[before_count:]
-    for attempt in attempts:
-        route_kind = getattr(getattr(attempt, "route_kind", None), "value", "")
-        if route_kind != "provider_fallback":
-            continue
-        collector.record_persona_prompt_proof(
+        return None
+
+    def _observe(assembly: FinalPromptAssembly) -> None:
+        collector.record_provider_persona_prompt_proof(
             identity,
-            request.messages,
-            None,
-            "provider_fallback",
-            attempt_ordinal=getattr(attempt, "ordinal", None),
-            confirmed_injection=request.persona_confirmed_in_system,
+            assembly.system_bytes,
+            persona_text,
+            assembly.attempt_kind,
+            attempt_ordinal=assembly.attempt_ordinal,
+            provider=assembly.provider,
+            model=assembly.model,
+            final_system_location=assembly.final_system_location,
+            final_system_message_index=assembly.final_system_message_index,
         )
+
+    return _observe

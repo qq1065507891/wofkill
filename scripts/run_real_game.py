@@ -29,6 +29,9 @@ from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
     compute_wolf_plan_outcome_metrics,
 )
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
+from werewolf_agent.runtime.exposure_audit import (  # noqa: E402
+    summarize_persona_prompt_confirmation,
+)
 from scripts.run_real_game_reports import (  # noqa: E402
     _sep,
     check_leakage,
@@ -143,6 +146,9 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
 
     return {
         **reflection_metrics,
+        "persona_prompt_confirmation": summarize_persona_prompt_confirmation(
+            list(gs.events)
+        ),
         "fallback_rate": round(fallback_rate, 3),
         "fallback_count": fallback_count,
         "action_fallback_count": action_fallback_count,

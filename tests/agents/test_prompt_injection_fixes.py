@@ -205,7 +205,7 @@ def test_inject_vote_basis_helper_centralized():
     assert "speech_logic" in sd["vote_basis_hint"] or "vote_basis" in sd["vote_basis_hint"].lower()
 
 
-def test_generation_request_records_final_persona_system_message_for_retries():
+def test_generation_request_records_only_unconfirmed_assembly_debug_for_retries():
     """Initial、structured retry、semantic retry 都从最终 messages 组装取证。"""
     from werewolf_agent.agents.player_generation_request import build_player_generation_request
     from werewolf_agent.agents.schemas import AgentContext, RetryInfo, TaskType
@@ -243,11 +243,14 @@ def test_generation_request_records_final_persona_system_message_for_retries():
         build_player_generation_request(_Agent(), context, retry, StructuredOutputMode.NATIVE_TOOL)
         for retry in retries
     ]
-    proofs = [event.payload["proof"] for event in collector.flush_events()]
+    events = collector.flush_events()
+    proofs = [event.payload["proof"] for event in events]
 
     assert all(request.messages[0]["role"] == "system" for request in requests)
     assert all(request.messages[0]["content"] == request.system_prompt for request in requests)
     assert all(request.persona_confirmed_in_system for request in requests)
+    assert all(event.type == "persona_request_assembly_audit" for event in events)
+    assert all(proof["confirmed_injection"] is False for proof in proofs)
     assert [proof["attempt_kind"] for proof in proofs] == [
         "initial", "structured_retry", "semantic_retry",
     ]
@@ -260,6 +263,7 @@ def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch
     from werewolf_agent.agents.schemas import AgentContext, RetryInfo, TaskType
     from werewolf_agent.evaluation.trace_identity import DecisionIdentity
     from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
+    from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
     from werewolf_agent.model_gateway.structured_output import StructuredOutputMode
     from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 
@@ -294,6 +298,25 @@ def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch
     attempt_context = GenerationAttemptContext(run_scope="p001")
 
     def _fake_generate(*args, **kwargs):
+        observer = kwargs["final_prompt_observer"]
+        observer(FinalPromptAssembly(
+            system_bytes=b"system rules\npersona-final-fragment\nprimary-assembly",
+            final_system_location="messages",
+            final_system_message_index=0,
+            provider="primary",
+            model="primary-model",
+            attempt_kind="primary",
+            attempt_ordinal=1,
+        ))
+        observer(FinalPromptAssembly(
+            system_bytes=b"system rules\npersona-final-fragment\nfallback-assembly",
+            final_system_location="system",
+            final_system_message_index=None,
+            provider="anthropic",
+            model="fallback-model",
+            attempt_kind="provider_fallback",
+            attempt_ordinal=2,
+        ))
         attempt_context.attempts = (
             SimpleNamespace(route_kind=SimpleNamespace(value="primary"), ordinal=1),
             SimpleNamespace(route_kind=SimpleNamespace(value="provider_fallback"), ordinal=2),
@@ -307,10 +330,13 @@ def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch
     )
 
     events = collector.flush_events()
-    assert len(events) == 1
-    assert events[0].payload["trace_id"] == identity.trace_id()
-    assert events[0].payload["proof"]["attempt_kind"] == "provider_fallback"
-    assert events[0].payload["proof"]["confirmed_injection"] is True
+    assert len(events) == 2
+    assert all(event.payload["trace_id"] == identity.trace_id() for event in events)
+    fallback = events[1].payload["proof"]
+    assert fallback["attempt_kind"] == "provider_fallback"
+    assert fallback["final_system_location"] == "system"
+    assert fallback["final_system_message_index"] is None
+    assert fallback["confirmed_injection"] is True
 
 
 def test_villager_role_guide_is_concise():

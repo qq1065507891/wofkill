@@ -20,6 +20,7 @@ from werewolf_agent.evaluation.balance_public_claims import (
     unsupported_claims_in_text as _unsupported_claims_in_text,  # noqa: F401
     unsupported_public_fact_claim_count as _unsupported_public_fact_claim_count,
 )
+from werewolf_agent.runtime.exposure_audit import summarize_persona_prompt_confirmation
 
 _FAILURE_TRACE_FIELDS = ("fallback_reason", "parse_error", "structured_failure_reason")
 _POWER_ROLES = {"seer", "witch", "hunter", "idiot"}
@@ -93,6 +94,12 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     unsupported_public_fact_claim_count = sum(
         _unsupported_public_fact_claim_count(game) for game in games
     )
+    persona_prompt_confirmation = summarize_persona_prompt_confirmation([
+        event
+        for game in games
+        for event in game.get("events", [])
+        if isinstance(event, dict)
+    ])
     mean_vote_concentration = (
         sum(vote_concentrations) / len(vote_concentrations)
         if vote_concentrations else 0.0
@@ -153,6 +160,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         "template_vote_reason_rate": template_vote_reason_rate,
         "unsupported_public_fact_claim_count": unsupported_public_fact_claim_count,
         "weak_wolf_plan_kill_count": weak_wolf_plan_kill_count,
+        "persona_prompt_confirmation": persona_prompt_confirmation,
         "warnings": warnings,
     }
 

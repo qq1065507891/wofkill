@@ -18,6 +18,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.model_gateway.usage_records import GenerateResult, LLMProvider, ModelConfig
+from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver
 
 
 def _call_provider_generate(
@@ -28,8 +29,12 @@ def _call_provider_generate(
     *,
     tools: list[dict[str, Any]] | None,
     tool_choice: dict[str, Any] | None,
+    final_prompt_observer: FinalPromptObserver | None = None,
 ) -> GenerateResult:
     signature = inspect.signature(provider.generate)
+    kwargs: dict[str, Any] = {}
+    if "final_prompt_observer" in signature.parameters:
+        kwargs["final_prompt_observer"] = final_prompt_observer
     if "tools" in signature.parameters:
         return provider.generate(
             prompt,
@@ -37,6 +42,7 @@ def _call_provider_generate(
             system_prompt,
             tools=tools,
             tool_choice=tool_choice,
+            **kwargs,
         )
     return provider.generate(prompt, config, system_prompt)
 

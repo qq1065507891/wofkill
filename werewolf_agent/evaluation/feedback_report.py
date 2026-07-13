@@ -3,7 +3,7 @@
 功能描述：为反馈回路评估输出生成紧凑JSON报告，并携带脱敏监控摘要。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-10
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -27,6 +27,7 @@ from werewolf_agent.evaluation.feedback_schemas import (
     ImprovementCandidate,
 )
 from werewolf_agent.evaluation.regression_gate import CandidateRegressionReport
+from werewolf_agent.runtime.exposure_audit import summarize_persona_prompt_confirmation
 
 _ablation_to_dict = feedback_report_serialization.ablation_to_dict
 _candidate_prompt_payload = feedback_report_serialization.candidate_prompt_payload
@@ -62,6 +63,7 @@ class FeedbackReport:
     full_game_ablation_reports: list[FullGameAblationReport] = field(default_factory=list)
     candidate_gate_reports: list[CandidateRegressionReport] = field(default_factory=list)
     monitoring_exposures: list[dict[str, Any]] = field(default_factory=list)
+    persona_prompt_confirmation: dict[str, Any] = field(default_factory=dict)
 
     def to_json_dict(self, *, include_private_audit: bool = False) -> dict[str, Any]:
         failure_clusters = _failure_clusters(
@@ -113,6 +115,9 @@ class FeedbackReport:
                 for report in self.full_game_ablation_reports
             ],
             "monitoring_exposures": _public_safe_json(self.monitoring_exposures),
+            "persona_prompt_confirmation": _public_safe_json(
+                self.persona_prompt_confirmation
+            ),
         }
 
     def to_json(self, *, include_private_audit: bool = False) -> str:
@@ -150,6 +155,7 @@ def build_feedback_report(
         generated_at=generated_at,
         source_refs=_collect_source_refs(traces),
         monitoring_exposures=_monitoring_exposure_rows(traces),
+        persona_prompt_confirmation=summarize_persona_prompt_confirmation(traces),
     )
 
 
@@ -166,7 +172,11 @@ def _monitoring_exposure_rows(traces: list[EvaluationTrace]) -> list[dict[str, A
     for trace in traces:
         trace_hash = hashlib.sha256(trace.trace_id.encode("utf-8")).hexdigest()[:16]
         for exposure in trace.module_exposures:
-            if exposure.module not in {"skill_tool_calls", "prompt_injections"}:
+            if exposure.module not in {
+                "skill_tool_calls",
+                "prompt_injections",
+                "persona_prompt_confirmation",
+            }:
                 continue
             rows.append({
                 "trace_hash": trace_hash,

@@ -45,6 +45,13 @@ def test_recent_balance_report_includes_new_guardrails(tmp_path):
 
     report = build_recent_balance_report([path])
 
+    assert report["persona_prompt_confirmation"] == {
+        "supported": False,
+        "configured_action_count": 0,
+        "confirmed_action_count": 0,
+        "confirmation_rate": None,
+    }
+
     assert report["sheriff_werewolf_rate"] == 1.0
     assert report["sheriff_vote_fallback_rate"] == 1.0
     assert report["wolf_team_plan_fallback_rate"] == 1.0

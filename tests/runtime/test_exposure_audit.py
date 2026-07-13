@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -262,6 +261,9 @@ def test_persona_exposure_can_be_recorded_after_prompt_visible_attachment() -> N
 
 
 def test_persona_final_message_proof_is_private_and_run_scoped() -> None:
+    import hashlib
+    import hmac
+
     identity = _identity()
     persona_text = "persona-secret-text"
     messages = (
@@ -271,21 +273,33 @@ def test_persona_final_message_proof_is_private_and_run_scoped() -> None:
     first = ModuleExposureAuditCollector()
     second = ModuleExposureAuditCollector()
 
-    first.record_persona_prompt_proof(identity, messages, persona_text, "initial")
-    first.record_persona_prompt_proof(identity, messages, persona_text, "semantic_retry")
-    second.record_persona_prompt_proof(identity, messages, persona_text, "initial")
+    system_bytes = messages[0]["content"].encode("utf-8")
+    for collector, kind, ordinal in (
+        (first, "primary", 1),
+        (first, "semantic_retry", 2),
+        (second, "primary", 1),
+    ):
+        collector.record_provider_persona_prompt_proof(
+            identity, system_bytes, persona_text, kind,
+            attempt_ordinal=ordinal, provider="openai", model="m",
+            final_system_location="messages", final_system_message_index=0,
+        )
 
     first_rows = [
         event.payload["proof"] for event in first.flush_events()
         if event.type == "persona_prompt_injection_audit"
     ]
     second_row = second.flush_events()[0].payload["proof"]
-    assert [row["attempt_kind"] for row in first_rows] == ["initial", "semantic_retry"]
+    assert [row["attempt_kind"] for row in first_rows] == ["primary", "semantic_retry"]
     assert all(row["final_system_message_index"] == 0 for row in first_rows)
     assert all(row["message_char_count"] == len(messages[0]["content"]) for row in first_rows)
     assert all(row["confirmed_injection"] is True for row in first_rows)
     assert first_rows[0]["run_scoped_fingerprint"] == first_rows[1]["run_scoped_fingerprint"]
     assert first_rows[0]["run_scoped_fingerprint"] != second_row["run_scoped_fingerprint"]
+    expected = hmac.new(
+        first._persona_proof_secret, system_bytes, hashlib.sha256,
+    ).hexdigest()[:24]
+    assert first_rows[0]["run_scoped_fingerprint"] == f"run_hmac_{expected}"
     serialized = str(first_rows + [second_row]).lower()
     assert persona_text not in serialized
     assert "prompt" not in serialized
@@ -296,11 +310,10 @@ def test_persona_final_message_proof_is_private_and_run_scoped() -> None:
 def test_persona_confirmation_summary_joins_by_decision_identity() -> None:
     collector = ModuleExposureAuditCollector()
     collector.record_persona(_identity(), {"profile_id": "calm"})
-    collector.record_persona_prompt_proof(
-        _identity(),
-        ({"role": "system", "content": "rules persona"},),
-        "persona",
-        "structured_retry",
+    collector.record_provider_persona_prompt_proof(
+        _identity(), b"rules persona", "persona", "structured_retry",
+        attempt_ordinal=2, provider="openai", model="m",
+        final_system_location="messages", final_system_message_index=0,
     )
 
     summary = exposure_audit.summarize_persona_prompt_confirmation(collector.flush_events())
@@ -310,6 +323,28 @@ def test_persona_confirmation_summary_joins_by_decision_identity() -> None:
         "configured_action_count": 1,
         "confirmed_action_count": 1,
         "confirmation_rate": 1.0,
+    }
+
+
+def test_request_assembly_proof_cannot_confirm_provider_injection() -> None:
+    collector = ModuleExposureAuditCollector()
+    collector.record_persona(_identity(), {"profile_id": "calm"})
+    collector.record_persona_prompt_proof(
+        _identity(),
+        ({"role": "system", "content": "rules persona"},),
+        "persona",
+        "primary",
+    )
+
+    events = collector.flush_events()
+    assert [event.type for event in events] == [
+        "persona_exposure_audit", "persona_request_assembly_audit",
+    ]
+    assert exposure_audit.summarize_persona_prompt_confirmation(events) == {
+        "supported": True,
+        "configured_action_count": 1,
+        "confirmed_action_count": 0,
+        "confirmation_rate": 0.0,
     }
 
 

@@ -19,6 +19,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
+from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,7 @@ class LLMProvider(Protocol):
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        final_prompt_observer: FinalPromptObserver | None = None,
     ) -> GenerateResult: ...
 
 
@@ -174,7 +176,17 @@ class MockProvider:
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        final_prompt_observer: FinalPromptObserver | None = None,
     ) -> GenerateResult:
+        if final_prompt_observer is not None and system_prompt:
+            from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
+            final_prompt_observer(FinalPromptAssembly(
+                system_bytes=system_prompt.encode("utf-8"),
+                final_system_location="messages",
+                final_system_message_index=0,
+                provider=self.name,
+                model=config.model,
+            ))
         start = time.monotonic()
         text = f"[{self._name}:{config.model}] mock response"
         latency = int((time.monotonic() - start) * 1000)

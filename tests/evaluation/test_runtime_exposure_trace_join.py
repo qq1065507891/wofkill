@@ -369,3 +369,72 @@ def test_persona_exposure_metadata_keeps_only_safe_policy_fields() -> None:
         "policy_keys": ["risk"],
         "sanitized": True,
     }
+
+
+def test_persona_provider_proof_flows_through_trace_builder_and_feedback_report() -> None:
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+
+    trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
+    events = [
+        {
+            "type": "persona_exposure_audit",
+            "payload": {
+                "trace_id": trace_id,
+                "snapshot": {"profile_id": "logic_leader", "sanitized": True},
+            },
+        },
+        {
+            "type": "persona_prompt_injection_audit",
+            "payload": {
+                "trace_id": trace_id,
+                "proof": {
+                    "final_system_location": "system",
+                    "final_system_message_index": None,
+                    "message_char_count": 42,
+                    "run_scoped_fingerprint": "run_hmac_opaque",
+                    "confirmed_injection": True,
+                    "attempt_kind": "provider_fallback",
+                    "attempt_ordinal": 2,
+                    "provider": "anthropic",
+                    "model": "fallback-model",
+                    "sanitized": True,
+                },
+            },
+        },
+        # 同一 decision 的重复 provider attempt 不得重复计入 confirmed action。
+        {
+            "type": "persona_prompt_injection_audit",
+            "payload": {
+                "trace_id": trace_id,
+                "proof": {
+                    "final_system_location": "messages",
+                    "final_system_message_index": 0,
+                    "message_char_count": 42,
+                    "run_scoped_fingerprint": "run_hmac_other",
+                    "confirmed_injection": True,
+                    "attempt_kind": "provider_fallback",
+                    "attempt_ordinal": 3,
+                    "provider": "openai",
+                    "model": "fallback-model-2",
+                    "sanitized": True,
+                },
+            },
+        },
+        _action_event(trace_id),
+    ]
+
+    traces = EvaluationTraceBuilder().build(_result(events))
+    report = build_feedback_report(report_id="r1", batch_id="b1", traces=traces)
+    payload = report.to_json_dict()
+
+    proof_rows = [
+        row for row in payload["monitoring_exposures"]
+        if row["module"] == "persona_prompt_confirmation"
+    ]
+    assert len(proof_rows) == 2
+    assert payload["persona_prompt_confirmation"] == {
+        "supported": True,
+        "configured_action_count": 1,
+        "confirmed_action_count": 1,
+        "confirmation_rate": 1.0,
+    }
