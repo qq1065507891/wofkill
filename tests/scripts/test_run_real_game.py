@@ -429,6 +429,54 @@ def test_save_game_log_exports_complete_death_fields(tmp_path, monkeypatch) -> N
     ]
 
 
+def test_real_game_parser_accepts_output_directory(tmp_path) -> None:
+    from scripts import run_real_game
+
+    args = run_real_game._build_argument_parser().parse_args([
+        "--output-dir", str(tmp_path / "artifact"),
+    ])
+
+    assert args.output_dir == tmp_path / "artifact"
+
+
+def test_save_game_log_uses_explicit_output_directory(tmp_path) -> None:
+    from scripts import run_real_game
+
+    runner = SimpleNamespace(
+        game_id="g_isolated",
+        state=GameState(game_id="g_isolated"),
+        step_count=1,
+    )
+    output_dir = tmp_path / "artifact"
+
+    path = run_real_game.save_game_log(runner, elapsed=0.1, output_dir=output_dir)
+
+    assert path == output_dir / "game_g_isolated.json"
+    assert path.exists()
+
+
+def test_low_quality_game_stays_under_explicit_output_directory(
+    tmp_path, monkeypatch
+) -> None:
+    from scripts import run_real_game
+
+    runner = SimpleNamespace(
+        game_id="g_low",
+        state=GameState(game_id="g_low"),
+        step_count=1,
+    )
+    monkeypatch.setattr(run_real_game, "compute_game_quality_score", lambda _runner: {
+        "fallback_rate": 1.0,
+        "total_quality_events": 6,
+    })
+    output_dir = tmp_path / "artifact"
+
+    path = run_real_game.save_game_log(runner, elapsed=0.1, output_dir=output_dir)
+
+    assert path == output_dir / "low_quality_games" / "game_g_low.json"
+    assert path.exists()
+
+
 def test_quality_score_counts_wolf_team_plan_fallbacks() -> None:
     from scripts import run_real_game
 

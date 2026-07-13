@@ -268,21 +268,29 @@ def _safe_event_payload(event_type: str, payload: dict) -> dict:
     }
 
 
-def save_game_log(runner: GameRunner, elapsed: float) -> Path:
+def save_game_log(
+    runner: GameRunner,
+    elapsed: float,
+    *,
+    output_dir: str | Path | None = None,
+) -> Path:
+    """保存单局 JSON；显式目录用于隔离批量验收产物。"""
     gs = runner.state
     quality = compute_game_quality_score(runner)
     is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_quality_events"] > 5
+    artifact_root = Path(output_dir) if output_dir is not None else ROOT
+    artifact_root.mkdir(parents=True, exist_ok=True)
 
     if is_low_quality:
-        low_q_dir = ROOT / "low_quality_games"
-        low_q_dir.mkdir(exist_ok=True)
+        low_q_dir = artifact_root / "low_quality_games"
+        low_q_dir.mkdir(parents=True, exist_ok=True)
         log_path = low_q_dir / f"game_{runner.game_id}.json"
         logger.warning(
             "Low quality game (fallback_rate=%.1f%%, %d quality events) — saved to %s",
             quality["fallback_rate"] * 100, quality["total_quality_events"], log_path,
         )
     else:
-        log_path = ROOT / f"game_{runner.game_id}.json"
+        log_path = artifact_root / f"game_{runner.game_id}.json"
 
     log_data = {
         "game_id": gs.game_id,
@@ -318,15 +326,26 @@ def save_game_log(runner: GameRunner, elapsed: float) -> Path:
 
 # ── main ─────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    _configure_file_logging()
+def _build_argument_parser() -> argparse.ArgumentParser:
+    """构建真实游戏 CLI 参数，供入口和无副作用测试复用。"""
     parser = argparse.ArgumentParser(description="Run a real 12-player werewolf game")
     parser.add_argument("--seed", type=int, default=None, help="Game seed (default: auto)")
     parser.add_argument("--max-steps", type=int, default=500, help="Max graph steps")
     parser.add_argument("--timeout", type=float, default=120.0, help="Agent timeout (seconds)")
     parser.add_argument("--no-timeout", action="store_true", help="Disable agent timeout")
     parser.add_argument("--delay", type=int, default=0, help="Inter-call delay ms (0=random 3-6s, >0=fixed, <0=none)")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory for this game's JSON artifact (default: repository root)",
+    )
+    return parser
+
+
+def main() -> None:
+    _configure_file_logging()
+    args = _build_argument_parser().parse_args()
 
     load_local_dotenv(ROOT / ".env")
 
@@ -440,7 +459,7 @@ def main() -> None:
         runner.step_count, elapsed, quality["fallback_rate"],
     )
 
-    log_path = save_game_log(runner, elapsed)
+    log_path = save_game_log(runner, elapsed, output_dir=args.output_dir)
     print(f"\n  Game log: {log_path}")
 
     # Also generate audit markdown if script exists
