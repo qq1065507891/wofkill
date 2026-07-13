@@ -282,11 +282,18 @@ def compute_decision_execution_metrics(
             attempt.route_kind is RouteKind.PROVIDER_FALLBACK
             for attempt in translated.attempts
         )
-        if has_provider_fallback and translated.outcome is not DecisionOutcome.TERMINAL_FALLBACK:
+        if (
+            has_provider_fallback
+            and translated.outcome is not DecisionOutcome.TERMINAL_FALLBACK
+            and minimum_level is not None
+        ):
             fallback_request_count += 1
             final = translated.final_attempt
             if (
-                final.requested_reasoning_level is not ReasoningLevel.NONE
+                reasoning_capability_satisfies(
+                    final.requested_reasoning_level.value,
+                    minimum_level.value,
+                )
                 and final.normalized_reasoning_status
                 not in {ReasoningStatus.UNSUPPORTED, ReasoningStatus.FALLBACK_DISABLED}
             ):

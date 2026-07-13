@@ -309,6 +309,48 @@ def test_none_only_reasoning_has_independent_unsupported_confirmation_rate() -> 
     assert metrics["critical_task_reasoning_request_coverage_supported"] is False
 
 
+def test_provider_fallback_keep_requires_critical_task_policy_minimum() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    first = _attempt(
+        1,
+        RouteKind.PRIMARY,
+        AttemptOutcome.FAILURE,
+        cause=RootCause.PROVIDER_ERROR,
+    )
+    medium_fallback = replace(
+        _attempt(
+            2,
+            RouteKind.PROVIDER_FALLBACK,
+            AttemptOutcome.SUCCESS,
+            provider="backup",
+            reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+        ),
+        requested_reasoning_level=ReasoningLevel.MEDIUM,
+    )
+    metrics = compute_decision_execution_metrics([{"events": [
+        {
+            "type": "action_trace_audit",
+            "payload": {
+                "task_type": "wolf_team_plan",
+                "action_trace": {"execution_attempts": (first, medium_fallback)},
+            },
+        },
+        {
+            "type": "action_trace_audit",
+            "payload": {
+                "task_type": "judge_phase",
+                "action_trace": {"execution_attempts": (first, medium_fallback)},
+            },
+        },
+    ]}])
+
+    assert metrics["reasoning_fallback_keep_metrics_supported"] is True
+    assert metrics["reasoning_fallback_request_count"] == 1
+    assert metrics["reasoning_fallback_keep_count"] == 0
+    assert metrics["reasoning_fallback_keep_rate"] == 0.0
+
+
 def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 
