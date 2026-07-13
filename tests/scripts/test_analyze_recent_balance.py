@@ -73,12 +73,15 @@ def test_soak_script_is_isolated_and_uses_exact_default_seeds() -> None:
     assert "$PSScriptRoot" in text
     assert "$runnerScript" in text
     assert "$analyzerScript" in text
+    assert "$thresholdEvaluatorScript" in text
     assert "Push-Location" in text
     assert "try {" in text
     assert "finally {" in text
     assert "Pop-Location" in text
     assert "--output-dir $outputDir" in text
     assert "audit-closure-report.json" in text
+    assert "audit-closure-thresholds.json" in text
+    assert "Test-Path -LiteralPath $thresholdPath" in text
     assert "Get-ChildItem" not in text
 
 

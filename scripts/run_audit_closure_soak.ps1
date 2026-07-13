@@ -38,6 +38,9 @@ $runnerScript = (Resolve-Path -LiteralPath (
 $analyzerScript = (Resolve-Path -LiteralPath (
     Join-Path $PSScriptRoot 'analyze_recent_balance.py'
 )).Path
+$thresholdEvaluatorScript = (Resolve-Path -LiteralPath (
+    Join-Path $PSScriptRoot 'evaluate_audit_closure_thresholds.py'
+)).Path
 $runId = Get-Date -Format 'yyyyMMdd-HHmmss'
 $outputDir = Join-Path $root "artifacts/audit_closure_soak/$runId"
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -81,6 +84,17 @@ try {
     }
     $reportJson | Set-Content -LiteralPath $reportPath -Encoding utf8
     Write-Host "Audit closure report: $reportPath"
+
+    $thresholdPath = Join-Path $outputDir 'audit-closure-thresholds.json'
+    & python $thresholdEvaluatorScript $reportPath $thresholdPath
+    $thresholdExitCode = $LASTEXITCODE
+    if (-not (Test-Path -LiteralPath $thresholdPath)) {
+        throw "Threshold evaluator did not write $thresholdPath"
+    }
+    Write-Host "Audit closure thresholds: $thresholdPath"
+    if ($thresholdExitCode -ne 0) {
+        throw "Audit closure hard thresholds failed; inspect $thresholdPath"
+    }
 }
 finally {
     Pop-Location

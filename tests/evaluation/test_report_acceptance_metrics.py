@@ -448,10 +448,14 @@ def test_semantic_repair_rates_keep_invariants_as_independent_numerators() -> No
         {"type": "semantic_repair_audit", "payload": {
             "repairable": True, "success": True,
             "target_preserved": False, "introduced_claim_count": 0,
+            "verified_claim_count": 1, "retained_verified_claim_count": 0,
+            "generic_template_used": False,
         }},
         {"type": "semantic_repair_audit", "payload": {
             "repairable": True, "success": False,
             "target_preserved": True, "introduced_claim_count": 1,
+            "verified_claim_count": 1, "retained_verified_claim_count": 1,
+            "generic_template_used": True,
         }},
     ]}])
 
@@ -459,6 +463,31 @@ def test_semantic_repair_rates_keep_invariants_as_independent_numerators() -> No
     assert metrics["semantic_repair_success_rate"] == 0.0
     assert metrics["semantic_repair_target_preservation_rate"] == 0.5
     assert metrics["semantic_repair_no_new_claim_rate"] == 0.5
+    assert metrics["semantic_repair_verified_claim_retention_metrics_supported"] is True
+    assert metrics["semantic_repair_verified_claim_retention_rate"] == 0.5
+    assert metrics["semantic_repair_generic_template_count"] == 1
+
+
+def test_report_exports_threshold_support_metrics() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    report = compute_balance_audit([{
+        "winning_faction": "good",
+        "events": [{"type": "reflection_complete", "payload": {"entries": [{
+            "player_id": "p01",
+            "verification": {
+                "rejected_fact_count": 1,
+                "persisted_rejected_fact_count": 0,
+            },
+        }]}}],
+    }])
+
+    assert report["completion_rate"] == 1.0
+    assert report["persona_exposure_linkage_rate"] is None
+    assert report["critical_task_reasoning_status_metrics_supported"] is False
+    assert report["critical_task_reasoning_status_explicit_rate"] is None
+    assert report["reflection_contamination_metrics_supported"] is True
+    assert report["reflection_persisted_rejected_fact_count"] == 0
 
 
 def test_possible_world_uniqueness_is_grouped_per_prompt() -> None:

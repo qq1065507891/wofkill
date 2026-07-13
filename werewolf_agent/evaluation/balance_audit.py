@@ -59,6 +59,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     game_count = len(games)
     wolf_wins = sum(1 for game in games if game.get("winning_faction") == "werewolf")
     good_wins = sum(1 for game in games if game.get("winning_faction") == "good")
+    completed_games = wolf_wins + good_wins
 
     action_trace_records = list(_iter_action_trace_records(games))
     action_traces = [record["trace"] for record in action_trace_records]
@@ -152,6 +153,8 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "games": game_count,
+        "completed_game_count": completed_games,
+        "completion_rate": completed_games / game_count if game_count else None,
         "wolf_win_rate": wolf_win_rate,
         "good_win_rate": good_win_rate,
         "fallback_action_rate": fallback_action_rate,
@@ -185,6 +188,12 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
             persona_prompt_confirmation["supported"]
         ),
         "persona_injection_confirmation_rate": (
+            persona_prompt_confirmation["confirmation_rate"]
+        ),
+        "persona_exposure_linkage_metrics_supported": (
+            persona_prompt_confirmation["supported"]
+        ),
+        "persona_exposure_linkage_rate": (
             persona_prompt_confirmation["confirmation_rate"]
         ),
         **acceptance_metrics,
@@ -338,6 +347,51 @@ def compute_decision_execution_metrics(
             if critical_request_count else None
         ),
         "reasoning_task_type_missing_count": missing_task_type_count,
+        **_critical_reasoning_status_metrics(games),
+    }
+
+
+def _critical_reasoning_status_metrics(
+    games: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """统计关键玩家请求是否为每个 attempt 显式记录推理状态。"""
+    total = 0
+    explicit = 0
+    for record in _iter_action_trace_records(games):
+        task_type = record.get("explicit_task_type")
+        if not task_type:
+            continue
+        try:
+            minimum = minimum_reasoning_level(str(task_type))
+        except ValueError:
+            continue
+        if minimum is ReasoningLevel.NONE:
+            continue
+        total += 1
+        attempts = record["trace"].get("execution_attempts")
+        if not isinstance(attempts, (list, tuple)) or not attempts:
+            continue
+        statuses: list[Any] = []
+        for attempt in attempts:
+            if isinstance(attempt, AttemptExecutionRecord):
+                statuses.append(attempt.normalized_reasoning_status)
+            elif isinstance(attempt, dict):
+                statuses.append(attempt.get("normalized_reasoning_status"))
+            else:
+                statuses.append(None)
+        if all(
+            isinstance(status, ReasoningStatus)
+            or status in {item.value for item in ReasoningStatus}
+            for status in statuses
+        ):
+            explicit += 1
+    return {
+        "critical_task_reasoning_status_metrics_supported": total > 0,
+        "critical_task_reasoning_status_request_count": total,
+        "critical_task_reasoning_status_explicit_count": explicit,
+        "critical_task_reasoning_status_explicit_rate": (
+            explicit / total if total else None
+        ),
     }
 
 
@@ -359,6 +413,8 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
     post_win_calls = 0
     rejected_facts = 0
     rejected_lessons = 0
+    reflection_entry_count = 0
+    persisted_rejected_facts = 0
 
     for game in games:
         events = game.get("events", [])
@@ -406,9 +462,13 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
                 evidence = trace.get("power_role_evidence")
                 power_decisions.append(evidence if isinstance(evidence, dict) else {})
         for _, verification in latest_reflections.values():
+            reflection_entry_count += 1
             rejected_facts += _non_negative_int(verification.get("rejected_fact_count"))
             rejected_lessons += _non_negative_int(
                 verification.get("rejected_lesson_count")
+            )
+            persisted_rejected_facts += _non_negative_int(
+                verification.get("persisted_rejected_fact_count")
             )
 
     semantic_count = len(semantic_rows)
@@ -420,6 +480,17 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
     no_new_claim = sum(
         _non_negative_int(row.get("introduced_claim_count")) == 0
         for row in semantic_rows
+    )
+    retention_rows = [
+        row for row in semantic_rows
+        if _non_negative_int(row.get("verified_claim_count")) > 0
+    ]
+    retained_verified_claims = sum(
+        _non_negative_int(row.get("retained_verified_claim_count")) > 0
+        for row in retention_rows
+    )
+    generic_template_count = sum(
+        row.get("generic_template_used") is True for row in semantic_rows
     )
     world_count = sum(len(group) for group in world_groups)
     unique_world_count = sum(
@@ -458,6 +529,18 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
         "semantic_repair_no_new_claim_rate": (
             no_new_claim / semantic_count if semantic_count else None
         ),
+        "semantic_repair_generic_template_count": generic_template_count,
+        "semantic_repair_verified_claim_retention_metrics_supported": (
+            bool(retention_rows)
+        ),
+        "semantic_repair_verified_claim_retention_eligible_count": (
+            len(retention_rows)
+        ),
+        "semantic_repair_verified_claim_retained_count": retained_verified_claims,
+        "semantic_repair_verified_claim_retention_rate": (
+            retained_verified_claims / len(retention_rows)
+            if retention_rows else None
+        ),
         "possible_world_metrics_supported": world_count > 0,
         "possible_world_prompt_count": len(world_groups),
         "possible_world_total_count": world_count,
@@ -477,6 +560,8 @@ def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "reflection_rejected_fact_count": rejected_facts,
         "reflection_rejected_lesson_count": rejected_lessons,
+        "reflection_contamination_metrics_supported": reflection_entry_count > 0,
+        "reflection_persisted_rejected_fact_count": persisted_rejected_facts,
     }
 
 
