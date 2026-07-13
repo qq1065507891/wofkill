@@ -220,6 +220,44 @@ def _final_hybrid_fields(gs) -> dict[str, str | None]:
     return fields
 
 
+def _safe_event_payload(event_type: str, payload: dict) -> dict:
+    """过滤日志中的反思原始草稿和 provider 响应，仅保留核验摘要。"""
+    if event_type != "reflection_complete":
+        return payload
+    safe_entries: list[dict] = []
+    for entry in payload.get("entries", []):
+        if not isinstance(entry, dict):
+            continue
+        verification = entry.get("verification", {})
+        if not isinstance(verification, dict):
+            verification = {}
+        lessons = [
+            {
+                "lesson_id": str(lesson.get("lesson_id") or ""),
+                "abstraction": str(lesson.get("abstraction") or ""),
+            }
+            for lesson in verification.get("verified_lessons", [])
+            if isinstance(lesson, dict)
+        ]
+        safe_entries.append({
+            "player_id": str(entry.get("player_id") or ""),
+            "role": str(entry.get("role") or ""),
+            "alive": bool(entry.get("alive", False)),
+            "verification": {
+                "status": str(verification.get("status") or ""),
+                "verified_fact_count": int(verification.get("verified_fact_count") or 0),
+                "verified_lessons": lessons,
+                "rejected_fact_count": int(verification.get("rejected_fact_count") or 0),
+                "rejected_lesson_count": int(verification.get("rejected_lesson_count") or 0),
+            },
+        })
+    return {
+        "visibility": "moderator_only",
+        "player_count": int(payload.get("player_count") or len(safe_entries)),
+        "entries": safe_entries,
+    }
+
+
 def save_game_log(runner: GameRunner, elapsed: float) -> Path:
     gs = runner.state
     quality = compute_game_quality_score(runner)
@@ -256,7 +294,10 @@ def save_game_log(runner: GameRunner, elapsed: float) -> Path:
             }
             for d in gs.deaths
         ],
-        "events": [{"type": e.type, "payload": e.payload} for e in gs.events],
+        "events": [
+            {"type": e.type, "payload": _safe_event_payload(e.type, e.payload)}
+            for e in gs.events
+        ],
         "elapsed_seconds": round(elapsed, 1),
         "steps": runner.step_count,
         "quality_score": quality,

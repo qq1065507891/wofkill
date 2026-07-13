@@ -70,6 +70,7 @@ def _agent_reflection(
             player=player,
             winner=winner,
             hybrid_master_faction=gs.hybrid_master_faction,
+            state=gs,
         )
         reflection_directive = {
             "reflection_task": reflection_task,
@@ -83,8 +84,42 @@ def _agent_reflection(
         context = merge_directive(context, reflection_directive)
 
         action, _retry_info = agent.act(context)
-        from werewolf_agent.memory.store import _scrub_player_ids
-        return {"reflection_text": _scrub_player_ids(getattr(action, "speech", "") or "")}
+        raw_draft = getattr(action, "speech", "") or ""
+        from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids
+        from werewolf_agent.memory.reflection_synthesis import (
+            parse_reflection_draft,
+            verify_reflection_draft,
+        )
+
+        draft = parse_reflection_draft(raw_draft)
+        if draft is None:
+            return {"reflection_verification": {
+                "status": "invalid_structured_draft",
+                "verified_fact_count": 0,
+                "verified_lessons": [],
+                "rejected_fact_count": 0,
+                "rejected_lesson_count": 0,
+            }}
+        verification = verify_reflection_draft(draft, gs)
+        return {"reflection_verification": {
+            "status": "verified",
+            "verified_fact_count": len(verification.verified_claims),
+            "verified_lessons": [
+                {
+                    "lesson_id": lesson.lesson_id,
+                    "abstraction": anonymize_player_ids(lesson.abstraction),
+                }
+                for lesson in verification.verified_lessons
+            ],
+            "rejected_fact_count": verification.rejected_fact_count,
+            "rejected_lesson_count": verification.rejected_lesson_count,
+        }}
     except Exception:
         logger.warning("Reflection failed for %s", player_id, exc_info=True)
-        return {"reflection_text": ""}
+        return {"reflection_verification": {
+            "status": "agent_error",
+            "verified_fact_count": 0,
+            "verified_lessons": [],
+            "rejected_fact_count": 0,
+            "rejected_lesson_count": 0,
+        }}

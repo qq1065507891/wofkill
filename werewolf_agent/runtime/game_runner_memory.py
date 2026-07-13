@@ -52,10 +52,6 @@ class GameRunnerMemoryMixin:
                 ReflectionSynthesizer,
             )
             from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids
-            from werewolf_agent.memory.reflection_synthesis import (
-                parse_reflection_draft,
-                verify_reflection_draft,
-            )
 
             mem_store = self._cognition_state_manager.memory_store
             player_ids = list(self._state.players.keys())
@@ -84,20 +80,19 @@ class GameRunnerMemoryMixin:
                 },
                 generate_reflection=False,
             )
-            self_reviews = self._latest_self_reviews()
+            verified_reflections = self._latest_verified_reflections()
             synthesizer = ReflectionSynthesizer()
             for report in reports:
-                raw_draft = self_reviews.get(report.player_id, "")
-                draft = parse_reflection_draft(raw_draft)
-                if draft is None:
-                    continue
-                verification = verify_reflection_draft(draft, self._state)
-                if not verification.verified_lessons:
+                verification = verified_reflections.get(report.player_id, {})
+                lessons = verification.get("verified_lessons", [])
+                if not isinstance(lessons, list) or not lessons:
                     continue
                 verified_text = "\n".join(
-                    anonymize_player_ids(lesson.abstraction)
-                    for lesson in verification.verified_lessons
+                    anonymize_player_ids(str(lesson.get("abstraction") or ""))
+                    for lesson in lessons if isinstance(lesson, dict)
                 )
+                if not verified_text.strip():
+                    continue
                 role = ground_truth.get(report.player_id, report.role)
                 master_faction = (
                     self._state.hybrid_master_faction
@@ -146,20 +141,25 @@ class GameRunnerMemoryMixin:
                 exc_info=True,
             )
 
-    def _latest_self_reviews(self) -> dict[str, str]:
+    def _latest_verified_reflections(self) -> dict[str, dict]:
         for event in reversed(self._state.events):
             if event.type != "reflection_complete":
                 continue
             entries = event.payload.get("entries", [])
-            result: dict[str, str] = {}
+            result: dict[str, dict] = {}
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
                 pid = str(entry.get("player_id", ""))
-                if pid:
-                    result[pid] = str(entry.get("reflection", "") or "")
+                verification = entry.get("verification")
+                if pid and isinstance(verification, dict):
+                    result[pid] = verification
             return result
         return {}
+
+    def _latest_self_reviews(self) -> dict[str, dict]:
+        """兼容旧调用名；只返回已核验的安全摘要，不返回 provider 草稿。"""
+        return self._latest_verified_reflections()
 
 
 __all__ = ["GameRunnerMemoryMixin"]

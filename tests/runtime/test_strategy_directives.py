@@ -3558,15 +3558,11 @@ class TestReflectionRoleSpecific:
             f"_agent_reflection should use TaskType.REFLECTION to bypass "
             f"public-speech 4-field check, got {captured['task_type']!r}"
         )
-        # P0-RF2: returned text is post-processed (raw p\d+ replaced)
-        assert "p03" not in result["reflection_text"], (
-            f"reflection_text should be scrubbed of p\\d+ ids, got: "
-            f"{result['reflection_text']!r}"
-        )
-        assert "[玩家ID已省略]" in result["reflection_text"]
+        assert result["reflection_verification"]["status"] == "invalid_structured_draft"
+        assert "reflection_text" not in result
 
-    def test_agent_reflection_scrubs_player_ids(self, monkeypatch) -> None:
-        """P0-RF2: _agent_reflection 返回的 reflection_text 走 _scrub_player_ids。"""
+    def test_agent_reflection_rejects_unstructured_draft_without_exposure(self, monkeypatch) -> None:
+        """非结构化 provider 草稿不得通过 reflection_text 暴露给运行时。"""
         from werewolf_agent.runtime import agent_adapter as aa
 
         def fake_build_agent_context(engine, gs, player_id, task_type, **kwargs):
@@ -3613,11 +3609,10 @@ class TestReflectionRoleSpecific:
             registry=FakeRegistry("我查杀了 p03,后来 p05 也查杀了 p07,他们都死了"),
             player_id="p01",
         )
-        text = result["reflection_text"]
-        assert "p03" not in text
-        assert "p05" not in text
-        assert "p07" not in text
-        assert text.count("[玩家ID已省略]") == 3
+        verification = result["reflection_verification"]
+        assert verification["status"] == "invalid_structured_draft"
+        assert verification["verified_lessons"] == []
+        assert "reflection_text" not in result
 
 
 class TestReflectionCrossGameLearning:

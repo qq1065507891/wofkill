@@ -13,7 +13,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from werewolf_agent.core.models import GameState
 
 
 GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
@@ -65,10 +68,80 @@ def build_reflection_prompt(
     player: Any,
     winner: str,
     hybrid_master_faction: str | None,
+    state: GameState | None = None,
 ) -> str:
     """生成角色复盘提示，并强制结构化事实与经验依赖协议。"""
     prompt = _build_reflection_prompt_text(player, winner, hybrid_master_faction)
-    return f"{prompt}\n\n{STRUCTURED_REFLECTION_PROTOCOL}"
+    if state is None:
+        return f"{prompt}\n\n{STRUCTURED_REFLECTION_PROTOCOL}"
+    refs = build_verifiable_event_refs(state)
+    refs_json = json.dumps(refs, ensure_ascii=False, separators=(",", ":"))
+    return (
+        f"{prompt}\n\n{STRUCTURED_REFLECTION_PROTOCOL}\n"
+        "以下引用仅供赛后 moderator 核验，禁止复述隐藏推理或 provider 原文。\n"
+        f"VERIFIABLE_EVENT_REFS_JSON={refs_json}"
+    )
+
+
+def build_verifiable_event_refs(state: GameState) -> list[dict[str, Any]]:
+    """生成与核验器同源的赛后绝对事件引用，不包含模型原文。"""
+    refs: list[dict[str, Any]] = []
+    witch_id = next(
+        (pid for pid, candidate in state.players.items() if candidate.role == "witch"),
+        "",
+    )
+    for index, event in enumerate(state.events):
+        event_ref = f"{state.game_id}:{index}"
+        payload = event.payload or {}
+        common = {
+            "event_ref": event_ref,
+            "event_type": event.type,
+            "visibility": "moderator_postgame",
+        }
+        if event.type == "roles_assigned":
+            refs.extend({
+                **common,
+                "claim_type": "role",
+                "subject_id": pid,
+                "value": candidate.role,
+            } for pid, candidate in sorted(state.players.items()))
+        elif event.type == "role_revealed":
+            refs.append({
+                **common,
+                "claim_type": "role",
+                "subject_id": str(payload.get("player_id") or ""),
+                "value": str(payload.get("role") or ""),
+            })
+        elif event.type == "vote":
+            refs.append({
+                **common,
+                "claim_type": "vote",
+                "subject_id": str(payload.get("voter") or ""),
+                "target_id": str(payload.get("target") or ""),
+            })
+        elif event.type == "vote_resolved":
+            refs.extend({
+                **common,
+                "claim_type": "vote",
+                "subject_id": str(vote.get("voter") or ""),
+                "target_id": str(vote.get("target") or ""),
+            } for vote in payload.get("votes", []) if isinstance(vote, dict))
+        elif event.type == "player_died":
+            refs.append({
+                **common,
+                "claim_type": "death",
+                "subject_id": str(payload.get("player_id") or ""),
+                "value": str(payload.get("reason") or ""),
+            })
+        elif event.type in {"witch_antidote_used", "witch_poison_used"}:
+            refs.append({
+                **common,
+                "claim_type": "potion",
+                "subject_id": witch_id,
+                "target_id": str(payload.get("target_id") or ""),
+                "value": "antidote" if event.type == "witch_antidote_used" else "poison",
+            })
+    return refs
 
 
 GOOD_REFLECTION_TEMPLATE = """你是{role},本局好人阵营{faction_result}。请按以下结构复盘:

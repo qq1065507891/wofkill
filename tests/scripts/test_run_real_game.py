@@ -11,14 +11,13 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from scripts.run_real_game import print_quality_audit
+from scripts.run_real_game import _safe_event_payload, print_quality_audit
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 
 
 def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately() -> None:
     from scripts import run_real_game
 
-    draft = '{"claims":[{"claim_id":"c1","event_ref":"g1:0","claim_type":"vote","subject_id":"p01","target_id":"p03"}],"lessons":[{"lesson_id":"l1","abstraction":"先核验票型","claim_dependencies":["c1"]}]}'
     gs = GameState(
         game_id="g1",
         players={
@@ -27,7 +26,16 @@ def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately(
         },
         events=[
             GameEvent(type="vote", payload={"voter": "p01", "target": "p02"}),
-            GameEvent(type="reflection_complete", payload={"entries": [{"player_id": "p01", "reflection": draft}]}),
+            GameEvent(type="reflection_complete", payload={"entries": [{
+                "player_id": "p01",
+                "verification": {
+                    "status": "verified",
+                    "verified_fact_count": 0,
+                    "verified_lessons": [],
+                    "rejected_fact_count": 1,
+                    "rejected_lesson_count": 1,
+                },
+            }]}),
         ],
     )
 
@@ -35,6 +43,31 @@ def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately(
 
     assert quality["reflection_rejected_fact_count"] == 1
     assert quality["reflection_rejected_lesson_count"] == 1
+
+
+def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
+    payload = {
+        "visibility": "moderator_only",
+        "player_count": 1,
+        "entries": [{
+            "player_id": "p01",
+            "role": "seer",
+            "reflection": "RAW_PROVIDER_DRAFT",
+            "provider_response": {"thinking": "SECRET"},
+            "verification": {
+                "status": "verified", "verified_fact_count": 1,
+                "verified_lessons": [{"lesson_id": "l1", "abstraction": "先复核公开票型"}],
+                "rejected_fact_count": 0, "rejected_lesson_count": 0,
+            },
+        }],
+    }
+
+    safe = _safe_event_payload("reflection_complete", payload)
+    serialized = json.dumps(safe, ensure_ascii=False)
+
+    assert "RAW_PROVIDER_DRAFT" not in serialized
+    assert "SECRET" not in serialized
+    assert safe["entries"][0]["verification"]["verified_fact_count"] == 1
 
 
 def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():

@@ -967,6 +967,16 @@ class TestGameRunnerMemoryLifecycle:
                                 "player_id": "p01",
                                 "role": "seer",
                                 "alive": True,
+                                "verification": {
+                                    "status": "verified",
+                                    "verified_fact_count": 1,
+                                    "verified_lessons": [{
+                                        "lesson_id": "l1",
+                                        "abstraction": "历史玩家A 在对跳局需要先核验警徽流。",
+                                    }],
+                                    "rejected_fact_count": 0,
+                                    "rejected_lesson_count": 0,
+                                },
                                 "reflection": json.dumps({
                                     "claims": [{
                                         "claim_id": "c1",
@@ -986,6 +996,16 @@ class TestGameRunnerMemoryLifecycle:
                                 "player_id": "p02",
                                 "role": "werewolf",
                                 "alive": False,
+                                "verification": {
+                                    "status": "verified",
+                                    "verified_fact_count": 1,
+                                    "verified_lessons": [{
+                                        "lesson_id": "l2",
+                                        "abstraction": "历史玩家A 下次悍跳前要统一警徽流口径。",
+                                    }],
+                                    "rejected_fact_count": 0,
+                                    "rejected_lesson_count": 0,
+                                },
                                 "reflection": json.dumps({
                                     "claims": [{
                                         "claim_id": "c2",

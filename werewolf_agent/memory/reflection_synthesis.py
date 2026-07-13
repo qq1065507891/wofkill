@@ -102,6 +102,7 @@ class ReflectionVerification(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    verified_claims: list[ReflectionClaim] = Field(default_factory=list)
     verified_lessons: list[ReflectionLesson] = Field(default_factory=list)
     rejected_fact_count: int = 0
     rejected_lesson_count: int = 0
@@ -136,9 +137,14 @@ def _claim_matches(claim: ReflectionClaim, state: GameState) -> bool:
     if claim.claim_type == "role":
         player = state.players.get(claim.subject_id)
         return (
-            event.type == "role_revealed"
-            and payload.get("player_id") == claim.subject_id
-            and payload.get("role") == claim.value
+            event.type in {"roles_assigned", "role_revealed"}
+            and (
+                event.type == "roles_assigned"
+                or (
+                    payload.get("player_id") == claim.subject_id
+                    and payload.get("role") == claim.value
+                )
+            )
             and player is not None
             and player.role == claim.value
         )
@@ -180,15 +186,17 @@ def verify_reflection_draft(
     state: GameState,
 ) -> ReflectionVerification:
     """对最终 GameState 做确定性核验，并按依赖关系筛选经验。"""
-    accepted = {
-        claim.claim_id for claim in draft.claims if _claim_matches(claim, state)
-    }
+    verified_claims = [
+        claim for claim in draft.claims if _claim_matches(claim, state)
+    ]
+    accepted = {claim.claim_id for claim in verified_claims}
     rejected_fact_count = len(draft.claims) - len(accepted)
     verified_lessons = [
         lesson for lesson in draft.lessons
         if all(dependency in accepted for dependency in lesson.claim_dependencies)
     ]
     return ReflectionVerification(
+        verified_claims=verified_claims,
         verified_lessons=verified_lessons,
         rejected_fact_count=rejected_fact_count,
         rejected_lesson_count=len(draft.lessons) - len(verified_lessons),

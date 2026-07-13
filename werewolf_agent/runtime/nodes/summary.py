@@ -276,11 +276,19 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
     for i, (pid, player) in enumerate(gs.players.items()):
         if i > 0:
             _sleep_between_agent_calls(state, default_ms=20000)
-        reflection_text = ""
+        verification: dict[str, Any] = {
+            "status": "not_generated",
+            "verified_fact_count": 0,
+            "verified_lessons": [],
+            "rejected_fact_count": 0,
+            "rejected_lesson_count": 0,
+        }
         try:
             result = _dispatch_agent(state, _agent_reflection, pid, post_game=True)
             if result:
-                reflection_text = result.get("reflection_text", "")
+                candidate = result.get("reflection_verification", {})
+                if isinstance(candidate, dict):
+                    verification = candidate
         except Exception:
             logger.warning(
                 "Failed to generate reflection for %s", _player_display(state, pid),
@@ -291,13 +299,14 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
             "player_id": pid,
             "role": player.role,
             "alive": player.alive,
-            "reflection": reflection_text or f"{player.role} 身份玩家 {pid} 完成对局",
+            "verification": verification,
         }
         reflection_entries.append(entry)
 
     event = GameEvent(
         type="reflection_complete",
         payload={
+            "visibility": "moderator_only",
             "player_count": len(reflection_entries),
             "entries": reflection_entries,
         },

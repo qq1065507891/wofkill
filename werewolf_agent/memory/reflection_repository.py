@@ -13,8 +13,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
+import secrets
 import uuid
 from collections import Counter
 from typing import Any
@@ -41,6 +44,7 @@ class ReflectionMemory:
     def __init__(self, repo: Any | None = None) -> None:
         self._entries: dict[str, ReflectionEntry] = {}
         self._v2_entries: dict[str, ReflectionEntryV2] = {}
+        self._view_id_key = secrets.token_bytes(32)
         self._repo = repo
         if self._repo is not None:
             self._load_all()
@@ -337,28 +341,27 @@ class ReflectionMemory:
         results.sort(key=self._live_rank_key)
         return [self._cross_game_view(entry) for entry in results[: query.max_results]]
 
-    @staticmethod
-    def _cross_game_view(entry: ReflectionEntryV2) -> ReflectionEntryV2:
-        """仅返回匿名化的已验证抽象，不暴露 moderator-only 原始草稿。"""
-        prompt_card = entry.prompt_card.model_copy(update={
-            "lesson": anonymize_player_ids(entry.prompt_card.lesson),
-            "trigger_signals": [
-                anonymize_player_ids(item) for item in entry.prompt_card.trigger_signals
-            ],
-            "recommended_action": anonymize_player_ids(entry.prompt_card.recommended_action),
-        })
-        return entry.model_copy(update={
-            "player_id": "历史玩家本人",
-            "prompt_card": prompt_card,
-            "source": entry.source.model_copy(update={
-                "llm_self_review": "",
-                "auto_review_summary": "",
-            }),
-            "mistake_patterns": [],
-            "preserved_strengths": [],
-            "actionable_advice": [],
-            "avoid_next_time": [],
-        })
+    def _cross_game_view(self, entry: ReflectionEntryV2) -> ReflectionEntryV2:
+        """返回保留聚合字段的匿名化视图，并使用本次运行专属 opaque ID。"""
+        payload = self._anonymize_value(entry.model_dump(mode="json"))
+        identity = f"{entry.game_id}\0{entry.entry_id}\0{entry.player_id}".encode("utf-8")
+        digest = hmac.new(self._view_id_key, identity, hashlib.sha256).hexdigest()[:24]
+        payload["entry_id"] = f"view_{digest}"
+        payload["player_id"] = "历史玩家本人"
+        payload["source"]["llm_self_review"] = ""
+        payload["source"]["auto_review_summary"] = ""
+        return ReflectionEntryV2.model_validate(payload)
+
+    @classmethod
+    def _anonymize_value(cls, value: Any) -> Any:
+        """递归匿名化所有可进入 live view 的文本字段。"""
+        if isinstance(value, str):
+            return anonymize_player_ids(value)
+        if isinstance(value, list):
+            return [cls._anonymize_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: cls._anonymize_value(item) for key, item in value.items()}
+        return value
 
     @staticmethod
     def _v2_has_tag(entry: ReflectionEntryV2, tag: str) -> bool:
