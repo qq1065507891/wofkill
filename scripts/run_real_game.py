@@ -36,6 +36,7 @@ from scripts.run_real_game_reports import (  # noqa: E402
     print_pace_report,
     print_quality_audit,
     print_usage_stats,
+    reflection_verification_metrics,
 )
 
 logging.basicConfig(
@@ -73,6 +74,7 @@ def _format_api_key_status(api_key: str) -> str:
 def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     """Compute structured quality metrics for a completed game."""
     gs = runner.state
+    reflection_metrics = reflection_verification_metrics(gs)
     traces = [e for e in gs.events if e.type == "action_trace_audit"]
     action_fallback_traces = [
         e.payload.get("action_trace", {}) for e in traces
@@ -140,6 +142,7 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     )
 
     return {
+        **reflection_metrics,
         "fallback_rate": round(fallback_rate, 3),
         "fallback_count": fallback_count,
         "action_fallback_count": action_fallback_count,

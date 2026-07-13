@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.reflection_prompt import build_reflection_prompt
@@ -14,6 +14,19 @@
 from types import SimpleNamespace
 
 from werewolf_agent.runtime.reflection_prompt import build_reflection_prompt
+
+
+def test_reflection_prompt_requires_structured_claims_event_refs_and_lessons():
+    prompt = build_reflection_prompt(
+        player=type("Player", (), {"role": "seer"})(),
+        winner="good",
+        hybrid_master_faction=None,
+    )
+
+    assert '"claims"' in prompt
+    assert '"event_ref"' in prompt
+    assert '"claim_dependencies"' in prompt
+    assert "只输出 JSON" in prompt
 
 
 def test_build_reflection_prompt_uses_good_template_for_good_role_win():

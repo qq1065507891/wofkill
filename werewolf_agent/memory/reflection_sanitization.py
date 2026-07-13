@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.memory.reflection_sanitization import _scrub_ids
@@ -61,6 +62,21 @@ def _iter_section_items(body: str, *, min_chars: int = 6):
 
 def _scrub_ids(text: str) -> str:
     return _PLAYER_ID_RE.sub("[玩家ID已省略]", str(text or ""))
+
+
+def anonymize_player_ids(text: str) -> str:
+    """按首次出现顺序把上一局玩家 ID 替换为稳定匿名标签。"""
+    labels: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(0).lower()
+        if key not in labels:
+            ordinal = len(labels)
+            suffix = chr(ord("A") + ordinal) if ordinal < 26 else str(ordinal + 1)
+            labels[key] = f"历史玩家{suffix}"
+        return labels[key]
+
+    return _PLAYER_ID_RE.sub(replace, str(text or ""))
 
 
 def _cap_source_text(text: str, max_chars: int = _SOURCE_TEXT_CAP) -> str:

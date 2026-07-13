@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.memory.reflection_synthesis import ReflectionSynthesizer
@@ -13,6 +14,12 @@
 from __future__ import annotations
 
 import re
+import json
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from werewolf_agent.core.models import GameState
 
 from werewolf_agent.evaluation.text_similarity import jaccard as _jaccard
 from werewolf_agent.memory.reflection_sanitization import (
@@ -49,6 +56,143 @@ _LLM_MISTAKE_HEADER_CATEGORY = {
     "暴露原因": "decision_mistake",
     "角色分工": "decision_mistake",
 }
+
+
+class ReflectionClaim(BaseModel):
+    """LLM 提出的单条可由终局事件核验的事实声明。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_id: str = Field(min_length=1)
+    event_ref: str = Field(min_length=1)
+    claim_type: Literal["role", "vote", "death", "potion"]
+    subject_id: str = Field(min_length=1)
+    target_id: str = ""
+    value: str = ""
+
+
+class ReflectionLesson(BaseModel):
+    """只在全部依赖事实通过后才可跨局保存的抽象经验。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lesson_id: str = Field(min_length=1)
+    abstraction: str = Field(min_length=1)
+    claim_dependencies: list[str] = Field(min_length=1)
+
+
+class ReflectionDraft(BaseModel):
+    """赛后模型输出的 moderator-only 结构化草稿。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claims: list[ReflectionClaim] = Field(default_factory=list)
+    lessons: list[ReflectionLesson] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _claim_ids_must_be_unique(self) -> "ReflectionDraft":
+        claim_ids = [claim.claim_id for claim in self.claims]
+        if len(claim_ids) != len(set(claim_ids)):
+            raise ValueError("ReflectionDraft.claim_id must be unique")
+        return self
+
+
+class ReflectionVerification(BaseModel):
+    """确定性事实门的结果，不包含原始草稿。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verified_lessons: list[ReflectionLesson] = Field(default_factory=list)
+    rejected_fact_count: int = 0
+    rejected_lesson_count: int = 0
+
+
+def parse_reflection_draft(text: str) -> ReflectionDraft | None:
+    """解析严格 JSON 草稿；无法解析时不把自由文本提升为长期记忆。"""
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
+    try:
+        return ReflectionDraft.model_validate(json.loads(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _event_for_ref(claim: ReflectionClaim, state: GameState):
+    prefix, separator, raw_index = claim.event_ref.rpartition(":")
+    if not separator or prefix != state.game_id or not raw_index.isdigit():
+        return None
+    index = int(raw_index)
+    if index >= len(state.events):
+        return None
+    return state.events[index]
+
+
+def _claim_matches(claim: ReflectionClaim, state: GameState) -> bool:
+    event = _event_for_ref(claim, state)
+    if event is None:
+        return False
+    payload = event.payload or {}
+    if claim.claim_type == "role":
+        player = state.players.get(claim.subject_id)
+        return (
+            event.type == "role_revealed"
+            and payload.get("player_id") == claim.subject_id
+            and payload.get("role") == claim.value
+            and player is not None
+            and player.role == claim.value
+        )
+    if claim.claim_type == "vote":
+        if event.type == "vote":
+            return payload.get("voter") == claim.subject_id and payload.get("target") == claim.target_id
+        if event.type == "vote_resolved":
+            return any(
+                vote.get("voter") == claim.subject_id and vote.get("target") == claim.target_id
+                for vote in payload.get("votes", []) if isinstance(vote, dict)
+            )
+        return False
+    if claim.claim_type == "death":
+        return (
+            event.type == "player_died"
+            and payload.get("player_id") == claim.subject_id
+            and payload.get("reason") == claim.value
+            and any(
+                death.player_id == claim.subject_id and death.reason == claim.value
+                for death in state.deaths
+            )
+        )
+    expected_type = {
+        "antidote": "witch_antidote_used",
+        "poison": "witch_poison_used",
+    }.get(claim.value)
+    actor = state.players.get(claim.subject_id)
+    return (
+        expected_type is not None
+        and event.type == expected_type
+        and payload.get("target_id") == claim.target_id
+        and actor is not None
+        and actor.role == "witch"
+    )
+
+
+def verify_reflection_draft(
+    draft: ReflectionDraft,
+    state: GameState,
+) -> ReflectionVerification:
+    """对最终 GameState 做确定性核验，并按依赖关系筛选经验。"""
+    accepted = {
+        claim.claim_id for claim in draft.claims if _claim_matches(claim, state)
+    }
+    rejected_fact_count = len(draft.claims) - len(accepted)
+    verified_lessons = [
+        lesson for lesson in draft.lessons
+        if all(dependency in accepted for dependency in lesson.claim_dependencies)
+    ]
+    return ReflectionVerification(
+        verified_lessons=verified_lessons,
+        rejected_fact_count=rejected_fact_count,
+        rejected_lesson_count=len(draft.lessons) - len(verified_lessons),
+    )
 
 
 class ReflectionSynthesizer:

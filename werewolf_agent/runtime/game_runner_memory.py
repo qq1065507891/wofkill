@@ -4,6 +4,7 @@ GameRunner 的跨局记忆恢复和终局快照保存逻辑。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_memory import GameRunnerMemoryMixin
@@ -50,6 +51,11 @@ class GameRunnerMemoryMixin:
                 ReflectionQualityGate,
                 ReflectionSynthesizer,
             )
+            from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids
+            from werewolf_agent.memory.reflection_synthesis import (
+                parse_reflection_draft,
+                verify_reflection_draft,
+            )
 
             mem_store = self._cognition_state_manager.memory_store
             player_ids = list(self._state.players.keys())
@@ -81,6 +87,17 @@ class GameRunnerMemoryMixin:
             self_reviews = self._latest_self_reviews()
             synthesizer = ReflectionSynthesizer()
             for report in reports:
+                raw_draft = self_reviews.get(report.player_id, "")
+                draft = parse_reflection_draft(raw_draft)
+                if draft is None:
+                    continue
+                verification = verify_reflection_draft(draft, self._state)
+                if not verification.verified_lessons:
+                    continue
+                verified_text = "\n".join(
+                    anonymize_player_ids(lesson.abstraction)
+                    for lesson in verification.verified_lessons
+                )
                 role = ground_truth.get(report.player_id, report.role)
                 master_faction = (
                     self._state.hybrid_master_faction
@@ -92,10 +109,23 @@ class GameRunnerMemoryMixin:
                     master_faction=master_faction,
                 )
                 candidate = synthesizer.synthesize(
-                    llm_self_review=self_reviews.get(report.player_id, ""),
+                    llm_self_review="",
                     review_report=report,
                     faction=faction,
                 )
+                candidate = candidate.model_copy(update={
+                    "prompt_card": candidate.prompt_card.model_copy(update={
+                        "lesson": verified_text,
+                        "recommended_action": verified_text,
+                        "fact_basis": "verified_event_claims",
+                        "auto_verified": True,
+                    }),
+                    "source": candidate.source.model_copy(update={
+                        "llm_self_review": "",
+                        "auto_review_summary": "",
+                        "source_game_id": self._game_id,
+                    }),
+                })
                 gate = ReflectionQualityGate(
                     existing_entries=mem_store.reflections.all_v2_entries()
                 )

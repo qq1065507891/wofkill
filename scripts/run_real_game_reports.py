@@ -16,6 +16,33 @@ from __future__ import annotations
 from typing import Any
 
 
+def reflection_verification_metrics(game_state: Any) -> dict[str, int]:
+    """对结构化复盘草稿复用终局事实门，并分别累计事实与经验拒绝数。"""
+    from werewolf_agent.memory.reflection_synthesis import (
+        parse_reflection_draft,
+        verify_reflection_draft,
+    )
+
+    rejected_facts = 0
+    rejected_lessons = 0
+    for event in game_state.events:
+        if event.type != "reflection_complete":
+            continue
+        for entry in event.payload.get("entries", []):
+            if not isinstance(entry, dict):
+                continue
+            draft = parse_reflection_draft(entry.get("reflection", ""))
+            if draft is None:
+                continue
+            verification = verify_reflection_draft(draft, game_state)
+            rejected_facts += verification.rejected_fact_count
+            rejected_lessons += verification.rejected_lesson_count
+    return {
+        "reflection_rejected_fact_count": rejected_facts,
+        "reflection_rejected_lesson_count": rejected_lessons,
+    }
+
+
 def _sep(title: str = "") -> None:
     line = "=" * 60
     if title:

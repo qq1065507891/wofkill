@@ -4,7 +4,7 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-06
+修改日期：2026-07-13
 使用示例：内部模块，无对外接口
 """
 
@@ -21,12 +21,19 @@ from werewolf_agent.memory.reflection_sanitization import (
     _cap_source_text,
     _iter_section_items,
     _scrub_ids,
+    anonymize_player_ids,
 )
 from werewolf_agent.memory.reflection_synthesis import (
+    ReflectionClaim,
+    ReflectionDraft,
+    ReflectionLesson,
     ReflectionSynthesizer,
+    ReflectionVerification,
     _LLM_MISTAKE_HEADER_CATEGORY,
     _LLM_MISTAKE_SECTION_RE,
     _LLM_STRENGTH_SECTION_RE,
+    parse_reflection_draft,
+    verify_reflection_draft,
 )
 from werewolf_agent.memory.schemas import (
     CrossGameQuery,
@@ -48,6 +55,10 @@ __all__ = [
     "ReflectionQualityGate",
     "ReflectionQualityStatus",
     "ReflectionSynthesizer",
+    "ReflectionClaim",
+    "ReflectionDraft",
+    "ReflectionLesson",
+    "ReflectionVerification",
     "ReviewReport",
     "_GENERIC_PHRASES",
     "_LEADING_ITEM_PREFIX_RE",
@@ -61,4 +72,7 @@ __all__ = [
     "_cap_source_text",
     "_iter_section_items",
     "_scrub_ids",
+    "anonymize_player_ids",
+    "parse_reflection_draft",
+    "verify_reflection_draft",
 ]

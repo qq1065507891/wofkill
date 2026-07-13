@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.memory.reflection_repository import ReflectionMemory
@@ -24,6 +25,7 @@ from werewolf_agent.memory.schemas import (
     ReflectionEntryV2,
     ReflectionQualityStatus,
 )
+from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids
 
 _LOG = logging.getLogger("werewolf_agent.memory.reflection")
 
@@ -333,7 +335,30 @@ class ReflectionMemory:
                 if needle in json.dumps(e.to_dict(), ensure_ascii=False).lower()
             ]
         results.sort(key=self._live_rank_key)
-        return results[: query.max_results]
+        return [self._cross_game_view(entry) for entry in results[: query.max_results]]
+
+    @staticmethod
+    def _cross_game_view(entry: ReflectionEntryV2) -> ReflectionEntryV2:
+        """仅返回匿名化的已验证抽象，不暴露 moderator-only 原始草稿。"""
+        prompt_card = entry.prompt_card.model_copy(update={
+            "lesson": anonymize_player_ids(entry.prompt_card.lesson),
+            "trigger_signals": [
+                anonymize_player_ids(item) for item in entry.prompt_card.trigger_signals
+            ],
+            "recommended_action": anonymize_player_ids(entry.prompt_card.recommended_action),
+        })
+        return entry.model_copy(update={
+            "player_id": "历史玩家本人",
+            "prompt_card": prompt_card,
+            "source": entry.source.model_copy(update={
+                "llm_self_review": "",
+                "auto_review_summary": "",
+            }),
+            "mistake_patterns": [],
+            "preserved_strengths": [],
+            "actionable_advice": [],
+            "avoid_next_time": [],
+        })
 
     @staticmethod
     def _v2_has_tag(entry: ReflectionEntryV2, tag: str) -> bool:

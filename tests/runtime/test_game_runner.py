@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import pytest
 from dataclasses import replace
 
@@ -950,6 +951,14 @@ class TestGameRunnerMemoryLifecycle:
             },
             events=[
                 GameEvent(
+                    type="role_revealed",
+                    payload={"player_id": "p01", "role": "seer"},
+                ),
+                GameEvent(
+                    type="role_revealed",
+                    payload={"player_id": "p02", "role": "werewolf"},
+                ),
+                GameEvent(
                     type="reflection_complete",
                     payload={
                         "player_count": 2,
@@ -958,13 +967,39 @@ class TestGameRunnerMemoryLifecycle:
                                 "player_id": "p01",
                                 "role": "seer",
                                 "alive": True,
-                                "reflection": "我在对跳局需要先核验警徽流。",
+                                "reflection": json.dumps({
+                                    "claims": [{
+                                        "claim_id": "c1",
+                                        "event_ref": f"{runner.game_id}:0",
+                                        "claim_type": "role",
+                                        "subject_id": "p01",
+                                        "value": "seer",
+                                    }],
+                                    "lessons": [{
+                                        "lesson_id": "l1",
+                                        "abstraction": "p01 在对跳局需要先核验警徽流。",
+                                        "claim_dependencies": ["c1"],
+                                    }],
+                                }, ensure_ascii=False),
                             },
                             {
                                 "player_id": "p02",
                                 "role": "werewolf",
                                 "alive": False,
-                                "reflection": "下次悍跳前要统一警徽流口径。",
+                                "reflection": json.dumps({
+                                    "claims": [{
+                                        "claim_id": "c2",
+                                        "event_ref": f"{runner.game_id}:1",
+                                        "claim_type": "role",
+                                        "subject_id": "p02",
+                                        "value": "werewolf",
+                                    }],
+                                    "lessons": [{
+                                        "lesson_id": "l2",
+                                        "abstraction": "p02 下次悍跳前要统一警徽流口径。",
+                                        "claim_dependencies": ["c2"],
+                                    }],
+                                }, ensure_ascii=False),
                             },
                         ],
                     },
@@ -979,6 +1014,34 @@ class TestGameRunnerMemoryLifecycle:
         assert {row["schema_version"] for row in rows} == {2}
         assert all("quality_status" in row for row in rows)
         assert all("text" not in row for row in rows)
+        assert all(row["source"]["llm_self_review"] == "" for row in rows)
+        assert all(row["source"]["source_game_id"] == runner.game_id for row in rows)
+        assert all("p01" not in row["prompt_card"]["lesson"] for row in rows)
+
+    def test_save_memory_snapshot_rejects_unstructured_raw_reflection(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=125,
+            repository=repo,
+            memory_coordinator=PersistentMemoryCoordinator(repo),
+        ))
+        runner._state = GameState(
+            game_id=runner.game_id,
+            phase="finished",
+            winning_faction="good",
+            players={"p01": PlayerState(id="p01", role="seer", alive=True)},
+            events=[GameEvent(type="reflection_complete", payload={
+                "entries": [{"player_id": "p01", "reflection": "p01 是预言家"}],
+            })],
+        )
+
+        runner._save_memory_snapshot()
+
+        assert repo.load_all_reflections() == []
 
     def test_save_memory_snapshot_does_not_rewrite_legacy_v1_reflections(self) -> None:
         from werewolf_agent.core.models import GameEvent, GameState, PlayerState

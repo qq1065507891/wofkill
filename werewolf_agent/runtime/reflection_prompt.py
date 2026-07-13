@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-07
+修改日期: 2026-07-13
 
 使用示例:
     >>> from werewolf_agent.runtime.reflection_prompt import build_reflection_prompt
@@ -19,7 +19,7 @@ from typing import Any
 GOOD_ROLES = {"villager", "seer", "witch", "hunter", "idiot"}
 
 
-def build_reflection_prompt(
+def _build_reflection_prompt_text(
     player: Any,
     winner: str,
     hybrid_master_faction: str | None,
@@ -54,6 +54,21 @@ def build_reflection_prompt(
         faction_result=faction_result,
         role=role,
     )
+
+
+STRUCTURED_REFLECTION_PROTOCOL = """只输出 JSON，禁止附加解释。格式：
+{"claims":[{"claim_id":"c1","event_ref":"<game_id>:<绝对事件索引>","claim_type":"role|vote|death|potion","subject_id":"p01","target_id":"p02","value":"seer|exile|poison|antidote"}],"lessons":[{"lesson_id":"l1","abstraction":"不含当前玩家 ID 的可迁移经验","claim_dependencies":["c1"]}]}
+每条事实必须引用一个真实事件；每条 lesson 必须列出支撑它的全部 claim_id。不要猜测未知事实。"""
+
+
+def build_reflection_prompt(
+    player: Any,
+    winner: str,
+    hybrid_master_faction: str | None,
+) -> str:
+    """生成角色复盘提示，并强制结构化事实与经验依赖协议。"""
+    prompt = _build_reflection_prompt_text(player, winner, hybrid_master_faction)
+    return f"{prompt}\n\n{STRUCTURED_REFLECTION_PROTOCOL}"
 
 
 GOOD_REFLECTION_TEMPLATE = """你是{role},本局好人阵营{faction_result}。请按以下结构复盘:
