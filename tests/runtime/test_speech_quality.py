@@ -287,27 +287,6 @@ class TestPublicRecordGrounding:
         assert "public_record_grounding" in result["missing_fields"]
 
 
-@pytest.mark.parametrize(
-    ("text", "unsupported"),
-    [
-        ("不能否认系统确认p08是狼人，我怀疑p08。", True),
-        ("没有理由不信系统确认p08是狼人，我怀疑p08。", True),
-        ("系统没有确认p08是狼人，我只是怀疑p08。", False),
-        ("不能说系统确认p08是狼人，我只是怀疑p08。", False),
-    ],
-)
-def test_speech_quality_reuses_authoritative_negation_scope(
-    text: str, unsupported: bool
-) -> None:
-    from werewolf_agent.runtime.speech_quality import validate_public_speech
-
-    result = validate_public_speech(
-        text,
-        context={"intent": "question_target", "target_id": "p08", "day_number": 1},
-    )
-
-    assert ("public_record_grounding" in result["missing_fields"]) is unsupported
-
     def test_accepts_supported_public_death_claim(self):
         speech = (
             "我是好人阵营。我怀疑p12，因为p02刚才说p03被狼刀，"
@@ -351,6 +330,28 @@ def test_speech_quality_reuses_authoritative_negation_scope(
         result = validate_public_speech(speech, phase="day_discussion", context=context)
         assert result["valid"] is False
         assert "public_record_grounding" in result["missing_fields"]
+
+
+@pytest.mark.parametrize(
+    ("text", "unsupported"),
+    [
+        ("不能否认系统确认p08是狼人，我怀疑p08。", True),
+        ("没有理由不信系统确认p08是狼人，我怀疑p08。", True),
+        ("系统没有确认p08是狼人，我只是怀疑p08。", False),
+        ("不能说系统确认p08是狼人，我只是怀疑p08。", False),
+    ],
+)
+def test_speech_quality_reuses_authoritative_negation_scope(
+    text: str, unsupported: bool
+) -> None:
+    from werewolf_agent.runtime.speech_quality import validate_public_speech
+
+    result = validate_public_speech(
+        text,
+        context={"intent": "question_target", "target_id": "p08", "day_number": 1},
+    )
+
+    assert ("public_record_grounding" in result["missing_fields"]) is unsupported
 
 
 class TestSpeechQualityExtraction:
