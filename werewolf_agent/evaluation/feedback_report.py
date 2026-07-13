@@ -169,6 +169,7 @@ def _collect_source_refs(traces: list[EvaluationTrace]) -> list[str]:
 
 def _monitoring_exposure_rows(traces: list[EvaluationTrace]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
     for trace in traces:
         trace_hash = hashlib.sha256(trace.trace_id.encode("utf-8")).hexdigest()[:16]
         for exposure in trace.module_exposures:
@@ -178,12 +179,41 @@ def _monitoring_exposure_rows(traces: list[EvaluationTrace]) -> list[dict[str, A
                 "persona_prompt_confirmation",
             }:
                 continue
-            rows.append({
+            row = {
                 "trace_hash": trace_hash,
                 "module": exposure.module,
                 "item_id": exposure.item_id,
                 "score": exposure.score,
                 "prompt_visible": exposure.prompt_visible,
                 "metadata": _public_safe_json(exposure.metadata),
-            })
+            }
+            identity = _monitoring_row_identity(row)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            rows.append(row)
     return rows
+
+
+def _monitoring_row_identity(row: dict[str, Any]) -> tuple[Any, ...]:
+    """构造脱敏监控行身份，避免同一次 provider 尝试重复上报。"""
+    metadata = row.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    if row.get("module") == "persona_prompt_confirmation":
+        return (
+            row.get("trace_hash"),
+            row.get("module"),
+            metadata.get("attempt_kind"),
+            metadata.get("attempt_ordinal"),
+            metadata.get("provider"),
+            metadata.get("model"),
+            metadata.get("run_scoped_fingerprint"),
+            metadata.get("final_system_location"),
+            metadata.get("final_system_message_index"),
+        )
+    return (
+        row.get("trace_hash"),
+        row.get("module"),
+        row.get("item_id"),
+        json.dumps(row, ensure_ascii=False, sort_keys=True, default=str),
+    )

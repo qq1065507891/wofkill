@@ -21,6 +21,7 @@ from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
 from werewolf_agent.model_gateway.final_prompt_observer import (
     FinalPromptAssembly,
     FinalPromptObserver,
+    notify_final_prompt_observer,
 )
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
@@ -99,7 +100,7 @@ class MiniMaxProvider(_BaseHttpProvider):
 
         if final_prompt_observer is not None:
             system_content = str(payload.get("system") or "")
-            final_prompt_observer(FinalPromptAssembly(
+            notify_final_prompt_observer(final_prompt_observer, FinalPromptAssembly(
                 system_bytes=system_content.encode("utf-8"),
                 final_system_location="system",
                 final_system_message_index=None,

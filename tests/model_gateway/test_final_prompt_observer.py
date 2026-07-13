@@ -31,9 +31,11 @@ class _Response:
 class _Client:
     def __init__(self, response_payload: dict[str, Any] | None = None) -> None:
         self.payload: dict[str, Any] | None = None
+        self.post_calls = 0
         self.response_payload = response_payload
 
     def post(self, _url: str, *, json: dict[str, Any], **_kwargs: Any) -> _Response:
+        self.post_calls += 1
         self.payload = json
         return _Response(self.response_payload)
 
@@ -74,6 +76,80 @@ def test_anthropic_observer_reports_top_level_system_with_no_message_index() -> 
     assert assemblies[0].system_bytes == client.payload["system"].encode("utf-8")
     assert assemblies[0].final_system_location == "system"
     assert assemblies[0].final_system_message_index is None
+
+
+def test_observer_exception_does_not_block_provider_http_request() -> None:
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _Client()
+
+    def broken_observer(_assembly: object) -> None:
+        raise RuntimeError("private observer details")
+
+    result = OpenAIProvider(
+        api_key="k",
+        base_url="https://example.test/v1",
+        http_client=client,
+    ).generate(
+        "user",
+        ModelConfig(provider="openai", model="m"),
+        system_prompt="rules\npersona-final",
+        final_prompt_observer=broken_observer,
+    )
+
+    assert result.text == "ok"
+    assert client.post_calls == 1
+
+
+def test_router_does_not_record_observer_exception_as_provider_failure() -> None:
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelRouter
+
+    client = _Client()
+    router = ModelRouter(
+        model_profiles={
+            "primary": {
+                "provider": "openai",
+                "model": "p",
+                "retry_count": 1,
+                "reasoning": {"level": "high"},
+            },
+        },
+        llm_profiles={
+            "default": {
+                "default": {"provider": "openai", "model_profile": "primary"},
+            },
+        },
+        player_assignments={"p01": "default"},
+        providers={
+            "openai": OpenAIProvider(
+                api_key="k",
+                base_url="https://openai.test/v1",
+                http_client=client,
+            ),
+        },
+        allow_test_model_capability=True,
+    )
+
+    result = router.generate(
+        "p01",
+        "speech",
+        "user",
+        "rules\npersona-final",
+        jitter_seconds=(0, 0),
+        final_prompt_observer=lambda _assembly: (_ for _ in ()).throw(
+            RuntimeError("private observer details")
+        ),
+    )
+
+    assert result.text == "ok"
+    assert client.post_calls == 1
+    assert len(result.attempts) == 1
+    assert result.attempts[0].attempt_outcome.value == "attempt_success"
+    assert result.attempts[0].root_cause.value == "none"
+    assert result.usage is not None
+    assert result.usage.retry_count == 0
 
 
 def test_router_observes_each_real_provider_assembly_in_fallback_chain() -> None:

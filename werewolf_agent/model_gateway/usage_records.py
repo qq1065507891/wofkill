@@ -19,7 +19,10 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
-from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptObserver,
+    notify_final_prompt_observer,
+)
 
 
 @dataclass(frozen=True)
@@ -180,7 +183,7 @@ class MockProvider:
     ) -> GenerateResult:
         if final_prompt_observer is not None and system_prompt:
             from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
-            final_prompt_observer(FinalPromptAssembly(
+            notify_final_prompt_observer(final_prompt_observer, FinalPromptAssembly(
                 system_bytes=system_prompt.encode("utf-8"),
                 final_system_location="messages",
                 final_system_message_index=0,

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
 from werewolf_agent.model_gateway import provider_call
 from werewolf_agent.model_gateway import retry_policy
 from werewolf_agent.model_gateway import router
@@ -112,3 +114,74 @@ def test_router_never_emits_deprecated_requested_not_confirmed_status() -> None:
         "requested_not_confirmed" not in inspect.getsource(module)
         for module in producers
     )
+
+
+@pytest.mark.parametrize(
+    ("signature_kind", "expected_keys"),
+    [
+        ("legacy", set()),
+        ("tools", {"tools", "tool_choice"}),
+        ("observer", {"final_prompt_observer"}),
+        ("both", {"tools", "tool_choice", "final_prompt_observer"}),
+        ("kwargs", {"tools", "tool_choice", "final_prompt_observer"}),
+    ],
+)
+def test_provider_call_adapts_tools_and_observer_independently(
+    signature_kind: str,
+    expected_keys: set[str],
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _LegacyProvider:
+        def generate(self, prompt, config, system_prompt=None):
+            return usage_records.GenerateResult(text="ok", provider="test", model="m")
+
+    class _ToolsProvider:
+        def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+            captured.update(tools=tools, tool_choice=tool_choice)
+            return usage_records.GenerateResult(text="ok", provider="test", model="m")
+
+    class _ObserverProvider:
+        def generate(self, prompt, config, system_prompt=None, final_prompt_observer=None):
+            captured["final_prompt_observer"] = final_prompt_observer
+            return usage_records.GenerateResult(text="ok", provider="test", model="m")
+
+    class _BothProvider:
+        def generate(
+            self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+            final_prompt_observer=None,
+        ):
+            captured.update(
+                tools=tools,
+                tool_choice=tool_choice,
+                final_prompt_observer=final_prompt_observer,
+            )
+            return usage_records.GenerateResult(text="ok", provider="test", model="m")
+
+    class _KwargsProvider:
+        def generate(self, prompt, config, system_prompt=None, **kwargs):
+            captured.update(kwargs)
+            return usage_records.GenerateResult(text="ok", provider="test", model="m")
+
+    provider_types = {
+        "legacy": _LegacyProvider,
+        "tools": _ToolsProvider,
+        "observer": _ObserverProvider,
+        "both": _BothProvider,
+        "kwargs": _KwargsProvider,
+    }
+    observer = lambda _assembly: None
+    result = provider_call._call_provider_generate(
+        provider_types[signature_kind](),
+        "prompt",
+        usage_records.ModelConfig(provider="test", model="m"),
+        "system",
+        tools=[{"name": "submit"}],
+        tool_choice={"type": "tool", "name": "submit"},
+        final_prompt_observer=observer,
+    )
+
+    assert result.text == "ok"
+    assert set(captured) == expected_keys
+    if "final_prompt_observer" in expected_keys:
+        assert captured["final_prompt_observer"] is observer

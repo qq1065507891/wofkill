@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：从评估对局结果构建归一化反馈回路轨迹，并汇总模块、调用与 prompt 注入监控。
+从评估对局结果构建归一化反馈轨迹，并稳定合并运行时与兼容侧通道曝光审计。
 作者：Mike
 创建日期：2025-01-15
 修改日期：2026-07-13
@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 from typing import Any
 
 from werewolf_agent.evaluation.decision_helpers import (
@@ -97,7 +98,10 @@ class EvaluationTraceBuilder:
     ) -> list[EvaluationTrace]:
         runtime_exposure_audits = self._collect_exposure_events(result.event_log)
         side_channel_audits = exposure_audits or []
-        exposure_by_trace = self._group_exposure_audits(runtime_exposure_audits + side_channel_audits)
+        exposure_by_trace = self._merge_exposure_audits(
+            runtime_exposure_audits,
+            side_channel_audits,
+        )
         exposure_sources_provided = bool(runtime_exposure_audits or side_channel_audits)
         traces: list[EvaluationTrace] = []
         action_index = 0
@@ -220,6 +224,29 @@ class EvaluationTraceBuilder:
             elif audit_type == "persona_prompt_injection_audit":
                 grouped[trace_id].extend(_persona_prompt_proof_exposures(audit))
         return grouped
+
+    @classmethod
+    def _merge_exposure_audits(
+        cls,
+        runtime_audits: list[dict[str, Any]],
+        side_channel_audits: list[dict[str, Any]],
+    ) -> dict[str, list[ModuleExposure]]:
+        """以运行时记录为准，稳定去除兼容侧通道的重复曝光。"""
+        runtime_grouped = cls._group_exposure_audits(runtime_audits)
+        side_grouped = cls._group_exposure_audits(side_channel_audits)
+        merged: dict[str, list[ModuleExposure]] = defaultdict(list)
+        for trace_id in dict.fromkeys([*runtime_grouped, *side_grouped]):
+            seen: set[tuple[Any, ...]] = set()
+            for exposure in [
+                *runtime_grouped.get(trace_id, []),
+                *side_grouped.get(trace_id, []),
+            ]:
+                identity = _exposure_identity(trace_id, exposure)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                merged[trace_id].append(exposure)
+        return merged
 
     @staticmethod
     def _collect_exposure_events(event_log: list[Any]) -> list[dict[str, Any]]:
@@ -427,6 +454,38 @@ def _persona_prompt_proof_exposures(audit: dict[str, Any]) -> list[ModuleExposur
             if key in proof
         },
     )]
+
+
+def _exposure_identity(
+    trace_id: str,
+    exposure: ModuleExposure,
+) -> tuple[Any, ...]:
+    """构造稳定曝光身份；persona 证明按 provider 最终 payload 位置区分。"""
+    if exposure.module == "persona_prompt_confirmation":
+        metadata = exposure.metadata
+        return (
+            trace_id,
+            exposure.module,
+            metadata.get("attempt_kind"),
+            metadata.get("attempt_ordinal"),
+            metadata.get("provider"),
+            metadata.get("model"),
+            metadata.get("run_scoped_fingerprint"),
+            metadata.get("final_system_location"),
+            metadata.get("final_system_message_index"),
+        )
+    return (
+        trace_id,
+        exposure.module,
+        exposure.item_id,
+        exposure.rank,
+        exposure.score,
+        exposure.prompt_visible,
+        exposure.cited_by_decision,
+        exposure.aligned_with_decision,
+        exposure.support.value,
+        json.dumps(exposure.metadata, ensure_ascii=False, sort_keys=True, default=str),
+    )
 
 
 def _world_model_exposures(audit: Any) -> list[ModuleExposure]:

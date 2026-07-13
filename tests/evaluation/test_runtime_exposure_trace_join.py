@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证运行时曝光事件与评估轨迹、反馈报告之间的稳定关联。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 from werewolf_agent.evaluation.schemas import GameResult
@@ -438,3 +446,71 @@ def test_persona_provider_proof_flows_through_trace_builder_and_feedback_report(
         "confirmed_action_count": 1,
         "confirmation_rate": 1.0,
     }
+
+
+def test_runtime_persona_proof_wins_over_side_channel_duplicate_stably() -> None:
+    from werewolf_agent.evaluation.feedback_report import build_feedback_report
+
+    trace_id = "g_runtime_exposure:p01:vote:D2:N1:vote:7"
+    runtime_proof = {
+        "final_system_location": "messages",
+        "final_system_message_index": 0,
+        "message_char_count": 42,
+        "run_scoped_fingerprint": "run_hmac_same",
+        "confirmed_injection": True,
+        "attempt_kind": "primary",
+        "attempt_ordinal": 1,
+        "provider": "openai",
+        "model": "primary-model",
+        "sanitized": True,
+    }
+    duplicate_side_proof = {**runtime_proof, "message_char_count": 999, "sanitized": False}
+    distinct_attempt = {
+        **runtime_proof,
+        "run_scoped_fingerprint": "run_hmac_fallback",
+        "attempt_kind": "provider_fallback",
+        "attempt_ordinal": 2,
+        "provider": "anthropic",
+        "model": "fallback-model",
+        "final_system_location": "system",
+        "final_system_message_index": None,
+    }
+    events = [
+        {
+            "type": "persona_prompt_injection_audit",
+            "payload": {"trace_id": trace_id, "proof": runtime_proof},
+        },
+        _action_event(trace_id),
+    ]
+    side_channel = [
+        {
+            "type": "persona_prompt_injection_audit",
+            "trace_id": trace_id,
+            "proof": distinct_attempt,
+        },
+        {
+            "type": "persona_prompt_injection_audit",
+            "trace_id": trace_id,
+            "proof": duplicate_side_proof,
+        },
+    ]
+
+    traces = EvaluationTraceBuilder().build(
+        _result(events),
+        exposure_audits=side_channel,
+    )
+    proof_exposures = [
+        exposure
+        for exposure in traces[0].module_exposures
+        if exposure.module == "persona_prompt_confirmation"
+    ]
+    report = build_feedback_report(report_id="r1", batch_id="b1", traces=traces)
+    report_rows = [
+        row
+        for row in report.to_json_dict()["monitoring_exposures"]
+        if row["module"] == "persona_prompt_confirmation"
+    ]
+
+    assert [row.metadata["attempt_ordinal"] for row in proof_exposures] == [1, 2]
+    assert proof_exposures[0].metadata["message_char_count"] == 42
+    assert len(report_rows) == 2

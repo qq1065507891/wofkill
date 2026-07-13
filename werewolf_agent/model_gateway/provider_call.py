@@ -32,19 +32,18 @@ def _call_provider_generate(
     final_prompt_observer: FinalPromptObserver | None = None,
 ) -> GenerateResult:
     signature = inspect.signature(provider.generate)
+    accepts_extra_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
     kwargs: dict[str, Any] = {}
-    if "final_prompt_observer" in signature.parameters:
+    if "final_prompt_observer" in signature.parameters or accepts_extra_kwargs:
         kwargs["final_prompt_observer"] = final_prompt_observer
-    if "tools" in signature.parameters:
-        return provider.generate(
-            prompt,
-            config,
-            system_prompt,
-            tools=tools,
-            tool_choice=tool_choice,
-            **kwargs,
-        )
-    return provider.generate(prompt, config, system_prompt)
+    if "tools" in signature.parameters or accepts_extra_kwargs:
+        kwargs["tools"] = tools
+    if "tool_choice" in signature.parameters or accepts_extra_kwargs:
+        kwargs["tool_choice"] = tool_choice
+    return provider.generate(prompt, config, system_prompt, **kwargs)
 
 
 def _normalize_tool_metadata(

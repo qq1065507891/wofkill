@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证运行时模块曝光审计事件的采集、脱敏与决策身份关联。
+
+作者: Project contributors
+修改日期: 2026-07-13
+"""
+
 from __future__ import annotations
 
 from typing import Any

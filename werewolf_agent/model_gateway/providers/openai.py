@@ -16,6 +16,7 @@ from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
 from werewolf_agent.model_gateway.final_prompt_observer import (
     FinalPromptAssembly,
     FinalPromptObserver,
+    notify_final_prompt_observer,
 )
 from werewolf_agent.model_gateway.providers.env import get_env
 from werewolf_agent.model_gateway.router import GenerateResult, ModelConfig
@@ -147,7 +148,7 @@ def _generate_openai_compatible(
             str(payload["messages"][system_index].get("content") or "")
             if system_index is not None else ""
         )
-        final_prompt_observer(FinalPromptAssembly(
+        notify_final_prompt_observer(final_prompt_observer, FinalPromptAssembly(
             system_bytes=system_content.encode("utf-8"),
             final_system_location="messages",
             final_system_message_index=system_index,
