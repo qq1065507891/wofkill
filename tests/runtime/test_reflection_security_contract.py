@@ -116,6 +116,7 @@ def test_agent_reflection_verifies_real_ids_before_anonymization(monkeypatch) ->
 def test_reflection_complete_contains_only_moderator_safe_verification(monkeypatch) -> None:
     safe = {
         "status": "verified", "verified_fact_count": 1,
+        "verified_claim_ids": [], "rejected_claim_ids": [],
         "verified_lessons": [{"lesson_id": "l1", "abstraction": "先复核公开票型"}],
         "rejected_fact_count": 0, "rejected_lesson_count": 0,
     }
@@ -188,8 +189,25 @@ def test_reflection_complete_rebuilds_strict_allowlist_from_untrusted_adapter_re
 
     assert set(verification) == {
         "status", "decision_id", "verified_fact_count", "verified_lessons",
+        "verified_claim_ids", "rejected_claim_ids",
         "rejected_fact_count", "rejected_lesson_count",
     }
     assert set(verification["verified_lessons"][0]) == {"lesson_id", "abstraction"}
     assert verification["verified_lessons"][0]["abstraction"] == "历史玩家A 应先复核 历史玩家B 的票型"
     assert "SECRET" not in serialized
+
+
+def test_safe_reflection_verification_never_accepts_pre_persistence_count() -> None:
+    from werewolf_agent.runtime.reflection_events import safe_reflection_verification
+
+    safe = safe_reflection_verification(
+        {"status": "verified", "persisted_rejected_fact_count": 0},
+        decision_id="reflection:g1:p01",
+    )
+    legacy = safe_reflection_verification(
+        {"status": "verified"},
+        decision_id="reflection:g1:p01",
+    )
+
+    assert "persisted_rejected_fact_count" not in safe
+    assert "persisted_rejected_fact_count" not in legacy

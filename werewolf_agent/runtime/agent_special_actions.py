@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_special_actions import agent_night_witch
@@ -106,11 +106,48 @@ def _damage_decision_evidence(
     ]
     comparison.update({
         "legal_alternatives": legal,
-        "alternative_target": legal[0] if legal else None,
+        "alternative_target": None,
         "no_legal_alternative": not legal,
     })
+    ranked = [
+        row for row in evidence.get("ranked_targets", [])
+        if isinstance(row, dict) and row.get("target")
+    ]
+    by_target = {str(row["target"]): row for row in ranked}
+    ranked_alternatives = [
+        str(row["target"]) for row in ranked
+        if str(row["target"]) in legal and str(row["target"]) != target_id
+    ]
+    alternative_target = (
+        ranked_alternatives[0]
+        if ranked_alternatives
+        else (legal[0] if legal else None)
+    )
+    comparison["alternative_target"] = alternative_target
     evidence["target_id"] = target_id
     evidence["alternative_comparison"] = comparison
+    selected = by_target.get(target_id)
+    alternative = by_target.get(alternative_target) if alternative_target else None
+    if selected is not None:
+        selected_score = selected.get("value")
+        selected_signals = list(selected.get("signals") or [])
+        evidence["target_evidence"] = {
+            "selected_score": selected_score,
+            "selected_signals": selected_signals,
+        }
+        evidence["target_comparison"] = {
+            "selected_score": selected_score,
+            "selected_signals": selected_signals,
+            "alternative_target": alternative_target,
+            "alternative_score": (
+                alternative.get("value") if alternative is not None else None
+            ),
+            "alternative_signals": (
+                list(alternative.get("signals") or [])
+                if alternative is not None else []
+            ),
+            "comparison_basis": "ranked public evidence score",
+        }
     return evidence
 
 
@@ -463,6 +500,7 @@ def agent_hunter_shot(
         action_trace.setdefault("final_action_type", ActionType.HUNTER_SHOT.value)
         action_trace["power_role_evidence"] = _damage_decision_evidence(
             {
+                "ranked_targets": (shot_assessment or {}).get("ranked_targets", []),
                 "alternative_comparison": strategy_directive["alternative_comparison"],
                 "friendly_fire_risk": strategy_directive["friendly_fire_risk"],
                 "retain_option": strategy_directive["retain_option"],

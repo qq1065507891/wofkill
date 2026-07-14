@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.evaluation.balance_public_claims import (
@@ -22,6 +22,16 @@ from typing import Any
 _PUBLIC_ROLE_CLAIM_REF = re.compile(
     r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,10}"
     r"(?:已?自认|认了?|自称|声称自己是|说自己是|(?<!对)跳)"
+    r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
+)
+_PUBLIC_ATTRIBUTED_ROLE_ASSIGNMENT_REF = re.compile(
+    r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,10}"
+    r"(?:声称|说|表示|宣称)(p\d{2})(?:(?!p\d{2})[^，。；;]){0,8}是"
+    r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
+)
+_PUBLIC_UNATTRIBUTED_ROLE_ASSIGNMENT_REF = re.compile(
+    r"有人(?:(?!p\d{2})[^，。；;]){0,8}(?:声称|说|表示|宣称)"
+    r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,8}是"
     r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
 )
 _PUBLIC_NIGHT_INFO_REF = re.compile(
@@ -65,7 +75,30 @@ class ClassifiedPublicClaim:
     target: str | None = None
     role: str | None = None
     support_kind: str | None = None
+    speaker_attribution: str | None = None
     negated: bool = False
+
+
+@dataclass(frozen=True)
+class PublicClaimAuditKey:
+    """事实声明的稳定结构键，独立保留说话者归属与否定关系。"""
+
+    claim_type: str
+    target: str
+    role: str
+    support_kind: str
+    speaker_attribution: str
+    negated: bool
+
+    @property
+    def content_identity(self) -> tuple[str, str, str, str]:
+        """返回不含说话者和否定关系的声明内容身份。"""
+        return self.claim_type, self.target, self.role, self.support_kind
+
+    @property
+    def attribution_agnostic_identity(self) -> tuple[str, str, str, str, bool]:
+        """返回用于判定合法补归因的声明身份。"""
+        return (*self.content_identity, self.negated)
 
 
 def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
@@ -81,6 +114,35 @@ def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
                 target=match.group(1),
                 role=match.group(2),
                 support_kind="role",
+                speaker_attribution=match.group(1),
+                negated=_player_claim_is_negated(text, match.start(), match.end()),
+            )
+        )
+    for match in _PUBLIC_ATTRIBUTED_ROLE_ASSIGNMENT_REF.finditer(text):
+        found.append(
+            ClassifiedPublicClaim(
+                PublicClaimType.PLAYER_CLAIM,
+                match.group(0),
+                match.start(),
+                match.end(),
+                target=match.group(2),
+                role=match.group(3),
+                support_kind="role_assignment",
+                speaker_attribution=match.group(1),
+                negated=_player_claim_is_negated(text, match.start(), match.end()),
+            )
+        )
+    for match in _PUBLIC_UNATTRIBUTED_ROLE_ASSIGNMENT_REF.finditer(text):
+        found.append(
+            ClassifiedPublicClaim(
+                PublicClaimType.PLAYER_CLAIM,
+                match.group(0),
+                match.start(),
+                match.end(),
+                target=match.group(1),
+                role=match.group(2),
+                support_kind="role_assignment",
+                negated=_player_claim_is_negated(text, match.start(), match.end()),
             )
         )
     for match in _PUBLIC_NIGHT_INFO_REF.finditer(text):
@@ -95,6 +157,8 @@ def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
                 end,
                 target=match.group(1),
                 support_kind="night_info",
+                speaker_attribution=match.group(1),
+                negated=_player_claim_is_negated(text, match.start(), end),
             )
         )
     for match in _SYSTEM_ROLE_FACT_REF.finditer(text):
@@ -106,6 +170,7 @@ def classify_public_claims(text: str) -> list[ClassifiedPublicClaim]:
                 match.end(),
                 target=match.group(2),
                 role=match.group(3),
+                speaker_attribution="system",
                 negated=bool(match.group(1)) or public_claim_is_negated(
                     text, match.start()
                 ),
@@ -185,6 +250,38 @@ def unsupported_claims_in_text(
     )
 
 
+def public_claim_audit_keys(
+    text: str,
+    public_speeches: list[tuple[str, str]],
+) -> tuple[set[PublicClaimAuditKey], set[PublicClaimAuditKey]]:
+    """返回事实 claim 的稳定键及其中有公开来源支撑的子集。"""
+    claims = [
+        claim for claim in classify_public_claims(text)
+        if claim.claim_type != PublicClaimType.CURRENT_PLAYER_INFERENCE
+    ]
+    keyed = {
+        public_claim_audit_key(claim): claim
+        for claim in claims
+    }
+    verified = {
+        key for key, claim in keyed.items()
+        if _claim_is_supported(claim, public_speeches)
+    }
+    return set(keyed), verified
+
+
+def public_claim_audit_key(claim: ClassifiedPublicClaim) -> PublicClaimAuditKey:
+    """把分类结果投影为不含原文的稳定审计键。"""
+    return PublicClaimAuditKey(
+        claim_type=claim.claim_type.value,
+        target=claim.target or "",
+        role=claim.role or "",
+        support_kind=claim.support_kind or "",
+        speaker_attribution=claim.speaker_attribution or "",
+        negated=claim.negated,
+    )
+
+
 def sanitize_public_text(
     text: str,
     public_speeches: list[tuple[str, str]],
@@ -253,6 +350,18 @@ def _claim_is_supported(
         return True
     if claim.support_kind == "role" and claim.target and claim.role:
         return role_claim_supported(claim.target, claim.role, public_speeches)
+    if (
+        claim.support_kind == "role_assignment"
+        and claim.speaker_attribution
+        and claim.target
+        and claim.role
+    ):
+        return attributed_role_claim_supported(
+            claim.speaker_attribution,
+            claim.target,
+            claim.role,
+            public_speeches,
+        )
     if claim.support_kind == "night_info" and claim.target:
         return night_info_claim_supported(claim.target, public_speeches)
     return False
@@ -264,6 +373,21 @@ def public_claim_is_negated(text: str, claim_start: int) -> bool:
     if any(pattern.search(clause) for pattern in _ASSERTIVE_NEGATION_PREFIXES):
         return False
     return any(pattern.search(clause) for pattern in _NEGATING_PREFIXES)
+
+
+def _player_claim_is_negated(text: str, claim_start: int, claim_end: int) -> bool:
+    """识别玩家声明关系自身的否定，不把双重否定误判为否定。"""
+    prefix = re.split(r"[，。；;！？]", text[:claim_start])[-1].strip()
+    if any(pattern.search(prefix) for pattern in _ASSERTIVE_NEGATION_PREFIXES):
+        return False
+    relation = text[claim_start:claim_end]
+    return public_claim_is_negated(text, claim_start) or bool(
+        re.search(
+            r"(?:并未|没有|未曾|否认)[^，。；;]{0,8}"
+            r"(?:声称|说|表示|宣称|自认)",
+            relation,
+        )
+    )
 
 
 def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:
@@ -306,6 +430,19 @@ def role_claim_supported(
     return any(
         speaker == player_id and any(marker in speech for marker in markers)
         for speaker, speech in public_speeches
+    )
+
+
+def attributed_role_claim_supported(
+    speaker: str,
+    target: str,
+    role: str,
+    public_speeches: list[tuple[str, str]],
+) -> bool:
+    """判断指定玩家是否曾公开对目标作出该角色归属声明。"""
+    return any(
+        public_speaker == speaker and target in speech and role in speech
+        for public_speaker, speech in public_speeches
     )
 
 

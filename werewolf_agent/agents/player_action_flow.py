@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -42,6 +42,12 @@ from werewolf_agent.agents.player_action_result import (
     finalize_fallback_player_action,
     finalize_successful_player_action,
 )
+from werewolf_agent.agents.semantic_repair_audit import (
+    build_semantic_repair_audit,
+    preserve_verified_claim_in_fallback,
+    semantic_repair_retains_verified_claim,
+)
+from werewolf_agent.agents.player_fallback_speech import generic_fallback_speech_used
 from werewolf_agent.agents.player_latency import latency_from_result as _latency_from_result
 from werewolf_agent.agents.schemas import (
     ActionType,
@@ -50,6 +56,7 @@ from werewolf_agent.agents.schemas import (
     OutputMode,
     PlayerAction,
     RetryInfo,
+    TaskType,
 )
 from werewolf_agent.model_gateway.structured_output import (
     StructuredFailureStage,
@@ -80,6 +87,7 @@ def run_player_action_flow(
     structured_failure_stage: str | None = None
     structured_output_mode = ""
     generation_attempt_context = GenerationAttemptContext(run_scope=context.agent_id)
+    semantic_repair_source: PlayerAction | None = None
 
     attempt = 0
     # Pipeline-optimization Task 1: track previous attempt's error signature
@@ -433,6 +441,8 @@ def run_player_action_flow(
             continue
         speech_quality_err = agent._speech_quality_error(context, action)
         if speech_quality_err:
+            if semantic_repair_source is None:
+                semantic_repair_source = action
             structured_failure_reason = "speech_quality"
             structured_failure_stage = StructuredFailureStage.SEMANTIC.value
             retry = build_speech_quality_retry(
@@ -468,6 +478,38 @@ def run_player_action_flow(
             generation_attempt_context.reject_latest_output()
             continue
 
+        if (
+            semantic_repair_source is not None
+            and not semantic_repair_retains_verified_claim(
+                context, semantic_repair_source, action
+            )
+        ):
+            structured_failure_reason = "speech_quality"
+            structured_failure_stage = StructuredFailureStage.SEMANTIC.value
+            retry = RetryInfo(
+                attempt=attempt,
+                max_retries=agent.max_retries,
+                error_code="semantic_claim_retention",
+                error_message="修复结果未完整保持目标与公开论点边界。",
+                correction_hint=(
+                    "保持源目标和全部已有公开来源支撑的论点，且不得新增事实声明。"
+                ),
+            )
+            should_short_circuit, last_error_signature = (
+                agent._check_repeat_error_signature(
+                    retry,
+                    raw_text,
+                    attempt,
+                    last_error_signature,
+                    structured_output_mode=structured_output_mode,
+                )
+            )
+            if should_short_circuit:
+                generation_attempt_context.reject_latest_output()
+                break
+            generation_attempt_context.reject_latest_output()
+            continue
+
         return finalize_successful_player_action(
             agent=agent,
             context=context,
@@ -481,6 +523,15 @@ def run_player_action_flow(
             retry_count=attempt,
             structured_output_mode=structured_output_mode,
             execution_attempts=generation_attempt_context.attempts,
+            semantic_repair_audit=(
+                build_semantic_repair_audit(
+                    context,
+                    semantic_repair_source,
+                    action,
+                    success=True,
+                )
+                if semantic_repair_source is not None else None
+            ),
         ), retry
 
     # Fallback
@@ -492,10 +543,17 @@ def run_player_action_flow(
         exit_reason,
     )
     generation_attempt_context.append_terminal_fallback()
+    fallback_action = agent._fallback_action(context)
+    if context.task_type is not TaskType.WOLF_DISCUSSION:
+        fallback_action = fallback_action.model_copy(update={"speech": ""})
+    if semantic_repair_source is not None:
+        fallback_action = preserve_verified_claim_in_fallback(
+            context, semantic_repair_source, fallback_action
+        )
     fallback = finalize_fallback_player_action(
         agent=agent,
         context=context,
-        fallback=agent._fallback_action(context),
+        fallback=fallback_action,
         retry=retry,
         raw_text=raw_text,
         parsed_action=parsed_action,
@@ -509,5 +567,17 @@ def run_player_action_flow(
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
         execution_attempts=generation_attempt_context.attempts,
+        semantic_repair_audit=(
+            build_semantic_repair_audit(
+                context,
+                semantic_repair_source,
+                fallback_action,
+                success=False,
+                generic_template_used=generic_fallback_speech_used(
+                    context, fallback_action.speech
+                ),
+            )
+            if semantic_repair_source is not None else None
+        ),
     )
     return fallback, retry

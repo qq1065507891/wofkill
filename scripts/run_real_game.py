@@ -3,7 +3,7 @@
 运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     python scripts/run_real_game.py --seed 42 --max-steps 500
@@ -330,6 +330,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     """构建真实游戏 CLI 参数，供入口和无副作用测试复用。"""
     parser = argparse.ArgumentParser(description="Run a real 12-player werewolf game")
     parser.add_argument("--seed", type=int, default=None, help="Game seed (default: auto)")
+    parser.add_argument(
+        "--game-id",
+        default="",
+        help="Explicit run-scoped game ID (default: g_<seed>)",
+    )
     parser.add_argument("--max-steps", type=int, default=500, help="Max graph steps")
     parser.add_argument("--timeout", type=float, default=120.0, help="Agent timeout (seconds)")
     parser.add_argument("--no-timeout", action="store_true", help="Disable agent timeout")
@@ -341,6 +346,30 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         help="Directory for this game's JSON artifact (default: repository root)",
     )
     return parser
+
+
+def _build_runner_config(
+    args: argparse.Namespace,
+    *,
+    game_repo,
+    memory_coordinator,
+) -> GameRunnerConfig:
+    """将 CLI 参数显式映射到 GameRunner 配置。"""
+    return GameRunnerConfig(
+        ruleset_id="pre_witch_hunter_idiot_mixed",
+        player_count=12,
+        seed=args.seed,
+        game_id=args.game_id,
+        use_agent_registry=True,
+        model_config_path=str(ROOT / "config" / "models.yaml"),
+        persona_config_path=str(
+            ROOT / "config" / "personas" / "jingcheng_style_prototypes.yaml"
+        ),
+        agent_call_timeout=0 if args.no_timeout else args.timeout,
+        repository=game_repo,
+        memory_coordinator=memory_coordinator,
+        agent_call_delay_ms=args.delay,
+    )
 
 
 def main() -> None:
@@ -422,17 +451,10 @@ def main() -> None:
     except Exception:
         print("  Memory DB: disabled (Docker PostgreSQL unavailable)")
 
-    config = GameRunnerConfig(
-        ruleset_id="pre_witch_hunter_idiot_mixed",
-        player_count=12,
-        seed=args.seed,
-        use_agent_registry=True,
-        model_config_path=str(ROOT / "config" / "models.yaml"),
-        persona_config_path=str(ROOT / "config" / "personas" / "jingcheng_style_prototypes.yaml"),
-        agent_call_timeout=0 if args.no_timeout else args.timeout,
-        repository=game_repo,
+    config = _build_runner_config(
+        args,
+        game_repo=game_repo,
         memory_coordinator=memory_coordinator,
-        agent_call_delay_ms=args.delay,
     )
 
     runner = GameRunner(config)

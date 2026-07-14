@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.agents.player_fallback_speech import build_fallback_speech
@@ -163,6 +164,21 @@ def build_fallback_speech(context: AgentContext) -> str:
     return _DAY_TEMPLATES[tmpl_idx]
 
 
+def generic_fallback_speech_used(context: AgentContext, speech: str) -> bool:
+    """按实际 fallback 文本及任务结构判定是否退化为泛化模板。"""
+    text = str(speech or "").strip()
+    if not text:
+        return False
+    generic_markers = ("信息不足", "继续观察", "暂时没有确定", "先听")
+    if any(marker in text for marker in generic_markers):
+        return True
+    return (
+        context.task_type is TaskType.SPEECH
+        and not context.legal_targets
+        and text == build_fallback_speech(context)
+    )
+
+
 def _append_seer_claim_clue(clues: list[str], item: dict[str, Any]) -> None:
     speaker = item.get("speaker") or item.get("seer_id")
     target = item.get("target") or item.get("target_id")
@@ -236,4 +252,5 @@ def _format_selected(
 __all__ = [
     "build_fallback_speech",
     "context_clues",
+    "generic_fallback_speech_used",
 ]

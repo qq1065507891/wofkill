@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.agents.player_retry import check_repeat_error_signature
@@ -14,7 +15,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from werewolf_agent.agents.schemas import ActionType, AgentContext, FallbackAction, RetryInfo, TaskType
+from werewolf_agent.agents.schemas import (
+    ActionType,
+    AgentContext,
+    FallbackAction,
+    RetryInfo,
+    TaskType,
+)
 
 _TARGET_REQUIRED_FALLBACK_ACTIONS = {
     ActionType.VOTE,
@@ -111,7 +118,7 @@ def build_fallback_action(
             safe_target = context.legal_targets[0]
 
     speech = ""
-    if safe_action == ActionType.SPEECH and context.task_type == TaskType.WOLF_DISCUSSION:
+    if safe_action == ActionType.SPEECH and context.task_type is TaskType.WOLF_DISCUSSION:
         speech = fallback_speech(context)
 
     # reason 在拿到完整 FallbackAction 后再生成，避免字符串里写死 target_id。

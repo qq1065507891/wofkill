@@ -1,8 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
-"""World-model audit extraction and sanitization helpers.
+"""构建、提取并清洗仅供 moderator 使用的世界模型审计证明。
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-14
     使用示例: 内部模块，无对外接口
 """
 
@@ -28,6 +28,8 @@ ALLOWED_WORLD_MODEL_KEYS = {
     "planning_mode",
     "belief",
     "possible_worlds",
+    "authoritative_world_identities",
+    "public_evidence_ids",
     "simulation_predictions",
     "decision_plan",
     "dialogue_plan",
@@ -46,6 +48,12 @@ def build_world_model_audit_from_context(
         "player_id": str(getattr(context, "agent_id", "") or ""),
         "belief": getattr(context, "belief_state", {}) or {},
         "possible_worlds": getattr(context, "possible_worlds", {}) or {},
+        "authoritative_world_identities": list(
+            getattr(context, "authoritative_world_identities", []) or []
+        ),
+        "public_evidence_ids": list(
+            getattr(context, "public_world_evidence_ids", []) or []
+        ),
         "simulation_predictions": getattr(context, "simulation_predictions", {}) or {},
     }
     parsed = _as_dict(parsed_action)

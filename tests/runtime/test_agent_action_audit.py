@@ -27,6 +27,54 @@ def test_action_audit_event_always_carries_explicit_task_type() -> None:
     assert event.payload["task_type"] == "vote"
 
 
+def test_action_audit_emits_separate_moderator_only_semantic_repair_event() -> None:
+    from werewolf_agent.runtime.nodes.action_audit import _action_audit_events
+
+    semantic = {
+        "repairable": True,
+        "success": True,
+        "target_preserved": True,
+        "introduced_claim_count": 0,
+        "verified_claim_count": 1,
+        "retained_verified_claim_count": 1,
+        "generic_template_used": False,
+    }
+    events = _action_audit_events(
+        state={},
+        player_id="p01",
+        phase="speech",
+        action_trace={"semantic_repair_audit": semantic},
+        decision_identity=None,
+        exposure_collector=None,
+    )
+
+    assert [event.type for event in events] == [
+        "semantic_repair_audit", "action_trace_audit"
+    ]
+    assert events[0].payload == {**semantic, "visibility": "moderator_only"}
+
+
+def test_semantic_repair_event_carries_decision_identity() -> None:
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.runtime.nodes.action_audit import _action_audit_events
+
+    identity = DecisionIdentity(
+        game_id="g1", player_id="p01", phase="day", day_number=1,
+        night_number=0, task_type="speech", action_index=4,
+    )
+    events = _action_audit_events(
+        state={}, player_id="p01", phase="speech",
+        action_trace={"semantic_repair_audit": {"repairable": True}},
+        decision_identity=identity, exposure_collector=None,
+    )
+
+    semantic = events[0].payload
+    assert semantic["trace_id"] == identity.trace_id()
+    assert semantic["game_id"] == "g1"
+    assert semantic["action_index"] == 4
+    assert semantic["task_type"] == "speech"
+
+
 def test_audit_context_kwargs_requires_identity_and_collector() -> None:
     from werewolf_agent.runtime.agent_action_audit import _audit_context_kwargs
 

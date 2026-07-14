@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_reflection_support import _strip_in_game_directives
@@ -99,6 +99,8 @@ def _agent_reflection(
             return {"reflection_verification": {
                 "status": "invalid_structured_draft",
                 "verified_fact_count": 0,
+                "verified_claim_ids": [],
+                "rejected_claim_ids": [],
                 "verified_lessons": [],
                 "rejected_fact_count": 0,
                 "rejected_lesson_count": 0,
@@ -108,6 +110,15 @@ def _agent_reflection(
             "status": "verified",
             "decision_id": f"reflection:{gs.game_id}:{player_id}",
             "verified_fact_count": len(verification.verified_claims),
+            "verified_claim_ids": [
+                claim.claim_id for claim in verification.verified_claims
+            ],
+            "rejected_claim_ids": [
+                claim.claim_id for claim in draft.claims
+                if claim.claim_id not in {
+                    verified.claim_id for verified in verification.verified_claims
+                }
+            ],
             "verified_lessons": anonymize_player_ids_recursive([
                 {
                     "lesson_id": lesson.lesson_id,
@@ -123,6 +134,8 @@ def _agent_reflection(
         return {"reflection_verification": {
             "status": "agent_error",
             "verified_fact_count": 0,
+            "verified_claim_ids": [],
+            "rejected_claim_ids": [],
             "verified_lessons": [],
             "rejected_fact_count": 0,
             "rejected_lesson_count": 0,

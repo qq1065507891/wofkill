@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_schemas import AgentContext
@@ -107,6 +108,13 @@ class AgentContext(BaseModel):
     persona_snapshot: dict[str, Any] = Field(default_factory=dict)
     model_config_snapshot: dict[str, Any] = Field(default_factory=dict)
     possible_worlds: dict[str, Any] = Field(default_factory=dict)
+    authoritative_world_identities: list[dict[str, Any]] = Field(
+        default_factory=list,
+        exclude=True,
+        description="仅供 moderator 审计重算 possible-world ID 的完整身份快照。",
+    )
+    public_world_evidence_ids: list[str] = Field(default_factory=list, exclude=True)
+    public_claim_ledger: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
     simulation_predictions: dict[str, Any] = Field(default_factory=dict)
     decision_plan_audit: dict[str, Any] = Field(default_factory=dict)
     dialogue_plan_audit: dict[str, Any] = Field(default_factory=dict)

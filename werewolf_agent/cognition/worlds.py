@@ -3,7 +3,7 @@
 功能描述：在角色数量约束下，枚举并评分可能的身份分配方案，
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-13
+修改日期：2026-07-14
 使用示例：内部模块，无对外接口
 """
 
@@ -124,8 +124,10 @@ class PossibleWorldSet:
                     "probability": round(world.probability, 3),
                     "key_assignments": {
                         pid: _deep_thaw(role)
-                        for pid, role in sorted(world.roles.items())[:max_assignments]
-                        if pid != self.viewer_id
+                        for pid, role in [
+                            item for item in sorted(world.roles.items())
+                            if item[0] != self.viewer_id
+                        ][:max_assignments]
                     },
                     "why": _deep_thaw(world.supporting_evidence[:3]),
                     "watch_for": _deep_thaw(world.contradictions[:3]),
@@ -145,6 +147,19 @@ class PossibleWorldSet:
                 "basis": "uniform evidence-insufficient prior",
             }
         return result
+
+    def to_audit_identity_proofs(self) -> list[dict[str, Any]]:
+        """导出完整 assignment 身份证明；调用方必须只写入 moderator 审计。"""
+        return [
+            {
+                "world_id": world.world_id,
+                "canonical_assignment": [
+                    [player, _deep_thaw(role)]
+                    for player, role in sorted(world.roles.items())
+                ],
+            }
+            for world in self.promptable_worlds()[:3]
+        ]
 
 
 class PossibleWorldsEngine:

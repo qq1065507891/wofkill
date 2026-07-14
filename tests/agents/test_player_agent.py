@@ -1241,7 +1241,7 @@ class TestPlayerAgentRetryFallback:
 
     def test_weak_day_speech_retries_with_quality_hint(self) -> None:
         provider = _SequenceJsonProvider([
-            '{"action_type":"speech","target_id":null,"speech":"再观察一下，先听后面",'
+            '{"action_type":"speech","target_id":null,"speech":"我怀疑p07。",'
             '"reason":"先观察","confidence":0.4}',
             '{"action_type":"speech","target_id":null,'
             '"speech":"我是好人阵营。我怀疑p07，p07发言前后矛盾，票型也不合理。我倾向投p07。",'
@@ -1268,11 +1268,11 @@ class TestPlayerAgentRetryFallback:
         assert provider.calls == 2
         assert retry.attempt == 2
         assert action.speech.startswith("我是好人阵营")
-        assert "发言过于空洞" in provider.prompts[1]
+        assert "先补一句身份立场" in provider.prompts[1]
 
     def test_weak_sheriff_speech_retries_with_high_pressure_hint(self) -> None:
         provider = _SequenceJsonProvider([
-            '{"action_type":"speech","target_id":null,"speech":"我竞选警长，大家听我发言。",'
+            '{"action_type":"speech","target_id":"p07","speech":"我怀疑p07。",'
             '"reason":"争取警徽","confidence":0.5}',
             '{"action_type":"speech","target_id":"p07",'
             '"speech":"我是预言家视角。我怀疑p07，p07发言前后矛盾，且警徽流安排不合理。我倾向投p07，并会对比他的票型。",'
@@ -3021,6 +3021,9 @@ def test_speech_quality_correction_hint_differs_from_error_message():
         # We expect a FallbackAction (since max_retries=1 and the speech
         # failed quality). The retry should be captured.
         assert retry is not None
+        assert action.trace.semantic_repair_audit is not None
+        assert action.trace.semantic_repair_audit["success"] is False
+        assert action.trace.semantic_repair_audit["generic_template_used"] is False
         # The key regression check: correction_hint must be the SHORT
         # action-oriented hint, NOT the long enumeration.
         # P3-3: correction_hint is the executable template with
@@ -3831,6 +3834,176 @@ class TestVoteFallbackTargetGate:
         fb = agent._fallback_action(ctx)
         assert isinstance(fb, FallbackAction)
         assert fb.target_id is None
+
+
+def test_speech_quality_retry_records_real_semantic_repair_audit(monkeypatch) -> None:
+    from unittest.mock import patch
+
+    payloads = []
+    for speech in ("我怀疑p05。", "我是好人，我怀疑p05，依据其发言矛盾，我倾向投p05。"):
+        payloads.append(json.dumps({
+            "action_type": "speech", "target_id": "p05", "speech": speech,
+            "reason": "公开发言", "confidence": 0.6,
+            "private_intent": {
+                "true_role": "villager", "faction_goal": "find_wolves",
+                "claimed_view": "good_player_without_night_info",
+                "pressure_target": "p05", "risk_flags": [],
+            },
+        }, ensure_ascii=False))
+    provider = _SequenceJsonProvider(payloads)
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None]):
+        action, _ = agent.act(context)
+
+    assert action.trace is not None
+    assert action.trace.semantic_repair_audit == {
+        "repairable": True, "success": True, "target_preserved": True,
+        "speaker_attribution_preserved": True, "negation_preserved": True,
+        "introduced_claim_count": 0, "verified_claim_count": 0,
+        "retained_verified_claim_count": 0, "generic_template_used": False,
+        "fallback_kind": "no_fallback",
+    }
+
+
+def test_semantic_repair_retries_until_verified_claim_is_retained(monkeypatch) -> None:
+    """语义修复不得接受丢失已有公开支撑论点的输出。"""
+    from unittest.mock import patch
+
+    speeches = (
+        "p03声称自己是预言家，我怀疑p05。",
+        "我是好人，我怀疑p05，依据其发言矛盾，我倾向投p05。",
+        "p03声称自己是预言家。我是好人，我怀疑p05，依据其发言矛盾，我倾向投p05。",
+    )
+    payloads = [json.dumps({
+        "action_type": "speech", "target_id": "p05", "speech": speech,
+        "reason": "公开发言", "confidence": 0.6,
+        "private_intent": {
+            "true_role": "villager", "faction_goal": "find_wolves",
+            "claimed_view": "good_player_without_night_info",
+            "pressure_target": "p05", "risk_flags": [],
+        },
+    }, ensure_ascii=False) for speech in speeches]
+    provider = _SequenceJsonProvider(payloads)
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+        public_claim_ledger=[{"speaker": "p03", "text": "我是预言家。"}],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None, None]):
+        action, _ = agent.act(context)
+
+    assert provider.calls == 3
+    assert action.speech == speeches[-1]
+    assert action.trace is not None
+    assert action.trace.semantic_repair_audit["retained_verified_claim_count"] == 1
+
+
+def test_terminal_fallback_preserves_verified_claim_and_source_target(monkeypatch) -> None:
+    """重试耗尽时，确定性 fallback 保留公开论点并尽量保留原目标。"""
+    from unittest.mock import patch
+
+    speeches = (
+        "p03声称自己是预言家，我怀疑p05。",
+        "我是好人，我怀疑p07，依据其发言矛盾，我倾向投p07。",
+    )
+    payloads = [json.dumps({
+        "action_type": "speech", "target_id": target, "speech": speech,
+        "reason": "公开发言", "confidence": 0.6,
+        "private_intent": {
+            "true_role": "villager", "faction_goal": "find_wolves",
+            "claimed_view": "good_player_without_night_info",
+            "pressure_target": target, "risk_flags": [],
+        },
+    }, ensure_ascii=False) for speech, target in zip(speeches, ("p05", "p07"), strict=True)]
+    provider = _SequenceJsonProvider(payloads)
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+        public_claim_ledger=[{"speaker": "p03", "text": "我是预言家。"}],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None]):
+        action, _ = agent.act(context)
+
+    assert "p03" in action.speech and "预言家" in action.speech
+    assert "p05" in action.speech
+    assert "前后矛盾" not in action.speech
+    assert "我继续关注p05" in action.speech
+    assert action.trace is not None
+    assert action.trace.semantic_repair_audit["success"] is False
+    assert action.trace.semantic_repair_audit["target_preserved"] is True
+    assert action.trace.semantic_repair_audit["retained_verified_claim_count"] == 1
+    assert action.trace.semantic_repair_audit["introduced_claim_count"] == 0
+
+
+def test_semantic_fallback_without_target_or_verified_claim_is_task_safe(
+    monkeypatch,
+) -> None:
+    """无 source target/verified claim 时仍返回任务特定且不造事实的安全表达。"""
+    from unittest.mock import patch
+
+    payload = json.dumps({
+        "action_type": "speech", "target_id": None,
+        "speech": "我只回应当前质疑。", "reason": "自我回应", "confidence": 0.5,
+        "private_intent": {
+            "true_role": "villager", "faction_goal": "find_wolves",
+            "claimed_view": "good_player_without_night_info",
+            "pressure_target": None, "risk_flags": [],
+        },
+    }, ensure_ascii=False)
+    provider = _SequenceJsonProvider([payload])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.DEFENSE_SPEECH, phase="day",
+        day_number=2, own_role="villager", legal_actions=[ActionType.SPEECH],
+        legal_targets=[], public_claim_ledger=[],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", return_value="需修复"):
+        action, _ = agent.act(context)
+
+    assert action.speech
+    assert "质疑" in action.speech or "辩护" in action.speech
+    assert action.trace is not None
+    assert action.trace.semantic_repair_audit["introduced_claim_count"] == 0
+    assert action.trace.semantic_repair_audit["generic_template_used"] is False
 
     def test_fallback_vote_uses_evidence_target_when_present(self) -> None:
         ctx = AgentContext(

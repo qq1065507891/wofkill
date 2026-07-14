@@ -4,7 +4,7 @@ GameRunner 兼容入口，负责组合配置、初始化、执行和记忆 mixin
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-06
+修改日期: 2026-07-14
 
 使用示例:
     >>> runner = GameRunner(GameRunnerConfig(seed=42))
@@ -49,7 +49,9 @@ class GameRunner(
 
     def __init__(self, config: GameRunnerConfig) -> None:
         self._config = config
-        self._game_id = f"g_{config.seed if config.seed is not None else uuid.uuid4().hex[:8]}"
+        self._game_id = config.game_id or (
+            f"g_{config.seed if config.seed is not None else uuid.uuid4().hex[:8]}"
+        )
         self._ruleset_registry: RulesetRegistry = config.ruleset_registry or RulesetRegistry()
         self._ruleset_entry = self._ruleset_registry.require_playable(config.ruleset_id)
         self._engine = RuleEngine.from_yaml(self._ruleset_entry.path)

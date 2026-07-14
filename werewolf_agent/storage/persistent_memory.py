@@ -3,7 +3,7 @@
 功能描述：持久内存协调器——将 MemoryStore 和 RAG 自动保存/恢复到 GameRepository（设计文档 §13）。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-14
 使用示例：内部模块，无对外接口
 """
 
@@ -58,10 +58,20 @@ class PersistentMemoryCoordinator:
         embedded in the snapshot. The snapshot stores only lightweight IDs.
         """
         self._persist_reflection_rows(memory_store)
-        data = save_memory_store(memory_store)
-        self._repo.save_memory_snapshot(snapshot_id, data)
+        data = {
+            **save_memory_store(memory_store),
+            "_persistence_active": True,
+            "_source_game_id": snapshot_id,
+        }
+        self._repo.save_memory_snapshot(
+            snapshot_id,
+            {**data, "_snapshot_id": snapshot_id},
+        )
         if snapshot_id != "latest":
-            self._repo.save_memory_snapshot("latest", data)
+            self._repo.save_memory_snapshot(
+                "latest",
+                {**data, "_snapshot_id": "latest"},
+            )
 
     def restore_memory(
         self,
@@ -72,8 +82,12 @@ class PersistentMemoryCoordinator:
         """Restore MemoryStore from a snapshot. Returns MemoryStore or None."""
         from werewolf_agent.memory.store import MemoryStore
         data = self._repo.load_memory_snapshot(snapshot_id)
+        if isinstance(data, dict) and data.get("_persistence_active") is False:
+            data = None
         if data is None and fallback_to_latest and snapshot_id != "latest":
             data = self._repo.load_memory_snapshot("latest")
+            if isinstance(data, dict) and data.get("_persistence_active") is False:
+                data = None
         if data is None:
             return MemoryStore(repo=self._repo)
         return restore_memory_store(data, repo=self._repo)
@@ -115,4 +129,7 @@ class PersistentMemoryCoordinator:
             if existing is None:
                 self._repo.save_reflection(entry.to_dict())
         for entry in getattr(reflections, "all_v2_entries", lambda: [])():
-            self._repo.save_reflection(entry.to_dict())
+            self._repo.save_reflection({
+                **entry.to_dict(),
+                "_persistence_active": True,
+            })

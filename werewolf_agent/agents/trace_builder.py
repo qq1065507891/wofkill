@@ -3,7 +3,7 @@
 功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-13
+修改日期：2026-07-14
 使用示例：内部模块，无对外接口
 """
 
@@ -36,6 +36,7 @@ def build_action_trace(
     structured_output_mode: str = "",
     structured_failure_stage: str | None = None,
     execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
+    semantic_repair_audit: dict[str, Any] | None = None,
 ) -> ActionTrace:
     """Build an ActionTrace from the current attempt's state.
 
@@ -82,4 +83,5 @@ def build_action_trace(
         ),
         execution_attempts=execution_attempts,
         decision_outcome=outcome,
+        semantic_repair_audit=semantic_repair_audit,
     )

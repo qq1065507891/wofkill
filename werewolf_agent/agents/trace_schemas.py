@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.agents.trace_schemas import ActionTrace
@@ -109,6 +109,7 @@ class ActionTrace(BaseModel):
     world_model_audit: dict[str, Any] = Field(default_factory=dict)
     execution_attempts: tuple[AttemptExecutionRecord, ...] = ()
     decision_outcome: str | None = None
+    semantic_repair_audit: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

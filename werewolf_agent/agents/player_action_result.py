@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_result import finalize_successful_player_action
@@ -39,6 +39,7 @@ def finalize_successful_player_action(
     retry_count: int,
     structured_output_mode: str,
     execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
+    semantic_repair_audit: dict[str, Any] | None = None,
 ) -> PlayerAction:
     """为成功行动附加审计 trace，并记录成功 metrics。"""
     trace = _build_action_trace(
@@ -53,6 +54,7 @@ def finalize_successful_player_action(
         retry_count=retry_count,
         structured_output_mode=structured_output_mode,
         execution_attempts=execution_attempts,
+        semantic_repair_audit=semantic_repair_audit,
     )
     trace.total_retry_count_until_success = max(retry_count - 1, 0)
     agent.metrics_collector.record(
@@ -84,6 +86,7 @@ def finalize_fallback_player_action(
     fallback_target_used: bool = False,
     metrics_error_code: str | None = None,
     execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
+    semantic_repair_audit: dict[str, Any] | None = None,
 ) -> FallbackAction:
     """为 fallback 行动附加审计 trace，并记录 fallback metrics。"""
     trace = _build_action_trace(
@@ -104,6 +107,7 @@ def finalize_fallback_player_action(
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
         execution_attempts=execution_attempts,
+        semantic_repair_audit=semantic_repair_audit,
     )
     agent.metrics_collector.record(
         player_id=context.agent_id,

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.action_audit import _allocate_decision_identity
@@ -118,7 +118,26 @@ def _action_audit_events(
     if exposure_collector is not None and decision_identity is not None:
         exposure_collector.record_action_tool_call(decision_identity, action_trace)
     exposure_events = exposure_collector.flush_events() if exposure_collector else []
-    return [*exposure_events, event]
+    semantic_events: list[GameEvent] = []
+    semantic = action_trace.get("semantic_repair_audit")
+    if isinstance(semantic, dict):
+        identity_payload: dict[str, Any] = {}
+        if decision_identity is not None:
+            identity_payload = {
+                "trace_id": decision_identity.trace_id(),
+                "game_id": decision_identity.game_id,
+                "action_index": decision_identity.action_index,
+                "task_type": decision_identity.task_type,
+            }
+        semantic_events.append(GameEvent(
+            type="semantic_repair_audit",
+            payload={
+                **semantic,
+                **identity_payload,
+                "visibility": "moderator_only",
+            },
+        ))
+    return [*exposure_events, *semantic_events, event]
 
 
 def _private_vote_audit_payload(action_trace: dict[str, Any]) -> dict[str, Any]:

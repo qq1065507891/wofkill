@@ -69,6 +69,7 @@ def test_soak_script_is_isolated_and_uses_exact_default_seeds() -> None:
 
     assert "[int[]]$Seeds = (713001..713010)" in text
     assert "$Seeds.Count -ne 10" in text
+    assert "Select-Object -Unique" in text
     assert "$env:WEREWOLF_GAME_LOG_PATH" in text
     assert "$PSScriptRoot" in text
     assert "$runnerScript" in text
@@ -78,7 +79,11 @@ def test_soak_script_is_isolated_and_uses_exact_default_seeds() -> None:
     assert "try {" in text
     assert "finally {" in text
     assert "Pop-Location" in text
-    assert "--output-dir $outputDir" in text
+    assert "--output-dir $gameOutputDir" in text
+    assert "$gameId = \"audit-$runId-seed-$seed\"" in text
+    assert "--game-id $gameId" in text
+    assert '$gameData.game_id -ne $gameId' in text
+    assert "$gameIds.Add($gameId)" in text
     assert "audit-closure-report.json" in text
     assert "audit-closure-thresholds.json" in text
     assert "Test-Path -LiteralPath $thresholdPath" in text

@@ -443,20 +443,37 @@ class TestRealRunConfiguration:
     def test_provider_dotenv_loading_does_not_enable_postgres_app_storage(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
-        from werewolf_agent.model_gateway.providers import load_local_dotenv
+        from werewolf_agent.model_gateway.providers import (
+            _ENV_OVERRIDES,
+            load_local_dotenv,
+        )
 
         monkeypatch.delenv("WEREWOLF_STORAGE_BACKEND", raising=False)
         monkeypatch.delenv("POSTGRES_DSN", raising=False)
         monkeypatch.delenv("WEREWOLF_VECTOR_BACKEND", raising=False)
         monkeypatch.delenv("PGVECTOR_DSN", raising=False)
 
-        load_local_dotenv()
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text(
+            "ANTHROPIC_API_KEY=test-key\n"
+            "ANTHROPIC_BASE_URL=https://example.invalid\n"
+            "WEREWOLF_STORAGE_BACKEND=postgres\n"
+            "POSTGRES_DSN=postgresql://example.invalid/test\n"
+            "WEREWOLF_VECTOR_BACKEND=pgvector\n"
+            "PGVECTOR_DSN=postgresql://example.invalid/vector\n",
+            encoding="utf-8",
+        )
+        _ENV_OVERRIDES.clear()
+        try:
+            load_local_dotenv(dotenv_path)
 
-        from werewolf_agent.model_gateway.providers import _ENV_OVERRIDES
-        assert "ANTHROPIC_API_KEY" in _ENV_OVERRIDES
-        assert "ANTHROPIC_BASE_URL" in _ENV_OVERRIDES
-        assert os.getenv("WEREWOLF_STORAGE_BACKEND") is None
-        assert os.getenv("POSTGRES_DSN") is None
-        assert os.getenv("WEREWOLF_VECTOR_BACKEND") is None
-        assert os.getenv("PGVECTOR_DSN") is None
+            assert "ANTHROPIC_API_KEY" in _ENV_OVERRIDES
+            assert "ANTHROPIC_BASE_URL" in _ENV_OVERRIDES
+            assert os.getenv("WEREWOLF_STORAGE_BACKEND") is None
+            assert os.getenv("POSTGRES_DSN") is None
+            assert os.getenv("WEREWOLF_VECTOR_BACKEND") is None
+            assert os.getenv("PGVECTOR_DSN") is None
+        finally:
+            _ENV_OVERRIDES.clear()

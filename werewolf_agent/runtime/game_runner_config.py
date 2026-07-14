@@ -4,6 +4,7 @@ GameRunner 的配置数据结构。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_config import GameRunnerConfig
@@ -12,8 +13,12 @@ GameRunner 的配置数据结构。
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
+
+
+_SAFE_GAME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
 @dataclass
@@ -39,8 +44,19 @@ class GameRunnerConfig:
     judge_hitl_enabled: bool = False
     judge_hitl_auto_pause_triggers: list[str] | None = None
     agent_call_delay_ms: int = 0
+    game_id: str = ""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.game_id, str):
+            raise ValueError("game_id must be a string")
+        if self.game_id and (
+            ".." in self.game_id or _SAFE_GAME_ID.fullmatch(self.game_id) is None
+        ):
+            raise ValueError(
+                "game_id must start with an ASCII letter or digit, contain only "
+                "letters, digits, '.', '_', or '-', exclude '..', and be at most "
+                "128 characters"
+            )
         if self.seed is None:
             import secrets
 

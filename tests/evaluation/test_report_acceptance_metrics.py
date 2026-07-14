@@ -4,11 +4,14 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-14
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import json
 
 import pytest
 
@@ -52,6 +55,40 @@ def _attempt(
         reasoning_token_count=1 if reasoning_status is ReasoningStatus.CONFIRMED else 0,
         evidence_kind=evidence,
     )
+
+
+def _world_proof(assignments: dict[str, str]) -> dict[str, object]:
+    pairs = [[player, role] for player, role in sorted(assignments.items())]
+    canonical = json.dumps(
+        pairs, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "world_id": f"world_{hashlib.sha256(canonical).hexdigest()}",
+        "canonical_assignment": pairs,
+    }
+
+
+def _semantic_pair(
+    payload: dict[str, object],
+    *,
+    action_index: int,
+    game_id: str = "g1",
+) -> list[dict[str, object]]:
+    payload = {
+        "speaker_attribution_preserved": True,
+        "negation_preserved": True,
+        **payload,
+    }
+    identity = {
+        "trace_id": f"trace-{action_index}", "game_id": game_id,
+        "action_index": action_index, "task_type": "speech",
+    }
+    return [
+        {"type": "semantic_repair_audit", "payload": {**payload, **identity}},
+        {"type": "action_trace_audit", "payload": {
+            **identity, "action_trace": {"semantic_repair_audit": payload},
+        }},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -256,6 +293,7 @@ def test_critical_reasoning_coverage_uses_policy_minimum_and_requires_task_type(
         medium_attempt,
         requested_reasoning_level=ReasoningLevel.NONE,
         normalized_reasoning_status=ReasoningStatus.NOT_REQUESTED,
+        reasoning_token_count=0,
         evidence_kind=EvidenceKind.NONE,
     )
     games = [{"events": [
@@ -309,6 +347,102 @@ def test_none_only_reasoning_has_independent_unsupported_confirmation_rate() -> 
     assert metrics["critical_task_reasoning_request_coverage_supported"] is False
 
 
+def test_critical_reasoning_checks_every_attempt_and_counts_unknown_task() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    high = _attempt(
+        1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT
+    )
+    low = replace(
+        _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS),
+        requested_reasoning_level=ReasoningLevel.NONE,
+        normalized_reasoning_status=ReasoningStatus.NOT_REQUESTED,
+        reasoning_token_count=0,
+        evidence_kind=EvidenceKind.NONE,
+    )
+    metrics = compute_decision_execution_metrics([{"events": [
+        {"type": "action_trace_audit", "payload": {
+            "task_type": "vote",
+            "action_trace": {"execution_attempts": (high, low)},
+        }},
+        {"type": "action_trace_audit", "payload": {
+            "task_type": "future_unknown_task",
+            "action_trace": {"execution_attempts": (replace(high, ordinal=1),)},
+        }},
+    ]}])
+
+    assert metrics["critical_task_reasoning_request_count"] == 2
+    assert metrics["critical_task_reasoning_requested_count"] == 1
+    assert metrics["critical_task_reasoning_request_coverage"] == 0.5
+    assert metrics["reasoning_task_type_unknown_count"] == 1
+
+
+def test_critical_reasoning_effective_request_rejects_terminal_statuses() -> None:
+    """关键任务只有达到 policy 且未被 provider 拒绝才算有效请求。"""
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    statuses = (
+        ReasoningStatus.REQUESTED_UNCONFIRMED,
+        ReasoningStatus.UNSUPPORTED,
+        ReasoningStatus.FALLBACK_DISABLED,
+    )
+    evidence = (
+        EvidenceKind.FIELD_ECHO,
+        EvidenceKind.UNSUPPORTED,
+        EvidenceKind.FALLBACK_DISABLED,
+    )
+    attempts = tuple(
+        replace(
+            _attempt(index, RouteKind.PRIMARY if index == 1 else RouteKind.RETRY,
+                     AttemptOutcome.FAILURE if index < 3 else AttemptOutcome.SUCCESS,
+                     cause=RootCause.TIMEOUT if index < 3 else RootCause.NONE,
+                     reasoning_status=status),
+            normalized_reasoning_status=status,
+            reasoning_token_count=0,
+            evidence_kind=evidence_kind,
+        )
+        for index, (status, evidence_kind) in enumerate(
+            zip(statuses, evidence, strict=True), start=1
+        )
+    )
+    metrics = compute_decision_execution_metrics([{"events": [{
+        "type": "action_trace_audit",
+        "payload": {
+            "task_type": "wolf_team_plan",
+            "action_trace": {"execution_attempts": attempts},
+        },
+    }]}])
+
+    assert metrics["critical_task_reasoning_effective_request_count"] == 1
+    assert metrics["critical_task_reasoning_effective_request_rate"] == 1 / 3
+    assert metrics["critical_task_reasoning_unsupported_count"] == 1
+    assert metrics["critical_task_reasoning_fallback_disabled_count"] == 1
+    assert metrics["reasoning_unconfirmed_count"] == 1
+    assert metrics["reasoning_confirmation_rate"] == 0.0
+
+
+def test_unconfirmed_reasoning_is_dispatched_but_requires_confirmation_review() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    unconfirmed = replace(
+        _attempt(1, RouteKind.PRIMARY, AttemptOutcome.SUCCESS),
+        normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+        reasoning_token_count=0,
+        evidence_kind=EvidenceKind.FIELD_ECHO,
+    )
+    metrics = compute_decision_execution_metrics([{"events": [{
+        "type": "action_trace_audit", "payload": {
+            "task_type": "vote",
+            "action_trace": {"execution_attempts": (unconfirmed,)},
+        },
+    }]}])
+
+    assert metrics["critical_task_reasoning_request_dispatched_rate"] == 1.0
+    assert metrics["critical_task_reasoning_confirmed_rate"] == 0.0
+    assert metrics["critical_task_reasoning_requires_confirmation_review_count"] == 1
+    assert metrics["critical_task_reasoning_effective_request_rate"] == 1.0
+
+
 def test_provider_fallback_keep_requires_critical_task_policy_minimum() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
 
@@ -354,9 +488,15 @@ def test_provider_fallback_keep_requires_critical_task_policy_minimum() -> None:
 def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 
+    world_one = _world_proof({"p01": "hunter", "p02": "werewolf", "p03": "villager"})
+    world_two = _world_proof({"p01": "hunter", "p02": "villager", "p03": "werewolf"})
     report = compute_balance_audit([{
         "game_id": "g1",
         "winning_faction": "good",
+        "players": {
+            "p01": {"role": "hunter"}, "p02": {"role": "werewolf"},
+            "p03": {"role": "villager"},
+        },
         "events": [
             {"type": "victory", "payload": {"winner": "good"}},
             {"type": "action_trace_audit", "payload": {"task_type": "vote", "action_trace": {}}},
@@ -364,16 +504,63 @@ def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> Non
                 "repairable": True,
                 "success": True,
                 "target_preserved": True,
+                "speaker_attribution_preserved": True,
+                "negation_preserved": True,
                 "introduced_claim_count": 0,
+                "verified_claim_count": 0,
+                "retained_verified_claim_count": 0,
+                "generic_template_used": False,
+                "fallback_kind": "no_fallback",
+                "trace_id": "trace-semantic", "game_id": "g1",
+                "action_index": 7, "task_type": "speech",
             }},
             {"type": "action_trace_audit", "payload": {
+                "trace_id": "trace-semantic", "game_id": "g1",
+                "action_index": 7, "task_type": "speech",
+                "action_trace": {"semantic_repair_audit": {
+                    "repairable": True, "success": True,
+                        "target_preserved": True,
+                        "speaker_attribution_preserved": True,
+                        "negation_preserved": True,
+                        "introduced_claim_count": 0,
+                    "verified_claim_count": 0, "retained_verified_claim_count": 0,
+                    "generic_template_used": False, "fallback_kind": "no_fallback",
+                }},
+            }},
+            {"type": "speech", "payload": {
+                "speaker": "p02", "text": "我是狼人。",
+                "claims": [{"type": "role", "value": "werewolf"}],
+            }},
+            {"type": "speech", "payload": {
+                "speaker": "p03", "text": "我是狼人。",
+                "claims": [{"type": "role", "value": "werewolf"}],
+            }},
+            {"type": "action_trace_audit", "payload": {
+                "player_id": "p01",
                 "phase": "hunter_shot",
                 "action_trace": {
                     "final_action_type": "hunter_shot",
-                    "power_role_evidence": {
-                        "target_id": "p02",
-                        "friendly_fire_risk": {"targets": []},
-                        "retain_option": {"available": True},
+                        "power_role_evidence": {
+                            "target_id": "p02",
+                            "target_evidence": {
+                                "selected_score": 5,
+                                "selected_signals": ["seer_check_wolf"],
+                            },
+                            "target_comparison": {
+                                "selected_score": 5,
+                                "selected_signals": ["seer_check_wolf"],
+                                "alternative_target": None,
+                                "alternative_score": None,
+                                "alternative_signals": [],
+                                "comparison_basis": "ranked public evidence score",
+                            },
+                        "friendly_fire_risk": {
+                            "status": "assessed", "targets": [], "basis": "无误伤目标",
+                        },
+                        "retain_option": {
+                            "action": "no_action", "available": True,
+                            "required": False, "reason": "可保留不开枪",
+                        },
                         "alternative_comparison": {
                             "legal_alternatives": [],
                             "no_legal_alternative": True,
@@ -381,12 +568,16 @@ def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> Non
                         },
                     },
                     "world_model_audit": {"possible_worlds": {"top_worlds": [
-                        {"label": "w1", "key_assignments": {"p02": "werewolf"}, "why": ["event:1"]},
-                        {"label": "w2", "key_assignments": {"p03": "werewolf"}, "why": ["claim:1"]},
-                    ]}},
+                        {"label": world_one["world_id"], "key_assignments": {"p02": "werewolf"}, "why": ["claim:g1:4"]},
+                        {"label": world_two["world_id"], "key_assignments": {"p03": "werewolf"}, "why": ["claim:g1:5"]},
+                    ]}, "authoritative_world_identities": [world_one, world_two],
+                    "public_evidence_ids": ["claim:g1:4", "claim:g1:5"]},
                 },
             }},
-            {"type": "reflection_complete", "payload": {"entries": [{
+            {"type": "player_died", "payload": {
+                "player_id": "p02", "reason": "hunter_shot", "source_player_id": "p01",
+            }},
+            {"type": "reflection_complete", "payload": {"player_count": 1, "entries": [{
                 "player_id": "p01",
                 "decision_id": "reflection:g1:p01",
                 "verification": {
@@ -399,13 +590,17 @@ def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> Non
                 },
             }]}},
         ],
-        "deaths": [],
+        "deaths": [{
+            "player_id": "p02", "reason": "hunter_shot", "source_player_id": "p01",
+        }],
     }])
 
-    assert report["terminal_post_win_game_model_call_count"] == 2
+    assert report["terminal_post_win_game_model_call_count"] == 3
     assert report["semantic_repair_metrics_supported"] is True
     assert report["semantic_repair_success_rate"] == 1.0
     assert report["semantic_repair_target_preservation_rate"] == 1.0
+    assert report["semantic_repair_speaker_attribution_preservation_rate"] == 1.0
+    assert report["semantic_repair_negation_preservation_rate"] == 1.0
     assert report["semantic_repair_no_new_claim_rate"] == 1.0
     assert report["possible_world_metrics_supported"] is True
     assert report["possible_world_unique_rate"] == 1.0
@@ -427,6 +622,8 @@ def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> Non
         "semantic_repair_metrics_supported": (
             "semantic_repair_success_rate",
             "semantic_repair_target_preservation_rate",
+            "semantic_repair_speaker_attribution_preservation_rate",
+            "semantic_repair_negation_preservation_rate",
             "semantic_repair_no_new_claim_rate",
         ),
         "possible_world_metrics_supported": (
@@ -444,19 +641,25 @@ def test_acceptance_metrics_use_exact_denominators_and_explicit_support() -> Non
 def test_semantic_repair_rates_keep_invariants_as_independent_numerators() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
 
-    metrics = compute_acceptance_audit_metrics([{"events": [
-        {"type": "semantic_repair_audit", "payload": {
+    first = {
             "repairable": True, "success": True,
             "target_preserved": False, "introduced_claim_count": 0,
-            "verified_claim_count": 1, "retained_verified_claim_count": 0,
-            "generic_template_used": False,
-        }},
-        {"type": "semantic_repair_audit", "payload": {
+                "verified_claim_count": 1, "retained_verified_claim_count": 0,
+                "generic_template_used": False,
+                "fallback_kind": "no_fallback",
+    }
+    second = {
             "repairable": True, "success": False,
             "target_preserved": True, "introduced_claim_count": 1,
-            "verified_claim_count": 1, "retained_verified_claim_count": 1,
-            "generic_template_used": True,
-        }},
+                "verified_claim_count": 1, "retained_verified_claim_count": 1,
+                "generic_template_used": True,
+                "fallback_kind": "generic_template",
+    }
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "players": {
+        "p01": {"role": "villager"}, "p02": {"role": "werewolf"},
+    }, "events": [
+        *_semantic_pair(first, action_index=1),
+        *_semantic_pair(second, action_index=2),
     ]}])
 
     assert metrics["semantic_repair_success_count"] == 0
@@ -473,13 +676,18 @@ def test_report_exports_threshold_support_metrics() -> None:
 
     report = compute_balance_audit([{
         "winning_faction": "good",
-        "events": [{"type": "reflection_complete", "payload": {"entries": [{
-            "player_id": "p01",
-            "verification": {
-                "rejected_fact_count": 1,
-                "persisted_rejected_fact_count": 0,
-            },
-        }]}}],
+        "players": {},
+        "events": [
+            {"type": "reflection_complete", "payload": {
+                "player_count": 0, "entries": [],
+            }},
+                {"type": "reflection_persistence_audit", "payload": {
+                    "expected_entry_count": 0,
+                    "persistence_complete": True,
+                    "rollback_complete": True,
+                    "entries": [],
+            }},
+        ],
     }])
 
     assert report["completion_rate"] == 1.0
@@ -490,46 +698,308 @@ def test_report_exports_threshold_support_metrics() -> None:
     assert report["reflection_persisted_rejected_fact_count"] == 0
 
 
+def test_semantic_and_reflection_metrics_fail_closed_when_source_fields_missing() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    metrics = compute_acceptance_audit_metrics([{"events": [
+        {"type": "semantic_repair_audit", "payload": {
+            "repairable": True,
+            "success": True,
+            "target_preserved": True,
+        }},
+        {"type": "reflection_complete", "payload": {"entries": [{
+            "player_id": "p01",
+            "verification": {"rejected_fact_count": 2},
+        }]}},
+    ]}])
+
+    assert metrics["semantic_repair_metrics_supported"] is False
+    assert metrics["semantic_repair_no_new_claim_rate"] is None
+    assert metrics["semantic_repair_generic_template_count"] is None
+    assert metrics["semantic_repair_verified_claim_retention_metrics_supported"] is False
+    assert metrics["semantic_repair_verified_claim_retention_rate"] is None
+    assert metrics["reflection_contamination_metrics_supported"] is False
+    assert metrics["reflection_persisted_rejected_fact_count"] is None
+
+
+def test_reflection_metrics_fail_closed_when_expected_persistence_is_incomplete() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    metrics = compute_acceptance_audit_metrics([{"events": [{
+        "type": "reflection_persistence_audit",
+        "payload": {
+            "persistence_complete": False,
+            "entries": [{
+                "player_id": "p01",
+                "decision_id": "reflection:g1:p01",
+                "entry_id": "reflection_g1_p01",
+                "row_found": False,
+                "persistence_complete": False,
+                "persisted_rejected_fact_count": 0,
+            }],
+        },
+    }]}])
+
+    assert metrics["reflection_contamination_metrics_supported"] is False
+    assert metrics["reflection_persisted_rejected_fact_count"] is None
+
+
+def test_reflection_metrics_fail_closed_when_one_game_omits_expected_audit() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    missing_audit_game = {"game_id": "g1", "events": [{
+        "type": "reflection_complete",
+        "payload": {"entries": [{
+            "player_id": "p01",
+            "verification": {
+                "decision_id": "reflection:g1:p01",
+                "verified_lessons": [{
+                    "lesson_id": "l1",
+                    "abstraction": "对跳时先核验公开票型",
+                }],
+                "rejected_fact_count": 0,
+                "rejected_lesson_count": 0,
+            },
+        }]},
+    }]}
+    clean_game = {"game_id": "g2", "events": [{
+        "type": "reflection_persistence_audit",
+        "payload": {
+            "persistence_complete": True,
+            "entries": [{
+                "player_id": "p02",
+                "decision_id": "reflection:g2:p02",
+                "entry_id": "reflection_g2_p02",
+                "row_found": True,
+                "persistence_complete": True,
+                "persisted_rejected_fact_count": 0,
+            }],
+        },
+    }]}
+
+    metrics = compute_acceptance_audit_metrics([missing_audit_game, clean_game])
+
+    assert metrics["reflection_contamination_metrics_supported"] is False
+    assert metrics["reflection_persisted_rejected_fact_count"] is None
+
+
 def test_possible_world_uniqueness_is_grouped_per_prompt() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
 
-    shared = {"key_assignments": {"p02": "werewolf"}, "why": ["event:1"]}
-    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    proof = _world_proof({"p01": "villager", "p02": "werewolf"})
+    shared = {
+        "label": proof["world_id"],
+        "key_assignments": {"p02": "werewolf"},
+        "why": ["claim:g1:0"],
+    }
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "players": {
+        "p01": {"role": "villager"}, "p02": {"role": "werewolf"},
+    }, "events": [
+        {"type": "speech", "payload": {
+            "speaker": "p02", "text": "我是狼人。",
+            "claims": [{"type": "role", "value": "werewolf"}],
+        }},
         {"type": "action_trace_audit", "payload": {
             "trace_id": "prompt-1", "action_trace": {"world_model_audit": {
-                "possible_worlds": {"top_worlds": [shared, shared]}
+                "possible_worlds": {"top_worlds": [shared, shared]},
+                "authoritative_world_identities": [proof],
+                "public_evidence_ids": ["claim:g1:0"],
             }},
         }},
         {"type": "action_trace_audit", "payload": {
             "trace_id": "prompt-2", "action_trace": {"world_model_audit": {
-                "possible_worlds": {"top_worlds": [shared]}
+                "possible_worlds": {"top_worlds": [shared]},
+                "authoritative_world_identities": [proof],
+                "public_evidence_ids": ["claim:g1:0"],
             }},
         }},
     ]}])
 
     assert metrics["possible_world_prompt_count"] == 2
     assert metrics["possible_world_total_count"] == 3
-    assert metrics["possible_world_unique_count"] == 2
-    assert metrics["possible_world_unique_rate"] == 2 / 3
+    assert metrics["possible_world_unique_count"] == 1
+    assert metrics["possible_world_unique_rate"] == 1 / 3
+
+
+def test_possible_world_uniqueness_rejects_missing_ids_and_duplicate_assignments() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    proof = _world_proof({"p01": "villager", "p02": "werewolf"})
+    worlds = [
+        {"key_assignments": {"p02": "werewolf"}, "why": ["claim:g1:0"]},
+        {"label": proof["world_id"], "key_assignments": {"p02": "werewolf"}, "why": ["claim:g1:0"]},
+        {"world_id": "world-c", "key_assignments": {"p03": "seer"}, "why": ["claim:g1:1"]},
+    ]
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "players": {
+        "p01": {"role": "villager"}, "p02": {"role": "werewolf"},
+    }, "events": [
+        {"type": "speech", "payload": {
+            "speaker": "p02", "text": "我是狼人。",
+            "claims": [{"type": "role", "value": "werewolf"}],
+        }},
+        {"type": "speech", "payload": {
+            "speaker": "p03", "text": "我是预言家。",
+            "claims": [{"type": "role", "value": "seer"}],
+        }},
+        {"type": "action_trace_audit", "payload": {"action_trace": {
+            "world_model_audit": {
+                "possible_worlds": {"top_worlds": worlds},
+                "authoritative_world_identities": [proof],
+                "public_evidence_ids": ["claim:g1:0", "claim:g1:1"],
+            },
+        }}},
+    ]}])
+
+    assert metrics["possible_world_total_count"] == 3
+    assert metrics["possible_world_unique_count"] == 1
+    assert metrics["possible_world_unique_rate"] == 1 / 3
+
+
+def test_possible_world_evidence_rejects_unknown_cross_game_and_private_refs() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    worlds = [
+        {"label": "valid", "key_assignments": {"p02": "werewolf"}, "why": ["claim:g1:0"]},
+        {"label": "unknown", "key_assignments": {"p03": "werewolf"}, "why": ["claim:g1:99"]},
+        {"label": "cross", "key_assignments": {"p04": "werewolf"}, "why": ["claim:g2:0"]},
+        {"label": "private", "key_assignments": {"p05": "werewolf"}, "why": ["claim:g1:1"]},
+    ]
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+        {"type": "speech", "payload": {
+            "speaker": "p02", "text": "我是狼人。",
+            "claims": [{"type": "role", "value": "werewolf"}],
+        }},
+        {"type": "speech", "payload": {
+            "speaker": "p06", "text": "私密", "visibility": "moderator_only",
+        }},
+        {"type": "action_trace_audit", "payload": {"action_trace": {
+            "world_model_audit": {
+                "possible_worlds": {"top_worlds": worlds},
+                "public_evidence_ids": [
+                    "claim:g1:0", "claim:g1:99", "claim:g2:0", "claim:g1:1",
+                ],
+            },
+        }}},
+    ]}])
+
+    assert metrics["possible_world_evidence_covered_count"] == 1
+    assert metrics["possible_world_evidence_coverage_rate"] == 0.25
+
+
+def test_possible_world_evidence_rejects_public_suspicion_as_assignment_support() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+        {"type": "speech", "payload": {
+            "speaker": "p01", "text": "我怀疑p02，他的发言很可疑。",
+        }},
+        {"type": "action_trace_audit", "payload": {"action_trace": {
+            "world_model_audit": {
+                "possible_worlds": {"top_worlds": [{
+                    "label": "world-a",
+                    "key_assignments": {"p02": "werewolf"},
+                    "why": ["claim:g1:0"],
+                }]},
+                "public_evidence_ids": ["claim:g1:0"],
+            },
+        }}},
+    ]}])
+
+    assert metrics["possible_world_evidence_covered_count"] == 0
+    assert metrics["possible_world_evidence_coverage_rate"] == 0.0
+
+
+def test_possible_world_hybrid_assignment_requires_exact_role_support() -> None:
+    """未知或 hybrid 角色不能借笼统 good faction 声明获得证据覆盖。"""
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+        {"type": "speech", "payload": {
+            "speaker": "p02", "text": "我是好人。",
+            "claims": [{"type": "faction", "value": "good"}],
+        }},
+        {"type": "action_trace_audit", "payload": {"action_trace": {
+            "world_model_audit": {
+                "possible_worlds": {"top_worlds": [{
+                    "label": "hybrid-world",
+                    "key_assignments": {"p02": "hybrid"},
+                    "why": ["claim:g1:0"],
+                }]},
+                "public_evidence_ids": ["claim:g1:0"],
+            },
+        }}},
+    ]}])
+
+    assert metrics["possible_world_evidence_covered_count"] == 0
+    assert metrics["possible_world_evidence_coverage_rate"] == 0.0
+
+
+def test_world_support_maps_faction_only_for_explicit_fixed_roles() -> None:
+    from werewolf_agent.evaluation.balance_audit import _support_matches_world
+
+    faction_only = {("p02", "faction:good")}
+
+    assert _support_matches_world(
+        faction_only, {"key_assignments": {"p02": "seer"}}
+    ) is True
+    assert _support_matches_world(
+        faction_only, {"key_assignments": {"p02": "hybrid"}}
+    ) is False
+    assert _support_matches_world(
+        faction_only, {"key_assignments": {"p02": "unknown_custom_role"}}
+    ) is False
+
+
+def test_possible_world_evidence_fails_closed_without_authoritative_index() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+        {"type": "speech", "payload": {"speaker": "p01", "text": "我怀疑p02。"}},
+        {"type": "action_trace_audit", "payload": {"action_trace": {
+            "world_model_audit": {"possible_worlds": {"top_worlds": [{
+                "label": "w1", "key_assignments": {"p02": "werewolf"},
+                "why": ["claim:g1:0"],
+            }]}},
+        }}},
+    ]}])
+
+    assert metrics["possible_world_evidence_covered_count"] == 0
+    assert metrics["possible_world_evidence_coverage_rate"] == 0.0
 
 
 def test_power_role_evidence_requires_explicit_legal_alternative_target() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
 
     def event(comparison, *, retain=True):
+        alternative = comparison.get("alternative_target")
         evidence = {
             "target_id": "p02",
-            "friendly_fire_risk": {"targets": []},
+            "target_evidence": {
+                "selected_score": 5, "selected_signals": ["public_evidence"],
+            },
+            "target_comparison": {
+                "selected_score": 5, "selected_signals": ["public_evidence"],
+                "alternative_target": alternative,
+                "alternative_score": 1 if alternative else None,
+                "alternative_signals": ["weaker_evidence"] if alternative else [],
+                "comparison_basis": "ranked public evidence score",
+            },
+            "friendly_fire_risk": {
+                "status": "assessed", "targets": [], "basis": "无误伤目标",
+            },
             "alternative_comparison": comparison,
         }
         if retain:
-            evidence["retain_option"] = {"available": True}
+            evidence["retain_option"] = {
+                "action": "no_action", "available": True,
+                "required": False, "reason": "可选择不开枪",
+            }
         return {"type": "action_trace_audit", "payload": {"action_trace": {
             "final_action_type": "hunter_shot",
             "power_role_evidence": evidence,
         }}}
 
-    metrics = compute_acceptance_audit_metrics([{"events": [
+    trace_events = [
         event({
             "legal_alternatives": ["p03"],
             "no_legal_alternative": False,
@@ -554,10 +1024,149 @@ def test_power_role_evidence_requires_explicit_legal_alternative_target() -> Non
             "no_legal_alternative": True,
             "alternative_target": None,
         }, retain=False),
-    ]}])
+    ]
+    damage_events = [{"type": "player_died", "payload": {
+        "player_id": "p02", "reason": "hunter_shot",
+    }} for _ in trace_events]
+    metrics = compute_acceptance_audit_metrics([{
+        "deaths": [{
+            "player_id": "p02", "reason": "hunter_shot",
+        } for _ in trace_events],
+        "events": [*trace_events, *damage_events],
+    }])
 
     assert metrics["power_role_evidence_complete_count"] == 2
     assert metrics["power_role_evidence_completeness_rate"] == 0.4
+
+
+def test_power_role_evidence_rejects_empty_or_partial_nested_objects() -> None:
+    """空对象不能伪装成神职已比较风险、保留与替代方案。"""
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    base = {
+        "target_id": "p02",
+        "target_evidence": {
+            "selected_score": 1, "selected_signals": ["公开查杀"],
+        },
+        "target_comparison": {
+            "selected_score": 1, "selected_signals": ["公开查杀"],
+            "alternative_target": "p03", "alternative_score": 0,
+            "alternative_signals": ["no_structured_public_support"],
+            "comparison_basis": "ranked public evidence score",
+        },
+        "friendly_fire_risk": {
+            "status": "assessed", "targets": [], "basis": "无明显误伤证据",
+        },
+        "retain_option": {
+            "action": "no_action", "available": True,
+            "required": False, "reason": "可等待更强证据",
+        },
+        "alternative_comparison": {
+            "legal_alternatives": ["p03"],
+            "no_legal_alternative": False,
+            "alternative_target": "p03",
+        },
+    }
+
+    def event(evidence):
+        return {"type": "action_trace_audit", "payload": {"action_trace": {
+            "final_action_type": "use_poison",
+            "power_role_evidence": evidence,
+        }}}
+
+    rows = [
+        base,
+        {**base, "friendly_fire_risk": {}},
+        {**base, "retain_option": {"available": True}},
+        {**base, "alternative_comparison": {"legal_alternatives": ["p03"]}},
+    ]
+    trace_events = [event(row) for row in rows]
+    damage_events = [{"type": "player_died", "payload": {
+        "player_id": "p02", "reason": "witch_poison",
+    }} for _ in rows]
+    metrics = compute_acceptance_audit_metrics([{
+        "deaths": [{
+            "player_id": "p02", "reason": "witch_poison",
+        } for _ in rows],
+        "events": [*trace_events, *damage_events],
+    }])
+
+    assert metrics["power_role_evidence_complete_count"] == 1
+    assert metrics["power_role_evidence_completeness_rate"] == 0.25
+
+
+def test_reflection_coverage_requires_each_completed_game_audit() -> None:
+    """一局完整审计不能掩盖另一已完成游戏完全没有反思事件。"""
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    clean = {
+        "game_id": "g1", "winning_faction": "good", "players": {}, "events": [
+            {"type": "reflection_complete", "payload": {
+                "player_count": 0, "entries": [],
+            }},
+            {"type": "reflection_persistence_audit", "payload": {
+                "expected_entry_count": 0,
+                "persistence_complete": True,
+                "rollback_complete": True,
+                "entries": [],
+            }},
+        ],
+    }
+    missing = {"game_id": "g2", "winning_faction": "werewolf", "events": []}
+
+    metrics = compute_acceptance_audit_metrics([clean, missing])
+
+    assert metrics["reflection_completed_game_count"] == 2
+    assert metrics["reflection_audited_game_count"] == 1
+    assert metrics["reflection_contamination_metrics_supported"] is False
+    assert metrics["reflection_persisted_rejected_fact_count"] is None
+
+
+def test_reflection_empty_transaction_is_supported_when_explicit() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    game = {
+        "game_id": "g1", "winning_faction": "good", "players": {}, "events": [
+            {"type": "reflection_complete", "payload": {
+                "player_count": 0, "entries": [],
+            }},
+            {"type": "reflection_persistence_audit", "payload": {
+                "expected_entry_count": 0,
+                "persistence_complete": True,
+                "rollback_complete": True,
+                "entries": [],
+            }},
+        ],
+    }
+
+    metrics = compute_acceptance_audit_metrics([game])
+
+    assert metrics["reflection_audited_game_count"] == 1
+    assert metrics["reflection_contamination_metrics_supported"] is True
+    assert metrics["reflection_persisted_rejected_fact_count"] == 0
+
+
+def test_semantic_fallback_metric_requires_structured_fallback_kind() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    common = {
+        "repairable": True, "success": False, "target_preserved": False,
+        "introduced_claim_count": 0, "verified_claim_count": 0,
+        "retained_verified_claim_count": 0, "generic_template_used": False,
+    }
+    legacy = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+        *_semantic_pair(common, action_index=1),
+    ]}])
+    structured = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+        *_semantic_pair(
+            {**common, "fallback_kind": "task_specific"}, action_index=1
+        ),
+    ]}])
+
+    assert legacy["semantic_repair_metrics_supported"] is False
+    assert legacy["semantic_repair_generic_template_count"] is None
+    assert structured["semantic_repair_metrics_supported"] is True
+    assert structured["semantic_repair_generic_template_count"] == 0
 
 
 def test_wolf_normalization_rate_uses_triggered_normalization_denominator() -> None:

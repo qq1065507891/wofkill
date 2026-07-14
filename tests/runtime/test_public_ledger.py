@@ -112,3 +112,26 @@ def test_public_ledger_excludes_wolf_plan_and_action_trace_private_role() -> Non
     assert "p08" not in str(ledger)
     assert "true_role" not in str(ledger)
     assert "private_intent" not in str(ledger)
+
+
+def test_public_claim_text_ledger_is_complete_ordered_and_public_only() -> None:
+    from werewolf_agent.runtime.public_ledger import build_public_claim_text_ledger
+
+    events = [
+        GameEvent(type="speech", payload={"speaker": "p01", "text": "最早公开声明"}),
+        *[
+            GameEvent(type="speech", payload={"speaker": "p02", "text": f"公开发言{i}"})
+            for i in range(12)
+        ],
+        GameEvent(type="speech", payload={
+            "speaker": "p03", "text": "私密声明", "visibility": "moderator_only",
+        }),
+    ]
+    ledger = build_public_claim_text_ledger(GameState(game_id="g1", events=events))
+
+    assert len(ledger) == 13
+    assert ledger[0] == {
+        "event_index": 0, "speaker": "p01", "text": "最早公开声明",
+    }
+    assert ledger[-1]["event_index"] == 12
+    assert "私密声明" not in str(ledger)

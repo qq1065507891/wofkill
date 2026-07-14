@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     python scripts/evaluate_audit_closure_thresholds.py report.json thresholds.json
@@ -18,6 +19,9 @@ from typing import Any, Sequence
 
 
 _THRESHOLDS = (
+    ("games", "==", 10, "games_present"),
+    ("unique_game_id_count", "==", 10, "games"),
+    ("unique_game_artifact_path_count", "==", 10, "games"),
     ("completion_rate", "==", 1.0, "games"),
     ("terminal_post_win_game_model_call_count", "==", 0, "games"),
     ("weak_wolf_plan_kill_count", "==", 0, "games"),
@@ -27,11 +31,20 @@ _THRESHOLDS = (
     ("persona_injection_confirmation_rate", "==", 1.0, "persona_injection_confirmation_metrics_supported"),
     ("persona_exposure_linkage_rate", "==", 1.0, "persona_exposure_linkage_metrics_supported"),
     ("critical_task_reasoning_request_coverage", "==", 1.0, "critical_task_reasoning_request_coverage_supported"),
+    ("critical_task_reasoning_request_dispatched_rate", "==", 1.0, "critical_task_reasoning_request_dispatched_metrics_supported"),
+    ("critical_task_reasoning_unsupported_count", "==", 0, "critical_task_reasoning_request_dispatched_metrics_supported"),
+    ("critical_task_reasoning_not_requested_count", "==", 0, "critical_task_reasoning_request_dispatched_metrics_supported"),
+    ("critical_task_reasoning_fallback_disabled_count", "==", 0, "critical_task_reasoning_request_dispatched_metrics_supported"),
     ("critical_task_reasoning_status_explicit_rate", "==", 1.0, "critical_task_reasoning_status_metrics_supported"),
+    ("reasoning_task_type_missing_count", "==", 0, "games"),
+    ("reasoning_task_type_unknown_count", "==", 0, "games"),
+    ("decision_execution_invalid_sequence_count", "==", 0, "games"),
     ("reasoning_fallback_disabled_count", "==", 0, "decision_execution_metrics_supported"),
     ("unsupported_public_fact_claim_count", "==", 0, "games"),
     ("reflection_persisted_rejected_fact_count", "==", 0, "reflection_contamination_metrics_supported"),
     ("semantic_repair_target_preservation_rate", "==", 1.0, "semantic_repair_metrics_supported"),
+    ("semantic_repair_speaker_attribution_preservation_rate", "==", 1.0, "semantic_repair_metrics_supported"),
+    ("semantic_repair_negation_preservation_rate", "==", 1.0, "semantic_repair_metrics_supported"),
     ("semantic_repair_no_new_claim_rate", "==", 1.0, "semantic_repair_metrics_supported"),
     ("semantic_repair_success_rate", ">=", 0.95, "semantic_repair_metrics_supported"),
     ("semantic_repair_generic_template_count", "==", 0, "semantic_repair_metrics_supported"),
@@ -46,6 +59,9 @@ _THRESHOLDS = (
 def _is_supported(report: dict[str, Any], name: str, support_key: str) -> bool:
     if name not in report or report[name] is None:
         return False
+    if support_key == "games_present":
+        value = report.get(name)
+        return isinstance(value, int) and not isinstance(value, bool)
     support = report.get(support_key)
     if support_key == "games":
         return isinstance(support, int) and not isinstance(support, bool) and support > 0
@@ -85,9 +101,28 @@ def evaluate_thresholds(report: dict[str, Any]) -> dict[str, Any]:
         and rate >= 0.8
         for rate in faction_rates
     )
+    confirmed_rate = report.get("critical_task_reasoning_confirmed_rate")
+    confirmation_review_count = report.get(
+        "critical_task_reasoning_requires_confirmation_review_count"
+    )
+    requires_confirmation_review = (
+        not isinstance(confirmed_rate, (int, float))
+        or isinstance(confirmed_rate, bool)
+        or confirmed_rate < 1.0
+        or not isinstance(confirmation_review_count, int)
+        or isinstance(confirmation_review_count, bool)
+        or confirmation_review_count > 0
+    )
     return {
         "overall_pass": all(item["passed"] for item in thresholds),
         "requires_more_samples": requires_more_samples,
+        "requires_confirmation_review": requires_confirmation_review,
+        "critical_task_reasoning_confirmed_rate": (
+            confirmed_rate
+            if isinstance(confirmed_rate, (int, float))
+            and not isinstance(confirmed_rate, bool)
+            else None
+        ),
         "thresholds": thresholds,
     }
 

@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.runtime.context import build_agent_context
@@ -44,6 +44,7 @@ from werewolf_agent.runtime.context_public_summary import (
     build_recent_transcript,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+from werewolf_agent.runtime.public_ledger import build_public_claim_text_ledger
 from werewolf_agent.skills.registry import SkillRegistry as SkillRegistry  # noqa: F401
 
 # Backward-compatible re-exports from runtime.directives package.
@@ -225,8 +226,10 @@ def build_agent_context(
     belief_dict: dict[str, Any] = {}
     seer_credibility_summary: dict[str, Any] = {}
     possible_worlds_dict: dict[str, Any] = {}
+    authoritative_world_identities: list[dict[str, Any]] = []
     simulation_predictions_dict: dict[str, Any] = {}
     possible_worlds_set = None
+    public_evidence_ids: set[str] = set()
     world_state = None
     belief_state = None
     alerts: list[Any] = []
@@ -380,6 +383,7 @@ def build_agent_context(
         if worlds.worlds:
             possible_worlds_set = worlds
             possible_worlds_dict = worlds.to_prompt_dict(max_assignments=4)
+            authoritative_world_identities = worlds.to_audit_identity_proofs()
     except Exception:
         logger.debug("Possible-world generation failed for %s", player_id, exc_info=True)
 
@@ -516,6 +520,7 @@ def build_agent_context(
         legal_actions=legal_actions,
         legal_targets=legal_targets,
         public_summary=public_summary,
+        public_claim_ledger=build_public_claim_text_ledger(gs),
         visible_world_state=visible,
         private_memory_hints=private_memory_hints,
         private_memory_caveat=private_memory_caveat,
@@ -528,6 +533,8 @@ def build_agent_context(
         seer_credibility=seer_credibility_summary,
         belief_state=belief_dict,
         possible_worlds=possible_worlds_dict,
+        authoritative_world_identities=authoritative_world_identities,
+        public_world_evidence_ids=sorted(public_evidence_ids),
         simulation_predictions=simulation_predictions_dict,
         strategy_directive=strategy_directive,
         skill_analyses=skill_analyses,

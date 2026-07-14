@@ -3,7 +3,7 @@
 验证 GameRunner 编排、终局边界与持久化行为。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ import pytest
 from dataclasses import replace
 
 from werewolf_agent.core.models import GameState, PlayerState, GameEvent
-from werewolf_agent.engine.rule_engine import RuleEngine
-from werewolf_agent.runtime.graph import RuntimeState, build_game_graph, _new_engine
+from werewolf_agent.runtime.graph import _new_engine
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 
 
@@ -166,6 +165,31 @@ class TestGameRunnerConfig:
     def test_config_default_ruleset(self) -> None:
         cfg = GameRunnerConfig()
         assert cfg.ruleset_id == "pre_witch_hunter_idiot_mixed"
+
+    @pytest.mark.parametrize("game_id", [
+        "run1",
+        "g_713001",
+        "audit.run-1_seed-713001",
+        "a" * 128,
+    ])
+    def test_config_accepts_safe_explicit_game_id(self, game_id: str) -> None:
+        assert GameRunnerConfig(game_id=game_id).game_id == game_id
+
+    @pytest.mark.parametrize("game_id", [
+        "../escape",
+        "safe/escape",
+        "safe\\escape",
+        "safe..escape",
+        " leading",
+        "has space",
+        "has\ttab",
+        "has\nnewline",
+        "_leading",
+        "a" * 129,
+    ])
+    def test_config_rejects_unsafe_explicit_game_id(self, game_id: str) -> None:
+        with pytest.raises(ValueError, match="game_id"):
+            GameRunnerConfig(game_id=game_id)
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +345,20 @@ class TestGameRunnerScriptedGame:
         assert s1.phase == s2.phase
         assert len(s1.players) == len(s2.players)
         assert s1.winning_faction == s2.winning_faction
+
+    def test_game_runner_uses_explicit_run_scoped_game_id(self) -> None:
+        runner = GameRunner(GameRunnerConfig(
+            seed=123,
+            game_id="audit-run-abc-seed-123",
+        ))
+
+        assert runner.game_id == "audit-run-abc-seed-123"
+        assert runner.state.game_id == "audit-run-abc-seed-123"
+
+    def test_game_runner_keeps_seed_based_game_id_by_default(self) -> None:
+        runner = GameRunner(GameRunnerConfig(seed=123))
+
+        assert runner.game_id == "g_123"
 
     def test_full_game_has_events(self) -> None:
         """A completed game must have recorded events."""
@@ -565,7 +603,7 @@ class TestGameRunnerAPIIntegration:
             seed=42,
             repository=repo,
         ))
-        final = runner.run()
+        runner.run()
         loaded = repo.load_game(runner.game_id)
         # Repository should have the game after run
         assert loaded is not None
@@ -1062,6 +1100,605 @@ class TestGameRunnerMemoryLifecycle:
         runner._save_memory_snapshot()
 
         assert repo.load_all_reflections() == []
+
+    def test_reflection_persistence_audit_rejects_extra_saved_claim_ids(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        original_save_all = coordinator.save_all
+
+        def save_all_with_contamination(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            rows = repo.load_all_reflections()
+            assert rows
+            row = rows[0]
+            row.setdefault("source", {})["verified_claim_ids"] = ["c-good", "c-bad"]
+            repo.save_reflection(row)
+
+        coordinator.save_all = save_all_with_contamination
+        runner = GameRunner(GameRunnerConfig(
+            seed=127, repository=repo, memory_coordinator=coordinator,
+        ))
+        runner._state = GameState(
+            game_id=runner.game_id, phase="finished", winning_faction="good",
+            players={"p01": PlayerState(id="p01", role="seer")},
+            events=[GameEvent(type="reflection_complete", payload={
+                "player_count": 1, "entries": [{
+                "player_id": "p01",
+                "verification": {
+                    "status": "verified",
+                    "decision_id": "reflection:g:p01",
+                    "verified_fact_count": 1,
+                    "verified_claim_ids": ["c-good"],
+                    "rejected_claim_ids": ["c-bad"],
+                    "verified_lessons": [{
+                        "lesson_id": "l1", "abstraction": "对跳时应先核验公开票型",
+                    }],
+                    "rejected_fact_count": 1,
+                    "rejected_lesson_count": 0,
+                },
+            }]})],
+        )
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["entries"] == [{
+            "player_id": "p01",
+            "decision_id": "reflection:g:p01",
+            "entry_id": f"reflection_{runner.game_id}_p01",
+            "row_found": True,
+            "persistence_complete": False,
+            "persisted_rejected_fact_count": None,
+        }]
+        assert audit.payload["persistence_complete"] is False
+        assert repo.load_reflections_by_game(runner.game_id) == []
+        assert repo.load_memory_snapshot(runner.game_id) is None
+        assert repo.load_memory_snapshot("latest") is None
+
+    def test_reflection_persistence_audit_fails_closed_when_store_v2_fails(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        class FailingReflectionRepository(InMemoryGameRepository):
+            def save_reflection(self, entry):
+                raise RuntimeError("reflection write unavailable")
+
+        repo = FailingReflectionRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=128,
+            repository=repo,
+            memory_coordinator=PersistentMemoryCoordinator(repo),
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["entries"] == [{
+            "player_id": "p01",
+            "decision_id": "reflection:g:p01",
+            "entry_id": f"reflection_{runner.game_id}_p01",
+            "row_found": False,
+            "persistence_complete": False,
+            "persisted_rejected_fact_count": None,
+        }]
+
+    def test_reflection_batch_rolls_back_when_later_row_write_fails(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        class FailSecondReflectionWriteRepository(InMemoryGameRepository):
+            def __init__(self) -> None:
+                super().__init__()
+                self.reflection_writes = 0
+
+            def save_reflection(self, entry):
+                self.reflection_writes += 1
+                if self.reflection_writes == 2:
+                    raise RuntimeError("second reflection write unavailable")
+                super().save_reflection(entry)
+
+        repo = FailSecondReflectionWriteRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=131,
+            repository=repo,
+            memory_coordinator=PersistentMemoryCoordinator(repo),
+        ))
+        runner._state = self._verified_reflection_state(
+            runner.game_id,
+            player_ids=("p01", "p02"),
+        )
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["expected_entry_count"] == 2
+        assert repo.load_reflections_by_game(runner.game_id) == []
+        assert runner._cognition_state_manager.memory_store.reflections.all_v2_entries() == []
+
+    def test_reflection_batch_rolls_back_when_snapshot_save_fails(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        original_save_all = coordinator.save_all
+
+        def save_all_then_fail(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            raise RuntimeError("snapshot confirmation unavailable")
+
+        coordinator.save_all = save_all_then_fail
+        runner = GameRunner(GameRunnerConfig(
+            seed=132, repository=repo, memory_coordinator=coordinator,
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert repo.load_reflections_by_game(runner.game_id) == []
+        assert runner._cognition_state_manager.memory_store.reflections.all_v2_entries() == []
+
+    def test_reflection_rollback_restores_repo_only_row_and_previous_snapshots(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=135, repository=repo, memory_coordinator=coordinator,
+        ))
+        entry_id = f"reflection_{runner.game_id}_p01"
+        old_row = {
+            "entry_id": entry_id,
+            "game_id": runner.game_id,
+            "sentinel": "repo-only-before-transaction",
+        }
+        old_game_snapshot = {"sentinel": "old-game"}
+        old_latest_snapshot = {"sentinel": "old-latest"}
+        assert runner._cognition_state_manager.memory_store.reflections.count() == 0
+        repo.save_reflection(old_row)
+        repo.save_memory_snapshot(runner.game_id, old_game_snapshot)
+        repo.save_memory_snapshot("latest", old_latest_snapshot)
+        original_save_all = coordinator.save_all
+
+        def save_all_then_fail(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            raise RuntimeError("snapshot confirmation unavailable")
+
+        coordinator.save_all = save_all_then_fail
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["rollback_complete"] is True
+        assert repo.load_reflection(entry_id) == old_row
+        assert repo.load_memory_snapshot(runner.game_id) == old_game_snapshot
+        assert repo.load_memory_snapshot("latest") == old_latest_snapshot
+
+    def test_failed_reflection_delete_is_marked_inactive_and_reported(self) -> None:
+        from werewolf_agent.memory.reflection import ReflectionMemory
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        class DeleteFailingRepository(InMemoryGameRepository):
+            def delete_reflection(self, entry_id):
+                raise RuntimeError("reflection delete unavailable")
+
+        repo = DeleteFailingRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        original_save_all = coordinator.save_all
+
+        def save_all_then_fail(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            raise RuntimeError("snapshot confirmation unavailable")
+
+        coordinator.save_all = save_all_then_fail
+        runner = GameRunner(GameRunnerConfig(
+            seed=136, repository=repo, memory_coordinator=coordinator,
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        row = repo.load_reflection(f"reflection_{runner.game_id}_p01")
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["rollback_complete"] is False
+        assert row is not None and row["_persistence_active"] is False
+        assert ReflectionMemory(repo=repo).all_v2_entries() == []
+
+    def test_failed_reflection_restore_is_quarantined_and_reported(self) -> None:
+        from werewolf_agent.memory.reflection import ReflectionMemory
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        class RestoreFailingRepository(InMemoryGameRepository):
+            fail_restore = False
+
+            def save_reflection(self, entry):
+                if self.fail_restore and entry.get("sentinel") == "old-row":
+                    raise RuntimeError("reflection restore unavailable")
+                super().save_reflection(entry)
+
+        repo = RestoreFailingRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        runner = GameRunner(GameRunnerConfig(
+            seed=138, repository=repo, memory_coordinator=coordinator,
+        ))
+        entry_id = f"reflection_{runner.game_id}_p01"
+        repo.save_reflection({
+            "entry_id": entry_id,
+            "game_id": runner.game_id,
+            "sentinel": "old-row",
+        })
+        original_save_all = coordinator.save_all
+
+        def save_all_then_fail(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            repo.fail_restore = True
+            raise RuntimeError("snapshot confirmation unavailable")
+
+        coordinator.save_all = save_all_then_fail
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        row = repo.load_reflection(entry_id)
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["rollback_complete"] is False
+        assert row is not None and row["_persistence_active"] is False
+        assert ReflectionMemory(repo=repo).all_v2_entries() == []
+
+    def test_failed_snapshot_delete_leaves_only_unrestorable_tombstones(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        class SnapshotDeleteFailingRepository(InMemoryGameRepository):
+            def delete_memory_snapshot(self, snapshot_id):
+                raise RuntimeError("snapshot delete unavailable")
+
+        repo = SnapshotDeleteFailingRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        original_save_all = coordinator.save_all
+
+        def save_all_then_fail(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            raise RuntimeError("snapshot confirmation unavailable")
+
+        coordinator.save_all = save_all_then_fail
+        runner = GameRunner(GameRunnerConfig(
+            seed=137, repository=repo, memory_coordinator=coordinator,
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["rollback_complete"] is False
+        assert coordinator.restore_for_new_game(runner.game_id).reflections.count() == 0
+        assert repo.load_memory_snapshot(runner.game_id)["_persistence_active"] is False
+        assert repo.load_memory_snapshot("latest")["_persistence_active"] is False
+
+    def test_reflection_batch_rolls_back_when_repository_readback_fails(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        class ReadbackFailingRepository(InMemoryGameRepository):
+            def load_reflections_by_game(self, game_id):
+                raise RuntimeError("reflection readback unavailable")
+
+        repo = ReadbackFailingRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=133,
+            repository=repo,
+            memory_coordinator=PersistentMemoryCoordinator(repo),
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert repo.load_all_reflections() == []
+        assert runner._cognition_state_manager.memory_store.reflections.all_v2_entries() == []
+        assert repo.load_memory_snapshot(runner.game_id) is None
+        assert repo.load_memory_snapshot("latest") is None
+
+    def test_empty_verified_reflection_batch_is_a_successful_empty_transaction(self) -> None:
+        from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=134,
+            repository=repo,
+            memory_coordinator=PersistentMemoryCoordinator(repo),
+        ))
+        runner._state = GameState(
+            game_id=runner.game_id,
+            phase="finished",
+            winning_faction="good",
+            players={"p01": PlayerState(id="p01", role="seer")},
+            events=[GameEvent(type="reflection_complete", payload={"entries": []})],
+        )
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload == {
+            "visibility": "moderator_only",
+            "expected_entry_count": 0,
+            "persistence_complete": True,
+            "rollback_complete": True,
+            "entries": [],
+        }
+
+    def test_reflection_persistence_audit_fails_closed_when_expected_row_missing(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        original_save_all = coordinator.save_all
+
+        def save_all_then_remove_rows(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            for row in repo.load_all_reflections():
+                repo.delete_reflection(row["entry_id"])
+
+        coordinator.save_all = save_all_then_remove_rows
+        runner = GameRunner(GameRunnerConfig(
+            seed=129, repository=repo, memory_coordinator=coordinator,
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["entries"][0]["row_found"] is False
+        assert audit.payload["entries"][0]["persistence_complete"] is False
+        assert audit.payload["entries"][0]["persisted_rejected_fact_count"] is None
+
+    @pytest.mark.parametrize(
+        "corruption",
+        ("stale_same_id", "wrong_player", "wrong_source_game", "missing_verified_claim"),
+    )
+    def test_reflection_readback_rejects_stale_or_mismatched_row(
+        self,
+        corruption: str,
+    ) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        original_save_all = coordinator.save_all
+
+        def save_all_then_corrupt(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            row = repo.load_all_reflections()[0]
+            if corruption == "stale_same_id":
+                row["quality_score"] = 0.0
+                row["prompt_card"]["lesson"] = "陈旧同 ID 内容"
+            elif corruption == "wrong_player":
+                row["player_id"] = "p99"
+            elif corruption == "wrong_source_game":
+                row["source"]["source_game_id"] = "old-game"
+            else:
+                row["source"]["verified_claim_ids"] = []
+            repo.save_reflection(row)
+
+        coordinator.save_all = save_all_then_corrupt
+        runner = GameRunner(GameRunnerConfig(
+            seed=139,
+            repository=repo,
+            memory_coordinator=coordinator,
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert audit.payload["entries"][0]["row_found"] is True
+        assert audit.payload["entries"][0]["persistence_complete"] is False
+        assert repo.load_reflections_by_game(runner.game_id) == []
+        assert repo.load_memory_snapshot(runner.game_id) is None
+        assert repo.load_memory_snapshot("latest") is None
+
+    @pytest.mark.parametrize("snapshot_id", ("game", "latest"))
+    def test_reflection_readback_rejects_missing_or_inconsistent_snapshot(
+        self,
+        snapshot_id: str,
+    ) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        original_save_all = coordinator.save_all
+
+        def save_all_then_corrupt_snapshot(*args, **kwargs):
+            original_save_all(*args, **kwargs)
+            target = runner.game_id if snapshot_id == "game" else "latest"
+            snapshot = repo.load_memory_snapshot(target)
+            assert snapshot is not None
+            snapshot["reflections"] = []
+            repo.save_memory_snapshot(target, snapshot)
+
+        coordinator.save_all = save_all_then_corrupt_snapshot
+        runner = GameRunner(GameRunnerConfig(
+            seed=140,
+            repository=repo,
+            memory_coordinator=coordinator,
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert repo.load_reflections_by_game(runner.game_id) == []
+        assert repo.load_memory_snapshot(runner.game_id) is None
+        assert repo.load_memory_snapshot("latest") is None
+
+    def test_reflection_readback_rejects_snapshot_save_silent_noop(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        coordinator = PersistentMemoryCoordinator(repo)
+        coordinator.save_all = lambda **_kwargs: None
+        runner = GameRunner(GameRunnerConfig(
+            seed=141,
+            repository=repo,
+            memory_coordinator=coordinator,
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        audit = next(
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        )
+        assert audit.payload["persistence_complete"] is False
+        assert repo.load_reflections_by_game(runner.game_id) == []
+        assert repo.load_memory_snapshot(runner.game_id) is None
+        assert repo.load_memory_snapshot("latest") is None
+
+    def test_successful_active_reflection_row_reloads_in_new_memory(self) -> None:
+        from werewolf_agent.memory.reflection import ReflectionMemory
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=142,
+            repository=repo,
+            memory_coordinator=PersistentMemoryCoordinator(repo),
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+
+        rows = repo.load_reflections_by_game(runner.game_id)
+        assert rows[0]["_persistence_active"] is True
+        assert len(ReflectionMemory(repo=repo).all_v2_entries()) == 1
+
+    def test_repeated_reflection_snapshot_audits_the_same_expected_row(self) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+        from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+        repo = InMemoryGameRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=130,
+            repository=repo,
+            memory_coordinator=PersistentMemoryCoordinator(repo),
+        ))
+        runner._state = self._verified_reflection_state(runner.game_id)
+
+        runner._save_memory_snapshot()
+        runner._save_memory_snapshot()
+
+        audits = [
+            event for event in runner.state.events
+            if event.type == "reflection_persistence_audit"
+        ]
+        assert len(repo.load_reflections_by_game(runner.game_id)) == 1
+        assert len(audits) == 2
+        assert all(event.payload["persistence_complete"] is True for event in audits)
+        assert all(event.payload["entries"][0]["row_found"] is True for event in audits)
+
+    @staticmethod
+    def _verified_reflection_state(
+        game_id: str,
+        *,
+        player_ids: tuple[str, ...] = ("p01",),
+    ) -> GameState:
+        return GameState(
+            game_id=game_id,
+            phase="finished",
+            winning_faction="good",
+            players={
+                player_id: PlayerState(id=player_id, role="seer")
+                for player_id in player_ids
+            },
+            events=[GameEvent(type="reflection_complete", payload={"entries": [{
+                "player_id": player_id,
+                "verification": {
+                    "status": "verified",
+                    "decision_id": f"reflection:g:{player_id}",
+                    "verified_fact_count": 1,
+                    "verified_claim_ids": [
+                        "c-good" if player_id == "p01" else f"c-good-{player_id}"
+                    ],
+                    "rejected_claim_ids": [
+                        "c-bad" if player_id == "p01" else f"c-bad-{player_id}"
+                    ],
+                    "verified_lessons": [{
+                        "lesson_id": "l1" if player_id == "p01" else f"lesson-{player_id}",
+                        "abstraction": "对跳时应先核验公开票型",
+                    }],
+                    "rejected_fact_count": 1,
+                    "rejected_lesson_count": 0,
+                },
+            } for player_id in player_ids]})],
+        )
 
     def test_latest_verified_reflections_uses_latest_canonical_decision_per_player(self) -> None:
         from werewolf_agent.core.models import GameEvent, GameState, PlayerState

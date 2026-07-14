@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> canonical_verified_reflections([])
@@ -43,6 +44,14 @@ def safe_reflection_verification(
         value = source.get(name)
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
+    def identifiers(name: str) -> list[str]:
+        value = source.get(name)
+        if not isinstance(value, list):
+            return []
+        return list(dict.fromkeys(
+            item for item in value if isinstance(item, str) and item
+        ))
+
     lessons: list[dict[str, str]] = []
     labels: dict[str, str] = {}
     raw_lessons = source.get("verified_lessons")
@@ -58,14 +67,17 @@ def safe_reflection_verification(
                 "lesson_id": lesson_id,
                 "abstraction": anonymize_player_ids_recursive(abstraction, labels),
             })
-    return {
+    result = {
         "status": safe_status,
         "decision_id": safe_decision_id,
         "verified_fact_count": count("verified_fact_count"),
+        "verified_claim_ids": identifiers("verified_claim_ids"),
+        "rejected_claim_ids": identifiers("rejected_claim_ids"),
         "verified_lessons": lessons,
         "rejected_fact_count": count("rejected_fact_count"),
         "rejected_lesson_count": count("rejected_lesson_count"),
     }
+    return result
 
 
 def canonical_verified_reflections(events: Iterable[Any]) -> dict[str, dict[str, Any]]:

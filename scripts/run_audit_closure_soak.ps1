@@ -23,12 +23,61 @@ param(
     [int[]]$Seeds = (713001..713010),
     [int]$MaxSteps = 500,
     [double]$TimeoutSeconds = 120,
-    [int]$DelayMilliseconds = 0
+    [int]$DelayMilliseconds = 0,
+    [string]$PythonCommand = 'python',
+    [string]$ArtifactRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-SeedGameArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportedPath,
+        [Parameter(Mandatory = $true)][string]$SeedOutputDir
+    )
+
+    $seedRoot = [System.IO.Path]::GetFullPath($SeedOutputDir).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $candidate = [System.IO.Path]::GetFullPath($ReportedPath)
+    $seedPrefix = $seedRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $candidate.StartsWith(
+        $seedPrefix,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "Game JSON must stay under its seed output directory: $candidate"
+    }
+
+    $current = Get-Item -LiteralPath $candidate -Force
+    while ($null -ne $current) {
+        if (($current.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Game JSON path must not traverse a symbolic link: $candidate"
+        }
+        if ($current.FullName.Equals(
+            $seedRoot,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            break
+        }
+        $current = if ($current -is [System.IO.DirectoryInfo]) {
+            $current.Parent
+        }
+        else {
+            $current.Directory
+        }
+    }
+    if ($null -eq $current) {
+        throw "Game JSON parent chain did not reach its seed output directory: $candidate"
+    }
+    return (Resolve-Path -LiteralPath $candidate).Path
+}
+
 if ($Seeds.Count -ne 10) {
     throw "Audit closure soak requires exactly 10 seeds; received $($Seeds.Count)"
+}
+if (@($Seeds | Select-Object -Unique).Count -ne 10) {
+    throw "Audit closure soak requires 10 unique seeds"
 }
 
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -41,22 +90,39 @@ $analyzerScript = (Resolve-Path -LiteralPath (
 $thresholdEvaluatorScript = (Resolve-Path -LiteralPath (
     Join-Path $PSScriptRoot 'evaluate_audit_closure_thresholds.py'
 )).Path
-$runId = Get-Date -Format 'yyyyMMdd-HHmmss'
-$outputDir = Join-Path $root "artifacts/audit_closure_soak/$runId"
-New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+$runId = "$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString('N'))"
+$artifactBase = if ($ArtifactRoot) {
+    [System.IO.Path]::GetFullPath($ArtifactRoot)
+}
+else {
+    Join-Path $root 'artifacts/audit_closure_soak'
+}
+$outputDir = Join-Path $artifactBase $runId
+if (Test-Path -LiteralPath $outputDir) {
+    throw "Refusing to reuse audit closure artifact directory: $outputDir"
+}
+New-Item -ItemType Directory -Path $outputDir | Out-Null
 
 $previousGameLogPath = $env:WEREWOLF_GAME_LOG_PATH
 $gameFiles = [System.Collections.Generic.List[string]]::new()
+$gameIds = [System.Collections.Generic.HashSet[string]]::new()
 Push-Location -LiteralPath $root
 try {
     foreach ($seed in $Seeds) {
-        $env:WEREWOLF_GAME_LOG_PATH = Join-Path $outputDir "seed-$seed.stdout.log"
-        $runOutput = & python $runnerScript `
+        $gameId = "audit-$runId-seed-$seed"
+        if (-not $gameIds.Add($gameId)) {
+            throw "Refusing duplicate run-scoped game ID: $gameId"
+        }
+        $gameOutputDir = Join-Path $outputDir "seed-$seed"
+        New-Item -ItemType Directory -Path $gameOutputDir | Out-Null
+        $env:WEREWOLF_GAME_LOG_PATH = Join-Path $gameOutputDir 'runner.stdout.log'
+        $runOutput = & $PythonCommand $runnerScript `
             --seed $seed `
+            --game-id $gameId `
             --max-steps $MaxSteps `
             --timeout $TimeoutSeconds `
             --delay $DelayMilliseconds `
-            --output-dir $outputDir 2>&1
+            --output-dir $gameOutputDir 2>&1
         $runExitCode = $LASTEXITCODE
         $runOutput | ForEach-Object { Write-Host $_ }
         if ($runExitCode -ne 0) {
@@ -69,7 +135,17 @@ try {
         if (-not $gameLogLine -or $gameLogLine -notmatch '^\s*Game log:\s*(.+\.json)\s*$') {
             throw "Real game for seed $seed did not report its JSON path"
         }
-        $gamePath = (Resolve-Path -LiteralPath $Matches[1].Trim()).Path
+        $reportedGamePath = $Matches[1].Trim()
+        $gamePath = Resolve-SeedGameArtifact `
+            -ReportedPath $reportedGamePath `
+            -SeedOutputDir $gameOutputDir
+        if ($gameFiles.Contains($gamePath)) {
+            throw "Refusing duplicate game JSON path: $gamePath"
+        }
+        $gameData = Get-Content -LiteralPath $gamePath -Raw | ConvertFrom-Json
+        if ($gameData.game_id -ne $gameId) {
+            throw "Game JSON ID mismatch: expected $gameId, got $($gameData.game_id)"
+        }
         $gameFiles.Add($gamePath)
     }
 
@@ -78,7 +154,7 @@ try {
     }
 
     $reportPath = Join-Path $outputDir 'audit-closure-report.json'
-    $reportJson = & python $analyzerScript @gameFiles
+    $reportJson = & $PythonCommand $analyzerScript @gameFiles
     if ($LASTEXITCODE -ne 0) {
         throw "Audit analyzer failed with exit code $LASTEXITCODE"
     }
@@ -86,7 +162,7 @@ try {
     Write-Host "Audit closure report: $reportPath"
 
     $thresholdPath = Join-Path $outputDir 'audit-closure-thresholds.json'
-    & python $thresholdEvaluatorScript $reportPath $thresholdPath
+    & $PythonCommand $thresholdEvaluatorScript $reportPath $thresholdPath
     $thresholdExitCode = $LASTEXITCODE
     if (-not (Test-Path -LiteralPath $thresholdPath)) {
         throw "Threshold evaluator did not write $thresholdPath"

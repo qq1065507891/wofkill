@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.memory.reflection_repository import ReflectionMemory
@@ -57,12 +57,19 @@ class ReflectionMemory:
         except Exception:
             return
         for data in rows:
+            # 失败事务留下的隔离行不得进入跨局提示；缺少该字段的历史行保持兼容。
+            if data.get("_persistence_active") is False:
+                continue
+            payload = {
+                key: value for key, value in data.items()
+                if key != "_persistence_active"
+            }
             try:
-                if data.get("schema_version") == 2:
-                    entry_v2 = ReflectionEntryV2.from_dict(data)
+                if payload.get("schema_version") == 2:
+                    entry_v2 = ReflectionEntryV2.from_dict(payload)
                     self._v2_entries[entry_v2.entry_id] = entry_v2
                 else:
-                    entry = ReflectionEntry.from_dict(data)
+                    entry = ReflectionEntry.from_dict(payload)
                     self._entries[entry.entry_id] = entry
             except Exception:
                 pass
@@ -169,6 +176,17 @@ class ReflectionMemory:
 
     def all_v2_entries(self) -> list[ReflectionEntryV2]:
         return list(self._v2_entries.values())
+
+    def restore_v2_local(
+        self,
+        entry_id: str,
+        previous: ReflectionEntryV2 | None,
+    ) -> None:
+        """仅恢复进程内 V2 行；仓储补偿由事务编排器单独负责。"""
+        if previous is None:
+            self._v2_entries.pop(entry_id, None)
+        else:
+            self._v2_entries[entry_id] = previous
 
     def count(self) -> int:
         return len(self._entries) + len(self._v2_entries)

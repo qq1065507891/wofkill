@@ -326,7 +326,10 @@ def test_load_game_logs_reads_json_files(tmp_path):
     path = tmp_path / "game.json"
     path.write_text(json.dumps({"winning_faction": "good"}), encoding="utf-8")
 
-    assert load_game_logs([path]) == [{"winning_faction": "good"}]
+    assert load_game_logs([path]) == [{
+        "winning_faction": "good",
+        "__source_path": str(path.resolve()),
+    }]
 
 
 def test_balance_audit_reads_runtime_vote_list_shape():

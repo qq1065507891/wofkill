@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 
 使用示例:
     >>> from werewolf_agent.runtime.witch_night_directives import build_witch_potion_status
@@ -73,6 +73,11 @@ def build_witch_action_evidence(
         for candidate in poison_candidates
         if candidate.get("player_id")
     }
+    candidate_reasons = {
+        str(candidate.get("player_id")): str(candidate.get("reason") or "").strip()
+        for candidate in poison_candidates
+        if candidate.get("player_id")
+    }
     antidote = list(dict.fromkeys(
         antidote_targets
         if antidote_targets is not None
@@ -94,6 +99,20 @@ def build_witch_action_evidence(
     return {
         "antidote_targets": antidote,
         "poison_targets": poison,
+        "ranked_targets": sorted(
+            [
+                {
+                    "target": target,
+                    "value": 1 if target in supported else 0,
+                    "signals": [
+                        candidate_reasons.get(target)
+                        or "no_structured_public_support"
+                    ],
+                }
+                for target in poison
+            ],
+            key=lambda item: (-item["value"], item["target"]),
+        ),
         "alternative_comparison": {
             "legal_alternatives": targets,
             "no_legal_alternative": len(targets) <= 1,
@@ -106,6 +125,7 @@ def build_witch_action_evidence(
             "reason": retain_option["reason"],
         },
         "friendly_fire_risk": {
+            "status": "assessed",
             "targets": [target for target in poison if target not in supported],
             "basis": "缺少结构化公开毒杀依据",
         },

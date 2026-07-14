@@ -3,13 +3,15 @@
 验证真实游戏脚本的报告辅助函数与结构化质量指标。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-14
 """
 
 from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+
+import pytest
 
 from scripts.run_real_game import _safe_event_payload, print_quality_audit
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
@@ -437,6 +439,40 @@ def test_real_game_parser_accepts_output_directory(tmp_path) -> None:
     ])
 
     assert args.output_dir == tmp_path / "artifact"
+
+
+def test_real_game_parser_passes_explicit_game_id_into_runner_config() -> None:
+    from scripts import run_real_game
+
+    args = run_real_game._build_argument_parser().parse_args([
+        "--seed", "713001",
+        "--game-id", "audit-run-abc-seed-713001",
+    ])
+
+    config = run_real_game._build_runner_config(
+        args,
+        game_repo=None,
+        memory_coordinator=None,
+    )
+
+    assert config.seed == 713001
+    assert config.game_id == "audit-run-abc-seed-713001"
+
+
+def test_real_game_runner_config_rejects_unsafe_cli_game_id() -> None:
+    from scripts import run_real_game
+
+    args = run_real_game._build_argument_parser().parse_args([
+        "--seed", "713001",
+        "--game-id", "../audit-escape",
+    ])
+
+    with pytest.raises(ValueError, match="game_id"):
+        run_real_game._build_runner_config(
+            args,
+            game_repo=None,
+            memory_coordinator=None,
+        )
 
 
 def test_save_game_log_uses_explicit_output_directory(tmp_path) -> None:

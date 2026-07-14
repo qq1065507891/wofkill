@@ -2,7 +2,7 @@
 """Public information ledger derived from visible game events.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-14
     使用示例: 内部模块，无对外接口
 """
 
@@ -51,6 +51,37 @@ def build_public_ledger(game_state: GameState) -> dict[str, list[dict[str, Any]]
         elif event.type in {"badge_transferred", "badge_torn"}:
             _add_badge_item(ledger, event)
     return ledger
+
+
+def build_public_claim_text_ledger(game_state: GameState) -> list[dict[str, Any]]:
+    """从完整事件流构建带 speaker 与时间边界的公开 claim 文本账本。"""
+    speech_types = {
+        "speech", "sheriff_speech", "tie_pk_speech", "sheriff_pk_speech",
+        "exile_last_words", "night_death_last_words",
+    }
+    ledger: list[dict[str, Any]] = []
+    for event_index, event in enumerate(game_state.events):
+        if event.type not in speech_types or not _is_public_event_compatible(event):
+            continue
+        payload = event.payload or {}
+        speaker = str(
+            payload.get("speaker")
+            or payload.get("player_id")
+            or payload.get("candidate_id")
+            or ""
+        )
+        text = str(payload.get("text") or payload.get("speech") or "")
+        if speaker and text:
+            ledger.append({
+                "event_index": event_index,
+                "speaker": speaker,
+                "text": text,
+            })
+    return ledger
+
+
+def _is_public_event_compatible(event: GameEvent) -> bool:
+    return event.payload.get("visibility") not in PRIVATE_VISIBILITIES
 
 
 def _is_public_event(event: GameEvent) -> bool:
