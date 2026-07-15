@@ -303,6 +303,25 @@ class ModelRouter:
         fallback_error: Exception | None = None
         last_empty_result: GenerateResult | None = None
         primary_attempts = 0
+        primary_audit_config = config
+
+        if primary_unavailable:
+            # 未注册 provider 没有真实调用；仅写入脱敏执行事实，供决策链保持连续。
+            primary_audit_config = replace(
+                config,
+                provider="unavailable",
+                model="unavailable",
+            )
+            attempts.append(_attempt_record(
+                opaque_request_id,
+                len(attempts) + 1,
+                primary_audit_config,
+                None,
+                first_route,
+                AttemptOutcome.FAILURE,
+                RootCause.PROVIDER_ERROR,
+            ))
+            primary_error = RuntimeError("provider_unavailable")
 
         max_retries = (getattr(config, "retry_count", 2) or 0) if provider else -1
         for attempt in range(max_retries + 1):
@@ -462,12 +481,12 @@ class ModelRouter:
         failure_reason = _failure_reason(primary_error, fallback_error)
         terminal_root = (
             RootCause.PROVIDER_ERROR
-            if primary_unavailable and not attempts
+            if primary_unavailable
             else RootCause.POLICY_REJECTION
         )
         if generation_attempt_context is None:
             attempts.append(_attempt_record(
-                opaque_request_id, len(attempts) + 1, config, None,
+                opaque_request_id, len(attempts) + 1, primary_audit_config, None,
                 RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
                 terminal_root,
                 terminal=True,

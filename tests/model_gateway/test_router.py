@@ -360,12 +360,76 @@ class TestGenerateWithMockProvider:
         assert strong.calls == 1
         assert result.provider == "strong"
 
+    def test_unregistered_primary_records_safe_failed_attempt_before_fallback(
+        self,
+    ) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+        from werewolf_agent.runtime.decision_outcomes import (
+            summarize_attempt_counts,
+            translate_decision_outcome,
+        )
+
+        fallback = _StaticTextProvider("ok", "fallback")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "secret-provider-key",
+                    "model": "secret-model-token",
+                    "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback",
+                    "model": "safe-model",
+                    "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "secret-provider-key", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"fallback": fallback},
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            "p01", "reflection", "hello", jitter_seconds=(0, 0)
+        )
+
+        assert fallback.calls == 1
+        assert [item.route_kind.value for item in result.attempts] == [
+            "primary",
+            "provider_fallback",
+        ]
+        assert result.attempts[0].root_cause.value == "provider_error"
+        assert result.attempts[0].attempt_outcome.value == "attempt_failure"
+        assert "secret-provider-key" not in repr(result.attempts)
+        assert "secret-model-token" not in repr(result.attempts)
+        translated = translate_decision_outcome(result.attempts)
+        counts = summarize_attempt_counts(result.attempts)
+        assert translated.outcome.value == "provider_fallback_success"
+        assert (counts.attempt_count, counts.retry_count, counts.provider_fallback_count) == (
+            2,
+            0,
+            1,
+        )
+        assert result.usage is not None
+        assert result.usage.retry_count == 0
+        assert "secret-provider-key" not in repr(result.usage)
+        assert "secret-model-token" not in repr(result.usage)
+
     def test_missing_provider_returns_auditable_terminal_failure(self) -> None:
         router = _make_router(providers={})
         router._model_profiles["claude_default"]["reasoning"] = {"level": "high"}
         result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
         assert result.text == ""
+        assert result.attempts[0].provider == "unavailable"
+        assert result.attempts[0].model == "unavailable"
         assert result.attempts[-1].route_kind.value == "safe_fallback"
+        assert result.attempts[-1].provider == "unavailable"
+        assert result.attempts[-1].model == "unavailable"
         assert result.attempts[-1].root_cause.value == "provider_error"
         assert router.get_usage_log()[-1].attempts == result.attempts
 
@@ -392,7 +456,11 @@ class TestGenerateWithMockProvider:
         )
         result = router.generate("p01", "reflection", "hello", jitter_seconds=(0, 0))
         assert first.calls == second.calls == 1
-        assert [attempt.provider for attempt in result.attempts] == ["first", "second"]
+        assert [attempt.provider for attempt in result.attempts] == [
+            "unavailable",
+            "first",
+            "second",
+        ]
         assert result.text == "ok"
 
     @pytest.mark.parametrize(
@@ -432,8 +500,14 @@ class TestGenerateWithMockProvider:
         assert result.text == "ok"
         assert provider.calls == 2
         assert sleeps == [1.75]
-        assert result.attempts[0].root_cause.value == expected_root
-        assert [item.ordinal for item in result.attempts] == [1, 2]
+        assert result.attempts[0].root_cause.value == "provider_error"
+        assert result.attempts[1].root_cause.value == expected_root
+        assert [item.ordinal for item in result.attempts] == [1, 2, 3]
+        assert [item.route_kind.value for item in result.attempts] == [
+            "primary",
+            "provider_fallback",
+            "retry",
+        ]
         warning = "\n".join(record.getMessage() for record in caplog.records)
         assert "provider=fallback" in warning
         assert "model=f" in warning
