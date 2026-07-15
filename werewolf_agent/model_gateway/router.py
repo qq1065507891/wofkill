@@ -297,31 +297,33 @@ class ModelRouter:
             config.reasoning_level,
         )
         provider = self._providers.get(config.provider) if primary_capable else None
-        primary_unavailable = primary_capable and provider is None
+        primary_skip_reason = (
+            "reasoning_unsupported"
+            if not primary_capable
+            else "provider_unavailable"
+            if provider is None
+            else None
+        )
 
         primary_error: Exception | None = None
         fallback_error: Exception | None = None
         last_empty_result: GenerateResult | None = None
         primary_attempts = 0
         primary_audit_config = config
+        primary_skip_root: RootCause | None = None
 
-        if primary_unavailable:
-            # 未注册 provider 没有真实调用；仅写入脱敏执行事实，供决策链保持连续。
-            primary_audit_config = replace(
-                config,
-                provider="unavailable",
-                model="unavailable",
-            )
-            attempts.append(_attempt_record(
-                opaque_request_id,
-                len(attempts) + 1,
+        if primary_skip_reason is not None:
+            (
                 primary_audit_config,
-                None,
-                first_route,
-                AttemptOutcome.FAILURE,
-                RootCause.PROVIDER_ERROR,
-            ))
-            primary_error = RuntimeError("provider_unavailable")
+                primary_error,
+                primary_skip_root,
+            ) = _record_skipped_primary_attempt(
+                attempts=attempts,
+                request_id=opaque_request_id,
+                config=config,
+                route_kind=first_route,
+                reason=primary_skip_reason,
+            )
 
         max_retries = (getattr(config, "retry_count", 2) or 0) if provider else -1
         for attempt in range(max_retries + 1):
@@ -480,9 +482,7 @@ class ModelRouter:
         # Record failure
         failure_reason = _failure_reason(primary_error, fallback_error)
         terminal_root = (
-            RootCause.PROVIDER_ERROR
-            if primary_unavailable
-            else RootCause.POLICY_REJECTION
+            primary_skip_root or RootCause.POLICY_REJECTION
         )
         if generation_attempt_context is None:
             attempts.append(_attempt_record(
@@ -736,6 +736,46 @@ def _retry_delay_for_exception(exc: Exception, attempt: int) -> float:
     from werewolf_agent.model_gateway.retry_policy import _retry_delay_for_exception as _impl
 
     return _impl(exc, attempt, uniform=random.uniform)
+
+
+_PRIMARY_SKIP_ROOT_CAUSES = {
+    "provider_unavailable": RootCause.PROVIDER_ERROR,
+    "reasoning_unsupported": RootCause.POLICY_REJECTION,
+}
+
+
+def _record_skipped_primary_attempt(
+    *,
+    attempts: list[AttemptExecutionRecord],
+    request_id: OpaqueRequestId,
+    config: ModelConfig,
+    route_kind: RouteKind,
+    reason: str,
+) -> tuple[ModelConfig, RuntimeError, RootCause]:
+    """记录未发生 provider 调用的脱敏 primary 执行事实。"""
+    try:
+        root_cause = _PRIMARY_SKIP_ROOT_CAUSES[reason]
+    except KeyError as exc:
+        raise ValueError("unknown primary skip reason") from exc
+    effective_route = RouteKind.PRIMARY if not attempts else route_kind
+    audit_config = replace(
+        config,
+        provider="unavailable",
+        model="unavailable",
+        reasoning_level="none",
+        reasoning_requested=False,
+        reasoning_capability="none",
+    )
+    attempts.append(_attempt_record(
+        request_id,
+        len(attempts) + 1,
+        audit_config,
+        None,
+        effective_route,
+        AttemptOutcome.FAILURE,
+        root_cause,
+    ))
+    return audit_config, RuntimeError(reason), root_cause
 
 
 def _root_cause(exc: Exception) -> RootCause:

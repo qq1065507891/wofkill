@@ -301,7 +301,11 @@ class TestGenerateWithMockProvider:
 
         assert primary.calls == fallback.calls == 0
         assert result.text == ""
-        assert result.attempts[-1].normalized_reasoning_status.value == "fallback_disabled"
+        assert [item.route_kind.value for item in result.attempts] == [
+            "primary",
+            "safe_fallback",
+        ]
+        assert result.attempts[-1].normalized_reasoning_status.value == "not_requested"
 
     def test_empty_response_retries_before_fallback(self) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
@@ -419,6 +423,106 @@ class TestGenerateWithMockProvider:
         assert result.usage.retry_count == 0
         assert "secret-provider-key" not in repr(result.usage)
         assert "secret-model-token" not in repr(result.usage)
+
+    @pytest.mark.parametrize(
+        (
+            "case",
+            "primary_capability",
+            "register_primary",
+            "with_fallback",
+            "expected_routes",
+            "expected_root",
+        ),
+        [
+            (
+                "missing-provider",
+                "high",
+                False,
+                True,
+                ["primary", "provider_fallback"],
+                "provider_error",
+            ),
+            (
+                "capability-mismatch",
+                "low",
+                True,
+                True,
+                ["primary", "provider_fallback"],
+                "policy_rejection",
+            ),
+            (
+                "capability-mismatch-terminal",
+                "low",
+                True,
+                False,
+                ["primary", "safe_fallback"],
+                "policy_rejection",
+            ),
+        ],
+    )
+    def test_zero_call_primary_paths_preserve_attempt_invariants(
+        self,
+        case,
+        primary_capability,
+        register_primary,
+        with_fallback,
+        expected_routes,
+        expected_root,
+    ) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+        from werewolf_agent.runtime.decision_outcomes import translate_decision_outcome
+
+        primary = _StaticTextProvider("must-not-run", "primary")
+        fallback = _StaticTextProvider("ok", "fallback")
+        providers = {"fallback": fallback} if with_fallback else {}
+        if register_primary:
+            providers["primary"] = primary
+        llm_profile = {
+            "default": {"provider": "primary", "model_profile": "primary"},
+        }
+        if with_fallback:
+            llm_profile["fallback"] = {
+                "provider": "fallback",
+                "model_profile": "fallback",
+            }
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary",
+                    "model": f"secret-{case}",
+                    "retry_count": 0,
+                    "reasoning": {"level": primary_capability},
+                },
+                "fallback": {
+                    "provider": "fallback",
+                    "model": "safe-model",
+                    "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": llm_profile},
+            player_assignments={"p01": "profile"},
+            providers=providers,
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            "p01", "reflection", "hello", jitter_seconds=(0, 0)
+        )
+
+        assert primary.calls == 0
+        assert fallback.calls == int(with_fallback)
+        assert [item.route_kind.value for item in result.attempts] == expected_routes
+        assert [item.ordinal for item in result.attempts] == list(
+            range(1, len(result.attempts) + 1)
+        )
+        assert result.attempts[0].route_kind.value == "primary"
+        assert result.attempts[0].root_cause.value == expected_root
+        assert result.attempts[0].requested_reasoning_level.value == "none"
+        assert f"secret-{case}" not in repr(result.attempts)
+        translate_decision_outcome(result.attempts)
+        usage = result.usage if result.usage is not None else router.get_usage_log()[-1]
+        assert usage.retry_count == 0
 
     def test_missing_provider_returns_auditable_terminal_failure(self) -> None:
         router = _make_router(providers={})
