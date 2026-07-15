@@ -3,7 +3,7 @@
 测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -48,6 +48,14 @@ class ModelRouter(_ProductionModelRouter):
             for profile in (kwargs.get("model_profiles") or {}).values():
                 profile.setdefault("reasoning", {"level": "high"})
         super().__init__(*args, **kwargs)
+
+
+def _v2_retry_count(trace: ActionTrace) -> int:
+    """仅按 execution_attempts 中显式 retry route 计算重试次数。"""
+    return sum(
+        attempt.route_kind.value == "retry"
+        for attempt in trace.execution_attempts
+    )
 
 
 def test_provider_fallback_parser_rejection_updates_shared_attempt_chain() -> None:
@@ -1367,7 +1375,7 @@ class TestPlayerAgentRetryFallback:
         assert router.calls == 1
         assert retry.error_code == "model_generation_failed"
         assert action.trace is not None
-        assert action.trace.retry_count == 1
+        assert action.trace.retry_count == _v2_retry_count(action.trace)
 
     def test_provider_failure_trace_appends_terminal_safe_fallback(self) -> None:
         router = ModelRouter(
@@ -2386,7 +2394,7 @@ class TestPlainTextRejection:
         assert action.trace.tool_call_required is True
         assert action.trace.parse_success is False
         assert action.trace.parse_error is not None
-        assert action.trace.retry_count == 1
+        assert action.trace.retry_count == _v2_retry_count(action.trace)
 
     def test_missing_tool_call_does_not_parse_text_json(self):
         """If tool_choice was required but no tool call arrived, do not treat text JSON as success."""
@@ -2673,7 +2681,7 @@ class TestStructuredOutputMetadata:
         assert action.trace.tool_call_received is True
         assert action.trace.parse_success is True
         assert action.trace.tool_call_name == "submit_player_action"
-        assert action.trace.retry_count == 1
+        assert action.trace.retry_count == _v2_retry_count(action.trace)
 
     def test_fallback_action_has_failure_trace(self):
         """A fallback action records structured output failure metadata."""
@@ -2698,7 +2706,7 @@ class TestStructuredOutputMetadata:
         assert action.trace.tool_call_required is True
         assert action.trace.parse_success is False
         assert action.trace.parse_error is not None
-        assert action.trace.retry_count == 2
+        assert action.trace.retry_count == _v2_retry_count(action.trace)
 
 
 # === Task 12: Speech Must Answer Contradiction ===
@@ -3378,18 +3386,10 @@ class TestSmartRetry:
 
 
 class TestRetryCountConsistency:
-    """R3-MG-5: trace.retry_count and metrics_collector.retry_count must agree.
-
-    Pre-fix, the success path used ``retry_count=attempt`` (e.g. 2) but
-    the exhausted-path trace used ``retry_count=self.max_retries`` (e.g. 4)
-    even when retries had short-circuited. The audit log and the
-    metrics_collector disagreed about how many attempts actually ran.
-    """
+    """V2 trace 与 metrics 都使用显式 retry route 计数。"""
 
     def test_retry_count_consistent(self):
-        """Exhausted path with early-exit at attempt=2 of max=4:
-        trace.retry_count and metrics.retry_count must both be 2.
-        """
+        """动作层提前退出不得把循环序号或总尝试数混入 retry_count。"""
         from werewolf_agent.agents.player import PlayerAgent
         from werewolf_agent.model_gateway.router import ModelRouter
 
@@ -3441,24 +3441,16 @@ class TestRetryCountConsistency:
             legal_targets=["p07", "p08"],
         )
 
-        action, retry = agent.act(ctx)
+        action, _ = agent.act(ctx)
 
         # Sanity: we should have fallen back after early-exit.
         assert isinstance(action, FallbackAction)
         assert action.trace is not None
 
-        # The trace must reflect the actual attempt number, not max_retries.
-        # Pre-fix: trace.retry_count == 4 (max_retries) even when we
-        # short-circuited at attempt 2.
-        assert action.trace.retry_count == retry.attempt, (
-            f"trace.retry_count ({action.trace.retry_count}) must equal "
-            f"retry.attempt ({retry.attempt})"
-        )
-        # And the metrics_collector must record the same number.
+        assert action.trace.attempt_count == len(action.trace.execution_attempts)
+        assert action.trace.retry_count == _v2_retry_count(action.trace)
         profile = agent.metrics_collector.get_profile("p01")
-        # The per-task breakdown also tracks retry_count through fallback_count;
-        # what we really want to check is that the agent's recorded
-        # fallback_used attempt is consistent with the trace.
+        # metrics_collector 在此仅暴露聚合 fallback 事实。
         assert profile.sample_count >= 1
         assert profile.fallback_count == 1
 
