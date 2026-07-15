@@ -3,7 +3,7 @@
 验证猎人死亡触发、开枪结算与终局路由顺序。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -130,7 +130,7 @@ class TestHunterShotTiming:
         }
         death = Death(
             player_id="hunter", reason="exile", timing="day",
-            resolution_batch="day_1_exile", triggered_skills=["hunter_shot"],
+            resolution_batch="day_1_vote", triggered_skills=["hunter_shot"],
         )
         gs = GameState(
             game_id="hunter_exile",
@@ -152,6 +152,10 @@ class TestHunterShotTiming:
         assert shot_result["game_state"].players["v1"].alive is False
         shot_deaths = [d for d in shot_result["game_state"].deaths if d.reason == "hunter_shot"]
         assert len(shot_deaths) == 1, "hunter_shot death should be recorded"
+        from werewolf_agent.core.resolution_batches import ResolutionBatchV2
+        assert shot_deaths[0].resolution_batch == ResolutionBatchV2(
+            "day", 1, "hunter_shot"
+        )
 
     def test_hunter_poisoned_cannot_shoot(self) -> None:
         """Hunter killed by witch poison must NOT be able to shoot."""

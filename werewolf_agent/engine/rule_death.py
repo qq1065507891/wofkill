@@ -4,6 +4,7 @@ RuleEngine 的死亡记录、死亡事件和存活目标校验 helper。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.engine.rule_death import apply_death
@@ -15,6 +16,10 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.core.resolution_batches import (
+    parse_resolution_batch,
+    serialize_resolution_batch,
+)
 
 
 def apply_death(
@@ -30,11 +35,13 @@ def apply_death(
     can_leave_last_words = death.can_leave_last_words
     if can_leave_last_words is None:
         night_number = state.night_number
-        if night_number == 0 and death.resolution_batch.startswith("night_"):
-            try:
-                night_number = int(death.resolution_batch.removeprefix("night_"))
-            except ValueError:
-                night_number = state.night_number
+        parsed_batch = parse_resolution_batch(death.resolution_batch)
+        if (
+            night_number == 0
+            and parsed_batch.batch is not None
+            and parsed_batch.batch.phase == "night"
+        ):
+            night_number = parsed_batch.batch.number
         can_leave_last_words = can_leave_last_words_fn(
             death_reason=death.reason,
             timing=death.timing,
@@ -61,7 +68,12 @@ def apply_death(
             "player_id": recorded_death.player_id,
             "reason": recorded_death.reason,
             "timing": recorded_death.timing,
-            "resolution_batch": recorded_death.resolution_batch,
+            "resolution_batch": serialize_resolution_batch(
+                recorded_death.resolution_batch
+            )[0],
+            "resolution_batch_parse_failed": (
+                recorded_death.resolution_batch_parse_failed
+            ),
             "source_player_id": recorded_death.source_player_id,
             "can_leave_last_words": recorded_death.can_leave_last_words,
             "triggered_skills": recorded_death.triggered_skills,

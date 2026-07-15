@@ -1,7 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：PostgreSQL 游戏仓库，支持 GameEvent V2 完整 JSON 与 V1 只读兼容。
-作者：Mike
+功能描述：PostgreSQL 游戏仓库，支持 GameEvent 与死亡批次 V2、V1 只读兼容。
+作者: Project contributors
 创建日期：2025-01-15
 修改日期：2026-07-15
 使用示例：内部模块，无对外接口
@@ -15,6 +15,10 @@ from dataclasses import asdict
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.core.resolution_batches import (
+    normalize_resolution_batch_fields,
+    serialize_resolution_batch_fields,
+)
 from werewolf_agent.runtime.event_metadata import (
     deserialize_game_event,
     serialize_game_event,
@@ -118,7 +122,14 @@ class PostgresGameRepository:
                     INSERT INTO deaths (game_id, player_id, death_json)
                     VALUES (%s, %s, %s::jsonb)
                     """,
-                    (game_id, death.player_id, json.dumps(asdict(death), ensure_ascii=False)),
+                    (
+                        game_id,
+                        death.player_id,
+                        json.dumps(
+                            serialize_resolution_batch_fields(asdict(death)),
+                            ensure_ascii=False,
+                        ),
+                    ),
                 )
             conn.commit()
 
@@ -128,7 +139,14 @@ class PostgresGameRepository:
                 "SELECT death_json FROM deaths WHERE game_id = %s",
                 (game_id,),
             ).fetchall()
-            return [Death(**(row[0] if isinstance(row[0], dict) else json.loads(row[0]))) for row in rows]
+            return [
+                Death(
+                    **normalize_resolution_batch_fields(
+                        row[0] if isinstance(row[0], dict) else json.loads(row[0])
+                    )
+                )
+                for row in rows
+            ]
 
     def save_model_usage(self, game_id: str, record: dict[str, Any]) -> None:
         with self._lock:

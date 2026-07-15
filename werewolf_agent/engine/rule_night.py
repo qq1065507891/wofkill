@@ -4,6 +4,7 @@ RuleEngine 的夜晚结算 helper。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.engine.rule_night import resolve_night
@@ -16,6 +17,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 
 
 def resolve_night(
@@ -36,7 +38,6 @@ def resolve_night(
     deaths: list[Death] = []
     antidote_used = state.antidote_used
     poison_used = state.poison_used
-    batch = f"night_{night_number}"
     witch_id = next(
         (pid for pid, player in state.players.items() if player.role == "witch" and player.alive),
         None,
@@ -62,7 +63,7 @@ def resolve_night(
             player_id=wolf_kill_target_id,
             reason="wolf_kill",
             timing="night",
-            resolution_batch=batch,
+            resolution_batch=ResolutionBatchV2("night", night_number, "wolf_kill"),
         )
         if use_antidote and not antidote_used:
             witch_cfg = raw["roles"]["witch"]
@@ -94,7 +95,7 @@ def resolve_night(
                 player_id=poison_target_id,
                 reason="witch_poison",
                 timing="night",
-                resolution_batch=batch,
+                resolution_batch=ResolutionBatchV2("night", night_number, "witch_poison"),
             ))
             events.append(GameEvent(
                 type="witch_poison_used",

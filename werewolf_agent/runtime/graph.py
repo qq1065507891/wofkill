@@ -1,9 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
-"""LangGraph game graph: deterministic orchestration around RuleEngine.
-    作者: Mike
-    创建日期: 2025-01-15
-    修改日期: 2026-07-13
-    使用示例: 内部模块，无对外接口
+"""围绕 RuleEngine 编排确定性的 LangGraph 游戏流程与兼容导出。
+
+作者: Project contributors
+创建日期: 2025-01-15
+修改日期: 2026-07-15
+使用示例: 内部模块，无对外接口
 Every node calls RuleEngine for rule decisions. No natural language adjudication.
 Node function implementations live in ``werewolf_agent.runtime.nodes``; this
 module owns graph factories, conditional-edge routing, and compatibility re-exports.
@@ -20,6 +21,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.resolution_batches import same_resolution_batch
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.graph_registration import (
     add_game_graph_edges as _add_all_edges,
@@ -260,12 +262,14 @@ def route_victory(state: RuntimeState) -> str:
         and (
             any(
                 event.type == "hunter_shot_declined"
-                and event.payload.get("resolution_batch") == current_night_batch
+                and same_resolution_batch(
+                    event.payload.get("resolution_batch", ""), current_night_batch
+                )
                 for event in gs.events
             )
             or any(
                 death.reason == "hunter_shot"
-                and death.resolution_batch == current_night_batch
+                and same_resolution_batch(death.resolution_batch, current_night_batch)
                 for death in gs.deaths
             )
         )

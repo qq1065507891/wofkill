@@ -1,9 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
-"""Special skill node functions (hunter, self-destruct, PK, badge transfer).
-    作者: Mike
-    创建日期: 2025-01-15
-    修改日期: 2026-07-13
-    使用示例: 内部模块，无对外接口
+"""处理猎人、自爆、PK 与警徽流转等特殊技能节点。
+
+作者: Project contributors
+创建日期: 2025-01-15
+修改日期: 2026-07-15
+使用示例: 内部模块，无对外接口
 """
 
 from __future__ import annotations
@@ -13,6 +14,11 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.core.resolution_batches import (
+    ResolutionBatchV2,
+    parse_resolution_batch,
+    serialize_resolution_batch,
+)
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     agent_badge_decision,
@@ -119,6 +125,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 exposure_collector.flush_events()
         if target is None:
             target = _hunter_shot_target_from_last_words(gs, death.player_id)
+        parsed_batch = parse_resolution_batch(death.resolution_batch)
         if target and target in gs.players and gs.players[target].alive and target != death.player_id:
             gs, _ = _judge_broadcast(
                 phase="hunter_shot_choice",
@@ -133,10 +140,20 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 f"  [猎人开枪] {_player_display(state, death.player_id)} "
                 f"选择带走{_player_display(state, target)}"
             )
+            shot_batch = (
+                ResolutionBatchV2(
+                    parsed_batch.batch.phase,
+                    parsed_batch.batch.number,
+                    "hunter_shot",
+                )
+                if parsed_batch.batch is not None
+                else death.resolution_batch
+            )
             shot_death = Death(
                 player_id=target, reason="hunter_shot",
-                timing=death.timing, resolution_batch=death.resolution_batch,
+                timing=death.timing, resolution_batch=shot_batch,
                 source_player_id=death.player_id,
+                resolution_batch_parse_failed=parsed_batch.batch_parse_failed,
             )
             gs = engine.apply_death(gs, shot_death)
             # Public death announcement for shot player
@@ -174,7 +191,13 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                     "hunter_id": death.player_id,
                     "day_number": gs.day_number,
                     "night_number": gs.night_number,
-                    "resolution_batch": death.resolution_batch,
+                    "resolution_batch": serialize_resolution_batch(
+                        death.resolution_batch
+                    )[0],
+                    "resolution_batch_parse_failed": (
+                        death.resolution_batch_parse_failed
+                        or parsed_batch.batch_parse_failed
+                    ),
                 },
             )])
         break
@@ -295,7 +318,7 @@ def sheriff_badge_transfer(state: RuntimeState) -> dict[str, Any]:
             gs=gs, day_number=gs.day_number,
             visibility="public",
         )
-        logger.debug(f"  [警徽] 警长撕毁了警徽")
+        logger.debug("  [警徽] 警长撕毁了警徽")
 
     gs = replace(gs, events=gs.events + [GameEvent(
         type=event_type,

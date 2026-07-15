@@ -1,26 +1,23 @@
 ﻿# -*- coding: utf-8 -*-
-"""Shared helper utilities used by multiple role directive builders.
-    作者: Mike
-    创建日期: 2025-01-15
-    修改日期: 2026-07-15
-    使用示例: 内部模块，无对外接口
+"""提供多个角色指令构建器共享的公开历史与约束 helper。
+
+作者: Project contributors
+创建日期: 2025-01-15
+修改日期: 2026-07-15
+使用示例: 内部模块，无对外接口
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from werewolf_agent.core.models import GameState
+from werewolf_agent.core.resolution_batches import parse_resolution_batch
 
 logger = logging.getLogger(__name__)
 
-# M3-2: strict regex for resolution_batch "day_N" form.  ``fullmatch``
-# means the entire string must be exactly ``day_<digits>`` -- this
-# rejects "day_", "day_BAD", "day_1_extra", "night_4", and "" without
-# any try/except plumbing.  See review I-3.
-_DAY_BATCH_RE = re.compile(r"day_(\d+)")
+_WARNED_BATCH_PARSE_FAILURES: set[tuple[str, str]] = set()
 
 
 def collect_public_vote_history(
@@ -86,27 +83,25 @@ def collect_death_order(
     lines: list[str] = []
     for d in gs.deaths:
         if current_day is not None:
-            batch = d.resolution_batch or ""
-            # resolution_batch format: "day_N" or "night_N".
-            # ``_DAY_BATCH_RE.fullmatch`` only matches the strict
-            # ``day_<digits>`` form; anything else (empty string,
-            # ``night_4``, ``day_BAD``, ``day_1_extra``) is treated
-            # as malformed and the death is kept defensively.
-            m = _DAY_BATCH_RE.fullmatch(batch)
-            if m and int(m.group(1)) > current_day:
+            parsed = parse_resolution_batch(d.resolution_batch)
+            if parsed.batch_parse_failed:
+                raw_batch = parsed.raw_value or ""
+                warning_key = (gs.game_id, raw_batch)
+                if warning_key not in _WARNED_BATCH_PARSE_FAILURES:
+                    _WARNED_BATCH_PARSE_FAILURES.add(warning_key)
+                    logger.warning(
+                        "collect_death_order: malformed resolution_batch for game %s: %r",
+                        gs.game_id,
+                        raw_batch,
+                    )
+                # 未知批次无法证明属于当前日，必须 fail closed。
                 continue
-            if not m and batch.startswith("day_"):
-                # Batch LOOKS like a day batch but didn't match the
-                # strict ``day_<digits>`` form -- this is a real
-                # engine regression signal (e.g. ``day_BAD``,
-                # ``day_1_extra``).  ``night_4`` and ``""`` are
-                # structurally valid and are not logged.  See review
-                # I-1.
-                logger.warning(
-                    "collect_death_order: malformed resolution_batch %r, keeping death %s",
-                    d.resolution_batch,
-                    d.player_id,
-                )
+            if (
+                parsed.batch is not None
+                and parsed.batch.phase == "day"
+                and parsed.batch.number > current_day
+            ):
+                continue
         label = _public_reasons.get(d.reason)
         if label:
             lines.append(f"{d.player_id}({label})")

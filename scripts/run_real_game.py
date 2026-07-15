@@ -30,6 +30,7 @@ from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
     compute_wolf_plan_outcome_metrics,
 )
 from werewolf_agent.core.models import GameEvent  # noqa: E402
+from werewolf_agent.core.resolution_batches import serialize_resolution_batch  # noqa: E402
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
 from werewolf_agent.runtime.event_metadata import serialize_game_event  # noqa: E402
 from werewolf_agent.runtime.exposure_audit import (  # noqa: E402
@@ -318,7 +319,11 @@ def save_game_log(
                 "player_id": d.player_id,
                 "reason": d.reason,
                 "timing": d.timing,
-                "resolution_batch": d.resolution_batch,
+                "resolution_batch": serialize_resolution_batch(d.resolution_batch)[0],
+                "resolution_batch_parse_failed": bool(
+                    d.resolution_batch_parse_failed
+                    or serialize_resolution_batch(d.resolution_batch)[1]
+                ),
                 "source_player_id": d.source_player_id,
                 "can_leave_last_words": d.can_leave_last_words,
                 "triggered_skills": list(d.triggered_skills),

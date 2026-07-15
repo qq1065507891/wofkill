@@ -1,11 +1,47 @@
+# -*- coding: utf-8 -*-
+"""
+验证玩家可见状态、公开摘要和 JSON-safe 赛后摘要。
+
+作者: Project contributors
+修改日期: 2026-07-15
+"""
+
 from werewolf_agent.agents.schemas import TaskType
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import build_agent_context
 from werewolf_agent.runtime.visible_state import (
+    build_post_game_summary,
     build_public_summary,
     build_visible_player_state,
 )
+
+
+def test_post_game_summary_serializes_v2_resolution_batch() -> None:
+    import json
+
+    from werewolf_agent.core.resolution_batches import ResolutionBatchV2
+
+    gs = GameState(
+        game_id="post-game-v2",
+        players={"p01": PlayerState(id="p01", role="villager", alive=False)},
+        deaths=[
+            Death(
+                "p01",
+                "exile",
+                "day_vote",
+                ResolutionBatchV2("day", 2, "vote"),
+            )
+        ],
+    )
+
+    summary = build_post_game_summary(gs, "p01")
+
+    assert json.loads(json.dumps(summary))["deaths"][0]["batch"] == {
+        "phase": "day",
+        "number": 2,
+        "cause": "vote",
+    }
 
 
 def test_build_visible_player_state_contains_shared_timeline_and_public_fields() -> None:

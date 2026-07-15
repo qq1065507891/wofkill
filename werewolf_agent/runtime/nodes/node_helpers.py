@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-13
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.node_helpers import _alive_wolves
@@ -19,6 +19,10 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.resolution_batches import (
+    ResolutionBatchV2,
+    same_resolution_batch,
+)
 from werewolf_agent.runtime.nodes.judge_broadcast_helpers import (
     _generate_judge_message,
     _jb,
@@ -137,20 +141,22 @@ def _dispatch_agent(
 def _hunter_reaction_resolved(
     gs: GameState,
     hunter_id: str,
-    resolution_batch: str,
+    resolution_batch: ResolutionBatchV2 | str,
 ) -> bool:
     """按猎人和死亡批次判断开枪或放弃反应是否已经完成。"""
     if any(
         death.source_player_id == hunter_id
         and death.reason == "hunter_shot"
-        and death.resolution_batch == resolution_batch
+        and same_resolution_batch(death.resolution_batch, resolution_batch)
         for death in gs.deaths
     ):
         return True
     return any(
         event.type == "hunter_shot_declined"
         and event.payload.get("hunter_id") == hunter_id
-        and event.payload.get("resolution_batch") == resolution_batch
+        and same_resolution_batch(
+            event.payload.get("resolution_batch", ""), resolution_batch
+        )
         for event in gs.events
     )
 

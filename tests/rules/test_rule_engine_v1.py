@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证 RuleEngine V1 兼容行为与 V2 结构化结算输出。
+
+作者: Project contributors
+修改日期: 2026-07-15
+"""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -6,6 +14,7 @@ import pytest
 
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
@@ -737,7 +746,10 @@ def test_resolve_night_double_death_wolf_and_poison() -> None:
     )
     assert new_state.players["v1"].alive is False
     assert new_state.players["v2"].alive is False
-    assert len([d for d in new_state.deaths if d.resolution_batch == "night_1"]) == 2
+    assert [d.resolution_batch for d in new_state.deaths] == [
+        ResolutionBatchV2("night", 1, "wolf_kill"),
+        ResolutionBatchV2("night", 1, "witch_poison"),
+    ]
 
 
 def test_resolve_night_cannot_use_antidote_and_poison_same_night() -> None:
@@ -891,7 +903,9 @@ def test_reduce_event_player_died_updates_state() -> None:
     assert new_state.players["v1"].alive is False
     assert len(new_state.deaths) == 1
     assert new_state.deaths[0].player_id == "v1"
-    assert new_state.deaths[0].resolution_batch == "night_1"
+    assert new_state.deaths[0].resolution_batch == ResolutionBatchV2(
+        "night", 1, "unknown"
+    )
     assert new_state.deaths[0].source_player_id == "w1"
     assert new_state.deaths[0].can_leave_last_words is True
     assert new_state.deaths[0].triggered_skills == ["hunter_shot"]

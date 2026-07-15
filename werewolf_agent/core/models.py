@@ -1,7 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 """
 功能描述：游戏状态与 V1/V2 事件元数据的不可变数据容器。
-作者：Mike
+作者: Project contributors
 创建日期：2025-01-15
 修改日期：2026-07-15
 使用示例：内部模块，无对外接口
@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 
 
 _GOOD_ROLES = frozenset({"villager", "seer", "witch", "hunter", "idiot"})
@@ -52,10 +53,11 @@ class Death:
     player_id: str
     reason: str
     timing: str
-    resolution_batch: str
+    resolution_batch: ResolutionBatchV2 | str
     source_player_id: str | None = None
     can_leave_last_words: bool | None = None
     triggered_skills: list[str] = field(default_factory=list)
+    resolution_batch_parse_failed: bool = False
 
 
 @dataclass(frozen=True)

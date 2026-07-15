@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-15
 
 使用示例:
     内部运行时节点模块。
@@ -15,6 +16,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.resolution_batches import same_resolution_batch
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     agent_exile_last_words,
@@ -64,7 +66,8 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     # 公告昨夜死亡情况。
     night_deaths = [
         death for death in gs.deaths
-        if death.timing == "night" and death.resolution_batch == f"night_{gs.night_number}"
+        if death.timing == "night"
+        and same_resolution_batch(death.resolution_batch, f"night_{gs.night_number}")
     ]
     if night_deaths:
         dead_desc = "、".join(
@@ -93,7 +96,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
         for death in night_deaths:
             logger.debug(f"  [死讯] {_player_display(state, death.player_id)} 死亡 (原因: {death.reason})")
     else:
-        logger.debug(f"  [死讯] 平安夜，无人死亡")
+        logger.debug("  [死讯] 平安夜，无人死亡")
     logger.debug(f"{'='*60}")
     _hitl_checkpoint(state, "announce_deaths", "after")
     return {"game_state": gs,
@@ -117,7 +120,7 @@ def announce_deaths_with_badge_loss(state: RuntimeState) -> dict[str, Any]:
                      type="badge_permanently_lost",
                      payload={"reason": "sheriff_election_interrupted_twice"},
                  )])
-    logger.debug(f"  [警徽] 本局警徽永久流失")
+    logger.debug("  [警徽] 本局警徽永久流失")
     result["game_state"] = gs
     return result
 
@@ -129,7 +132,7 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
     batch = f"night_{gs.night_number}"
     eligible = []
     for death in gs.deaths:
-        if death.resolution_batch != batch:
+        if not same_resolution_batch(death.resolution_batch, batch):
             continue
         can_leave = death.can_leave_last_words
         if can_leave is None:

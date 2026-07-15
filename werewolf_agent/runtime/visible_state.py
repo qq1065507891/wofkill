@@ -1,9 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
-"""Shared player-visible runtime state builders.
-    作者: Mike
-    创建日期: 2025-01-15
-    修改日期: 2026-07-05
-    使用示例: 内部模块，无对外接口
+"""构建玩家可见的运行时状态与赛后摘要。
+
+作者: Project contributors
+创建日期: 2025-01-15
+修改日期: 2026-07-15
+使用示例: 内部模块，无对外接口
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.core.models import GameState
+from werewolf_agent.core.resolution_batches import serialize_resolution_batch
 from werewolf_agent.runtime.public_ledger import build_public_ledger
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
@@ -212,7 +214,7 @@ def build_post_game_summary(
             "player_id": d.player_id,
             "reason": d.reason,
             "timing": d.timing,
-            "batch": d.resolution_batch,
+            "batch": serialize_resolution_batch(d.resolution_batch)[0],
         }
         for d in game_state.deaths
     ]

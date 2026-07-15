@@ -23,6 +23,7 @@ from dataclasses import replace
 import pytest
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 from werewolf_agent.storage.repository import GameRepository
 from werewolf_agent.storage.sqlite_store import SqliteGameRepository
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
@@ -322,7 +323,9 @@ class TestDeaths:
         assert loaded[0].player_id == "v1"
         assert loaded[0].reason == "wolf_kill"
         assert loaded[0].timing == "night"
-        assert loaded[0].resolution_batch == "night_1"
+        assert loaded[0].resolution_batch == ResolutionBatchV2(
+            "night", 1, "unknown"
+        )
 
     def test_deaths_with_triggered_skills(self, repo: GameRepository) -> None:
         gs = _make_game_state("d2")

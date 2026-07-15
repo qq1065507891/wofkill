@@ -2,7 +2,7 @@
 """验证多局平衡审计与公开声明安全修复。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -780,6 +780,33 @@ def test_balance_audit_counts_only_night1_witch_wolf_kill_deaths():
 
     assert audit["witch_night1_death_rate"] == 1 / 2
     assert audit["witch_wolf_kill_death_rate"] == 1.0
+
+
+def test_balance_audit_reads_v2_night_batch_mapping() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    audit = compute_balance_audit(
+        [
+            {
+                "winning_faction": "good",
+                "players": {"p01": {"role": "witch"}},
+                "events": [],
+                "deaths": [
+                    {
+                        "player_id": "p01",
+                        "reason": "wolf_kill",
+                        "resolution_batch": {
+                            "phase": "night",
+                            "number": 1,
+                            "cause": "wolf_kill",
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert audit["witch_night1_death_rate"] == 1.0
 
 
 def test_balance_audit_counts_template_vote_reasons_and_public_fact_hallucinations():

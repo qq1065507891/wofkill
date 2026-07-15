@@ -1,7 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：内存游戏仓库，原样保存完整不可变 GameEvent 数据类。
-作者：Mike
+功能描述：内存游戏仓库，保留完整 GameEvent 并规范化 Death 批次。
+作者: Project contributors
 创建日期：2025-01-15
 修改日期：2026-07-15
 使用示例：内部模块，无对外接口
@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.core.resolution_batches import normalize_resolution_batch_fields
 
 
 class InMemoryGameRepository:
@@ -49,7 +50,10 @@ class InMemoryGameRepository:
         self._deaths[game_id] = list(deaths)
 
     def load_deaths(self, game_id: str) -> list[Death]:
-        return list(self._deaths.get(game_id, []))
+        return [
+            Death(**normalize_resolution_batch_fields(death.__dict__))
+            for death in self._deaths.get(game_id, [])
+        ]
 
     def save_model_usage(self, game_id: str, record: dict[str, Any]) -> None:
         if game_id not in self._usage:

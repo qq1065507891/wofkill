@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：**：按§14设计运行批量对局，固定种子集，支持从initial_seed + ruleset_snapshot + event_log回放，只读RuleEngine状态不写入
-作者：Mike
+功能描述：按固定种子运行批量对局，并输出可回放、JSON-safe 的结果。
+作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -16,6 +16,7 @@ from dataclasses import replace
 from typing import Any, Callable
 
 from werewolf_agent.agents.schemas import AgentContext
+from werewolf_agent.core.resolution_batches import serialize_resolution_batch
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine, Ruleset
 from werewolf_agent.evaluation.ablation import (
@@ -316,7 +317,18 @@ class BatchRunner:
             player_roles=player_roles,
             player_factions=player_factions,
             deaths=[
-                {"player_id": d.player_id, "reason": d.reason, "timing": d.timing, "resolution_batch": d.resolution_batch}
+                {
+                    "player_id": d.player_id,
+                    "reason": d.reason,
+                    "timing": d.timing,
+                    "resolution_batch": serialize_resolution_batch(
+                        d.resolution_batch
+                    )[0],
+                    "resolution_batch_parse_failed": bool(
+                        d.resolution_batch_parse_failed
+                        or serialize_resolution_batch(d.resolution_batch)[1]
+                    ),
+                }
                 for d in state.deaths
             ],
             event_log=events,

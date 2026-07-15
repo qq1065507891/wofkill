@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
 功能描述：单方法 reduce_event 分发所有事件类型（player_died、idiot_revealed、sheriff_elected、victory 等），
-作者：Mike
+作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -13,6 +13,15 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.resolution_batches import (
+    ResolutionBatchV2,
+    normalize_resolution_batch_fields,
+)
+
+
+def _death_from_fields(**fields: Any) -> Death:
+    """通过统一 parser 构造可审计的迁移期 Death。"""
+    return Death(**normalize_resolution_batch_fields(fields))
 
 
 def _apply_idiot_reveal(raw: dict[str, Any], state: GameState, player_id: str) -> GameState:
@@ -48,7 +57,7 @@ class EventReducer:
             if player.alive:
                 updated = replace(player, alive=False)
                 new_players = {**state.players, pid: updated}
-                death = Death(
+                death = _death_from_fields(
                     player_id=pid,
                     reason=payload.get("reason", "unknown"),
                     timing=payload.get("timing", "unknown"),
@@ -56,6 +65,9 @@ class EventReducer:
                     source_player_id=payload.get("source_player_id"),
                     can_leave_last_words=payload.get("can_leave_last_words"),
                     triggered_skills=list(payload.get("triggered_skills", [])),
+                    resolution_batch_parse_failed=payload.get(
+                        "resolution_batch_parse_failed", False
+                    ),
                 )
                 return replace(
                     state,
@@ -70,11 +82,14 @@ class EventReducer:
             player = state.players[pid]
             new_state = _apply_idiot_reveal(self._raw, state, pid)
             if player.alive and player.role == "idiot" and not player.revealed_idiot:
-                death = Death(
+                death = _death_from_fields(
                     player_id=pid,
                     reason="exile",
                     timing="day_vote",
-                    resolution_batch=payload.get("resolution_batch", f"day_{state.day_number}_vote"),
+                    resolution_batch=payload.get(
+                        "resolution_batch",
+                        ResolutionBatchV2("day", state.day_number, "vote"),
+                    ),
                     can_leave_last_words=payload.get("can_leave_last_words", True),
                     triggered_skills=list(payload.get("triggered_skills", [])),
                 )
@@ -91,11 +106,22 @@ class EventReducer:
             if player.alive:
                 updated = replace(player, alive=False)
                 new_players = {**state.players, pid: updated}
-                death = Death(
+                death = _death_from_fields(
                     player_id=pid,
                     reason="self_destruct",
                     timing="day_discussion",
-                    resolution_batch=f"day_{payload.get('day_number', '?')}_self_destruct",
+                    resolution_batch=payload.get(
+                        "resolution_batch",
+                        (
+                            ResolutionBatchV2(
+                                "day", payload["day_number"], "self_destruct"
+                            )
+                            if isinstance(payload.get("day_number"), int)
+                            and not isinstance(payload.get("day_number"), bool)
+                            and payload["day_number"] >= 0
+                            else f"day_{payload.get('day_number', '?')}_self_destruct"
+                        ),
+                    ),
                     can_leave_last_words=payload.get("can_leave_last_words"),
                     triggered_skills=list(payload.get("triggered_skills", [])),
                 )
@@ -139,11 +165,14 @@ class EventReducer:
                         exile_immune=after["exile_immune"],
                     )
                 new_players = {**state.players, pid: updated}
-                death = Death(
+                death = _death_from_fields(
                     player_id=pid,
                     reason="exile",
                     timing="day_vote",
-                    resolution_batch=payload.get("resolution_batch", "day_vote"),
+                    resolution_batch=payload.get(
+                        "resolution_batch",
+                        ResolutionBatchV2("day", state.day_number, "vote"),
+                    ),
                     can_leave_last_words=payload.get("can_leave_last_words", True),
                     triggered_skills=list(payload.get("triggered_skills", [])),
                 )

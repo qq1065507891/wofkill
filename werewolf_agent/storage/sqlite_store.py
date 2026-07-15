@@ -1,7 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：SQLite 游戏仓库，支持 GameEvent V2 完整 JSON 与 V1 只读兼容。
-作者：Mike
+功能描述：SQLite 游戏仓库，支持 GameEvent 与死亡批次 V2、V1 只读兼容。
+作者: Project contributors
 创建日期：2025-01-15
 修改日期：2026-07-15
 使用示例：内部模块，无对外接口
@@ -16,6 +16,10 @@ import threading
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.resolution_batches import (
+    normalize_resolution_batch_fields,
+    serialize_resolution_batch_fields,
+)
 from werewolf_agent.runtime.event_metadata import (
     deserialize_game_event,
     serialize_game_event,
@@ -25,6 +29,9 @@ from werewolf_agent.runtime.event_metadata import (
 
 def _serialize_game_state(gs: GameState) -> str:
     data = asdict(gs)
+    data["deaths"] = [
+        serialize_resolution_batch_fields(asdict(death)) for death in gs.deaths
+    ]
     data["events"] = [serialize_game_event(event) for event in gs.events]
     return json.dumps(data, ensure_ascii=False)
 
@@ -34,7 +41,10 @@ def _deserialize_game_state(raw: str) -> GameState:
     players = {
         pid: PlayerState(**pdata) for pid, pdata in data.pop("players", {}).items()
     }
-    deaths = [Death(**d) for d in data.pop("deaths", [])]
+    deaths = [
+        Death(**normalize_resolution_batch_fields(d))
+        for d in data.pop("deaths", [])
+    ]
     events = [deserialize_game_event(e) for e in data.pop("events", [])]
     return GameState(
         players=players,
@@ -226,7 +236,14 @@ class SqliteGameRepository:
             for death in deaths:
                 self._conn.execute(
                     "INSERT INTO deaths (game_id, player_id, death_json) VALUES (?, ?, ?)",
-                    (game_id, death.player_id, json.dumps(asdict(death), ensure_ascii=False)),
+                    (
+                        game_id,
+                        death.player_id,
+                        json.dumps(
+                            serialize_resolution_batch_fields(asdict(death)),
+                            ensure_ascii=False,
+                        ),
+                    ),
                 )
             self._conn.commit()
 
@@ -236,7 +253,10 @@ class SqliteGameRepository:
                 "SELECT death_json FROM deaths WHERE game_id = ?",
                 (game_id,),
             ).fetchall()
-            return [Death(**json.loads(r[0])) for r in rows]
+            return [
+                Death(**normalize_resolution_batch_fields(json.loads(r[0])))
+                for r in rows
+            ]
 
     # -- Model usage -------------------------------------------------------
 

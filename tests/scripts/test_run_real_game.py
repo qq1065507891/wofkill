@@ -15,6 +15,7 @@ import pytest
 
 from scripts.run_real_game import _safe_event_payload, print_quality_audit
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 
 
 def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately() -> None:
@@ -405,7 +406,7 @@ def test_save_game_log_exports_complete_death_fields(tmp_path, monkeypatch) -> N
                 player_id="hunter",
                 reason="exile",
                 timing="day_vote",
-                resolution_batch="day_3_vote",
+                resolution_batch=ResolutionBatchV2("day", 3, "vote"),
                 source_player_id=None,
                 can_leave_last_words=True,
                 triggered_skills=["hunter_shot"],
@@ -423,7 +424,8 @@ def test_save_game_log_exports_complete_death_fields(tmp_path, monkeypatch) -> N
             "player_id": "hunter",
             "reason": "exile",
             "timing": "day_vote",
-            "resolution_batch": "day_3_vote",
+            "resolution_batch": {"phase": "day", "number": 3, "cause": "vote"},
+            "resolution_batch_parse_failed": False,
             "source_player_id": None,
             "can_leave_last_words": True,
             "triggered_skills": ["hunter_shot"],

@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,40 @@ def _make_deaths() -> list[Death]:
             resolution_batch="night_1",
         ),
     ]
+
+
+def test_postgres_load_deaths_normalizes_v1_v2_and_preserves_failure() -> None:
+    repo, mock_conn = _setup_repo_with_mock_conn()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ({"player_id": "p1", "reason": "exile", "timing": "day", "resolution_batch": "day_2_vote"},),
+        ({"player_id": "p2", "reason": "wolf_kill", "timing": "night", "resolution_batch": {"phase": "night", "number": 2, "cause": "wolf_kill"}},),
+        ({"player_id": "p3", "reason": "rule_effect", "timing": "day", "resolution_batch": "day_BAD"},),
+    ]
+    mock_conn.execute.return_value = mock_cursor
+
+    loaded = repo.load_deaths("g1")
+
+    assert loaded[0].resolution_batch == ResolutionBatchV2("day", 2, "vote")
+    assert loaded[1].resolution_batch == ResolutionBatchV2("night", 2, "wolf_kill")
+    assert loaded[2].resolution_batch == "day_BAD"
+    assert loaded[2].resolution_batch_parse_failed is True
+
+
+def test_postgres_save_deaths_uses_json_safe_batch_serializer() -> None:
+    repo, mock_conn = _setup_repo_with_mock_conn()
+    repo.save_deaths(
+        "g1",
+        [Death("p1", "exile", "day", ResolutionBatchV2("day", 2, "vote"))],
+    )
+
+    record = json.loads(mock_conn.execute.call_args_list[1].args[1][2])
+    assert record["resolution_batch"] == {
+        "phase": "day",
+        "number": 2,
+        "cause": "vote",
+    }
+    assert record["resolution_batch_parse_failed"] is False
 
 
 def _make_mock_psycopg() -> types.ModuleType:

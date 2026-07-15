@@ -4,6 +4,7 @@ RuleEngine 低风险 helper 拆分后的兼容测试。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-15
 
 使用示例:
     >>> pytest tests/rules/test_rule_engine_split.py
@@ -275,11 +276,19 @@ def test_exile_helper_preserves_idiot_reveal_and_self_destruct_flow() -> None:
     assert [event.type for event in exile_events] == ["idiot_revealed", "player_exiled"]
     assert exile_events[-1].payload == {
         "player_id": "idiot",
-        "resolution_batch": "day_2_vote",
+        "resolution_batch": {"phase": "day", "number": 2, "cause": "vote"},
     }
     assert self_destruct_state.players["wolf"].alive is False
     assert self_destruct_events[-1].type == "werewolf_self_destructed"
-    assert self_destruct_events[-1].payload == {"player_id": "wolf", "day_number": 2}
+    assert self_destruct_events[-1].payload == {
+        "player_id": "wolf",
+        "day_number": 2,
+        "resolution_batch": {
+            "phase": "day",
+            "number": 2,
+            "cause": "self_destruct",
+        },
+    }
 
 
 def test_exile_split_preserves_rule_engine_apply_death_override_point() -> None:

@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
 """
 功能描述：消费已保存的 JSON 对局和强类型运行时审计，汇总平衡与验收指标。
-作者：Mike
+作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-14
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Iterable
+
+from werewolf_agent.core.resolution_batches import parse_resolution_batch
 
 from werewolf_agent.evaluation.acceptance_audit import (
     _compute_acceptance_metrics as _compute_acceptance_metrics,
@@ -589,10 +590,9 @@ def _witch_wolf_kill_death_rate(games: list[dict[str, Any]]) -> float:
 
 
 def _death_night_number(death: dict[str, Any]) -> int | None:
-    batch = str(death.get("resolution_batch") or "")
-    match = re.fullmatch(r"night_(\d+)", batch)
-    if match:
-        return int(match.group(1))
+    parsed = parse_resolution_batch(death.get("resolution_batch") or "")
+    if parsed.batch is not None and parsed.batch.phase == "night":
+        return parsed.batch.number
     value = death.get("night_number")
     if isinstance(value, int):
         return value

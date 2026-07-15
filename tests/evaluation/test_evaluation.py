@@ -584,12 +584,18 @@ class TestBatchRunner:
             assert result.hybrid_result == "lose"
 
     def test_game_result_has_deaths(self):
+        import json
+
         engine = _make_engine()
         config = BatchConfig(batch_id="death_test", seed_set=[42], num_games=1)
         runner = BatchRunner(engine, config)
         result = runner.run_game(42)
         # Game should have some deaths unless all wolves die immediately
         assert isinstance(result.deaths, list)
+        encoded = json.dumps(result.to_dict())
+        assert encoded
+        for death in result.deaths:
+            assert isinstance(death["resolution_batch"], dict)
 
     def test_add_leakage_record(self):
         engine = _make_engine()
@@ -659,7 +665,11 @@ class TestBatchRunner:
         assert replayed_state.hybrid_result == result.hybrid_result
         assert len(replayed_state.deaths) == len(result.deaths)
         for replayed_death, recorded_death in zip(replayed_state.deaths, result.deaths):
-            assert replayed_death.resolution_batch == recorded_death["resolution_batch"]
+            from werewolf_agent.core.resolution_batches import parse_resolution_batch
+
+            assert replayed_death.resolution_batch == parse_resolution_batch(
+                recorded_death["resolution_batch"]
+            ).batch
 
     def test_verify_replay_uses_ruleset_snapshot(self):
         engine = _make_engine()

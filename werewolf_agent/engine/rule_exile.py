@@ -4,6 +4,7 @@ RuleEngine 的日间放逐、白痴揭示和狼人自爆 helper。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.engine.rule_exile import resolve_exile
@@ -14,6 +15,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.core.resolution_batches import (
+    ResolutionBatchV2,
+    serialize_resolution_batch,
+)
 
 
 def legal_exile_targets(state: GameState) -> list[str]:
@@ -39,7 +44,7 @@ def resolve_exile(
         player_id=target_id,
         reason="exile",
         timing="day_vote",
-        resolution_batch=f"day_{state.day_number}_vote",
+        resolution_batch=ResolutionBatchV2("day", state.day_number, "vote"),
     )
     new_state = apply_death_fn(state, death)
     if target.role == "idiot" and not target.revealed_idiot:
@@ -47,7 +52,10 @@ def resolve_exile(
         events.append(GameEvent(type="idiot_revealed", payload={"player_id": target_id}))
     events.append(GameEvent(
         type="player_exiled",
-        payload={"player_id": target_id, "resolution_batch": death.resolution_batch},
+        payload={
+            "player_id": target_id,
+            "resolution_batch": serialize_resolution_batch(death.resolution_batch)[0],
+        },
     ))
     return new_state, events
 
@@ -66,12 +74,16 @@ def resolve_self_destruct(
         player_id=wolf_id,
         reason="self_destruct",
         timing="day_discussion",
-        resolution_batch=f"day_{day_number}_self_destruct",
+        resolution_batch=ResolutionBatchV2("day", day_number, "self_destruct"),
     )
     new_state = apply_death_fn(state, death)
     event = GameEvent(
         type="werewolf_self_destructed",
-        payload={"player_id": wolf_id, "day_number": day_number},
+        payload={
+            "player_id": wolf_id,
+            "day_number": day_number,
+            "resolution_batch": serialize_resolution_batch(death.resolution_batch)[0],
+        },
     )
     return new_state, [event]
 

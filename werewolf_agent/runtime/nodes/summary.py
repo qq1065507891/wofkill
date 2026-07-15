@@ -1,9 +1,10 @@
 ﻿# -*- coding: utf-8 -*-
-"""Summary and reflection node functions.
-    作者: Mike
-    创建日期: 2025-01-15
-    修改日期: 2026-07-13
-    使用示例: 内部模块，无对外接口
+"""处理每日摘要、立场归纳与赛后反思节点。
+
+作者: Project contributors
+创建日期: 2025-01-15
+修改日期: 2026-07-15
+使用示例: 内部模块，无对外接口
 - ``summarize_positions`` — per-player LLM summarisation after free discussion
 - ``summarize_context`` — daily structured context summary for pruning
 - ``reflection`` — post-game per-player reflection using ReflectionMemory
@@ -17,6 +18,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.resolution_batches import parse_resolution_batch
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.runtime.context import build_agent_context
@@ -223,7 +225,12 @@ def summarize_context(state: RuntimeState) -> dict[str, Any]:
     day_deaths = [
         {"player_id": d.player_id, "reason": d.reason, "timing": d.timing}
         for d in gs.deaths
-        if d.resolution_batch and f"day_{day}" in d.resolution_batch
+        if (
+            (parsed_batch := parse_resolution_batch(d.resolution_batch)).batch
+            is not None
+            and parsed_batch.batch.phase == "day"
+            and parsed_batch.batch.number == day
+        )
     ]
     summary_parts["deaths_this_day"] = day_deaths
 
