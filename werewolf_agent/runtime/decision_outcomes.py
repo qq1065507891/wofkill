@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -177,7 +177,7 @@ def translate_decision_outcome(
         retry_count=counts.retry_count,
         attempt_count=counts.attempt_count,
         provider_fallback_count=counts.provider_fallback_count,
-        generated_by=_generated_by(route_history),
+        generated_by=derive_generated_by(attempts),
         terminal_failure_code=derive_terminal_failure_code(
             attempts,
             structured_failure_reason,
@@ -268,14 +268,23 @@ def _route_kind(item: DecisionAttempt | Mapping[str, Any]) -> RouteKind:
     return route_kind if isinstance(route_kind, RouteKind) else RouteKind(route_kind)
 
 
-def _generated_by(route_history: set[RouteKind]) -> DecisionGeneratedBy:
-    if RouteKind.SAFE_FALLBACK in route_history:
-        return DecisionGeneratedBy.TERMINAL_FALLBACK
-    if RouteKind.REPAIR in route_history:
-        return DecisionGeneratedBy.REPAIR
-    if RouteKind.PROVIDER_FALLBACK in route_history:
-        return DecisionGeneratedBy.PROVIDER_FALLBACK
-    return DecisionGeneratedBy.MODEL
+def derive_generated_by(
+    attempts: Sequence[DecisionAttempt | Mapping[str, Any]],
+) -> DecisionGeneratedBy:
+    """按最终 attempt 的最近非 RETRY 路线推导最终内容来源。"""
+    if not attempts:
+        raise ValueError("at least one attempt is required")
+    source_by_route = {
+        RouteKind.PRIMARY: DecisionGeneratedBy.MODEL,
+        RouteKind.PROVIDER_FALLBACK: DecisionGeneratedBy.PROVIDER_FALLBACK,
+        RouteKind.REPAIR: DecisionGeneratedBy.REPAIR,
+        RouteKind.SAFE_FALLBACK: DecisionGeneratedBy.TERMINAL_FALLBACK,
+    }
+    for attempt in reversed(attempts):
+        route = _route_kind(attempt)
+        if route is not RouteKind.RETRY:
+            return source_by_route[route]
+    raise ValueError("retry attempt requires a non-retry source route")
 
 
 def translate_serialized_decision_outcome(
@@ -299,7 +308,7 @@ def _serialized_attempt(payload: Mapping[str, Any]) -> _SerializedDecisionAttemp
         raise ValueError("serialized attempt requires an opaque request id")
     return _SerializedDecisionAttempt(
         opaque_request_id=request_id,
-        ordinal=int(payload["ordinal"]),
+        ordinal=_parse_serialized_ordinal(payload.get("ordinal")),
         provider=str(payload["provider"]),
         model=str(payload["model"]),
         route_kind=RouteKind(payload["route_kind"]),
@@ -316,6 +325,25 @@ def _serialized_attempt(payload: Mapping[str, Any]) -> _SerializedDecisionAttemp
     )
 
 
+def _parse_serialized_ordinal(value: Any) -> int:
+    """只接受正整数或无前导零的 ASCII 正整数字符串。"""
+    if type(value) is int:
+        ordinal = value
+    elif (
+        isinstance(value, str)
+        and value
+        and value.isascii()
+        and value.isdecimal()
+        and value[0] != "0"
+    ):
+        ordinal = int(value)
+    else:
+        raise ValueError("serialized attempt ordinal must be a canonical positive integer")
+    if ordinal <= 0:
+        raise ValueError("serialized attempt ordinal must be a canonical positive integer")
+    return ordinal
+
+
 __all__ = [
     "AttemptCounts",
     "DecisionGeneratedBy",
@@ -323,6 +351,7 @@ __all__ = [
     "STABLE_TERMINAL_FAILURE_CODES",
     "DecisionAttempt",
     "TranslatedDecisionOutcome",
+    "derive_generated_by",
     "derive_terminal_failure_code",
     "normalize_decision_execution_trace",
     "normalize_terminal_failure_code",

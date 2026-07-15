@@ -2,7 +2,7 @@
 """Runtime audit events for module exposure, call monitoring, and prompt injection.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-15
+    修改日期: 2026-07-16
     使用示例: 内部模块，无对外接口
 """
 
@@ -252,16 +252,17 @@ def _sanitize_decision_trace_values(row: dict[str, Any]) -> None:
     flags: list[str] = []
     generated_by = row.get("generated_by")
     allowed_generated = {item.value for item in DecisionGeneratedBy}
-    if generated_by is None:
-        row.pop("generated_by", None)
-    elif generated_by not in allowed_generated:
+    if "generated_by" in row and (
+        not isinstance(generated_by, str) or generated_by not in allowed_generated
+    ):
         row["generated_by"] = "unknown"
         flags.append("generated_by_invalid")
 
     terminal_code = row.get("terminal_failure_code")
-    if terminal_code is None:
-        row.pop("terminal_failure_code", None)
-    else:
+    if "terminal_failure_code" in row and not isinstance(terminal_code, str):
+        row["terminal_failure_code"] = "unknown"
+        flags.append("terminal_failure_code_invalid")
+    elif "terminal_failure_code" in row:
         normalized = normalize_terminal_failure_code(terminal_code)
         row["terminal_failure_code"] = normalized
         if normalized == "unknown" and terminal_code != "unknown":

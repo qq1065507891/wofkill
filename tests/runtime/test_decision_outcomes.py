@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-权威决策结果分类、重试语义与非法序列测试。
+权威决策结果分类、最终来源归因、V1 反序列化与非法序列测试。
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -24,8 +24,11 @@ from werewolf_agent.model_gateway.execution_records import (
     RouteKind,
 )
 from werewolf_agent.runtime.decision_outcomes import (
+    DecisionGeneratedBy,
     DecisionOutcome,
+    normalize_decision_execution_trace,
     translate_decision_outcome,
+    translate_serialized_decision_outcome,
 )
 
 
@@ -51,6 +54,24 @@ def _attempt(
         reasoning_token_count=reasoning_tokens,
         evidence_kind=(EvidenceKind.AUTHORITATIVE_PROVIDER_EXECUTION if reasoning_status == "confirmed" else EvidenceKind.NONE),
     )
+
+
+def _serialized_attempt(
+    attempt: AttemptExecutionRecord,
+) -> dict[str, object]:
+    return {
+        "opaque_request_id": attempt.opaque_request_id.value,
+        "ordinal": attempt.ordinal,
+        "provider": attempt.provider,
+        "model": attempt.model,
+        "route_kind": attempt.route_kind.value,
+        "root_cause": attempt.root_cause.value,
+        "attempt_outcome": attempt.attempt_outcome.value,
+        "requested_reasoning_level": attempt.requested_reasoning_level.value,
+        "normalized_reasoning_status": attempt.normalized_reasoning_status.value,
+        "reasoning_token_count": attempt.reasoning_token_count,
+        "evidence_kind": attempt.evidence_kind.value,
+    }
 
 
 def test_outcome_taxonomy_is_mutually_exclusive() -> None:
@@ -148,6 +169,111 @@ def test_provider_fallback_preserves_reasoning_evidence() -> None:
     assert result.final_attempt.normalized_reasoning_status == "confirmed"
     assert result.final_attempt.reasoning_token_count == 23
     assert result.attempts[0].root_cause is RootCause.TIMEOUT
+
+
+@pytest.mark.parametrize(
+    ("attempts", "expected_generated_by", "expected_outcome"),
+    [
+        (
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.INVALID_OUTPUT),
+                _attempt(2, RouteKind.REPAIR, AttemptOutcome.FAILURE, cause=RootCause.INVALID_OUTPUT),
+                _attempt(3, RouteKind.PROVIDER_FALLBACK, AttemptOutcome.SUCCESS),
+            ),
+            DecisionGeneratedBy.PROVIDER_FALLBACK,
+            DecisionOutcome.REPAIRED_SUCCESS,
+        ),
+        (
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.INVALID_OUTPUT),
+                _attempt(2, RouteKind.REPAIR, AttemptOutcome.FAILURE, cause=RootCause.INVALID_OUTPUT),
+                _attempt(3, RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE, cause=RootCause.PROVIDER_ERROR),
+                replace(_attempt(4, RouteKind.RETRY, AttemptOutcome.SUCCESS), provider="backup"),
+            ),
+            DecisionGeneratedBy.PROVIDER_FALLBACK,
+            DecisionOutcome.REPAIRED_SUCCESS,
+        ),
+        (
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.PROVIDER_ERROR),
+                _attempt(2, RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE, cause=RootCause.INVALID_OUTPUT),
+                _attempt(3, RouteKind.REPAIR, AttemptOutcome.SUCCESS),
+            ),
+            DecisionGeneratedBy.REPAIR,
+            DecisionOutcome.REPAIRED_SUCCESS,
+        ),
+        (
+            (
+                _attempt(1, RouteKind.PRIMARY, AttemptOutcome.FAILURE, cause=RootCause.TIMEOUT),
+                _attempt(2, RouteKind.RETRY, AttemptOutcome.SUCCESS),
+            ),
+            DecisionGeneratedBy.MODEL,
+            DecisionOutcome.RETRY_SUCCESS,
+        ),
+    ],
+)
+def test_generated_by_tracks_final_content_source_for_runtime_and_v1(
+    attempts: tuple[AttemptExecutionRecord, ...],
+    expected_generated_by: DecisionGeneratedBy,
+    expected_outcome: DecisionOutcome,
+) -> None:
+    runtime = translate_decision_outcome(attempts)
+    serialized = translate_serialized_decision_outcome(
+        [_serialized_attempt(item) for item in attempts]
+    )
+    normalized = normalize_decision_execution_trace(
+        {"execution_attempts": [_serialized_attempt(item) for item in attempts]}
+    )
+
+    assert runtime.generated_by is expected_generated_by
+    assert serialized.generated_by is expected_generated_by
+    assert normalized["generated_by"] == expected_generated_by.value
+    assert runtime.outcome is expected_outcome
+    assert serialized.outcome is expected_outcome
+
+
+@pytest.mark.parametrize(
+    "ordinal",
+    [
+        True,
+        False,
+        1.0,
+        1.5,
+        0,
+        -1,
+        "",
+        "0",
+        "-1",
+        "+1",
+        "01",
+        " 1",
+        "1 ",
+        "1.0",
+        "１",
+        "١",
+        None,
+    ],
+)
+def test_v1_ordinal_rejects_noncanonical_values(ordinal: object) -> None:
+    attempt = _attempt(1, RouteKind.PRIMARY, AttemptOutcome.SUCCESS)
+    payload = _serialized_attempt(attempt)
+    payload["ordinal"] = ordinal
+
+    with pytest.raises(ValueError, match="ordinal"):
+        translate_serialized_decision_outcome([payload])
+
+
+@pytest.mark.parametrize("ordinal", [1, "1"])
+def test_v1_ordinal_accepts_exact_int_or_canonical_ascii_string(
+    ordinal: int | str,
+) -> None:
+    attempt = _attempt(1, RouteKind.PRIMARY, AttemptOutcome.SUCCESS)
+    payload = _serialized_attempt(attempt)
+    payload["ordinal"] = ordinal
+
+    translated = translate_serialized_decision_outcome([payload])
+
+    assert translated.final_attempt.ordinal == 1
 
 
 def test_illegal_attempt_sequences_are_rejected() -> None:

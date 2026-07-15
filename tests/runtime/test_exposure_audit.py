@@ -3,7 +3,7 @@
 验证运行时模块曝光审计事件的采集、脱敏与决策身份关联。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -252,6 +252,41 @@ def test_action_tool_call_monitor_fail_closes_unsafe_decision_trace_values() -> 
     ]
     assert "werewolf" not in str(row)
     assert "p01" not in str(row)
+
+
+@pytest.mark.parametrize(
+    "malicious_value",
+    [
+        {"generated_by": "nested_private_secret"},
+        ["nested_private_secret", {"terminal_failure_code": "nested_private_secret"}],
+        7,
+        True,
+        None,
+    ],
+)
+def test_action_tool_call_monitor_rejects_non_string_decision_trace_values(
+    malicious_value: object,
+) -> None:
+    collector = ModuleExposureAuditCollector()
+    collector.record_action_tool_call(
+        _identity(),
+        {
+            "tool_call_required": True,
+            "tool_call_received": False,
+            "generated_by": malicious_value,
+            "terminal_failure_code": malicious_value,
+        },
+    )
+
+    row = collector.flush_events()[0].payload["calls"][0]
+
+    assert row["generated_by"] == "unknown"
+    assert row["terminal_failure_code"] == "unknown"
+    assert row["value_sanitization"] == [
+        "generated_by_invalid",
+        "terminal_failure_code_invalid",
+    ]
+    assert "nested_private_secret" not in str(row)
 
 
 def test_collector_records_prompt_injection_rows_without_raw_content() -> None:
