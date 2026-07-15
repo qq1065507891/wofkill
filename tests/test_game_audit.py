@@ -1,9 +1,26 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import subprocess
+import sys
 
 from werewolf_agent.core.models import GameState, GameEvent
 from scripts.print_game_audit import audit_game, find_boundary_violations, render_audit_report
+
+
+def test_print_game_audit_help_supports_direct_script_invocation() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts" / "print_game_audit.py"), "--help"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_render_audit_report_includes_player_raw_output_and_judge_events() -> None:

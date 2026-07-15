@@ -88,6 +88,7 @@ _FACT_VISIBILITY_MAP: dict[str, str] = {
 
 # What each role can see
 _ROLE_VISIBILITY: dict[str, set[str]] = {
+    "moderator": {"public", "moderator_only"},
     "villager": {"public"},
     "seer": {"public", "seer_private"},
     "witch": {"public", "witch_private"},
@@ -112,12 +113,18 @@ _OWNER_PRIVATE_FACT_TYPES: set[str] = {
 _EVENT_VISIBILITY_TO_FACT_VISIBILITY = {
     EventVisibility.PUBLIC.value: "public",
     EventVisibility.MODERATOR_ONLY.value: "moderator_only",
+    EventVisibility.MODERATOR_FULL.value: "moderator_only",
+    EventVisibility.MODERATOR_POSTGAME.value: "moderator_only",
     EventVisibility.WEREWOLF_TEAM_ONLY.value: "wolf_team",
     EventVisibility.SEER_PRIVATE.value: "seer_private",
+    EventVisibility.SEER_ONLY.value: "seer_private",
     EventVisibility.WITCH_PRIVATE.value: "witch_private",
+    EventVisibility.HYBRID_ONLY.value: "hybrid_private",
     EventVisibility.HYBRID_PRIVATE.value: "hybrid_private",
     EventVisibility.ACTOR_PRIVATE.value: "actor_private",
     EventVisibility.ROLE_PRIVATE.value: "role_private",
+    EventVisibility.PRIVATE.value: "actor_private",
+    EventVisibility.PLAYER_ONLY.value: "actor_private",
 }
 
 
@@ -186,8 +193,17 @@ class VisibilityPolicy:
                 )
 
             event_visibility = fact.metadata.get("visibility")
-            if event_visibility in _EVENT_VISIBILITY_TO_FACT_VISIBILITY:
-                mapped = _EVENT_VISIBILITY_TO_FACT_VISIBILITY[event_visibility]
+            if event_visibility is not None:
+                mapped = _EVENT_VISIBILITY_TO_FACT_VISIBILITY.get(event_visibility)
+                if mapped is None:
+                    return FactVisibility(
+                        fact_index=fact_index,
+                        visibility="moderator_only",
+                        audit_reason=(
+                            f"unknown event visibility: {event_visibility}, "
+                            "default moderator_only"
+                        ),
+                    )
                 if mapped != "public":
                     return FactVisibility(
                         fact_index=fact_index,

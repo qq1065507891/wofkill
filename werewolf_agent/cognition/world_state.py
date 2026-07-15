@@ -487,7 +487,11 @@ def _attach_event_metadata(
     metadata.setdefault("source_event", event.type)
     visibility = event_visibility(event)
     metadata.setdefault("visibility", visibility.value)
-    if visibility is EventVisibility.ACTOR_PRIVATE:
+    if visibility in {
+        EventVisibility.ACTOR_PRIVATE,
+        EventVisibility.PRIVATE,
+        EventVisibility.PLAYER_ONLY,
+    }:
         metadata.setdefault(
             "visibility_actor_id",
             event.payload.get("visibility_actor_id") or fact.source_player,

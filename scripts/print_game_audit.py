@@ -14,11 +14,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
-from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
-from werewolf_agent.runtime.event_metadata import deserialize_game_event
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility  # noqa: E402
+from werewolf_agent.runtime.event_metadata import deserialize_game_event  # noqa: E402
 
 
 JUDGE_EVENT_TYPES = {
