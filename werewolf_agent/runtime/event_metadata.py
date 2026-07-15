@@ -107,9 +107,12 @@ def new_game_event(
 
 def serialize_game_event(event: GameEvent) -> dict[str, Any]:
     """把事件转换为 JSON/数据库可用字典。"""
+    payload = dict(event.payload)
+    if event.schema_version == "2" or event.visibility is not None:
+        payload.pop("visibility", None)
     return {
         "type": event.type,
-        "payload": dict(event.payload),
+        "payload": payload,
         "visibility": event.visibility.value if event.visibility is not None else None,
         "event_id": event.event_id,
         "sequence_number": event.sequence_number,

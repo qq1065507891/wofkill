@@ -29,6 +29,7 @@ from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
     compute_acceptance_audit_metrics,
     compute_wolf_plan_outcome_metrics,
 )
+from werewolf_agent.core.models import GameEvent  # noqa: E402
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
 from werewolf_agent.runtime.event_metadata import serialize_game_event  # noqa: E402
 from werewolf_agent.runtime.exposure_audit import (  # noqa: E402
@@ -262,11 +263,22 @@ def _safe_event_payload(event_type: str, payload: dict) -> dict:
             "decision_id": safe_verification["decision_id"],
             "verification": safe_verification,
         })
-    return {
+    safe_payload = {
         "visibility": "moderator_only",
         "player_count": int(payload.get("player_count") or len(safe_entries)),
         "entries": safe_entries,
     }
+    return safe_payload
+
+
+def _serialize_event_for_log(event: GameEvent) -> dict[str, Any]:
+    """复用规范 serializer，并在脱敏后维持 V2 顶层 visibility 权威。"""
+    serialized = serialize_game_event(event)
+    safe_payload = dict(_safe_event_payload(event.type, event.payload))
+    if event.schema_version == "2" or event.visibility is not None:
+        safe_payload.pop("visibility", None)
+    serialized["payload"] = safe_payload
+    return serialized
 
 
 def save_game_log(
@@ -314,10 +326,7 @@ def save_game_log(
             for d in gs.deaths
         ],
         "events": [
-            {
-                **serialize_game_event(e),
-                "payload": _safe_event_payload(e.type, e.payload),
-            }
+            _serialize_event_for_log(e)
             for e in gs.events
         ],
         "elapsed_seconds": round(elapsed, 1),

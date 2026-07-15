@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GameRunner 的跨局记忆恢复和终局快照保存逻辑。
+GameRunner 的跨局记忆恢复、终局快照和 V2 持久化审计事件逻辑。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_memory import GameRunnerMemoryMixin
@@ -16,8 +16,9 @@ import logging
 from copy import deepcopy
 from dataclasses import replace
 
-from werewolf_agent.core.models import GameEvent
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.memory.store import MemoryStore
+from werewolf_agent.runtime.event_metadata import new_game_event
 from werewolf_agent.runtime.reflection_events import canonical_verified_reflections
 
 
@@ -354,15 +355,16 @@ class GameRunnerMemoryMixin:
             and snapshot_read_complete
             and all(entry["persistence_complete"] is True for entry in entries)
         )
-        event = GameEvent(
-            type="reflection_persistence_audit",
+        event = new_game_event(
+            self._state,
+            "reflection_persistence_audit",
             payload={
-                "visibility": "moderator_only",
                 "expected_entry_count": len(expected_entries),
                 "persistence_complete": complete,
                 "rollback_complete": rollback_complete,
                 "entries": entries,
             },
+            visibility=EventVisibility.MODERATOR_ONLY,
         )
         self._state = replace(self._state, events=[*self._state.events, event])
         return complete
@@ -478,8 +480,8 @@ class GameRunnerMemoryMixin:
             event = events[index]
             if event.type != "reflection_persistence_audit":
                 continue
-            events[index] = GameEvent(
-                type=event.type,
+            events[index] = replace(
+                event,
                 payload={**event.payload, "rollback_complete": complete},
             )
             self._state = replace(self._state, events=events)

@@ -113,6 +113,36 @@ def test_event_serializer_round_trips_datetime_and_enum() -> None:
     assert restored == event
 
 
+def test_v2_serializer_removes_conflicting_legacy_payload_visibility() -> None:
+    event = GameEvent(
+        type="speech",
+        payload={"text": "private", "visibility": "public"},
+        visibility=EventVisibility.ACTOR_PRIVATE,
+        event_id="g1:e000000",
+        sequence_number=0,
+        occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        game_id="g1",
+        schema_version="2",
+    )
+
+    serialized = serialize_game_event(event)
+
+    assert serialized["visibility"] == "actor_private"
+    assert serialized["payload"] == {"text": "private"}
+
+
+def test_v1_serializer_preserves_legacy_payload_visibility_for_read_compatibility() -> None:
+    event = GameEvent(
+        type="speech",
+        payload={"text": "legacy", "visibility": "moderator_only"},
+    )
+
+    serialized = serialize_game_event(event)
+
+    assert serialized["visibility"] is None
+    assert serialized["payload"]["visibility"] == "moderator_only"
+
+
 def test_game_event_rejects_naive_occurred_at_in_memory() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         GameEvent(type="invalid", occurred_at=datetime(2026, 7, 15))
@@ -166,3 +196,86 @@ def test_v2_private_visibility_is_used_by_public_share_and_seer_strategy() -> No
 
     assert _event_is_public_for_share(event) is False
     assert public_seer_claimants(GameState(events=[event])) == set()
+
+
+def test_runner_stamps_hitl_events_outside_process_chunk() -> None:
+    from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+
+    class FakeHitl:
+        is_paused = True
+        _pending_command = object()
+
+        def send_command(self, raw: str) -> None:
+            self.raw = raw
+
+        def handle_command(self, command: object, state: GameState) -> dict:
+            return {"game_state": state, "response": "OK"}
+
+        def flush_events(self) -> list[GameEvent]:
+            return [GameEvent(type="hitl_audit")]
+
+    runner = GameRunner(GameRunnerConfig(seed=42, use_agent_registry=False))
+    existing = stamp_new_events(
+        runner.game_id,
+        [],
+        [GameEvent(type="existing")],
+    )[0]
+    runner._state = GameState(game_id=runner.game_id, events=[existing])
+    runner._hitl_interface = FakeHitl()
+
+    runner.send_command("status")
+
+    assert runner.state.events[0] is existing
+    assert runner.state.events[1].event_id == f"{runner.game_id}:e000001"
+    assert runner.state.events[1].sequence_number == 1
+    assert runner.state.events[1].schema_version == "2"
+
+
+def test_runner_stamps_terminal_reflection_audit_continuously() -> None:
+    from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+    from werewolf_agent.storage.memory_store import InMemoryGameRepository
+
+    repository = InMemoryGameRepository()
+    runner = GameRunner(GameRunnerConfig(
+        seed=43,
+        use_agent_registry=False,
+        repository=repository,
+    ))
+    existing = stamp_new_events(
+        runner.game_id,
+        [],
+        [GameEvent(type="existing")],
+    )[0]
+    runner._state = GameState(game_id=runner.game_id, events=[existing])
+
+    runner._append_reflection_persistence_audit([], upstream_complete=False)
+
+    audit = runner.state.events[-1]
+    assert audit.event_id == f"{runner.game_id}:e000001"
+    assert audit.sequence_number == 1
+    assert audit.visibility is EventVisibility.MODERATOR_ONLY
+    assert "visibility" not in audit.payload
+    assert audit.schema_version == "2"
+
+
+def test_runner_rollback_update_preserves_reflection_audit_v2_metadata() -> None:
+    from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+    from werewolf_agent.storage.memory_store import InMemoryGameRepository
+
+    runner = GameRunner(GameRunnerConfig(
+        seed=44,
+        use_agent_registry=False,
+        repository=InMemoryGameRepository(),
+    ))
+    runner._append_reflection_persistence_audit([], upstream_complete=False)
+    before = runner.state.events[-1]
+
+    runner._set_latest_reflection_rollback_status(False)
+
+    after = runner.state.events[-1]
+    assert after.event_id == before.event_id
+    assert after.sequence_number == before.sequence_number
+    assert after.occurred_at == before.occurred_at
+    assert after.visibility == before.visibility
+    assert after.schema_version == "2"
+    assert after.payload["rollback_complete"] is False

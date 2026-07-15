@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 import re
 from typing import Any
 
-from werewolf_agent.core.event_visibility import event_visibility
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
 
 
@@ -463,7 +463,7 @@ def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
         return [_attach_event_metadata(StructuredFact(
             fact_type=event.type,
             value=str(event.payload)[:200],
-        ), event)]
+        ), event, state)]
     # E2 (post-review-v2): seer_check 走特殊路径，seer_id 在 dispatch 入口预计算
     if event.type == "seer_check":
         seer_id = next(
@@ -471,17 +471,33 @@ def extract_facts(event: GameEvent, state: GameState) -> list[StructuredFact]:
             "?",
         )
         return [
-            _attach_event_metadata(fact, event)
+            _attach_event_metadata(fact, event, state)
             for fact in _extract_seer_check(event, seer_id)
         ]
-    return [_attach_event_metadata(fact, event) for fact in extractor(event, state)]
+    return [_attach_event_metadata(fact, event, state) for fact in extractor(event, state)]
 
 
-def _attach_event_metadata(fact: StructuredFact, event: GameEvent) -> StructuredFact:
+def _attach_event_metadata(
+    fact: StructuredFact,
+    event: GameEvent,
+    state: GameState,
+) -> StructuredFact:
     """把来源事件和 visibility 写入事实 metadata，供可见性策略使用。"""
     metadata = dict(fact.metadata)
     metadata.setdefault("source_event", event.type)
-    metadata.setdefault("visibility", event_visibility(event).value)
+    visibility = event_visibility(event)
+    metadata.setdefault("visibility", visibility.value)
+    if visibility is EventVisibility.ACTOR_PRIVATE:
+        metadata.setdefault(
+            "visibility_actor_id",
+            event.payload.get("visibility_actor_id") or fact.source_player,
+        )
+    elif visibility is EventVisibility.ROLE_PRIVATE:
+        source = state.players.get(fact.source_player or "")
+        metadata.setdefault(
+            "visibility_role",
+            event.payload.get("visibility_role") or (source.role if source else None),
+        )
     return replace(fact, metadata=metadata)
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from werewolf_agent.core.models import GameState, GameEvent
-from scripts.print_game_audit import find_boundary_violations, render_audit_report
+from scripts.print_game_audit import audit_game, find_boundary_violations, render_audit_report
 
 
 def test_render_audit_report_includes_player_raw_output_and_judge_events() -> None:
@@ -311,3 +311,20 @@ class TestAuditScript:
         import importlib.util
         spec = importlib.util.spec_from_file_location("print_game_audit", "scripts/print_game_audit.py")
         assert spec is not None
+def test_audit_game_classifies_v2_top_level_private_speech(capsys) -> None:
+    audit_game({"events": [{
+        "type": "speech",
+        "payload": {"speaker": "p01", "text": "private"},
+        "visibility": "actor_private",
+        "event_id": "g1:e000000",
+        "sequence_number": 0,
+        "occurred_at": "2026-07-15T00:00:00+00:00",
+        "game_id": "g1",
+        "trace_id": None,
+        "schema_version": "2",
+    }]})
+
+    output = capsys.readouterr().out
+
+    assert "公开: 0" in output
+    assert "actor_private" in output

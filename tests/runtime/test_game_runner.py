@@ -3,7 +3,7 @@
 验证 GameRunner 编排、终局边界与持久化行为。
 
 作者: Project contributors
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -1469,8 +1469,11 @@ class TestGameRunnerMemoryLifecycle:
             event for event in runner.state.events
             if event.type == "reflection_persistence_audit"
         )
+        from werewolf_agent.core.event_visibility import EventVisibility
+
+        assert audit.visibility is EventVisibility.MODERATOR_ONLY
+        assert audit.schema_version == "2"
         assert audit.payload == {
-            "visibility": "moderator_only",
             "expected_entry_count": 0,
             "persistence_complete": True,
             "rollback_complete": True,

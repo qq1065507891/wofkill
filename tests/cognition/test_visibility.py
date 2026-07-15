@@ -1,4 +1,10 @@
-"""Tests for visibility policy config wiring (post-review C2)."""
+# -*- coding: utf-8 -*-
+"""
+验证认知事实可见性配置与 GameEvent V2 actor/role 私有边界。
+
+作者: Project contributors
+修改日期: 2026-07-15
+"""
 
 from __future__ import annotations
 
@@ -25,3 +31,54 @@ class TestVisibilityConfigWiring:
         assert len(facts) == 0, (
             f"custom config did not override fact_type visibility: {[f.fact_type for f in visible]}"
         )
+
+
+def test_v2_actor_and_role_private_speech_only_reaches_eligible_viewers() -> None:
+    from werewolf_agent.cognition.visibility import VisibilityPolicy
+    from werewolf_agent.cognition.world_state import build_world_state
+    from werewolf_agent.core.event_visibility import EventVisibility
+    from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+
+    state = GameState(
+        players={
+            "p01": PlayerState(id="p01", role="seer"),
+            "p02": PlayerState(id="p02", role="seer"),
+            "p03": PlayerState(id="p03", role="villager"),
+        },
+        events=[
+            GameEvent(
+                type="speech",
+                payload={"speaker": "p01", "text": "actor secret"},
+                visibility=EventVisibility.ACTOR_PRIVATE,
+                schema_version="2",
+            ),
+            GameEvent(
+                type="speech",
+                payload={"speaker": "p01", "text": "role secret"},
+                visibility=EventVisibility.ROLE_PRIVATE,
+                schema_version="2",
+            ),
+        ],
+    )
+    world = build_world_state(state)
+    policy = VisibilityPolicy()
+
+    actor_values = {
+        fact.value
+        for fact in policy.filter_visible_facts(world, "p01", "seer")
+    }
+    same_role_values = {
+        fact.value
+        for fact in policy.filter_visible_facts(world, "p02", "seer")
+    }
+    other_values = {
+        fact.value
+        for fact in policy.filter_visible_facts(world, "p03", "villager")
+    }
+
+    assert "actor secret" in actor_values
+    assert "actor secret" not in same_role_values
+    assert "actor secret" not in other_values
+    assert "role secret" in actor_values
+    assert "role secret" in same_role_values
+    assert "role secret" not in other_values

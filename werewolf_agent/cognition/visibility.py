@@ -5,7 +5,7 @@
 每条私密信息泄露必须可追溯至此处的策略规则。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-10
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from werewolf_agent.cognition.world_state import StructuredFact, StructuredWorldState
+from werewolf_agent.core.event_visibility import EventVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +110,14 @@ _OWNER_PRIVATE_FACT_TYPES: set[str] = {
 }
 
 _EVENT_VISIBILITY_TO_FACT_VISIBILITY = {
-    "public": "public",
-    "moderator_only": "moderator_only",
-    "werewolf_team_only": "wolf_team",
-    "seer_private": "seer_private",
-    "witch_private": "witch_private",
-    "hybrid_private": "hybrid_private",
+    EventVisibility.PUBLIC.value: "public",
+    EventVisibility.MODERATOR_ONLY.value: "moderator_only",
+    EventVisibility.WEREWOLF_TEAM_ONLY.value: "wolf_team",
+    EventVisibility.SEER_PRIVATE.value: "seer_private",
+    EventVisibility.WITCH_PRIVATE.value: "witch_private",
+    EventVisibility.HYBRID_PRIVATE.value: "hybrid_private",
+    EventVisibility.ACTOR_PRIVATE.value: "actor_private",
+    EventVisibility.ROLE_PRIVATE.value: "role_private",
 }
 
 
@@ -241,15 +244,37 @@ class VisibilityPolicy:
             label = self.compute_fact_visibility(fact, idx)
             report.fact_labels.append(label)
 
-            if label.visibility in allowed and self._viewer_owns_private_fact(
+            if self._viewer_can_see_fact(
                 fact,
-                viewer_id,
+                label,
+                viewer_id=viewer_id,
+                viewer_role=viewer_role,
+                allowed=allowed,
             ):
                 report.visible_indices.append(idx)
             else:
                 report.hidden_indices.append(idx)
 
         return report
+
+    @classmethod
+    def _viewer_can_see_fact(
+        cls,
+        fact: StructuredFact,
+        label: FactVisibility,
+        *,
+        viewer_id: str,
+        viewer_role: str,
+        allowed: set[str],
+    ) -> bool:
+        if label.visibility == "actor_private":
+            return bool(viewer_id) and fact.metadata.get("visibility_actor_id") == viewer_id
+        if label.visibility == "role_private":
+            return fact.metadata.get("visibility_role") == viewer_role
+        return label.visibility in allowed and cls._viewer_owns_private_fact(
+            fact,
+            viewer_id,
+        )
 
     @staticmethod
     def _viewer_owns_private_fact(fact: StructuredFact, viewer_id: str) -> bool:

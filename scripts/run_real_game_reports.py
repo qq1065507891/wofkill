@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-13
+修改日期: 2026-07-15
 
 使用示例:
     >>> from scripts.run_real_game_reports import print_quality_audit
@@ -14,6 +14,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 
 
 def reflection_verification_metrics(game_state: Any) -> dict[str, int]:
@@ -72,7 +74,7 @@ def print_game_summary(runner: Any) -> None:
 
     print(f"\n  Events ({len(gs.events)} total, last 30):")
     for event in gs.events[-30:]:
-        visibility = event.payload.get("visibility", "public") if event.payload else ""
+        visibility = event_visibility(event).value
         tag = event.type
         if event.payload:
             if "speech" in event.type:
@@ -365,15 +367,15 @@ def check_leakage(runner: Any) -> None:
     _sep("LEAKAGE CHECK")
     leaks = []
     for event in gs.events:
-        visibility = event.payload.get("visibility", "public") if event.payload else ""
-        if visibility in ("moderator_only", "seer_only", "witch_private", "werewolf_team_only"):
+        visibility = event_visibility(event)
+        if visibility is not EventVisibility.PUBLIC:
             continue
-        if "wolf_kill" in event.type and visibility == "public":
+        if "wolf_kill" in event.type:
             if "wolf_kill_target_id" in event.payload or "target_id" in event.payload:
                 if "wolf_kill" in event.type:
                     pass
-        if event.type == "seer_check" and visibility not in ("seer_only", "moderator_only"):
-            leaks.append(f"Seer check leaked: vis={visibility}")
+        if event.type == "seer_check":
+            leaks.append(f"Seer check leaked: vis={visibility.value}")
 
     if leaks:
         print("  POTENTIAL LEAKS:")

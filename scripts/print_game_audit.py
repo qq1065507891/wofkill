@@ -3,7 +3,7 @@
 将保存的游戏 JSON 渲染为便于人工检查的详细审计报告。
 
 作者: Project contributors
-修改日期: 2026-07-07
+修改日期: 2026-07-15
 
 使用示例:
     python scripts/print_game_audit.py game.json
@@ -16,6 +16,9 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
+from werewolf_agent.runtime.event_metadata import deserialize_game_event
 
 
 JUDGE_EVENT_TYPES = {
@@ -62,17 +65,29 @@ def print_section(title: str, items: list[dict], fields: list[str] | None = None
         print(f"  {i}. {line}")
 
 
+def _record_visibility(record: dict[str, Any]) -> EventVisibility:
+    """把 V1/V2 导出字典还原为事件后复用唯一可见性语义。"""
+    return event_visibility(deserialize_game_event(record))
+
+
 def audit_game(data: dict):
     """Print a structured audit report to stdout."""
     events = data.get("events", [])
 
     # Separate by type
     judge_broadcasts = [e for e in events if e.get("type") == "judge_broadcast"]
-    public_speeches = [e for e in events if e.get("type") == "speech" and e.get("payload", {}).get("visibility", "public") != "werewolf_team_only"]
+    public_speeches = [
+        e for e in events
+        if e.get("type") == "speech"
+        and _record_visibility(e) is EventVisibility.PUBLIC
+    ]
     wolf_chat = [e for e in events if e.get("type") == "wolf_discussion"]
     wolf_plans = [e for e in events if e.get("type") == "wolf_team_plan"]
     votes = [e for e in events if e.get("type") in ("vote_resolved", "vote")]
-    private_actions = [e for e in events if e.get("payload", {}).get("visibility") in ("moderator_only", "witch_private", "seer_only")]
+    private_actions = [
+        e for e in events
+        if _record_visibility(e) is not EventVisibility.PUBLIC
+    ]
     traces = [e for e in events if e.get("type") == "action_trace_audit"]
     fallbacks = [e for e in events if "fallback" in str(e.get("payload", {}).get("action_trace", ""))]
 

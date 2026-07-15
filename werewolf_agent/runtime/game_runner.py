@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GameRunner 兼容入口，负责组合配置、初始化、执行和记忆 mixin。
+GameRunner 兼容入口，负责组合配置、初始化、执行、HITL 事件盖章和记忆 mixin。
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 
 使用示例:
     >>> runner = GameRunner(GameRunnerConfig(seed=42))
@@ -32,6 +32,7 @@ from werewolf_agent.runtime.agent_adapter import SimpleAgentRegistry
 from werewolf_agent.runtime.cognition_state import CognitionStateManager
 from werewolf_agent.runtime.game_runner_config import GameRunnerConfig
 from werewolf_agent.runtime.game_runner_execution import GameRunnerExecutionMixin
+from werewolf_agent.runtime.event_metadata import stamp_new_events
 from werewolf_agent.runtime.game_runner_memory import GameRunnerMemoryMixin
 from werewolf_agent.runtime.game_runner_setup import GameRunnerSetupMixin
 from werewolf_agent.runtime.graph import RuntimeState, build_game_graph
@@ -160,12 +161,21 @@ class GameRunner(
             cmd = self._hitl_interface._pending_command
             if cmd is None:
                 cmd = HITLCommand.parse(raw)
+            previous_events = self._state.events
             result = self._hitl_interface.handle_command(cmd, self._state)
             if "game_state" in result:
                 self._state = result["game_state"]
             hitl_events = self._hitl_interface.flush_events()
             if hitl_events:
                 self._state = replace(self._state, events=self._state.events + hitl_events)
+            self._state = replace(
+                self._state,
+                events=stamp_new_events(
+                    self._state.game_id,
+                    previous_events,
+                    self._state.events,
+                ),
+            )
             return result.get("response", "OK")
         return f"命令已排队: {raw}"
 

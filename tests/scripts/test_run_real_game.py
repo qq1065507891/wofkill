@@ -474,6 +474,86 @@ def test_save_game_log_exports_complete_safe_v2_event_metadata(tmp_path) -> None
     }
 
 
+def test_save_game_log_drops_reflection_payload_visibility_for_v2(tmp_path) -> None:
+    from datetime import datetime, timezone
+
+    from scripts import run_real_game
+    from werewolf_agent.core.event_visibility import EventVisibility
+
+    event = GameEvent(
+        type="reflection_complete",
+        payload={
+            "visibility": "public",
+            "entries": [{
+                "player_id": "p01",
+                "decision_id": "reflection:g1:p01",
+                "verification": {"status": "verified"},
+            }],
+        },
+        visibility=EventVisibility.MODERATOR_ONLY,
+        event_id="g1:e000000",
+        sequence_number=0,
+        occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        game_id="g1",
+        schema_version="2",
+    )
+    runner = SimpleNamespace(
+        game_id="g1",
+        state=GameState(game_id="g1", events=[event]),
+        step_count=1,
+    )
+
+    path = run_real_game.save_game_log(runner, 0.1, output_dir=tmp_path)
+    exported = json.loads(path.read_text(encoding="utf-8"))["events"][0]
+
+    assert exported["visibility"] == "moderator_only"
+    assert "visibility" not in exported["payload"]
+
+
+def test_save_game_log_keeps_v1_reflection_private_by_legacy_payload(tmp_path) -> None:
+    from scripts import run_real_game
+
+    event = GameEvent(
+        type="reflection_complete",
+        payload={"entries": []},
+    )
+    runner = SimpleNamespace(
+        game_id="g1",
+        state=GameState(game_id="g1", events=[event]),
+        step_count=1,
+    )
+
+    path = run_real_game.save_game_log(runner, 0.1, output_dir=tmp_path)
+    exported = json.loads(path.read_text(encoding="utf-8"))["events"][0]
+
+    assert exported["visibility"] is None
+    assert exported["payload"]["visibility"] == "moderator_only"
+
+
+def test_reports_classify_v2_private_event_from_top_level_visibility(capsys) -> None:
+    from scripts.run_real_game_reports import check_leakage, print_game_summary
+    from werewolf_agent.core.event_visibility import EventVisibility
+
+    runner = SimpleNamespace(
+        state=GameState(game_id="g-report", events=[GameEvent(
+            type="seer_check",
+            payload={"seer_id": "p01", "target_id": "p02", "alignment": "wolf"},
+            visibility=EventVisibility.SEER_PRIVATE,
+            schema_version="2",
+        )]),
+        step_count=1,
+    )
+
+    print_game_summary(runner)
+    summary = capsys.readouterr().out
+    check_leakage(runner)
+    leakage = capsys.readouterr().out
+
+    assert "[seer_private]" in summary
+    assert "Seer check leaked" not in leakage
+    assert "No public-state information leaks detected." in leakage
+
+
 def test_real_game_parser_accepts_output_directory(tmp_path) -> None:
     from scripts import run_real_game
 

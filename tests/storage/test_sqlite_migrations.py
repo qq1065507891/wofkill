@@ -1,14 +1,9 @@
-"""SQLite schema/migration consistency tests.
+# -*- coding: utf-8 -*-
+"""
+验证 SQLite fresh schema、版本迁移与 repository 自动升级的一致性。
 
-Catches drift between:
-* ``werewolf_agent.storage.sqlite_store._SCHEMA`` — the legacy
-  executescript path used by ``SqliteGameRepository.__init__``
-* ``werewolf_agent.storage.migrations.MIGRATIONS[version=1]`` — the
-  versioned migration applied by ``MigrationManager.apply_all``
-
-Both must declare the same set of user tables so a database created
-by one path is interoperable with the other (and a future migration
-v2 can rely on the v1 baseline regardless of entry point).
+作者: Project contributors
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -44,3 +39,51 @@ def test_fresh_sqlite_schema_includes_nullable_event_json() -> None:
     events_table = _SCHEMA.split("CREATE TABLE IF NOT EXISTS events", 1)[1].split(");", 1)[0]
     assert "event_json TEXT" in events_table
     assert "event_json TEXT NOT NULL" not in events_table
+
+
+def test_repository_upgrades_legacy_events_table_and_round_trips_v2(tmp_path) -> None:
+    import sqlite3
+
+    from werewolf_agent.core.models import GameEvent
+    from werewolf_agent.runtime.event_metadata import stamp_new_events
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE games (
+            game_id TEXT PRIMARY KEY,
+            state_json TEXT NOT NULL
+        );
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
+        INSERT INTO games (game_id, state_json) VALUES ('g1', '{}');
+        INSERT INTO events (game_id, seq, event_type, payload_json)
+        VALUES ('g1', 1, 'legacy', '{"visibility":"moderator_only"}');
+    """)
+    conn.close()
+
+    repository = SqliteGameRepository(str(db_path))
+    legacy = repository.load_events("g1")[0]
+    current = stamp_new_events(
+        "g1",
+        [legacy],
+        [legacy, GameEvent(type="current")],
+    )[1]
+    repository.append_events("g1", [current])
+    loaded = repository.load_events("g1")
+
+    assert legacy.schema_version is None
+    assert legacy.payload["visibility"] == "moderator_only"
+    assert loaded[-1] == current
+    columns = {
+        row[1]
+        for row in repository._conn.execute("PRAGMA table_info(events)").fetchall()
+    }
+    assert "event_json" in columns
+    repository.close()

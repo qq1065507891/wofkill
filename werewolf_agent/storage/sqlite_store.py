@@ -120,6 +120,20 @@ CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id);
 
 
 
+def _ensure_event_schema_v2(conn: sqlite3.Connection) -> None:
+    """为旧 repository 数据库补齐 nullable event_json，并记录版本。"""
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(events)").fetchall()
+    }
+    if "event_json" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN event_json TEXT")
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)",
+        (2, "Add nullable GameEvent V2 JSON storage"),
+    )
+
+
 class SqliteGameRepository:
     """SQLite implementation of GameRepository."""
 
@@ -130,6 +144,7 @@ class SqliteGameRepository:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
+        _ensure_event_schema_v2(self._conn)
         self._conn.commit()
 
     def close(self) -> None:
