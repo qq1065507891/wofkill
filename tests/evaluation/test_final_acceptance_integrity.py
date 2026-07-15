@@ -139,7 +139,7 @@ def test_power_evidence_denominator_comes_from_real_damage_and_missing_trace_fai
             "alternative_target": "p03",
         },
     }
-    game = {"players": {
+    game = {"game_id": "g-power-evidence", "players": {
         "p01": {"role": "hunter"}, "p02": {"role": "werewolf"},
         "p03": {"role": "villager"},
     }, "deaths": [
@@ -484,6 +484,12 @@ def test_power_damage_sources_must_match_before_evidence_can_pass() -> None:
         },
     }
     game = {
+        "game_id": "g-power-source-reconcile",
+        "players": {
+            "p01": {"role": "hunter"},
+            "p02": {"role": "werewolf"},
+            "p03": {"role": "villager"},
+        },
         "deaths": [{
             "player_id": "p02", "reason": "hunter_shot", "source_player_id": "p01",
         }],

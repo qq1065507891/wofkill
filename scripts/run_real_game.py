@@ -30,7 +30,10 @@ from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
     compute_wolf_plan_outcome_metrics,
 )
 from werewolf_agent.core.models import GameEvent  # noqa: E402
-from werewolf_agent.core.resolution_batches import serialize_resolution_batch  # noqa: E402
+from werewolf_agent.evaluation.game_projection import (  # noqa: E402
+    AcceptanceGameProjection,
+    project_acceptance_game,
+)
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
 from werewolf_agent.runtime.event_metadata import serialize_game_event  # noqa: E402
 from werewolf_agent.runtime.exposure_audit import (  # noqa: E402
@@ -78,37 +81,42 @@ def _format_api_key_status(api_key: str) -> str:
 
 
 # 保存游戏日志和质量指标。
-def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
-    """Compute structured quality metrics for a completed game."""
-    gs = runner.state
-    reflection_metrics = reflection_verification_metrics(gs)
-    traces = [e for e in gs.events if e.type == "action_trace_audit"]
+def compute_game_quality_score(
+    source: GameRunner | AcceptanceGameProjection,
+) -> dict[str, Any]:
+    """从固定游戏投影计算可在线保存、离线复算的结构化质量指标。"""
+    projection = project_acceptance_game(
+        source.state if hasattr(source, "state") else source,
+        steps=getattr(source, "step_count", None),
+    )
+    events = [
+        GameEvent(type=str(event.get("type") or ""), payload=dict(event.get("payload") or {}))
+        for event in projection.events
+    ]
+    reflection_metrics = reflection_verification_metrics(
+        type("QualityState", (), {"events": events})()
+    )
+    traces = [e for e in events if e.type == "action_trace_audit"]
     action_fallback_traces = [
         e.payload.get("action_trace", {}) for e in traces
         if e.payload.get("action_trace", {}).get("fallback_reason")
     ]
     wolf_plan_fallbacks = [
-        e for e in gs.events if e.type == "wolf_team_plan_fallback"
+        e for e in events if e.type == "wolf_team_plan_fallback"
     ]
     action_fallback_count = sum(
         1 for e in traces
         if e.payload.get("action_trace", {}).get("fallback_reason")
     )
     wolf_plan_outcomes = compute_wolf_plan_outcome_metrics([{
-        "game_id": gs.game_id,
+        "game_id": projection.game_id,
         "events": [
             {"type": event.type, "payload": event.payload}
-            for event in gs.events
+            for event in events
             if event.type in {"wolf_team_plan", "wolf_team_plan_fallback"}
         ]
     }])
-    acceptance_metrics = compute_acceptance_audit_metrics([{
-        "game_id": gs.game_id,
-        "events": [
-            {"type": event.type, "payload": event.payload}
-            for event in gs.events
-        ],
-    }])
+    acceptance_metrics = compute_acceptance_audit_metrics([projection])
     wolf_plan_fallback_count = wolf_plan_outcomes[
         "wolf_team_plan_terminal_fallback_count"
     ]
@@ -121,11 +129,32 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     total_quality_events = total + wolf_plan_attempts
     fallback_count = action_fallback_count + wolf_plan_fallback_count
     fallback_rate = fallback_count / total_quality_events if total_quality_events > 0 else 0.0
-    speeches = [e for e in gs.events if e.type == "speech"]
+    speeches = [e for e in events if e.type == "speech"]
     non_empty_speeches = sum(1 for e in speeches if e.payload.get("text", "").strip())
     speech_rate = non_empty_speeches / len(speeches) if speeches else 0.0
-    phases_seen = {e.payload.get("phase") for e in gs.events if e.type == "judge_broadcast"}
-    has_winner = bool(gs.winning_faction)
+    speech_traces = [
+        e.payload.get("action_trace") or {}
+        for e in traces
+        if (e.payload.get("task_type") or e.payload.get("phase"))
+        in {"speech", "sheriff_speech", "pk_speech"}
+    ]
+    speech_trace_count = len(speech_traces)
+    speech_model_success_count = sum(
+        trace.get("generated_by") in {"model", "repair", "provider_fallback"}
+        and trace.get("decision_outcome") != "terminal_fallback"
+        for trace in speech_traces
+    )
+    speech_terminal_fallback_count = sum(
+        trace.get("generated_by") == "terminal_fallback"
+        or trace.get("decision_outcome") == "terminal_fallback"
+        for trace in speech_traces
+    )
+    speech_semantic_acceptance_count = sum(
+        (trace.get("semantic_repair_audit") or {}).get("success") is True
+        for trace in speech_traces
+    )
+    phases_seen = {e.payload.get("phase") for e in events if e.type == "judge_broadcast"}
+    has_winner = bool(projection.winning_faction)
     action_fallback_by_error_code = Counter(
         trace.get("retry", {}).get("error_code") or "unknown"
         for trace in action_fallback_traces
@@ -158,7 +187,7 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
     return {
         **reflection_metrics,
         "persona_prompt_confirmation": summarize_persona_prompt_confirmation(
-            list(gs.events)
+            events
         ),
         "fallback_rate": round(fallback_rate, 3),
         "fallback_count": fallback_count,
@@ -181,10 +210,24 @@ def compute_game_quality_score(runner: GameRunner) -> dict[str, Any]:
         "total_quality_events": total_quality_events,
         "speech_count": len(speeches),
         "non_empty_speech_count": non_empty_speeches,
+        "speech_non_empty_rate": round(speech_rate, 3),
+        "speech_model_success_rate": (
+            round(speech_model_success_count / speech_trace_count, 3)
+            if speech_trace_count else None
+        ),
+        "speech_terminal_fallback_rate": (
+            round(speech_terminal_fallback_count / speech_trace_count, 3)
+            if speech_trace_count else None
+        ),
+        "speech_semantic_acceptance_rate": (
+            round(speech_semantic_acceptance_count / speech_trace_count, 3)
+            if speech_trace_count else None
+        ),
+        # V1 只读兼容别名；新写消费者应使用 speech_non_empty_rate。
         "speech_fill_rate": round(speech_rate, 3),
         "phases_seen": len(phases_seen),
         "has_winner": has_winner,
-        "steps": runner.step_count,
+        "steps": projection.steps,
     }
 
 
@@ -283,15 +326,29 @@ def _serialize_event_for_log(event: GameEvent) -> dict[str, Any]:
     return serialized
 
 
+def _serialize_projected_event_for_log(event: dict[str, Any]) -> dict[str, Any]:
+    """仅从固定投影生成脱敏日志事件，不回读可变 runner 状态。"""
+    serialized = dict(event)
+    safe_payload = dict(_safe_event_payload(
+        str(serialized.get("type") or ""),
+        dict(serialized.get("payload") or {}),
+    ))
+    if serialized.get("schema_version") == "2" or serialized.get("visibility") is not None:
+        safe_payload.pop("visibility", None)
+    serialized["payload"] = safe_payload
+    return serialized
+
+
 def save_game_log(
     runner: GameRunner,
     elapsed: float,
     *,
+    projection: AcceptanceGameProjection,
+    quality_score: dict[str, Any],
     output_dir: str | Path | None = None,
 ) -> Path:
     """保存单局 JSON；显式目录用于隔离批量验收产物。"""
-    gs = runner.state
-    quality = compute_game_quality_score(runner)
+    quality = quality_score
     is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_quality_events"] > 5
     artifact_root = Path(output_dir) if output_dir is not None else ROOT
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -308,39 +365,47 @@ def save_game_log(
         log_path = artifact_root / f"game_{runner.game_id}.json"
 
     log_data = {
-        "game_id": gs.game_id,
-        "winning_faction": gs.winning_faction,
-        "phase": gs.phase,
-        "day_number": gs.day_number,
-        "night_number": gs.night_number,
-        **_final_hybrid_fields(gs),
-        "players": {pid: {"role": p.role, "alive": p.alive} for pid, p in gs.players.items()},
-        "deaths": [
-            {
-                "player_id": d.player_id,
-                "reason": d.reason,
-                "timing": d.timing,
-                "resolution_batch": serialize_resolution_batch(d.resolution_batch)[0],
-                "resolution_batch_parse_failed": bool(
-                    d.resolution_batch_parse_failed
-                    or serialize_resolution_batch(d.resolution_batch)[1]
-                ),
-                "source_player_id": d.source_player_id,
-                "can_leave_last_words": d.can_leave_last_words,
-                "triggered_skills": list(d.triggered_skills),
-            }
-            for d in gs.deaths
-        ],
+        "game_id": projection.game_id,
+        "winning_faction": projection.winning_faction,
+        "status": projection.status,
+        "termination_reason": projection.termination_reason,
+        "phase": projection.metadata.get("phase"),
+        "day_number": projection.metadata.get("day_number", 0),
+        "night_number": projection.metadata.get("night_number", 0),
+        "hybrid_master_id": projection.metadata.get("hybrid_master_id"),
+        "hybrid_master_faction": projection.metadata.get("hybrid_master_faction"),
+        "hybrid_result": projection.metadata.get("hybrid_result"),
+        "players": projection.players,
+        "deaths": list(projection.deaths),
         "events": [
-            _serialize_event_for_log(e)
-            for e in gs.events
+            _serialize_projected_event_for_log(event)
+            for event in projection.events
         ],
         "elapsed_seconds": round(elapsed, 1),
-        "steps": runner.step_count,
+        "steps": projection.steps,
         "quality_score": quality,
     }
     log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
     return log_path
+
+
+def finalize_game_log(
+    runner: GameRunner,
+    elapsed: float,
+    *,
+    output_dir: str | Path | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """在赛后反思与持久化审计完成后固定投影、评分一次并保存。"""
+    projection = project_acceptance_game(runner.state, steps=runner.step_count)
+    quality = compute_game_quality_score(projection)
+    path = save_game_log(
+        runner,
+        elapsed,
+        projection=projection,
+        quality_score=quality,
+        output_dir=output_dir,
+    )
+    return path, quality
 
 
 # ── main ─────────────────────────────────────────────────────────────────
@@ -492,7 +557,11 @@ def main() -> None:
     print_quality_audit(runner)
     check_leakage(runner)
 
-    quality = compute_game_quality_score(runner)
+    log_path, quality = finalize_game_log(
+        runner,
+        elapsed,
+        output_dir=args.output_dir,
+    )
     gs = runner.state
     logger.info(
         "GAME_COMPLETE winner=%s day=%d night=%d steps=%d elapsed=%.1f fallback_rate=%.3f",
@@ -500,7 +569,6 @@ def main() -> None:
         runner.step_count, elapsed, quality["fallback_rate"],
     )
 
-    log_path = save_game_log(runner, elapsed, output_dir=args.output_dir)
     print(f"\n  Game log: {log_path}")
 
     # Also generate audit markdown if script exists

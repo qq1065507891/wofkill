@@ -18,6 +18,71 @@ from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 
 
+def _save_game_log(run_real_game, runner, elapsed, **kwargs):
+    """测试新写链路：先固定最终投影和质量，再交给纯保存函数。"""
+    projection = run_real_game.project_acceptance_game(
+        runner.state,
+        steps=runner.step_count,
+    )
+    quality_score = kwargs.pop("quality_score", None)
+    if quality_score is None:
+        quality_score = run_real_game.compute_game_quality_score(projection)
+    return run_real_game.save_game_log(
+        runner,
+        elapsed,
+        projection=projection,
+        quality_score=quality_score,
+        **kwargs,
+    )
+
+
+def test_finalize_game_log_projects_after_persistence_audit_and_scores_once(
+    monkeypatch,
+) -> None:
+    from scripts import run_real_game
+
+    runner = SimpleNamespace(
+        game_id="g-final-order",
+        state=GameState(
+            game_id="g-final-order",
+            players={"p01": PlayerState(id="p01", role="villager")},
+            events=[GameEvent(type="reflection_persistence_audit", payload={})],
+        ),
+        step_count=3,
+    )
+    calls: list[str] = []
+    expected_projection = object()
+    quality = {"fallback_rate": 0.0, "total_quality_events": 0}
+
+    def project(state, *, steps):
+        assert state.events[-1].type == "reflection_persistence_audit"
+        assert steps == 3
+        calls.append("project")
+        return expected_projection
+
+    def compute(value):
+        assert value is expected_projection
+        calls.append("compute")
+        return quality
+
+    def save(_runner, _elapsed, *, projection, quality_score, output_dir):
+        assert projection is expected_projection
+        assert quality_score is quality
+        assert output_dir is None
+        calls.append("save")
+        return "game.json"
+
+    monkeypatch.setattr(run_real_game, "project_acceptance_game", project)
+    monkeypatch.setattr(run_real_game, "compute_game_quality_score", compute)
+    monkeypatch.setattr(run_real_game, "save_game_log", save)
+
+    path, returned_quality = run_real_game.finalize_game_log(runner, 1.0)
+
+    assert path == "game.json"
+    assert returned_quality is quality
+    assert calls == ["project", "compute", "save"]
+
+
 def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately() -> None:
     from scripts import run_real_game
 
@@ -416,7 +481,7 @@ def test_save_game_log_exports_complete_death_fields(tmp_path, monkeypatch) -> N
     runner = SimpleNamespace(game_id="g_export", state=gs, step_count=1)
     monkeypatch.setattr(run_real_game, "ROOT", tmp_path)
 
-    path = run_real_game.save_game_log(runner, elapsed=1.2)
+    path = _save_game_log(run_real_game, runner, elapsed=1.2)
     data = json.loads(path.read_text(encoding="utf-8"))
 
     assert data["deaths"] == [
@@ -456,7 +521,8 @@ def test_save_game_log_exports_complete_safe_v2_event_metadata(tmp_path) -> None
         step_count=1,
     )
 
-    path = run_real_game.save_game_log(
+    path = _save_game_log(
+        run_real_game,
         runner,
         elapsed=0.1,
         output_dir=tmp_path,
@@ -518,7 +584,7 @@ def test_save_game_log_handles_nested_resolution_batches(tmp_path) -> None:
         step_count=1,
     )
 
-    path = run_real_game.save_game_log(runner, 0.1, output_dir=tmp_path)
+    path = _save_game_log(run_real_game, runner, 0.1, output_dir=tmp_path)
     exported = json.loads(path.read_text(encoding="utf-8"))["events"][0]
 
     assert exported["payload"] == {
@@ -560,7 +626,7 @@ def test_save_game_log_drops_reflection_payload_visibility_for_v2(tmp_path) -> N
         step_count=1,
     )
 
-    path = run_real_game.save_game_log(runner, 0.1, output_dir=tmp_path)
+    path = _save_game_log(run_real_game, runner, 0.1, output_dir=tmp_path)
     exported = json.loads(path.read_text(encoding="utf-8"))["events"][0]
 
     assert exported["visibility"] == "moderator_only"
@@ -580,7 +646,7 @@ def test_save_game_log_keeps_v1_reflection_private_by_legacy_payload(tmp_path) -
         step_count=1,
     )
 
-    path = run_real_game.save_game_log(runner, 0.1, output_dir=tmp_path)
+    path = _save_game_log(run_real_game, runner, 0.1, output_dir=tmp_path)
     exported = json.loads(path.read_text(encoding="utf-8"))["events"][0]
 
     assert exported["visibility"] is None
@@ -691,7 +757,9 @@ def test_save_game_log_uses_explicit_output_directory(tmp_path) -> None:
     )
     output_dir = tmp_path / "artifact"
 
-    path = run_real_game.save_game_log(runner, elapsed=0.1, output_dir=output_dir)
+    path = _save_game_log(
+        run_real_game, runner, elapsed=0.1, output_dir=output_dir
+    )
 
     assert path == output_dir / "game_g_isolated.json"
     assert path.exists()
@@ -707,13 +775,19 @@ def test_low_quality_game_stays_under_explicit_output_directory(
         state=GameState(game_id="g_low"),
         step_count=1,
     )
-    monkeypatch.setattr(run_real_game, "compute_game_quality_score", lambda _runner: {
+    quality_score = {
         "fallback_rate": 1.0,
         "total_quality_events": 6,
-    })
+    }
     output_dir = tmp_path / "artifact"
 
-    path = run_real_game.save_game_log(runner, elapsed=0.1, output_dir=output_dir)
+    path = _save_game_log(
+        run_real_game,
+        runner,
+        elapsed=0.1,
+        output_dir=output_dir,
+        quality_score=quality_score,
+    )
 
     assert path == output_dir / "low_quality_games" / "game_g_low.json"
     assert path.exists()
@@ -880,7 +954,7 @@ def test_save_game_log_exports_hybrid_fields_from_victory_event(tmp_path, monkey
     runner = SimpleNamespace(game_id="g_hybrid_export", state=gs, step_count=1)
     monkeypatch.setattr(run_real_game, "ROOT", tmp_path)
 
-    path = run_real_game.save_game_log(runner, elapsed=1.2)
+    path = _save_game_log(run_real_game, runner, elapsed=1.2)
     data = json.loads(path.read_text(encoding="utf-8"))
 
     assert data["hybrid_master_id"] == "p01"

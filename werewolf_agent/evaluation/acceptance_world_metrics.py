@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -11,6 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 from werewolf_agent.evaluation.acceptance_shared import _game_player_roles
+from werewolf_agent.evaluation.game_projection import (
+    normalize_acceptance_games,
+    projection_support,
+)
 from werewolf_agent.evaluation.world_evidence_audit import (
     _current_game_public_evidence_refs,
     _public_assignment_support_before,
@@ -23,6 +28,8 @@ def compute_world_acceptance_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """扫描世界模型审计并投影其验收指标。"""
+    games = normalize_acceptance_games(games)
+    projection_is_supported, _ = projection_support(games)
     world_groups: list[
         tuple[
             list[dict[str, Any]],
@@ -80,15 +87,17 @@ def compute_world_acceptance_metrics(
         for world in group
     )
     return {
-        "possible_world_metrics_supported": world_count > 0,
+        "possible_world_metrics_supported": projection_is_supported and world_count > 0,
         "possible_world_prompt_count": len(world_groups),
         "possible_world_total_count": world_count,
         "possible_world_unique_count": unique_world_count,
         "possible_world_unique_rate": (
-            unique_world_count / world_count if world_count else None
+            unique_world_count / world_count
+            if projection_is_supported and world_count else None
         ),
         "possible_world_evidence_covered_count": evidence_covered,
         "possible_world_evidence_coverage_rate": (
-            evidence_covered / world_count if world_count else None
+            evidence_covered / world_count
+            if projection_is_supported and world_count else None
         ),
     }

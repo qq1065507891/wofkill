@@ -752,8 +752,9 @@ def test_report_exports_threshold_support_metrics() -> None:
     assert report["persona_exposure_linkage_rate"] is None
     assert report["critical_task_reasoning_status_metrics_supported"] is False
     assert report["critical_task_reasoning_status_explicit_rate"] is None
-    assert report["reflection_contamination_metrics_supported"] is True
-    assert report["reflection_persisted_rejected_fact_count"] == 0
+    assert report["reflection_contamination_metrics_supported"] is False
+    assert report["reflection_persisted_rejected_fact_count"] is None
+    assert report["acceptance_projection_unsupported_reason"] == "missing_game_id"
 
 
 def test_semantic_and_reflection_metrics_fail_closed_when_source_fields_missing() -> None:
@@ -922,7 +923,10 @@ def test_possible_world_evidence_rejects_unknown_cross_game_and_private_refs() -
         {"label": "cross", "key_assignments": {"p04": "werewolf"}, "why": ["claim:g2:0"]},
         {"label": "private", "key_assignments": {"p05": "werewolf"}, "why": ["claim:g1:1"]},
     ]
-    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    metrics = compute_acceptance_audit_metrics([{
+        "game_id": "g1",
+        "players": {f"p0{i}": {"role": "villager"} for i in range(1, 7)},
+        "events": [
         {"type": "speech", "payload": {
             "speaker": "p02", "text": "我是狼人。",
             "claims": [{"type": "role", "value": "werewolf"}],
@@ -947,7 +951,10 @@ def test_possible_world_evidence_rejects_unknown_cross_game_and_private_refs() -
 def test_possible_world_evidence_rejects_public_suspicion_as_assignment_support() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
 
-    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    metrics = compute_acceptance_audit_metrics([{
+        "game_id": "g1",
+        "players": {"p01": {"role": "villager"}, "p02": {"role": "werewolf"}},
+        "events": [
         {"type": "speech", "payload": {
             "speaker": "p01", "text": "我怀疑p02，他的发言很可疑。",
         }},
@@ -971,7 +978,10 @@ def test_possible_world_hybrid_assignment_requires_exact_role_support() -> None:
     """未知或 hybrid 角色不能借笼统 good faction 声明获得证据覆盖。"""
     from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
 
-    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    metrics = compute_acceptance_audit_metrics([{
+        "game_id": "g1",
+        "players": {"p02": {"role": "hybrid"}},
+        "events": [
         {"type": "speech", "payload": {
             "speaker": "p02", "text": "我是好人。",
             "claims": [{"type": "faction", "value": "good"}],
@@ -1011,7 +1021,10 @@ def test_world_support_maps_faction_only_for_explicit_fixed_roles() -> None:
 def test_possible_world_evidence_fails_closed_without_authoritative_index() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
 
-    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    metrics = compute_acceptance_audit_metrics([{
+        "game_id": "g1",
+        "players": {"p01": {"role": "villager"}, "p02": {"role": "werewolf"}},
+        "events": [
         {"type": "speech", "payload": {"speaker": "p01", "text": "我怀疑p02。"}},
         {"type": "action_trace_audit", "payload": {"action_trace": {
             "world_model_audit": {"possible_worlds": {"top_worlds": [{
@@ -1087,6 +1100,8 @@ def test_power_role_evidence_requires_explicit_legal_alternative_target() -> Non
         "player_id": "p02", "reason": "hunter_shot",
     }} for _ in trace_events]
     metrics = compute_acceptance_audit_metrics([{
+        "game_id": "g-power-alternatives",
+        "players": {"p01": {"role": "hunter"}, "p02": {"role": "werewolf"}},
         "deaths": [{
             "player_id": "p02", "reason": "hunter_shot",
         } for _ in trace_events],
@@ -1143,6 +1158,8 @@ def test_power_role_evidence_rejects_empty_or_partial_nested_objects() -> None:
         "player_id": "p02", "reason": "witch_poison",
     }} for _ in rows]
     metrics = compute_acceptance_audit_metrics([{
+        "game_id": "g-power-nested",
+        "players": {"p01": {"role": "witch"}, "p02": {"role": "werewolf"}},
         "deaths": [{
             "player_id": "p02", "reason": "witch_poison",
         } for _ in rows],
@@ -1200,8 +1217,9 @@ def test_reflection_empty_transaction_is_supported_when_explicit() -> None:
     metrics = compute_acceptance_audit_metrics([game])
 
     assert metrics["reflection_audited_game_count"] == 1
-    assert metrics["reflection_contamination_metrics_supported"] is True
-    assert metrics["reflection_persisted_rejected_fact_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+    assert metrics["acceptance_projection_unsupported_reason"] == "missing_players"
+    assert metrics["reflection_persisted_rejected_fact_count"] is None
 
 
 def test_semantic_fallback_metric_requires_structured_fallback_kind() -> None:

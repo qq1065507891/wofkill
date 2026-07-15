@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -11,11 +12,18 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from werewolf_agent.evaluation.game_projection import (
+    normalize_acceptance_games,
+    projection_support,
+)
+
 
 def compute_power_acceptance_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """对账伤害事实与动作轨迹并投影神职证据指标。"""
+    games = normalize_acceptance_games(games)
+    projection_is_supported, _ = projection_support(games)
     power_decisions: list[dict[str, Any]] = []
     for game in games:
         power_trace_candidates: list[tuple[str, str | None, str, dict[str, Any]]] = []
@@ -92,11 +100,14 @@ def compute_power_acceptance_metrics(
     )
     power_count = len(power_decisions)
     return {
-        "power_role_evidence_metrics_supported": power_count > 0,
+        "power_role_evidence_metrics_supported": (
+            projection_is_supported and power_count > 0
+        ),
         "power_role_damage_decision_count": power_count,
         "power_role_evidence_complete_count": complete_power_decisions,
         "power_role_evidence_completeness_rate": (
-            complete_power_decisions / power_count if power_count else None
+            complete_power_decisions / power_count
+            if projection_is_supported and power_count else None
         ),
     }
 

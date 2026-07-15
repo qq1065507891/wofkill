@@ -3,7 +3,7 @@
 功能描述：消费已保存的 JSON 对局和强类型运行时审计，汇总平衡与验收指标。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -36,6 +36,7 @@ from werewolf_agent.evaluation.decision_execution_audit import (
     _trace_task as _trace_task,
     compute_decision_execution_metrics,  # noqa: F401
 )
+from werewolf_agent.evaluation.game_projection import normalize_acceptance_games
 from werewolf_agent.evaluation.world_evidence_audit import (
     support_matches_world as _support_matches_world,  # noqa: F401
 )
@@ -62,6 +63,7 @@ def load_game_logs(paths: Iterable[str | Path]) -> list[dict[str, Any]]:
 
 def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute balance and quality metrics from saved game logs."""
+    games = normalize_acceptance_games(games)
     game_count = len(games)
     unique_game_ids = {
         str(game.get("game_id")) for game in games if game.get("game_id")
@@ -71,7 +73,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     }
     wolf_wins = sum(1 for game in games if game.get("winning_faction") == "werewolf")
     good_wins = sum(1 for game in games if game.get("winning_faction") == "good")
-    completed_games = wolf_wins + good_wins
+    completed_games = sum(game.get("status") == "finished" for game in games)
 
     action_trace_records = list(_iter_action_trace_records(games))
     action_traces = [record["trace"] for record in action_trace_records]

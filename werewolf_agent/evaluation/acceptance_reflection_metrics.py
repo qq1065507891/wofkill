@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -14,12 +15,18 @@ from werewolf_agent.evaluation.acceptance_shared import (
     _is_non_negative_int,
     _non_negative_int,
 )
+from werewolf_agent.evaluation.game_projection import (
+    normalize_acceptance_games,
+    projection_support,
+)
 
 
 def compute_reflection_acceptance_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """扫描每局最新反思事务并投影持久化验收指标。"""
+    games = normalize_acceptance_games(games)
+    projection_is_supported, _ = projection_support(games)
     rejected_facts = 0
     rejected_lessons = 0
     reflection_persistence_entry_count = 0
@@ -170,7 +177,8 @@ def compute_reflection_acceptance_metrics(
                 reflection_contamination_source_complete = False
 
     supported = (
-        reflection_completed_game_count > 0
+        projection_is_supported
+        and reflection_completed_game_count > 0
         and reflection_audited_game_count == reflection_completed_game_count
         and reflection_contamination_source_complete
     )

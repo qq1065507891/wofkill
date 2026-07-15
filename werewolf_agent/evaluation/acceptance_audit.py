@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -40,15 +40,23 @@ from werewolf_agent.evaluation.acceptance_world_metrics import (
 from werewolf_agent.evaluation.decision_execution_audit import (
     compute_decision_execution_metrics,
 )
+from werewolf_agent.evaluation.game_projection import (
+    normalize_acceptance_games,
+    projection_support,
+)
 
 
 def compute_acceptance_audit_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """组合执行 taxonomy 与跨责任域验收指标，供单局和批量报告复用。"""
+    normalized = normalize_acceptance_games(games)
+    supported, unsupported_reason = projection_support(normalized)
     return {
-        **compute_decision_execution_metrics(games),
-        **_compute_acceptance_metrics(games),
+        **compute_decision_execution_metrics(normalized),
+        **_compute_acceptance_metrics(normalized),
+        "acceptance_projection_supported": supported,
+        "acceptance_projection_unsupported_reason": unsupported_reason,
     }
 
 

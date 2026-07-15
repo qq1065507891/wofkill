@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.resolution_batches import ResolutionBatchV2
@@ -84,6 +84,8 @@ class GameState:
     deaths: list[Death] = field(default_factory=list)
     events: list[GameEvent] = field(default_factory=list)
     winning_faction: str | None = None
+    status: Literal["running", "finished", "aborted"] = "running"
+    termination_reason: str | None = None
     paused: bool = False
 
     def __post_init__(self) -> None:
