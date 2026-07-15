@@ -249,6 +249,49 @@ git add werewolf_agent/core/event_visibility.py werewolf_agent/core/models.py we
 git commit -m "feat: add v2 game event metadata"
 ```
 
+### Task 2 Review Hardening: Upgrade Compatibility
+
+**Files:**
+- Modify: `werewolf_agent/runtime/event_metadata.py`
+- Modify: `werewolf_agent/core/event_visibility.py`
+- Modify: `werewolf_agent/runtime/replay.py`
+- Modify: `werewolf_agent/storage/sqlite_store.py`
+- Modify: `werewolf_agent/storage/postgres_store.py`
+- Test: `tests/runtime/test_event_metadata_v2.py`
+- Test: `tests/runtime/test_event_sourcing.py`
+- Test: `tests/storage/test_sqlite_migrations.py`
+- Test: `tests/storage/test_postgres_store.py`
+
+- [x] **Step 1: Add failing compatibility tests**
+
+Cover legacy-column visibility for SQLite and Postgres, unknown legacy visibility
+fail-closed behavior through helper/deserialization/public share, mixed V1/V2 replay
+ordering, strict validation of existing V2 metadata, and nested payload copy isolation.
+
+- [x] **Step 2: Run the focused tests and record the real failures**
+
+Run each new node before implementation so every reported RED corresponds to the
+current defect rather than an inferred failure.
+
+- [x] **Step 3: Centralize event serialization compatibility**
+
+Add one event-metadata helper that returns the legacy payload with canonical
+`visibility`, while `serialize_game_event()` keeps V2 visibility authoritative at
+the top level and removes the duplicate from `event_json.payload`. Both stores use
+the shared helper for `payload_json`.
+
+- [x] **Step 4: Harden replay and stamping**
+
+Preserve mixed upgrade-log array order when legacy events are present, sort pure
+V2 logs by trusted sequence numbers, and reject partial, duplicate, conflicting,
+or game-inconsistent existing V2 metadata without rewriting it.
+
+- [x] **Step 5: Run Task 2 gates and commit**
+
+Run focused metadata/storage/replay/public privacy tests, the original Task 2
+regression set, Ruff, and `git diff --check`; then commit with
+`fix: harden event v2 upgrade compatibility`.
+
 ## Task 3: 统一死亡批次契约
 
 **Files:**

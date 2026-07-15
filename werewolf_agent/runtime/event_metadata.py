@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.core.models import GameEvent
@@ -13,11 +14,12 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
 
 
@@ -35,6 +37,91 @@ def _is_complete_v2(event: GameEvent) -> bool:
         and event.occurred_at is not None
         and event.game_id is not None
         and event.visibility is not None
+    )
+
+
+def _has_v2_identity_metadata(event: GameEvent) -> bool:
+    return any((
+        event.schema_version is not None,
+        event.event_id is not None,
+        event.sequence_number is not None,
+        event.occurred_at is not None,
+        event.game_id is not None,
+    ))
+
+
+def _validate_v2_event(game_id: str, event: GameEvent) -> bool:
+    """验证已有 V2 身份字段，返回是否为完整 V2 事件。"""
+    if not _has_v2_identity_metadata(event):
+        return False
+    if not _is_complete_v2(event):
+        raise ValueError(f"partial V2 metadata on event: {event.type}")
+    if event.game_id != game_id:
+        raise ValueError(
+            f"GameEvent.game_id mismatch: expected {game_id}, got {event.game_id}"
+        )
+    sequence_number = event.sequence_number
+    if (
+        not isinstance(sequence_number, int)
+        or isinstance(sequence_number, bool)
+        or sequence_number < 0
+    ):
+        raise ValueError(f"invalid GameEvent.sequence_number: {sequence_number}")
+    expected_event_id = f"{game_id}:e{sequence_number:06d}"
+    if event.event_id != expected_event_id:
+        raise ValueError(
+            f"GameEvent.event_id mismatch: expected {expected_event_id}, "
+            f"got {event.event_id}"
+        )
+    _require_aware(event.occurred_at)  # type: ignore[arg-type]
+    return True
+
+
+def _collect_v2_identity(
+    game_id: str,
+    events: Sequence[GameEvent],
+) -> tuple[set[str], set[int], int | None]:
+    event_ids: set[str] = set()
+    sequence_numbers: set[int] = set()
+    last_sequence: int | None = None
+    for event in events:
+        if not _validate_v2_event(game_id, event):
+            continue
+        event_id = event.event_id
+        sequence_number = event.sequence_number
+        assert event_id is not None and sequence_number is not None
+        if event_id in event_ids or sequence_number in sequence_numbers:
+            raise ValueError(
+                f"duplicate V2 event identity: {event_id}/{sequence_number}"
+            )
+        if last_sequence is not None and sequence_number <= last_sequence:
+            raise ValueError(
+                "V2 sequence_number must be strictly monotonic in event-log order"
+            )
+        event_ids.add(event_id)
+        sequence_numbers.add(sequence_number)
+        last_sequence = sequence_number
+    return event_ids, sequence_numbers, last_sequence
+
+
+def _matches_authoritative_prefix(
+    authoritative: GameEvent,
+    candidate: GameEvent,
+) -> bool:
+    """允许图状态携带未盖章逻辑副本，但拒绝任何已有 V2 身份冲突。"""
+    if candidate == authoritative:
+        return True
+    if _has_v2_identity_metadata(candidate):
+        return False
+    authoritative_payload = deepcopy(authoritative.payload)
+    candidate_payload = deepcopy(candidate.payload)
+    authoritative_payload.pop("visibility", None)
+    candidate_payload.pop("visibility", None)
+    return (
+        candidate.type == authoritative.type
+        and candidate.trace_id == authoritative.trace_id
+        and candidate_payload == authoritative_payload
+        and event_visibility(candidate) is event_visibility(authoritative)
     )
 
 
@@ -68,20 +155,47 @@ def stamp_new_events(
 ) -> list[GameEvent]:
     """仅给 ``after`` 中本次新增且未盖章的事件分配 V2 元数据。"""
     occurred_at = _require_aware(now or datetime.now(timezone.utc))
-    existing_sequences = [
-        event.sequence_number
-        for event in before
-        if event.sequence_number is not None
-    ]
-    next_sequence = max([len(before), *(number + 1 for number in existing_sequences)])
-    result = list(after[: len(before)])
+    if len(after) < len(before) or any(
+        not _matches_authoritative_prefix(old_event, next_event)
+        for old_event, next_event in zip(before, after)
+    ):
+        raise ValueError("after event prefix must preserve before events unchanged")
+    event_ids, sequence_numbers, last_sequence = _collect_v2_identity(game_id, before)
+    next_sequence = max(
+        len(before),
+        (max(sequence_numbers) + 1) if sequence_numbers else 0,
+    )
+    result = list(before)
     for event in after[len(before) :]:
         if _is_complete_v2(event):
-            _require_aware(event.occurred_at)  # type: ignore[arg-type]
+            _validate_v2_event(game_id, event)
+            assert event.event_id is not None and event.sequence_number is not None
+            if (
+                event.event_id in event_ids
+                or event.sequence_number in sequence_numbers
+            ):
+                raise ValueError(
+                    "duplicate V2 event identity: "
+                    f"{event.event_id}/{event.sequence_number}"
+                )
+            if last_sequence is not None and event.sequence_number <= last_sequence:
+                raise ValueError(
+                    "V2 sequence_number must be strictly monotonic in event-log order"
+                )
             result.append(event)
-            next_sequence = max(next_sequence, event.sequence_number + 1)  # type: ignore[operator]
+            event_ids.add(event.event_id)
+            sequence_numbers.add(event.sequence_number)
+            last_sequence = event.sequence_number
+            next_sequence = max(next_sequence, event.sequence_number + 1)
             continue
-        result.append(_stamp_event(game_id, event, next_sequence, occurred_at))
+        if _has_v2_identity_metadata(event):
+            raise ValueError(f"partial V2 metadata on event: {event.type}")
+        stamped = _stamp_event(game_id, event, next_sequence, occurred_at)
+        result.append(stamped)
+        assert stamped.event_id is not None and stamped.sequence_number is not None
+        event_ids.add(stamped.event_id)
+        sequence_numbers.add(stamped.sequence_number)
+        last_sequence = stamped.sequence_number
         next_sequence += 1
     return result
 
@@ -107,7 +221,7 @@ def new_game_event(
 
 def serialize_game_event(event: GameEvent) -> dict[str, Any]:
     """把事件转换为 JSON/数据库可用字典。"""
-    payload = dict(event.payload)
+    payload = deepcopy(event.payload)
     if event.schema_version == "2" or event.visibility is not None:
         payload.pop("visibility", None)
     return {
@@ -127,6 +241,13 @@ def serialize_game_event(event: GameEvent) -> dict[str, Any]:
     }
 
 
+def serialize_legacy_event_payload(event: GameEvent) -> dict[str, Any]:
+    """为滚动升级期的旧 reader 生成带规范可见性的 payload。"""
+    payload = deepcopy(event.payload)
+    payload["visibility"] = event_visibility(event).value
+    return payload
+
+
 def deserialize_game_event(data: Mapping[str, Any]) -> GameEvent:
     """从完整 V2 JSON 或 V1 type/payload 字典读取事件。"""
     occurred_at_raw = data.get("occurred_at")
@@ -138,7 +259,7 @@ def deserialize_game_event(data: Mapping[str, Any]) -> GameEvent:
     visibility_raw = data.get("visibility")
     return GameEvent(
         type=str(data["type"]),
-        payload=dict(data.get("payload") or {}),
+        payload=deepcopy(data.get("payload") or {}),
         visibility=(
             EventVisibility.from_legacy(visibility_raw)
             if visibility_raw is not None
@@ -157,5 +278,6 @@ __all__ = [
     "deserialize_game_event",
     "new_game_event",
     "serialize_game_event",
+    "serialize_legacy_event_payload",
     "stamp_new_events",
 ]

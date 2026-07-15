@@ -554,6 +554,32 @@ def test_reports_classify_v2_private_event_from_top_level_visibility(capsys) -> 
     assert "No public-state information leaks detected." in leakage
 
 
+def test_reports_fail_closed_for_unknown_legacy_visibility(capsys) -> None:
+    from scripts.run_real_game_reports import check_leakage, print_game_summary
+
+    runner = SimpleNamespace(
+        state=GameState(game_id="g-report", events=[GameEvent(
+            type="seer_check",
+            payload={
+                "seer_id": "p01",
+                "target_id": "p02",
+                "alignment": "wolf",
+                "visibility": "future_private",
+            },
+        )]),
+        step_count=1,
+    )
+
+    print_game_summary(runner)
+    summary = capsys.readouterr().out
+    check_leakage(runner)
+    leakage = capsys.readouterr().out
+
+    assert "[moderator_only]" in summary
+    assert "Seer check leaked" not in leakage
+    assert "No public-state information leaks detected." in leakage
+
+
 def test_real_game_parser_accepts_output_directory(tmp_path) -> None:
     from scripts import run_real_game
 

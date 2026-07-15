@@ -17,7 +17,7 @@ def replay_from_events(
     initial_state: GameState,
     events: list[GameEvent],
 ) -> GameState:
-    if any(event.sequence_number is not None for event in events):
+    if events and all(event.sequence_number is not None for event in events):
         indexed = list(enumerate(events))
         ordered_events = [
             event

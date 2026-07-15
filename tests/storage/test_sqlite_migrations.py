@@ -87,3 +87,38 @@ def test_repository_upgrades_legacy_events_table_and_round_trips_v2(tmp_path) ->
     }
     assert "event_json" in columns
     repository.close()
+
+
+def test_sqlite_dual_write_keeps_private_visibility_for_legacy_reader(tmp_path) -> None:
+    import json
+
+    from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
+    from werewolf_agent.core.models import GameEvent, GameState
+    from werewolf_agent.runtime.event_metadata import stamp_new_events
+    from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+    repository = SqliteGameRepository(str(tmp_path / "events.db"))
+    event = stamp_new_events(
+        "g1",
+        [],
+        [GameEvent(
+            type="seer_check",
+            payload={"target_id": "p02"},
+            visibility=EventVisibility.SEER_PRIVATE,
+        )],
+    )[0]
+
+    repository.save_game(GameState(game_id="g1"))
+    repository.append_events("g1", [event])
+
+    event_type, payload_json, event_json = repository._conn.execute(
+        "SELECT event_type, payload_json, event_json FROM events WHERE game_id = ?",
+        ("g1",),
+    ).fetchone()
+    legacy_event = GameEvent(type=event_type, payload=json.loads(payload_json))
+    current_record = json.loads(event_json)
+
+    assert event_visibility(legacy_event) is EventVisibility.SEER_PRIVATE
+    assert current_record["visibility"] == "seer_private"
+    assert "visibility" not in current_record["payload"]
+    repository.close()

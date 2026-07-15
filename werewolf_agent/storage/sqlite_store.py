@@ -16,7 +16,11 @@ import threading
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
-from werewolf_agent.runtime.event_metadata import deserialize_game_event, serialize_game_event
+from werewolf_agent.runtime.event_metadata import (
+    deserialize_game_event,
+    serialize_game_event,
+    serialize_legacy_event_payload,
+)
 
 
 def _serialize_game_state(gs: GameState) -> str:
@@ -193,7 +197,7 @@ class SqliteGameRepository:
                         game_id,
                         current_max + i + 1,
                         event.type,
-                        json.dumps(event.payload, ensure_ascii=False),
+                        json.dumps(serialize_legacy_event_payload(event), ensure_ascii=False),
                         json.dumps(serialize_game_event(event), ensure_ascii=False),
                     ),
                 )

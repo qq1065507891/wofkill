@@ -865,6 +865,40 @@ def test_postgres_append_events_always_writes_full_event_json() -> None:
     assert deserialize_game_event(serialized) == event
 
 
+def test_postgres_dual_write_keeps_private_visibility_for_legacy_reader() -> None:
+    from datetime import datetime, timezone
+
+    from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
+
+    repo, mock_conn = _setup_repo_with_mock_conn()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (0,)
+    mock_conn.execute.return_value = mock_cursor
+    event = GameEvent(
+        type="seer_check",
+        payload={"target_id": "p02"},
+        visibility=EventVisibility.SEER_PRIVATE,
+        event_id="g1:e000000",
+        sequence_number=0,
+        occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        game_id="g1",
+        schema_version="2",
+    )
+
+    repo.append_events("g1", [event])
+
+    insert_args = mock_conn.execute.call_args_list[1].args[1]
+    legacy_event = GameEvent(
+        type=insert_args[2],
+        payload=json.loads(insert_args[3]),
+    )
+    current_record = json.loads(insert_args[4])
+
+    assert event_visibility(legacy_event) is EventVisibility.SEER_PRIVATE
+    assert current_record["visibility"] == "seer_private"
+    assert "visibility" not in current_record["payload"]
+
+
 def test_postgres_load_events_prefers_v2_event_json_and_reads_v1_rows() -> None:
     repo, mock_conn = _setup_repo_with_mock_conn()
     mock_cursor = MagicMock()

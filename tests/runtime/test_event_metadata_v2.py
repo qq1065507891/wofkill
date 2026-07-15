@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -20,6 +21,26 @@ from werewolf_agent.runtime.event_metadata import (
     stamp_new_events,
 )
 from werewolf_agent.runtime.game_runner_execution import GameRunnerExecutionMixin
+
+
+FIXED_NOW = datetime(2026, 7, 15, 8, 30, tzinfo=timezone.utc)
+
+
+def _complete_v2_event(
+    sequence_number: int,
+    *,
+    game_id: str = "g1",
+    event_id: str | None = None,
+) -> GameEvent:
+    return GameEvent(
+        type=f"event_{sequence_number}",
+        visibility=EventVisibility.PUBLIC,
+        event_id=event_id or f"{game_id}:e{sequence_number:06d}",
+        sequence_number=sequence_number,
+        occurred_at=FIXED_NOW,
+        game_id=game_id,
+        schema_version="2",
+    )
 
 
 def test_stamp_new_events_assigns_stable_v2_metadata() -> None:
@@ -141,6 +162,141 @@ def test_v1_serializer_preserves_legacy_payload_visibility_for_read_compatibilit
 
     assert serialized["visibility"] is None
     assert serialized["payload"]["visibility"] == "moderator_only"
+
+
+def test_serializer_returns_independent_nested_payload_copy() -> None:
+    event = GameEvent(
+        type="seer_check",
+        payload={"result": {"targets": ["p02"]}},
+        visibility=EventVisibility.SEER_PRIVATE,
+    )
+
+    serialized = serialize_game_event(event)
+    serialized["payload"]["result"]["targets"].append("p03")
+
+    assert event.payload == {"result": {"targets": ["p02"]}}
+
+
+def test_unknown_legacy_visibility_normalizes_to_moderator_only() -> None:
+    event = GameEvent(
+        type="speech",
+        payload={"text": "secret", "visibility": "future_private"},
+    )
+
+    assert event_visibility(event) is EventVisibility.MODERATOR_ONLY
+
+
+def test_stamp_unknown_legacy_visibility_fails_closed_without_interrupting_runner() -> None:
+    event = GameEvent(
+        type="speech",
+        payload={"text": "secret", "visibility": "future_private"},
+    )
+
+    stamped = stamp_new_events("g1", [], [event], now=FIXED_NOW)[0]
+
+    assert stamped.visibility is EventVisibility.MODERATOR_ONLY
+    assert "visibility" not in stamped.payload
+
+
+def test_deserializer_unknown_visibility_fails_closed_without_raising() -> None:
+    event = deserialize_game_event({
+        "type": "speech",
+        "payload": {"text": "secret"},
+        "visibility": "future_private",
+    })
+
+    assert event.visibility is EventVisibility.MODERATOR_ONLY
+
+
+def test_public_share_hides_unknown_legacy_visibility_without_raising() -> None:
+    from werewolf_agent.api.routes.game_public_share import _event_is_public_for_share
+
+    event = GameEvent(
+        type="speech",
+        payload={"text": "secret", "visibility": "future_private"},
+    )
+
+    assert _event_is_public_for_share(event) is False
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        GameEvent(type="partial", schema_version="2"),
+        GameEvent(type="partial", event_id="g1:e000000"),
+        GameEvent(type="partial", sequence_number=0),
+        GameEvent(type="partial", occurred_at=FIXED_NOW),
+        GameEvent(type="partial", game_id="g1"),
+    ],
+)
+def test_stamp_new_events_rejects_partial_v2_metadata(partial: GameEvent) -> None:
+    with pytest.raises(ValueError, match="partial V2 metadata"):
+        stamp_new_events("g1", [], [partial], now=FIXED_NOW)
+
+
+@pytest.mark.parametrize("location", ["before", "new"])
+def test_stamp_new_events_rejects_duplicate_v2_identity(location: str) -> None:
+    duplicate = _complete_v2_event(0)
+    if location == "before":
+        before = [duplicate, duplicate]
+        after = list(before)
+    else:
+        before = [duplicate]
+        after = [duplicate, duplicate]
+
+    with pytest.raises(ValueError, match="duplicate"):
+        stamp_new_events("g1", before, after, now=FIXED_NOW)
+
+
+@pytest.mark.parametrize("location", ["before", "new"])
+def test_stamp_new_events_rejects_wrong_game_id(location: str) -> None:
+    wrong = _complete_v2_event(0, game_id="other")
+    before = [wrong] if location == "before" else []
+    after = [wrong]
+
+    with pytest.raises(ValueError, match="game_id"):
+        stamp_new_events("g1", before, after, now=FIXED_NOW)
+
+
+def test_stamp_new_events_rejects_event_id_inconsistent_with_sequence() -> None:
+    inconsistent = _complete_v2_event(1, event_id="g1:e000000")
+
+    with pytest.raises(ValueError, match="event_id"):
+        stamp_new_events("g1", [], [inconsistent], now=FIXED_NOW)
+
+
+def test_stamp_new_events_rejects_non_monotonic_existing_v2_sequence() -> None:
+    before = [_complete_v2_event(1), _complete_v2_event(0)]
+
+    with pytest.raises(ValueError, match="monotonic"):
+        stamp_new_events("g1", before, list(before), now=FIXED_NOW)
+
+
+def test_stamp_new_events_rejects_rewritten_before_prefix() -> None:
+    existing = _complete_v2_event(0)
+    rewritten = replace(existing, trace_id="rewritten")
+
+    with pytest.raises(ValueError, match="prefix"):
+        stamp_new_events("g1", [existing], [rewritten], now=FIXED_NOW)
+
+
+def test_stamp_new_events_reuses_authoritative_metadata_for_unstamped_graph_prefix() -> None:
+    raw = GameEvent(
+        type="speech",
+        payload={"text": "secret", "visibility": "actor_private"},
+        trace_id="trace-1",
+    )
+    existing = stamp_new_events("g1", [], [raw], now=FIXED_NOW)[0]
+
+    stamped = stamp_new_events(
+        "g1",
+        [existing],
+        [raw, GameEvent(type="next")],
+        now=FIXED_NOW,
+    )
+
+    assert stamped[0] is existing
+    assert stamped[1].event_id == "g1:e000001"
 
 
 def test_game_event_rejects_naive_occurred_at_in_memory() -> None:

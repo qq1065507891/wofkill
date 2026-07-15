@@ -233,3 +233,34 @@ def test_replay_preserves_v1_array_order_without_sequence_numbers() -> None:
     replayed = replay_from_events(CapturingEngine(), GameState(), events)
 
     assert replayed.events == events
+
+
+def test_replay_preserves_legacy_prefix_before_v2_suffix() -> None:
+    class CapturingEngine:
+        def reduce_events(self, state, events):
+            return replace(state, events=list(events))
+
+    events = [
+        GameEvent(type="legacy_prefix"),
+        GameEvent(type="v2_suffix", sequence_number=1),
+    ]
+
+    replayed = replay_from_events(CapturingEngine(), GameState(), events)
+
+    assert replayed.events == events
+
+
+def test_replay_preserves_mixed_log_positions_without_trusting_v2_sequence() -> None:
+    class CapturingEngine:
+        def reduce_events(self, state, events):
+            return replace(state, events=list(events))
+
+    events = [
+        GameEvent(type="v2_before", sequence_number=7),
+        GameEvent(type="legacy_middle"),
+        GameEvent(type="v2_after", sequence_number=2),
+    ]
+
+    replayed = replay_from_events(CapturingEngine(), GameState(), events)
+
+    assert replayed.events == events

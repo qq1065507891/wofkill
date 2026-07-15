@@ -345,3 +345,18 @@ def test_audit_game_classifies_v2_top_level_private_speech(capsys) -> None:
 
     assert "公开: 0" in output
     assert "actor_private" in output
+
+
+def test_audit_game_fail_closed_for_unknown_legacy_visibility(capsys) -> None:
+    audit_game({"events": [{
+        "type": "speech",
+        "payload": {
+            "speaker": "p01",
+            "text": "private",
+            "visibility": "future_private",
+        },
+    }]})
+
+    output = capsys.readouterr().out
+
+    assert "公开: 0" in output
