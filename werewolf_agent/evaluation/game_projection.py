@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+import json
 from typing import Any, Literal, Mapping
 
 from werewolf_agent.core.resolution_batches import serialize_resolution_batch
@@ -120,7 +121,13 @@ def _from_state(source: Any, *, steps: int | None) -> AcceptanceGameProjection:
     winner = getattr(source, "winning_faction", None)
     raw_status = getattr(source, "status", "running")
     status = _derive_status(raw_status, winner, getattr(source, "phase", None))
-    reason = _unsupported_reason(str(getattr(source, "game_id", "")), events, players)
+    reason = _unsupported_reason(
+        str(getattr(source, "game_id", "")),
+        events,
+        players,
+        status=status,
+        winner=winner,
+    )
     metadata = {
         "phase": getattr(source, "phase", None),
         "day_number": getattr(source, "day_number", 0),
@@ -138,7 +145,7 @@ def _from_state(source: Any, *, steps: int | None) -> AcceptanceGameProjection:
         steps=int(steps if steps is not None else getattr(source, "steps", 0) or 0),
         supported=reason is None,
         unsupported_reason=reason,
-        metadata=metadata,
+        metadata=_json_safe(metadata),
     )
 
 
@@ -158,15 +165,22 @@ def _from_mapping(source: Mapping[str, Any], *, steps: int | None) -> Acceptance
     winner = source.get("winning_faction") or source.get("winner")
     status = _derive_status(source.get("status"), winner, source.get("phase"))
     game_id = str(source.get("game_id") or "")
-    reason = _unsupported_reason(game_id, events, players, source=source)
-    metadata = {
+    reason = _unsupported_reason(
+        game_id,
+        events,
+        players,
+        status=status,
+        winner=winner,
+        source=source,
+    )
+    metadata = _json_safe({
         key: source[key]
         for key in (
             "phase", "day_number", "night_number", "__source_path",
             "hybrid_master_id", "hybrid_master_faction", "hybrid_result",
         )
         if key in source
-    }
+    })
     return AcceptanceGameProjection(
         game_id=game_id,
         events=events,
@@ -220,6 +234,8 @@ def _unsupported_reason(
     events: tuple[dict[str, Any], ...],
     players: dict[str, dict[str, Any]],
     *,
+    status: GameStatus,
+    winner: Any,
     source: Mapping[str, Any] | None = None,
 ) -> str | None:
     if not game_id:
@@ -230,7 +246,14 @@ def _unsupported_reason(
         return "missing_players"
     if any(not player.get("role") for player in players.values()):
         return "missing_player_roles"
+    if status == "finished" and not winner:
+        return "finished_without_winner"
     return None
+
+
+def _json_safe(value: Any) -> Any:
+    """深拷贝 metadata，并把 Path 等旧日志值收敛为稳定 JSON 标量。"""
+    return json.loads(json.dumps(deepcopy(value), ensure_ascii=False, default=str))
 
 
 __all__ = [

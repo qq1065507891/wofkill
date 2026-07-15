@@ -130,28 +130,46 @@ def compute_game_quality_score(
     fallback_count = action_fallback_count + wolf_plan_fallback_count
     fallback_rate = fallback_count / total_quality_events if total_quality_events > 0 else 0.0
     speeches = [e for e in events if e.type == "speech"]
-    non_empty_speeches = sum(1 for e in speeches if e.payload.get("text", "").strip())
-    speech_rate = non_empty_speeches / len(speeches) if speeches else 0.0
+    observed_speeches = [
+        e for e in speeches if isinstance(e.payload.get("text"), str)
+    ]
+    non_empty_speeches = sum(
+        bool(e.payload["text"].strip()) for e in observed_speeches
+    )
+    speech_rate = (
+        non_empty_speeches / len(observed_speeches)
+        if observed_speeches else None
+    )
     speech_traces = [
         e.payload.get("action_trace") or {}
         for e in traces
         if (e.payload.get("task_type") or e.payload.get("phase"))
         in {"speech", "sheriff_speech", "pk_speech"}
     ]
-    speech_trace_count = len(speech_traces)
+    speech_outcome_traces = [
+        trace for trace in speech_traces
+        if isinstance(trace.get("generated_by"), str)
+        and isinstance(trace.get("decision_outcome"), str)
+    ]
+    speech_outcome_observed_count = len(speech_outcome_traces)
     speech_model_success_count = sum(
         trace.get("generated_by") in {"model", "repair", "provider_fallback"}
         and trace.get("decision_outcome") != "terminal_fallback"
-        for trace in speech_traces
+        for trace in speech_outcome_traces
     )
     speech_terminal_fallback_count = sum(
         trace.get("generated_by") == "terminal_fallback"
         or trace.get("decision_outcome") == "terminal_fallback"
-        for trace in speech_traces
+        for trace in speech_outcome_traces
     )
+    speech_semantic_traces = [
+        trace for trace in speech_traces
+        if isinstance((trace.get("semantic_repair_audit") or {}).get("success"), bool)
+    ]
+    speech_semantic_observed_count = len(speech_semantic_traces)
     speech_semantic_acceptance_count = sum(
         (trace.get("semantic_repair_audit") or {}).get("success") is True
-        for trace in speech_traces
+        for trace in speech_semantic_traces
     )
     phases_seen = {e.payload.get("phase") for e in events if e.type == "judge_broadcast"}
     has_winner = bool(projection.winning_faction)
@@ -210,21 +228,41 @@ def compute_game_quality_score(
         "total_quality_events": total_quality_events,
         "speech_count": len(speeches),
         "non_empty_speech_count": non_empty_speeches,
-        "speech_non_empty_rate": round(speech_rate, 3),
+        "speech_non_empty_metrics_supported": bool(observed_speeches),
+        "speech_non_empty_unsupported_reason": (
+            None if observed_speeches else "missing_speech_text_fields"
+        ),
+        "speech_non_empty_observed_count": len(observed_speeches),
+        "speech_non_empty_rate": (
+            round(speech_rate, 3) if speech_rate is not None else None
+        ),
+        "speech_model_success_metrics_supported": bool(speech_outcome_traces),
+        "speech_model_success_unsupported_reason": (
+            None if speech_outcome_traces else "missing_speech_outcome_fields"
+        ),
+        "speech_model_success_observed_count": speech_outcome_observed_count,
         "speech_model_success_rate": (
-            round(speech_model_success_count / speech_trace_count, 3)
-            if speech_trace_count else None
+            round(speech_model_success_count / speech_outcome_observed_count, 3)
+            if speech_outcome_observed_count else None
         ),
+        "speech_terminal_fallback_metrics_supported": bool(speech_outcome_traces),
+        "speech_terminal_fallback_unsupported_reason": (
+            None if speech_outcome_traces else "missing_speech_outcome_fields"
+        ),
+        "speech_terminal_fallback_observed_count": speech_outcome_observed_count,
         "speech_terminal_fallback_rate": (
-            round(speech_terminal_fallback_count / speech_trace_count, 3)
-            if speech_trace_count else None
+            round(speech_terminal_fallback_count / speech_outcome_observed_count, 3)
+            if speech_outcome_observed_count else None
         ),
+        "speech_semantic_acceptance_metrics_supported": bool(speech_semantic_traces),
+        "speech_semantic_acceptance_unsupported_reason": (
+            None if speech_semantic_traces else "missing_speech_semantic_fields"
+        ),
+        "speech_semantic_acceptance_observed_count": speech_semantic_observed_count,
         "speech_semantic_acceptance_rate": (
-            round(speech_semantic_acceptance_count / speech_trace_count, 3)
-            if speech_trace_count else None
+            round(speech_semantic_acceptance_count / speech_semantic_observed_count, 3)
+            if speech_semantic_observed_count else None
         ),
-        # V1 只读兼容别名；新写消费者应使用 speech_non_empty_rate。
-        "speech_fill_rate": round(speech_rate, 3),
         "phases_seen": len(phases_seen),
         "has_winner": has_winner,
         "steps": projection.steps,
@@ -339,8 +377,19 @@ def _serialize_projected_event_for_log(event: dict[str, Any]) -> dict[str, Any]:
     return serialized
 
 
+def normalize_quality_score(quality_score: dict[str, Any]) -> dict[str, Any]:
+    """读取一周期 V1 speech_fill_rate，并归一化到新字段名。"""
+    normalized = dict(quality_score)
+    if (
+        "speech_non_empty_rate" not in normalized
+        and "speech_fill_rate" in normalized
+    ):
+        normalized["speech_non_empty_rate"] = normalized["speech_fill_rate"]
+    return normalized
+
+
 def save_game_log(
-    runner: GameRunner,
+    _runner: GameRunner,
     elapsed: float,
     *,
     projection: AcceptanceGameProjection,
@@ -348,7 +397,8 @@ def save_game_log(
     output_dir: str | Path | None = None,
 ) -> Path:
     """保存单局 JSON；显式目录用于隔离批量验收产物。"""
-    quality = quality_score
+    quality = normalize_quality_score(quality_score)
+    quality.pop("speech_fill_rate", None)
     is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_quality_events"] > 5
     artifact_root = Path(output_dir) if output_dir is not None else ROOT
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -356,13 +406,13 @@ def save_game_log(
     if is_low_quality:
         low_q_dir = artifact_root / "low_quality_games"
         low_q_dir.mkdir(parents=True, exist_ok=True)
-        log_path = low_q_dir / f"game_{runner.game_id}.json"
+        log_path = low_q_dir / f"game_{projection.game_id}.json"
         logger.warning(
             "Low quality game (fallback_rate=%.1f%%, %d quality events) — saved to %s",
             quality["fallback_rate"] * 100, quality["total_quality_events"], log_path,
         )
     else:
-        log_path = artifact_root / f"game_{runner.game_id}.json"
+        log_path = artifact_root / f"game_{projection.game_id}.json"
 
     log_data = {
         "game_id": projection.game_id,

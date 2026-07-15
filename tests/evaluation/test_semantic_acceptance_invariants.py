@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ def _game(*, speaker_preserved: object, negation_preserved: object) -> dict[str,
     }
     return {
         "game_id": "g1",
+        "players": {"p01": {"role": "villager"}},
         "events": [
             {
                 "type": "semantic_repair_audit",

@@ -257,13 +257,14 @@ def test_semantic_repair_requires_one_identity_linked_event_per_eligible_trace()
         }},
     }}
 
-    missing = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [trace_event]}])
-    duplicate = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    projection = {"game_id": "g1", "players": {"p01": {"role": "villager"}}}
+    missing = compute_acceptance_audit_metrics([{**projection, "events": [trace_event]}])
+    duplicate = compute_acceptance_audit_metrics([{**projection, "events": [
         {"type": "semantic_repair_audit", "payload": semantic},
         {"type": "semantic_repair_audit", "payload": semantic},
         trace_event,
     ]}])
-    exact = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    exact = compute_acceptance_audit_metrics([{**projection, "events": [
         {"type": "semantic_repair_audit", "payload": semantic}, trace_event,
     ]}])
 
@@ -288,7 +289,8 @@ def test_verified_claim_retention_requires_every_verified_claim() -> None:
         key: value for key, value in semantic.items()
         if key not in {"trace_id", "game_id", "action_index", "task_type"}
     }
-    metrics = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    metrics = compute_acceptance_audit_metrics([{
+        "game_id": "g1", "players": {"p01": {"role": "villager"}}, "events": [
         {"type": "semantic_repair_audit", "payload": semantic},
         {"type": "action_trace_audit", "payload": {
             "trace_id": "trace-1", "game_id": "g1", "action_index": 1,

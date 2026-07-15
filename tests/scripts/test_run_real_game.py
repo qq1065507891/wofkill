@@ -793,6 +793,32 @@ def test_low_quality_game_stays_under_explicit_output_directory(
     assert path.exists()
 
 
+def test_save_game_log_path_uses_projection_id_when_runner_drifts(tmp_path) -> None:
+    from scripts import run_real_game
+
+    runner = SimpleNamespace(
+        game_id="runner-drift",
+        state=GameState(
+            game_id="projection-id",
+            players={"p01": PlayerState(id="p01", role="villager")},
+        ),
+        step_count=1,
+    )
+    projection = run_real_game.project_acceptance_game(runner.state, steps=1)
+    quality = run_real_game.compute_game_quality_score(projection)
+
+    path = run_real_game.save_game_log(
+        runner,
+        0.1,
+        projection=projection,
+        quality_score=quality,
+        output_dir=tmp_path,
+    )
+
+    assert path.name == "game_projection-id.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["game_id"] == "projection-id"
+
+
 def test_quality_score_counts_wolf_team_plan_fallbacks() -> None:
     from scripts import run_real_game
 

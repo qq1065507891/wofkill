@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
@@ -75,6 +76,43 @@ def test_projection_is_snapshot_and_explicit_aborted_status_is_authoritative() -
     assert projection.status == "aborted"
     assert projection.players["p01"]["facts"] == ["before"]
     assert projection.events[0]["payload"]["nested"] == ["before"]
+
+
+def test_finished_projection_requires_winner_but_aborted_does_not() -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    common = {
+        "game_id": "g-status-contract",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+    }
+    finished = project_acceptance_game({**common, "status": "finished"})
+    aborted = project_acceptance_game({**common, "status": "aborted"})
+
+    assert finished.supported is False
+    assert finished.unsupported_reason == "finished_without_winner"
+    assert aborted.supported is True
+    assert aborted.winning_faction is None
+
+
+def test_projection_metadata_is_deep_snapshot_and_json_safe() -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    nested = {"parts": ["before"]}
+    source = {
+        "game_id": "g-metadata",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+        "status": "running",
+        "hybrid_result": nested,
+        "__source_path": Path("legacy/game.json"),
+    }
+    projection = project_acceptance_game(source)
+    nested["parts"].append("after")
+
+    assert projection.metadata["hybrid_result"] == {"parts": ["before"]}
+    assert projection.metadata["__source_path"] == str(Path("legacy/game.json"))
+    json.dumps(projection.to_mapping())
 
 
 def test_legacy_projection_infers_status_but_does_not_fake_missing_players() -> None:
@@ -156,6 +194,8 @@ def test_saved_projection_recomputes_identical_final_quality(tmp_path) -> None:
     assert saved["events"][-1]["type"] == "reflection_persistence_audit"
     assert saved["quality_score"] == final_quality
     assert offline_quality == final_quality
+    assert path.name == "game_g-projection.json"
+    assert "speech_fill_rate" not in saved["quality_score"]
 
 
 def test_game_state_status_fields_are_json_safe_and_default_running() -> None:
@@ -165,7 +205,7 @@ def test_game_state_status_fields_are_json_safe_and_default_running() -> None:
     assert state.termination_reason is None
 
 
-def test_quality_uses_distinct_speech_rates_and_read_only_legacy_alias() -> None:
+def test_quality_speech_metrics_use_independent_observed_denominators() -> None:
     from scripts.run_real_game import compute_game_quality_score
     from werewolf_agent.evaluation.game_projection import project_acceptance_game
 
@@ -174,7 +214,7 @@ def test_quality_uses_distinct_speech_rates_and_read_only_legacy_alias() -> None
         players={"p01": PlayerState(id="p01", role="villager")},
         events=[
             GameEvent(type="speech", payload={"speaker": "p01", "text": "有内容"}),
-            GameEvent(type="speech", payload={"speaker": "p01", "text": ""}),
+            GameEvent(type="speech", payload={"speaker": "p01"}),
             GameEvent(type="action_trace_audit", payload={
                 "task_type": "speech",
                 "action_trace": {"generated_by": "model", "decision_outcome": "direct_success",
@@ -184,15 +224,87 @@ def test_quality_uses_distinct_speech_rates_and_read_only_legacy_alias() -> None
                 "task_type": "speech",
                 "action_trace": {"generated_by": "terminal_fallback",
                                  "decision_outcome": "terminal_fallback",
-                                 "semantic_repair_audit": {"success": False}},
+                                 "semantic_repair_audit": {}},
             }),
         ],
     )
 
     quality = compute_game_quality_score(project_acceptance_game(state))
 
-    assert quality["speech_non_empty_rate"] == 0.5
+    assert quality["speech_non_empty_metrics_supported"] is True
+    assert quality["speech_non_empty_observed_count"] == 1
+    assert quality["speech_non_empty_rate"] == 1.0
+    assert quality["speech_model_success_metrics_supported"] is True
+    assert quality["speech_model_success_observed_count"] == 2
     assert quality["speech_model_success_rate"] == 0.5
+    assert quality["speech_terminal_fallback_metrics_supported"] is True
+    assert quality["speech_terminal_fallback_observed_count"] == 2
     assert quality["speech_terminal_fallback_rate"] == 0.5
-    assert quality["speech_semantic_acceptance_rate"] == 0.5
-    assert quality["speech_fill_rate"] == quality["speech_non_empty_rate"]
+    assert quality["speech_semantic_acceptance_metrics_supported"] is True
+    assert quality["speech_semantic_acceptance_observed_count"] == 1
+    assert quality["speech_semantic_acceptance_rate"] == 1.0
+    assert "speech_fill_rate" not in quality
+
+
+def test_legacy_speech_fields_are_unsupported_but_alias_is_readable() -> None:
+    from scripts.run_real_game import compute_game_quality_score, normalize_quality_score
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    state = GameState(
+        game_id="g-legacy-speech",
+        players={"p01": PlayerState(id="p01", role="villager")},
+        events=[
+            GameEvent(type="speech", payload={"speaker": "p01"}),
+            GameEvent(type="action_trace_audit", payload={
+                "task_type": "speech", "action_trace": {},
+            }),
+        ],
+    )
+    quality = compute_game_quality_score(project_acceptance_game(state))
+
+    assert quality["speech_non_empty_metrics_supported"] is False
+    assert quality["speech_non_empty_rate"] is None
+    assert quality["speech_model_success_metrics_supported"] is False
+    assert quality["speech_model_success_rate"] is None
+    assert quality["speech_terminal_fallback_metrics_supported"] is False
+    assert quality["speech_terminal_fallback_rate"] is None
+    assert quality["speech_semantic_acceptance_metrics_supported"] is False
+    assert quality["speech_semantic_acceptance_rate"] is None
+    assert normalize_quality_score({"speech_fill_rate": 0.25})["speech_non_empty_rate"] == 0.25
+
+
+def test_terminal_semantic_rejects_incomplete_projection() -> None:
+    from werewolf_agent.evaluation.acceptance_terminal_semantic_metrics import (
+        compute_terminal_semantic_acceptance_metrics,
+    )
+
+    identity = {
+        "trace_id": "trace-semantic",
+        "game_id": "g-semantic-legacy",
+        "action_index": 1,
+        "task_type": "speech",
+    }
+    semantic = {
+        "repairable": True,
+        "success": True,
+        "target_preserved": True,
+        "speaker_attribution_preserved": True,
+        "negation_preserved": True,
+        "introduced_claim_count": 0,
+        "verified_claim_count": 0,
+        "retained_verified_claim_count": 0,
+        "fallback_kind": "no_fallback",
+    }
+    metrics = compute_terminal_semantic_acceptance_metrics([{
+        "game_id": "g-semantic-legacy",
+        "events": [
+            {"type": "semantic_repair_audit", "payload": {**identity, **semantic}},
+            {"type": "action_trace_audit", "payload": {
+                **identity, "action_trace": {"semantic_repair_audit": semantic},
+            }},
+        ],
+    }])
+
+    assert metrics["semantic_repair_metrics_supported"] is False
+    assert metrics["semantic_repair_success_rate"] is None
+    assert metrics["semantic_repair_verified_claim_retention_metrics_supported"] is False

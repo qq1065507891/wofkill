@@ -1230,10 +1230,11 @@ def test_semantic_fallback_metric_requires_structured_fallback_kind() -> None:
         "introduced_claim_count": 0, "verified_claim_count": 0,
         "retained_verified_claim_count": 0, "generic_template_used": False,
     }
-    legacy = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    projection = {"game_id": "g1", "players": {"p01": {"role": "villager"}}}
+    legacy = compute_acceptance_audit_metrics([{**projection, "events": [
         *_semantic_pair(common, action_index=1),
     ]}])
-    structured = compute_acceptance_audit_metrics([{"game_id": "g1", "events": [
+    structured = compute_acceptance_audit_metrics([{**projection, "events": [
         *_semantic_pair(
             {**common, "fallback_kind": "task_specific"}, action_index=1
         ),

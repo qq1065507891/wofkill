@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -13,6 +14,10 @@ from typing import Any
 from werewolf_agent.evaluation.acceptance_shared import (
     _is_non_negative_int,
     _non_negative_int,
+)
+from werewolf_agent.evaluation.game_projection import (
+    normalize_acceptance_games,
+    projection_support,
 )
 
 _SEMANTIC_FALLBACK_KINDS = frozenset({
@@ -28,6 +33,8 @@ def compute_terminal_semantic_acceptance_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """扫描终局与语义事件并投影对应验收指标。"""
+    games = normalize_acceptance_games(games)
+    projection_is_supported, _ = projection_support(games)
     semantic_rows: list[dict[str, Any]] = []
     semantic_eligible_count = 0
     semantic_reconciliation_complete = True
@@ -87,7 +94,8 @@ def compute_terminal_semantic_acceptance_metrics(
 
     semantic_count = semantic_eligible_count
     semantic_source_complete = (
-        semantic_count > 0
+        projection_is_supported
+        and semantic_count > 0
         and semantic_reconciliation_complete
         and len(semantic_rows) == semantic_count
         and all(
@@ -131,7 +139,7 @@ def compute_terminal_semantic_acceptance_metrics(
         if semantic_source_complete
         else 0
     )
-    retention_source_complete = semantic_count > 0 and all(
+    retention_source_complete = projection_is_supported and semantic_count > 0 and all(
         _is_non_negative_int(row.get("verified_claim_count"))
         and _is_non_negative_int(row.get("retained_verified_claim_count"))
         and row["retained_verified_claim_count"] <= row["verified_claim_count"]

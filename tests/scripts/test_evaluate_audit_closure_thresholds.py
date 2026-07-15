@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -213,7 +213,10 @@ def test_real_runtime_semantic_event_flows_through_report_and_threshold() -> Non
         action_trace={"semantic_repair_audit": semantic},
         decision_identity=identity, exposure_collector=None,
     )
-    game = {"game_id": "g1", "events": [
+    game = {
+        "game_id": "g1",
+        "players": {"p01": {"role": "villager"}},
+        "events": [
         {"type": event.type, "payload": event.payload} for event in runtime_events
     ]}
     metrics = compute_acceptance_audit_metrics([game])
