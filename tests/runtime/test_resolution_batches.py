@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.core.resolution_batches import (
     ResolutionBatchV2,
     parse_resolution_batch,
@@ -218,3 +218,41 @@ def test_event_reducer_missing_self_destruct_day_fails_closed_without_crash() ->
 
     assert reduced.deaths[0].resolution_batch == "day_?_self_destruct"
     assert reduced.deaths[0].resolution_batch_parse_failed is True
+
+
+@pytest.mark.parametrize(
+    ("batch", "input_marker"),
+    [
+        ("day_BAD", False),
+        (ResolutionBatchV2("day", 2, "rule_effect"), True),
+    ],
+)
+def test_apply_death_ors_input_and_parser_failure_markers(
+    batch: str | ResolutionBatchV2,
+    input_marker: bool,
+) -> None:
+    from werewolf_agent.engine.rule_death import apply_death
+
+    state = GameState(
+        game_id="marker-or",
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+    result = apply_death(
+        state,
+        Death(
+            "p01",
+            "rule_effect",
+            "day",
+            batch,
+            resolution_batch_parse_failed=input_marker,
+        ),
+        can_leave_last_words_fn=lambda **_kwargs: False,
+        can_hunter_shoot_fn=lambda *_args, **_kwargs: False,
+    )
+
+    assert result.deaths[0].resolution_batch == batch
+    assert result.deaths[0].resolution_batch_parse_failed is True
+    event_payload = result.events[-1].payload
+    assert event_payload["resolution_batch_parse_failed"] is True
+    if batch == "day_BAD":
+        assert event_payload["resolution_batch"] == "day_BAD"

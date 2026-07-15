@@ -21,6 +21,9 @@ from typing import Any, Mapping, Sequence
 
 from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.resolution_batches import (
+    serialize_resolution_batches_in_value,
+)
 
 
 def _require_aware(value: datetime) -> datetime:
@@ -221,7 +224,7 @@ def new_game_event(
 
 def serialize_game_event(event: GameEvent) -> dict[str, Any]:
     """把事件转换为 JSON/数据库可用字典。"""
-    payload = deepcopy(event.payload)
+    payload = serialize_resolution_batches_in_value(deepcopy(event.payload))
     if event.schema_version == "2" or event.visibility is not None:
         payload.pop("visibility", None)
     return {
@@ -243,7 +246,7 @@ def serialize_game_event(event: GameEvent) -> dict[str, Any]:
 
 def serialize_legacy_event_payload(event: GameEvent) -> dict[str, Any]:
     """为滚动升级期的旧 reader 生成带规范可见性的 payload。"""
-    payload = deepcopy(event.payload)
+    payload = serialize_resolution_batches_in_value(deepcopy(event.payload))
     payload["visibility"] = event_visibility(event).value
     return payload
 

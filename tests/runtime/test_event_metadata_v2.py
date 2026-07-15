@@ -10,11 +10,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import json
 
 import pytest
 
 from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 from werewolf_agent.runtime.event_metadata import (
     deserialize_game_event,
     serialize_game_event,
@@ -175,6 +177,29 @@ def test_serializer_returns_independent_nested_payload_copy() -> None:
     serialized["payload"]["result"]["targets"].append("p03")
 
     assert event.payload == {"result": {"targets": ["p02"]}}
+
+
+def test_event_serializer_recursively_converts_nested_resolution_batches() -> None:
+    batch = ResolutionBatchV2("night", 3, "hunter_shot")
+    event = GameEvent(
+        type="nested_batch",
+        payload={
+            "items": [batch, {"inner": batch}],
+            "visibility": "moderator_only",
+        },
+        visibility=EventVisibility.MODERATOR_ONLY,
+        schema_version="2",
+    )
+
+    serialized = serialize_game_event(event)
+    encoded = json.loads(json.dumps(serialized))
+    restored = deserialize_game_event(encoded)
+
+    expected = {"phase": "night", "number": 3, "cause": "hunter_shot"}
+    assert encoded["payload"] == {"items": [expected, {"inner": expected}]}
+    assert restored.payload == encoded["payload"]
+    assert event.payload["items"][0] is batch
+    assert event.payload["visibility"] == "moderator_only"
 
 
 def test_unknown_legacy_visibility_normalizes_to_moderator_only() -> None:

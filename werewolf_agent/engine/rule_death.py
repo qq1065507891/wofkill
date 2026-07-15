@@ -32,10 +32,10 @@ def apply_death(
     target = state.players[death.player_id]
     if not target.alive:
         return state
+    parsed_batch = parse_resolution_batch(death.resolution_batch)
     can_leave_last_words = death.can_leave_last_words
     if can_leave_last_words is None:
         night_number = state.night_number
-        parsed_batch = parse_resolution_batch(death.resolution_batch)
         if (
             night_number == 0
             and parsed_batch.batch is not None
@@ -58,21 +58,27 @@ def apply_death(
         death,
         can_leave_last_words=can_leave_last_words,
         triggered_skills=triggered_skills,
+        resolution_batch_parse_failed=(
+            death.resolution_batch_parse_failed
+            or parsed_batch.batch_parse_failed
+        ),
     )
     updated = replace(target, alive=False)
     new_players = {**state.players, death.player_id: updated}
     new_deaths = state.deaths + [recorded_death]
+    serialized_batch, serialization_failed = serialize_resolution_batch(
+        recorded_death.resolution_batch
+    )
     new_events = state.events + [GameEvent(
         type="player_died",
         payload={
             "player_id": recorded_death.player_id,
             "reason": recorded_death.reason,
             "timing": recorded_death.timing,
-            "resolution_batch": serialize_resolution_batch(
-                recorded_death.resolution_batch
-            )[0],
+            "resolution_batch": serialized_batch,
             "resolution_batch_parse_failed": (
                 recorded_death.resolution_batch_parse_failed
+                or serialization_failed
             ),
             "source_player_id": recorded_death.source_player_id,
             "can_leave_last_words": recorded_death.can_leave_last_words,

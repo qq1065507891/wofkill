@@ -209,15 +209,20 @@ def build_post_game_summary(
     if viewer is None:
         return {}
 
-    deaths = [
-        {
-            "player_id": d.player_id,
-            "reason": d.reason,
-            "timing": d.timing,
-            "batch": serialize_resolution_batch(d.resolution_batch)[0],
-        }
-        for d in game_state.deaths
-    ]
+    deaths = []
+    for death in game_state.deaths:
+        serialized_batch, parse_failed = serialize_resolution_batch(
+            death.resolution_batch
+        )
+        deaths.append({
+            "player_id": death.player_id,
+            "reason": death.reason,
+            "timing": death.timing,
+            "batch": serialized_batch,
+            "resolution_batch_parse_failed": bool(
+                death.resolution_batch_parse_failed or parse_failed
+            ),
+        })
 
     timeline = _extract_viewer_action_timeline(game_state, player_id)
 

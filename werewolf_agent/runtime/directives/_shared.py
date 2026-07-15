@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from werewolf_agent.core.models import GameState
@@ -72,12 +74,9 @@ def collect_death_order(
     Only exile and hunter_shot reasons are public knowledge.
     wolf_kill and witch_poison are indistinguishable to players -- both are night deaths.
 
-    M3-2: optional ``current_day`` filter.  When supplied, only
-    deaths whose ``resolution_batch`` parses to ``day_N`` with
-    ``N <= current_day`` are included.  Night deaths are never
-    public (the ``_public_reasons`` map excludes them) and are
-    therefore unaffected by the filter; the filter is purely a
-    "show only the day deaths up through this day" cap.
+    ``current_day`` 表示当前已进入 Dn；Dk 与该日清晨公布的 Nk
+    都只在 ``k <= n`` 时可见。无法解析的批次和未来 day/night
+    批次一律失败关闭，避免把未来死亡注入当前指令。
     """
     _public_reasons = {"exile": "放逐", "hunter_shot": "枪杀"}
     lines: list[str] = []
@@ -86,19 +85,27 @@ def collect_death_order(
             parsed = parse_resolution_batch(d.resolution_batch)
             if parsed.batch_parse_failed:
                 raw_batch = parsed.raw_value or ""
-                warning_key = (gs.game_id, raw_batch)
+                raw_hash = hashlib.sha256(raw_batch.encode("utf-8")).hexdigest()
+                warning_key = (gs.game_id, raw_hash)
                 if warning_key not in _WARNED_BATCH_PARSE_FAILURES:
                     _WARNED_BATCH_PARSE_FAILURES.add(warning_key)
+                    batch_type = (
+                        "str"
+                        if isinstance(d.resolution_batch, str)
+                        else "mapping"
+                        if isinstance(d.resolution_batch, Mapping)
+                        else "other"
+                    )
                     logger.warning(
-                        "collect_death_order: malformed resolution_batch for game %s: %r",
-                        gs.game_id,
-                        raw_batch,
+                        "collect_death_order: malformed resolution_batch "
+                        "batch_type=%s batch_hash=%s",
+                        batch_type,
+                        raw_hash[:12],
                     )
                 # 未知批次无法证明属于当前日，必须 fail closed。
                 continue
             if (
                 parsed.batch is not None
-                and parsed.batch.phase == "day"
                 and parsed.batch.number > current_day
             ):
                 continue

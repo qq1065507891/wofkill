@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-集中定义死亡结算批次 V2，并提供 V1/V2 解析与 JSON 安全序列化。
+集中定义死亡结算批次 V2，并提供 V1/V2 解析及嵌套 JSON 安全序列化。
 
 作者: Project contributors
 创建日期: 2026-07-15
@@ -173,6 +173,20 @@ def same_resolution_batch(
     )
 
 
+def serialize_resolution_batches_in_value(value: Any) -> Any:
+    """递归转换容器中的 ResolutionBatchV2，不处理其他业务数据类。"""
+    if isinstance(value, ResolutionBatchV2):
+        return serialize_resolution_batch(value)[0]
+    if isinstance(value, Mapping):
+        return {
+            key: serialize_resolution_batches_in_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [serialize_resolution_batches_in_value(item) for item in value]
+    return value
+
+
 __all__ = [
     "ResolutionBatchParseResult",
     "ResolutionBatchV2",
@@ -180,5 +194,6 @@ __all__ = [
     "parse_resolution_batch",
     "same_resolution_batch",
     "serialize_resolution_batch",
+    "serialize_resolution_batches_in_value",
     "serialize_resolution_batch_fields",
 ]

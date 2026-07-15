@@ -42,6 +42,23 @@ def test_post_game_summary_serializes_v2_resolution_batch() -> None:
         "number": 2,
         "cause": "vote",
     }
+    assert summary["deaths"][0]["resolution_batch_parse_failed"] is False
+
+
+def test_post_game_summary_preserves_unknown_raw_with_failure_marker() -> None:
+    import json
+
+    gs = GameState(
+        game_id="post-game-unknown",
+        players={"p01": PlayerState(id="p01", role="villager", alive=False)},
+        deaths=[Death("p01", "rule_effect", "day", "day_SECRET")],
+    )
+
+    summary = build_post_game_summary(gs, "p01")
+    encoded = json.loads(json.dumps(summary))
+
+    assert encoded["deaths"][0]["batch"] == "day_SECRET"
+    assert encoded["deaths"][0]["resolution_batch_parse_failed"] is True
 
 
 def test_build_visible_player_state_contains_shared_timeline_and_public_fields() -> None:

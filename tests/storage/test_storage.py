@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from pathlib import Path
 from dataclasses import replace
 
 import pytest
@@ -252,6 +253,27 @@ class TestProductionStorageBoundary:
 
 
 class TestEventLog:
+    def test_sqlite_serializes_nested_resolution_batch_payload(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        repository = SqliteGameRepository(str(tmp_path / "nested-batch.db"))
+        repository.save_game(_make_game_state("nested-batch"))
+        batch = ResolutionBatchV2("night", 2, "hunter_shot")
+
+        repository.append_events(
+            "nested-batch",
+            [GameEvent(type="nested", payload={"items": [{"batch": batch}]})],
+        )
+        loaded = repository.load_events("nested-batch")
+        repository.close()
+
+        assert loaded[0].payload["items"][0]["batch"] == {
+            "phase": "night",
+            "number": 2,
+            "cause": "hunter_shot",
+        }
+
     def test_append_events_and_load(self, repo: GameRepository) -> None:
         gs = _make_game_state("e1")
         repo.save_game(gs)

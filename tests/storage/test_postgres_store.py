@@ -900,6 +900,31 @@ def test_postgres_append_events_always_writes_full_event_json() -> None:
     assert deserialize_game_event(serialized) == event
 
 
+def test_postgres_append_events_serializes_nested_resolution_batches() -> None:
+    from werewolf_agent.core.event_visibility import EventVisibility
+
+    repo, mock_conn = _setup_repo_with_mock_conn()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (0,)
+    mock_conn.execute.return_value = mock_cursor
+    batch = ResolutionBatchV2("day", 2, "hunter_shot")
+    event = GameEvent(
+        type="nested_batch",
+        payload={"items": [{"batch": batch}]},
+        visibility=EventVisibility.PUBLIC,
+        schema_version="2",
+    )
+
+    repo.append_events("g1", [event])
+
+    insert_args = mock_conn.execute.call_args_list[1].args[1]
+    legacy_payload = json.loads(insert_args[3])
+    event_json = json.loads(insert_args[4])
+    expected = {"phase": "day", "number": 2, "cause": "hunter_shot"}
+    assert legacy_payload["items"][0]["batch"] == expected
+    assert event_json["payload"]["items"][0]["batch"] == expected
+
+
 def test_postgres_dual_write_keeps_private_visibility_for_legacy_reader() -> None:
     from datetime import datetime, timezone
 

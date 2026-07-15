@@ -15,6 +15,8 @@ the pre-fix behavior so back-compat callers keep working.
 
 from unittest.mock import patch
 
+import pytest
+
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
 from werewolf_agent.runtime.directives._shared import (
     collect_death_order,
@@ -201,6 +203,63 @@ def test_collect_death_order_accepts_v2_and_excludes_future_day() -> None:
     )
 
     assert collect_death_order(gs, current_day=2) == "p01(放逐)"
+
+
+@pytest.mark.parametrize(
+    ("batch", "included"),
+    [
+        ("day_1_vote", True),
+        ("day_2_vote", True),
+        ("day_3_vote", False),
+        ("night_1_wolf_kill", True),
+        ("night_2_wolf_kill", True),
+        ("night_3_wolf_kill", False),
+    ],
+)
+def test_collect_death_order_filters_day_and_night_relative_to_current_day(
+    batch: str,
+    included: bool,
+) -> None:
+    gs = GameState(
+        game_id=f"matrix-{batch}",
+        day_number=2,
+        deaths=[Death("p01", "exile", "day_vote", batch)],
+    )
+
+    output = collect_death_order(gs, current_day=2)
+
+    assert ("p01" in output) is included
+
+
+def test_collect_death_order_warning_redacts_malformed_raw_and_deduplicates(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from werewolf_agent.runtime.directives import _shared
+
+    secret = "day_SECRET-player-p09-role-wolf-target-p01"
+    _shared._WARNED_BATCH_PARSE_FAILURES.clear()
+    gs = GameState(
+        game_id="private-game-id",
+        deaths=[
+            Death("p01", "exile", "day_vote", secret),
+            Death("p02", "hunter_shot", "day_vote", secret),
+        ],
+    )
+
+    with caplog.at_level("WARNING", logger=_shared.__name__):
+        collect_death_order(gs, current_day=2)
+        collect_death_order(gs, current_day=2)
+
+    records = [record for record in caplog.records if "malformed" in record.message]
+    assert len(records) == 1
+    message = records[0].message
+    assert secret not in message
+    assert "p09" not in message
+    assert "wolf" not in message
+    assert "p01" not in message
+    assert "private-game-id" not in message
+    assert "batch_type=str" in message
+    assert "batch_hash=" in message
 
 
 def test_collect_death_order_night_batch_does_not_warn() -> None:
