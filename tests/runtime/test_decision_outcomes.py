@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -91,7 +92,7 @@ def test_outcome_taxonomy_is_mutually_exclusive() -> None:
                 _attempt(2, RouteKind.REPAIR, AttemptOutcome.SUCCESS),
             ),
             DecisionOutcome.REPAIRED_SUCCESS,
-            1,
+            0,
         ),
         (
             (
@@ -99,7 +100,7 @@ def test_outcome_taxonomy_is_mutually_exclusive() -> None:
                 _attempt(2, RouteKind.PROVIDER_FALLBACK, AttemptOutcome.SUCCESS),
             ),
             DecisionOutcome.PROVIDER_FALLBACK_SUCCESS,
-            1,
+            0,
         ),
         (
             (
@@ -107,7 +108,7 @@ def test_outcome_taxonomy_is_mutually_exclusive() -> None:
                 _attempt(2, RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE, cause=RootCause.POLICY_REJECTION),
             ),
             DecisionOutcome.TERMINAL_FALLBACK,
-            1,
+            0,
         ),
         (
             (
@@ -119,13 +120,17 @@ def test_outcome_taxonomy_is_mutually_exclusive() -> None:
                 ),
             ),
             DecisionOutcome.PROVIDER_FALLBACK_SUCCESS,
-            2,
+            1,
         ),
     ],
 )
 def test_retry_semantics_table(attempts, expected, retries) -> None:
     result = translate_decision_outcome(attempts)
     assert (result.outcome, result.retry_count) == (expected, retries)
+    assert result.attempt_count == len(attempts)
+    assert result.provider_fallback_count == sum(
+        item.route_kind is RouteKind.PROVIDER_FALLBACK for item in attempts
+    )
 
 
 def test_provider_fallback_preserves_reasoning_evidence() -> None:

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-13
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -67,12 +67,34 @@ class DecisionOutcome(str, Enum):
     TERMINAL_FALLBACK = "terminal_fallback"
 
 
+class DecisionGeneratedBy(str, Enum):
+    """最终动作内容的稳定生成来源。"""
+
+    MODEL = "model"
+    REPAIR = "repair"
+    PROVIDER_FALLBACK = "provider_fallback"
+    TERMINAL_FALLBACK = "terminal_fallback"
+
+
+@dataclass(frozen=True)
+class AttemptCounts:
+    """仅由强类型路由推导的 V2 尝试计数。"""
+
+    attempt_count: int
+    retry_count: int
+    provider_fallback_count: int
+
+
 @dataclass(frozen=True)
 class TranslatedDecisionOutcome:
     """最终分类及完整可追溯尝试链。"""
 
     outcome: DecisionOutcome
     retry_count: int
+    attempt_count: int
+    provider_fallback_count: int
+    generated_by: DecisionGeneratedBy
+    terminal_failure_code: str | None
     attempts: tuple[DecisionAttempt, ...]
 
     @property
@@ -127,11 +149,83 @@ def translate_decision_outcome(
         outcome = DecisionOutcome.RETRY_SUCCESS
     else:
         outcome = DecisionOutcome.DIRECT_SUCCESS
+    counts = summarize_attempt_counts(attempts)
     return TranslatedDecisionOutcome(
         outcome=outcome,
-        retry_count=len(attempts) - 1,
+        retry_count=counts.retry_count,
+        attempt_count=counts.attempt_count,
+        provider_fallback_count=counts.provider_fallback_count,
+        generated_by=_generated_by(route_history),
+        terminal_failure_code=(
+            final.root_cause.value
+            if final.route_kind is RouteKind.SAFE_FALLBACK
+            else None
+        ),
         attempts=attempts,
     )
+
+
+def summarize_attempt_counts(
+    attempts: Sequence[DecisionAttempt | Mapping[str, Any]],
+) -> AttemptCounts:
+    """按集中定义的 route_kind 语义计算尝试、重试和供应商回退次数。"""
+    route_kinds = tuple(_route_kind(item) for item in attempts)
+    return AttemptCounts(
+        attempt_count=len(route_kinds),
+        retry_count=sum(route is RouteKind.RETRY for route in route_kinds),
+        provider_fallback_count=sum(
+            route is RouteKind.PROVIDER_FALLBACK for route in route_kinds
+        ),
+    )
+
+
+def normalize_decision_execution_trace(
+    trace: Mapping[str, Any],
+) -> dict[str, Any]:
+    """返回 V2 内存投影；旧 trace 只读归一化且不修改输入。"""
+    raw_attempts = trace.get("execution_attempts")
+    if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
+        raise ValueError("decision trace requires execution attempts")
+    if all(isinstance(item, Mapping) for item in raw_attempts):
+        translated = translate_serialized_decision_outcome(raw_attempts)
+    elif all(not isinstance(item, Mapping) for item in raw_attempts):
+        translated = translate_decision_outcome(tuple(raw_attempts))
+    else:
+        raise TypeError("execution attempts must share one schema")
+
+    normalized = dict(trace)
+    normalized.update(
+        attempt_count=translated.attempt_count,
+        retry_count=translated.retry_count,
+        provider_fallback_count=translated.provider_fallback_count,
+        decision_outcome=translated.outcome.value,
+        generated_by=translated.generated_by.value,
+        terminal_failure_code=translated.terminal_failure_code,
+    )
+    v2_fields = {
+        "attempt_count",
+        "provider_fallback_count",
+        "generated_by",
+        "terminal_failure_code",
+    }
+    if not v2_fields.issubset(trace):
+        normalized["normalized_from_schema_version"] = "1"
+    return normalized
+
+
+def _route_kind(item: DecisionAttempt | Mapping[str, Any]) -> RouteKind:
+    route_kind = item.get("route_kind") if isinstance(item, Mapping) else item.route_kind
+    return route_kind if isinstance(route_kind, RouteKind) else RouteKind(route_kind)
+
+
+def _generated_by(route_history: set[RouteKind]) -> DecisionGeneratedBy:
+    if RouteKind.SAFE_FALLBACK in route_history:
+        return DecisionGeneratedBy.TERMINAL_FALLBACK
+    if RouteKind.REPAIR in route_history:
+        return DecisionGeneratedBy.REPAIR
+    if RouteKind.PROVIDER_FALLBACK in route_history:
+        return DecisionGeneratedBy.PROVIDER_FALLBACK
+    return DecisionGeneratedBy.MODEL
 
 
 def translate_serialized_decision_outcome(
@@ -168,9 +262,13 @@ def _serialized_attempt(payload: Mapping[str, Any]) -> _SerializedDecisionAttemp
 
 
 __all__ = [
+    "AttemptCounts",
+    "DecisionGeneratedBy",
     "DecisionOutcome",
     "DecisionAttempt",
     "TranslatedDecisionOutcome",
+    "normalize_decision_execution_trace",
+    "summarize_attempt_counts",
     "translate_decision_outcome",
     "translate_serialized_decision_outcome",
 ]

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -192,9 +192,25 @@ def test_execution_report_taxonomy_is_consistent(
         "execution_attempts": attempts,
         # 故意放入错误的历史投影，证明报告重新消费 translator，而不是信任自由文本。
         "decision_outcome": "legacy_free_text",
-        "retry_count": len(attempts) - 1,
-        "total_retry_count_until_success": (
-            None if decision == "terminal_fallback" else len(attempts) - 1
+        "attempt_count": len(attempts),
+        "retry_count": sum(
+            item.route_kind is RouteKind.RETRY for item in attempts
+        ),
+        "provider_fallback_count": sum(
+            item.route_kind is RouteKind.PROVIDER_FALLBACK for item in attempts
+        ),
+        "generated_by": (
+            "terminal_fallback"
+            if decision == "terminal_fallback"
+            else "repair"
+            if decision == "repaired_success"
+            else "provider_fallback"
+            if decision == "provider_fallback_success"
+            else "model"
+        ),
+        "terminal_failure_code": (
+            attempts[-1].root_cause.value
+            if decision == "terminal_fallback" else None
         ),
     }
     metrics = compute_decision_execution_metrics([{
@@ -206,7 +222,9 @@ def test_execution_report_taxonomy_is_consistent(
 
     assert metrics["decision_count"] == 1
     assert metrics["attempt_count"] == len(attempts)
-    assert metrics["retry_count"] == len(attempts) - 1
+    assert metrics["retry_count"] == sum(
+        item.route_kind is RouteKind.RETRY for item in attempts
+    )
     assert metrics["root_cause_counts"] == root_counts
     assert metrics["attempt_outcome_counts"] == attempt_counts
     assert metrics["decision_outcome_counts"] == {decision: 1}
@@ -270,11 +288,51 @@ def test_retry_consistency_accepts_two_attempts_with_one_retry_and_no_errors() -
             "action_trace": {
                 "execution_attempts": attempts,
                 "retry_count": 1,
-                "total_retry_count_until_success": 1,
+                "attempt_count": 2,
+                "provider_fallback_count": 0,
+                "generated_by": "model",
+                "terminal_failure_code": None,
             },
         }}],
     }])
 
+    assert metrics["attempt_retry_consistency_error_count"] == 0
+
+
+def test_provider_fallback_is_not_counted_as_retry() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_decision_execution_metrics
+
+    attempts = (
+        _attempt(
+            1,
+            RouteKind.PRIMARY,
+            AttemptOutcome.FAILURE,
+            cause=RootCause.PROVIDER_ERROR,
+        ),
+        _attempt(
+            2,
+            RouteKind.PROVIDER_FALLBACK,
+            AttemptOutcome.SUCCESS,
+            provider="backup",
+        ),
+    )
+    metrics = compute_decision_execution_metrics([{
+        "events": [{"type": "action_trace_audit", "payload": {
+            "task_type": "vote",
+            "action_trace": {
+                "execution_attempts": attempts,
+                "attempt_count": 2,
+                "retry_count": 0,
+                "provider_fallback_count": 1,
+                "generated_by": "provider_fallback",
+                "terminal_failure_code": None,
+            },
+        }}],
+    }])
+
+    assert metrics["attempt_count"] == 2
+    assert metrics["retry_count"] == 0
+    assert metrics["provider_fallback_count"] == 1
     assert metrics["attempt_retry_consistency_error_count"] == 0
 
 

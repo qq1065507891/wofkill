@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.agents.trace_schemas import ActionTrace
@@ -15,7 +15,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
 
 
@@ -100,16 +100,29 @@ class ActionTrace(BaseModel):
     tool_call_name: str = ""
     parse_success: bool = False
     parse_error: str | None = None
+    attempt_count: int = 0
     retry_count: int = 0
+    provider_fallback_count: int = 0
+    generated_by: Literal[
+        "model", "repair", "provider_fallback", "terminal_fallback"
+    ] | None = None
+    terminal_failure_code: str | None = None
     structured_failure_reason: str | None = None
     structured_output_mode: str = ""
     structured_failure_stage: str | None = None
-    # P3-G3223805846-1: 成功路径上累计重试次数（0 表示一次成功）
     total_retry_count_until_success: int = 0
     world_model_audit: dict[str, Any] = Field(default_factory=dict)
     execution_attempts: tuple[AttemptExecutionRecord, ...] = ()
     decision_outcome: str | None = None
     semantic_repair_audit: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize_v2(self, handler: Any) -> dict[str, Any]:
+        """新 trace 不写旧计数字段；显式读入的 V1 值仍可只读访问。"""
+        payload = handler(self)
+        if "total_retry_count_until_success" not in self.model_fields_set:
+            payload.pop("total_retry_count_until_success", None)
+        return payload
 
 
 # ---------------------------------------------------------------------------

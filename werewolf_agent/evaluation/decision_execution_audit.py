@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from werewolf_agent.model_gateway.reasoning_policy import (
 )
 from werewolf_agent.runtime.decision_outcomes import (
     DecisionOutcome,
+    normalize_decision_execution_trace,
     translate_decision_outcome,
     translate_serialized_decision_outcome,
 )
@@ -36,6 +38,7 @@ def compute_decision_execution_metrics(
     decision_outcomes: Counter[str] = Counter()
     attempt_count = 0
     retry_count = 0
+    provider_fallback_count = 0
     decision_count = 0
     invalid_sequence_count = 0
     consistency_errors = 0
@@ -79,6 +82,7 @@ def compute_decision_execution_metrics(
                 critical_request_count += 1
             continue
         try:
+            normalized_trace = normalize_decision_execution_trace(trace)
             if all(isinstance(item, AttemptExecutionRecord) for item in raw_attempts):
                 translated = translate_decision_outcome(tuple(raw_attempts))
             elif all(isinstance(item, dict) for item in raw_attempts):
@@ -130,8 +134,9 @@ def compute_decision_execution_metrics(
                     status is ReasoningStatus.FALLBACK_DISABLED
                 )
         decision_outcomes[translated.outcome.value] += 1
-        attempt_count += len(translated.attempts)
+        attempt_count += translated.attempt_count
         retry_count += translated.retry_count
+        provider_fallback_count += translated.provider_fallback_count
         for attempt in translated.attempts:
             root_causes[attempt.root_cause.value] += 1
             attempt_outcomes[attempt.attempt_outcome.value] += 1
@@ -150,17 +155,15 @@ def compute_decision_execution_metrics(
                 ):
                     fallback_disabled_count += 1
 
-        expected_retry_count = len(translated.attempts) - 1
-        if trace.get("retry_count") is not None:
-            consistency_errors += int(trace["retry_count"] != expected_retry_count)
-        expected_success_retries = (
-            None
-            if translated.outcome is DecisionOutcome.TERMINAL_FALLBACK
-            else translated.retry_count
-        )
-        if "total_retry_count_until_success" in trace:
-            consistency_errors += int(
-                trace["total_retry_count_until_success"] != expected_success_retries
+        expected_fields = {
+            "attempt_count": translated.attempt_count,
+            "retry_count": translated.retry_count,
+            "provider_fallback_count": translated.provider_fallback_count,
+        }
+        if "normalized_from_schema_version" not in normalized_trace:
+            consistency_errors += sum(
+                trace.get(key) != value
+                for key, value in expected_fields.items()
             )
 
         has_provider_fallback = any(
@@ -189,6 +192,7 @@ def compute_decision_execution_metrics(
         "decision_count": decision_count,
         "attempt_count": attempt_count,
         "retry_count": retry_count,
+        "provider_fallback_count": provider_fallback_count,
         "root_cause_counts": dict(sorted(root_causes.items())),
         "attempt_outcome_counts": dict(sorted(attempt_outcomes.items())),
         "decision_outcome_counts": dict(sorted(decision_outcomes.items())),

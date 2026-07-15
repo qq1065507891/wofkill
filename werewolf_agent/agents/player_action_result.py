@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_result import finalize_successful_player_action
@@ -23,6 +23,7 @@ from werewolf_agent.agents.schemas import (
 )
 from werewolf_agent.agents.trace_builder import build_action_trace as _build_action_trace
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
+from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
 
 
 def finalize_successful_player_action(
@@ -56,13 +57,16 @@ def finalize_successful_player_action(
         execution_attempts=execution_attempts,
         semantic_repair_audit=semantic_repair_audit,
     )
-    trace.total_retry_count_until_success = max(retry_count - 1, 0)
+    effective_retry_count = (
+        summarize_attempt_counts(execution_attempts).retry_count
+        if execution_attempts else retry_count
+    )
     agent.metrics_collector.record(
         player_id=context.agent_id,
         task_type=context.task_type.value,
         error_code=None,
         fallback_used=False,
-        retry_count=retry_count,
+        retry_count=effective_retry_count,
     )
     return action.model_copy(update={"trace": trace})
 
@@ -109,11 +113,15 @@ def finalize_fallback_player_action(
         execution_attempts=execution_attempts,
         semantic_repair_audit=semantic_repair_audit,
     )
+    effective_retry_count = (
+        summarize_attempt_counts(execution_attempts).retry_count
+        if execution_attempts else retry_count
+    )
     agent.metrics_collector.record(
         player_id=context.agent_id,
         task_type=context.task_type.value,
         error_code=metrics_error_code or (retry.error_code if retry else "exhausted_retries"),
         fallback_used=True,
-        retry_count=retry_count,
+        retry_count=effective_retry_count,
     )
     return fallback.model_copy(update={"trace": trace})

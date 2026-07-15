@@ -3,18 +3,22 @@
 功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-14
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from werewolf_agent.agents.schemas import ActionTrace, AgentContext, PlayerAction, RetryInfo
 from werewolf_agent.runtime.world_model_audit import build_world_model_audit_from_context
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
-from werewolf_agent.runtime.decision_outcomes import translate_decision_outcome
+from werewolf_agent.runtime.decision_outcomes import (
+    TranslatedDecisionOutcome,
+    translate_decision_outcome,
+)
 
 
 def build_action_trace(
@@ -54,8 +58,8 @@ def build_action_trace(
         if isinstance(parsed_action, PlayerAction)
         else parsed_action
     )
-    outcome = (
-        translate_decision_outcome(execution_attempts).outcome.value
+    translated = (
+        translate_decision_outcome(execution_attempts)
         if execution_attempts else None
     )
     return ActionTrace(
@@ -73,7 +77,16 @@ def build_action_trace(
         tool_call_name="submit_player_action" if tool_call_required else "",
         parse_success=parse_success,
         parse_error=parse_error,
-        retry_count=retry_count,
+        attempt_count=translated.attempt_count if translated else 0,
+        retry_count=translated.retry_count if translated else retry_count,
+        provider_fallback_count=(
+            translated.provider_fallback_count if translated else 0
+        ),
+        generated_by=translated.generated_by.value if translated else None,
+        terminal_failure_code=_terminal_failure_code(
+            translated,
+            structured_failure_reason,
+        ),
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
@@ -82,6 +95,20 @@ def build_action_trace(
             parsed_action=parsed_payload,
         ),
         execution_attempts=execution_attempts,
-        decision_outcome=outcome,
+        decision_outcome=translated.outcome.value if translated else None,
         semantic_repair_audit=semantic_repair_audit,
     )
+
+
+def _terminal_failure_code(
+    translated: TranslatedDecisionOutcome | None,
+    structured_failure_reason: str | None,
+) -> str | None:
+    """仅允许稳定错误码进入 trace，拒绝原始错误正文与身份信息。"""
+    if not translated or translated.generated_by.value != "terminal_fallback":
+        return None
+    if structured_failure_reason and re.fullmatch(
+        r"[a-z][a-z0-9_]{0,63}", structured_failure_reason
+    ):
+        return structured_failure_reason
+    return translated.terminal_failure_code

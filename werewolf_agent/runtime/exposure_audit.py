@@ -2,7 +2,7 @@
 """Runtime audit events for module exposure, call monitoring, and prompt injection.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-13
+    修改日期: 2026-07-15
     使用示例: 内部模块，无对外接口
 """
 
@@ -61,6 +61,10 @@ _SKILL_TOOL_CALL_KEYS = frozenset({
     "structured_output_mode",
     "parse_success",
     "retry_count",
+    "attempt_count",
+    "provider_fallback_count",
+    "generated_by",
+    "terminal_failure_code",
     "duration_ms",
 })
 _SKILL_TOOL_INPUT_KEYS = frozenset({
@@ -414,6 +418,14 @@ class ModuleExposureAuditCollector:
                 "decision_usage": decision_usage,
                 "parse_success": parse_success,
                 "retry_count": int(action_trace.get("retry_count") or 0),
+                "attempt_count": int(action_trace.get("attempt_count") or 0),
+                "provider_fallback_count": int(
+                    action_trace.get("provider_fallback_count") or 0
+                ),
+                "generated_by": action_trace.get("generated_by"),
+                "terminal_failure_code": action_trace.get(
+                    "terminal_failure_code"
+                ),
                 "structured_failure_reason": action_trace.get("structured_failure_reason"),
                 "structured_failure_stage": action_trace.get("structured_failure_stage"),
                 "structured_output_mode": action_trace.get("structured_output_mode"),

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -65,6 +65,7 @@ from werewolf_agent.model_gateway.structured_output import (
     classify_structured_failure,
 )
 from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
+from werewolf_agent.runtime.decision_outcomes import summarize_attempt_counts
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,9 @@ def run_player_action_flow(
                 tool_call_received=False,
                 parse_success=False,
                 parse_error="provider does not support tool_choice",
-                retry_count=attempt,
+                retry_count=summarize_attempt_counts(
+                    generation_attempt_context.attempts
+                ).retry_count,
                 structured_failure_reason=structured_failure_reason,
                 structured_output_mode=structured_output_mode,
                 structured_failure_stage=structured_failure_stage,
@@ -219,7 +222,9 @@ def run_player_action_flow(
                     tool_call_received=False,
                     parse_success=False,
                     parse_error=failure_reason,
-                    retry_count=attempt,
+                    retry_count=summarize_attempt_counts(
+                        generation_attempt_context.attempts
+                    ).retry_count,
                     structured_failure_reason=structured_failure_reason,
                     structured_output_mode=structured_output_mode,
                     structured_failure_stage=structured_failure_stage,
@@ -520,7 +525,9 @@ def run_player_action_flow(
             tool_call_required=tool_call_required,
             tool_call_received=tool_call_received,
             parse_success=parse_success,
-            retry_count=attempt,
+            retry_count=summarize_attempt_counts(
+                generation_attempt_context.attempts
+            ).retry_count,
             structured_output_mode=structured_output_mode,
             execution_attempts=generation_attempt_context.attempts,
             semantic_repair_audit=(
@@ -562,7 +569,9 @@ def run_player_action_flow(
         tool_call_received=tool_call_received,
         parse_success=parse_success,
         parse_error=parse_error_str,
-        retry_count=attempt,
+        retry_count=summarize_attempt_counts(
+            generation_attempt_context.attempts
+        ).retry_count,
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
