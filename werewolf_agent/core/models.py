@@ -1,15 +1,18 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：所有游戏状态的不可变数据容器，frozen dataclass + __post_init__ 防御性拷贝，零外部依赖。
+功能描述：游戏状态与 V1/V2 事件元数据的不可变数据容器。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
+
+from werewolf_agent.core.event_visibility import EventVisibility
 
 
 _GOOD_ROLES = frozenset({"villager", "seer", "witch", "hunter", "idiot"})
@@ -135,6 +138,23 @@ class VoteResult:
 class GameEvent:
     type: str
     payload: dict[str, Any] = field(default_factory=dict)
+    visibility: EventVisibility | None = None
+    event_id: str | None = None
+    sequence_number: int | None = None
+    occurred_at: datetime | None = None
+    game_id: str | None = None
+    trace_id: str | None = None
+    schema_version: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.occurred_at is not None
+            and (
+                self.occurred_at.tzinfo is None
+                or self.occurred_at.utcoffset() is None
+            )
+        ):
+            raise ValueError("GameEvent.occurred_at must be timezone-aware")
 
 
 @dataclass(frozen=True)

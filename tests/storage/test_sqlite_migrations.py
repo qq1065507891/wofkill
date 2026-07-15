@@ -34,5 +34,13 @@ def test_sqlite_schema_has_reflections_table():
     """S3 (post-review-v2): SQLite _SCHEMA 应含 reflections 表。"""
     from werewolf_agent.storage.sqlite_store import _SCHEMA
     assert "CREATE TABLE IF NOT EXISTS reflections" in _SCHEMA, (
-        f"SQLite _SCHEMA missing reflections table"
+        "SQLite _SCHEMA missing reflections table"
     )
+
+
+def test_fresh_sqlite_schema_includes_nullable_event_json() -> None:
+    from werewolf_agent.storage.sqlite_store import _SCHEMA
+
+    events_table = _SCHEMA.split("CREATE TABLE IF NOT EXISTS events", 1)[1].split(");", 1)[0]
+    assert "event_json TEXT" in events_table
+    assert "event_json TEXT NOT NULL" not in events_table

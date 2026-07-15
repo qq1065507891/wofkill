@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.public_ledger import build_public_ledger
 
@@ -135,3 +136,16 @@ def test_public_claim_text_ledger_is_complete_ordered_and_public_only() -> None:
     }
     assert ledger[-1]["event_index"] == 12
     assert "私密声明" not in str(ledger)
+
+
+def test_public_ledger_uses_v2_top_level_visibility_without_payload_marker() -> None:
+    state = GameState(events=[GameEvent(
+        type="speech",
+        payload={"speaker": "p01", "text": "我是预言家"},
+        visibility=EventVisibility.MODERATOR_ONLY,
+        schema_version="2",
+    )])
+
+    ledger = build_public_ledger(state)
+
+    assert ledger["role_claims"] == []

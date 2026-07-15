@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：内存游戏仓库——用于测试和本地开发。
+功能描述：内存游戏仓库，原样保存完整不可变 GameEvent 数据类。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -37,6 +37,7 @@ class InMemoryGameRepository:
         return self._games.get(game_id)
 
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
+        """保留事件的完整 V1/V2 数据类，不经过降级序列化。"""
         if game_id not in self._events:
             self._events[game_id] = []
         self._events[game_id].extend(events)

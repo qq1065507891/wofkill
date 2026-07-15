@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：PostgreSQL 游戏仓库——JSONB 存储，与 SQLite/InMemory 接口一致，供 Docker Compose 本地生产用。
+功能描述：PostgreSQL 游戏仓库，支持 GameEvent V2 完整 JSON 与 V1 只读兼容。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -15,6 +15,7 @@ from dataclasses import asdict
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.runtime.event_metadata import deserialize_game_event, serialize_game_event
 from werewolf_agent.storage.sqlite_store import _deserialize_game_state, _serialize_game_state
 
 
@@ -70,21 +71,36 @@ class PostgresGameRepository:
             for i, event in enumerate(events):
                 conn.execute(
                     """
-                    INSERT INTO events (game_id, seq, event_type, payload_json)
-                    VALUES (%s, %s, %s, %s::jsonb)
+                    INSERT INTO events (game_id, seq, event_type, payload_json, event_json)
+                    VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
                     """,
-                    (game_id, current + i + 1, event.type, json.dumps(event.payload, ensure_ascii=False)),
+                    (
+                        game_id,
+                        current + i + 1,
+                        event.type,
+                        json.dumps(event.payload, ensure_ascii=False),
+                        json.dumps(serialize_game_event(event), ensure_ascii=False),
+                    ),
                 )
             conn.commit()
 
     def load_events(self, game_id: str) -> list[GameEvent]:
         with self._lock:
             rows = self._ensure_connection().execute(
-                "SELECT event_type, payload_json FROM events WHERE game_id = %s ORDER BY seq",
+                "SELECT event_type, payload_json, event_json FROM events WHERE game_id = %s ORDER BY seq",
                 (game_id,),
             ).fetchall()
             return [
-                GameEvent(type=row[0], payload=row[1] if isinstance(row[1], dict) else json.loads(row[1]))
+                (
+                    deserialize_game_event(
+                        row[2] if isinstance(row[2], dict) else json.loads(row[2])
+                    )
+                    if len(row) > 2 and row[2] is not None
+                    else GameEvent(
+                        type=row[0],
+                        payload=row[1] if isinstance(row[1], dict) else json.loads(row[1]),
+                    )
+                )
                 for row in rows
             ]
 
@@ -425,6 +441,9 @@ class PostgresGameRepository:
                 payload_json JSONB NOT NULL
             )
         """)
+        conn.execute(
+            "ALTER TABLE events ADD COLUMN IF NOT EXISTS event_json JSONB"
+        )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS deaths (
                 game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,

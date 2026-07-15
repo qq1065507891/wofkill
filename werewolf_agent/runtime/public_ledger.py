@@ -1,8 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
-"""Public information ledger derived from visible game events.
+"""从 V1/V2 可见游戏事件构建公开信息账本。
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-14
+    修改日期: 2026-07-15
     使用示例: 内部模块，无对外接口
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.cognition.world_state import _infer_claims_from_text
 
@@ -81,13 +82,13 @@ def build_public_claim_text_ledger(game_state: GameState) -> list[dict[str, Any]
 
 
 def _is_public_event_compatible(event: GameEvent) -> bool:
-    return event.payload.get("visibility") not in PRIVATE_VISIBILITIES
+    return event_visibility(event) is EventVisibility.PUBLIC
 
 
 def _is_public_event(event: GameEvent) -> bool:
     if event.type not in PUBLIC_EVENT_TYPES:
         return False
-    return event.payload.get("visibility") not in PRIVATE_VISIBILITIES
+    return event_visibility(event) is EventVisibility.PUBLIC
 
 
 def _add_speech_items(

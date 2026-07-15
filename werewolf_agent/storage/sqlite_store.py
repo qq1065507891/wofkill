@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：SQLite 游戏仓库——持久化本地开发，stdlib sqlite3 六表结构。
+功能描述：SQLite 游戏仓库，支持 GameEvent V2 完整 JSON 与 V1 只读兼容。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -16,10 +16,12 @@ import threading
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.runtime.event_metadata import deserialize_game_event, serialize_game_event
 
 
 def _serialize_game_state(gs: GameState) -> str:
     data = asdict(gs)
+    data["events"] = [serialize_game_event(event) for event in gs.events]
     return json.dumps(data, ensure_ascii=False)
 
 
@@ -29,7 +31,7 @@ def _deserialize_game_state(raw: str) -> GameState:
         pid: PlayerState(**pdata) for pid, pdata in data.pop("players", {}).items()
     }
     deaths = [Death(**d) for d in data.pop("deaths", [])]
-    events = [GameEvent(**e) for e in data.pop("events", [])]
+    events = [deserialize_game_event(e) for e in data.pop("events", [])]
     return GameState(
         players=players,
         deaths=deaths,
@@ -55,6 +57,7 @@ CREATE TABLE IF NOT EXISTS events (
     seq INTEGER NOT NULL,
     event_type TEXT NOT NULL,
     payload_json TEXT NOT NULL,
+    event_json TEXT,
     FOREIGN KEY (game_id) REFERENCES games(game_id) ON DELETE CASCADE
 );
 
@@ -170,19 +173,29 @@ class SqliteGameRepository:
             ).fetchone()[0]
             for i, event in enumerate(events):
                 self._conn.execute(
-                    "INSERT INTO events (game_id, seq, event_type, payload_json) VALUES (?, ?, ?, ?)",
-                    (game_id, current_max + i + 1, event.type, json.dumps(event.payload, ensure_ascii=False)),
+                    "INSERT INTO events (game_id, seq, event_type, payload_json, event_json) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        game_id,
+                        current_max + i + 1,
+                        event.type,
+                        json.dumps(event.payload, ensure_ascii=False),
+                        json.dumps(serialize_game_event(event), ensure_ascii=False),
+                    ),
                 )
             self._conn.commit()
 
     def load_events(self, game_id: str) -> list[GameEvent]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT event_type, payload_json FROM events WHERE game_id = ? ORDER BY seq",
+                "SELECT event_type, payload_json, event_json FROM events WHERE game_id = ? ORDER BY seq",
                 (game_id,),
             ).fetchall()
             return [
-                GameEvent(type=r[0], payload=json.loads(r[1]))
+                (
+                    deserialize_game_event(json.loads(r[2]))
+                    if r[2] is not None
+                    else GameEvent(type=r[0], payload=json.loads(r[1]))
+                )
                 for r in rows
             ]
 

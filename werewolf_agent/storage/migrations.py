@@ -1,9 +1,9 @@
 ﻿# -*- coding: utf-8 -*-
 """
-功能描述：SQLite schema 迁移系统——版本化迁移，升级不丢数据。
+功能描述：SQLite schema 迁移系统，版本化升级并为事件保留 V1 读取列。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -87,6 +87,13 @@ MIGRATIONS: list[Migration] = [
         );
         CREATE INDEX IF NOT EXISTS idx_reflections_game ON reflections (game_id);
         CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id);
+        """,
+    ),
+    Migration(
+        version=2,
+        description="Add nullable GameEvent V2 JSON storage",
+        sql="""
+        ALTER TABLE events ADD COLUMN event_json TEXT;
         """,
     ),
 ]

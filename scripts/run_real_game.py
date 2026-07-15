@@ -3,7 +3,7 @@
 运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
 作者: Project contributors
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 
 使用示例:
     python scripts/run_real_game.py --seed 42 --max-steps 500
@@ -30,6 +30,7 @@ from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
     compute_wolf_plan_outcome_metrics,
 )
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
+from werewolf_agent.runtime.event_metadata import serialize_game_event  # noqa: E402
 from werewolf_agent.runtime.exposure_audit import (  # noqa: E402
     summarize_persona_prompt_confirmation,
 )
@@ -313,7 +314,10 @@ def save_game_log(
             for d in gs.deaths
         ],
         "events": [
-            {"type": e.type, "payload": _safe_event_payload(e.type, e.payload)}
+            {
+                **serialize_game_event(e),
+                "payload": _safe_event_payload(e.type, e.payload),
+            }
             for e in gs.events
         ],
         "elapsed_seconds": round(elapsed, 1),

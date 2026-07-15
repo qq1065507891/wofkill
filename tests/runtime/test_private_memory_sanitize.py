@@ -1230,3 +1230,21 @@ def test_token_estimate_includes_dict_wrapper_overhead():
         f"a single-key empty entry. The legacy estimator returns 1 "
         f"(max 1 with no cjk/ascii content). Got estimated={estimated}."
     )
+
+
+def test_private_memory_excludes_v2_private_speech_without_payload_visibility():
+    from werewolf_agent.core.event_visibility import EventVisibility
+    from werewolf_agent.core.models import GameState
+    from werewolf_agent.runtime.private_memory import build_private_memory
+
+    state = GameState(events=[GameEvent(
+        type="speech",
+        payload={"speaker": "p01", "text": "逻辑漏洞是队友暴露"},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        schema_version="2",
+    )])
+
+    memory, caveat = build_private_memory(state, "p01")
+
+    assert memory == {}
+    assert caveat == ""

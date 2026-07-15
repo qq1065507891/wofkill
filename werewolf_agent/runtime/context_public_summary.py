@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-07
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.runtime.context_public_summary import build_public_summary
@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.timeline import (
     TIMELINE_ORDER_NOTE,
@@ -28,6 +29,8 @@ def build_recent_transcript(gs: GameState) -> list[dict[str, Any]]:
     """Build the compact recent speech/vote transcript for prompts."""
     transcript: list[dict[str, Any]] = []
     for event in reversed(gs.events):
+        if event_visibility(event) is not EventVisibility.PUBLIC:
+            continue
         if event.type in ("speech", "sheriff_speech"):
             if len(transcript) < 10:
                 transcript.insert(0, {
@@ -56,6 +59,8 @@ def build_public_summary(gs: GameState) -> str:
     summary_items: list[tuple[int, str]] = []
 
     for event in gs.events:
+        if event_visibility(event) is not EventVisibility.PUBLIC:
+            continue
         if event.type == "day_announce":
             day = event.payload.get("day", "?")
             try:
@@ -64,7 +69,7 @@ def build_public_summary(gs: GameState) -> str:
                 day_label = f"D{day}"
             summary_items.append((3, f"\n===== {day_label} ====="))
 
-        elif event.type == "judge_broadcast" and event.payload.get("visibility") == "public":
+        elif event.type == "judge_broadcast":
             phase = event.payload.get("phase", "")
             msg = event.payload.get("message", "")
             if phase == "death_announce":

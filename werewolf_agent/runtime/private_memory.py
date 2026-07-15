@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-09
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.runtime.private_memory import build_private_memory
@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from werewolf_agent.core.event_visibility import event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.private_memory_safety import (
     _FACTION_DISCLOSURE_RE as _FACTION_DISCLOSURE_RE,
@@ -277,7 +278,7 @@ def build_private_memory(
                 continue
             _add_private_vote_thought(memory, event, player_id, game_state)
             continue
-        if event.payload.get("visibility") in PRIVATE_VISIBILITIES:
+        if event_visibility(event).value in PRIVATE_VISIBILITIES:
             continue
         _add_own_speech_notes(memory, event, player_id)
     # P1-M14: priority-ordered truncation replaces the previous
@@ -372,7 +373,7 @@ def _add_own_speech_notes(
     if player_id and speaker != player_id:
         return
     # 跳过私密频道发言（如狼队频道），只处理公开发言
-    visibility = event.payload.get("visibility", "")
+    visibility = event_visibility(event).value
     if visibility == "werewolf_team_only" and player_id and speaker != player_id:
         return
     day = event.payload.get("day_number", 0)

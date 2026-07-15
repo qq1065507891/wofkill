@@ -3,13 +3,14 @@
 功能描述：预言家策略评估函数。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-10
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 from __future__ import annotations
 
 from typing import Any
 
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameState
 from werewolf_agent.cognition.world_state import _has_self_seer_context
 
@@ -29,7 +30,7 @@ def public_seer_claimants(gs: GameState) -> set[str]:
     for event in gs.events:
         if event.type not in ("speech", "sheriff_speech"):
             continue
-        if event.payload.get("visibility", "public") != "public":
+        if event_visibility(event) is not EventVisibility.PUBLIC:
             continue
         speaker = event.payload.get("speaker")
         if not speaker:

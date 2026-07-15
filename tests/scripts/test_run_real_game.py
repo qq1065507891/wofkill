@@ -3,7 +3,7 @@
 验证真实游戏脚本的报告辅助函数与结构化质量指标。
 
 作者: Project contributors
-修改日期: 2026-07-14
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -429,6 +429,49 @@ def test_save_game_log_exports_complete_death_fields(tmp_path, monkeypatch) -> N
             "triggered_skills": ["hunter_shot"],
         },
     ]
+
+
+def test_save_game_log_exports_complete_safe_v2_event_metadata(tmp_path) -> None:
+    from datetime import datetime, timezone
+
+    from scripts import run_real_game
+    from werewolf_agent.core.event_visibility import EventVisibility
+
+    event = GameEvent(
+        type="seer_check",
+        payload={"target_id": "p02"},
+        visibility=EventVisibility.SEER_PRIVATE,
+        event_id="g_export:e000000",
+        sequence_number=0,
+        occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        game_id="g_export",
+        trace_id="trace-1",
+        schema_version="2",
+    )
+    runner = SimpleNamespace(
+        game_id="g_export",
+        state=GameState(game_id="g_export", events=[event]),
+        step_count=1,
+    )
+
+    path = run_real_game.save_game_log(
+        runner,
+        elapsed=0.1,
+        output_dir=tmp_path,
+    )
+    exported = json.loads(path.read_text(encoding="utf-8"))["events"][0]
+
+    assert exported == {
+        "type": "seer_check",
+        "payload": {"target_id": "p02"},
+        "visibility": "seer_private",
+        "event_id": "g_export:e000000",
+        "sequence_number": 0,
+        "occurred_at": "2026-07-15T00:00:00+00:00",
+        "game_id": "g_export",
+        "trace_id": "trace-1",
+        "schema_version": "2",
+    }
 
 
 def test_real_game_parser_accepts_output_directory(tmp_path) -> None:

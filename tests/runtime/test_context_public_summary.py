@@ -4,13 +4,14 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.runtime.context_public_summary import build_public_summary
     >>> build_public_summary(game_state)
 """
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.context_public_summary import (
     build_public_summary,
@@ -40,6 +41,18 @@ def test_build_recent_transcript_keeps_speeches_and_vote_records_in_order():
             "votes": {"p01": "p02", "p03": None},
         },
     ]
+
+
+def test_public_context_excludes_v2_private_event_without_payload_visibility():
+    gs = GameState(events=[GameEvent(
+        type="speech",
+        payload={"speaker": "p01", "text": "私密发言"},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        schema_version="2",
+    )])
+
+    assert build_recent_transcript(gs) == []
+    assert "私密发言" not in build_public_summary(gs)
 
 
 def test_build_public_summary_prioritizes_vote_details_and_prepends_timeline_note():

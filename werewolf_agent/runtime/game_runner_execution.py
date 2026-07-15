@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-GameRunner 的图执行、单步推进和持久化协调逻辑。
+协调 GameRunner 的图执行、事件元数据盖章、单步推进和持久化。
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_execution import GameRunnerExecutionMixin
@@ -12,8 +13,10 @@ GameRunner 的图执行、单步推进和持久化协调逻辑。
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from werewolf_agent.core.models import GameState
+from werewolf_agent.runtime.event_metadata import stamp_new_events
 
 
 logger = logging.getLogger("werewolf_agent.runtime.game_runner")
@@ -26,7 +29,13 @@ class GameRunnerExecutionMixin:
         for name, output in chunk.items():
             node_name = name
             if output is not None and "game_state" in output:
-                self._state = output["game_state"]
+                next_state = output["game_state"]
+                stamped_events = stamp_new_events(
+                    next_state.game_id,
+                    self._state.events,
+                    next_state.events,
+                )
+                self._state = replace(next_state, events=stamped_events)
                 try:
                     self._cognition_state_manager.update_from_events(self._state)
                 except Exception:

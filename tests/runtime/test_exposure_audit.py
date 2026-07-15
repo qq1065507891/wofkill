@@ -3,7 +3,7 @@
 验证运行时模块曝光审计事件的采集、脱敏与决策身份关联。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -49,6 +49,35 @@ def test_collector_builds_rag_reflection_skill_persona_events() -> None:
     ]
     assert all(event.payload["trace_id"] == "g1:p01:vote:D2:N1:vote:4" for event in events)
     assert all(event.payload["visibility"] == "moderator_only" for event in events)
+
+
+def test_v2_stamping_preserves_private_visibility_without_copying_payload() -> None:
+    from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
+    from werewolf_agent.runtime.event_metadata import stamp_new_events
+
+    collector = ModuleExposureAuditCollector()
+    collector.record_skill(_identity(), {"vote_analysis": "push p02"})
+    original = collector.flush_events()[0]
+    expected_payload = dict(original.payload)
+    expected_payload.pop("visibility")
+
+    event = stamp_new_events("g1", [], [original])[0]
+
+    assert event_visibility(event) is EventVisibility.MODERATOR_ONLY
+    assert "visibility" not in event.payload
+    assert event.payload == expected_payload
+
+
+def test_v2_event_id_contains_no_player_identity_truth() -> None:
+    from werewolf_agent.runtime.event_metadata import stamp_new_events
+
+    collector = ModuleExposureAuditCollector()
+    collector.record_skill(_identity(), {"vote_analysis": "push p02"})
+
+    event = stamp_new_events("g1", [], collector.flush_events())[0]
+
+    assert event.event_id == "g1:e000000"
+    assert _identity().player_id not in event.event_id
 
 
 def test_collector_strips_forbidden_private_fields() -> None:

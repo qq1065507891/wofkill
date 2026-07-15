@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.api.routes.game_public_share import _event_is_public_for_share
@@ -12,12 +13,12 @@
 
 from __future__ import annotations
 
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
 
 
 def _event_is_public_for_share(event: GameEvent) -> bool:
-    visibility = event.payload.get("visibility") if isinstance(event.payload, dict) else None
-    if visibility in {"moderator_only", "werewolf_team_only", "witch_private", "seer_private", "hybrid_only"}:
+    if event_visibility(event) is not EventVisibility.PUBLIC:
         return False
     private_types = {
         "private_intent_recorded",

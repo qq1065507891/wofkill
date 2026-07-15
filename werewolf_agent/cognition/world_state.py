@@ -3,7 +3,7 @@
 功能描述：每个事实是带已知模式的冻结 dataclass。事实列表是所有下游认知模块
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-10
+修改日期：2026-07-15
 使用示例：内部模块，无对外接口
 """
 
@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 import re
 from typing import Any
 
+from werewolf_agent.core.event_visibility import event_visibility
 from werewolf_agent.core.models import GameEvent, GameState
 
 
@@ -480,9 +481,7 @@ def _attach_event_metadata(fact: StructuredFact, event: GameEvent) -> Structured
     """把来源事件和 visibility 写入事实 metadata，供可见性策略使用。"""
     metadata = dict(fact.metadata)
     metadata.setdefault("source_event", event.type)
-    visibility = event.payload.get("visibility")
-    if visibility:
-        metadata.setdefault("visibility", visibility)
+    metadata.setdefault("visibility", event_visibility(event).value)
     return replace(fact, metadata=metadata)
 
 

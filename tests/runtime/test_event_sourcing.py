@@ -1,40 +1,19 @@
+# -*- coding: utf-8 -*-
+"""
+验证暂停、启动与 GameEvent V1/V2 replay 的事件溯源行为。
+
+作者: Project contributors
+修改日期: 2026-07-15
+"""
+
 from __future__ import annotations
 
-import pytest
 from dataclasses import replace
 
-from typing import Any
 
-from werewolf_agent.core.models import Death, GameState, PlayerState, GameEvent
-from werewolf_agent.engine.rule_engine import RuleEngine
-from werewolf_agent.agents.schemas import (
-    ActionType, AgentContext, PlayerAction, RetryInfo, FallbackAction,
-    TaskType,
-)
-from werewolf_agent.runtime.graph import (
-    RuntimeState,
-    build_game_graph,
-    build_game_graph_with_checkpoint,
-    _new_engine,
-    _alive_wolves,
-    _alive_non_wolves,
-    _find_role,
-    _stable_seed,
-    check_victory,
-    free_discussion,
-    wolf_consensus,
-    route_after_resolve_night,
-    route_after_hunter_shot,
-    route_after_post_exile,
-    _sheriff_died_this_batch,
-    _route_after_badge_transfer,
-    _action_trace_event,
-)
-from werewolf_agent.runtime.agent_adapter import _single_wolf_vote
-from werewolf_agent.runtime.replay import replay_from_events, extract_event_log
-from werewolf_agent.runtime.checkpoints import make_checkpointer
-
-
+from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.runtime.graph import _new_engine
+from werewolf_agent.runtime.replay import replay_from_events
 
 class TestPauseResumeEventSourcing:
     """Pause/resume must use event sourcing (GameEvent + reducer),
@@ -229,3 +208,28 @@ class TestStartGameEventSourcing:
         assert result2.phase == "night"
         assert len(result2.players) == 12
         assert len([e for e in result2.events if e.type == "game_started"]) == 2
+def test_replay_orders_v2_events_by_sequence_number() -> None:
+    class CapturingEngine:
+        def reduce_events(self, state, events):
+            return replace(state, events=list(events))
+
+    events = [
+        GameEvent(type="second", sequence_number=1),
+        GameEvent(type="first", sequence_number=0),
+    ]
+
+    replayed = replay_from_events(CapturingEngine(), GameState(), events)
+
+    assert [event.type for event in replayed.events] == ["first", "second"]
+
+
+def test_replay_preserves_v1_array_order_without_sequence_numbers() -> None:
+    class CapturingEngine:
+        def reduce_events(self, state, events):
+            return replace(state, events=list(events))
+
+    events = [GameEvent(type="second"), GameEvent(type="first")]
+
+    replayed = replay_from_events(CapturingEngine(), GameState(), events)
+
+    assert replayed.events == events

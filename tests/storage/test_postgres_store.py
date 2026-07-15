@@ -1,15 +1,9 @@
-"""PostgresGameRepository unit tests with mocked psycopg.
+# -*- coding: utf-8 -*-
+"""
+使用 mock psycopg 验证 PostgreSQL 仓库与 GameEvent V1/V2 存储兼容。
 
-Covers:
-1. Schema creation (_ensure_schema)
-2. Game CRUD: save, load, delete, list
-3. Events: append (with seq numbering) and load
-4. Deaths: save (clear + insert) and load
-5. Model usage: save and load
-6. Evaluation: save (upsert) and load
-7. Config snapshots: save (upsert) and load
-8. Connection management: close, import error
-9. JSONB handling: dict results from psycopg
+作者: Project contributors
+修改日期: 2026-07-15
 """
 
 from __future__ import annotations
@@ -20,7 +14,7 @@ import threading
 import types
 from dataclasses import asdict
 from typing import Any
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -788,8 +782,6 @@ class TestPostgresStoreCustomConfig:
 
     def test_postgres_custom_configs_init_dict(self):
         from werewolf_agent.storage.postgres_store import PostgresGameRepository
-        # __new__ skips __init__ so direct attribute test
-        pg = PostgresGameRepository.__new__(PostgresGameRepository)
         # Methods should be callable (not NotImplementedError stubs)
         import inspect
         src = inspect.getsource(PostgresGameRepository.save_custom_config)
@@ -831,5 +823,78 @@ def test_postgres_ensure_schema_has_schema_version():
     import inspect
     src = inspect.getsource(PostgresGameRepository)
     assert "schema_version" in src, (
-        f"Postgres _ensure_schema missing schema_version table"
+        "Postgres _ensure_schema missing schema_version table"
     )
+
+
+def test_postgres_ensure_schema_adds_event_json_column() -> None:
+    repo, mock_conn = _setup_repo_with_mock_conn()
+
+    repo._ensure_schema()
+
+    sql = " ".join(call.args[0] for call in mock_conn.execute.call_args_list)
+    assert "ALTER TABLE events ADD COLUMN IF NOT EXISTS event_json JSONB" in sql
+
+
+def test_postgres_append_events_always_writes_full_event_json() -> None:
+    from datetime import datetime, timezone
+
+    from werewolf_agent.core.event_visibility import EventVisibility
+    from werewolf_agent.runtime.event_metadata import deserialize_game_event
+
+    repo, mock_conn = _setup_repo_with_mock_conn()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (0,)
+    mock_conn.execute.return_value = mock_cursor
+    event = GameEvent(
+        type="seer_check",
+        payload={"target_id": "p02"},
+        visibility=EventVisibility.SEER_PRIVATE,
+        event_id="g1:e000000",
+        sequence_number=0,
+        occurred_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+        game_id="g1",
+        schema_version="2",
+    )
+
+    repo.append_events("g1", [event])
+
+    insert = mock_conn.execute.call_args_list[1]
+    assert "event_json" in insert.args[0]
+    serialized = json.loads(insert.args[1][4])
+    assert deserialize_game_event(serialized) == event
+
+
+def test_postgres_load_events_prefers_v2_event_json_and_reads_v1_rows() -> None:
+    repo, mock_conn = _setup_repo_with_mock_conn()
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        (
+            "legacy",
+            {"visibility": "moderator_only"},
+            None,
+        ),
+        (
+            "ignored",
+            {"visibility": "public"},
+            {
+                "type": "seer_check",
+                "payload": {"target_id": "p02"},
+                "visibility": "seer_private",
+                "event_id": "g1:e000001",
+                "sequence_number": 1,
+                "occurred_at": "2026-07-15T00:00:00+00:00",
+                "game_id": "g1",
+                "trace_id": None,
+                "schema_version": "2",
+            },
+        ),
+    ]
+    mock_conn.execute.return_value = mock_cursor
+
+    legacy, current = repo.load_events("g1")
+
+    assert legacy.schema_version is None
+    assert legacy.payload["visibility"] == "moderator_only"
+    assert current.type == "seer_check"
+    assert current.schema_version == "2"
