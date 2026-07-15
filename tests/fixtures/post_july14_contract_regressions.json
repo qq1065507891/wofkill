@@ -1,0 +1,89 @@
+{
+  "K1": {
+    "alive_wolves": ["p01", "p02", "p03"],
+    "stances": [
+      {"wolf_id": "p01", "target_id": "p07", "stance": "propose"},
+      {"wolf_id": "p02", "target_id": "p07", "stance": "support"}
+    ],
+    "expected_contract": "execute_structured_majority_consensus"
+  },
+  "K2": {
+    "transcript_limit": 1,
+    "discussion_event_ids": ["event-01", "event-02"],
+    "structured_stance_event_ids": ["event-01", "event-02"],
+    "expected_contract": "preserve_structured_stances_after_transcript_truncation"
+  },
+  "K3": {
+    "alive_targets": ["p04", "p05"],
+    "primary_target": "p04",
+    "backup_target": "p05",
+    "backup_activation": "primary_invalid_before_resolution",
+    "expected_contract": "prompt_uses_live_targets_and_backup_semantics"
+  },
+  "N1": {
+    "alive_wolves": ["p03"],
+    "primary": [{"wolf_id": "p03", "target_id": "p10"}],
+    "backup": [{"wolf_id": "p03", "target_id": "p05"}],
+    "expected_contract": "select_primary_without_tie"
+  },
+  "N2": {
+    "max_consecutive_pre_resolution_no_kill": 2,
+    "prior_no_kill_reasons": ["insufficient_quorum", "plan_generation_failed"],
+    "expected_contract": "force_recovery_after_all_no_kill_sources"
+  },
+  "N3": {
+    "step_count": 200,
+    "status": "running",
+    "phase": "wolf_discussion",
+    "expected_contract": "persist_structured_step_limit_abort"
+  },
+  "N4": {
+    "alive_wolves": ["p01", "p02", "p03"],
+    "reasoning_claims_consensus": true,
+    "structured_supporters": ["p01"],
+    "expected_contract": "structured_evidence_overrides_reasoning_claim"
+  },
+  "N5": {
+    "primary_target": "p04",
+    "backup_target": "p05",
+    "primary_selected": true,
+    "witch_antidote_used": true,
+    "expected_contract": "backup_is_not_same_night_second_kill"
+  },
+  "N6": {
+    "decision_outcome": "direct_success",
+    "wolf_plan_outcome": "insufficient_quorum",
+    "expected_contract": "quality_exposes_contract_failure"
+  },
+  "N7": {
+    "event": {"type": "wolf_no_kill", "payload": {}},
+    "expected_contract": "new_events_include_v2_audit_metadata"
+  },
+  "N8": {
+    "draft_status": "invalid_structured_draft",
+    "reflection_entries": [],
+    "persistence_complete": true,
+    "expected_contract": "invalid_reflection_cannot_complete_persistence"
+  },
+  "N9": {
+    "resolution_batch": "day_2_vote",
+    "current_day": 2,
+    "expected_contract": "parse_legacy_day_death_batch"
+  },
+  "N10": {
+    "generated_by": "terminal_fallback",
+    "text": "safe fallback",
+    "expected_contract": "terminal_fallback_is_not_model_success"
+  },
+  "N11": {
+    "winning_faction": "werewolf",
+    "players": ["p01", "p02"],
+    "reflection_entries": [],
+    "expected_contract": "completed_game_but_reflection_no_valid_entries"
+  },
+  "N12": {
+    "primary_route": {"provider": "provider-a", "model": "model-a"},
+    "fallback_route": {"provider": "provider-a", "model": "model-a"},
+    "expected_contract": "reject_same_provider_model_fallback"
+  }
+}
