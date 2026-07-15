@@ -597,10 +597,19 @@ def _death_night_number(death: dict[str, Any]) -> int | None:
     if batch is not None and batch.phase == "night":
         return batch.number
     value = death.get("night_number")
-    if isinstance(value, int):
+    if type(value) is int and value > 0:
         return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
+    if (
+        isinstance(value, str)
+        and 0 < len(value) <= 10
+        and value.isascii()
+        and value.isdigit()
+    ):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
     return None
 
 

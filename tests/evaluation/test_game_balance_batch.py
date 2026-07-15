@@ -846,6 +846,34 @@ def test_death_night_number_ignores_marked_batch_and_uses_trusted_fallback(
     assert _death_night_number(death) == expected
 
 
+@pytest.mark.parametrize(
+    ("night_number", "expected"),
+    [
+        (True, None),
+        (False, None),
+        (-1, None),
+        (0, None),
+        ("9" * 5_000, None),
+        ("١", None),
+        (1, 1),
+        ("1", 1),
+    ],
+)
+def test_death_night_number_validates_trusted_fallback(
+    night_number: object,
+    expected: int | None,
+) -> None:
+    from werewolf_agent.evaluation.balance_audit import _death_night_number
+
+    death = {
+        "resolution_batch": "night_9",
+        "resolution_batch_parse_failed": True,
+        "night_number": night_number,
+    }
+
+    assert _death_night_number(death) == expected
+
+
 def test_balance_audit_counts_template_vote_reasons_and_public_fact_hallucinations():
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 

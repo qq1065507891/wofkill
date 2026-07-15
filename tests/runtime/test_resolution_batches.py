@@ -481,3 +481,85 @@ def test_set_subclass_is_summarized_without_unbounded_iteration() -> None:
     assert values.item_reads == 0
     assert result.raw_value is not None
     assert "$set_summary" in result.raw_value
+
+
+class _SnapshotMapping(Mapping[str, object]):
+    def __init__(
+        self,
+        *,
+        iter_keys: tuple[str, ...] = ("phase", "number", "cause"),
+        item_pairs: tuple[tuple[str, object], ...] = (
+            ("phase", "night"),
+            ("number", 1),
+            ("cause", "wolf_kill"),
+        ),
+        getitem_values: Mapping[str, object] | None = None,
+        iter_error: bool = False,
+    ) -> None:
+        self.iter_keys = iter_keys
+        self.item_pairs = item_pairs
+        self.getitem_values = dict(
+            getitem_values
+            or {"phase": "night", "number": 1, "cause": "wolf_kill"}
+        )
+        self.iter_error = iter_error
+
+    def __len__(self) -> int:
+        return len(self.item_pairs)
+
+    def __iter__(self) -> Iterator[str]:
+        if self.iter_error:
+            raise RuntimeError("iter failed")
+        yield from self.iter_keys
+
+    def __getitem__(self, key: str) -> object:
+        return self.getitem_values[key]
+
+    def items(self) -> Iterator[tuple[str, object]]:
+        yield from self.item_pairs
+
+
+class _ListPairSnapshotMapping(_SnapshotMapping):
+    def items(self) -> Iterator[tuple[str, object]]:
+        yield ["phase", "night"]  # type: ignore[misc]
+        yield ["number", 1]  # type: ignore[misc]
+        yield ["cause", "wolf_kill"]  # type: ignore[misc]
+
+
+def test_consistent_custom_mapping_snapshot_is_supported() -> None:
+    result = parse_resolution_batch(_SnapshotMapping())
+
+    assert result.batch == ResolutionBatchV2("night", 1, "wolf_kill")
+    assert result.batch_parse_failed is False
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        _SnapshotMapping(iter_error=True),
+        _ListPairSnapshotMapping(),
+        _SnapshotMapping(iter_keys=("phase", "number", "unexpected")),
+        _SnapshotMapping(
+            item_pairs=(
+                ("phase", "day"),
+                ("number", 1),
+                ("cause", "vote"),
+            ),
+        ),
+        _SnapshotMapping(
+            item_pairs=(
+                ("phase", "night"),
+                ("phase", "day"),
+                ("number", 1),
+            ),
+        ),
+    ],
+)
+def test_inconsistent_mapping_snapshot_fails_closed(
+    mapping: _SnapshotMapping,
+) -> None:
+    result = parse_resolution_batch(mapping)
+
+    assert result.batch is None
+    assert result.batch_parse_failed is True
+    assert result.raw_value is not None

@@ -149,6 +149,12 @@ def _mapping_read_failure(value: Mapping[object, object]) -> dict[str, object]:
     return {"$unreadable_mapping": _type_label(value)}
 
 
+def _mapping_consistency_failure(
+    value: Mapping[object, object],
+) -> dict[str, object]:
+    return {"$inconsistent_mapping": _type_label(value)}
+
+
 def _bounded_mapping_items(
     value: Mapping[object, object],
 ) -> tuple[list[tuple[object, object]] | dict[str, object], bool]:
@@ -184,6 +190,33 @@ def _bounded_mapping_items(
                 "type": _type_label(value),
             }
         }, False
+    try:
+        iter_keys = list(islice(iter(value), _SANITIZER_MAX_ITEMS + 1))
+        item_keys = [
+            item[0]
+            for item in items
+            if type(item) is tuple and len(item) == 2
+        ]
+        if len(item_keys) != len(items):
+            return _mapping_consistency_failure(value), False
+        item_key_tokens = [
+            _canonical_order_token(_canonical_sanitize(key))
+            for key in item_keys
+        ]
+        iter_key_tokens = [
+            _canonical_order_token(_canonical_sanitize(key))
+            for key in iter_keys
+        ]
+    except Exception:
+        return _mapping_read_failure(value), False
+    if len(set(item_key_tokens)) != len(item_key_tokens):
+        for index, token in enumerate(item_key_tokens):
+            if token in item_key_tokens[:index]:
+                return {
+                    "$mapping_key_collision": _canonical_sanitize(item_keys[index])
+                }, False
+    if len(iter_keys) != reported_size or item_key_tokens != iter_key_tokens:
+        return _mapping_consistency_failure(value), False
     return items, True
 
 
@@ -192,12 +225,15 @@ def _canonical_sanitize_mapping(
     *,
     depth: int,
     active_ids: set[int],
+    bounded: list[tuple[object, object]] | dict[str, object] | None = None,
+    complete: bool | None = None,
 ) -> tuple[object, bool]:
     """有界读取并规范化 Mapping，同时返回根结构是否完整可信。"""
     value_id = id(value)
     active_ids.add(value_id)
     try:
-        bounded, complete = _bounded_mapping_items(value)
+        if complete is None:
+            bounded, complete = _bounded_mapping_items(value)
         if not complete:
             return bounded, False
         items = bounded
@@ -354,15 +390,6 @@ def _canonical_sanitize(
     return {"$unsupported": _type_label(value)}
 
 
-def _stable_mapping_json(value: Mapping[object, object]) -> tuple[str, bool]:
-    sanitized, complete = _canonical_sanitize_mapping(
-        value,
-        depth=0,
-        active_ids=set(),
-    )
-    return _canonical_json(sanitized), complete
-
-
 def parse_resolution_batch(
     value: ResolutionBatchV2 | str | Mapping[str, object],
 ) -> ResolutionBatchParseResult:
@@ -370,17 +397,39 @@ def parse_resolution_batch(
     if isinstance(value, ResolutionBatchV2):
         return ResolutionBatchParseResult(value, None, False)
     if isinstance(value, Mapping):
-        raw, mapping_complete = _stable_mapping_json(value)
-        if not mapping_complete:
+        bounded, mapping_complete = _bounded_mapping_items(value)
+        sanitized, sanitization_complete = _canonical_sanitize_mapping(
+            value,
+            depth=0,
+            active_ids=set(),
+            bounded=bounded,
+            complete=mapping_complete,
+        )
+        raw = _canonical_json(sanitized)
+        if not mapping_complete or not sanitization_complete:
             return ResolutionBatchParseResult(None, raw, True)
         try:
-            if len(value) != 3:
+            items = cast(list[tuple[object, object]], bounded)
+            if len(items) != 3 or any(type(key) is not str for key, _ in items):
+                return ResolutionBatchParseResult(None, raw, True)
+            snapshot = {key: item for key, item in items}
+            if set(snapshot) != {"phase", "number", "cause"}:
+                return ResolutionBatchParseResult(None, raw, True)
+            if (
+                type(snapshot["phase"]) is not str
+                or type(snapshot["number"]) is not int
+                or type(snapshot["cause"]) is not str
+            ):
                 return ResolutionBatchParseResult(None, raw, True)
             batch = ResolutionBatchV2(
-                phase=cast(ResolutionPhase, value["phase"]),
-                number=cast(int, value["number"]),
-                cause=cast(ResolutionCause, value["cause"]),
+                phase=cast(ResolutionPhase, snapshot["phase"]),
+                number=cast(int, snapshot["number"]),
+                cause=cast(ResolutionCause, snapshot["cause"]),
             )
+            for key, expected in snapshot.items():
+                observed = value[key]
+                if type(observed) is not type(expected) or observed != expected:
+                    return ResolutionBatchParseResult(None, raw, True)
         except Exception:
             return ResolutionBatchParseResult(None, raw, True)
         return ResolutionBatchParseResult(batch, None, False)
