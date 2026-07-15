@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-09
+修改日期: 2026-07-15
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_system import PromptSystemMixin
@@ -66,7 +66,15 @@ class PromptSystemMixin:
             "本轮任务和最终输出约束只约束输出格式，不是公开记录；"
             "最终输出约束包含纠正提示和最终输出协议。"
             "技能战术建议只是辅助推理，不改变规则、身份或公开记录。"
-            "不确定内容必须表达为推测。"
+            "不确定内容必须表达为推测。\n"
+            "【重写一致性硬约束 / MUST（v1.1.4 fallback-fix Part B.1）】"
+            "当本回合因为retry hint需要重写发言时，必须遵守以下约束："
+            "(1) 保持源 target_id 不变,不得更换攻击对象;"
+            "(2) 不新增事实声明,所有数据点必须能在『公开记录』或『近期发言』中找到对应原文;"
+            "(3) 不得因retry hint而改变行动(投谁/杀谁/开不开枪),仅优化发言措辞;"
+            "(4) 若必须回应矛盾,请基于公开引用并标注『我推测/我质疑』,不要把推断写成『公开记录已证明』。"
+            "(违反任意一条会导致 fallback 出口,即一次性被判定 speech_quality / "
+            "semantic_claim_retention 而本轮无法贡献发言。)"
         )
 
     def _build_reasoning_method(self) -> str:
@@ -162,5 +170,12 @@ class PromptSystemMixin:
             "「最终输出协议」是字段、枚举和必填项的唯一依据。"
             "若最终输出协议要求工具且工具可用，则使用工具提交；否则只输出一个"
             "符合当前 ActionContract 的 JSON 对象。不要解释、不要 Markdown、"
-            "不要添加合同之外的字段。公开发言正文必须使用中文。"
+            "不要添加合同之外的字段。公开发言正文必须使用中文。\n"
+            "【JSON 形式硬约束 / MUST（v1.1.4 fallback-fix Part D.1）】"
+            "(1) JSON 必须以单个 `}` 结尾,不允许截断;不允许任何 markdown fence 或注释;"
+            "(2) JSON 字符总数 ≤ 4000(speech)/ ≤ 800(vote/wolf/night);"
+            "(3) ``speech`` 字段必填,``reason`` 必填,``confidence`` ∈ [0,1];"
+            "(4) 不允许在合同外加任何 extra 字段(Pydantic extra=\"forbid\" 会拒绝);"
+            "(5) ``target_id`` 必须在合法目标集内或为 null;"
+            "(违反任意一条会触发 truncated_json / schema_validation / parse_error 并最终 fallback。)"
         )

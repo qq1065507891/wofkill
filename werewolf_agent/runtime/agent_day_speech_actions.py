@@ -57,6 +57,8 @@ from werewolf_agent.runtime.directives import (
 )
 from werewolf_agent.runtime.directives._shared import (
     build_sheriff_silent_directive as _build_sheriff_silent_directive,
+    build_speech_consistency_hard_constraints,
+    build_speech_quality_hard_constraints,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.last_words_directives import build_exile_last_words_strategy
@@ -167,6 +169,16 @@ def agent_day_speech(
     strategy_directive = {
         **(context.strategy_directive or {}),
         **build_day_speech_base_directive(style_hint),
+        # NEW (v1.1.4 fallback-fix, Part A.2 + B.2):
+        # Always inject MUST-text speech-quality + speech-consistency
+        # hard constraints at the system prompt level so the LLM sees
+        # the contract before the first attempt, rather than only via
+        # retry hints after failure.  Both keys render under 【参考】
+        # tier since they are not in HARD_CONSTRAINT_KEYS, but their
+        # leading "【... 硬约束 / MUST】" prefix cues the LLM the
+        # content is non-negotiable.
+        **build_speech_quality_hard_constraints(),
+        **build_speech_consistency_hard_constraints(),
     }
 
     # Role-specific speech constraints

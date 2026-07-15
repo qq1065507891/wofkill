@@ -4728,11 +4728,35 @@ def test_system_output_contract_defers_vote_fields_to_action_contract():
     builder = PlayerPromptBuilder(ctx)
     stable_contract = builder._build_output_contract()
     user_prompt = builder.build_user_prompt(RetryInfo())
-    for field in (
-        "choice", "reason", "seer_stance", "vote_basis",
-        "standing_with_seer", "suspect_reason", "not_voting_reason",
-        "private_reason", "confidence",
-    ):
+    # NEW (v1.1.4 fallback-fix Part D.1): the JSON 形式硬约束 block in
+    # _build_output_contract deliberately enumerates a *subset* of the
+    # schema field names (``speech`` / ``reason`` / ``confidence`` /
+    # ``target_id``) plus field constraints (``extra='forbid'``).
+    # The point: those invariants live at the system level, so the
+    # LLM sees them on attempt 1 rather than only after a retry.
+    # This narrows the original assertion:
+    #   - field names that ARE enumerated (speech/reason/confidence/target_id)
+    #     now live in stable_contract;
+    #   - VOTE-only fields (choice/seer_stance/vote_basis/standing_with_seer
+    #     /suspect_reason/not_voting_reason/private_reason) stay ONLY in
+    #     user_prompt (action contract) — they have no business in the
+    #     cross-task stable contract.
+    enumerated_in_stable = {"speech", "reason", "confidence", "target_id"}
+    vote_only_in_user = {
+        "choice",
+        "seer_stance",
+        "vote_basis",
+        "standing_with_seer",
+        "suspect_reason",
+        "not_voting_reason",
+        "private_reason",
+    }
+    for field in enumerated_in_stable:
+        assert field in stable_contract, (
+            f"v1.1.4 Part D.1 missing — {field!r} should be enumerated "
+            "in _build_output_contract's JSON form constraints"
+        )
+    for field in vote_only_in_user:
         assert field not in stable_contract
         assert field in user_prompt
 

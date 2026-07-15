@@ -2,7 +2,7 @@
 """Shared helper utilities used by multiple role directive builders.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-15
     使用示例: 内部模块，无对外接口
 """
 
@@ -161,3 +161,64 @@ def build_sheriff_silent_directive(
         "3) 在证据接近时说明取舍，避免无理由跟票。"
     )
     return parts
+
+
+# ---------------------------------------------------------------------------
+# NEW (v1.1.4 fallback-fix, Part A.2 + B.2)
+#
+# These two constants are stable MUST-text injected into the system prompt
+# via ``strategy_directive`` (rendered under the 【硬约束】 section by
+# ``PromptStrategyMixin._build_strategy_directive``).  The goal is to
+# reduce the two largest sources of fallback observed in 7-14+ games:
+#   - ``speech_quality``           (49/86 = 57% of fallbacks)
+#   - ``semantic_claim_retention`` (30/86 = 35% of fallbacks)
+#
+# We inject these into strategy_directive rather than relying on retry
+# hints because retry hints only fire AFTER the LLM has already failed
+# once; the contract text below preempts the failure mode by making the
+# MUST visible at every step.
+#
+# Refs:
+#   - Part A.1 ``runtime/context.py:301-310`` (priority 门槛从 high 放宽)
+#   - Part A.3 ``runtime/speech_quality.py::_required_components`` (强制 stance)
+#   - Part D.1 ``agents/prompt_output.py::_build_output_contract`` (JSON 硬约束)
+# ---------------------------------------------------------------------------
+
+_SPEECH_QUALITY_HARD_CONSTRAINTS = (
+    "【发言质量硬约束 / MUST】\n"
+    "1) 发言开头先表明身份立场（一句话：我是好人阵营 / 我是预言家 / 我是女巫等），"
+    "不要写\"按公开信息判断\"之类的占位文本。\n"
+    "2) 必须给出至少 1 个具体怀疑对象（用玩家 ID 如 p05/p07），不要泛指\"某玩家\"。\n"
+    "3) 必须给出投票倾向（我倾向投 pXX / 我归票 pXX / 我保留观望）。\n"
+    "4) 必须引用至少 1 条公开依据（预言家查杀、金水、对跳、票型突变、警徽流、发言前后矛盾）。\n"
+    "5) PK / 警徽 / 遗言阶段必须包含角色声明、对跳分析或攻击/防守论点。\n"
+    "6) 不要写\"先听\"、\"再观察\"、\"信息不足\"、\"我没什么可说\"等空洞起手式——这些会被 ``validate_public_speech`` 直接判为 filler 并触发 fallback。"
+)
+
+_SPEECH_CONSISTENCY_HARD_CONSTRAINTS = (
+    "【发言一致性硬约束 / MUST（适用重写场景）】\n"
+    "1) 重写发言时必须保持源 target_id 不变（不得更换攻击对象）。\n"
+    "2) 不得新增事实声明——所有数据点必须能在公开记录或近因发言中找到对应原文。\n"
+    "3) 不能因为 retry hint 而改变行动（投谁/杀谁）——仅优化发言措辞。\n"
+    "4) 若必须回应矛盾点，请基于已有公开引用，标注\"我推测/我质疑\"，不要把推断写成\"公开记录已证明\"。"
+)
+
+
+def build_speech_quality_hard_constraints() -> dict[str, str]:
+    """返回 ``strategy_directive`` 兼容的 dict — 注入发言质量硬约束。
+
+    Key 是 ``speech_quality_constraints``；该 key 不在 ``HARD_CONSTRAINT_KEYS`` /
+    ``SUGGESTION_KEYS`` / ``REFERENCE_KEYS`` 任何白名单内，会落入 ``【参考】`` 段。
+    这是有意为之：硬约束文档应与 ``must_address_alerts``（已在 HARD）
+    并行渲染，在 system prompt 顶层可见。
+    """
+    return {"speech_quality_constraints": _SPEECH_QUALITY_HARD_CONSTRAINTS}
+
+
+def build_speech_consistency_hard_constraints() -> dict[str, str]:
+    """返回 ``strategy_directive`` 兼容的 dict — 注入发言一致性硬约束。
+
+    Key 是 ``speech_consistency_constraints``；与 ``speech_quality_constraints``
+    同处理（落入【参考】段）。两个 key 一起渲染保证 system prompt 顶层可见。
+    """
+    return {"speech_consistency_constraints": _SPEECH_CONSISTENCY_HARD_CONSTRAINTS}

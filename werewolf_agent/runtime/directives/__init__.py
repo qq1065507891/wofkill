@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Role-specific speech directive builders for day-phase agent prompts.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-15
     使用示例: 内部模块，无对外接口
 Each module in this package contains directive functions for one role,
 producing structured prompt content that guides the LLM agent's day-phase
@@ -11,6 +11,10 @@ speech behavior.  Shared helper utilities live in ``_shared.py``.
 
 from __future__ import annotations
 
+from werewolf_agent.runtime.directives._shared import (
+    build_speech_consistency_hard_constraints,
+    build_speech_quality_hard_constraints,
+)
 from werewolf_agent.runtime.directives.hunter import build_hunter_directive
 from werewolf_agent.runtime.directives.hybrid import build_hybrid_directive
 from werewolf_agent.runtime.directives.idiot import build_idiot_directive
@@ -35,4 +39,7 @@ __all__ = [
     "build_wolf_directive",
     "build_wolf_night_directive",
     "build_wolf_vote_directive",
+    # NEW (v1.1.4 fallback-fix, Parts A.2 + B.2)
+    "build_speech_quality_hard_constraints",
+    "build_speech_consistency_hard_constraints",
 ]

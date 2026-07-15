@@ -137,23 +137,32 @@ llm_profiles:
       model_profile: minimax_m27_fast
 
   # --- MiniMax profiles ---
+  # NEW (v1.1.4 fallback-fix, Part C.1):
+  # ``minimax`` provider (calling ``MiniMax-M2.7``) failed on 154/618
+  # attempts (24.9%) with ``root_cause=invalid_output`` in 4 games
+  # captured on/after 2026-07-14.  ``MiniMax-M3`` (Ark OpenAI-compatible
+  # endpoint) is more reliable, so we now route the player default
+  # through the ``openai`` provider instead of the native ``minimax``
+  # provider.  ``reflection`` task keeps the M2.7 native endpoint as
+  # a fallback (cross-version diverse provider signals help the
+  # reflection synthesizer avoid single-provider bias).
   minimax_default:
     default:
-      provider: minimax
-      model_profile: minimax_m27_default
+      provider: openai
+      model_profile: ark_minimax_m3
     tasks:
       reflection:
         provider: minimax
         model_profile: minimax_m27_reflection
       speech:
-        provider: minimax
-        model_profile: minimax_m27_default
+        provider: openai
+        model_profile: ark_minimax_m3
       deception:
-        provider: minimax
-        model_profile: minimax_m27_fast
+        provider: openai
+        model_profile: ark_minimax_m3
       night_action:
-        provider: minimax
-        model_profile: minimax_m27_default
+        provider: openai
+        model_profile: ark_minimax_m3
       # Phase 2 P2-2: 5 JUDGE_* task types now map to the same
       # model as ``speech`` (per Phase 1 decision).  Judge
       # broadcasts are serial and don't need the extra quality of
@@ -178,9 +187,15 @@ llm_profiles:
       judge_sheriff:
         provider: minimax
         model_profile: minimax_m27_default
+    # NEW (v1.1.4 fallback-fix, Part C.1):
+    # fallback was previously ``minimax_m27_fast`` (same provider
+    # as the old default — offered no actual model diversity when
+    # the primary failed).  Now it routes to a different provider
+    # (``openai`` + Ark deepseek-v4-flash) so a MiniMax outage
+    # doesn't propagate.
     fallback:
-      provider: minimax
-      model_profile: minimax_m27_fast
+      provider: openai
+      model_profile: ark_deepseek_v4_flash
 
   # Backward-compatible aliases used by older tests/docs.
   pro_reasoner:
@@ -210,9 +225,15 @@ llm_profiles:
       judge_sheriff:
         provider: minimax
         model_profile: minimax_m27_default
+    # NEW (v1.1.4 fallback-fix, Part C.1):
+    # fallback was previously ``minimax_m27_fast`` (same provider
+    # as the old default — offered no actual model diversity when
+    # the primary failed).  Now it routes to a different provider
+    # (``openai`` + Ark deepseek-v4-flash) so a MiniMax outage
+    # doesn't propagate.
     fallback:
-      provider: minimax
-      model_profile: minimax_m27_fast
+      provider: openai
+      model_profile: ark_deepseek_v4_flash
 
   local_wolf:
     default:

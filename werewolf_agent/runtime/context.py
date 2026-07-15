@@ -299,7 +299,7 @@ def build_agent_context(
             ctx_alerts.append(alert_entry)
 
         for alert in ctx_alerts:
-            if alert["priority"] != "high":
+            if alert["priority"] == "low":
                 continue
             players = [p for p in alert["player_id"].split(",") if p]
             must_address.append({
@@ -307,6 +307,10 @@ def build_agent_context(
                 "players": players,
                 "public_evidence": alert["description"],
                 "required_response": ["question", "side_with", "park"],
+                # NEW (v1.1.4 fallback-fix): priority passed through so the
+                # speech_quality gate can weight high vs medium alerts
+                # independently in validate_public_speech.
+                "priority": alert["priority"],
             })
 
         if must_address:

@@ -364,13 +364,37 @@ def _required_components(intent: str, *, phase: str = "", day: int = 0) -> set[s
     if intent and intent in by_intent:
         required = set(by_intent[intent])
     else:
-        required = {"stance", "suspicion_target", "vote_leaning", "evidence"}
+        # NEW (v1.1.4 fallback-fix, Part A.3):
+        # The historical default dropped "stance" once ``day <= 1`` /
+        # ``phase in (sheriff_speech, pk_speech)`` was applied below,
+        # which let 4 份 games produce 49 fallback cases whose root
+        # cause was the LLM skipping stance to dodge the question.
+        # Force stance back in unconditionally; suspicion_target stays
+        # required from D2 onward.
+        required = {
+            "stance",
+            "suspicion_target",
+            "vote_leaning",
+            "evidence",
+        }
 
-    # Per-phase relaxation: sheriff/PK speeches don't need vote_leaning
-    # (no vote yet); D1 speeches don't need strict evidence.
-    if phase in ("sheriff_speech", "pk_speech") or day <= 1:
+    # NEW (v1.1.4 fallback-fix, Part A.3):
+    # Always require ``stance`` so the LLM cannot duck the identity
+    # framing question.  ``suspicion_target`` likewise stays in from
+    # D2 onward — D1 is the only day we soften (no consensus possible
+    # yet), and even then we keep stance mandatory.
+    if phase in ("sheriff_speech", "pk_speech"):
+        # Sheriff/PK phases don't have a vote yet, so drop vote_leaning
+        # but KEEP stance (the role-claim itself is what matters).
         required.discard("vote_leaning")
+    else:
+        # Day-time (non-sheriff/PK) speech: vote_leaning stays required
+        # from D2 onward; softened only on D1 (no prior-day context).
+        if day <= 1:
+            required.discard("vote_leaning")
     if day <= 1:
+        # Evidence: only soften on D1.  From D2+ the LLM must cite
+        # at least one concrete public-record item.
         required.discard("evidence")
 
     return required

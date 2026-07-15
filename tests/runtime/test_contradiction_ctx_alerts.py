@@ -56,10 +56,21 @@ def test_ctx_alerts_keeps_high_claim_conflict():
     assert "claim_conflict" in types
 
 
-def test_must_address_excludes_medium_priority():
-    """must_address_alerts 只含 high，medium（vote_conflict）不强制回应。"""
+def test_must_address_includes_medium_priority():
+    """v1.1.4 fallback-fix Part A.1: priority 门槛从只保留 high 放宽到
+    high + medium;只有 low 仍被过滤。medium contradiction 既然已
+    surface 给 LLM,它必须能在发言里回应,而不是被卡在 filler 上。
+    """
     gs, engine = _make_state()
     ctx = build_agent_context(engine, gs, "p05", TaskType.SPEECH)
-    must_types = [e.get("alert_type") for e in ctx.strategy_directive.get("must_address_alerts", [])]
+    must = ctx.strategy_directive.get("must_address_alerts", [])
+    must_types = [e.get("alert_type") for e in must]
+    # 高优先级 claim_conflict 仍进 must_address
     assert "claim_conflict" in must_types
-    assert "vote_conflict" not in must_types
+    # medium 的 vote_conflict 现在也进(v1.1.4 行为变化)
+    assert "vote_conflict" in must_types
+    # priority 字段透传,low 仍未过滤后可识别
+    for entry in must:
+        assert entry.get("priority") in {"high", "medium"}, (
+            f"low-priority alert leaked into must_address_alerts: {entry}"
+        )
