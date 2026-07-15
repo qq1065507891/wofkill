@@ -752,6 +752,70 @@ class TestHunterShotResolution:
         result = route_after_resolve_night({"game_state": gs, "engine": engine})
         assert result == "resolve_hunter_shot"
 
+    def test_failed_hunter_death_does_not_route_or_create_child_death(self) -> None:
+        from werewolf_agent.runtime.graph import (
+            resolve_hunter_shot,
+            route_after_resolve_night,
+        )
+
+        engine = _new_engine()
+        hunter_death = Death(
+            player_id="hunter",
+            reason="wolf_kill",
+            timing="night",
+            resolution_batch="night_1_wolf_kill",
+            triggered_skills=["hunter_shot"],
+            resolution_batch_parse_failed=True,
+        )
+        gs = GameState(
+            game_id="failed-hunter-parent",
+            phase="night",
+            night_number=1,
+            players={
+                "w1": PlayerState(id="w1", role="werewolf"),
+                "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+                "v1": PlayerState(id="v1", role="villager"),
+            },
+            deaths=[hunter_death],
+        )
+
+        assert route_after_resolve_night(
+            {"game_state": gs, "engine": engine}
+        ) != "resolve_hunter_shot"
+        resolved = resolve_hunter_shot(
+            {
+                "game_state": gs,
+                "engine": engine,
+                "hunter_shot_target_id": "v1",
+            }
+        )["game_state"]
+        assert resolved.players["v1"].alive is True
+        assert not [death for death in resolved.deaths if death.reason == "hunter_shot"]
+
+    def test_failed_hunter_child_does_not_complete_night_route(self) -> None:
+        from werewolf_agent.runtime.graph import route_victory
+
+        gs = GameState(
+            game_id="failed-hunter-child-route",
+            phase="night",
+            night_number=1,
+            players={
+                "w1": PlayerState(id="w1", role="werewolf"),
+                "v1": PlayerState(id="v1", role="villager", alive=False),
+            },
+            deaths=[
+                Death(
+                    "v1",
+                    "hunter_shot",
+                    "night",
+                    "night_1_hunter_shot",
+                    resolution_batch_parse_failed=True,
+                )
+            ],
+        )
+
+        assert route_victory({"game_state": gs}) == "enter_night"
+
     def test_route_after_resolve_night_no_hunter_shot_skips(self) -> None:
         """route_after_resolve_night skips hunter_shot when no pending shot."""
         from werewolf_agent.runtime.graph import route_after_resolve_night

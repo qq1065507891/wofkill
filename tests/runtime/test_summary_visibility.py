@@ -1,4 +1,4 @@
-from werewolf_agent.core.models import GameState, PlayerState
+from werewolf_agent.core.models import Death, GameState, PlayerState
 from werewolf_agent.runtime.nodes.summary import (
     _sleep_between_agent_calls,
     summarize_context,
@@ -28,6 +28,29 @@ def test_public_context_summary_excludes_private_player_positions() -> None:
     assert event.payload["visibility"] == "public"
     assert "position_summary" not in event.payload
     assert "我是狼人" not in str(event.payload)
+
+
+def test_context_summary_excludes_persisted_failed_death_batch() -> None:
+    gs = GameState(
+        game_id="summary-failed-batch",
+        day_number=1,
+        players={"p01": PlayerState(id="p01", role="villager", alive=False)},
+        deaths=[
+            Death(
+                "p01",
+                "exile",
+                "day_vote",
+                "day_1_vote",
+                resolution_batch_parse_failed=True,
+            )
+        ],
+    )
+
+    result = summarize_context({"game_state": gs})
+
+    event = result["game_state"].events[-1]
+    assert event.type == "context_summary"
+    assert event.payload["deaths_this_day"] == []
 
 
 def test_agent_call_delay_can_be_disabled(monkeypatch) -> None:

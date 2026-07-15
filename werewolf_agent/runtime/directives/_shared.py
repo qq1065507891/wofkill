@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import OrderedDict
 from collections.abc import Mapping
+from threading import Lock
 from typing import Any
 
 from werewolf_agent.core.models import GameState
@@ -23,7 +25,47 @@ from werewolf_agent.core.resolution_batches import (
 
 logger = logging.getLogger(__name__)
 
-_WARNED_BATCH_PARSE_FAILURES: set[tuple[str, str]] = set()
+_RESOLUTION_BATCH_WARNING_CACHE_MAX = 256
+
+
+class _StateIdentity:
+    """以对象身份比较状态，并由有界缓存限制强引用生命周期。"""
+
+    __slots__ = ("state",)
+
+    def __init__(self, state: GameState) -> None:
+        self.state = state
+
+    def __hash__(self) -> int:
+        return id(self.state)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _StateIdentity) and self.state is other.state
+
+
+_WARNED_BATCH_PARSE_FAILURES: OrderedDict[tuple[object, str], None] = OrderedDict()
+_BATCH_WARNING_CACHE_LOCK = Lock()
+
+
+def _reset_resolution_batch_warning_cache_for_tests() -> None:
+    """仅供测试隔离全局告警去重状态。"""
+    with _BATCH_WARNING_CACHE_LOCK:
+        _WARNED_BATCH_PARSE_FAILURES.clear()
+
+
+def _should_warn_batch_parse_failure(gs: GameState, raw_hash: str) -> bool:
+    """按局作用域维护有界 LRU；空 game_id 使用状态实例隔离。"""
+    scope: object = ("game", gs.game_id) if gs.game_id else _StateIdentity(gs)
+    warning_key = (scope, raw_hash)
+    with _BATCH_WARNING_CACHE_LOCK:
+        if warning_key in _WARNED_BATCH_PARSE_FAILURES:
+            _WARNED_BATCH_PARSE_FAILURES.move_to_end(warning_key)
+            return False
+        _WARNED_BATCH_PARSE_FAILURES[warning_key] = None
+        capacity = max(1, _RESOLUTION_BATCH_WARNING_CACHE_MAX)
+        while len(_WARNED_BATCH_PARSE_FAILURES) > capacity:
+            _WARNED_BATCH_PARSE_FAILURES.popitem(last=False)
+        return True
 
 
 def collect_public_vote_history(
@@ -107,9 +149,7 @@ def collect_death_order(
                 raw_hash = hashlib.sha256(
                     audit_identity.encode("utf-8")
                 ).hexdigest()
-                warning_key = (gs.game_id, raw_hash)
-                if warning_key not in _WARNED_BATCH_PARSE_FAILURES:
-                    _WARNED_BATCH_PARSE_FAILURES.add(warning_key)
+                if _should_warn_batch_parse_failure(gs, raw_hash):
                     batch_type = (
                         "str"
                         if isinstance(d.resolution_batch, str)

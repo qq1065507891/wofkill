@@ -18,7 +18,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
-from werewolf_agent.core.resolution_batches import parse_resolution_batch
+from werewolf_agent.core.resolution_batches import valid_carrier_resolution_batch
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.runtime.context import build_agent_context
@@ -226,10 +226,9 @@ def summarize_context(state: RuntimeState) -> dict[str, Any]:
         {"player_id": d.player_id, "reason": d.reason, "timing": d.timing}
         for d in gs.deaths
         if (
-            (parsed_batch := parse_resolution_batch(d.resolution_batch)).batch
-            is not None
-            and parsed_batch.batch.phase == "day"
-            and parsed_batch.batch.number == day
+            (parsed_batch := valid_carrier_resolution_batch(d)) is not None
+            and parsed_batch.phase == "day"
+            and parsed_batch.number == day
         )
     ]
     summary_parts["deaths_this_day"] = day_deaths

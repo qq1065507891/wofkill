@@ -107,6 +107,68 @@ def test_parse_invalid_mapping_fails_closed_with_stable_json(value: dict[str, ob
     assert result.batch_parse_failed is True
 
 
+class _OpaqueValue:
+    def __init__(self, secret: str) -> None:
+        self.secret = secret
+
+
+def test_invalid_mapping_sanitizer_is_stable_and_hides_object_details() -> None:
+    first = parse_resolution_batch({"phase": "bad", "payload": _OpaqueValue("one")})
+    second = parse_resolution_batch({"phase": "bad", "payload": _OpaqueValue("two")})
+
+    assert first.raw_value == second.raw_value
+    assert "0x" not in first.raw_value
+    assert "one" not in first.raw_value
+    assert "two" not in first.raw_value
+    assert "_OpaqueValue" in first.raw_value
+
+
+def test_invalid_mapping_sanitizer_preserves_distinct_typed_keys() -> None:
+    result = parse_resolution_batch({1: "integer", "1": "string"})
+
+    assert result.batch_parse_failed is True
+    assert result.raw_value is not None
+    sanitized = __import__("json").loads(result.raw_value)
+    assert sanitized["$mapping"] == [[1, "integer"], ["1", "string"]]
+
+
+def test_invalid_mapping_sanitizer_fails_closed_on_canonical_key_collision() -> None:
+    result = parse_resolution_batch({_OpaqueValue("one"): 1, _OpaqueValue("two"): 2})
+
+    assert result.raw_value is not None
+    sanitized = __import__("json").loads(result.raw_value)
+    assert "$mapping_key_collision" in sanitized
+    assert "one" not in result.raw_value
+    assert "two" not in result.raw_value
+
+
+def test_invalid_mapping_sanitizer_marks_cycles_and_depth_limit() -> None:
+    cycle: dict[str, object] = {"phase": "bad"}
+    cycle["payload"] = cycle
+    deep: object = "leaf"
+    for _ in range(20):
+        deep = [deep]
+
+    cycle_result = parse_resolution_batch(cycle)
+    deep_result = parse_resolution_batch({"phase": "bad", "payload": deep})
+
+    assert cycle_result.raw_value is not None
+    assert "$cycle" in cycle_result.raw_value
+    assert deep_result.raw_value is not None
+    assert "$max_depth" in deep_result.raw_value
+
+
+def test_invalid_mapping_sanitizer_sorts_sets_deterministically() -> None:
+    first = parse_resolution_batch({"phase": "bad", "payload": {3, 1, 2}})
+    second = parse_resolution_batch({"payload": {2, 3, 1}, "phase": "bad"})
+
+    assert first.raw_value == second.raw_value
+    assert first.raw_value is not None
+    assert __import__("json").loads(first.raw_value)["payload"] == {
+        "$set": [1, 2, 3]
+    }
+
+
 def test_resolution_batch_v2_rejects_invalid_constructor_values() -> None:
     with pytest.raises(ValueError):
         ResolutionBatchV2(phase="day", number=True, cause="vote")

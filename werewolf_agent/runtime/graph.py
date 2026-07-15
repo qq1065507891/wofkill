@@ -21,7 +21,10 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from werewolf_agent.core.models import GameEvent, GameState
-from werewolf_agent.core.resolution_batches import same_resolution_batch
+from werewolf_agent.core.resolution_batches import (
+    carrier_matches_resolution_batch,
+    same_resolution_batch,
+)
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.graph_registration import (
     add_game_graph_edges as _add_all_edges,
@@ -263,13 +266,17 @@ def route_victory(state: RuntimeState) -> str:
             any(
                 event.type == "hunter_shot_declined"
                 and same_resolution_batch(
-                    event.payload.get("resolution_batch", ""), current_night_batch
+                    event.payload.get("resolution_batch", ""),
+                    current_night_batch,
+                    left_parse_failed=bool(
+                        event.payload.get("resolution_batch_parse_failed", False)
+                    ),
                 )
                 for event in gs.events
             )
             or any(
                 death.reason == "hunter_shot"
-                and same_resolution_batch(death.resolution_batch, current_night_batch)
+                and carrier_matches_resolution_batch(death, current_night_batch)
                 for death in gs.deaths
             )
         )

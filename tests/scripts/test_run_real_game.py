@@ -476,6 +476,61 @@ def test_save_game_log_exports_complete_safe_v2_event_metadata(tmp_path) -> None
     }
 
 
+def test_serialize_event_for_log_canonicalizes_nested_resolution_batches() -> None:
+    from scripts import run_real_game
+    from werewolf_agent.core.event_visibility import EventVisibility
+
+    batch = ResolutionBatchV2("night", 2, "hunter_shot")
+    event = GameEvent(
+        type="nested_batch",
+        payload={"items": [{"batch": batch}]},
+        visibility=EventVisibility.MODERATOR_ONLY,
+        schema_version="2",
+    )
+
+    exported = run_real_game._serialize_event_for_log(event)
+
+    assert exported["payload"] == {
+        "items": [
+            {"batch": {"phase": "night", "number": 2, "cause": "hunter_shot"}}
+        ]
+    }
+    assert exported["visibility"] == "moderator_only"
+    assert event.payload["items"][0]["batch"] is batch
+    json.dumps(exported)
+
+
+def test_save_game_log_handles_nested_resolution_batches(tmp_path) -> None:
+    from scripts import run_real_game
+
+    batch = ResolutionBatchV2("day", 4, "rule_effect")
+    runner = SimpleNamespace(
+        game_id="g_nested_batch",
+        state=GameState(
+            game_id="g_nested_batch",
+            events=[
+                GameEvent(
+                    type="nested_batch",
+                    payload={"outer": {"batches": [batch]}},
+                )
+            ],
+        ),
+        step_count=1,
+    )
+
+    path = run_real_game.save_game_log(runner, 0.1, output_dir=tmp_path)
+    exported = json.loads(path.read_text(encoding="utf-8"))["events"][0]
+
+    assert exported["payload"] == {
+        "outer": {
+            "batches": [
+                {"phase": "day", "number": 4, "cause": "rule_effect"}
+            ]
+        }
+    }
+    assert runner.state.events[0].payload["outer"]["batches"][0] is batch
+
+
 def test_save_game_log_drops_reflection_payload_visibility_for_v2(tmp_path) -> None:
     from datetime import datetime, timezone
 

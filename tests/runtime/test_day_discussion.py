@@ -326,6 +326,38 @@ def test_announce_deaths_skips_increment_when_phase_is_day() -> None:
 
     assert result["game_state"].day_number == 1
 
+
+def test_announce_deaths_excludes_persisted_failed_batch() -> None:
+    from werewolf_agent.runtime.graph import announce_deaths
+
+    gs = GameState(
+        game_id="failed-death-announcement",
+        players={"p01": PlayerState(id="p01", role="villager", alive=False)},
+        phase="night",
+        day_number=0,
+        night_number=1,
+        deaths=[
+            Death(
+                "p01",
+                "wolf_kill",
+                "night",
+                "night_1_wolf_kill",
+                resolution_batch_parse_failed=True,
+            )
+        ],
+    )
+
+    result = announce_deaths({"game_state": gs})["game_state"]
+
+    announcements = [
+        event
+        for event in result.events
+        if event.type == "judge_broadcast"
+        and event.payload.get("phase") == "death_announce"
+    ]
+    assert len(announcements) == 1
+    assert "p01" not in announcements[0].payload["message"]
+
 def test_free_discussion_routes_to_vote_after_last_normal_speech() -> None:
     from werewolf_agent.runtime.graph import route_self_destruct_check
 

@@ -18,10 +18,11 @@ import time
 from dataclasses import replace
 from typing import Any
 
-from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import (
-    ResolutionBatchV2,
+    carrier_matches_resolution_batch,
     same_resolution_batch,
+    valid_carrier_resolution_batch,
 )
 from werewolf_agent.runtime.nodes.judge_broadcast_helpers import (
     _generate_judge_message,
@@ -140,22 +141,29 @@ def _dispatch_agent(
 
 def _hunter_reaction_resolved(
     gs: GameState,
-    hunter_id: str,
-    resolution_batch: ResolutionBatchV2 | str,
+    hunter_death: Death,
 ) -> bool:
     """按猎人和死亡批次判断开枪或放弃反应是否已经完成。"""
+    resolution_batch = valid_carrier_resolution_batch(hunter_death)
+    if resolution_batch is None:
+        # 损坏批次不能驱动技能链；视为无需继续结算，避免无限路由。
+        return True
     if any(
-        death.source_player_id == hunter_id
+        death.source_player_id == hunter_death.player_id
         and death.reason == "hunter_shot"
-        and same_resolution_batch(death.resolution_batch, resolution_batch)
+        and carrier_matches_resolution_batch(death, resolution_batch)
         for death in gs.deaths
     ):
         return True
     return any(
         event.type == "hunter_shot_declined"
-        and event.payload.get("hunter_id") == hunter_id
+        and event.payload.get("hunter_id") == hunter_death.player_id
         and same_resolution_batch(
-            event.payload.get("resolution_batch", ""), resolution_batch
+            event.payload.get("resolution_batch", ""),
+            resolution_batch,
+            left_parse_failed=bool(
+                event.payload.get("resolution_batch_parse_failed", False)
+            ),
         )
         for event in gs.events
     )
@@ -169,7 +177,7 @@ def _has_pending_hunter_shot(gs: GameState) -> bool:
         player = gs.players.get(death.player_id)
         if player is None or player.alive:
             continue
-        if not _hunter_reaction_resolved(gs, death.player_id, death.resolution_batch):
+        if not _hunter_reaction_resolved(gs, death):
             return True
     return False
 

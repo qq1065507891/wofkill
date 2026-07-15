@@ -275,7 +275,8 @@ def _safe_event_payload(event_type: str, payload: dict) -> dict:
 def _serialize_event_for_log(event: GameEvent) -> dict[str, Any]:
     """复用规范 serializer，并在脱敏后维持 V2 顶层 visibility 权威。"""
     serialized = serialize_game_event(event)
-    safe_payload = dict(_safe_event_payload(event.type, event.payload))
+    # 先使用规范 serializer 深拷贝并递归转换批次，再对副本做脱敏。
+    safe_payload = dict(_safe_event_payload(event.type, serialized["payload"]))
     if event.schema_version == "2" or event.visibility is not None:
         safe_payload.pop("visibility", None)
     serialized["payload"] = safe_payload

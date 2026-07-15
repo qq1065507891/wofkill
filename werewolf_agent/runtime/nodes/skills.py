@@ -16,8 +16,8 @@ from typing import Any
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import (
     ResolutionBatchV2,
-    parse_resolution_batch,
     serialize_resolution_batch,
+    valid_carrier_resolution_batch,
 )
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
@@ -59,8 +59,14 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         player = gs.players[death.player_id]
         if player.role != "hunter" or player.alive:
             continue
-        if _hunter_reaction_resolved(gs, death.player_id, death.resolution_batch):
+        parsed_batch = valid_carrier_resolution_batch(death)
+        batch_parse_failed = (
+            death.resolution_batch_parse_failed
+            or parsed_batch is None
+        )
+        if batch_parse_failed or _hunter_reaction_resolved(gs, death):
             continue
+        assert parsed_batch is not None
 
         gs, _ = _jb(
             state,
@@ -125,7 +131,6 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 exposure_collector.flush_events()
         if target is None:
             target = _hunter_shot_target_from_last_words(gs, death.player_id)
-        parsed_batch = parse_resolution_batch(death.resolution_batch)
         if target and target in gs.players and gs.players[target].alive and target != death.player_id:
             gs, _ = _judge_broadcast(
                 phase="hunter_shot_choice",
@@ -140,20 +145,16 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 f"  [猎人开枪] {_player_display(state, death.player_id)} "
                 f"选择带走{_player_display(state, target)}"
             )
-            shot_batch = (
-                ResolutionBatchV2(
-                    parsed_batch.batch.phase,
-                    parsed_batch.batch.number,
-                    "hunter_shot",
-                )
-                if parsed_batch.batch is not None
-                else death.resolution_batch
+            shot_batch = ResolutionBatchV2(
+                parsed_batch.phase,
+                parsed_batch.number,
+                "hunter_shot",
             )
             shot_death = Death(
                 player_id=target, reason="hunter_shot",
                 timing=death.timing, resolution_batch=shot_batch,
                 source_player_id=death.player_id,
-                resolution_batch_parse_failed=parsed_batch.batch_parse_failed,
+                resolution_batch_parse_failed=batch_parse_failed,
             )
             gs = engine.apply_death(gs, shot_death)
             # Public death announcement for shot player
@@ -194,10 +195,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                     "resolution_batch": serialize_resolution_batch(
                         death.resolution_batch
                     )[0],
-                    "resolution_batch_parse_failed": (
-                        death.resolution_batch_parse_failed
-                        or parsed_batch.batch_parse_failed
-                    ),
+                    "resolution_batch_parse_failed": batch_parse_failed,
                 },
             )])
         break

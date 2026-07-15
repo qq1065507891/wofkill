@@ -242,7 +242,7 @@ def test_persisted_failure_marker_warns_once_without_batch_contents(
 ) -> None:
     from werewolf_agent.runtime.directives import _shared
 
-    _shared._WARNED_BATCH_PARSE_FAILURES.clear()
+    _shared._reset_resolution_batch_warning_cache_for_tests()
     batch = ResolutionBatchV2("day", 2, "vote")
     gs = GameState(
         game_id="persisted-private-game",
@@ -308,7 +308,7 @@ def test_collect_death_order_warning_redacts_malformed_raw_and_deduplicates(
     from werewolf_agent.runtime.directives import _shared
 
     secret = "day_SECRET-player-p09-role-wolf-target-p01"
-    _shared._WARNED_BATCH_PARSE_FAILURES.clear()
+    _shared._reset_resolution_batch_warning_cache_for_tests()
     gs = GameState(
         game_id="private-game-id",
         deaths=[
@@ -343,6 +343,71 @@ def test_collect_death_order_warning_redacts_malformed_raw_and_deduplicates(
     assert "private-game-id" not in message
     assert "batch_type=str" in message
     assert "batch_hash=" in message
+
+
+def test_batch_warning_cache_scopes_same_raw_by_game(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from werewolf_agent.runtime.directives import _shared
+
+    _shared._reset_resolution_batch_warning_cache_for_tests()
+    states = [
+        GameState(
+            game_id=game_id,
+            day_number=1,
+            deaths=[Death("p01", "exile", "day_vote", "day_BAD")],
+        )
+        for game_id in ("warning-game-a", "warning-game-b")
+    ]
+
+    with caplog.at_level("WARNING", logger=_shared.__name__):
+        for state in states:
+            collect_death_order(state, current_day=1)
+
+    assert len([r for r in caplog.records if "malformed" in r.message]) == 2
+
+
+def test_batch_warning_cache_scopes_empty_game_id_by_state_instance(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from werewolf_agent.runtime.directives import _shared
+
+    _shared._reset_resolution_batch_warning_cache_for_tests()
+    states = [
+        GameState(
+            day_number=1,
+            deaths=[Death("p01", "exile", "day_vote", "day_BAD")],
+        )
+        for _ in range(2)
+    ]
+
+    with caplog.at_level("WARNING", logger=_shared.__name__):
+        for state in states:
+            collect_death_order(state, current_day=1)
+
+    assert len([r for r in caplog.records if "malformed" in r.message]) == 2
+
+
+def test_batch_warning_cache_evicts_least_recently_used_entry(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from werewolf_agent.runtime.directives import _shared
+
+    monkeypatch.setattr(_shared, "_RESOLUTION_BATCH_WARNING_CACHE_MAX", 3)
+    _shared._reset_resolution_batch_warning_cache_for_tests()
+
+    with caplog.at_level("WARNING", logger=_shared.__name__):
+        for raw in ("bad_0", "bad_1", "bad_2", "bad_3", "bad_0"):
+            state = GameState(
+                game_id="bounded-warning-game",
+                day_number=1,
+                deaths=[Death("p01", "exile", "day_vote", raw)],
+            )
+            collect_death_order(state, current_day=1)
+
+    assert len([r for r in caplog.records if "malformed" in r.message]) == 5
+    assert len(_shared._WARNED_BATCH_PARSE_FAILURES) == 3
 
 
 def test_collect_death_order_night_batch_does_not_warn() -> None:

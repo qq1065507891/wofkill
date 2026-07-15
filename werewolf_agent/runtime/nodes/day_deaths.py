@@ -16,7 +16,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
-from werewolf_agent.core.resolution_batches import same_resolution_batch
+from werewolf_agent.core.resolution_batches import carrier_matches_resolution_batch
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
     agent_exile_last_words,
@@ -67,7 +67,7 @@ def announce_deaths(state: RuntimeState) -> dict[str, Any]:
     night_deaths = [
         death for death in gs.deaths
         if death.timing == "night"
-        and same_resolution_batch(death.resolution_batch, f"night_{gs.night_number}")
+        and carrier_matches_resolution_batch(death, f"night_{gs.night_number}")
     ]
     if night_deaths:
         dead_desc = "、".join(
@@ -132,7 +132,7 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
     batch = f"night_{gs.night_number}"
     eligible = []
     for death in gs.deaths:
-        if not same_resolution_batch(death.resolution_batch, batch):
+        if not carrier_matches_resolution_batch(death, batch):
             continue
         can_leave = death.can_leave_last_words
         if can_leave is None:
