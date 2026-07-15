@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 使用示例: 内部模块，无对外接口
 """
 
@@ -19,8 +19,9 @@ from typing import Any
 
 from werewolf_agent.core.models import GameState
 from werewolf_agent.core.resolution_batches import (
-    parse_resolution_batch,
+    ResolutionBatchV2,
     serialize_resolution_batch,
+    valid_carrier_resolution_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,24 +129,15 @@ def collect_death_order(
     lines: list[str] = []
     for d in gs.deaths:
         if current_day is not None:
-            parsed = parse_resolution_batch(d.resolution_batch)
-            batch_failed = (
-                d.resolution_batch_parse_failed
-                or parsed.batch_parse_failed
-            )
-            if batch_failed:
-                if parsed.raw_value is not None:
-                    audit_identity = parsed.raw_value
-                elif parsed.batch is not None:
-                    serialized_batch = serialize_resolution_batch(parsed.batch)[0]
-                    audit_identity = json.dumps(
-                        serialized_batch,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                else:
-                    audit_identity = "missing"
+            batch = valid_carrier_resolution_batch(d)
+            if batch is None:
+                serialized_batch = serialize_resolution_batch(d.resolution_batch)[0]
+                audit_identity = json.dumps(
+                    serialized_batch,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
                 raw_hash = hashlib.sha256(
                     audit_identity.encode("utf-8")
                 ).hexdigest()
@@ -156,7 +148,7 @@ def collect_death_order(
                         else "mapping"
                         if isinstance(d.resolution_batch, Mapping)
                         else "v2"
-                        if parsed.batch is not None
+                        if isinstance(d.resolution_batch, ResolutionBatchV2)
                         else "other"
                     )
                     logger.warning(
@@ -167,10 +159,7 @@ def collect_death_order(
                     )
                 # 未知批次无法证明属于当前日，必须 fail closed。
                 continue
-            if (
-                parsed.batch is not None
-                and parsed.batch.number > current_day
-            ):
+            if batch.number > current_day:
                 continue
         label = _public_reasons.get(d.reason)
         if label:

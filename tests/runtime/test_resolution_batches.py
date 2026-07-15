@@ -4,12 +4,15 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> python -m pytest tests/runtime/test_resolution_batches.py -q
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterator, Mapping
 
 import pytest
 
@@ -318,3 +321,163 @@ def test_apply_death_ors_input_and_parser_failure_markers(
     assert event_payload["resolution_batch_parse_failed"] is True
     if batch == "day_BAD":
         assert event_payload["resolution_batch"] == "day_BAD"
+
+
+def test_apply_death_does_not_trust_marked_night_batch_for_last_words() -> None:
+    from werewolf_agent.engine.rule_death import apply_death
+
+    observed_night_numbers: list[int] = []
+    state = GameState(
+        game_id="marked-night-number",
+        night_number=0,
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+
+    apply_death(
+        state,
+        Death(
+            "p01",
+            "wolf_kill",
+            "night",
+            ResolutionBatchV2("night", 9, "wolf_kill"),
+            resolution_batch_parse_failed=True,
+        ),
+        can_leave_last_words_fn=lambda **kwargs: (
+            observed_night_numbers.append(kwargs["night_number"]) or False
+        ),
+        can_hunter_shoot_fn=lambda *_args, **_kwargs: False,
+    )
+
+    assert observed_night_numbers == [0]
+
+
+def test_apply_death_day_batch_keeps_state_night_number_for_last_words() -> None:
+    from werewolf_agent.engine.rule_death import apply_death
+
+    observed_night_numbers: list[int] = []
+    state = GameState(
+        game_id="day-batch-night-number",
+        night_number=3,
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+
+    apply_death(
+        state,
+        Death("p01", "exile", "day_vote", ResolutionBatchV2("day", 9, "vote")),
+        can_leave_last_words_fn=lambda **kwargs: (
+            observed_night_numbers.append(kwargs["night_number"]) or False
+        ),
+        can_hunter_shoot_fn=lambda *_args, **_kwargs: False,
+    )
+
+    assert observed_night_numbers == [3]
+
+
+class _CountingMapping(Mapping[str, object]):
+    def __init__(
+        self,
+        *,
+        actual_size: int,
+        reported_size: int,
+        items_error: bool = False,
+        malformed_items: bool = False,
+        len_error: bool = False,
+        getitem_error: bool = False,
+    ) -> None:
+        self.actual_size = actual_size
+        self.reported_size = reported_size
+        self.items_error = items_error
+        self.malformed_items = malformed_items
+        self.len_error = len_error
+        self.getitem_error = getitem_error
+        self.item_reads = 0
+
+    def __len__(self) -> int:
+        if self.len_error:
+            raise RuntimeError("len failed")
+        return self.reported_size
+
+    def __iter__(self) -> Iterator[str]:
+        yield from ("phase", "number", "cause")
+
+    def __getitem__(self, key: str) -> object:
+        if self.getitem_error:
+            raise RuntimeError("getitem failed")
+        values: dict[str, object] = {
+            "phase": "night",
+            "number": 1,
+            "cause": "wolf_kill",
+        }
+        return values[key]
+
+    def items(self) -> Iterator[tuple[str, object]]:
+        if self.items_error:
+            raise RuntimeError("items failed")
+        if self.malformed_items:
+            yield ("missing-value",)  # type: ignore[misc]
+            return
+        for index in range(self.actual_size):
+            self.item_reads += 1
+            yield f"key-{index}", index
+
+
+def test_mapping_sanitizer_caps_reads_when_len_lies() -> None:
+    mapping = _CountingMapping(actual_size=10_000, reported_size=3)
+
+    first = parse_resolution_batch(mapping)
+    first_reads = mapping.item_reads
+    mapping.item_reads = 0
+    second = parse_resolution_batch(mapping)
+
+    assert first.batch is None
+    assert first.batch_parse_failed is True
+    assert first.raw_value == second.raw_value
+    assert first_reads <= 65
+    assert mapping.item_reads <= 65
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        _CountingMapping(actual_size=3, reported_size=3, items_error=True),
+        _CountingMapping(actual_size=1, reported_size=1, malformed_items=True),
+        _CountingMapping(actual_size=3, reported_size=3, len_error=True),
+        _CountingMapping(actual_size=3, reported_size=3, getitem_error=True),
+    ],
+)
+def test_mapping_parser_fails_closed_on_mapping_protocol_errors(
+    mapping: _CountingMapping,
+) -> None:
+    first = parse_resolution_batch(mapping)
+    second = parse_resolution_batch(mapping)
+
+    assert first.batch is None
+    assert first.batch_parse_failed is True
+    assert first.raw_value == second.raw_value
+    assert first.raw_value is not None
+    assert "failed" not in first.raw_value
+
+
+class _LyingSet(set[int]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.item_reads = 0
+
+    def __len__(self) -> int:
+        return 1
+
+    def __iter__(self) -> Iterator[int]:
+        for value in range(10_000):
+            self.item_reads += 1
+            yield value
+
+
+def test_set_subclass_is_summarized_without_unbounded_iteration() -> None:
+    values = _LyingSet()
+
+    result = parse_resolution_batch({"phase": "bad", "payload": values})
+
+    assert result.batch_parse_failed is True
+    assert values.item_reads == 0
+    assert result.raw_value is not None
+    assert "$set_summary" in result.raw_value

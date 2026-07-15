@@ -4,7 +4,7 @@ RuleEngine 的死亡记录、死亡事件和存活目标校验 helper。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.engine.rule_death import apply_death
@@ -17,8 +17,8 @@ from dataclasses import replace
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import (
-    parse_resolution_batch,
     serialize_resolution_batch,
+    valid_carrier_resolution_batch,
 )
 
 
@@ -32,16 +32,16 @@ def apply_death(
     target = state.players[death.player_id]
     if not target.alive:
         return state
-    parsed_batch = parse_resolution_batch(death.resolution_batch)
+    valid_batch = valid_carrier_resolution_batch(death)
     can_leave_last_words = death.can_leave_last_words
     if can_leave_last_words is None:
         night_number = state.night_number
         if (
             night_number == 0
-            and parsed_batch.batch is not None
-            and parsed_batch.batch.phase == "night"
+            and valid_batch is not None
+            and valid_batch.phase == "night"
         ):
-            night_number = parsed_batch.batch.number
+            night_number = valid_batch.number
         can_leave_last_words = can_leave_last_words_fn(
             death_reason=death.reason,
             timing=death.timing,
@@ -58,10 +58,7 @@ def apply_death(
         death,
         can_leave_last_words=can_leave_last_words,
         triggered_skills=triggered_skills,
-        resolution_batch_parse_failed=(
-            death.resolution_batch_parse_failed
-            or parsed_batch.batch_parse_failed
-        ),
+        resolution_batch_parse_failed=(valid_batch is None),
     )
     updated = replace(target, alive=False)
     new_players = {**state.players, death.player_id: updated}

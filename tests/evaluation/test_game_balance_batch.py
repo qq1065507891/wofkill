@@ -2,7 +2,7 @@
 """验证多局平衡审计与公开声明安全修复。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -807,6 +807,43 @@ def test_balance_audit_reads_v2_night_batch_mapping() -> None:
     )
 
     assert audit["witch_night1_death_rate"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("death", "expected"),
+    [
+        (
+            {
+                "resolution_batch": "night_1",
+                "resolution_batch_parse_failed": True,
+            },
+            None,
+        ),
+        (
+            {
+                "resolution_batch": "night_1",
+                "resolution_batch_parse_failed": True,
+                "night_number": "2",
+            },
+            2,
+        ),
+        (
+            {
+                "resolution_batch": "night_2",
+                "resolution_batch_parse_failed": False,
+                "night_number": 1,
+            },
+            2,
+        ),
+    ],
+)
+def test_death_night_number_ignores_marked_batch_and_uses_trusted_fallback(
+    death: dict[str, object],
+    expected: int | None,
+) -> None:
+    from werewolf_agent.evaluation.balance_audit import _death_night_number
+
+    assert _death_night_number(death) == expected
 
 
 def test_balance_audit_counts_template_vote_reasons_and_public_fact_hallucinations():

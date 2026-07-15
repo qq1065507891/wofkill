@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> parse_resolution_batch("day_2_vote").batch
@@ -18,6 +19,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import islice
 from typing import Any, Literal, Protocol, TypeAlias, cast
 
 ResolutionPhase: TypeAlias = Literal["day", "night"]
@@ -143,6 +145,109 @@ def _canonical_order_token(value: object) -> str:
     return f"{rank}:{_canonical_json(value)}"
 
 
+def _mapping_read_failure(value: Mapping[object, object]) -> dict[str, object]:
+    return {"$unreadable_mapping": _type_label(value)}
+
+
+def _bounded_mapping_items(
+    value: Mapping[object, object],
+) -> tuple[list[tuple[object, object]] | dict[str, object], bool]:
+    """最多读取 MAX+1 个条目，并校验 Mapping 报告的长度。"""
+    try:
+        reported_size = len(value)
+    except Exception:
+        return _mapping_read_failure(value), False
+    if reported_size > _SANITIZER_MAX_ITEMS:
+        return {
+            "$truncated_mapping": {
+                "reported_size": reported_size,
+                "type": _type_label(value),
+            }
+        }, False
+    try:
+        items = list(islice(iter(value.items()), _SANITIZER_MAX_ITEMS + 1))
+    except Exception:
+        return _mapping_read_failure(value), False
+    if len(items) > _SANITIZER_MAX_ITEMS:
+        return {
+            "$truncated_mapping": {
+                "observed_at_least": _SANITIZER_MAX_ITEMS + 1,
+                "reported_size": reported_size,
+                "type": _type_label(value),
+            }
+        }, False
+    if len(items) != reported_size:
+        return {
+            "$mapping_size_mismatch": {
+                "observed_size": len(items),
+                "reported_size": reported_size,
+                "type": _type_label(value),
+            }
+        }, False
+    return items, True
+
+
+def _canonical_sanitize_mapping(
+    value: Mapping[object, object],
+    *,
+    depth: int,
+    active_ids: set[int],
+) -> tuple[object, bool]:
+    """有界读取并规范化 Mapping，同时返回根结构是否完整可信。"""
+    value_id = id(value)
+    active_ids.add(value_id)
+    try:
+        bounded, complete = _bounded_mapping_items(value)
+        if not complete:
+            return bounded, False
+        items = bounded
+        if all(
+            isinstance(key, str) and len(key) <= _SANITIZER_MAX_STRING_LENGTH
+            for key, _ in items
+        ):
+            return {
+                key: _canonical_sanitize(
+                    item,
+                    depth=depth + 1,
+                    active_ids=active_ids,
+                )
+                for key, item in sorted(items, key=lambda pair: pair[0])
+            }, True
+
+        canonical_items: list[tuple[str, object, object]] = []
+        for key, item in items:
+            safe_key = _canonical_sanitize(
+                key,
+                depth=depth + 1,
+                active_ids=active_ids,
+            )
+            canonical_items.append(
+                (
+                    _canonical_order_token(safe_key),
+                    safe_key,
+                    _canonical_sanitize(
+                        item,
+                        depth=depth + 1,
+                        active_ids=active_ids,
+                    ),
+                )
+            )
+        canonical_items.sort(key=lambda entry: entry[0])
+        for index in range(1, len(canonical_items)):
+            if canonical_items[index - 1][0] == canonical_items[index][0]:
+                return {"$mapping_key_collision": canonical_items[index][1]}, False
+        return {
+            "$mapping": [
+                [safe_key, safe_item]
+                for _, safe_key, safe_item in canonical_items
+            ]
+        }, True
+    except Exception:
+        return _mapping_read_failure(value), False
+    finally:
+        active_ids.remove(value_id)
+
+
 def _canonical_sanitize(
     value: object,
     *,
@@ -177,62 +282,12 @@ def _canonical_sanitize(
         return {"$cycle": _type_label(value)}
 
     if isinstance(value, Mapping):
-        active_ids.add(value_id)
-        try:
-            try:
-                items = list(value.items())
-            except Exception:  # pragma: no cover - 防御异常 Mapping 实现
-                return {"$unreadable_mapping": _type_label(value)}
-            if len(items) > _SANITIZER_MAX_ITEMS:
-                return {
-                    "$truncated_mapping": {
-                        "length": len(items),
-                        "type": _type_label(value),
-                    }
-                }
-            if all(
-                isinstance(key, str) and len(key) <= _SANITIZER_MAX_STRING_LENGTH
-                for key, _ in items
-            ):
-                return {
-                    key: _canonical_sanitize(
-                        item,
-                        depth=depth + 1,
-                        active_ids=active_ids,
-                    )
-                    for key, item in sorted(items, key=lambda pair: pair[0])
-                }
-
-            canonical_items: list[tuple[str, object, object]] = []
-            for key, item in items:
-                safe_key = _canonical_sanitize(
-                    key,
-                    depth=depth + 1,
-                    active_ids=active_ids,
-                )
-                canonical_items.append(
-                    (
-                        _canonical_order_token(safe_key),
-                        safe_key,
-                        _canonical_sanitize(
-                            item,
-                            depth=depth + 1,
-                            active_ids=active_ids,
-                        ),
-                    )
-                )
-            canonical_items.sort(key=lambda entry: entry[0])
-            for index in range(1, len(canonical_items)):
-                if canonical_items[index - 1][0] == canonical_items[index][0]:
-                    return {"$mapping_key_collision": canonical_items[index][1]}
-            return {
-                "$mapping": [
-                    [safe_key, safe_item]
-                    for _, safe_key, safe_item in canonical_items
-                ]
-            }
-        finally:
-            active_ids.remove(value_id)
+        sanitized, _complete = _canonical_sanitize_mapping(
+            value,
+            depth=depth,
+            active_ids=active_ids,
+        )
+        return sanitized
 
     if isinstance(value, (list, tuple)):
         active_ids.add(value_id)
@@ -258,10 +313,28 @@ def _canonical_sanitize(
     if isinstance(value, (set, frozenset)):
         active_ids.add(value_id)
         try:
-            if len(value) > _SANITIZER_MAX_ITEMS:
+            if type(value) not in {set, frozenset}:
                 return {
-                    "$truncated_set": {
-                        "length": len(value),
+                    "$set_summary": {
+                        "size": None,
+                        "type": _type_label(value),
+                    }
+                }
+            try:
+                size = len(value)
+            except Exception:
+                size = None
+            if size is None:
+                return {
+                    "$set_summary": {
+                        "size": size,
+                        "type": _type_label(value),
+                    }
+                }
+            if size > _SANITIZER_MAX_ITEMS:
+                return {
+                    "$set_summary": {
+                        "size": size,
                         "type": _type_label(value),
                     }
                 }
@@ -281,8 +354,13 @@ def _canonical_sanitize(
     return {"$unsupported": _type_label(value)}
 
 
-def _stable_mapping_json(value: Mapping[object, object]) -> str:
-    return _canonical_json(_canonical_sanitize(value))
+def _stable_mapping_json(value: Mapping[object, object]) -> tuple[str, bool]:
+    sanitized, complete = _canonical_sanitize_mapping(
+        value,
+        depth=0,
+        active_ids=set(),
+    )
+    return _canonical_json(sanitized), complete
 
 
 def parse_resolution_batch(
@@ -292,16 +370,18 @@ def parse_resolution_batch(
     if isinstance(value, ResolutionBatchV2):
         return ResolutionBatchParseResult(value, None, False)
     if isinstance(value, Mapping):
-        raw = _stable_mapping_json(value)
-        if set(value) != {"phase", "number", "cause"}:
+        raw, mapping_complete = _stable_mapping_json(value)
+        if not mapping_complete:
             return ResolutionBatchParseResult(None, raw, True)
         try:
+            if len(value) != 3:
+                return ResolutionBatchParseResult(None, raw, True)
             batch = ResolutionBatchV2(
                 phase=cast(ResolutionPhase, value["phase"]),
                 number=cast(int, value["number"]),
                 cause=cast(ResolutionCause, value["cause"]),
             )
-        except (TypeError, ValueError):
+        except Exception:
             return ResolutionBatchParseResult(None, raw, True)
         return ResolutionBatchParseResult(batch, None, False)
     if isinstance(value, str):
