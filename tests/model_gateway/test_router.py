@@ -1,4 +1,10 @@
-"""Unit tests for ModelRouter."""
+# -*- coding: utf-8 -*-
+"""
+验证 ModelRouter 的配置解析、provider 路由、重试与 fallback 记录。
+
+作者: Project contributors
+修改日期: 2026-07-15
+"""
 
 import pytest
 
@@ -433,6 +439,63 @@ class TestGenerateWithMockProvider:
         assert "model=f" in warning
         assert "attempt 1/2" in warning
         assert "retry in 1.8s" in warning
+
+    def test_fallback_retry_records_one_transition_then_retry(
+        self, monkeypatch,
+    ) -> None:
+        from werewolf_agent.model_gateway import router as router_module
+        from werewolf_agent.model_gateway.router import ModelRouter
+        from werewolf_agent.runtime.decision_outcomes import (
+            summarize_attempt_counts,
+            translate_decision_outcome,
+        )
+
+        primary = _SequenceProvider(
+            [RuntimeError("HTTP 503 primary unavailable")],
+            "primary",
+        )
+        fallback = _SequenceProvider(
+            [RuntimeError("HTTP 503 fallback retry"), "ok"],
+            "fallback",
+        )
+        monkeypatch.setattr(router_module.time, "sleep", lambda _: None)
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary",
+                    "model": "p",
+                    "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback",
+                    "model": "f",
+                    "retry_count": 1,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "fallback": fallback},
+            validate_reasoning=False,
+        )
+
+        result = router.generate(
+            "p01", "reflection", "hello", jitter_seconds=(0, 0)
+        )
+
+        assert [item.route_kind.value for item in result.attempts] == [
+            "primary",
+            "provider_fallback",
+            "retry",
+        ]
+        translated = translate_decision_outcome(result.attempts)
+        counts = summarize_attempt_counts(result.attempts)
+        assert translated.provider_fallback_count == 1
+        assert (counts.attempt_count, counts.retry_count) == (3, 1)
 
     @pytest.mark.parametrize(
         ("statuses", "expected_provider"),

@@ -1,4 +1,10 @@
-"""Tests for the extracted trace_builder module."""
+# -*- coding: utf-8 -*-
+"""
+验证 ActionTrace 构造、V2 计数与终态失败码投影。
+
+作者: Project contributors
+修改日期: 2026-07-15
+"""
 
 from __future__ import annotations
 
@@ -138,6 +144,64 @@ class TestBuildActionTrace:
         assert trace.structured_failure_reason == "missing_tool_call"
         assert trace.parse_success is False
         assert trace.parse_error == "missing required tool call"
+
+    def test_terminal_failure_code_matches_normalized_trace(self):
+        from werewolf_agent.model_gateway.execution_records import (
+            AttemptExecutionRecord,
+            AttemptOutcome,
+            EvidenceKind,
+            OpaqueRequestId,
+            ReasoningLevel,
+            ReasoningStatus,
+            RootCause,
+            RouteKind,
+        )
+        from werewolf_agent.runtime.decision_outcomes import (
+            normalize_decision_execution_trace,
+        )
+
+        request_id = OpaqueRequestId.new("game", "11223344")
+        common = dict(
+            opaque_request_id=request_id,
+            provider="primary",
+            model="model-a",
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            reasoning_token_count=0,
+        )
+        attempts = (
+            AttemptExecutionRecord(
+                **common,
+                ordinal=1,
+                route_kind=RouteKind.PRIMARY,
+                root_cause=RootCause.INVALID_OUTPUT,
+                attempt_outcome=AttemptOutcome.FAILURE,
+                normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+                evidence_kind=EvidenceKind.NONE,
+            ),
+            AttemptExecutionRecord(
+                **common,
+                ordinal=2,
+                route_kind=RouteKind.SAFE_FALLBACK,
+                root_cause=RootCause.INVALID_OUTPUT,
+                attempt_outcome=AttemptOutcome.FAILURE,
+                normalized_reasoning_status=ReasoningStatus.FALLBACK_DISABLED,
+                evidence_kind=EvidenceKind.FALLBACK_DISABLED,
+            ),
+        )
+        trace = build_action_trace(
+            _context(),
+            raw_text="",
+            parsed_action=None,
+            final_action_type=ActionType.NO_ACTION,
+            retry=RetryInfo(),
+            structured_failure_reason="illegal_action",
+            execution_attempts=attempts,
+        )
+
+        normalized = normalize_decision_execution_trace(trace.model_dump())
+
+        assert trace.terminal_failure_code == "illegal_action"
+        assert normalized["terminal_failure_code"] == "illegal_action"
 
     def test_structured_output_mode_and_failure_stage_propagate(self):
         trace = build_action_trace(

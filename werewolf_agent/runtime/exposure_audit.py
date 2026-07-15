@@ -16,6 +16,10 @@ from typing import Any
 
 from werewolf_agent.core.models import GameEvent
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+from werewolf_agent.runtime.decision_outcomes import (
+    DecisionGeneratedBy,
+    normalize_terminal_failure_code,
+)
 
 _RAG_KEYS = frozenset({
     "entry_id",
@@ -227,6 +231,7 @@ def _sanitize_skill_tool_rows(calls: Any) -> list[dict[str, Any]]:
         }
         if "error_message" in row:
             row["error_message"] = _truncate(row["error_message"])
+        _sanitize_decision_trace_values(row)
         input_summary = item.get("input_summary")
         if isinstance(input_summary, Mapping):
             clean_input = _sanitize_allowed(input_summary, _SKILL_TOOL_INPUT_KEYS)
@@ -240,6 +245,29 @@ def _sanitize_skill_tool_rows(calls: Any) -> list[dict[str, Any]]:
         if row:
             rows.append(row)
     return rows
+
+
+def _sanitize_decision_trace_values(row: dict[str, Any]) -> None:
+    """对决策 trace 值执行封闭集合校验，拒绝把任意正文带入审计。"""
+    flags: list[str] = []
+    generated_by = row.get("generated_by")
+    allowed_generated = {item.value for item in DecisionGeneratedBy}
+    if generated_by is None:
+        row.pop("generated_by", None)
+    elif generated_by not in allowed_generated:
+        row["generated_by"] = "unknown"
+        flags.append("generated_by_invalid")
+
+    terminal_code = row.get("terminal_failure_code")
+    if terminal_code is None:
+        row.pop("terminal_failure_code", None)
+    else:
+        normalized = normalize_terminal_failure_code(terminal_code)
+        row["terminal_failure_code"] = normalized
+        if normalized == "unknown" and terminal_code != "unknown":
+            flags.append("terminal_failure_code_invalid")
+    if flags:
+        row["value_sanitization"] = flags
 
 
 def _context_value(context: Any, field_path: str) -> Any:

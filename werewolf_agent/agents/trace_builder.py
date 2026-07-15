@@ -9,14 +9,12 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from werewolf_agent.agents.schemas import ActionTrace, AgentContext, PlayerAction, RetryInfo
 from werewolf_agent.runtime.world_model_audit import build_world_model_audit_from_context
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
 from werewolf_agent.runtime.decision_outcomes import (
-    TranslatedDecisionOutcome,
     translate_decision_outcome,
 )
 
@@ -59,7 +57,10 @@ def build_action_trace(
         else parsed_action
     )
     translated = (
-        translate_decision_outcome(execution_attempts)
+        translate_decision_outcome(
+            execution_attempts,
+            structured_failure_reason=structured_failure_reason,
+        )
         if execution_attempts else None
     )
     return ActionTrace(
@@ -83,9 +84,8 @@ def build_action_trace(
             translated.provider_fallback_count if translated else 0
         ),
         generated_by=translated.generated_by.value if translated else None,
-        terminal_failure_code=_terminal_failure_code(
-            translated,
-            structured_failure_reason,
+        terminal_failure_code=(
+            translated.terminal_failure_code if translated else None
         ),
         structured_failure_reason=structured_failure_reason,
         structured_output_mode=structured_output_mode,
@@ -98,17 +98,3 @@ def build_action_trace(
         decision_outcome=translated.outcome.value if translated else None,
         semantic_repair_audit=semantic_repair_audit,
     )
-
-
-def _terminal_failure_code(
-    translated: TranslatedDecisionOutcome | None,
-    structured_failure_reason: str | None,
-) -> str | None:
-    """仅允许稳定错误码进入 trace，拒绝原始错误正文与身份信息。"""
-    if not translated or translated.generated_by.value != "terminal_fallback":
-        return None
-    if structured_failure_reason and re.fullmatch(
-        r"[a-z][a-z0-9_]{0,63}", structured_failure_reason
-    ):
-        return structured_failure_reason
-    return translated.terminal_failure_code

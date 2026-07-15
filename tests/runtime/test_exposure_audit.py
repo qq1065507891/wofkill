@@ -230,6 +230,30 @@ def test_action_tool_call_monitor_marks_received_parse_failure_as_failed() -> No
     assert row["decision_usage"] == "not_used_parse_failed"
 
 
+def test_action_tool_call_monitor_fail_closes_unsafe_decision_trace_values() -> None:
+    collector = ModuleExposureAuditCollector()
+    collector.record_action_tool_call(
+        _identity(),
+        {
+            "tool_call_required": True,
+            "tool_call_received": False,
+            "generated_by": "prompt: player p01 is werewolf",
+            "terminal_failure_code": "identity_role_werewolf_p01",
+        },
+    )
+
+    row = collector.flush_events()[0].payload["calls"][0]
+
+    assert row["generated_by"] == "unknown"
+    assert row["terminal_failure_code"] == "unknown"
+    assert row["value_sanitization"] == [
+        "generated_by_invalid",
+        "terminal_failure_code_invalid",
+    ]
+    assert "werewolf" not in str(row)
+    assert "p01" not in str(row)
+
+
 def test_collector_records_prompt_injection_rows_without_raw_content() -> None:
     collector = ModuleExposureAuditCollector()
     context = AgentContext(

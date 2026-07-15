@@ -20,6 +20,7 @@ from werewolf_agent.model_gateway.execution_records import (
     RouteKind,
 )
 from werewolf_agent.runtime.decision_outcomes import (
+    derive_terminal_failure_code,
     normalize_decision_execution_trace,
     summarize_attempt_counts,
 )
@@ -117,3 +118,42 @@ def test_action_trace_writes_only_v2_counter_fields() -> None:
     assert payload["generated_by"] == "provider_fallback"
     assert payload["terminal_failure_code"] is None
     assert "total_retry_count_until_success" not in payload
+
+
+def test_terminal_failure_code_is_stable_across_v2_normalization() -> None:
+    attempts = _records((RouteKind.PRIMARY, RouteKind.SAFE_FALLBACK))
+    cases = (
+        ("illegal_action", "illegal_action"),
+        ("empty_response", "empty_response"),
+        ("invalid_output", "invalid_output"),
+        ("provider_error", "provider_error"),
+        ("prompt player p01 role", "unknown"),
+    )
+
+    for candidate, expected in cases:
+        code = derive_terminal_failure_code(attempts, candidate)
+        trace = {
+            "execution_attempts": attempts,
+            "attempt_count": 2,
+            "retry_count": 0,
+            "provider_fallback_count": 0,
+            "generated_by": "terminal_fallback",
+            "terminal_failure_code": code,
+            "structured_failure_reason": candidate,
+        }
+        normalized = normalize_decision_execution_trace(trace)
+
+        assert code == expected
+        assert normalized["terminal_failure_code"] == expected
+        assert normalize_decision_execution_trace(normalized) == normalized
+
+
+def test_v1_terminal_trace_uses_attempt_root_cause_without_rewrite() -> None:
+    attempts = _records((RouteKind.PRIMARY, RouteKind.SAFE_FALLBACK))
+    legacy = {"execution_attempts": attempts, "retry_count": 7}
+
+    normalized = normalize_decision_execution_trace(legacy)
+
+    assert normalized["terminal_failure_code"] == "policy_rejection"
+    assert normalized["normalized_from_schema_version"] == "1"
+    assert legacy == {"execution_attempts": attempts, "retry_count": 7}

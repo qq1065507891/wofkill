@@ -3,7 +3,7 @@
     功能描述：模型路由器网关 facade，负责配置解析、provider 路由、fallback 和用量追踪协调。
     作者：Mike
     创建日期：2025-01-15
-    修改日期：2026-07-13
+    修改日期：2026-07-15
     使用示例：内部模块，无对外接口
 """
 
@@ -568,6 +568,10 @@ class ModelRouter:
             config = replace(config, structured_output_mode=mode.value)
             retries = getattr(config, "retry_count", 1) or 0
             for retry_index in range(retries + 1):
+                route_kind = (
+                    RouteKind.PROVIDER_FALLBACK
+                    if retry_index == 0 else RouteKind.RETRY
+                )
                 try:
                     effective_choice = (
                         tool_choice if mode == StructuredOutputMode.NATIVE_TOOL else None
@@ -577,7 +581,7 @@ class ModelRouter:
                         tools=tools, tool_choice=effective_choice,
                         final_prompt_observer=bind_attempt(
                             final_prompt_observer,
-                            attempt_kind=RouteKind.PROVIDER_FALLBACK.value,
+                            attempt_kind=route_kind.value,
                             attempt_ordinal=len(attempts) + 1,
                         ),
                     )
@@ -595,7 +599,7 @@ class ModelRouter:
                     if result.reasoning_status == "unsupported":
                         attempts.append(_attempt_record(
                             request_id, len(attempts) + 1, config, result,
-                            RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE,
+                            route_kind, AttemptOutcome.FAILURE,
                             RootCause.POLICY_REJECTION,
                         ))
                         break
@@ -603,7 +607,7 @@ class ModelRouter:
                         empty_error = EmptyModelResponseError("empty_response")
                         attempts.append(_attempt_record(
                             request_id, len(attempts) + 1, config, result,
-                            RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE,
+                            route_kind, AttemptOutcome.FAILURE,
                             RootCause.INVALID_OUTPUT,
                         ))
                         if retry_index < retries:
@@ -620,7 +624,7 @@ class ModelRouter:
                         break
                     attempts.append(_attempt_record(
                         request_id, len(attempts) + 1, config, result,
-                        RouteKind.PROVIDER_FALLBACK, AttemptOutcome.SUCCESS,
+                        route_kind, AttemptOutcome.SUCCESS,
                         RootCause.NONE,
                     ))
                     if result.usage is None:
@@ -652,7 +656,7 @@ class ModelRouter:
                 except Exception as exc:
                     attempts.append(_attempt_record(
                         request_id, len(attempts) + 1, config, None,
-                        RouteKind.PROVIDER_FALLBACK, AttemptOutcome.FAILURE,
+                        route_kind, AttemptOutcome.FAILURE,
                         _root_cause(exc),
                     ))
                     if retry_index < retries and _is_retryable_exception(exc):

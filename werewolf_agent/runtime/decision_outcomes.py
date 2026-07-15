@@ -76,6 +76,26 @@ class DecisionGeneratedBy(str, Enum):
     TERMINAL_FALLBACK = "terminal_fallback"
 
 
+STABLE_TERMINAL_FAILURE_CODES = frozenset({
+    "empty_response",
+    "illegal_action",
+    "invalid_output",
+    "invalid_tool_arguments",
+    "missing_tool_call",
+    "model_generation_failed",
+    "parse_error",
+    "policy_rejection",
+    "provider_error",
+    "schema_validation",
+    "speech_quality",
+    "structured_output_unsupported",
+    "timeout",
+    "truncated_json",
+    "unknown",
+    "vote_quality",
+})
+
+
 @dataclass(frozen=True)
 class AttemptCounts:
     """仅由强类型路由推导的 V2 尝试计数。"""
@@ -105,6 +125,8 @@ class TranslatedDecisionOutcome:
 
 def translate_decision_outcome(
     attempts: tuple[DecisionAttempt, ...],
+    *,
+    structured_failure_reason: str | None = None,
 ) -> TranslatedDecisionOutcome:
     """仅按强类型路线与尝试事实翻译结果，不解析自由文本。"""
     if not attempts:
@@ -156,10 +178,9 @@ def translate_decision_outcome(
         attempt_count=counts.attempt_count,
         provider_fallback_count=counts.provider_fallback_count,
         generated_by=_generated_by(route_history),
-        terminal_failure_code=(
-            final.root_cause.value
-            if final.route_kind is RouteKind.SAFE_FALLBACK
-            else None
+        terminal_failure_code=derive_terminal_failure_code(
+            attempts,
+            structured_failure_reason,
         ),
         attempts=attempts,
     )
@@ -179,6 +200,26 @@ def summarize_attempt_counts(
     )
 
 
+def normalize_terminal_failure_code(value: Any) -> str:
+    """把终态失败原因收敛到封闭稳定码集合，未知值不回显。"""
+    return value if isinstance(value, str) and value in STABLE_TERMINAL_FAILURE_CODES else "unknown"
+
+
+def derive_terminal_failure_code(
+    attempts: Sequence[DecisionAttempt | Mapping[str, Any]],
+    structured_failure_reason: str | None = None,
+) -> str | None:
+    """按统一优先级从终态 attempt 与结构化失败原因推导稳定码。"""
+    if not attempts or _route_kind(attempts[-1]) is not RouteKind.SAFE_FALLBACK:
+        return None
+    if structured_failure_reason is not None:
+        return normalize_terminal_failure_code(structured_failure_reason)
+    final = attempts[-1]
+    root_cause = final.get("root_cause") if isinstance(final, Mapping) else final.root_cause
+    root_value = root_cause.value if isinstance(root_cause, RootCause) else root_cause
+    return normalize_terminal_failure_code(root_value)
+
+
 def normalize_decision_execution_trace(
     trace: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -186,10 +227,19 @@ def normalize_decision_execution_trace(
     raw_attempts = trace.get("execution_attempts")
     if not isinstance(raw_attempts, (list, tuple)) or not raw_attempts:
         raise ValueError("decision trace requires execution attempts")
+    failure_reason = trace.get("structured_failure_reason")
+    if failure_reason is None:
+        failure_reason = trace.get("terminal_failure_code")
     if all(isinstance(item, Mapping) for item in raw_attempts):
-        translated = translate_serialized_decision_outcome(raw_attempts)
+        translated = translate_serialized_decision_outcome(
+            raw_attempts,
+            structured_failure_reason=failure_reason,
+        )
     elif all(not isinstance(item, Mapping) for item in raw_attempts):
-        translated = translate_decision_outcome(tuple(raw_attempts))
+        translated = translate_decision_outcome(
+            tuple(raw_attempts),
+            structured_failure_reason=failure_reason,
+        )
     else:
         raise TypeError("execution attempts must share one schema")
 
@@ -230,10 +280,15 @@ def _generated_by(route_history: set[RouteKind]) -> DecisionGeneratedBy:
 
 def translate_serialized_decision_outcome(
     attempts: Sequence[Mapping[str, Any]],
+    *,
+    structured_failure_reason: str | None = None,
 ) -> TranslatedDecisionOutcome:
     """规范化脱敏 JSON 尝试后复用唯一 translator，拒绝未知枚举。"""
     normalized = tuple(_serialized_attempt(item) for item in attempts)
-    return translate_decision_outcome(normalized)
+    return translate_decision_outcome(
+        normalized,
+        structured_failure_reason=structured_failure_reason,
+    )
 
 
 def _serialized_attempt(payload: Mapping[str, Any]) -> _SerializedDecisionAttempt:
@@ -265,9 +320,12 @@ __all__ = [
     "AttemptCounts",
     "DecisionGeneratedBy",
     "DecisionOutcome",
+    "STABLE_TERMINAL_FAILURE_CODES",
     "DecisionAttempt",
     "TranslatedDecisionOutcome",
+    "derive_terminal_failure_code",
     "normalize_decision_execution_trace",
+    "normalize_terminal_failure_code",
     "summarize_attempt_counts",
     "translate_decision_outcome",
     "translate_serialized_decision_outcome",
