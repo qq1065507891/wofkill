@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from werewolf_agent.core.models import Death, GameEvent, GameState, PlayerState
+from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 from werewolf_agent.runtime.directives._shared import (
     collect_death_order,
     collect_public_vote_history,
@@ -180,8 +181,6 @@ def test_collect_death_order_aggregates_parse_warning_by_game_and_raw_batch() ->
 
 
 def test_collect_death_order_accepts_v2_and_excludes_future_day() -> None:
-    from werewolf_agent.core.resolution_batches import ResolutionBatchV2
-
     gs = GameState(
         game_id="v2-game",
         phase="day",
@@ -203,6 +202,78 @@ def test_collect_death_order_accepts_v2_and_excludes_future_day() -> None:
     )
 
     assert collect_death_order(gs, current_day=2) == "p01(放逐)"
+
+
+@pytest.mark.parametrize(
+    ("number", "persisted_marker", "included"),
+    [
+        (1, False, True),
+        (1, True, False),
+        (2, False, True),
+        (2, True, False),
+    ],
+)
+def test_collect_death_order_honors_persisted_failure_marker(
+    number: int,
+    persisted_marker: bool,
+    included: bool,
+) -> None:
+    gs = GameState(
+        game_id=f"persisted-marker-{number}-{persisted_marker}",
+        day_number=2,
+        deaths=[
+            Death(
+                "p01",
+                "exile",
+                "day_vote",
+                ResolutionBatchV2("day", number, "vote"),
+                resolution_batch_parse_failed=persisted_marker,
+            )
+        ],
+    )
+
+    output = collect_death_order(gs, current_day=2)
+
+    assert ("p01" in output) is included
+
+
+def test_persisted_failure_marker_warns_once_without_batch_contents(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from werewolf_agent.runtime.directives import _shared
+
+    _shared._WARNED_BATCH_PARSE_FAILURES.clear()
+    batch = ResolutionBatchV2("day", 2, "vote")
+    gs = GameState(
+        game_id="persisted-private-game",
+        deaths=[
+            Death(
+                "p01",
+                "exile",
+                "day_vote",
+                batch,
+                resolution_batch_parse_failed=True,
+            ),
+            Death(
+                "p02",
+                "hunter_shot",
+                "day_vote",
+                batch,
+                resolution_batch_parse_failed=True,
+            ),
+        ],
+    )
+
+    with caplog.at_level("WARNING", logger=_shared.__name__):
+        collect_death_order(gs, current_day=2)
+        collect_death_order(gs, current_day=2)
+
+    records = [record for record in caplog.records if "malformed" in record.message]
+    assert len(records) == 1
+    assert "batch_type=v2" in records[0].message
+    assert "persisted-private-game" not in records[0].message
+    assert "phase" not in records[0].message
+    assert "vote" not in records[0].message
 
 
 @pytest.mark.parametrize(
@@ -241,8 +312,20 @@ def test_collect_death_order_warning_redacts_malformed_raw_and_deduplicates(
     gs = GameState(
         game_id="private-game-id",
         deaths=[
-            Death("p01", "exile", "day_vote", secret),
-            Death("p02", "hunter_shot", "day_vote", secret),
+            Death(
+                "p01",
+                "exile",
+                "day_vote",
+                secret,
+                resolution_batch_parse_failed=True,
+            ),
+            Death(
+                "p02",
+                "hunter_shot",
+                "day_vote",
+                secret,
+                resolution_batch_parse_failed=True,
+            ),
         ],
     )
 

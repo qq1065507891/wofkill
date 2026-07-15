@@ -10,12 +10,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Mapping
 from typing import Any
 
 from werewolf_agent.core.models import GameState
-from werewolf_agent.core.resolution_batches import parse_resolution_batch
+from werewolf_agent.core.resolution_batches import (
+    parse_resolution_batch,
+    serialize_resolution_batch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +87,26 @@ def collect_death_order(
     for d in gs.deaths:
         if current_day is not None:
             parsed = parse_resolution_batch(d.resolution_batch)
-            if parsed.batch_parse_failed:
-                raw_batch = parsed.raw_value or ""
-                raw_hash = hashlib.sha256(raw_batch.encode("utf-8")).hexdigest()
+            batch_failed = (
+                d.resolution_batch_parse_failed
+                or parsed.batch_parse_failed
+            )
+            if batch_failed:
+                if parsed.raw_value is not None:
+                    audit_identity = parsed.raw_value
+                elif parsed.batch is not None:
+                    serialized_batch = serialize_resolution_batch(parsed.batch)[0]
+                    audit_identity = json.dumps(
+                        serialized_batch,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                else:
+                    audit_identity = "missing"
+                raw_hash = hashlib.sha256(
+                    audit_identity.encode("utf-8")
+                ).hexdigest()
                 warning_key = (gs.game_id, raw_hash)
                 if warning_key not in _WARNED_BATCH_PARSE_FAILURES:
                     _WARNED_BATCH_PARSE_FAILURES.add(warning_key)
@@ -94,6 +115,8 @@ def collect_death_order(
                         if isinstance(d.resolution_batch, str)
                         else "mapping"
                         if isinstance(d.resolution_batch, Mapping)
+                        else "v2"
+                        if parsed.batch is not None
                         else "other"
                     )
                     logger.warning(
