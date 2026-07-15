@@ -13,6 +13,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 
 
@@ -308,3 +310,77 @@ def test_terminal_semantic_rejects_incomplete_projection() -> None:
     assert metrics["semantic_repair_metrics_supported"] is False
     assert metrics["semantic_repair_success_rate"] is None
     assert metrics["semantic_repair_verified_claim_retention_metrics_supported"] is False
+
+
+@pytest.mark.parametrize(
+    (
+        "trace", "model_supported", "model_rate", "model_reason",
+        "terminal_supported", "terminal_rate", "terminal_reason",
+    ),
+    [
+        ({"generated_by": "model"}, True, 1.0, None,
+         False, None, "missing_decision_outcome"),
+        ({"decision_outcome": "terminal_fallback"}, False, None, "missing_generated_by",
+         True, 1.0, None),
+        ({"generated_by": "terminal_fallback"}, True, 0.0, None,
+         False, None, "missing_decision_outcome"),
+        ({"decision_outcome": "direct_success"}, False, None, "missing_generated_by",
+         True, 0.0, None),
+        ({"generated_by": "invalid", "decision_outcome": "direct_success"},
+         False, None, "invalid_generated_by", True, 0.0, None),
+        ({"generated_by": "model", "decision_outcome": "invalid"},
+         True, 1.0, None, False, None, "invalid_decision_outcome"),
+    ],
+)
+def test_speech_outcome_metrics_have_independent_closed_observability(
+    trace,
+    model_supported,
+    model_rate,
+    model_reason,
+    terminal_supported,
+    terminal_rate,
+    terminal_reason,
+) -> None:
+    from scripts.run_real_game import compute_game_quality_score
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    state = GameState(
+        game_id="g-speech-observability",
+        players={"p01": PlayerState(id="p01", role="villager")},
+        events=[GameEvent(type="action_trace_audit", payload={
+            "task_type": "speech", "action_trace": trace,
+        })],
+    )
+    quality = compute_game_quality_score(project_acceptance_game(state))
+
+    assert quality["speech_model_success_metrics_supported"] is model_supported
+    assert quality["speech_model_success_rate"] == model_rate
+    assert quality["speech_model_success_unsupported_reason"] == model_reason
+    assert quality["speech_terminal_fallback_metrics_supported"] is terminal_supported
+    assert quality["speech_terminal_fallback_rate"] == terminal_rate
+    assert quality["speech_terminal_fallback_unsupported_reason"] == terminal_reason
+
+
+def test_load_game_logs_normalizes_legacy_quality_without_rewriting(tmp_path) -> None:
+    from werewolf_agent.evaluation.balance_audit import load_game_logs
+
+    legacy_path = tmp_path / "legacy.json"
+    conflict_path = tmp_path / "conflict.json"
+    legacy_path.write_text(json.dumps({
+        "game_id": "legacy",
+        "quality_score": {"speech_fill_rate": 0.25},
+    }), encoding="utf-8")
+    conflict_path.write_text(json.dumps({
+        "game_id": "conflict",
+        "quality_score": {
+            "speech_fill_rate": 0.25,
+            "speech_non_empty_rate": 0.75,
+        },
+    }), encoding="utf-8")
+    before = [path.read_text(encoding="utf-8") for path in (legacy_path, conflict_path)]
+
+    legacy, conflict = load_game_logs([legacy_path, conflict_path])
+
+    assert legacy["quality_score"]["speech_non_empty_rate"] == 0.25
+    assert conflict["quality_score"]["speech_non_empty_rate"] == 0.75
+    assert [path.read_text(encoding="utf-8") for path in (legacy_path, conflict_path)] == before

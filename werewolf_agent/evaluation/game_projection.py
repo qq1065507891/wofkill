@@ -89,6 +89,17 @@ def projection_support(games: list[Mapping[str, Any]]) -> tuple[bool, str | None
     return bool(games), None if games else "no_games"
 
 
+def normalize_quality_score(quality_score: Mapping[str, Any]) -> dict[str, Any]:
+    """读取一周期 V1 speech_fill_rate，并让显式新字段优先。"""
+    normalized = dict(quality_score)
+    if (
+        "speech_non_empty_rate" not in normalized
+        and "speech_fill_rate" in normalized
+    ):
+        normalized["speech_non_empty_rate"] = normalized["speech_fill_rate"]
+    return normalized
+
+
 def _from_state(source: Any, *, steps: int | None) -> AcceptanceGameProjection:
     players = {
         str(player_id): {
@@ -259,6 +270,7 @@ def _json_safe(value: Any) -> Any:
 __all__ = [
     "AcceptanceGameProjection",
     "normalize_acceptance_games",
+    "normalize_quality_score",
     "project_acceptance_game",
     "projection_support",
 ]

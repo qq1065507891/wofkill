@@ -32,6 +32,7 @@ from werewolf_agent.evaluation.balance_audit import (  # noqa: E402
 from werewolf_agent.core.models import GameEvent  # noqa: E402
 from werewolf_agent.evaluation.game_projection import (  # noqa: E402
     AcceptanceGameProjection,
+    normalize_quality_score,
     project_acceptance_game,
 )
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig  # noqa: E402
@@ -60,6 +61,17 @@ logging.basicConfig(
 logging.getLogger("werewolf_agent.runtime.nodes").setLevel(logging.DEBUG)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("real_game")
+
+_SPEECH_GENERATED_BY_VALUES = frozenset({
+    "model", "repair", "provider_fallback", "terminal_fallback",
+})
+_SPEECH_MODEL_SUCCESS_VALUES = frozenset({
+    "model", "repair", "provider_fallback",
+})
+_SPEECH_DECISION_OUTCOME_VALUES = frozenset({
+    "direct_success", "retry_success", "repaired_success",
+    "provider_fallback_success", "terminal_fallback",
+})
 
 
 def _configure_file_logging() -> Path:
@@ -146,21 +158,21 @@ def compute_game_quality_score(
         if (e.payload.get("task_type") or e.payload.get("phase"))
         in {"speech", "sheriff_speech", "pk_speech"}
     ]
-    speech_outcome_traces = [
-        trace for trace in speech_traces
-        if isinstance(trace.get("generated_by"), str)
-        and isinstance(trace.get("decision_outcome"), str)
-    ]
-    speech_outcome_observed_count = len(speech_outcome_traces)
-    speech_model_success_count = sum(
-        trace.get("generated_by") in {"model", "repair", "provider_fallback"}
-        and trace.get("decision_outcome") != "terminal_fallback"
-        for trace in speech_outcome_traces
+    model_observation = _categorical_speech_observation(
+        speech_traces,
+        field="generated_by",
+        allowed=_SPEECH_GENERATED_BY_VALUES,
+        positive=_SPEECH_MODEL_SUCCESS_VALUES,
+        missing_reason="missing_generated_by",
+        invalid_reason="invalid_generated_by",
     )
-    speech_terminal_fallback_count = sum(
-        trace.get("generated_by") == "terminal_fallback"
-        or trace.get("decision_outcome") == "terminal_fallback"
-        for trace in speech_outcome_traces
+    terminal_observation = _categorical_speech_observation(
+        speech_traces,
+        field="decision_outcome",
+        allowed=_SPEECH_DECISION_OUTCOME_VALUES,
+        positive=frozenset({"terminal_fallback"}),
+        missing_reason="missing_decision_outcome",
+        invalid_reason="invalid_decision_outcome",
     )
     speech_semantic_traces = [
         trace for trace in speech_traces
@@ -236,24 +248,14 @@ def compute_game_quality_score(
         "speech_non_empty_rate": (
             round(speech_rate, 3) if speech_rate is not None else None
         ),
-        "speech_model_success_metrics_supported": bool(speech_outcome_traces),
-        "speech_model_success_unsupported_reason": (
-            None if speech_outcome_traces else "missing_speech_outcome_fields"
-        ),
-        "speech_model_success_observed_count": speech_outcome_observed_count,
-        "speech_model_success_rate": (
-            round(speech_model_success_count / speech_outcome_observed_count, 3)
-            if speech_outcome_observed_count else None
-        ),
-        "speech_terminal_fallback_metrics_supported": bool(speech_outcome_traces),
-        "speech_terminal_fallback_unsupported_reason": (
-            None if speech_outcome_traces else "missing_speech_outcome_fields"
-        ),
-        "speech_terminal_fallback_observed_count": speech_outcome_observed_count,
-        "speech_terminal_fallback_rate": (
-            round(speech_terminal_fallback_count / speech_outcome_observed_count, 3)
-            if speech_outcome_observed_count else None
-        ),
+        "speech_model_success_metrics_supported": model_observation["supported"],
+        "speech_model_success_unsupported_reason": model_observation["reason"],
+        "speech_model_success_observed_count": model_observation["observed_count"],
+        "speech_model_success_rate": model_observation["rate"],
+        "speech_terminal_fallback_metrics_supported": terminal_observation["supported"],
+        "speech_terminal_fallback_unsupported_reason": terminal_observation["reason"],
+        "speech_terminal_fallback_observed_count": terminal_observation["observed_count"],
+        "speech_terminal_fallback_rate": terminal_observation["rate"],
         "speech_semantic_acceptance_metrics_supported": bool(speech_semantic_traces),
         "speech_semantic_acceptance_unsupported_reason": (
             None if speech_semantic_traces else "missing_speech_semantic_fields"
@@ -377,15 +379,34 @@ def _serialize_projected_event_for_log(event: dict[str, Any]) -> dict[str, Any]:
     return serialized
 
 
-def normalize_quality_score(quality_score: dict[str, Any]) -> dict[str, Any]:
-    """读取一周期 V1 speech_fill_rate，并归一化到新字段名。"""
-    normalized = dict(quality_score)
-    if (
-        "speech_non_empty_rate" not in normalized
-        and "speech_fill_rate" in normalized
+def _categorical_speech_observation(
+    traces: list[dict[str, Any]],
+    *,
+    field: str,
+    allowed: frozenset[str],
+    positive: frozenset[str],
+    missing_reason: str,
+    invalid_reason: str,
+) -> dict[str, Any]:
+    """按单一封闭枚举字段计算指标，缺失和非法值分别 fail closed。"""
+    values = [trace.get(field) for trace in traces]
+    observed = [value for value in values if isinstance(value, str) and value in allowed]
+    if any(
+        value is not None
+        and (not isinstance(value, str) or value not in allowed)
+        for value in values
     ):
-        normalized["speech_non_empty_rate"] = normalized["speech_fill_rate"]
-    return normalized
+        return {"supported": False, "reason": invalid_reason,
+                "observed_count": len(observed), "rate": None}
+    if not traces or len(observed) != len(traces):
+        return {"supported": False, "reason": missing_reason,
+                "observed_count": len(observed), "rate": None}
+    return {
+        "supported": True,
+        "reason": None,
+        "observed_count": len(observed),
+        "rate": round(sum(value in positive for value in observed) / len(observed), 3),
+    }
 
 
 def save_game_log(

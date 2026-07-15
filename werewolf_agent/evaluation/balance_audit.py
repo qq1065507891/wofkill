@@ -36,7 +36,10 @@ from werewolf_agent.evaluation.decision_execution_audit import (
     _trace_task as _trace_task,
     compute_decision_execution_metrics,  # noqa: F401
 )
-from werewolf_agent.evaluation.game_projection import normalize_acceptance_games
+from werewolf_agent.evaluation.game_projection import (
+    normalize_acceptance_games,
+    normalize_quality_score,
+)
 from werewolf_agent.evaluation.world_evidence_audit import (
     support_matches_world as _support_matches_world,  # noqa: F401
 )
@@ -56,6 +59,9 @@ def load_game_logs(paths: Iterable[str | Path]) -> list[dict[str, Any]]:
     for path in paths:
         resolved = Path(path).resolve(strict=True)
         game = json.loads(resolved.read_text(encoding="utf-8"))
+        quality = game.get("quality_score")
+        if isinstance(quality, dict):
+            game["quality_score"] = normalize_quality_score(quality)
         game["__source_path"] = str(resolved)
         games.append(game)
     return games
