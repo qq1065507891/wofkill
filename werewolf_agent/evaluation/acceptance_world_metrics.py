@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def compute_world_acceptance_metrics(
 ) -> dict[str, Any]:
     """扫描世界模型审计并投影其验收指标。"""
     games = normalize_acceptance_games(games)
-    projection_is_supported, _ = projection_support(games)
+    projection_is_supported, projection_reason = projection_support(games)
     world_groups: list[
         tuple[
             list[dict[str, Any]],
@@ -88,6 +88,10 @@ def compute_world_acceptance_metrics(
     )
     return {
         "possible_world_metrics_supported": projection_is_supported and world_count > 0,
+        "possible_world_metrics_unsupported_reason": (
+            projection_reason if not projection_is_supported
+            else None if world_count else "no_possible_worlds"
+        ),
         "possible_world_prompt_count": len(world_groups),
         "possible_world_total_count": world_count,
         "possible_world_unique_count": unique_world_count,

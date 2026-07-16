@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-16
 
 使用示例:
     内部运行时节点模块。
@@ -198,7 +199,18 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         player_role = gs.players[speaker_id].role if speaker_id in gs.players else "?"
         logger.debug(f"  [{_player_display(state, speaker_id)}({player_role})]: {speech_text if speech_text else '(未发言)'}")
         if not speech_text.strip():
-            # 跳过空发言，不向时间线添加事件。
+            # 空文本不公开，但保留 moderator-only 决策事实供真实分母审计。
+            if action_trace is not None:
+                gs = replace(gs, events=gs.events + _action_audit_events(
+                    state=state,
+                    player_id=speaker_id,
+                    phase="speech",
+                    action_trace=action_trace,
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                ))
             advanced = advance_speaker()
             if advanced["current_speaker_id"] is None:
                 gs, _ = _judge_broadcast(
@@ -226,7 +238,7 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 type="seer_credibility_audit",
                 payload=seer_credibility_audit,
             ))
-        if action_trace:
+        if action_trace is not None:
             events.extend(_action_audit_events(
                 state=state,
                 player_id=speaker_id,

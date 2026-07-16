@@ -1,4 +1,10 @@
-"""Tests for PK (tie-break) speech and revote flow."""
+# -*- coding: utf-8 -*-
+"""
+验证平票 PK 发言与重新投票流程。
+
+作者: Project contributors
+修改日期: 2026-07-16
+"""
 
 import pytest
 from dataclasses import replace
@@ -180,6 +186,8 @@ class TestTiePKSpeechNode:
 
         gs = _make_gs_with_tie()
         private_trace = {
+            "generated_by": "terminal_fallback",
+            "decision_outcome": "terminal_fallback",
             "raw_text": '{"private_intent":{"true_role":"werewolf"}}',
             "parsed_action": {"private_intent": {"true_role": "werewolf"}},
             "final_action_type": "speech",
@@ -215,6 +223,12 @@ class TestTiePKSpeechNode:
             assert audit.payload["visibility"] == "moderator_only"
             assert audit.payload["phase"] == "pk_speech"
             assert audit.payload["action_trace"] == private_trace
+
+        from scripts.run_real_game import compute_game_quality_score
+
+        quality = compute_game_quality_score(result["game_state"])
+        assert quality["speech_opportunity_count"] == 2
+        assert quality["speech_terminal_fallback_rate"] == 1.0
 
 
 class TestAgentPKSpeechAdapter:

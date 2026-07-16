@@ -3,7 +3,7 @@
 运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     python scripts/run_real_game.py --seed 42 --max-steps 500
@@ -16,10 +16,12 @@ from collections import Counter
 import json
 import logging
 import os
+import re
 import sys
 import time
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -72,6 +74,13 @@ _SPEECH_DECISION_OUTCOME_VALUES = frozenset({
     "direct_success", "retry_success", "repaired_success",
     "provider_fallback_success", "terminal_fallback",
 })
+_SPEECH_EVENT_TASKS = {
+    "speech": "speech",
+    "sheriff_speech": "sheriff_speech",
+    "sheriff_pk_speech": "sheriff_speech",
+    "tie_pk_speech": "pk_speech",
+}
+_SAFE_GAME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
 def _configure_file_logging() -> Path:
@@ -101,9 +110,10 @@ def compute_game_quality_score(
         source.state if hasattr(source, "state") else source,
         steps=getattr(source, "step_count", None),
     )
+    projected = projection.to_mapping()
     events = [
         GameEvent(type=str(event.get("type") or ""), payload=dict(event.get("payload") or {}))
-        for event in projection.events
+        for event in projected["events"]
     ]
     reflection_metrics = reflection_verification_metrics(
         type("QualityState", (), {"events": events})()
@@ -142,22 +152,19 @@ def compute_game_quality_score(
     fallback_count = action_fallback_count + wolf_plan_fallback_count
     fallback_rate = fallback_count / total_quality_events if total_quality_events > 0 else 0.0
     speeches = [e for e in events if e.type == "speech"]
+    speech_opportunities = _project_speech_opportunities(events)
     observed_speeches = [
-        e for e in speeches if isinstance(e.payload.get("text"), str)
+        row for row in speech_opportunities if isinstance(row.get("text"), str)
     ]
     non_empty_speeches = sum(
-        bool(e.payload["text"].strip()) for e in observed_speeches
+        bool(row["text"].strip()) for row in observed_speeches
     )
     speech_rate = (
-        non_empty_speeches / len(observed_speeches)
-        if observed_speeches else None
+        non_empty_speeches / len(speech_opportunities)
+        if speech_opportunities and len(observed_speeches) == len(speech_opportunities)
+        else None
     )
-    speech_traces = [
-        e.payload.get("action_trace") or {}
-        for e in traces
-        if (e.payload.get("task_type") or e.payload.get("phase"))
-        in {"speech", "sheriff_speech", "pk_speech"}
-    ]
+    speech_traces = [dict(row.get("action_trace") or {}) for row in speech_opportunities]
     model_observation = _categorical_speech_observation(
         speech_traces,
         field="generated_by",
@@ -239,10 +246,12 @@ def compute_game_quality_score(
         **acceptance_metrics,
         "total_quality_events": total_quality_events,
         "speech_count": len(speeches),
+        "speech_opportunity_count": len(speech_opportunities),
         "non_empty_speech_count": non_empty_speeches,
-        "speech_non_empty_metrics_supported": bool(observed_speeches),
+        "speech_non_empty_metrics_supported": bool(speech_opportunities) and speech_rate is not None,
         "speech_non_empty_unsupported_reason": (
-            None if observed_speeches else "missing_speech_text_fields"
+            None if speech_opportunities and speech_rate is not None
+            else "missing_speech_text_fields"
         ),
         "speech_non_empty_observed_count": len(observed_speeches),
         "speech_non_empty_rate": (
@@ -256,19 +265,66 @@ def compute_game_quality_score(
         "speech_terminal_fallback_unsupported_reason": terminal_observation["reason"],
         "speech_terminal_fallback_observed_count": terminal_observation["observed_count"],
         "speech_terminal_fallback_rate": terminal_observation["rate"],
-        "speech_semantic_acceptance_metrics_supported": bool(speech_semantic_traces),
+        "speech_semantic_acceptance_metrics_supported": (
+            bool(speech_opportunities)
+            and len(speech_semantic_traces) == len(speech_opportunities)
+        ),
         "speech_semantic_acceptance_unsupported_reason": (
-            None if speech_semantic_traces else "missing_speech_semantic_fields"
+            None
+            if speech_opportunities and len(speech_semantic_traces) == len(speech_opportunities)
+            else "missing_speech_semantic_fields"
         ),
         "speech_semantic_acceptance_observed_count": speech_semantic_observed_count,
         "speech_semantic_acceptance_rate": (
             round(speech_semantic_acceptance_count / speech_semantic_observed_count, 3)
-            if speech_semantic_observed_count else None
+            if speech_opportunities
+            and speech_semantic_observed_count == len(speech_opportunities)
+            else None
         ),
         "phases_seen": len(phases_seen),
         "has_winner": has_winner,
         "steps": projection.steps,
     }
+
+
+def _project_speech_opportunities(events: list[GameEvent]) -> list[dict[str, Any]]:
+    """把公开节点与私有决策审计合并为一份真实发言机会投影。"""
+    rows: list[dict[str, Any]] = []
+    for event in events:
+        task_type = _SPEECH_EVENT_TASKS.get(event.type)
+        if task_type is not None:
+            speaker = event.payload.get("speaker")
+            if speaker is not None or "text" in event.payload:
+                rows.append({
+                    "task_type": task_type,
+                    "player_id": speaker,
+                    "text": event.payload.get("text"),
+                    "action_trace": None,
+                })
+            continue
+        if event.type != "action_trace_audit":
+            continue
+        task_type = event.payload.get("task_type") or event.payload.get("phase")
+        if task_type not in {"speech", "sheriff_speech", "pk_speech"}:
+            continue
+        player_id = event.payload.get("player_id")
+        match = next((
+            row for row in rows
+            if row["task_type"] == task_type
+            and row["action_trace"] is None
+            and (player_id is None or row["player_id"] == player_id)
+        ), None)
+        if match is None:
+            match = {
+                "task_type": task_type,
+                "player_id": player_id,
+                "text": "",
+                "action_trace": None,
+            }
+            rows.append(match)
+        trace = event.payload.get("action_trace")
+        match["action_trace"] = trace if isinstance(trace, Mapping) else {}
+    return rows
 
 
 def _faction_for_player(gs, player_id: str | None) -> str | None:
@@ -418,46 +474,72 @@ def save_game_log(
     output_dir: str | Path | None = None,
 ) -> Path:
     """保存单局 JSON；显式目录用于隔离批量验收产物。"""
+    if not _SAFE_GAME_ID.fullmatch(projection.game_id) or projection.game_id in {".", ".."}:
+        raise ValueError(f"invalid game_id: {projection.game_id!r}")
     quality = normalize_quality_score(quality_score)
     quality.pop("speech_fill_rate", None)
     is_low_quality = quality["fallback_rate"] > 0.7 and quality["total_quality_events"] > 5
-    artifact_root = Path(output_dir) if output_dir is not None else ROOT
+    artifact_root = (Path(output_dir) if output_dir is not None else ROOT).resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
 
     if is_low_quality:
         low_q_dir = artifact_root / "low_quality_games"
         low_q_dir.mkdir(parents=True, exist_ok=True)
-        log_path = low_q_dir / f"game_{projection.game_id}.json"
+        log_path = _contained_game_log_path(low_q_dir, projection.game_id)
         logger.warning(
             "Low quality game (fallback_rate=%.1f%%, %d quality events) — saved to %s",
             quality["fallback_rate"] * 100, quality["total_quality_events"], log_path,
         )
     else:
-        log_path = artifact_root / f"game_{projection.game_id}.json"
+        log_path = _contained_game_log_path(artifact_root, projection.game_id)
 
+    projected = projection.to_mapping()
     log_data = {
         "game_id": projection.game_id,
         "winning_faction": projection.winning_faction,
         "status": projection.status,
         "termination_reason": projection.termination_reason,
-        "phase": projection.metadata.get("phase"),
-        "day_number": projection.metadata.get("day_number", 0),
-        "night_number": projection.metadata.get("night_number", 0),
-        "hybrid_master_id": projection.metadata.get("hybrid_master_id"),
-        "hybrid_master_faction": projection.metadata.get("hybrid_master_faction"),
-        "hybrid_result": projection.metadata.get("hybrid_result"),
-        "players": projection.players,
-        "deaths": list(projection.deaths),
+        "phase": projected.get("phase"),
+        "day_number": projected.get("day_number", 0),
+        "night_number": projected.get("night_number", 0),
+        "hybrid_master_id": projected.get("hybrid_master_id"),
+        "hybrid_master_faction": projected.get("hybrid_master_faction"),
+        "hybrid_result": projected.get("hybrid_result"),
+        "players": projected["players"],
+        "deaths": projected["deaths"],
         "events": [
             _serialize_projected_event_for_log(event)
-            for event in projection.events
+            for event in projected["events"]
         ],
         "elapsed_seconds": round(elapsed, 1),
         "steps": projection.steps,
         "quality_score": quality,
     }
-    log_path.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_json(log_path, log_data)
     return log_path
+
+
+def _contained_game_log_path(directory: Path, game_id: str) -> Path:
+    """构造并复核日志路径始终位于指定目录。"""
+    root = directory.resolve()
+    target = (root / f"game_{game_id}.json").resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(f"invalid game_id: {game_id!r}")
+    return target
+
+
+def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
+    """同目录写临时文件并原子替换，失败时保留旧文件。"""
+    encoded = json.dumps(value, ensure_ascii=False, indent=2)
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def finalize_game_log(

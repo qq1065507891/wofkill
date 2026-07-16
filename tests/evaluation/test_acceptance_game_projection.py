@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -76,8 +77,8 @@ def test_projection_is_snapshot_and_explicit_aborted_status_is_authoritative() -
     source["events"][0]["payload"]["nested"].append("after")
 
     assert projection.status == "aborted"
-    assert projection.players["p01"]["facts"] == ["before"]
-    assert projection.events[0]["payload"]["nested"] == ["before"]
+    assert "facts" not in projection.players["p01"]
+    assert tuple(projection.events[0]["payload"]["nested"]) == ("before",)
 
 
 def test_finished_projection_requires_winner_but_aborted_does_not() -> None:
@@ -112,7 +113,7 @@ def test_projection_metadata_is_deep_snapshot_and_json_safe() -> None:
     projection = project_acceptance_game(source)
     nested["parts"].append("after")
 
-    assert projection.metadata["hybrid_result"] == {"parts": ["before"]}
+    assert tuple(projection.metadata["hybrid_result"]["parts"]) == ("before",)
     assert projection.metadata["__source_path"] == str(Path("legacy/game.json"))
     json.dumps(projection.to_mapping())
 
@@ -207,7 +208,7 @@ def test_game_state_status_fields_are_json_safe_and_default_running() -> None:
     assert state.termination_reason is None
 
 
-def test_quality_speech_metrics_use_independent_observed_denominators() -> None:
+def test_quality_speech_metrics_use_one_complete_opportunity_denominator() -> None:
     from scripts.run_real_game import compute_game_quality_score
     from werewolf_agent.evaluation.game_projection import project_acceptance_game
 
@@ -233,18 +234,19 @@ def test_quality_speech_metrics_use_independent_observed_denominators() -> None:
 
     quality = compute_game_quality_score(project_acceptance_game(state))
 
-    assert quality["speech_non_empty_metrics_supported"] is True
+    assert quality["speech_opportunity_count"] == 2
+    assert quality["speech_non_empty_metrics_supported"] is False
     assert quality["speech_non_empty_observed_count"] == 1
-    assert quality["speech_non_empty_rate"] == 1.0
+    assert quality["speech_non_empty_rate"] is None
     assert quality["speech_model_success_metrics_supported"] is True
     assert quality["speech_model_success_observed_count"] == 2
     assert quality["speech_model_success_rate"] == 0.5
     assert quality["speech_terminal_fallback_metrics_supported"] is True
     assert quality["speech_terminal_fallback_observed_count"] == 2
     assert quality["speech_terminal_fallback_rate"] == 0.5
-    assert quality["speech_semantic_acceptance_metrics_supported"] is True
+    assert quality["speech_semantic_acceptance_metrics_supported"] is False
     assert quality["speech_semantic_acceptance_observed_count"] == 1
-    assert quality["speech_semantic_acceptance_rate"] == 1.0
+    assert quality["speech_semantic_acceptance_rate"] is None
     assert "speech_fill_rate" not in quality
 
 
@@ -384,3 +386,234 @@ def test_load_game_logs_normalizes_legacy_quality_without_rewriting(tmp_path) ->
     assert legacy["quality_score"]["speech_non_empty_rate"] == 0.25
     assert conflict["quality_score"]["speech_non_empty_rate"] == 0.75
     assert [path.read_text(encoding="utf-8") for path in (legacy_path, conflict_path)] == before
+
+
+def test_projection_is_recursively_immutable_and_redacts_player_extras() -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    projection = project_acceptance_game({
+        "game_id": "g-private-player",
+        "players": {"p01": {
+            "id": "p01", "role": "seer", "alive": True, "faction": "good",
+            "private_prompt": "SECRET", "nested": {"secret": "SECRET"},
+        }},
+        "events": [{"type": "audit", "payload": {"items": ["before"]}}],
+        "deaths": [],
+    })
+
+    assert dict(projection.players["p01"]) == {
+        "id": "p01", "role": "seer", "alive": True, "faction": "good",
+    }
+    with pytest.raises(TypeError):
+        projection.players["p01"]["role"] = "werewolf"
+    with pytest.raises(AttributeError):
+        projection.events[0]["payload"]["items"].append("after")
+    mutable = projection.to_mapping()
+    mutable["events"][0]["payload"]["items"].append("after")
+    assert tuple(projection.events[0]["payload"]["items"]) == ("before",)
+    assert "SECRET" not in json.dumps(mutable, ensure_ascii=False)
+    json.dumps(mutable, ensure_ascii=False)
+
+
+def test_direct_projection_constructor_redacts_player_extras() -> None:
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    projection = AcceptanceGameProjection(
+        game_id="g-direct-private-player",
+        players={"p01": {
+            "id": "p01", "role": "seer", "alive": True, "faction": "good",
+            "private_prompt": "SECRET",
+        }},
+        events=(),
+        winning_faction=None,
+        status="running",
+    )
+
+    assert dict(projection.players["p01"]) == {
+        "id": "p01", "role": "seer", "alive": True, "faction": "good",
+    }
+    assert "SECRET" not in json.dumps(projection.to_mapping(), ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        ({"game_id": "g", "players": {"p": {"role": "villager"}}}, "missing_events"),
+        ({"game_id": "g", "players": {"p": {"role": "villager"}}, "events": {}},
+         "invalid_events_container"),
+        ({"game_id": "g", "players": {"p": {"role": "villager"}}, "events": ["bad"]},
+         "invalid_event_entry"),
+        ({"game_id": "g", "players": {"p": {"role": "villager"}},
+          "events": [{"type": "audit", "payload": {"custom": object()}}]},
+         "invalid_event_payload"),
+    ],
+)
+def test_invalid_event_inputs_fail_closed_with_stable_reason(source, reason) -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    projection = project_acceptance_game(source)
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == reason
+
+
+def test_state_with_custom_event_payload_fails_closed() -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    state = GameState(
+        game_id="g-state-invalid-event",
+        players={"p01": PlayerState(id="p01", role="villager")},
+        events=[GameEvent(type="audit", payload={"custom": object()})],
+    )
+
+    projection = project_acceptance_game(state)
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == "invalid_event_payload"
+
+
+def test_direct_domain_apis_expose_projection_unsupported_reason() -> None:
+    from werewolf_agent.evaluation.acceptance_power_metrics import (
+        compute_power_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_reflection_metrics import (
+        compute_reflection_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_terminal_semantic_metrics import (
+        compute_terminal_semantic_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_world_metrics import (
+        compute_world_acceptance_metrics,
+    )
+
+    invalid = [{"game_id": "g-invalid", "players": {"p": {"role": "villager"}},
+                "events": {}}]
+    results = [
+        (compute_world_acceptance_metrics(invalid), "possible_world_metrics_unsupported_reason"),
+        (compute_power_acceptance_metrics(invalid), "power_role_evidence_metrics_unsupported_reason"),
+        (compute_reflection_acceptance_metrics(invalid), "reflection_contamination_metrics_unsupported_reason"),
+        (compute_terminal_semantic_acceptance_metrics(invalid), "semantic_repair_metrics_unsupported_reason"),
+    ]
+
+    for metrics, key in results:
+        assert metrics[key] == "invalid_events_container"
+
+
+def test_normalized_projection_preserves_unsupported_reason_across_domain_apis() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+    from werewolf_agent.evaluation.game_projection import (
+        normalize_acceptance_games,
+        project_acceptance_game,
+    )
+
+    invalid = [{
+        "game_id": "g-invalid-roundtrip",
+        "players": {"p": {"role": "villager"}},
+        "events": {},
+    }]
+    normalized = normalize_acceptance_games(invalid)
+
+    assert project_acceptance_game(normalized[0]).unsupported_reason == (
+        "invalid_events_container"
+    )
+    combined = compute_acceptance_audit_metrics(invalid)
+    assert combined["possible_world_metrics_unsupported_reason"] == (
+        "invalid_events_container"
+    )
+    assert combined["power_role_evidence_metrics_unsupported_reason"] == (
+        "invalid_events_container"
+    )
+    assert combined["reflection_contamination_metrics_unsupported_reason"] == (
+        "invalid_events_container"
+    )
+    assert combined["semantic_repair_metrics_unsupported_reason"] == (
+        "invalid_events_container"
+    )
+
+
+@pytest.mark.parametrize("game_id", ["../escape", "a/b", "a\\b", "/absolute", "C:\\escape"])
+def test_save_game_log_rejects_unsafe_projection_game_id(tmp_path, game_id) -> None:
+    from scripts.run_real_game import save_game_log
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    projection = AcceptanceGameProjection(
+        game_id=game_id, events=(), players={}, winning_faction=None, status="running",
+    )
+    with pytest.raises(ValueError, match="invalid game_id"):
+        save_game_log(
+            None, 0.1, projection=projection,
+            quality_score={"fallback_rate": 0.0, "total_quality_events": 0},
+            output_dir=tmp_path,
+        )
+
+
+def test_save_game_log_replace_failure_preserves_old_file_and_cleans_temp(
+    tmp_path, monkeypatch,
+) -> None:
+    from scripts import run_real_game
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    target = tmp_path / "game_g-atomic.json"
+    target.write_text("old-valid", encoding="utf-8")
+    projection = AcceptanceGameProjection(
+        game_id="g-atomic", events=(), players={}, winning_faction=None, status="running",
+    )
+
+    def fail_replace(_source, _target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(run_real_game.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        run_real_game.save_game_log(
+            None, 0.1, projection=projection,
+            quality_score={"fallback_rate": 0.0, "total_quality_events": 0},
+            output_dir=tmp_path,
+        )
+
+    assert target.read_text(encoding="utf-8") == "old-valid"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_save_game_log_atomic_success_leaves_only_final_file(tmp_path) -> None:
+    from scripts.run_real_game import save_game_log
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    projection = AcceptanceGameProjection(
+        game_id="g-atomic-ok", events=(), players={}, winning_faction=None, status="running",
+    )
+    path = save_game_log(
+        None, 0.1, projection=projection,
+        quality_score={"fallback_rate": 0.0, "total_quality_events": 0},
+        output_dir=tmp_path,
+    )
+
+    assert json.loads(path.read_text(encoding="utf-8"))["game_id"] == "g-atomic-ok"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_save_game_log_never_reads_runner(tmp_path) -> None:
+    from scripts.run_real_game import save_game_log
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    class UnreadableRunner:
+        def __getattribute__(self, name):
+            raise AssertionError(f"runner must not be read: {name}")
+
+    projection = AcceptanceGameProjection(
+        game_id="g-no-runner-read",
+        events=(),
+        players={},
+        winning_faction=None,
+        status="running",
+    )
+    path = save_game_log(
+        UnreadableRunner(),
+        0.1,
+        projection=projection,
+        quality_score={"fallback_rate": 0.0, "total_quality_events": 0},
+        output_dir=tmp_path,
+    )
+
+    assert path.name == "game_g-no-runner-read.json"

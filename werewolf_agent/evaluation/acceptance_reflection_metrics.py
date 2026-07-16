@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def compute_reflection_acceptance_metrics(
 ) -> dict[str, Any]:
     """扫描每局最新反思事务并投影持久化验收指标。"""
     games = normalize_acceptance_games(games)
-    projection_is_supported, _ = projection_support(games)
+    projection_is_supported, projection_reason = projection_support(games)
     rejected_facts = 0
     rejected_lessons = 0
     reflection_persistence_entry_count = 0
@@ -188,6 +188,10 @@ def compute_reflection_acceptance_metrics(
         "reflection_completed_game_count": reflection_completed_game_count,
         "reflection_audited_game_count": reflection_audited_game_count,
         "reflection_contamination_metrics_supported": supported,
+        "reflection_contamination_metrics_unsupported_reason": (
+            projection_reason if not projection_is_supported
+            else None if supported else "incomplete_reflection_audit"
+        ),
         "reflection_persisted_rejected_fact_count": (
             persisted_rejected_facts if supported else None
         ),

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def compute_terminal_semantic_acceptance_metrics(
 ) -> dict[str, Any]:
     """扫描终局与语义事件并投影对应验收指标。"""
     games = normalize_acceptance_games(games)
-    projection_is_supported, _ = projection_support(games)
+    projection_is_supported, projection_reason = projection_support(games)
     semantic_rows: list[dict[str, Any]] = []
     semantic_eligible_count = 0
     semantic_reconciliation_complete = True
@@ -166,6 +166,10 @@ def compute_terminal_semantic_acceptance_metrics(
     return {
         "terminal_post_win_game_model_call_count": post_win_calls,
         "semantic_repair_metrics_supported": semantic_source_complete,
+        "semantic_repair_metrics_unsupported_reason": (
+            projection_reason if not projection_is_supported
+            else None if semantic_source_complete else "incomplete_semantic_repair_audit"
+        ),
         "semantic_repair_eligible_count": semantic_count,
         "semantic_repair_success_count": semantic_success,
         "semantic_repair_success_rate": (

@@ -3,7 +3,7 @@
 验证警长竞选、死亡警徽处理与阶段路由。
 
 作者: Project contributors
-修改日期: 2026-07-13
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -599,7 +599,11 @@ def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypat
         day_number=1,
         sheriff_candidates=["p01", "p02"],
     )
-    private_trace = {"parsed_action": {"private_intent": {"true_role": "werewolf"}}}
+    private_trace = {
+        "generated_by": "model",
+        "decision_outcome": "direct_success",
+        "parsed_action": {"private_intent": {"true_role": "werewolf"}},
+    }
 
     def fake_dispatch_agent(*_args, **_kwargs):
         return {"speech_text": "我上警竞选警长。", "action_trace": private_trace}
@@ -624,6 +628,50 @@ def test_sheriff_speech_calls_candidate_agents_and_keeps_trace_private(monkeypat
     assert all("action_trace" not in event.payload for event in speeches)
     assert len(audits) == 2
     assert all(event.payload["visibility"] == "moderator_only" for event in audits)
+    from scripts.run_real_game import compute_game_quality_score
+
+    quality = compute_game_quality_score(result["game_state"])
+    assert quality["speech_opportunity_count"] == 2
+    assert quality["speech_model_success_rate"] == 1.0
+
+
+def test_sheriff_pk_speech_is_in_unified_speech_opportunity_projection(monkeypatch) -> None:
+    from scripts.run_real_game import compute_game_quality_score
+    from werewolf_agent.runtime.nodes import sheriff_pk as sheriff_pk_mod
+
+    gs = GameState(
+        game_id="sheriff_pk_quality",
+        players={
+            "p01": PlayerState(id="p01", role="seer"),
+            "p02": PlayerState(id="p02", role="werewolf"),
+        },
+        day_number=1,
+        sheriff_pk_candidates=["p01", "p02"],
+    )
+
+    def fake_dispatch_agent(*_args, **_kwargs):
+        return {
+            "speech_text": "PK speech",
+            "action_trace": {
+                "generated_by": "model",
+                "decision_outcome": "direct_success",
+            },
+        }
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(sheriff_pk_mod, "_dispatch_agent", fake_dispatch_agent)
+    result = sheriff_pk_mod.sheriff_pk_speech({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+    })
+    quality = compute_game_quality_score(result["game_state"])
+
+    assert quality["speech_opportunity_count"] == 2
+    assert quality["speech_terminal_fallback_rate"] == 0.0
 
 
 def test_agent_sheriff_vote_does_not_inject_exile_vote_basis_hint() -> None:

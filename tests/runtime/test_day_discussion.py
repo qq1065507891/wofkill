@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+验证日间自由讨论节点、发言审计与相关运行时行为。
+
+作者: Project contributors
+修改日期: 2026-07-16
+"""
+
 from __future__ import annotations
 
 import json
@@ -152,6 +160,49 @@ def test_free_discussion_keeps_action_trace_out_of_public_speech(monkeypatch) ->
     assert public_speech.payload["text"] == "公开发言"
     assert audit_event.payload["visibility"] == "moderator_only"
     assert audit_event.payload["action_trace"] == private_trace
+
+
+def test_free_discussion_empty_model_speech_keeps_private_decision_opportunity(
+    monkeypatch,
+) -> None:
+    from scripts.run_real_game import compute_game_quality_score
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+    from werewolf_agent.runtime.nodes import day as day_mod
+
+    gs = GameState(
+        game_id="empty_speech_opportunity",
+        day_number=1,
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+    trace = {
+        "generated_by": "terminal_fallback",
+        "decision_outcome": "terminal_fallback",
+    }
+
+    def fake_dispatch_agent(state, fn, *extra_args, **kwargs):
+        return {"speech_text": "", "action_trace": trace}
+
+    class Registry:
+        def get_agent(self, player_id):
+            return object()
+
+    monkeypatch.setattr(day_mod, "_dispatch_agent", fake_dispatch_agent)
+    result = day_mod.free_discussion({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "agent_registry": Registry(),
+        "speech_order": ["p01"],
+        "speech_index": 0,
+    })
+    final_state = result["game_state"]
+    quality = compute_game_quality_score(project_acceptance_game(final_state))
+
+    assert not any(event.type == "speech" for event in final_state.events)
+    audit = next(event for event in final_state.events if event.type == "action_trace_audit")
+    assert audit.payload["visibility"] == "moderator_only"
+    assert quality["speech_opportunity_count"] == 1
+    assert quality["speech_non_empty_rate"] == 0.0
+    assert quality["speech_terminal_fallback_rate"] == 1.0
 
 
 # ---------------------------------------------------------------------------

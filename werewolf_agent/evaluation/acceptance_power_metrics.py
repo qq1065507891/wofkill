@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def compute_power_acceptance_metrics(
 ) -> dict[str, Any]:
     """对账伤害事实与动作轨迹并投影神职证据指标。"""
     games = normalize_acceptance_games(games)
-    projection_is_supported, _ = projection_support(games)
+    projection_is_supported, projection_reason = projection_support(games)
     power_decisions: list[dict[str, Any]] = []
     for game in games:
         power_trace_candidates: list[tuple[str, str | None, str, dict[str, Any]]] = []
@@ -102,6 +102,10 @@ def compute_power_acceptance_metrics(
     return {
         "power_role_evidence_metrics_supported": (
             projection_is_supported and power_count > 0
+        ),
+        "power_role_evidence_metrics_unsupported_reason": (
+            projection_reason if not projection_is_supported
+            else None if power_count else "no_power_role_damage_decisions"
         ),
         "power_role_damage_decision_count": power_count,
         "power_role_evidence_complete_count": complete_power_decisions,
