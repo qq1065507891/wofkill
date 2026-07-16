@@ -31,6 +31,10 @@ from werewolf_agent.runtime.game_termination import (
 from werewolf_agent.storage.sqlite_store import _deserialize_game_state, _serialize_game_state
 
 
+class PostgresSchemaMigrationError(RuntimeError):
+    """PostgreSQL schema 升级因现存数据冲突而无法安全完成。"""
+
+
 class PostgresGameRepository:
     """PostgreSQL implementation of GameRepository."""
 
@@ -507,6 +511,15 @@ class PostgresGameRepository:
 
     def _ensure_schema(self) -> None:
         conn = self._ensure_connection()
+        try:
+            self._ensure_schema_transaction(conn)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    def _ensure_schema_transaction(self, conn: Any) -> None:
+        """在单个事务中创建基础 schema 并完成事件完整性升级。"""
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_version (
@@ -535,18 +548,7 @@ class PostgresGameRepository:
         conn.execute(
             "ALTER TABLE events ADD COLUMN IF NOT EXISTS event_json JSONB"
         )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_seq "
-            "ON events (game_id, seq)"
-        )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_event_id "
-            "ON events (game_id, (event_json->>'event_id')) "
-            "WHERE event_json->>'event_id' IS NOT NULL"
-        )
-        conn.execute(
-            "INSERT INTO schema_version (version) VALUES (3) ON CONFLICT DO NOTHING"
-        )
+        self._upgrade_event_integrity_v3(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS deaths (
                 game_id TEXT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
@@ -610,4 +612,66 @@ class PostgresGameRepository:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_reflections_player ON reflections (player_id)"
         )
-        conn.commit()
+
+    @staticmethod
+    def _upgrade_event_integrity_v3(conn: Any) -> None:
+        """预检历史重复项，安全创建事件唯一索引并最后记录 v3。"""
+        seq_duplicates = conn.execute("""
+            SELECT game_id, seq, COUNT(*), array_agg(id ORDER BY id)
+            FROM events
+            GROUP BY game_id, seq
+            HAVING COUNT(*) > 1
+            ORDER BY game_id, seq
+            LIMIT 20
+        """).fetchall()
+        event_id_duplicates = conn.execute("""
+            SELECT
+                game_id,
+                event_json->>'event_id',
+                COUNT(*),
+                array_agg(id ORDER BY id)
+            FROM events
+            WHERE event_json->>'event_id' IS NOT NULL
+            GROUP BY game_id, event_json->>'event_id'
+            HAVING COUNT(*) > 1
+            ORDER BY game_id, event_json->>'event_id'
+            LIMIT 20
+        """).fetchall()
+        if seq_duplicates or event_id_duplicates:
+            details: list[str] = []
+            details.extend(
+                f"game_id={game_id}, seq={seq}, count={count}, rows={row_ids}"
+                for game_id, seq, count, row_ids in seq_duplicates
+            )
+            details.extend(
+                "game_id="
+                f"{game_id}, event_id={event_id}, count={count}, rows={row_ids}"
+                for game_id, event_id, count, row_ids in event_id_duplicates
+            )
+            raise PostgresSchemaMigrationError(
+                "PostgreSQL event integrity v3 migration blocked by duplicate "
+                "audit rows; resolve or quarantine these rows explicitly before "
+                "retrying: " + " | ".join(details)
+            )
+
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_seq "
+            "ON events (game_id, seq)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_event_id "
+            "ON events (game_id, (event_json->>'event_id')) "
+            "WHERE event_json->>'event_id' IS NOT NULL"
+        )
+        indexes = conn.execute("""
+            SELECT
+                to_regclass('uq_events_game_seq'),
+                to_regclass('uq_events_game_event_id')
+        """).fetchone()
+        if indexes is None or any(index is None for index in indexes):
+            raise PostgresSchemaMigrationError(
+                "PostgreSQL event integrity v3 indexes were not created"
+            )
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (3) ON CONFLICT DO NOTHING"
+        )

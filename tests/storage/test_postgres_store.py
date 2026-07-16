@@ -138,11 +138,107 @@ def _configure_empty_event_write(mock_conn: MagicMock, current: int = 0) -> None
     mock_conn.execute.side_effect = execute
 
 
+def _configure_clean_schema_upgrade(mock_conn: MagicMock) -> None:
+    """让通用 schema mock 明确返回无重复项和已创建索引。"""
+    def execute(sql: str, _params=None):
+        cursor = MagicMock()
+        normalized = " ".join(sql.split())
+        if "HAVING COUNT(*) > 1" in normalized:
+            cursor.fetchall.return_value = []
+        elif "SELECT to_regclass" in normalized:
+            cursor.fetchone.return_value = (
+                "uq_events_game_seq",
+                "uq_events_game_event_id",
+            )
+        return cursor
+
+    mock_conn.execute.side_effect = execute
+
+
 def _event_insert_calls(mock_conn: MagicMock) -> list[Any]:
     return [
         call for call in mock_conn.execute.call_args_list
         if "INSERT INTO events" in call.args[0]
     ]
+
+
+class _AtomicV3Result:
+    def __init__(self, *, one=None, rows=None) -> None:
+        self._one = one
+        self._rows = rows or []
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class _AtomicV3Connection:
+    """模拟 PostgreSQL DDL 事务，验证失败回滚与同连接重试。"""
+
+    def __init__(
+        self,
+        *,
+        seq_duplicates=None,
+        event_id_duplicates=None,
+    ) -> None:
+        self.seq_duplicates = seq_duplicates or []
+        self.event_id_duplicates = event_id_duplicates or []
+        self.executed_sql: list[str] = []
+        self.pending_indexes: set[str] = set()
+        self.applied_indexes: set[str] = set()
+        self.pending_version_3 = False
+        self.applied_version_3 = False
+        self.commits = 0
+        self.rollbacks = 0
+
+    def execute(self, sql, _params=None):
+        normalized = " ".join(sql.split())
+        self.executed_sql.append(normalized)
+        if normalized == "SELECT 1":
+            return _AtomicV3Result(one=(1,))
+        if "GROUP BY game_id, seq" in normalized:
+            return _AtomicV3Result(rows=self.seq_duplicates)
+        if "GROUP BY game_id, event_json->>'event_id'" in normalized:
+            return _AtomicV3Result(rows=self.event_id_duplicates)
+        if "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_seq" in normalized:
+            self.pending_indexes.add("uq_events_game_seq")
+        if "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_event_id" in normalized:
+            self.pending_indexes.add("uq_events_game_event_id")
+        if "SELECT to_regclass" in normalized:
+            indexes = self.applied_indexes | self.pending_indexes
+            return _AtomicV3Result(one=(
+                (
+                    "uq_events_game_seq"
+                    if "uq_events_game_seq" in indexes
+                    else None
+                ),
+                (
+                    "uq_events_game_event_id"
+                    if "uq_events_game_event_id" in indexes
+                    else None
+                ),
+            ))
+        if (
+            "INSERT INTO schema_version (version) VALUES (3)"
+            in normalized
+        ):
+            self.pending_version_3 = True
+        return _AtomicV3Result()
+
+    def commit(self) -> None:
+        self.commits += 1
+        self.applied_indexes.update(self.pending_indexes)
+        self.pending_indexes.clear()
+        if self.pending_version_3:
+            self.applied_version_3 = True
+            self.pending_version_3 = False
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+        self.pending_indexes.clear()
+        self.pending_version_3 = False
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +265,7 @@ class TestEnsureSchema:
 
         mock_mod = _make_mock_psycopg()
         mock_conn = MagicMock()
+        _configure_clean_schema_upgrade(mock_conn)
         mock_mod.connect.return_value = mock_conn
 
         with patch.dict(sys.modules, {"psycopg": mock_mod}):
@@ -187,6 +284,7 @@ class TestEnsureSchema:
 
         mock_mod = _make_mock_psycopg()
         mock_conn = MagicMock()
+        _configure_clean_schema_upgrade(mock_conn)
         mock_mod.connect.return_value = mock_conn
 
         with patch.dict(sys.modules, {"psycopg": mock_mod}):
@@ -214,6 +312,7 @@ class TestEnsureSchema:
 
         mock_mod = _make_mock_psycopg()
         mock_conn = MagicMock()
+        _configure_clean_schema_upgrade(mock_conn)
         mock_mod.connect.return_value = mock_conn
 
         with patch.dict(sys.modules, {"psycopg": mock_mod}):
@@ -223,6 +322,60 @@ class TestEnsureSchema:
             repo._ensure_schema()
 
         mock_conn.commit.assert_called_once()
+
+    def test_v3_clean_legacy_upgrade_is_preflighted_verified_and_atomic(self) -> None:
+        connection = _AtomicV3Connection()
+        repo = _make_repo_without_init()
+        repo._conn = connection
+
+        repo._ensure_schema()
+
+        assert connection.commits == 1
+        assert connection.rollbacks == 0
+        assert connection.applied_version_3 is True
+        assert connection.applied_indexes == {
+            "uq_events_game_seq",
+            "uq_events_game_event_id",
+        }
+        sql = " ".join(connection.executed_sql)
+        assert "HAVING COUNT(*) > 1" in sql
+        assert "to_regclass" in sql
+
+    def test_v3_duplicate_legacy_upgrade_rolls_back_and_can_retry(self) -> None:
+        from werewolf_agent.storage.postgres_store import PostgresSchemaMigrationError
+
+        connection = _AtomicV3Connection(
+            seq_duplicates=[("legacy-game", 7, 2, [41, 99])],
+            event_id_duplicates=[
+                ("legacy-game", "legacy-game:e000007", 2, [41, 99]),
+            ],
+        )
+        repo = _make_repo_without_init()
+        repo._conn = connection
+
+        with pytest.raises(
+            PostgresSchemaMigrationError,
+            match=r"legacy-game.*seq=7.*rows=\[41, 99\].*event_id",
+        ):
+            repo._ensure_schema()
+
+        assert connection.rollbacks == 1
+        assert connection.commits == 0
+        assert connection.applied_version_3 is False
+        assert connection.applied_indexes == set()
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+
+        connection.seq_duplicates = []
+        connection.event_id_duplicates = []
+        repo._ensure_schema()
+
+        assert connection.rollbacks == 1
+        assert connection.commits == 1
+        assert connection.applied_version_3 is True
+        assert connection.applied_indexes == {
+            "uq_events_game_seq",
+            "uq_events_game_event_id",
+        }
 
 
 # ===========================================================================
@@ -989,6 +1142,7 @@ def test_postgres_ensure_schema_has_schema_version():
 
 def test_postgres_ensure_schema_adds_event_json_column() -> None:
     repo, mock_conn = _setup_repo_with_mock_conn()
+    _configure_clean_schema_upgrade(mock_conn)
 
     repo._ensure_schema()
 
@@ -998,6 +1152,7 @@ def test_postgres_ensure_schema_adds_event_json_column() -> None:
 
 def test_postgres_ensure_schema_adds_unique_event_sequence_and_identity() -> None:
     repo, mock_conn = _setup_repo_with_mock_conn()
+    _configure_clean_schema_upgrade(mock_conn)
 
     repo._ensure_schema()
 
