@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.node_helpers import _alive_wolves
@@ -33,6 +33,11 @@ from werewolf_agent.runtime.nodes.judge_broadcast_helpers import (
 from werewolf_agent.runtime.nodes.runtime_state import RuntimeState, _stable_seed
 from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeline import phase_label
+from werewolf_agent.runtime.wolf_no_kill_policy import (
+    NoKillPolicy,
+    NoKillReasonCode,
+    no_kill_policy_for_state,
+)
 
 
 logger = logging.getLogger("werewolf_agent.runtime.nodes._shared")
@@ -55,9 +60,11 @@ def _force_wolf_kill(gs: GameState, reason: str) -> dict[str, Any]:
     import random as _random
     non_wolves = _alive_non_wolves(gs)
     if not non_wolves:
-        event = GameEvent(type="wolf_no_kill_timeout", payload={"night_number": gs.night_number})
-        gs = replace(gs, events=gs.events + [event])
-        return {"game_state": gs, "wolf_kill_target_id": None}
+        return NoKillPolicy().resolve(
+            gs,
+            reason_code="plan_generation_failed",
+            extra_payload={"legacy_reason": reason},
+        )
     rng = _random.Random(_stable_seed(gs.game_id, reason, gs.night_number))
     target = rng.choice(non_wolves)
     event = GameEvent(
@@ -326,17 +333,34 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
                 "visibility": "moderator_only",
             },
         )
+        invalid_gs = replace(gs, events=[*gs.events, event])
+        return no_kill_policy_for_state(state).resolve(
+            invalid_gs,
+            reason_code="insufficient_quorum",
+            extra_payload={
+                "consensus_priority": exc.priority,
+                "consensus_status": "invariant_violation",
+            },
+        )
+
+    def positive_support(
+        priority: WolfPriorityConsensus,
+    ) -> dict[str, int]:
         return {
-            "game_state": replace(gs, events=[*gs.events, event]),
-            "wolf_kill_target_id": None,
+            target_id: len(supporters)
+            for target_id, supporters in priority.supporters_by_target.items()
         }
 
-    def no_kill(priority: WolfPriorityConsensus, reason: str) -> dict[str, Any]:
-        event = GameEvent(
-            type="wolf_no_kill_timeout",
-            payload={
-                "night_number": gs.night_number,
-                "reason": reason,
+    def no_kill(
+        priority: WolfPriorityConsensus,
+        reason: NoKillReasonCode,
+    ) -> dict[str, Any]:
+        return no_kill_policy_for_state(state).resolve(
+            gs,
+            reason_code=reason,
+            primary_positive_support=positive_support(consensus.primary),
+            backup_positive_support=positive_support(consensus.backup),
+            extra_payload={
                 "consensus_priority": priority.priority,
                 "consensus_status": priority.status,
                 "quorum": consensus.quorum,
@@ -347,11 +371,6 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
                 },
             },
         )
-        return {
-            "game_state": replace(gs, events=[*gs.events, event]),
-            "wolf_kill_target_id": None,
-        }
-
     authorized_statuses = {"majority", "single_wolf"}
     primary = consensus.primary
     if primary.status not in authorized_statuses or primary.target_id is None:

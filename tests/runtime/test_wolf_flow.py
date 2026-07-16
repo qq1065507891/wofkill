@@ -363,25 +363,32 @@ def test_wolf_consensus_explicit_no_kill_records_declared_event() -> None:
     assert result["wolf_kill_target_id"] is None
     event = _last_non_broadcast_event(result["game_state"])
     assert event.type == "wolf_no_kill_declared"
-    assert event.payload["reason"] == "create peace-night pressure"
+    assert event.payload["reason"] == "strategic_abstain"
+    assert event.payload["legacy_reason"] == "create peace-night pressure"
+    assert event.payload["no_kill_decision"]["reason_code"] == "strategic_abstain"
 
 
 def test_wolf_consensus_kill_records_selected_target() -> None:
     engine = _new_engine()
     players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
     gs = GameState(game_id="wolf_kill", players=players, night_number=1)
+    target_id = next(
+        player_id
+        for player_id, player in players.items()
+        if player.role != "werewolf"
+    )
 
     result = wolf_consensus({
         "game_state": gs,
         "engine": engine,
         "wolf_action": "kill",
-        "wolf_kill_target_id": "p01",
+        "wolf_kill_target_id": target_id,
     })
 
-    assert result["wolf_kill_target_id"] == "p01"
+    assert result["wolf_kill_target_id"] == target_id
     event = _last_non_broadcast_event(result["game_state"])
     assert event.type == "wolf_kill_selected"
-    assert event.payload["target_id"] == "p01"
+    assert event.payload["target_id"] == target_id
 
 def test_wolf_discussion_timer_expiration_forces_no_kill_timeout() -> None:
     from werewolf_agent.runtime.timers import ManualTimer
@@ -403,7 +410,8 @@ def test_wolf_discussion_timer_expiration_forces_no_kill_timeout() -> None:
     assert result["wolf_kill_target_id"] is None
     event = _last_non_broadcast_event(result["game_state"])
     assert event.type == "wolf_no_kill_timeout"
-    assert event.payload["reason"] == "timer_expired"
+    assert event.payload["reason"] == "provider_unavailable"
+    assert event.payload["legacy_reason"] == "timer_expired"
 
 
 def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monkeypatch) -> None:

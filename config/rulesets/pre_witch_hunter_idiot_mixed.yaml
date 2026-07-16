@@ -481,3 +481,4 @@ validation:
 game_rules:
   base_vote_weight: 2
   sheriff_weight: 1.5
+  max_consecutive_pre_resolution_no_kill: 2

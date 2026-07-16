@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-16
 
 使用示例:
     >>> python -m pytest tests/runtime/test_wolf_night_nodes.py -q
@@ -47,6 +48,17 @@ def test_wolf_night_node_groups_are_importable() -> None:
     assert wolf_discussion.wolf_team_plan_node is wolf_night_nodes.wolf_team_plan_node
     assert wolf_consensus._legacy_wolf_consensus is wolf_night_nodes._legacy_wolf_consensus
     assert wolf_consensus.wolf_consensus is wolf_night_nodes.wolf_consensus
+
+
+def test_wolf_night_facade_exports_the_single_no_kill_policy() -> None:
+    from werewolf_agent.runtime.nodes import wolf_night_nodes
+    from werewolf_agent.runtime.wolf_no_kill_policy import (
+        NoKillDecision,
+        NoKillPolicy,
+    )
+
+    assert wolf_night_nodes.NoKillDecision is NoKillDecision
+    assert wolf_night_nodes.NoKillPolicy is NoKillPolicy
 
 
 def test_wolf_discussion_keeps_compat_patch_but_consensus_does_not(monkeypatch) -> None:
