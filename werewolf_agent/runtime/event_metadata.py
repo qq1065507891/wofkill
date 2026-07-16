@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.core.models import GameEvent
@@ -78,6 +78,23 @@ def _validate_v2_event(game_id: str, event: GameEvent) -> bool:
         )
     _require_aware(event.occurred_at)  # type: ignore[arg-type]
     return True
+
+
+def validate_v2_event_identity(
+    game_id: str,
+    event: GameEvent,
+    *,
+    required_visibility: EventVisibility | None = None,
+) -> None:
+    """验证权威 V2 身份，并可要求精确可见性。"""
+    if not _validate_v2_event(game_id, event):
+        raise ValueError(f"event is not V2: {event.type}")
+    if required_visibility is not None and event.visibility is not required_visibility:
+        raise ValueError(
+            "GameEvent.visibility mismatch: "
+            f"expected {required_visibility.value}, "
+            f"got {event.visibility.value if event.visibility else None}"
+        )
 
 
 def _collect_v2_identity(

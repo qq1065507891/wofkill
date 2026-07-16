@@ -17,6 +17,8 @@ from typing import Any
 
 from werewolf_agent.agents.schemas import WolfTargetStance, WolfTargetStanceAction
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.runtime.event_metadata import validate_v2_event_identity
 
 
 def living_wolf_ids(gs: GameState) -> list[str]:
@@ -54,12 +56,17 @@ def collect_current_wolf_target_stances(gs: GameState) -> list[dict[str, Any]]:
     """读取本夜已验证的结构化 stance，不读取或解析自由文本。"""
     stances: list[dict[str, Any]] = []
     for event in gs.events:
-        if (
-            event.type != "wolf_discussion"
-            or event.payload.get("night_number") != gs.night_number
-            or event.schema_version != "2"
-            or not event.event_id
-        ):
+        if event.type != "wolf_discussion":
+            continue
+        try:
+            validate_v2_event_identity(
+                gs.game_id,
+                event,
+                required_visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+            )
+        except ValueError:
+            continue
+        if event.payload.get("night_number") != gs.night_number:
             continue
         raw_stance = event.payload.get("target_stance")
         if not isinstance(raw_stance, dict):

@@ -11,6 +11,9 @@
     >>> build_wolf_discussion_instruction("w1", night_number=1, has_teammate_input=False, has_previous_speeches=False)
 """
 
+from dataclasses import replace
+from datetime import datetime, timezone
+
 import pytest
 from pydantic import ValidationError
 
@@ -301,6 +304,69 @@ def test_structured_stance_collector_rejects_forged_non_v2_or_dead_target() -> N
         players=gs.players,
         events=[forged],
     )
+
+    assert collect_current_wolf_target_stances(gs) == []
+
+
+def _with_naive_occurred_at(event: GameEvent) -> GameEvent:
+    """构造绕过 dataclass 入口的损坏内存事件，验证读取边界 fail closed。"""
+    forged = replace(event)
+    object.__setattr__(forged, "occurred_at", datetime(2026, 7, 16))
+    return forged
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda event: replace(event, sequence_number=None),
+        lambda event: replace(event, sequence_number=-1),
+        lambda event: replace(event, occurred_at=None),
+        _with_naive_occurred_at,
+        lambda event: replace(event, event_id="forged:e999999"),
+        lambda event: replace(event, game_id="other_game"),
+        lambda event: replace(event, visibility=EventVisibility.PUBLIC),
+        lambda event: replace(event, visibility=EventVisibility.MODERATOR_ONLY),
+    ],
+    ids=[
+        "missing_sequence",
+        "invalid_sequence",
+        "missing_occurred_at",
+        "invalid_occurred_at",
+        "noncanonical_event_id",
+        "wrong_game_id",
+        "public_visibility",
+        "moderator_visibility",
+    ],
+)
+def test_structured_stance_collector_requires_authoritative_private_v2_event(
+    mutate,
+) -> None:
+    """伪造或错误可见性的 V2 事件必须 fail closed。"""
+    gs = _make_game_state()
+    event = new_game_event(
+        gs,
+        "wolf_discussion",
+        {"wolf_id": "w1", "round": 1, "night_number": 1, "text": ""},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        now=datetime(2026, 7, 16, tzinfo=timezone.utc),
+    )
+    stance = build_validated_wolf_target_stance(
+        gs,
+        event,
+        wolf_id="w1",
+        round_number=1,
+        raw_stance={
+            "target_id": "p1",
+            "stance": "propose",
+            "priority": "primary",
+        },
+    )
+    event = replace(
+        event,
+        payload={**event.payload, "target_stance": stance.model_dump()},
+    )
+    forged = mutate(event)
+    gs = replace(gs, events=[forged])
 
     assert collect_current_wolf_target_stances(gs) == []
 

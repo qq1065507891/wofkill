@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.runtime.agent_adapter import (
     _extract_first_balanced_json_object,
@@ -60,8 +62,10 @@ def _make_gs(*, night=1, wolves=("p04", "p05", "p08", "p10"), extra_events=()):
                         "round_number": round_num,
                     },
                 },
+                visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
                 event_id=event_id,
                 sequence_number=sequence_number,
+                occurred_at=datetime(2026, 7, 16, tzinfo=timezone.utc),
                 game_id="test_wtp",
                 schema_version="2",
             ))
