@@ -16,7 +16,7 @@ from werewolf_agent.evaluation.acceptance_shared import (
     _non_negative_int,
 )
 from werewolf_agent.evaluation.game_projection import (
-    normalize_acceptance_games,
+    ensure_normalized_acceptance_games,
     projection_support,
 )
 
@@ -33,7 +33,7 @@ def compute_terminal_semantic_acceptance_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """扫描终局与语义事件并投影对应验收指标。"""
-    games = normalize_acceptance_games(games)
+    games = ensure_normalized_acceptance_games(games)
     projection_is_supported, projection_reason = projection_support(games)
     semantic_rows: list[dict[str, Any]] = []
     semantic_eligible_count = 0

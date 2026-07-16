@@ -13,7 +13,7 @@ from collections import Counter
 from typing import Any
 
 from werewolf_agent.evaluation.game_projection import (
-    normalize_acceptance_games,
+    ensure_normalized_acceptance_games,
     projection_support,
 )
 
@@ -22,7 +22,7 @@ def compute_power_acceptance_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """对账伤害事实与动作轨迹并投影神职证据指标。"""
-    games = normalize_acceptance_games(games)
+    games = ensure_normalized_acceptance_games(games)
     projection_is_supported, projection_reason = projection_support(games)
     power_decisions: list[dict[str, Any]] = []
     for game in games:

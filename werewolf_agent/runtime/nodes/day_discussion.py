@@ -42,6 +42,16 @@ from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_pick_speech_order
 
 
+def _terminal_speech_trace(reason: str) -> dict[str, str]:
+    """构造不含模型私密内容的稳定发言机会审计。"""
+    return {
+        "generated_by": "terminal_fallback",
+        "decision_outcome": "terminal_fallback",
+        "fallback_reason": reason,
+        "final_action_type": "speech",
+    }
+
+
 def free_discussion(state: RuntimeState) -> dict[str, Any]:
     gs: GameState = state["game_state"]
     speech_order = state.get("speech_order", [])
@@ -150,14 +160,34 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
     )
 
     if speaker_id and timed_out:
-        gs = replace(gs, events=gs.events + [GameEvent(
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=speaker_id,
+            phase="speech",
+            task_type="speech",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
+        events = _action_audit_events(
+            state=state,
+            player_id=speaker_id,
+            phase="speech",
+            action_trace=_terminal_speech_trace("speech_timeout"),
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        events.append(GameEvent(
             type="speech_timeout",
             payload={
                 "player_id": speaker_id,
                 "day_number": gs.day_number,
                 "seconds_limit": state.get("speech_seconds_limit", 0),
             },
-        )])
+        ))
+        gs = replace(gs, events=gs.events + events)
         return {"game_state": gs, **advance_speaker()}
     if speaker_id:
         # 法官公告当前发言人。
@@ -168,49 +198,71 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
             visibility="public",
         )
         speech_text = state.get("speech_text", "")
-        action_trace = None
+        decision_identity = _allocate_decision_identity(
+            state,
+            player_id=speaker_id,
+            phase="speech",
+            task_type="speech",
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
+        exposure_collector = ModuleExposureAuditCollector()
+        action_trace = (
+            _terminal_speech_trace("pre_supplied_speech_text")
+            if speech_text else None
+        )
         seer_credibility_audit = None
-        decision_identity = None
-        exposure_collector = None
         if not speech_text:
-            decision_identity = _allocate_decision_identity(
-                state,
-                player_id=speaker_id,
-                phase="speech",
-                task_type="speech",
-                day_number=gs.day_number,
-                night_number=gs.night_number,
-            )
-            exposure_collector = ModuleExposureAuditCollector()
-            result = _dispatch_agent(
-                state,
-                agent_day_speech,
-                speaker_id,
-                timeout_override=AGENT_TIMEOUTS.day_speech,
-                decision_identity=decision_identity,
-                exposure_collector=exposure_collector,
-            )
+            try:
+                result = _dispatch_agent(
+                    state,
+                    agent_day_speech,
+                    speaker_id,
+                    timeout_override=AGENT_TIMEOUTS.day_speech,
+                    decision_identity=decision_identity,
+                    exposure_collector=exposure_collector,
+                )
+            except Exception:
+                logger.warning("发言 agent 调度失败，记录安全终止机会")
+                result = None
+                action_trace = _terminal_speech_trace("agent_dispatch_error")
             if result is not None:
                 if result.get("self_destruct"):
+                    trace = result.get("action_trace") or _terminal_speech_trace(
+                        "self_destruct_before_speech"
+                    )
+                    gs = replace(gs, events=gs.events + _action_audit_events(
+                        state=state,
+                        player_id=speaker_id,
+                        phase="speech",
+                        action_trace=trace,
+                        decision_identity=decision_identity,
+                        exposure_collector=exposure_collector,
+                        day_number=gs.day_number,
+                        night_number=gs.night_number,
+                    ))
                     return {"game_state": gs, "self_destruct_wolf_id": speaker_id}
                 speech_text = result.get("speech_text", "")
-                action_trace = result.get("action_trace")
+                action_trace = result.get("action_trace") or _terminal_speech_trace(
+                    "missing_action_trace"
+                )
                 seer_credibility_audit = result.get("seer_credibility_audit")
+            elif action_trace is None:
+                action_trace = _terminal_speech_trace("agent_unavailable")
         player_role = gs.players[speaker_id].role if speaker_id in gs.players else "?"
         logger.debug(f"  [{_player_display(state, speaker_id)}({player_role})]: {speech_text if speech_text else '(未发言)'}")
         if not speech_text.strip():
             # 空文本不公开，但保留 moderator-only 决策事实供真实分母审计。
-            if action_trace is not None:
-                gs = replace(gs, events=gs.events + _action_audit_events(
-                    state=state,
-                    player_id=speaker_id,
-                    phase="speech",
-                    action_trace=action_trace,
-                    decision_identity=decision_identity,
-                    exposure_collector=exposure_collector,
-                    day_number=gs.day_number,
-                    night_number=gs.night_number,
-                ))
+            gs = replace(gs, events=gs.events + _action_audit_events(
+                state=state,
+                player_id=speaker_id,
+                phase="speech",
+                action_trace=action_trace,
+                decision_identity=decision_identity,
+                exposure_collector=exposure_collector,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+            ))
             advanced = advance_speaker()
             if advanced["current_speaker_id"] is None:
                 gs, _ = _judge_broadcast(
@@ -232,23 +284,22 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         }
         if redacted_claims:
             payload["redacted_public_claims"] = redacted_claims
-        events = [GameEvent(type="speech", payload=payload)]
+        events = _action_audit_events(
+            state=state,
+            player_id=speaker_id,
+            phase="speech",
+            action_trace=action_trace,
+            decision_identity=decision_identity,
+            exposure_collector=exposure_collector,
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+        )
         if seer_credibility_audit:
             events.append(GameEvent(
                 type="seer_credibility_audit",
                 payload=seer_credibility_audit,
             ))
-        if action_trace is not None:
-            events.extend(_action_audit_events(
-                state=state,
-                player_id=speaker_id,
-                phase="speech",
-                action_trace=action_trace,
-                decision_identity=decision_identity,
-                exposure_collector=exposure_collector,
-                day_number=gs.day_number,
-                night_number=gs.night_number,
-            ))
+        events.append(GameEvent(type="speech", payload=payload))
         gs = replace(gs, events=gs.events + events)
         advanced = advance_speaker()
         if advanced["current_speaker_id"] is None:

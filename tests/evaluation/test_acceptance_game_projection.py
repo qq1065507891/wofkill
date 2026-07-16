@@ -472,6 +472,236 @@ def test_state_with_custom_event_payload_fails_closed() -> None:
     assert projection.unsupported_reason == "invalid_event_payload"
 
 
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"game_id": object()}, "invalid_game_id"),
+        ({"status": "complete"}, "invalid_status"),
+        ({"status": []}, "invalid_status"),
+        ({"winning_faction": object()}, "invalid_winning_faction"),
+        ({"events": "bad"}, "invalid_events_container"),
+        ({"events": ({"payload": {}},)}, "invalid_event_entry"),
+        ({"events": ({"type": "audit", "payload": []},)}, "invalid_event_entry"),
+        ({"players": []}, "invalid_players_container"),
+        ({"players": {"p01": "bad"}}, "invalid_player_entry"),
+        ({"deaths": {}}, "invalid_deaths_container"),
+        ({"metadata": []}, "invalid_metadata_container"),
+    ],
+)
+def test_direct_projection_constructor_fails_closed_for_invalid_structure(
+    overrides, reason,
+) -> None:
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    values = {
+        "game_id": "g-direct-invalid",
+        "events": (),
+        "players": {"p01": {"id": "p01", "role": "villager"}},
+        "winning_faction": None,
+        "status": "running",
+    }
+    values.update(overrides)
+
+    projection = AcceptanceGameProjection(**values)
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == reason
+    json.dumps(projection.to_mapping(), ensure_ascii=False)
+
+
+@pytest.mark.parametrize("source_kind", ["mapping", "state", "projection"])
+def test_cyclic_event_payload_fails_closed_without_recursion_error(source_kind) -> None:
+    from werewolf_agent.evaluation.game_projection import (
+        AcceptanceGameProjection,
+        project_acceptance_game,
+    )
+
+    cyclic = {}
+    cyclic["self"] = cyclic
+    event = {"type": "audit", "payload": cyclic}
+    players = {"p01": {"id": "p01", "role": "villager"}}
+    if source_kind == "mapping":
+        source = {"game_id": "g-cycle-map", "players": players, "events": [event]}
+    elif source_kind == "state":
+        source = GameState(
+            game_id="g-cycle-state",
+            players={"p01": PlayerState(id="p01", role="villager")},
+            events=[GameEvent(type="audit", payload=cyclic)],
+        )
+    else:
+        source = AcceptanceGameProjection(
+            game_id="g-cycle-direct",
+            players=players,
+            events=(event,),
+            winning_faction=None,
+            status="running",
+        )
+
+    projection = project_acceptance_game(source)
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == "cyclic_json_value"
+    assert "self" not in json.dumps(projection.to_mapping(), ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        (lambda: {"nested": _nested_json_value(40)}, "json_depth_exceeded"),
+        (lambda: {"items": list(range(10001))}, "json_item_limit_exceeded"),
+    ],
+)
+def test_projection_json_bounds_fail_closed(payload, reason) -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    projection = project_acceptance_game({
+        "game_id": "g-json-bounds",
+        "players": {"p01": {"role": "villager"}},
+        "events": [{"type": "audit", "payload": payload()}],
+    })
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == reason
+
+
+def _nested_json_value(depth: int):
+    value = "leaf"
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def test_path_is_only_coerced_for_source_path_metadata() -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    source_path = project_acceptance_game({
+        "game_id": "g-path-metadata",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+        "__source_path": Path("legacy/game.json"),
+    })
+    event_path = project_acceptance_game({
+        "game_id": "g-path-event",
+        "players": {"p01": {"role": "villager"}},
+        "events": [{"type": "audit", "payload": {"path": Path("private")}}],
+    })
+
+    assert source_path.metadata["__source_path"] == str(Path("legacy/game.json"))
+    assert event_path.supported is False
+    assert event_path.unsupported_reason == "invalid_event_payload"
+
+
+def test_custom_state_metadata_and_players_fail_closed_without_repr_leak() -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    secret = "PRIVATE_OBJECT_REPR"
+
+    class CustomValue:
+        def __repr__(self):
+            return secret
+
+    state = SimpleNamespace(
+        game_id="g-custom-state",
+        status="running",
+        winning_faction=None,
+        termination_reason=None,
+        players={"p01": SimpleNamespace(
+            id="p01", role="villager", alive=True, faction=CustomValue(),
+        )},
+        events=[],
+        deaths=[],
+        phase="day",
+        day_number=1,
+        night_number=0,
+        hybrid_result=CustomValue(),
+    )
+
+    projection = project_acceptance_game(state)
+    encoded = json.dumps(projection.to_mapping(), ensure_ascii=False)
+
+    assert projection.supported is False
+    assert projection.unsupported_reason in {"invalid_player_value", "invalid_metadata_value"}
+    assert secret not in encoded
+
+
+def test_custom_explicit_unsupported_reason_uses_stable_fallback() -> None:
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    class CustomReason:
+        def __str__(self):
+            return "PRIVATE_REASON"
+
+    projection = project_acceptance_game({
+        "game_id": "g-custom-reason",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+        "_acceptance_projection_supported": False,
+        "_acceptance_projection_unsupported_reason": CustomReason(),
+    })
+
+    assert projection.supported is False
+    assert projection.unsupported_reason == "unsupported_projection"
+    assert "PRIVATE_REASON" not in json.dumps(projection.to_mapping(), ensure_ascii=False)
+
+
+def test_domain_apis_accept_invalid_direct_projection_without_throwing() -> None:
+    from werewolf_agent.evaluation.acceptance_power_metrics import (
+        compute_power_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_reflection_metrics import (
+        compute_reflection_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_terminal_semantic_metrics import (
+        compute_terminal_semantic_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_world_metrics import (
+        compute_world_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    invalid = AcceptanceGameProjection(
+        game_id="g-direct-domain",
+        players={"p01": {"role": "villager"}},
+        events="bad",
+        winning_faction=None,
+        status="running",
+    )
+    results = [
+        (compute_world_acceptance_metrics([invalid]), "possible_world_metrics_unsupported_reason"),
+        (compute_power_acceptance_metrics([invalid]), "power_role_evidence_metrics_unsupported_reason"),
+        (compute_reflection_acceptance_metrics([invalid]), "reflection_contamination_metrics_unsupported_reason"),
+        (compute_terminal_semantic_acceptance_metrics([invalid]), "semantic_repair_metrics_unsupported_reason"),
+    ]
+
+    for metrics, key in results:
+        assert metrics[key] == "invalid_events_container"
+
+
+def test_combined_acceptance_entry_normalizes_each_game_once(monkeypatch) -> None:
+    from werewolf_agent.evaluation import game_projection
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    source = {
+        "game_id": "g-normalize-once",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+    }
+    original = game_projection.project_acceptance_game
+    calls = []
+
+    def counting_project(value, **kwargs):
+        calls.append(value)
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(game_projection, "project_acceptance_game", counting_project)
+
+    compute_acceptance_audit_metrics([source])
+
+    assert calls == [source]
+
+
 def test_direct_domain_apis_expose_projection_unsupported_reason() -> None:
     from werewolf_agent.evaluation.acceptance_power_metrics import (
         compute_power_acceptance_metrics,
@@ -591,6 +821,61 @@ def test_save_game_log_atomic_success_leaves_only_final_file(tmp_path) -> None:
 
     assert json.loads(path.read_text(encoding="utf-8"))["game_id"] == "g-atomic-ok"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_low_quality_resolved_directory_cannot_escape_original_output_root(
+    tmp_path, monkeypatch,
+) -> None:
+    from scripts import run_real_game
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    output_root = tmp_path / "trusted"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_resolve = run_real_game.Path.resolve
+
+    def redirected_resolve(path, *args, **kwargs):
+        if path == output_root / "low_quality_games":
+            return outside
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_real_game.Path, "resolve", redirected_resolve)
+    projection = AcceptanceGameProjection(
+        game_id="g-low-quality-escape",
+        events=(),
+        players={},
+        winning_faction=None,
+        status="running",
+    )
+
+    with pytest.raises(ValueError, match="outside output_dir"):
+        run_real_game.save_game_log(
+            None,
+            0.1,
+            projection=projection,
+            quality_score={"fallback_rate": 1.0, "total_quality_events": 6},
+            output_dir=output_root,
+        )
+
+    assert list(outside.iterdir()) == []
+
+
+def test_atomic_writer_rejects_target_parent_outside_trusted_root(tmp_path) -> None:
+    from scripts.run_real_game import _atomic_write_json
+
+    trusted_root = tmp_path / "trusted"
+    trusted_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(ValueError, match="outside output_dir"):
+        _atomic_write_json(
+            outside / "game_escape.json",
+            {"game_id": "escape"},
+            trusted_root=trusted_root,
+        )
+
+    assert list(outside.iterdir()) == []
 
 
 def test_save_game_log_never_reads_runner(tmp_path) -> None:

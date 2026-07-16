@@ -295,12 +295,23 @@ def _project_speech_opportunities(events: list[GameEvent]) -> list[dict[str, Any
         if task_type is not None:
             speaker = event.payload.get("speaker")
             if speaker is not None or "text" in event.payload:
-                rows.append({
-                    "task_type": task_type,
-                    "player_id": speaker,
-                    "text": event.payload.get("text"),
-                    "action_trace": None,
-                })
+                match = next((
+                    row for row in reversed(rows)
+                    if row["task_type"] == task_type
+                    and row["player_id"] == speaker
+                    and not row["public_observed"]
+                ), None)
+                if match is None:
+                    rows.append({
+                        "task_type": task_type,
+                        "player_id": speaker,
+                        "text": event.payload.get("text"),
+                        "action_trace": None,
+                        "public_observed": True,
+                    })
+                else:
+                    match["text"] = event.payload.get("text")
+                    match["public_observed"] = True
             continue
         if event.type != "action_trace_audit":
             continue
@@ -320,6 +331,7 @@ def _project_speech_opportunities(events: list[GameEvent]) -> list[dict[str, Any
                 "player_id": player_id,
                 "text": "",
                 "action_trace": None,
+                "public_observed": False,
             }
             rows.append(match)
         trace = event.payload.get("action_trace")
@@ -485,13 +497,17 @@ def save_game_log(
     if is_low_quality:
         low_q_dir = artifact_root / "low_quality_games"
         low_q_dir.mkdir(parents=True, exist_ok=True)
-        log_path = _contained_game_log_path(low_q_dir, projection.game_id)
+        log_path = _contained_game_log_path(
+            artifact_root, low_q_dir, projection.game_id,
+        )
         logger.warning(
             "Low quality game (fallback_rate=%.1f%%, %d quality events) — saved to %s",
             quality["fallback_rate"] * 100, quality["total_quality_events"], log_path,
         )
     else:
-        log_path = _contained_game_log_path(artifact_root, projection.game_id)
+        log_path = _contained_game_log_path(
+            artifact_root, artifact_root, projection.game_id,
+        )
 
     projected = projection.to_mapping()
     log_data = {
@@ -515,29 +531,53 @@ def save_game_log(
         "steps": projection.steps,
         "quality_score": quality,
     }
-    _atomic_write_json(log_path, log_data)
+    _atomic_write_json(log_path, log_data, trusted_root=artifact_root)
     return log_path
 
 
-def _contained_game_log_path(directory: Path, game_id: str) -> Path:
-    """构造并复核日志路径始终位于指定目录。"""
-    root = directory.resolve()
-    target = (root / f"game_{game_id}.json").resolve()
-    if not target.is_relative_to(root):
-        raise ValueError(f"invalid game_id: {game_id!r}")
-    return target
+def _resolve_within_output_root(
+    trusted_root: Path, candidate: Path,
+) -> Path:
+    """解析 junction/symlink 后仍要求候选路径位于原始信任根。"""
+    root = trusted_root.resolve()
+    resolved = candidate.resolve()
+    if resolved != root and not resolved.is_relative_to(root):
+        raise ValueError("artifact path is outside output_dir")
+    return resolved
 
 
-def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
-    """同目录写临时文件并原子替换，失败时保留旧文件。"""
+def _contained_game_log_path(
+    trusted_root: Path,
+    directory: Path,
+    game_id: str,
+) -> Path:
+    """相对原始 output_dir 信任根构造并复核日志路径。"""
+    parent = _resolve_within_output_root(trusted_root, directory)
+    return _resolve_within_output_root(
+        trusted_root, parent / f"game_{game_id}.json",
+    )
+
+
+def _atomic_write_json(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    trusted_root: Path,
+) -> None:
+    """在已验证父目录写临时文件并原子替换，失败时保留旧文件。"""
     encoded = json.dumps(value, ensure_ascii=False, indent=2)
-    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    target = _resolve_within_output_root(trusted_root, path)
+    parent = _resolve_within_output_root(trusted_root, target.parent)
+    temporary = _resolve_within_output_root(
+        trusted_root,
+        parent / f"{target.name}.{uuid.uuid4().hex}.tmp",
+    )
     try:
         with temporary.open("x", encoding="utf-8", newline="\n") as handle:
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
 

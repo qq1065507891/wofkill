@@ -16,7 +16,7 @@ from werewolf_agent.evaluation.acceptance_shared import (
     _non_negative_int,
 )
 from werewolf_agent.evaluation.game_projection import (
-    normalize_acceptance_games,
+    ensure_normalized_acceptance_games,
     projection_support,
 )
 
@@ -25,7 +25,7 @@ def compute_reflection_acceptance_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """扫描每局最新反思事务并投影持久化验收指标。"""
-    games = normalize_acceptance_games(games)
+    games = ensure_normalized_acceptance_games(games)
     projection_is_supported, projection_reason = projection_support(games)
     rejected_facts = 0
     rejected_lessons = 0

@@ -205,6 +205,69 @@ def test_free_discussion_empty_model_speech_keeps_private_decision_opportunity(
     assert quality["speech_terminal_fallback_rate"] == 1.0
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_reason"),
+    [
+        ("missing_registry", "agent_unavailable"),
+        ("none_result", "agent_unavailable"),
+        ("exception", "agent_dispatch_error"),
+        ("timeout", "speech_timeout"),
+    ],
+)
+def test_free_discussion_always_records_safe_speech_opportunity(
+    monkeypatch, mode, expected_reason,
+) -> None:
+    from scripts.run_real_game import compute_game_quality_score
+    from werewolf_agent.runtime.nodes import day as day_mod
+
+    gs = GameState(
+        game_id=f"speech_opportunity_{mode}",
+        day_number=1,
+        players={"p01": PlayerState(id="p01", role="villager")},
+    )
+
+    class Registry:
+        def get_agent(self, player_id):
+            return None
+
+    state = {
+        "game_state": gs,
+        "engine": _new_engine(),
+        "speech_order": ["p01"],
+        "speech_index": 0,
+    }
+    if mode != "missing_registry":
+        state["agent_registry"] = Registry()
+    if mode == "none_result":
+        monkeypatch.setattr(day_mod, "_dispatch_agent", lambda *_args, **_kwargs: None)
+    elif mode == "exception":
+        def fail_dispatch(*_args, **_kwargs):
+            raise TimeoutError("PRIVATE provider detail")
+
+        monkeypatch.setattr(day_mod, "_dispatch_agent", fail_dispatch)
+    elif mode == "timeout":
+        state["speech_timed_out"] = True
+
+    result = day_mod.free_discussion(state)
+    final_state = result["game_state"]
+    audits = [event for event in final_state.events if event.type == "action_trace_audit"]
+    quality = compute_game_quality_score(final_state)
+
+    assert not any(event.type == "speech" for event in final_state.events)
+    assert len(audits) == 1
+    assert audits[0].payload["visibility"] == "moderator_only"
+    assert audits[0].payload["action_trace"] == {
+        "generated_by": "terminal_fallback",
+        "decision_outcome": "terminal_fallback",
+        "fallback_reason": expected_reason,
+        "final_action_type": "speech",
+    }
+    assert "PRIVATE" not in json.dumps(audits[0].payload, ensure_ascii=False)
+    assert quality["speech_opportunity_count"] == 1
+    assert quality["speech_non_empty_rate"] == 0.0
+    assert quality["speech_terminal_fallback_rate"] == 1.0
+
+
 # ---------------------------------------------------------------------------
 # Day speech agent interactions
 # ---------------------------------------------------------------------------
