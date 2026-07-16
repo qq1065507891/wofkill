@@ -3,7 +3,7 @@
 测试公开发言质量校验，包括模板发言、平安夜误推理和公开记录引用。
 
 作者: Project contributors
-修改日期: 2026-07-09
+修改日期: 2026-07-16
 """
 
 import pytest
@@ -398,3 +398,39 @@ class TestFallbackSpeech:
         speech = fallback_speech_with_basis(context)
         assert "p03" in speech or "p05" in speech
         assert len(speech) > 20
+
+
+def test_non_empty_terminal_fallback_does_not_count_as_model_success() -> None:
+    from scripts.run_real_game import compute_game_quality_score
+    from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+    from werewolf_agent.evaluation.game_projection import project_acceptance_game
+
+    state = GameState(
+        game_id="g-terminal-speech",
+        players={"p01": PlayerState(id="p01", role="villager")},
+        events=[
+            GameEvent(type="speech", payload={
+                "speaker": "p01",
+                "text": "[FALLBACK]普通发言仅基于公开信息：昨夜无人出局。",
+            }),
+            GameEvent(type="action_trace_audit", payload={
+                "task_type": "speech",
+                "action_trace": {
+                    "generated_by": "terminal_fallback",
+                    "decision_outcome": "terminal_fallback",
+                    "terminal_failure_code": "schema_validation",
+                    "original_failure_code": "schema_validation",
+                    "failure_stage": "protocol",
+                    "fallback_kind": "ordinary_speech",
+                    "semantic_repair_audit": {"success": False},
+                },
+            }),
+        ],
+    )
+
+    quality = compute_game_quality_score(project_acceptance_game(state))
+
+    assert quality["speech_non_empty_rate"] == 1.0
+    assert quality["speech_model_success_rate"] == 0.0
+    assert quality["speech_terminal_fallback_rate"] == 1.0
+    assert quality["speech_semantic_acceptance_rate"] == 0.0

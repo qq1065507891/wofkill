@@ -3,7 +3,7 @@
 从评估对局结果构建归一化反馈轨迹，并稳定合并运行时与兼容侧通道曝光审计。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-13
+修改日期：2026-07-16
 使用示例：内部模块，无对外接口
 """
 
@@ -39,6 +39,9 @@ _SKILL_TOOL_CALL_METADATA_KEYS = frozenset({
     "error_type",
     "structured_failure_reason",
     "structured_failure_stage",
+    "original_failure_code",
+    "failure_stage",
+    "fallback_kind",
     "structured_output_mode",
     "parse_success",
     "retry_count",

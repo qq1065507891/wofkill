@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Any
 
 import pytest
@@ -264,6 +265,31 @@ def test_action_tool_call_monitor_fail_closes_unsafe_decision_trace_values() -> 
         "generated_by_invalid",
         "terminal_failure_code_invalid",
     ]
+    assert "werewolf" not in str(row)
+    assert "p01" not in str(row)
+
+
+def test_action_tool_call_monitor_fail_closes_terminal_fallback_metadata() -> None:
+    collector = ModuleExposureAuditCollector()
+    collector.record_action_tool_call(
+        _identity(),
+        {
+            "tool_call_required": True,
+            "tool_call_received": False,
+            "generated_by": "terminal_fallback",
+            "terminal_failure_code": "schema_validation",
+            "original_failure_code": "private_role_werewolf_p01",
+            "failure_stage": "private_role_werewolf_p01",
+            "fallback_kind": "private_role_werewolf_p01",
+        },
+    )
+
+    row = collector.flush_events()[0].payload["calls"][0]
+
+    assert row["terminal_failure_code"] == "schema_validation"
+    assert row["original_failure_code"] == "unknown"
+    assert row["failure_stage"] == "unknown"
+    assert row["fallback_kind"] == "unknown"
     assert "werewolf" not in str(row)
     assert "p01" not in str(row)
 
@@ -555,6 +581,12 @@ def test_wolf_consensus_dispatches_each_vote_with_identity_and_flushes_action_au
         }
 
     monkeypatch.setattr(agent_adapter, "_single_wolf_vote", fake_single_vote)
+    # Task 8 后权威空 stance 会直接解析为 all_abstain；本测试专门覆盖旧式逐狼
+    # 调度曝光链，因此显式关闭权威计划入口，避免两个互斥路径互相污染。
+    consensus_module = import_module(
+        "werewolf_agent.runtime.nodes.wolf_consensus"
+    )
+    monkeypatch.setattr(consensus_module, "_planned_wolf_kill", lambda _state: None)
     gs = GameState(
         game_id="audit_wolf_consensus",
         players={

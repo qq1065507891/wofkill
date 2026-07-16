@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.player_failures import fallback_reason
@@ -13,6 +14,20 @@
 from __future__ import annotations
 
 from werewolf_agent.agents.schemas import ActionType, FallbackAction
+from werewolf_agent.runtime.decision_outcomes import normalize_terminal_failure_code
+
+
+_TASK_FAILURE_CODE_ALIASES = {
+    "agent_exception": "model_generation_failed",
+    "captain_agent_missing": "fallback_route_unavailable",
+    "generate_error": "model_generation_failed",
+    "json_parse_failed": "parse_error",
+    "membership_validation_failed": "illegal_action",
+    "no_alive_wolves": "policy_rejection",
+    "no_registry": "fallback_route_unavailable",
+    "provider_tool_choice_unsupported": "structured_output_unsupported",
+    "schema_validation_failed": "schema_validation",
+}
 
 
 def fallback_reason(action: FallbackAction) -> str:
@@ -57,3 +72,9 @@ def categorize_failure_category(
         http_status=http_status,
         raw_error=raw_error,
     )
+
+
+def terminal_failure_code_for_task_failure(reason: object) -> str:
+    """把任务局部 reason 映射为不含原始错误正文的 V2 稳定码。"""
+    candidate = _TASK_FAILURE_CODE_ALIASES.get(reason, reason)
+    return normalize_terminal_failure_code(candidate)

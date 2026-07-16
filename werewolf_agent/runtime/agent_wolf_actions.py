@@ -4,13 +4,12 @@
 
 作者: Mike
 创建日期: 2026-07-07
-修改日期: 2026-07-09
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_wolf_actions import agent_wolf_discussion
     >>> agent_wolf_discussion(...)
 
-修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -55,6 +54,9 @@ from werewolf_agent.runtime.wolf_team_plan_support import (
     normalize_wolf_team_plan_payload,
     validate_wolf_team_plan_membership,
 )
+from werewolf_agent.agents.player_failures import (
+    terminal_failure_code_for_task_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +74,17 @@ def _record_wolf_team_plan_failure(
     captain_id: str | None,
     normalization_repairs: tuple[str, ...] = (),
 ) -> None:
-    """记录狼队计划失败元数据，供审计事件下钻原因。"""
+    """记录狼队计划稳定失败元数据，不持久化原始异常正文。"""
+    terminal_code = terminal_failure_code_for_task_failure(reason)
     failure = {
         "reason": reason,
         "stage": stage,
         "attempts": attempts,
-        "last_error": last_error,
         "captain_id": captain_id,
+        "terminal_failure_code": terminal_code,
+        "original_failure_code": terminal_code,
+        "failure_stage": stage,
+        "fallback_kind": "wolf_team_plan_structured_stance",
     }
     if normalization_repairs:
         failure.update({

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.trace_schemas import ActionTrace
@@ -107,6 +107,9 @@ class ActionTrace(BaseModel):
         "model", "repair", "provider_fallback", "terminal_fallback"
     ] | None = None
     terminal_failure_code: str | None = None
+    original_failure_code: str | None = None
+    failure_stage: str | None = None
+    fallback_kind: str | None = None
     structured_failure_reason: str | None = None
     structured_output_mode: str = ""
     structured_failure_stage: str | None = None

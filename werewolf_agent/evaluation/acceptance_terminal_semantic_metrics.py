@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Iterable, Mapping, Sequence
 
 from werewolf_agent.evaluation.acceptance_shared import (
@@ -47,6 +48,27 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
     semantic_eligible_count = 0
     semantic_reconciliation_complete = True
     post_win_calls = 0
+    terminal_fallback_count = 0
+    terminal_failure_code_covered_count = 0
+    terminal_fallback_kind_counts: Counter[str] = Counter()
+
+    def record_terminal_fallback(row: Mapping[str, Any]) -> None:
+        """统一统计玩家动作与狼队计划的终退 V2 字段。"""
+        nonlocal terminal_fallback_count, terminal_failure_code_covered_count
+        if row.get("generated_by") != "terminal_fallback":
+            return
+        terminal_fallback_count += 1
+        original_code = row.get("original_failure_code")
+        terminal_code = row.get("terminal_failure_code")
+        if (
+            isinstance(original_code, str)
+            and bool(original_code)
+            and original_code == terminal_code
+        ):
+            terminal_failure_code_covered_count += 1
+        fallback_kind = row.get("fallback_kind")
+        if isinstance(fallback_kind, str) and fallback_kind:
+            terminal_fallback_kind_counts[fallback_kind] += 1
 
     for game in games:
         victory_seen = False
@@ -70,6 +92,8 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
                 task = str(payload.get("task_type") or payload.get("phase") or "")
                 if task not in {"reflection", "post_game_reflection"}:
                     post_win_calls += 1
+            if event_type == "wolf_team_plan_fallback":
+                record_terminal_fallback(payload)
             if event_type == "semantic_repair_audit" and payload.get("repairable") is True:
                 identity = _semantic_identity(payload)
                 if identity is not None:
@@ -79,6 +103,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
             trace = payload.get("action_trace")
             if not isinstance(trace, Mapping):
                 continue
+            record_terminal_fallback(trace)
             semantic = trace.get("semantic_repair_audit")
             if isinstance(semantic, Mapping) and semantic.get("repairable") is True:
                 semantic_eligible_count += 1
@@ -173,6 +198,23 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
     )
     return {
         "terminal_post_win_game_model_call_count": post_win_calls,
+        "terminal_fallback_count": terminal_fallback_count,
+        "terminal_fallback_original_failure_code_metrics_supported": (
+            projection_is_supported and terminal_fallback_count > 0
+        ),
+        "terminal_fallback_original_failure_code_unsupported_reason": (
+            projection_reason if not projection_is_supported
+            else None if terminal_fallback_count > 0
+            else "no_terminal_fallback_observations"
+        ),
+        "terminal_fallback_original_failure_code_covered_count": (
+            terminal_failure_code_covered_count
+        ),
+        "terminal_fallback_original_failure_code_coverage_rate": (
+            terminal_failure_code_covered_count / terminal_fallback_count
+            if projection_is_supported and terminal_fallback_count else None
+        ),
+        "terminal_fallback_kind_counts": dict(sorted(terminal_fallback_kind_counts.items())),
         "semantic_repair_metrics_supported": semantic_source_complete,
         "semantic_repair_metrics_unsupported_reason": (
             projection_reason if not projection_is_supported

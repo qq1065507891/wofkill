@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-14
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_reflection_support import _strip_in_game_directives
@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from werewolf_agent.agents.schemas import ActionType, TaskType
+from werewolf_agent.agents.schemas import ActionType, FallbackAction, TaskType
 from werewolf_agent.core.models import GameState
 from werewolf_agent.runtime.context import _merge_strategy_directive, build_agent_context
 from werewolf_agent.runtime.reflection_prompt import build_reflection_prompt
@@ -34,6 +34,31 @@ def _strip_in_game_directives(context):
         if key in _POST_GAME_KEEP
     }
     return context.model_copy(update={"strategy_directive": kept})
+
+
+def _terminal_reflection_verification(
+    action: Any,
+) -> dict[str, Any] | None:
+    """把反思终退显式标成未生成，禁止把兜底文本当作经验。"""
+    if not isinstance(action, FallbackAction) or action.trace is None:
+        return None
+    trace = action.trace
+    if (
+        trace.generated_by != "terminal_fallback"
+        or trace.fallback_kind != "reflection_not_generated"
+    ):
+        return None
+    return {
+        "status": "not_generated",
+        "failure_code": trace.original_failure_code or trace.terminal_failure_code,
+        "failure_stage": trace.failure_stage,
+        "verified_fact_count": 0,
+        "verified_claim_ids": [],
+        "rejected_claim_ids": [],
+        "verified_lessons": [],
+        "rejected_fact_count": 0,
+        "rejected_lesson_count": 0,
+    }
 
 
 def _agent_reflection(
@@ -85,6 +110,9 @@ def _agent_reflection(
         context = merge_directive(context, reflection_directive)
 
         action, _retry_info = agent.act(context)
+        terminal_verification = _terminal_reflection_verification(action)
+        if terminal_verification is not None:
+            return {"reflection_verification": terminal_verification}
         raw_draft = getattr(action, "speech", "") or ""
         from werewolf_agent.memory.reflection_sanitization import (
             anonymize_player_ids_recursive,

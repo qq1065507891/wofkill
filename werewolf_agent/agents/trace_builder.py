@@ -3,7 +3,7 @@
 功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-15
+修改日期：2026-07-16
 使用示例：内部模块，无对外接口
 """
 
@@ -39,6 +39,7 @@ def build_action_trace(
     structured_failure_stage: str | None = None,
     execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
     semantic_repair_audit: dict[str, Any] | None = None,
+    fallback_kind: str | None = None,
 ) -> ActionTrace:
     """Build an ActionTrace from the current attempt's state.
 
@@ -63,13 +64,28 @@ def build_action_trace(
         )
         if execution_attempts else None
     )
+    terminal_failure_code = (
+        translated.terminal_failure_code
+        if translated and translated.generated_by.value == "terminal_fallback"
+        else None
+    )
+    retry_payload = retry.model_dump() if retry else None
+    trace_parse_error = parse_error
+    trace_failure_reason = structured_failure_reason
+    if terminal_failure_code is not None:
+        # 终退审计只导出稳定码，不保留 provider/schema 的原始错误正文。
+        retry_payload = retry.model_dump(exclude={"error_message"}) if retry else None
+        if retry_payload is not None:
+            retry_payload["error_code"] = terminal_failure_code
+        trace_parse_error = terminal_failure_code
+        trace_failure_reason = terminal_failure_code
     return ActionTrace(
         raw_text=raw_text,
         parsed_action=parsed_payload,
         final_action_type=final_type_value,
         legal_actions=[action.value for action in context.legal_actions],
         legal_targets=list(context.legal_targets),
-        retry=retry.model_dump() if retry else None,
+        retry=retry_payload,
         fallback_reason=fallback_reason,
         fallback_target_used=fallback_target_used,
         fallback_target_id=fallback_target_id,
@@ -77,17 +93,18 @@ def build_action_trace(
         tool_call_received=tool_call_received,
         tool_call_name="submit_player_action" if tool_call_required else "",
         parse_success=parse_success,
-        parse_error=parse_error,
+        parse_error=trace_parse_error,
         attempt_count=translated.attempt_count if translated else 0,
         retry_count=translated.retry_count if translated else retry_count,
         provider_fallback_count=(
             translated.provider_fallback_count if translated else 0
         ),
         generated_by=translated.generated_by.value if translated else None,
-        terminal_failure_code=(
-            translated.terminal_failure_code if translated else None
-        ),
-        structured_failure_reason=structured_failure_reason,
+        terminal_failure_code=terminal_failure_code,
+        original_failure_code=terminal_failure_code,
+        failure_stage=(structured_failure_stage if terminal_failure_code else None),
+        fallback_kind=(fallback_kind if terminal_failure_code else None),
+        structured_failure_reason=trace_failure_reason,
         structured_output_mode=structured_output_mode,
         structured_failure_stage=structured_failure_stage,
         world_model_audit=build_world_model_audit_from_context(

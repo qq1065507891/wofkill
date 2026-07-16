@@ -15,11 +15,8 @@ from werewolf_agent.agents.schemas import (
     ActionType,
     AgentContext,
     FallbackAction,
-    FactionGoal,
     PlayerAction,
-    PrivateIntent,
     RetryInfo,
-    RiskFlag,
     TaskType,
 )
 from werewolf_agent.agents.player import (
@@ -2130,7 +2127,7 @@ class TestMandatoryVote:
         assert action.trace.fallback_target_used is True
         assert action.trace.fallback_target_id == "p02"
 
-    def test_good_speech_fallback_marks_no_effective_public_speech(self) -> None:
+    def test_good_speech_fallback_emits_visible_fact_terminal_speech(self) -> None:
         agent = self._make_agent("")
         ctx = AgentContext(
             agent_id="p06",
@@ -2153,7 +2150,9 @@ class TestMandatoryVote:
         action, _ = agent.act(ctx)
 
         assert isinstance(action, FallbackAction)
-        assert action.speech == ""  # FALLBACK text hidden from other players
+        assert action.speech.startswith("[FALLBACK]普通发言仅基于公开信息：")
+        assert action.trace is not None
+        assert action.trace.fallback_kind == "ordinary_speech"
         assert action.action_type == ActionType.SPEECH
         assert action.reason
 
@@ -2214,10 +2213,10 @@ class TestSpeechQualityAndWolfAssignments:
 
         assert isinstance(action, FallbackAction)
         assert action.action_type == ActionType.SPEECH
-        assert action.speech == ""  # FALLBACK speech excluded from public transcript
+        assert action.speech.startswith("[FALLBACK]普通发言仅基于公开信息：")
         assert action.reason
 
-    def test_good_speech_fallback_varies_only_by_player_marker(self) -> None:
+    def test_good_speech_fallback_is_deterministic_from_visible_facts(self) -> None:
         router = ModelRouter(
             model_profiles={},
             llm_profiles={},
@@ -2238,8 +2237,8 @@ class TestSpeechQualityAndWolfAssignments:
             ctx.model_copy(update={"agent_id": "p02", "day_number": 3})
         )
 
-        assert first.speech == ""  # FALLBACK excluded from public transcript
-        assert second.speech == ""  # both players get empty fallback speech
+        assert first.speech == second.speech
+        assert first.speech.startswith("[FALLBACK]普通发言仅基于公开信息：")
 
     def test_wolf_discussion_fallback_keeps_werewolf_private_perspective(self) -> None:
         router = ModelRouter(
@@ -2475,7 +2474,7 @@ class TestPlainTextRejection:
         assert action.trace is not None
         assert action.trace.tool_call_required is True
         assert action.trace.parse_success is False
-        assert action.trace.parse_error is not None
+        assert action.trace.parse_error == "parse_error"
         assert action.trace.retry_count == _v2_retry_count(action.trace)
 
     def test_missing_tool_call_does_not_parse_text_json(self):
@@ -2500,7 +2499,7 @@ class TestPlainTextRejection:
         assert retry_info.error_code == "missing_tool_call"
         assert action.trace is not None
         assert action.trace.structured_failure_reason == "missing_tool_call"
-        assert action.trace.parse_error == "missing required tool call: submit_player_action"
+        assert action.trace.parse_error == "missing_tool_call"
         assert action.trace.tool_call_received is False
 
     def test_configured_text_tool_fallback_parses_plain_json(self):
@@ -3033,10 +3032,6 @@ def test_speech_quality_correction_hint_differs_from_error_message():
     """
     from unittest.mock import patch
     from werewolf_agent.agents.player import PlayerAgent
-    from werewolf_agent.agents.schemas import (
-        SpeechPlayerAction,
-        PlayerAction as _PA,
-    )
     from werewolf_agent.model_gateway.router import ModelRouter
 
     router = ModelRouter(
@@ -3046,15 +3041,6 @@ def test_speech_quality_correction_hint_differs_from_error_message():
         providers={"mock": _JsonProvider("unused")},
     )
     agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=1)
-
-    # Build a speech action that will fail _speech_quality_error.
-    bad_speech_action = SpeechPlayerAction(
-        action_type=ActionType.SPEECH,
-        target_id=None,
-        speech="",  # Empty -> fails stance/suspicion_target/evidence checks
-        reason="ok",
-        confidence=0.5,
-    )
 
     captured_retry: list = []
 
@@ -3084,7 +3070,6 @@ def test_speech_quality_correction_hint_differs_from_error_message():
         # construction.
         # Patch the parsed_action check by going through act() with a
         # provider that returns the bad speech action's JSON.
-        from werewolf_agent.agents.schemas import PrivateIntent
 
         provider = _SequenceJsonProvider([
             (
@@ -4167,7 +4152,7 @@ class TestMostSuspectTargetResolution:
     def test_most_suspect_target_falls_through_to_non_self(self):
         from werewolf_agent.agents.player import PlayerAgent
         from werewolf_agent.agents.schemas import (
-            ActionType, AgentContext, FallbackAction, TaskType,
+            ActionType, AgentContext, TaskType,
         )
         ctx = AgentContext(
             agent_id="p08",

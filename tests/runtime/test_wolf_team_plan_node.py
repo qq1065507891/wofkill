@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
 from unittest.mock import patch
 
-import pytest
 
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
@@ -106,6 +104,11 @@ class TestNoRegistryFallback:
         assert fallback_event.payload == {
             "night_number": 1,
             "reason": "no_registry",
+            "generated_by": "terminal_fallback",
+            "terminal_failure_code": "fallback_route_unavailable",
+            "original_failure_code": "fallback_route_unavailable",
+            "failure_stage": "registry",
+            "fallback_kind": "wolf_team_plan_structured_stance",
         }
         assert fallback_event.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
 
@@ -230,8 +233,13 @@ class TestLLMFallback:
         assert fallback_event.payload["reason"] == "empty_response"
         assert fallback_event.payload["stage"] == "model_output"
         assert fallback_event.payload["attempts"] == 3
-        assert fallback_event.payload["last_error"] == "empty_response"
+        assert "last_error" not in fallback_event.payload
         assert fallback_event.payload["captain_id"] == "p04"
+        assert fallback_event.payload["generated_by"] == "terminal_fallback"
+        assert fallback_event.payload["terminal_failure_code"] == "empty_response"
+        assert fallback_event.payload["original_failure_code"] == "empty_response"
+        assert fallback_event.payload["failure_stage"] == "model_output"
+        assert fallback_event.payload["fallback_kind"] == "wolf_team_plan_structured_stance"
 
 
 class TestStateReturn:

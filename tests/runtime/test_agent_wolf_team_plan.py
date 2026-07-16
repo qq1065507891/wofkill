@@ -439,8 +439,11 @@ class TestRetryAndFailure:
             "reason": "empty_response",
             "stage": "model_output",
             "attempts": 3,
-            "last_error": "empty_response",
             "captain_id": "p04",
+            "terminal_failure_code": "empty_response",
+            "original_failure_code": "empty_response",
+            "failure_stage": "model_output",
+            "fallback_kind": "wolf_team_plan_structured_stance",
         }
 
 

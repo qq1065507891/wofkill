@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_result import finalize_successful_player_action
@@ -91,6 +91,7 @@ def finalize_fallback_player_action(
     metrics_error_code: str | None = None,
     execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
     semantic_repair_audit: dict[str, Any] | None = None,
+    fallback_kind: str | None = None,
 ) -> FallbackAction:
     """为 fallback 行动附加审计 trace，并记录 fallback metrics。"""
     trace = _build_action_trace(
@@ -112,6 +113,7 @@ def finalize_fallback_player_action(
         structured_failure_stage=structured_failure_stage,
         execution_attempts=execution_attempts,
         semantic_repair_audit=semantic_repair_audit,
+        fallback_kind=fallback_kind,
     )
     effective_retry_count = (
         summarize_attempt_counts(execution_attempts).retry_count

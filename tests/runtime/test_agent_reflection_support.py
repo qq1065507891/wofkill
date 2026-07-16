@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-16
 
 使用示例:
     >>> python -m pytest tests/runtime/test_agent_reflection_support.py -q
@@ -11,7 +12,13 @@
 
 from __future__ import annotations
 
-from werewolf_agent.agents.schemas import AgentContext, TaskType
+from werewolf_agent.agents.schemas import (
+    ActionTrace,
+    ActionType,
+    AgentContext,
+    FallbackAction,
+    TaskType,
+)
 
 
 def test_reflection_support_exports_are_compatibility_imports() -> None:
@@ -40,4 +47,36 @@ def test_strip_in_game_directives_available_from_split_module() -> None:
     assert stripped.strategy_directive == {
         "reflection_task": "复盘任务",
         "game_outcome": "好人胜利",
+    }
+
+
+def test_terminal_reflection_is_reported_as_not_generated() -> None:
+    from werewolf_agent.runtime.agent_reflection_support import (
+        _terminal_reflection_verification,
+    )
+
+    action = FallbackAction(
+        action_type=ActionType.NO_ACTION,
+        reason="not_generated",
+        trace=ActionTrace(
+            generated_by="terminal_fallback",
+            terminal_failure_code="schema_validation",
+            original_failure_code="schema_validation",
+            failure_stage="protocol",
+            fallback_kind="reflection_not_generated",
+        ),
+    )
+
+    verification = _terminal_reflection_verification(action)
+
+    assert verification == {
+        "status": "not_generated",
+        "failure_code": "schema_validation",
+        "failure_stage": "protocol",
+        "verified_fact_count": 0,
+        "verified_claim_ids": [],
+        "rejected_claim_ids": [],
+        "verified_lessons": [],
+        "rejected_fact_count": 0,
+        "rejected_lesson_count": 0,
     }

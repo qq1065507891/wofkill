@@ -69,6 +69,9 @@ _SKILL_TOOL_CALL_KEYS = frozenset({
     "provider_fallback_count",
     "generated_by",
     "terminal_failure_code",
+    "original_failure_code",
+    "failure_stage",
+    "fallback_kind",
     "duration_ms",
 })
 _SKILL_TOOL_INPUT_KEYS = frozenset({
@@ -80,6 +83,22 @@ _SKILL_TOOL_INPUT_KEYS = frozenset({
     "legal_target_count",
     "candidate_count",
     "has_wolf_team_plan",
+})
+_TERMINAL_FAILURE_STAGES = frozenset({
+    "provider", "protocol", "schema", "semantic",
+    "model_output", "registry", "runtime", "unknown",
+})
+_TERMINAL_FALLBACK_KINDS = frozenset({
+    "ordinary_speech",
+    "sheriff_speech",
+    "night_legal_action",
+    "night_explicit_abstain",
+    "reflection_not_generated",
+    "last_words_not_generated",
+    "wolf_team_plan_structured_stance",
+    "wolf_discussion_speech",
+    "safe_action",
+    "unknown",
 })
 _SKILL_TOOL_OUTPUT_KEYS = frozenset({
     "confidence",
@@ -275,6 +294,29 @@ def _sanitize_decision_trace_values(row: dict[str, Any]) -> None:
         row["terminal_failure_code"] = normalized
         if normalized == "unknown" and terminal_code != "unknown":
             flags.append("terminal_failure_code_invalid")
+
+    original_code = row.get("original_failure_code")
+    if "original_failure_code" in row:
+        normalized = normalize_terminal_failure_code(original_code)
+        row["original_failure_code"] = normalized
+        if normalized == "unknown" and original_code != "unknown":
+            flags.append("original_failure_code_invalid")
+
+    failure_stage = row.get("failure_stage")
+    if "failure_stage" in row and (
+        not isinstance(failure_stage, str)
+        or failure_stage not in _TERMINAL_FAILURE_STAGES
+    ):
+        row["failure_stage"] = "unknown"
+        flags.append("failure_stage_invalid")
+
+    fallback_kind = row.get("fallback_kind")
+    if "fallback_kind" in row and (
+        not isinstance(fallback_kind, str)
+        or fallback_kind not in _TERMINAL_FALLBACK_KINDS
+    ):
+        row["fallback_kind"] = "unknown"
+        flags.append("fallback_kind_invalid")
     if flags:
         row["value_sanitization"] = flags
 
@@ -440,9 +482,7 @@ class ModuleExposureAuditCollector:
             decision_usage = "not_used"
             result_available = False
 
-        self.record_skill_tool_calls(
-            identity,
-            [{
+        call_row = {
                 "call_kind": "tool",
                 "call_name": call_name,
                 "tool_name": call_name,
@@ -467,8 +507,11 @@ class ModuleExposureAuditCollector:
                 "structured_failure_stage": action_trace.get("structured_failure_stage"),
                 "structured_output_mode": action_trace.get("structured_output_mode"),
                 "output_summary": {"tool_call_name": call_name},
-            }],
-        )
+            }
+        for key in ("original_failure_code", "failure_stage", "fallback_kind"):
+            if key in action_trace:
+                call_row[key] = action_trace[key]
+        self.record_skill_tool_calls(identity, [call_row])
 
     def record_persona(self, identity: DecisionIdentity, snapshot: Mapping[str, Any] | None) -> None:
         if not snapshot:

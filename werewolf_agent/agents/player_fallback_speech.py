@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-14
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.player_fallback_speech import build_fallback_speech
@@ -17,11 +17,24 @@ import hashlib
 import logging
 from typing import Any
 
-from werewolf_agent.agents.schemas import AgentContext, TaskType
+from werewolf_agent.agents.schemas import (
+    ActionType,
+    AgentContext,
+    FallbackAction,
+    TaskType,
+)
 
 logger = logging.getLogger(__name__)
 
 _FALLBACK_PREFIX = "[FALLBACK]"
+
+_TARGET_REQUIRED_NIGHT_ACTIONS = frozenset({
+    ActionType.WOLF_KILL,
+    ActionType.USE_POISON,
+    ActionType.CHECK_ALIGNMENT,
+    ActionType.CHOOSE_MASTER,
+    ActionType.HUNTER_SHOT,
+})
 
 _WOLF_DISCUSSION_TARGET_TEMPLATES = (
     f"{_FALLBACK_PREFIX}狼队夜聊我建议优先刀{{target}}，这个位置如果是神职能压缩好人信息。",
@@ -164,6 +177,117 @@ def build_fallback_speech(context: AgentContext) -> str:
     return _DAY_TEMPLATES[tmpl_idx]
 
 
+def build_task_terminal_fallback(
+    context: AgentContext,
+    base_fallback: FallbackAction,
+) -> tuple[FallbackAction, str]:
+    """按任务构造安全终退结果，不解析失败模型的自由文本。"""
+    if context.task_type is TaskType.SPEECH:
+        return (
+            base_fallback.model_copy(update={
+                "action_type": ActionType.SPEECH,
+                "target_id": None,
+                "speech": _minimal_visible_fact_speech(context, sheriff=False),
+                "reason": "terminal_speech_from_visible_facts",
+            }),
+            "ordinary_speech",
+        )
+    if context.task_type in {TaskType.SHERIFF_SPEECH, TaskType.PK_SPEECH}:
+        return (
+            base_fallback.model_copy(update={
+                "action_type": ActionType.SPEECH,
+                "target_id": None,
+                "speech": _minimal_visible_fact_speech(context, sheriff=True),
+                "reason": "terminal_sheriff_speech_from_visible_facts",
+            }),
+            "sheriff_speech",
+        )
+    if context.task_type is TaskType.NIGHT_ACTION:
+        return _build_night_terminal_fallback(context, base_fallback)
+    if context.task_type is TaskType.REFLECTION:
+        return (
+            base_fallback.model_copy(update={
+                "action_type": ActionType.NO_ACTION,
+                "target_id": None,
+                "speech": "",
+                "reason": "not_generated",
+            }),
+            "reflection_not_generated",
+        )
+    if context.task_type is TaskType.LAST_WORDS:
+        return (
+            base_fallback.model_copy(update={
+                "action_type": ActionType.NO_ACTION,
+                "target_id": None,
+                "speech": "",
+                "reason": "no_model_output",
+            }),
+            "last_words_not_generated",
+        )
+    if context.task_type is TaskType.WOLF_TEAM_PLAN:
+        return (
+            base_fallback.model_copy(update={
+                "action_type": ActionType.NO_ACTION,
+                "target_id": None,
+                "speech": "",
+                "reason": "structured_stance_only",
+            }),
+            "wolf_team_plan_structured_stance",
+        )
+    if context.task_type is TaskType.WOLF_DISCUSSION:
+        return base_fallback, "wolf_discussion_speech"
+    return base_fallback.model_copy(update={"speech": ""}), "safe_action"
+
+
+def _minimal_visible_fact_speech(context: AgentContext, *, sheriff: bool) -> str:
+    """仅复述当前公开摘要或存活列表，避免模板臆测身份与行动。"""
+    public_summary = str(context.public_summary or "").strip()
+    if public_summary:
+        visible_fact = public_summary[:120]
+    else:
+        alive = context.visible_world_state.get("alive_players", [])
+        visible_ids = [str(player_id) for player_id in alive if isinstance(player_id, str)]
+        visible_fact = (
+            f"当前公开存活玩家为：{', '.join(visible_ids)}。"
+            if visible_ids
+            else "当前没有足够的公开记录可复述。"
+        )
+    prefix = "警长竞选发言" if sheriff else "普通发言"
+    return f"{_FALLBACK_PREFIX}{prefix}仅基于公开信息：{visible_fact}"
+
+
+def _build_night_terminal_fallback(
+    context: AgentContext,
+    base_fallback: FallbackAction,
+) -> tuple[FallbackAction, str]:
+    """选择首个可验证的确定性夜间动作，否则显式弃权。"""
+    for action_type in context.legal_actions:
+        if action_type in _TARGET_REQUIRED_NIGHT_ACTIONS:
+            if not context.legal_targets:
+                continue
+            target_id = context.legal_targets[0]
+        else:
+            target_id = None
+        return (
+            base_fallback.model_copy(update={
+                "action_type": action_type,
+                "target_id": target_id,
+                "speech": "",
+                "reason": "deterministic_legal_night_action",
+            }),
+            "night_legal_action",
+        )
+    return (
+        base_fallback.model_copy(update={
+            "action_type": ActionType.NO_ACTION,
+            "target_id": None,
+            "speech": "",
+            "reason": "no_legal_deterministic_action",
+        }),
+        "night_explicit_abstain",
+    )
+
+
 def generic_fallback_speech_used(context: AgentContext, speech: str) -> bool:
     """按实际 fallback 文本及任务结构判定是否退化为泛化模板。"""
     text = str(speech or "").strip()
@@ -251,6 +375,7 @@ def _format_selected(
 
 __all__ = [
     "build_fallback_speech",
+    "build_task_terminal_fallback",
     "context_clues",
     "generic_fallback_speech_used",
 ]

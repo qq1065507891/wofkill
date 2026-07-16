@@ -413,7 +413,7 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
             plan = None
 
-            fallback_reason = f"agent_exception: {e}"
+            fallback_reason = "agent_exception"
 
 
 
@@ -444,10 +444,27 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
             "reason": fallback_reason,
             "visibility": "werewolf_team_only",
         }
+        from werewolf_agent.agents.player_failures import (
+            terminal_failure_code_for_task_failure,
+        )
+        terminal_code = failure_meta.get("terminal_failure_code")
+        if not isinstance(terminal_code, str):
+            terminal_code = terminal_failure_code_for_task_failure(fallback_reason)
+        failure_stage = (
+            failure_meta.get("failure_stage")
+            or failure_meta.get("stage")
+            or ("registry" if fallback_reason == "no_registry" else "runtime")
+        )
+        fallback_payload.update({
+            "generated_by": "terminal_fallback",
+            "terminal_failure_code": terminal_code,
+            "original_failure_code": terminal_code,
+            "failure_stage": failure_stage,
+            "fallback_kind": "wolf_team_plan_structured_stance",
+        })
         for key in (
             "stage",
             "attempts",
-            "last_error",
             "captain_id",
             "normalization_triggered",
             "normalization_repairs",

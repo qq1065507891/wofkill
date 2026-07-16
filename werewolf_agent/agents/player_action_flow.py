@@ -47,7 +47,10 @@ from werewolf_agent.agents.semantic_repair_audit import (
     preserve_verified_claim_in_fallback,
     semantic_repair_retains_verified_claim,
 )
-from werewolf_agent.agents.player_fallback_speech import generic_fallback_speech_used
+from werewolf_agent.agents.player_fallback_speech import (
+    build_task_terminal_fallback,
+    generic_fallback_speech_used,
+)
 from werewolf_agent.agents.player_latency import latency_from_result as _latency_from_result
 from werewolf_agent.agents.schemas import (
     ActionType,
@@ -56,7 +59,6 @@ from werewolf_agent.agents.schemas import (
     OutputMode,
     PlayerAction,
     RetryInfo,
-    TaskType,
 )
 from werewolf_agent.model_gateway.structured_output import (
     StructuredFailureStage,
@@ -141,10 +143,13 @@ def run_player_action_flow(
             structured_failure_reason = "structured_output_unsupported"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
             generation_attempt_context.append_terminal_fallback()
+            fallback_action, fallback_kind = build_task_terminal_fallback(
+                context, agent._fallback_action(context)
+            )
             fallback = finalize_fallback_player_action(
                 agent=agent,
                 context=context,
-                fallback=agent._fallback_action(context),
+                fallback=fallback_action,
                 retry=retry,
                 raw_text="",
                 parsed_action=None,
@@ -160,6 +165,7 @@ def run_player_action_flow(
                 structured_failure_stage=structured_failure_stage,
                 metrics_error_code=structured_failure_reason,
                 execution_attempts=generation_attempt_context.attempts,
+                fallback_kind=fallback_kind,
             )
             return fallback, retry
 
@@ -225,10 +231,13 @@ def run_player_action_flow(
                 generation_attempt_context.append_terminal_fallback(
                     structured_failure_reason
                 )
+                fallback_action, fallback_kind = build_task_terminal_fallback(
+                    context, agent._fallback_action(context)
+                )
                 fallback = finalize_fallback_player_action(
                     agent=agent,
                     context=context,
-                    fallback=agent._fallback_action(context),
+                    fallback=fallback_action,
                     retry=retry,
                     raw_text="",
                     parsed_action=None,
@@ -244,6 +253,7 @@ def run_player_action_flow(
                     structured_failure_stage=structured_failure_stage,
                     metrics_error_code=retry_error_code,
                     execution_attempts=generation_attempt_context.attempts,
+                    fallback_kind=fallback_kind,
                 )
                 return fallback, retry
             failure_category = _categorize_failure_category(
@@ -564,9 +574,9 @@ def run_player_action_flow(
         exit_reason,
     )
     generation_attempt_context.append_terminal_fallback()
-    fallback_action = agent._fallback_action(context)
-    if context.task_type is not TaskType.WOLF_DISCUSSION:
-        fallback_action = fallback_action.model_copy(update={"speech": ""})
+    fallback_action, fallback_kind = build_task_terminal_fallback(
+        context, agent._fallback_action(context)
+    )
     if semantic_repair_source is not None:
         fallback_action = preserve_verified_claim_in_fallback(
             context, semantic_repair_source, fallback_action
@@ -602,5 +612,6 @@ def run_player_action_flow(
             )
             if semantic_repair_source is not None else None
         ),
+        fallback_kind=fallback_kind,
     )
     return fallback, retry
