@@ -104,7 +104,32 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
 
         )
 
-        gs = replace(gs, events=gs.events + [GameEvent(type="wolf_discussion", payload={})])
+        for wolf_id in _compat("_alive_wolves", _alive_wolves)(gs):
+            base_payload = {
+                "wolf_id": wolf_id,
+                "round": 1,
+                "night_number": gs.night_number,
+                "text": "",
+                "visibility": "werewolf_team_only",
+            }
+            event = new_game_event(
+                gs,
+                "wolf_discussion",
+                base_payload,
+                visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+            )
+            stance = build_validated_wolf_target_stance(
+                gs,
+                event,
+                wolf_id=wolf_id,
+                round_number=1,
+                raw_stance=None,
+            )
+            event = replace(
+                event,
+                payload={**base_payload, "target_stance": stance.model_dump()},
+            )
+            gs = _append_stamped_events(gs, [event])
 
         return {"game_state": gs}
 
@@ -285,84 +310,37 @@ def _build_fallback_wolf_team_plan(
 
 ) -> dict[str, Any]:
 
-    """Legacy regex-extraction + static dedup fallback for wolf_team_plan.
-
-
-
-    Called by `wolf_team_plan_node` when the LLM captain path fails
-
-    (agent unavailable, retry exhausted, schema rejection). Keeps the
-
-    pre-LLM behavior available so the game can continue even if the
-
-    captain's provider is down or returns malformed plans.
-
-
-
-    The legacy path's known weakness — regex extractor's keyword set
-
-    misses LLM synonyms like '悍跳位' — is partially mitigated by the
-
-    keyword-补丁 in wolf_strategy.py (T6) but is fundamentally why the
-
-    LLM path exists as the primary route.
-
-    """
-
-    from werewolf_agent.runtime.wolf_strategy import (
-
-        build_wolf_team_plan_from_discussion,
-
-        summarize_wolf_consensus,
-
+    """从结构化 stance 构建保守 fallback，绝不解析自由文本。"""
+    from werewolf_agent.runtime.wolf_discussion_directives import (
+        collect_current_wolf_target_stances,
     )
 
     gs: GameState = state["game_state"]
-
-    consensus = summarize_wolf_consensus(
-
-        gs.events, wolves, night_number=gs.night_number
-
-    )
-
-    plan = build_wolf_team_plan_from_discussion(
-
+    plan = _build_wolf_team_plan(
         gs,
-
         previous_plan=state.get("wolf_team_plan"),
-
-        consensus=consensus,
-
     )
+    stances = collect_current_wolf_target_stances(gs)
+    for priority, plan_key in (
+        ("primary", "night_kill_primary"),
+        ("backup", "night_kill_backup"),
+    ):
+        positive = [
+            stance
+            for stance in stances
+            if (
+                stance["priority"] == priority
+                and stance["stance"] in {"propose", "support"}
+                and stance["target_id"] is not None
+            )
+        ]
+        plan[plan_key] = positive[-1]["target_id"] if positive else None
 
-    static_plan = _build_wolf_team_plan(
-
-        gs, previous_plan=state.get("wolf_team_plan")
-
-    )
-
-    used_wolves = {
-
-        plan[r] for r in ("fake_seer", "pusher", "hooker", "deep_cover")
-
-        if plan.get(r)
-
-    }
-
-    for key in ("fake_seer", "pusher", "hooker", "deep_cover", "public_story"):
-
-        if not plan.get(key) and static_plan.get(key):
-
-            if key != "public_story" and static_plan[key] in used_wolves:
-
-                continue
-
-            plan[key] = static_plan[key]
-
-            if key != "public_story":
-
-                used_wolves.add(static_plan[key])
-
+    plan["evidence_from_discussion"] = stances
+    plan["day_push_target"] = None
+    plan["evidence_quality"] = "weak" if any(
+        plan.get(key) for key in ("night_kill_primary", "night_kill_backup")
+    ) else "none"
     return plan
 
 def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:

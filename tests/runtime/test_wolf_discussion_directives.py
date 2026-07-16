@@ -15,10 +15,10 @@ import pytest
 from pydantic import ValidationError
 
 from werewolf_agent.agents.action_contract import ActionContract
+from werewolf_agent.agents.output_parser import action_from_data
 from werewolf_agent.agents.schemas import (
     ActionType,
     OutputMode,
-    PlayerAction,
     TaskType,
     WolfTargetStance,
 )
@@ -31,6 +31,7 @@ from werewolf_agent.runtime.wolf_discussion_directives import (
     build_teammate_transcript,
     build_wolf_discussion_instruction,
     build_wolf_discussion_strategy_directive,
+    collect_current_wolf_target_stances,
     collect_wolf_discussion_speeches,
     living_wolf_ids,
     living_wolf_teammates,
@@ -271,6 +272,39 @@ def test_runtime_stance_references_same_night_v2_discussion_event() -> None:
     assert stance.round_number == 1
 
 
+def test_structured_stance_collector_rejects_forged_non_v2_or_dead_target() -> None:
+    """下游只能读取仍满足实时约束的 V2 stance。"""
+    gs = _make_game_state()
+    gs.players["dead"] = PlayerState(id="dead", role="villager", alive=False)
+    forged = GameEvent(
+        type="wolf_discussion",
+        payload={
+            "wolf_id": "w1",
+            "round": 1,
+            "night_number": 1,
+            "text": "",
+            "target_stance": {
+                "wolf_id": "w1",
+                "target_id": "dead",
+                "stance": "propose",
+                "priority": "primary",
+                "source_event_id": "wolf_discussion_directives:e000099",
+                "round_number": 1,
+            },
+        },
+        event_id="wolf_discussion_directives:e000099",
+    )
+    gs = GameState(
+        game_id=gs.game_id,
+        phase=gs.phase,
+        night_number=gs.night_number,
+        players=gs.players,
+        events=[forged],
+    )
+
+    assert collect_current_wolf_target_stances(gs) == []
+
+
 def test_only_wolf_discussion_action_contract_exposes_target_stance() -> None:
     """普通白天 speech schema 不得暴露狼队私有 stance。"""
     wolf_schema = ActionContract.build(
@@ -289,7 +323,7 @@ def test_only_wolf_discussion_action_contract_exposes_target_stance() -> None:
     assert "target_stance" in wolf_schema["properties"]
     assert "target_stance" not in day_schema["properties"]
 
-    action = PlayerAction.model_validate(
+    action, error = action_from_data(
         {
             "action_type": "speech",
             "target_id": None,
@@ -301,6 +335,31 @@ def test_only_wolf_discussion_action_contract_exposes_target_stance() -> None:
                 "stance": "abstain",
                 "priority": "primary",
             },
+        },
+        task_type=TaskType.WOLF_DISCUSSION,
+    )
+    assert error is None
+    assert action is not None
+    assert action.target_stance.stance == "abstain"
+
+
+def test_generic_action_parser_rejects_target_stance_without_wolf_context() -> None:
+    """普通 action 解析不得因模型多返回字段而接纳狼队私有 stance。"""
+    action, error = action_from_data(
+        {
+            "action_type": "speech",
+            "target_id": None,
+            "speech": "白天正常发言。",
+            "reason": "公开讨论",
+            "confidence": 0.5,
+            "target_stance": {
+                "target_id": None,
+                "stance": "abstain",
+                "priority": "primary",
+            },
         }
     )
-    assert action.target_stance.stance == "abstain"
+
+    assert action is None
+    assert error is not None
+    assert "target_stance" in error

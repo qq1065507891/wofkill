@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2025-01-15
-修改日期: 2026-07-09
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.output_parser import parse_action
@@ -66,6 +66,8 @@ from werewolf_agent.agents.schemas import (
     RiskFlag,
     SeerStance,
     VoteBasis,
+    TaskType,
+    WolfDiscussionSpeechPlayerAction,
 )
 from werewolf_agent.agents.speech_intent_parser import (
     SPEECH_INTENTS,
@@ -137,7 +139,11 @@ __all__ = [
 ]
 
 
-def action_from_data(data: Any) -> tuple[PlayerAction | None, str | None]:
+def action_from_data(
+    data: Any,
+    *,
+    task_type: TaskType | None = None,
+) -> tuple[PlayerAction | None, str | None]:
     # PlayerAction is a discriminated Union of 16 action-type variants
     # (pipeline-optimization Task 5). ``model_validate`` is overridden on
     # the base class to route the data through the Union's TypeAdapter,
@@ -155,6 +161,12 @@ def action_from_data(data: Any) -> tuple[PlayerAction | None, str | None]:
     # clean values.
     data = sanitize_optional_private_fields(data)
     try:
+        if (
+            task_type is TaskType.WOLF_DISCUSSION
+            and isinstance(data, dict)
+            and data.get("action_type") in (ActionType.SPEECH, ActionType.SPEECH.value)
+        ):
+            return WolfDiscussionSpeechPlayerAction.model_validate(data), None
         return PlayerAction.model_validate(data), None
     except ValidationError as e:
         return None, f"Schema validation error: {e}"
@@ -187,33 +199,40 @@ def _looks_like_truncated_json(text: str) -> bool:
     return depth > 0 or in_string
 
 
-def parse_action(text: str) -> tuple[PlayerAction | None, str | None]:
+def parse_action(
+    text: str,
+    *,
+    task_type: TaskType | None = None,
+) -> tuple[PlayerAction | None, str | None]:
     """Parse LLM output into PlayerAction. Returns (action, error)."""
     cleaned = text.strip()
 
     # Strip markdown code fences
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [line for line in lines if not line.strip().startswith("```")]
         cleaned = "\n".join(lines).strip()
 
     # Try direct parse first
     try:
         data = json.loads(cleaned)
-        return action_from_data(data)
+        return action_from_data(data, task_type=task_type)
     except json.JSONDecodeError as direct_error:
         # Repair and retry
         repaired = repair_json_text(cleaned)
         if repaired != cleaned:
             try:
                 data = json.loads(repaired)
-                return action_from_data(data)
+                return action_from_data(data, task_type=task_type)
             except json.JSONDecodeError:
                 pass  # fall through to extraction
 
         parameter_data = extract_parameter_tag_action(cleaned)
         if parameter_data is not None:
-            action, parse_error = action_from_data(parameter_data)
+            action, parse_error = action_from_data(
+                parameter_data,
+                task_type=task_type,
+            )
             if action is not None:
                 return action, None
             return None, parse_error
@@ -222,7 +241,7 @@ def parse_action(text: str) -> tuple[PlayerAction | None, str | None]:
         if not candidates:
             if _looks_like_truncated_json(cleaned):
                 return None, "truncated_json: JSON object ended before it closed"
-            return None, f"No JSON object found in output"
+            return None, "No JSON object found in output"
         first_error: str | None = None
         for candidate in candidates:
             try:
@@ -241,7 +260,7 @@ def parse_action(text: str) -> tuple[PlayerAction | None, str | None]:
                     if first_error is None:
                         first_error = f"JSON parse error: {e}"
                     continue
-            action, parse_error = action_from_data(data)
+            action, parse_error = action_from_data(data, task_type=task_type)
             if action is not None:
                 return action, None
             if first_error is None:

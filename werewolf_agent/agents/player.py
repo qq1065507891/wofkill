@@ -3,7 +3,7 @@
 玩家 Agent public facade，保留身份、persona、fallback 和解析辅助入口。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-08
+修改日期：2026-07-16
 使用示例：内部模块，无对外接口
 """
 
@@ -180,8 +180,16 @@ class PlayerAgent:
             for field in _SHERIFF_VOTE_FORBIDDEN_AUDIT_FIELDS
         )
 
-    def _parse_action(self, text: str) -> tuple[PlayerAction | None, str | None]:
-        return _parse_action_impl(text)
+    def _parse_action(
+        self,
+        text: str,
+        *,
+        context: AgentContext | None = None,
+    ) -> tuple[PlayerAction | None, str | None]:
+        return _parse_action_impl(
+            text,
+            task_type=context.task_type if context is not None else None,
+        )
 
     def _parse_planning_action(
         self,

@@ -209,7 +209,7 @@ class TestWolfDiscussionLoop:
         assert event.type == "wolf_no_kill_declared"
 
     def test_wolf_discussion_no_registry_remains_scripted(self) -> None:
-        """Without registry, wolf_discussion uses scripted fallback (no regression)."""
+        """无 registry 时仍为每名存活狼写入 V2 abstain 私有事件。"""
         from werewolf_agent.runtime.graph import wolf_discussion
         engine = _new_engine()
         players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
@@ -218,9 +218,56 @@ class TestWolfDiscussionLoop:
         result = wolf_discussion({"game_state": gs, "engine": engine})
 
         disc_events = [e for e in result["game_state"].events if e.type == "wolf_discussion"]
-        assert len(disc_events) == 1
-        # Scripted fallback has empty payload
-        assert disc_events[0].payload == {}
+        alive_wolves = [
+            pid for pid, player in players.items()
+            if player.role == "werewolf" and player.alive
+        ]
+        assert len(disc_events) == len(alive_wolves)
+        for event in disc_events:
+            assert event.schema_version == "2"
+            assert event.visibility.value == "werewolf_team_only"
+            assert event.payload["target_stance"] == {
+                "target_id": None,
+                "stance": "abstain",
+                "priority": "primary",
+                "wolf_id": event.payload["wolf_id"],
+                "source_event_id": event.event_id,
+                "round_number": 1,
+            }
+
+
+def test_wolf_team_plan_fallback_does_not_infer_target_from_free_text(
+) -> None:
+    """LLM 失败时不得把“今晚刀 p02”等自由文本重新升级为执行目标。"""
+    from werewolf_agent.runtime.nodes import night as night_mod
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "p1": PlayerState(id="p1", role="villager"),
+        "p2": PlayerState(id="p2", role="villager"),
+    }
+    gs = GameState(
+        game_id="no_regex_fallback",
+        players=players,
+        night_number=1,
+        events=[
+            GameEvent(
+                type="wolf_discussion",
+                payload={
+                    "wolf_id": "w1",
+                    "round": 1,
+                    "night_number": 1,
+                    "text": "今晚刀 p02，大家统一。",
+                    "visibility": "werewolf_team_only",
+                },
+            )
+        ],
+    )
+    result = night_mod.wolf_team_plan_node({"game_state": gs})
+
+    assert result["wolf_team_plan"]["night_kill_primary"] is None
+    assert result["wolf_team_plan"]["night_kill_backup"] is None
 
 
 # ---------------------------------------------------------------------------

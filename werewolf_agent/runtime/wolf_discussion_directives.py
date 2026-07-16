@@ -57,6 +57,8 @@ def collect_current_wolf_target_stances(gs: GameState) -> list[dict[str, Any]]:
         if (
             event.type != "wolf_discussion"
             or event.payload.get("night_number") != gs.night_number
+            or event.schema_version != "2"
+            or not event.event_id
         ):
             continue
         raw_stance = event.payload.get("target_stance")
@@ -66,7 +68,24 @@ def collect_current_wolf_target_stances(gs: GameState) -> list[dict[str, Any]]:
             stance = WolfTargetStance.model_validate(raw_stance)
         except ValueError:
             continue
-        if stance.source_event_id != event.event_id:
+        wolf = gs.players.get(stance.wolf_id)
+        target = gs.players.get(stance.target_id) if stance.target_id else None
+        if (
+            stance.source_event_id != event.event_id
+            or stance.wolf_id != event.payload.get("wolf_id")
+            or stance.round_number != event.payload.get("round")
+            or wolf is None
+            or not wolf.alive
+            or wolf.role != "werewolf"
+            or (
+                stance.target_id is not None
+                and (
+                    target is None
+                    or not target.alive
+                    or target.role == "werewolf"
+                )
+            )
+        ):
             continue
         stances.append(stance.model_dump())
     return stances

@@ -313,15 +313,20 @@ class VotePlayerAction(PlayerAction):
 
 
 class SpeechPlayerAction(PlayerAction):
-    """发言 action；狼队夜聊可额外携带私有结构化立场。"""
+    """普通发言 action，不接受狼队私有结构化字段。"""
 
     model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.SPEECH] = ActionType.SPEECH
     action_kind: Literal["speech"] = "speech"
     intent: str = Field(default="", description="Structured public-speech intent")
+
+
+class WolfDiscussionSpeechPlayerAction(SpeechPlayerAction):
+    """仅在 WOLF_DISCUSSION 上下文解析的私有夜聊 action。"""
+
     target_stance: WolfTargetStanceAction | None = Field(
         default=None,
-        description="Private wolf-discussion stance; omitted from ordinary day-speech tools.",
+        description="Private wolf-discussion stance.",
     )
 
 
@@ -550,6 +555,7 @@ __all__ = [
     "VotePlayerAction",
     "WolfKillPlayerAction",
     "WolfNoKillPlayerAction",
+    "WolfDiscussionSpeechPlayerAction",
     "WolfTargetStance",
     "WolfTargetStanceAction",
     "WolfTeamPlan",

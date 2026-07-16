@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -326,16 +326,16 @@ def run_player_action_flow(
                 context,
             )
             if parse_error and action is None:
-                action, parse_error = agent._parse_action(result.text)
+                action, parse_error = agent._parse_action(result.text, context=context)
         elif output_mode == OutputMode.SPEECH_INTENT:
-            action, parse_error = agent._parse_action(result.text)
+            action, parse_error = agent._parse_action(result.text, context=context)
             if parse_error and action is None:
                 action, parse_error, choice_data = _parse_speech_intent_action(
                     result.text,
                     context,
                 )
         else:
-            action, parse_error = agent._parse_action(result.text)
+            action, parse_error = agent._parse_action(result.text, context=context)
             # 完整行动 JSON 也要复用投票字段修复器：模型经常遗漏
             # candidate_comparison 等审计字段，但已有 target_id 时可以
             # 基于当前上下文安全补齐，而不应直接降级成 FallbackAction。
