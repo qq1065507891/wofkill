@@ -9,7 +9,7 @@ Covers:
 - LLM returns schema-invalid JSON → retry
 - LLM target points to dead/non-wolf → membership rejected, retry
 - LLM NotImplementedError → immediate None (provider unsupported)
-- discussion text correctly collected from gs.events for current night
+- structured stances correctly collected from current-night gs.events
 """
 
 from __future__ import annotations
@@ -39,8 +39,10 @@ def _make_gs(*, night=1, wolves=("p04", "p05", "p08", "p10"), extra_events=()):
         players[pid] = PlayerState(id=pid, role=role, alive=True)
     events: list[GameEvent] = [GameEvent(type="enter_night", payload={"night": night})]
     # Add 4 wolf_discussion entries for current night
+    sequence_number = 1
     for round_num in (1,):
         for w in wolves:
+            event_id = f"test_wtp:e{sequence_number:06d}"
             events.append(GameEvent(
                 type="wolf_discussion",
                 payload={
@@ -49,8 +51,21 @@ def _make_gs(*, night=1, wolves=("p04", "p05", "p08", "p10"), extra_events=()):
                     "night_number": night,
                     "text": f"我是 {w}, 建议刀 p01",
                     "visibility": "werewolf_team_only",
+                    "target_stance": {
+                        "wolf_id": w,
+                        "target_id": "p01",
+                        "stance": "support",
+                        "priority": "primary",
+                        "source_event_id": event_id,
+                        "round_number": round_num,
+                    },
                 },
+                event_id=event_id,
+                sequence_number=sequence_number,
+                game_id="test_wtp",
+                schema_version="2",
             ))
+            sequence_number += 1
     events.extend(extra_events)
     return GameState(
         game_id="test_wtp", phase="night", night_number=night,
@@ -187,17 +202,19 @@ class TestHappyPath:
         assert plan["consensus_method"] == "llm"
         assert plan["captain_id"] == "p04"
 
-    def test_discussion_text_injected_into_prompt(self):
+    def test_structured_stances_injected_into_prompt(self):
         gs = _make_gs()
         router = _FakeModelRouter([(_valid_plan_json(), None)])
         registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
         agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
         assert len(router.calls) == 1
         call_prompt = router.calls[0]["prompt"]
-        # Each of 4 wolves has a discussion line
+        # Each wolf's structured stance is present, while free text is excluded.
         for w in ("p04", "p05", "p08", "p10"):
             assert f"{w}" in call_prompt
-        assert "建议刀 p01" in call_prompt
+        assert '"target_id": "p01"' in call_prompt
+        assert '"stance": "support"' in call_prompt
+        assert "建议刀 p01" not in call_prompt
 
     def test_alive_wolves_and_targets_in_system_prompt(self):
         gs = _make_gs()
@@ -460,7 +477,7 @@ class TestExtractFirstBalancedJsonObject:
 # ---------------------------------------------------------------------------
 
 class TestDiscussionCollection:
-    def test_only_current_night_text_collected(self):
+    def test_only_current_night_structured_stances_are_collected(self):
         # Add a stale night-2 discussion event to a night-2 game with prior night-1 events
         gs = _make_gs(night=2)
         # Insert prior-night noise
@@ -468,7 +485,15 @@ class TestDiscussionCollection:
             type="wolf_discussion",
             payload={"wolf_id": "p04", "round": 1, "night_number": 1,
                      "text": "OLD NIGHT TEXT SHOULD NOT APPEAR",
-                     "visibility": "werewolf_team_only"},
+                     "visibility": "werewolf_team_only",
+                     "target_stance": {
+                         "wolf_id": "p04",
+                         "target_id": "p02",
+                         "stance": "propose",
+                         "priority": "primary",
+                         "source_event_id": "test_wtp:e999999",
+                         "round_number": 1,
+                     }},
         )
         gs = replace(gs, events=[prior_noise] + list(gs.events))
         router = _FakeModelRouter([(_valid_plan_json(night_number=2), None)])
@@ -476,4 +501,6 @@ class TestDiscussionCollection:
         agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
         user_prompt = router.calls[0]["prompt"]
         assert "OLD NIGHT TEXT" not in user_prompt
-        assert "建议刀 p01" in user_prompt  # current night text present
+        assert "我是 p04" not in user_prompt
+        assert '"target_id": "p01"' in user_prompt
+        assert '"stance": "support"' in user_prompt

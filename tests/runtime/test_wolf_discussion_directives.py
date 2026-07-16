@@ -11,8 +11,22 @@
     >>> build_wolf_discussion_instruction("w1", night_number=1, has_teammate_input=False, has_previous_speeches=False)
 """
 
+import pytest
+from pydantic import ValidationError
+
+from werewolf_agent.agents.action_contract import ActionContract
+from werewolf_agent.agents.schemas import (
+    ActionType,
+    OutputMode,
+    PlayerAction,
+    TaskType,
+    WolfTargetStance,
+)
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.runtime.event_metadata import new_game_event
 from werewolf_agent.runtime.wolf_discussion_directives import (
+    build_validated_wolf_target_stance,
     build_empty_wolf_discussion_fallback,
     build_teammate_transcript,
     build_wolf_discussion_instruction,
@@ -139,8 +153,154 @@ def test_build_teammate_transcript_uses_recent_six_teammate_speeches() -> None:
 
 
 def test_build_empty_wolf_discussion_fallback_keeps_existing_wording() -> None:
-    """空狼队夜聊发言兜底文案保持稳定。"""
-    assert build_empty_wolf_discussion_fallback("w1", "p1", "本轮需要统一刀口。") == (
-        "我是w1，本轮讨论我认为应该刀p1。"
+    """空夜聊兜底不得猜测击杀目标，结构化立场由调用方记为 abstain。"""
+    speech = build_empty_wolf_discussion_fallback("w1", "本轮需要统一刀口。")
+
+    assert speech == (
+        "我是w1，本轮暂不提出击杀目标。"
         "本轮需要统一刀口。请大家发表意见。"
     )
+    assert "p1" not in speech
+
+
+@pytest.mark.parametrize(
+    ("stance", "target_id"),
+    [
+        ("propose", "p1"),
+        ("support", "p1"),
+        ("oppose", "p1"),
+        ("abstain", None),
+    ],
+)
+def test_wolf_target_stance_schema_accepts_all_legal_stances(
+    stance: str,
+    target_id: str | None,
+) -> None:
+    """完整 stance schema 覆盖四种合法立场。"""
+    parsed = WolfTargetStance.model_validate(
+        {
+            "wolf_id": "w1",
+            "target_id": target_id,
+            "stance": stance,
+            "priority": "primary",
+            "source_event_id": "wolf_discussion_directives:e000003",
+            "round_number": 1,
+        }
+    )
+
+    assert parsed.stance == stance
+    assert parsed.target_id == target_id
+
+
+def test_wolf_target_stance_schema_rejects_abstain_with_target() -> None:
+    """abstain 必须显式不带目标。"""
+    with pytest.raises(ValidationError, match="abstain"):
+        WolfTargetStance.model_validate(
+            {
+                "wolf_id": "w1",
+                "target_id": "p1",
+                "stance": "abstain",
+                "priority": "primary",
+                "source_event_id": "wolf_discussion_directives:e000003",
+                "round_number": 1,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("wolf_id", "target_id", "match"),
+    [
+        ("p1", "w1", "alive werewolf"),
+        ("w1", "dead", "alive non-werewolf"),
+        ("w1", "w2", "alive non-werewolf"),
+    ],
+)
+def test_runtime_stance_validation_rejects_illegal_actor_or_target(
+    wolf_id: str,
+    target_id: str,
+    match: str,
+) -> None:
+    """运行时结合存活状态拒绝非法 actor、死亡目标和狼队友目标。"""
+    gs = _make_game_state()
+    gs.players["dead"] = PlayerState(id="dead", role="villager", alive=False)
+    event = new_game_event(
+        gs,
+        "wolf_discussion",
+        {"wolf_id": wolf_id, "round": 1, "night_number": 1, "text": ""},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        build_validated_wolf_target_stance(
+            gs,
+            event,
+            wolf_id=wolf_id,
+            round_number=1,
+            raw_stance={
+                "target_id": target_id,
+                "stance": "propose",
+                "priority": "primary",
+            },
+        )
+
+
+def test_runtime_stance_references_same_night_v2_discussion_event() -> None:
+    """写入的 stance 必须引用同夜 V2 wolf_discussion 事件 ID。"""
+    gs = _make_game_state()
+    event = new_game_event(
+        gs,
+        "wolf_discussion",
+        {"wolf_id": "w1", "round": 1, "night_number": 1, "text": "建议刀p1"},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+
+    stance = build_validated_wolf_target_stance(
+        gs,
+        event,
+        wolf_id="w1",
+        round_number=1,
+        raw_stance={
+            "target_id": "p1",
+            "stance": "support",
+            "priority": "backup",
+        },
+    )
+
+    assert event.schema_version == "2"
+    assert stance.source_event_id == event.event_id
+    assert stance.round_number == 1
+
+
+def test_only_wolf_discussion_action_contract_exposes_target_stance() -> None:
+    """普通白天 speech schema 不得暴露狼队私有 stance。"""
+    wolf_schema = ActionContract.build(
+        output_mode=OutputMode.FULL_ACTION,
+        task_type=TaskType.WOLF_DISCUSSION,
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p1"],
+    ).json_schema
+    day_schema = ActionContract.build(
+        output_mode=OutputMode.FULL_ACTION,
+        task_type=TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p1"],
+    ).json_schema
+
+    assert "target_stance" in wolf_schema["properties"]
+    assert "target_stance" not in day_schema["properties"]
+
+    action = PlayerAction.model_validate(
+        {
+            "action_type": "speech",
+            "target_id": None,
+            "speech": "今晚先观察。",
+            "reason": "狼队夜聊",
+            "confidence": 0.5,
+            "target_stance": {
+                "target_id": None,
+                "stance": "abstain",
+                "priority": "primary",
+            },
+        }
+    )
+    assert action.target_stance.stance == "abstain"

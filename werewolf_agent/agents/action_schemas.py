@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-12
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.action_schemas import PlayerAction
@@ -55,6 +55,33 @@ class VoteBasis(str, Enum):
     PRESSURE_TEST = "pressure_test"
     ANTI_HERD = "anti_herd"
     FALLBACK = "fallback"
+
+
+class WolfTargetStanceAction(BaseModel):
+    """狼人夜聊 action 中由模型提交的私有目标立场。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str | None = None
+    stance: Literal["propose", "support", "oppose", "abstain"]
+    priority: Literal["primary", "backup"]
+
+    @model_validator(mode="after")
+    def _validate_target_shape(self) -> "WolfTargetStanceAction":
+        if self.stance == "abstain":
+            if self.target_id is not None:
+                raise ValueError("abstain target stance requires target_id=None")
+        elif not self.target_id:
+            raise ValueError(f"{self.stance} target stance requires target_id")
+        return self
+
+
+class WolfTargetStance(WolfTargetStanceAction):
+    """写入私有事件的完整狼人目标立场。"""
+
+    wolf_id: str
+    source_event_id: str
+    round_number: int = Field(ge=1)
 
 
 # ---------------------------------------------------------------------------
@@ -286,12 +313,16 @@ class VotePlayerAction(PlayerAction):
 
 
 class SpeechPlayerAction(PlayerAction):
-    """Public speech action — speech text is the primary payload."""
+    """发言 action；狼队夜聊可额外携带私有结构化立场。"""
 
     model_config = ConfigDict(extra="forbid")
     action_type: Literal[ActionType.SPEECH] = ActionType.SPEECH
     action_kind: Literal["speech"] = "speech"
     intent: str = Field(default="", description="Structured public-speech intent")
+    target_stance: WolfTargetStanceAction | None = Field(
+        default=None,
+        description="Private wolf-discussion stance; omitted from ordinary day-speech tools.",
+    )
 
 
 class WolfKillPlayerAction(PlayerAction):
@@ -519,6 +550,8 @@ __all__ = [
     "VotePlayerAction",
     "WolfKillPlayerAction",
     "WolfNoKillPlayerAction",
+    "WolfTargetStance",
+    "WolfTargetStanceAction",
     "WolfTeamPlan",
     "_PLAYER_ACTION_ADAPTER",
 ]

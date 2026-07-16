@@ -79,6 +79,11 @@ class _WolfMockAgent:
                 reason="discuss",
                 confidence=0.8,
                 private_intent=None,
+                target_stance={
+                    "target_id": context.legal_targets[0],
+                    "stance": "propose",
+                    "priority": "primary",
+                },
             ), RetryInfo(attempts=0, errors=[])
 
         # Vote phase
@@ -154,8 +159,14 @@ class TestWolfDiscussionLoop:
             assert evt.payload.get("visibility") == "werewolf_team_only", (
                 f"wolf_discussion event missing visibility: {evt.payload}"
             )
+            assert evt.schema_version == "2"
+            assert evt.event_id
             assert "wolf_id" in evt.payload, "wolf_discussion event must identify the speaker"
             assert evt.payload["round"] in {1, 2, 3}
+            stance = evt.payload["target_stance"]
+            assert stance["wolf_id"] == evt.payload["wolf_id"]
+            assert stance["source_event_id"] == evt.event_id
+            assert stance["round_number"] == evt.payload["round"]
 
     def test_wolf_consensus_uses_all_wolves_votes(self) -> None:
         """wolf_consensus with registry collects votes from all alive wolves."""

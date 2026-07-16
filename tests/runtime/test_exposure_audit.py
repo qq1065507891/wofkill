@@ -88,6 +88,20 @@ def test_collector_strips_forbidden_private_fields() -> None:
     assert "werewolf" not in str(payload)
 
 
+def test_exposure_sanitizer_always_denies_private_wolf_stance_fields() -> None:
+    """即使未来误扩 allowlist，曝光审计也不能带出狼身份或 stance。"""
+    private_payload = {
+        "wolf_id": "wolf1",
+        "target_stance": {"stance": "propose", "target_id": "villager1"},
+        "source_event_id": "g1:e000001",
+    }
+
+    assert exposure_audit._sanitize_allowed(
+        private_payload,
+        frozenset(private_payload),
+    ) == {}
+
+
 def test_sanitized_empty_rag_and_reflection_do_not_emit_events() -> None:
     collector = ModuleExposureAuditCollector()
 
@@ -1024,6 +1038,20 @@ def test_wolf_discussion_keeps_action_index_monotonic_across_round_state_copies(
 
     result = night_nodes.wolf_discussion(_state(gs))
 
+    discussion_events = [
+        event for event in result["game_state"].events
+        if event.type == "wolf_discussion"
+    ]
+    assert discussion_events
+    assert all(
+        event.payload["target_stance"]["stance"] == "abstain"
+        for event in discussion_events
+    )
+    assert all(
+        event.payload["target_stance"]["target_id"] is None
+        for event in discussion_events
+    )
+
     audit_indexes = [
         event.payload["action_index"]
         for event in result["game_state"].events
@@ -1031,6 +1059,40 @@ def test_wolf_discussion_keeps_action_index_monotonic_across_round_state_copies(
     ]
     assert audit_indexes == list(range(len(audit_indexes)))
     assert len(audit_indexes) == 6
+
+
+def test_public_view_cannot_see_wolf_stance_or_wolf_identity() -> None:
+    """狼人 stance 仅狼队可见，村民公开视图不得获得任何私有字段。"""
+    from werewolf_agent.api.views import _event_visible_to_player
+    from werewolf_agent.core.event_visibility import EventVisibility
+
+    gs = GameState(
+        game_id="wolf_stance_privacy",
+        players={
+            "wolf1": PlayerState(id="wolf1", role="werewolf"),
+            "villager1": PlayerState(id="villager1", role="villager"),
+        },
+        night_number=1,
+    )
+    event = GameEvent(
+        type="wolf_discussion",
+        payload={
+            "wolf_id": "wolf1",
+            "night_number": 1,
+            "target_stance": {
+                "wolf_id": "wolf1",
+                "target_id": "villager1",
+                "stance": "propose",
+                "priority": "primary",
+                "source_event_id": "wolf_stance_privacy:e000000",
+                "round_number": 1,
+            },
+        },
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+
+    assert _event_visible_to_player(event, gs, "villager1", "villager") is False
+    assert _event_visible_to_player(event, gs, "wolf1", "werewolf") is True
 
 
 def test_day_vote_resolve_vote_pairs_pending_exposures_with_action_audits(

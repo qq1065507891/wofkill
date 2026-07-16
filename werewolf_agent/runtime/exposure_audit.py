@@ -134,6 +134,11 @@ _PROMPT_INJECTION_FIELDS = (
     ("skill_analyses", "skill_analyses", "skill_section", "viewer_visible"),
     ("persona", "persona_snapshot", "persona_section", "viewer_visible"),
 )
+_PRIVATE_WOLF_STANCE_KEYS = frozenset({
+    "wolf_id",
+    "target_stance",
+    "source_event_id",
+})
 
 
 def _identity_payload(identity: DecisionIdentity) -> dict[str, Any]:
@@ -155,7 +160,10 @@ def _sanitize_allowed(value: Any, allowed_keys: frozenset[str]) -> Any:
         return {
             str(key): _sanitize_allowed(item, allowed_keys)
             for key, item in value.items()
-            if str(key) in allowed_keys
+            if (
+                str(key) in allowed_keys
+                and str(key) not in _PRIVATE_WOLF_STANCE_KEYS
+            )
         }
     if isinstance(value, list):
         return [_sanitize_allowed(item, allowed_keys) for item in value]

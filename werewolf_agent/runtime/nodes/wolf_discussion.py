@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-13
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.wolf_discussion import wolf_discussion
@@ -17,6 +17,8 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import GameEvent, GameState
+from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.runtime.event_metadata import new_game_event, stamp_new_events
 from werewolf_agent.runtime.agent_adapter import agent_wolf_discussion
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes._shared import (
@@ -32,6 +34,21 @@ from werewolf_agent.runtime.nodes._shared import (
     _judge_broadcast,
     _player_display,
 )
+from werewolf_agent.runtime.wolf_discussion_directives import (
+    build_validated_wolf_target_stance,
+)
+
+
+def _append_stamped_events(gs: GameState, events: list[GameEvent]) -> GameState:
+    """追加事件时统一补齐 V2 元数据，保持后续 source_event_id 单调唯一。"""
+    stamped = stamp_new_events(
+        gs.game_id,
+        gs.events,
+        [*gs.events, *events],
+    )
+    return replace(gs, events=stamped)
+
+
 def _compat(name: str, fallback: Any) -> Any:
     """读取旧 facade 上的 monkeypatch，保持测试和外部补丁路径兼容。"""
     try:
@@ -139,6 +156,7 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                 exposure_collector=exposure_collector,
             )
             speech_text = result.get("speech_text", "") if result else ""
+            raw_stance = result.get("target_stance") if result else None
 
             logger.debug(
 
@@ -148,29 +166,37 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
 
             )
 
-            disc_event = GameEvent(
-
-                type="wolf_discussion",
-
-                payload={
-
+            base_payload = {
                     "wolf_id": wolf_id,
-
                     "round": round_number,
-
                     "night_number": gs.night_number,
-
                     "text": speech_text,
-
                     "visibility": "werewolf_team_only",
-
+            }
+            disc_event = new_game_event(
+                gs,
+                "wolf_discussion",
+                base_payload,
+                visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+            )
+            stance = build_validated_wolf_target_stance(
+                gs,
+                disc_event,
+                wolf_id=wolf_id,
+                round_number=round_number,
+                raw_stance=raw_stance,
+            )
+            disc_event = replace(
+                disc_event,
+                payload={
+                    **base_payload,
+                    "target_stance": stance.model_dump(),
                 },
-
             )
 
             # Immediately merge into gs so next wolf sees this speech
-
-            gs = replace(gs, events=gs.events + [disc_event])
+            gs = _append_stamped_events(gs, [disc_event])
+            disc_event = gs.events[-1]
 
             events.append(disc_event)
             if result and result.get("action_trace"):
@@ -184,8 +210,9 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                     day_number=gs.day_number,
                     night_number=gs.night_number,
                 )
-                gs = replace(gs, events=gs.events + trace_events)
-                events.extend(trace_events)
+                before_count = len(gs.events)
+                gs = _append_stamped_events(gs, trace_events)
+                events.extend(gs.events[before_count:])
             else:
                 exposure_collector.flush_events()
 

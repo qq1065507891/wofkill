@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-09
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.wolf_discussion_directives import build_wolf_discussion_instruction
@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from werewolf_agent.core.models import GameState
+from werewolf_agent.agents.schemas import WolfTargetStance, WolfTargetStanceAction
+from werewolf_agent.core.models import GameEvent, GameState
 
 
 def living_wolf_ids(gs: GameState) -> list[str]:
@@ -47,6 +48,71 @@ def collect_wolf_discussion_speeches(
                 "text": str(event.payload.get("text", "")),
             })
     return speeches
+
+
+def collect_current_wolf_target_stances(gs: GameState) -> list[dict[str, Any]]:
+    """读取本夜已验证的结构化 stance，不读取或解析自由文本。"""
+    stances: list[dict[str, Any]] = []
+    for event in gs.events:
+        if (
+            event.type != "wolf_discussion"
+            or event.payload.get("night_number") != gs.night_number
+        ):
+            continue
+        raw_stance = event.payload.get("target_stance")
+        if not isinstance(raw_stance, dict):
+            continue
+        try:
+            stance = WolfTargetStance.model_validate(raw_stance)
+        except ValueError:
+            continue
+        if stance.source_event_id != event.event_id:
+            continue
+        stances.append(stance.model_dump())
+    return stances
+
+
+def build_validated_wolf_target_stance(
+    gs: GameState,
+    discussion_event: GameEvent,
+    *,
+    wolf_id: str,
+    round_number: int,
+    raw_stance: dict[str, Any] | WolfTargetStanceAction | None,
+) -> WolfTargetStance:
+    """结合实时存活状态，把 action 草稿补全为可审计的完整 stance。"""
+    wolf = gs.players.get(wolf_id)
+    if wolf is None or not wolf.alive or wolf.role != "werewolf":
+        raise ValueError("wolf_id must identify a current alive werewolf")
+    if (
+        discussion_event.type != "wolf_discussion"
+        or discussion_event.schema_version != "2"
+        or not discussion_event.event_id
+        or discussion_event.payload.get("night_number") != gs.night_number
+    ):
+        raise ValueError("source_event_id must reference this night's V2 wolf_discussion")
+
+    draft = WolfTargetStanceAction.model_validate(
+        raw_stance
+        or {
+            "target_id": None,
+            "stance": "abstain",
+            "priority": "primary",
+        }
+    )
+    if draft.target_id is not None:
+        target = gs.players.get(draft.target_id)
+        if target is None or not target.alive or target.role == "werewolf":
+            raise ValueError("target_id must identify a current alive non-werewolf")
+
+    return WolfTargetStance(
+        wolf_id=wolf_id,
+        target_id=draft.target_id,
+        stance=draft.stance,
+        priority=draft.priority,
+        source_event_id=discussion_event.event_id,
+        round_number=round_number,
+    )
 
 
 def teammate_discussion_speeches(
@@ -128,11 +194,10 @@ def build_teammate_transcript(
 
 def build_empty_wolf_discussion_fallback(
     wolf_id: str,
-    fallback_target: str,
     required_text: str,
 ) -> str:
-    """构建空狼队夜聊发言的兜底文本。"""
+    """构建不猜测任何目标的空狼队夜聊兜底文本。"""
     return (
-        f"我是{wolf_id}，本轮讨论我认为应该刀{fallback_target}。"
+        f"我是{wolf_id}，本轮暂不提出击杀目标。"
         f"{required_text}请大家发表意见。"
     )

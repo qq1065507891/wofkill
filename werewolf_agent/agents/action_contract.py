@@ -3,7 +3,7 @@
 功能描述：**：为不同输出模式（FULL_ACTION / TARGET_CHOICE / SPEECH_INTENT）生成结构化输出契约。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-09
+修改日期：2026-07-16
 使用示例：内部模块，无对外接口
 """
 
@@ -134,6 +134,26 @@ def build_full_action_schema(
             "private_reason",
         ])
     elif task_type == TaskType.WOLF_DISCUSSION:
+        properties["target_stance"] = {
+            "type": ["object", "null"],
+            "additionalProperties": False,
+            "properties": {
+                "target_id": {
+                    "enum": target_values,
+                    "description": "存活非狼人目标；abstain 时必须为 null。",
+                },
+                "stance": {
+                    "type": "string",
+                    "enum": ["propose", "support", "oppose", "abstain"],
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["primary", "backup"],
+                },
+            },
+            "required": ["target_id", "stance", "priority"],
+            "description": "仅狼队夜聊可见的结构化目标立场。",
+        }
         properties["private_intent"] = {
             "type": ["object", "null"],
             "additionalProperties": False,

@@ -10,7 +10,7 @@
     >>> from werewolf_agent.runtime.agent_wolf_actions import agent_wolf_discussion
     >>> agent_wolf_discussion(...)
 
-修改日期: 2026-07-13
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from werewolf_agent.runtime.wolf_discussion_directives import (
     build_teammate_transcript,
     build_wolf_discussion_instruction,
     build_wolf_discussion_strategy_directive,
+    collect_current_wolf_target_stances,
     collect_wolf_discussion_speeches,
     living_wolf_ids,
     living_wolf_teammates,
@@ -51,7 +52,6 @@ from werewolf_agent.runtime.wolf_team_plan_support import (
     build_prior_plan_summary,
     build_wolf_role_definitions,
     build_wolf_team_plan_evidence,
-    collect_current_wolf_discussion_text,
     normalize_wolf_team_plan_payload,
     validate_wolf_team_plan_membership,
 )
@@ -151,7 +151,7 @@ def agent_wolf_team_plan(
     )
 
     night_num = gs.night_number
-    discussion_text = collect_current_wolf_discussion_text(gs)
+    discussion_stances = collect_current_wolf_target_stances(gs)
     prior_summary = build_prior_plan_summary(state.get("wolf_team_plan") or {})
     role_defs = build_wolf_role_definitions(_WOLF_ROLE_STRATEGY)
     contract = wolf_team_plan_contract()
@@ -177,7 +177,8 @@ def agent_wolf_team_plan(
     )
 
     user_prompt = (
-        f"## 本夜 (N{night_num}) 狼队夜聊全文\n{discussion_text}\n\n"
+        f"## 本夜 (N{night_num}) 狼队结构化立场\n"
+        f"{json.dumps(discussion_stances, ensure_ascii=False, sort_keys=True)}\n\n"
         f"## 上局延续\n{prior_summary}\n\n"
         f"## alive_wolves 候选\n{alive_wolves}\n\n"
         f"## alive_non_wolves 候选 (击杀目标)\n{alive_non_wolves}\n\n"
@@ -484,19 +485,24 @@ def agent_wolf_discussion(
 
     action, retry_info = agent.act(context)
     speech_text = getattr(action, "speech", "") or ""
+    target_stance = getattr(action, "target_stance", None)
 
     if not speech_text.strip():
-        alive_non_wolves = [
-            pid for pid, p in gs.players.items() if p.alive and p.role != "werewolf"
-        ]
-        fallback_target = alive_non_wolves[0] if alive_non_wolves else ""
         speech_text = build_empty_wolf_discussion_fallback(
             wolf_id,
-            fallback_target,
             requirements.get("required", ""),
         )
+        target_stance = None
 
-    return {"speech_text": speech_text, "action_trace": _action_trace_payload(action)}
+    return {
+        "speech_text": speech_text,
+        "target_stance": (
+            target_stance.model_dump()
+            if hasattr(target_stance, "model_dump")
+            else target_stance
+        ),
+        "action_trace": _action_trace_payload(action),
+    }
 
 
 __all__ = [
