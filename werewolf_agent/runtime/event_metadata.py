@@ -124,6 +124,14 @@ def _collect_v2_identity(
     return event_ids, sequence_numbers, last_sequence
 
 
+def validate_v2_event_log_identity(
+    game_id: str,
+    events: Sequence[GameEvent],
+) -> None:
+    """验证日志内全部 V2 身份完整、唯一且按事件顺序严格递增。"""
+    _collect_v2_identity(game_id, events)
+
+
 def _matches_authoritative_prefix(
     authoritative: GameEvent,
     candidate: GameEvent,
@@ -300,4 +308,6 @@ __all__ = [
     "serialize_game_event",
     "serialize_legacy_event_payload",
     "stamp_new_events",
+    "validate_v2_event_identity",
+    "validate_v2_event_log_identity",
 ]

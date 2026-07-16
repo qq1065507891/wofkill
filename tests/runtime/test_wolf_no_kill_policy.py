@@ -73,6 +73,7 @@ def test_third_consecutive_pre_resolution_no_kill_forces_deterministic_target() 
             type="wolf_no_kill_timeout",
             payload={
                 "reason": "provider_unavailable",
+                "night_number": 1,
                 "no_kill_decision": {
                     "reason_code": "provider_unavailable",
                     "consecutive_pre_resolution_no_kill_count": 1,
@@ -85,6 +86,7 @@ def test_third_consecutive_pre_resolution_no_kill_forces_deterministic_target() 
             type="wolf_no_kill_declared",
             payload={
                 "reason": "strategic_abstain",
+                "night_number": 2,
                 "no_kill_decision": {
                     "reason_code": "strategic_abstain",
                     "consecutive_pre_resolution_no_kill_count": 2,
@@ -249,12 +251,269 @@ def test_repeated_resolve_after_forced_recovery_preserves_selected_target() -> N
     assert len(repeated["game_state"].events) == len(recovered_state.events)
 
 
+def test_v1_checkpoint_no_kill_forms_trigger_third_night_recovery() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    gs = _game_state(events=[
+        GameEvent(
+            type="wolf_no_kill_timeout",
+            payload={"night_number": 1},
+        ),
+        GameEvent(
+            type="wolf_no_kill_declared",
+            payload={
+                "night_number": 2,
+                "wolf_action_reason": "create peace-night pressure",
+            },
+        ),
+    ])
+
+    result = NoKillPolicy().resolve(gs, reason_code="true_tie")
+
+    assert result["wolf_kill_target_id"] is not None
+    recovery = result["game_state"].events[-2]
+    assert recovery.payload["original_reasons"] == [
+        "provider_unavailable",
+        "strategic_abstain",
+        "true_tie",
+    ]
+
+
+def test_v1_timer_and_invalid_plan_forms_have_stable_reason_mapping() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    gs = _game_state(events=[
+        GameEvent(
+            type="timer_expired",
+            payload={"night_number": 1, "timer_key": "wolf_discussion"},
+        ),
+        GameEvent(
+            type="wolf_plan_invalid_no_kill",
+            payload={"night_number": 2, "reason": "arbitrary old text"},
+        ),
+    ])
+
+    result = NoKillPolicy().resolve(gs, reason_code="invalid_backup")
+
+    recovery = result["game_state"].events[-2]
+    assert recovery.payload["original_reasons"] == [
+        "provider_unavailable",
+        "plan_generation_failed",
+        "invalid_backup",
+    ]
+
+
+def test_legacy_no_kill_without_night_identity_is_not_counted() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    gs = _game_state(events=[
+        GameEvent(type="wolf_no_kill_timeout", payload={}),
+        GameEvent(
+            type="wolf_no_kill_declared",
+            payload={"wolf_action_reason": "old checkpoint"},
+        ),
+    ])
+
+    result = NoKillPolicy().resolve(gs, reason_code="true_tie")
+
+    decision = result["game_state"].events[-1].payload["no_kill_decision"]
+    assert decision["consecutive_pre_resolution_no_kill_count"] == 1
+    assert decision["forced_recovery_applied"] is False
+
+
+def test_legacy_adapter_rejects_unknown_visibility_alias() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    gs = _game_state(events=[
+        GameEvent(
+            type="wolf_plan_invalid_no_kill",
+            payload={"night_number": 1, "visibility": "forged-private"},
+        ),
+        GameEvent(
+            type="wolf_plan_invalid_no_kill",
+            payload={"night_number": 2, "visibility": "forged-private"},
+        ),
+    ])
+
+    result = NoKillPolicy().resolve(gs, reason_code="true_tie")
+
+    decision = result["game_state"].events[-1].payload["no_kill_decision"]
+    assert decision["consecutive_pre_resolution_no_kill_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "reserved_key",
+    [
+        "night_number",
+        "reason",
+        "reason_code",
+        "no_kill_decision",
+        "target_id",
+        "original_reasons",
+        "consecutive_pre_resolution_no_kill_count",
+        "forced_recovery_applied",
+        "recovered_target_id",
+        "candidate_scores",
+        "final_target_id",
+    ],
+)
+def test_extra_payload_cannot_overwrite_canonical_no_kill_fields(
+    reserved_key: str,
+) -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    gs = _game_state()
+
+    with pytest.raises(ValueError, match="reserved no-kill payload"):
+        NoKillPolicy().resolve(
+            gs,
+            reason_code="true_tie",
+            extra_payload={reserved_key: "forged"},
+        )
+
+    assert gs.events == []
+
+
+def test_current_night_v1_choice_requires_explicit_safe_legacy_shape() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import (
+        _current_night_wolf_choice,
+    )
+
+    valid = _game_state(events=[GameEvent(
+        type="wolf_kill_selected",
+        payload={"night_number": 3, "target_id": "p1"},
+    )])
+    illegal = _game_state(events=[GameEvent(
+        type="wolf_kill_selected",
+        payload={"night_number": 3, "target_id": "w1"},
+    )])
+    forged = _game_state(events=[GameEvent(
+        type="unrelated_event",
+        payload={"night_number": 3, "target_id": "p1"},
+    )])
+
+    assert _current_night_wolf_choice(valid) == (True, "p1")
+    assert _current_night_wolf_choice(illegal) == (False, None)
+    assert _current_night_wolf_choice(forged) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda event: replace(event, game_id="other-game"),
+        lambda event: replace(event, event_id="forged:e999999"),
+        lambda event: replace(event, visibility=EventVisibility.PUBLIC),
+        lambda event: replace(event, payload={**event.payload, "reason": "true_tie"}),
+        lambda event: replace(event, payload={**event.payload, "no_kill_decision": {}}),
+    ],
+    ids=[
+        "cross_game",
+        "noncanonical_event_id",
+        "public_visibility",
+        "reason_mismatch",
+        "incomplete_decision",
+    ],
+)
+def test_current_night_v2_no_kill_requires_trusted_complete_schema(mutate) -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import (
+        NoKillPolicy,
+        _current_night_wolf_choice,
+    )
+
+    resolved = NoKillPolicy().resolve(_game_state(), reason_code="strategic_abstain")
+    gs = resolved["game_state"]
+    gs = replace(gs, events=[mutate(gs.events[-1])])
+
+    assert _current_night_wolf_choice(gs) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "target_id",
+    ["w1", "missing"],
+)
+def test_current_night_v2_selected_target_must_be_legal(target_id: str) -> None:
+    from werewolf_agent.runtime.event_metadata import new_game_event
+    from werewolf_agent.runtime.wolf_no_kill_policy import (
+        _current_night_wolf_choice,
+    )
+
+    gs = _game_state()
+    selected = new_game_event(
+        gs,
+        "wolf_kill_selected",
+        {"night_number": 3, "target_id": target_id},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+    gs = replace(gs, events=[selected])
+
+    assert _current_night_wolf_choice(gs) == (False, None)
+
+
+def test_current_night_v2_selected_rejects_unexpected_malformed_decision() -> None:
+    from werewolf_agent.runtime.event_metadata import new_game_event
+    from werewolf_agent.runtime.wolf_no_kill_policy import (
+        _current_night_wolf_choice,
+    )
+
+    gs = _game_state()
+    selected = new_game_event(
+        gs,
+        "wolf_kill_selected",
+        {
+            "night_number": 3,
+            "target_id": "p1",
+            "no_kill_decision": {},
+        },
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+    gs = replace(gs, events=[selected])
+
+    assert _current_night_wolf_choice(gs) == (False, None)
+
+
+def test_duplicate_v2_identity_cannot_suppress_current_night_action() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import (
+        NoKillPolicy,
+        _current_night_wolf_choice,
+    )
+
+    resolved = NoKillPolicy().resolve(_game_state(), reason_code="true_tie")
+    gs = resolved["game_state"]
+    gs = replace(gs, events=[gs.events[0], gs.events[0]])
+
+    assert _current_night_wolf_choice(gs) == (False, None)
+
+
+def test_legacy_consensus_new_selected_write_is_private_v2() -> None:
+    from werewolf_agent.runtime.nodes.wolf_consensus import (
+        _legacy_wolf_consensus,
+    )
+
+    result = _legacy_wolf_consensus({
+        "game_state": _game_state(),
+        "wolf_action": "kill",
+        "wolf_kill_target_id": "p1",
+    })
+
+    event = result["game_state"].events[-1]
+    assert event.type == "wolf_kill_selected"
+    assert event.schema_version == "2"
+    assert event.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
+    assert event.game_id == result["game_state"].game_id
+
+
 def test_forced_recovery_without_legal_target_keeps_auditable_count() -> None:
     from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
 
     gs = _game_state(events=[
-        GameEvent(type="wolf_no_kill_timeout", payload={"reason": "true_tie"}),
-        GameEvent(type="wolf_no_kill_timeout", payload={"reason": "invalid_backup"}),
+        GameEvent(
+            type="wolf_no_kill_timeout",
+            payload={"night_number": 1, "reason": "true_tie"},
+        ),
+        GameEvent(
+            type="wolf_no_kill_timeout",
+            payload={"night_number": 2, "reason": "invalid_backup"},
+        ),
     ])
     gs = replace(
         gs,
@@ -601,6 +860,39 @@ def test_failure_classifier_rejects_mismatched_v2_fallback_identity(
     assert _trusted_wolf_plan_failure_reason(gs) is None
 
 
+@pytest.mark.parametrize("corruption", ["duplicate", "out_of_order"])
+def test_failure_classifier_rejects_non_authoritative_v2_event_log(
+    corruption: str,
+) -> None:
+    from werewolf_agent.runtime.event_metadata import new_game_event
+    from werewolf_agent.runtime.nodes.node_helpers import (
+        _trusted_wolf_plan_failure_reason,
+    )
+
+    gs = _runtime_state_with_authoritative_stances(
+        (),
+        fallback_reason="schema_validation_failed",
+    )["game_state"]
+    marker = new_game_event(
+        gs,
+        "wolf_consensus_plan_mismatch",
+        {"night_number": 1},
+        visibility=EventVisibility.MODERATOR_ONLY,
+    )
+    if corruption == "duplicate":
+        marker = replace(
+            marker,
+            event_id=gs.events[0].event_id,
+            sequence_number=gs.events[0].sequence_number,
+        )
+        events = [*gs.events, marker]
+    else:
+        events = [marker, *gs.events]
+    gs = replace(gs, events=events)
+
+    assert _trusted_wolf_plan_failure_reason(gs) is None
+
+
 def test_trusted_failure_metadata_cannot_authorize_its_own_target() -> None:
     state = _runtime_state_with_authoritative_stances(
         (
@@ -622,7 +914,10 @@ def test_trusted_failure_metadata_cannot_authorize_its_own_target() -> None:
 
     assert result is not None
     assert result["wolf_kill_target_id"] == "p1"
-    assert result["game_state"].events[-1].payload["target_id"] == "p1"
+    selected = result["game_state"].events[-1]
+    assert selected.payload["target_id"] == "p1"
+    assert selected.schema_version == "2"
+    assert selected.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
 
 
 @pytest.mark.parametrize("value", [True, 0, -1, "2"])

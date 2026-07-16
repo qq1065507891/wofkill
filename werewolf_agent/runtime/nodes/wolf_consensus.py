@@ -15,8 +15,10 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.agent_adapter import agent_wolf_consensus
+from werewolf_agent.runtime.event_metadata import new_game_event
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes._shared import (
     AGENT_TIMEOUTS,
@@ -131,13 +133,15 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
                     "  [狼人决策] 击杀目标: %s",
                     _player_display(state, target),
                 )
-                event = GameEvent(
-                    type="wolf_kill_selected",
-                    payload={
+                event = new_game_event(
+                    audited_gs,
+                    "wolf_kill_selected",
+                    {
                         "night_number": gs.night_number,
                         "target_id": target,
                         "action_traces": result.get("action_traces", {}),
                     },
+                    visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
                 )
                 return {
                     "game_state": replace(
@@ -175,9 +179,11 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
             or target_state.role == "werewolf"
         ):
             return policy.resolve(gs, reason_code="invalid_primary")
-        event = GameEvent(
-            type="wolf_kill_selected",
-            payload={"night_number": gs.night_number, "target_id": target},
+        event = new_game_event(
+            gs,
+            "wolf_kill_selected",
+            {"night_number": gs.night_number, "target_id": target},
+            visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
         )
         return {
             "game_state": replace(gs, events=[*gs.events, event]),

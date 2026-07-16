@@ -32,7 +32,11 @@ from werewolf_agent.runtime.nodes.judge_broadcast_helpers import (
     _judge_broadcast,
 )
 from werewolf_agent.runtime.nodes.runtime_state import RuntimeState, _stable_seed
-from werewolf_agent.runtime.event_metadata import validate_v2_event_identity
+from werewolf_agent.runtime.event_metadata import (
+    new_game_event,
+    validate_v2_event_identity,
+    validate_v2_event_log_identity,
+)
 from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeline import phase_label
 from werewolf_agent.runtime.wolf_no_kill_policy import (
@@ -69,9 +73,11 @@ def _force_wolf_kill(gs: GameState, reason: str) -> dict[str, Any]:
         )
     rng = _random.Random(_stable_seed(gs.game_id, reason, gs.night_number))
     target = rng.choice(non_wolves)
-    event = GameEvent(
-        type="wolf_kill_selected",
-        payload={"night_number": gs.night_number, "target_id": target, "reason": reason},
+    event = new_game_event(
+        gs,
+        "wolf_kill_selected",
+        {"night_number": gs.night_number, "target_id": target, "reason": reason},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
     )
     gs = replace(gs, events=gs.events + [event])
     return {"game_state": gs, "wolf_kill_target_id": target}
@@ -301,6 +307,8 @@ def _trusted_wolf_plan_failure_reason(
     gs: GameState,
 ) -> NoKillReasonCode | None:
     """仅从本夜私有 V2 fallback 事件读取失败类别，不授予目标执行权。"""
+    if not _v2_event_log_identity_is_authoritative(gs):
+        return None
     for event in reversed(gs.events):
         if event.type != "wolf_team_plan_fallback":
             continue
@@ -334,6 +342,15 @@ def _trusted_wolf_plan_failure_reason(
             return "provider_unavailable"
         return "plan_generation_failed"
     return None
+
+
+def _v2_event_log_identity_is_authoritative(gs: GameState) -> bool:
+    """校验日志中所有 V2 身份唯一且按事件顺序严格递增。"""
+    try:
+        validate_v2_event_log_identity(gs.game_id, gs.events)
+    except ValueError:
+        return False
+    return True
 
 
 def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
@@ -449,14 +466,16 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
         "  [狼人决策] 按结构化 stance 共识击杀: %s",
         _player_display(state, selected_target),
     )
-    event = GameEvent(
-        type="wolf_kill_selected",
-        payload={
+    event = new_game_event(
+        gs,
+        "wolf_kill_selected",
+        {
             "night_number": gs.night_number,
             "target_id": selected_target,
             "reason": "wolf_stance_consensus",
             "plan_key": plan_key,
         },
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
     )
     gs = replace(gs, events=[*gs.events, event])
     return {"game_state": gs, "wolf_kill_target_id": selected_target}
