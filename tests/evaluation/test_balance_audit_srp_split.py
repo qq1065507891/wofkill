@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -89,22 +90,22 @@ def test_acceptance_facade_composes_all_domain_projectors(monkeypatch) -> None:
 
     monkeypatch.setattr(
         acceptance_audit,
-        "compute_terminal_semantic_acceptance_metrics",
+        "_compute_terminal_semantic_acceptance_metrics_from_normalized",
         lambda games: {"terminal_semantic_marker": len(games)},
     )
     monkeypatch.setattr(
         acceptance_audit,
-        "compute_world_acceptance_metrics",
+        "_compute_world_acceptance_metrics_from_normalized",
         lambda games: {"world_marker": len(games)},
     )
     monkeypatch.setattr(
         acceptance_audit,
-        "compute_power_acceptance_metrics",
+        "_compute_power_acceptance_metrics_from_normalized",
         lambda games: {"power_marker": len(games)},
     )
     monkeypatch.setattr(
         acceptance_audit,
-        "compute_reflection_acceptance_metrics",
+        "_compute_reflection_acceptance_metrics_from_normalized",
         lambda games: {"reflection_marker": len(games)},
     )
 

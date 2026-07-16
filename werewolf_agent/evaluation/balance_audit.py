@@ -16,10 +16,11 @@ from typing import Any, Iterable, Mapping
 from werewolf_agent.core.resolution_batches import valid_resolution_batch
 
 from werewolf_agent.evaluation.acceptance_audit import (
+    _compute_acceptance_audit_metrics_from_normalized,
     _compute_acceptance_metrics as _compute_acceptance_metrics,
     _non_negative_int as _non_negative_int,
     _power_role_evidence_complete as _power_role_evidence_complete,
-    compute_acceptance_audit_metrics,
+    compute_acceptance_audit_metrics,  # noqa: F401
 )
 from werewolf_agent.evaluation.balance_public_claims import (
     night_info_claim_supported as _night_info_claim_supported,  # noqa: F401
@@ -137,7 +138,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         for event in game.get("events", [])
         if isinstance(event, Mapping)
     ])
-    acceptance_metrics = compute_acceptance_audit_metrics(games)
+    acceptance_metrics = _compute_acceptance_audit_metrics_from_normalized(games)
     mean_vote_concentration = (
         sum(vote_concentrations) / len(vote_concentrations)
         if vote_concentrations else 0.0

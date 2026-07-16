@@ -10,10 +10,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from werewolf_agent.evaluation.game_projection import (
-    ensure_normalized_acceptance_games,
+    normalize_acceptance_games,
     projection_support,
 )
 
@@ -22,7 +22,15 @@ def compute_power_acceptance_metrics(
     games: Iterable[Any],
 ) -> dict[str, Any]:
     """对账伤害事实与动作轨迹并投影神职证据指标。"""
-    games = ensure_normalized_acceptance_games(games)
+    return _compute_power_acceptance_metrics_from_normalized(
+        normalize_acceptance_games(games)
+    )
+
+
+def _compute_power_acceptance_metrics_from_normalized(
+    games: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """消费同一调用链刚完成验证的不可变游戏快照。"""
     projection_is_supported, projection_reason = projection_support(games)
     power_decisions: list[dict[str, Any]] = []
     for game in games:

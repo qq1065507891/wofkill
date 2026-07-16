@@ -37,28 +37,10 @@ _JSON_BOUND_REASONS = frozenset({
 })
 _MAX_JSON_DEPTH = 32
 _MAX_JSON_ITEMS = 10_000
-_NORMALIZED_GAMES_CONSTRUCTION_TOKEN = object()
 
 
 class _ProjectionValueError(ValueError):
     """标记投影中不支持的结构或非 JSON 值。"""
-
-
-class _NormalizedAcceptanceGames(tuple[Mapping[str, Any], ...]):
-    """保存由投影边界验证并深度冻结的内部游戏序列。"""
-
-    __slots__ = ()
-
-    def __new__(
-        cls,
-        games: Iterable[Mapping[str, Any]],
-        *,
-        _token: object | None = None,
-    ) -> _NormalizedAcceptanceGames:
-        """只允许投影边界构造可信内部载体。"""
-        if _token is not _NORMALIZED_GAMES_CONSTRUCTION_TOKEN:
-            raise TypeError("normalized acceptance games are internal construction only")
-        return super().__new__(cls, games)
 
 
 @dataclass
@@ -206,22 +188,10 @@ def normalize_acceptance_games(
     games: Iterable[AcceptanceGameProjection | Mapping[str, Any] | Any],
 ) -> Sequence[Mapping[str, Any]]:
     """统一验收入口，并返回深度不可变的已验证游戏序列。"""
-    return _NormalizedAcceptanceGames(
-        (
-            _freeze_normalized(project_acceptance_game(game).to_mapping())
-            for game in games
-        ),
-        _token=_NORMALIZED_GAMES_CONSTRUCTION_TOKEN,
+    return tuple(
+        _freeze_normalized(project_acceptance_game(game).to_mapping())
+        for game in games
     )
-
-
-def ensure_normalized_acceptance_games(
-    games: Iterable[AcceptanceGameProjection | Mapping[str, Any] | Any],
-) -> Sequence[Mapping[str, Any]]:
-    """仅复用内部不可变序列；其余公开输入始终重新验证。"""
-    if isinstance(games, _NormalizedAcceptanceGames):
-        return games
-    return normalize_acceptance_games(games)
 
 
 def projection_support(games: Sequence[Mapping[str, Any]]) -> tuple[bool, str | None]:
@@ -571,7 +541,7 @@ def _unsupported_reason(
 
 
 __all__ = [
-    "AcceptanceGameProjection", "ensure_normalized_acceptance_games",
-    "normalize_acceptance_games", "normalize_quality_score", "project_acceptance_game",
+    "AcceptanceGameProjection", "normalize_acceptance_games",
+    "normalize_quality_score", "project_acceptance_game",
     "projection_support",
 ]

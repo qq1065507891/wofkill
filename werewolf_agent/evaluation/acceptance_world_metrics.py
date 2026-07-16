@@ -9,11 +9,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from werewolf_agent.evaluation.acceptance_shared import _game_player_roles
 from werewolf_agent.evaluation.game_projection import (
-    ensure_normalized_acceptance_games,
+    normalize_acceptance_games,
     projection_support,
 )
 from werewolf_agent.evaluation.world_evidence_audit import (
@@ -28,7 +28,15 @@ def compute_world_acceptance_metrics(
     games: Iterable[Any],
 ) -> dict[str, Any]:
     """扫描世界模型审计并投影其验收指标。"""
-    games = ensure_normalized_acceptance_games(games)
+    return _compute_world_acceptance_metrics_from_normalized(
+        normalize_acceptance_games(games)
+    )
+
+
+def _compute_world_acceptance_metrics_from_normalized(
+    games: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """消费同一调用链刚完成验证的不可变游戏快照。"""
     projection_is_supported, projection_reason = projection_support(games)
     world_groups: list[
         tuple[

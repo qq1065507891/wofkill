@@ -733,10 +733,22 @@ def test_normalized_acceptance_games_are_deeply_immutable() -> None:
 def test_plain_list_or_tuple_projection_markers_are_revalidated(
     container_factory,
 ) -> None:
-    from werewolf_agent.evaluation.game_projection import (
-        ensure_normalized_acceptance_games,
-        projection_support,
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
     )
+    from werewolf_agent.evaluation.acceptance_power_metrics import (
+        compute_power_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_reflection_metrics import (
+        compute_reflection_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_terminal_semantic_metrics import (
+        compute_terminal_semantic_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_world_metrics import (
+        compute_world_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 
     forged = {
         "game_id": "g-forged-normalized-container",
@@ -746,23 +758,123 @@ def test_plain_list_or_tuple_projection_markers_are_revalidated(
         "_acceptance_projection_unsupported_reason": None,
     }
 
-    normalized = ensure_normalized_acceptance_games(container_factory([forged]))
+    games = container_factory([forged])
+    results = [
+        (compute_acceptance_audit_metrics(games), "acceptance_projection_unsupported_reason"),
+        (compute_world_acceptance_metrics(games), "possible_world_metrics_unsupported_reason"),
+        (compute_power_acceptance_metrics(games), "power_role_evidence_metrics_unsupported_reason"),
+        (compute_reflection_acceptance_metrics(games), "reflection_contamination_metrics_unsupported_reason"),
+        (compute_terminal_semantic_acceptance_metrics(games), "semantic_repair_metrics_unsupported_reason"),
+        (compute_balance_audit(games), "acceptance_projection_unsupported_reason"),
+    ]
 
-    assert projection_support(normalized) == (False, "invalid_events_container")
+    for metrics, reason_key in results:
+        assert metrics[reason_key] == "invalid_events_container"
 
 
-def test_private_normalized_container_rejects_unvalidated_construction() -> None:
+def test_projection_module_exposes_no_nominal_trust_token_or_type() -> None:
     from werewolf_agent.evaluation import game_projection
 
-    forged = ({
+    assert not hasattr(game_projection, "_NORMALIZED_GAMES_CONSTRUCTION_TOKEN")
+    assert not hasattr(game_projection, "_NormalizedAcceptanceGames")
+
+
+@pytest.mark.parametrize("construction", ["module_token", "tuple_new"])
+def test_all_public_acceptance_apis_revalidate_nominal_tuple_forgery(
+    construction,
+) -> None:
+    from werewolf_agent.evaluation import game_projection
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_power_metrics import (
+        compute_power_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_reflection_metrics import (
+        compute_reflection_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_terminal_semantic_metrics import (
+        compute_terminal_semantic_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_world_metrics import (
+        compute_world_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    forged = {
         "game_id": "g-forged-private-container",
         "players": {"p01": {"role": "villager"}},
         "events": {},
         "_acceptance_projection_supported": True,
-    },)
+        "_acceptance_projection_unsupported_reason": None,
+    }
+    nominal_type = getattr(game_projection, "_NormalizedAcceptanceGames", None)
+    if nominal_type is None:
+        nominal_type = type("CallerForgedNormalizedGames", (tuple,), {})
+    if (
+        construction == "module_token"
+        and hasattr(game_projection, "_NORMALIZED_GAMES_CONSTRUCTION_TOKEN")
+    ):
+        games = nominal_type(
+            (forged,),
+            _token=game_projection._NORMALIZED_GAMES_CONSTRUCTION_TOKEN,
+        )
+    else:
+        games = tuple.__new__(nominal_type, (forged,))
 
-    with pytest.raises(TypeError, match="internal construction only"):
-        game_projection._NormalizedAcceptanceGames(forged)
+    results = [
+        (compute_acceptance_audit_metrics(games), "acceptance_projection_unsupported_reason"),
+        (compute_world_acceptance_metrics(games), "possible_world_metrics_unsupported_reason"),
+        (compute_power_acceptance_metrics(games), "power_role_evidence_metrics_unsupported_reason"),
+        (compute_reflection_acceptance_metrics(games), "reflection_contamination_metrics_unsupported_reason"),
+        (compute_terminal_semantic_acceptance_metrics(games), "semantic_repair_metrics_unsupported_reason"),
+        (compute_balance_audit(games), "acceptance_projection_unsupported_reason"),
+    ]
+
+    for metrics, reason_key in results:
+        assert metrics[reason_key] == "invalid_events_container"
+
+
+@pytest.mark.parametrize(
+    "domain_import",
+    [
+        ("acceptance_world_metrics", "compute_world_acceptance_metrics"),
+        ("acceptance_power_metrics", "compute_power_acceptance_metrics"),
+        ("acceptance_reflection_metrics", "compute_reflection_acceptance_metrics"),
+        (
+            "acceptance_terminal_semantic_metrics",
+            "compute_terminal_semantic_acceptance_metrics",
+        ),
+    ],
+)
+def test_direct_domain_entry_normalizes_each_game_once(
+    monkeypatch, domain_import,
+) -> None:
+    from importlib import import_module
+
+    from werewolf_agent.evaluation import game_projection
+
+    source = {
+        "game_id": "g-direct-domain-normalize-once",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+    }
+    original = game_projection.project_acceptance_game
+    calls = []
+
+    def counting_project(value, **kwargs):
+        calls.append(value)
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(game_projection, "project_acceptance_game", counting_project)
+    module_name, function_name = domain_import
+    function = getattr(
+        import_module(f"werewolf_agent.evaluation.{module_name}"), function_name,
+    )
+
+    function([source])
+
+    assert calls == [source]
 
 
 def test_combined_and_domain_metrics_accept_immutable_normalized_games() -> None:

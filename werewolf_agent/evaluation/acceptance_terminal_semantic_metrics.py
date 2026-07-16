@@ -9,14 +9,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from werewolf_agent.evaluation.acceptance_shared import (
     _is_non_negative_int,
     _non_negative_int,
 )
 from werewolf_agent.evaluation.game_projection import (
-    ensure_normalized_acceptance_games,
+    normalize_acceptance_games,
     projection_support,
 )
 
@@ -33,7 +33,15 @@ def compute_terminal_semantic_acceptance_metrics(
     games: Iterable[Any],
 ) -> dict[str, Any]:
     """扫描终局与语义事件并投影对应验收指标。"""
-    games = ensure_normalized_acceptance_games(games)
+    return _compute_terminal_semantic_acceptance_metrics_from_normalized(
+        normalize_acceptance_games(games)
+    )
+
+
+def _compute_terminal_semantic_acceptance_metrics_from_normalized(
+    games: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """消费同一调用链刚完成验证的不可变游戏快照。"""
     projection_is_supported, projection_reason = projection_support(games)
     semantic_rows: list[dict[str, Any]] = []
     semantic_eligible_count = 0
