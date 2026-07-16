@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from werewolf_agent.evaluation.acceptance_power_metrics import (
     _friendly_fire_risk_complete,
@@ -47,7 +47,7 @@ from werewolf_agent.evaluation.game_projection import (
 
 
 def compute_acceptance_audit_metrics(
-    games: list[dict[str, Any]],
+    games: Iterable[Any],
 ) -> dict[str, Any]:
     """组合执行 taxonomy 与跨责任域验收指标，供单局和批量报告复用。"""
     normalized = ensure_normalized_acceptance_games(games)
@@ -60,7 +60,7 @@ def compute_acceptance_audit_metrics(
     }
 
 
-def _compute_acceptance_metrics(games: list[dict[str, Any]]) -> dict[str, Any]:
+def _compute_acceptance_metrics(games: Iterable[Any]) -> dict[str, Any]:
     """组合不依赖模型调用的四个验收领域投影结果。"""
     return {
         **compute_terminal_semantic_acceptance_metrics(games),

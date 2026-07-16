@@ -702,6 +702,104 @@ def test_combined_acceptance_entry_normalizes_each_game_once(monkeypatch) -> Non
     assert calls == [source]
 
 
+def test_normalized_acceptance_games_are_deeply_immutable() -> None:
+    from werewolf_agent.evaluation.game_projection import normalize_acceptance_games
+
+    source = {
+        "game_id": "g-immutable-normalized",
+        "players": {"p01": {"role": "villager"}},
+        "events": [{
+            "type": "model_execution_audit",
+            "payload": {"labels": ["original"]},
+        }],
+    }
+
+    normalized = normalize_acceptance_games([source])
+
+    with pytest.raises(TypeError):
+        normalized[0] = normalized[0]
+    with pytest.raises(AttributeError):
+        normalized.append(normalized[0])
+    with pytest.raises(TypeError):
+        normalized[0]["events"] = ()
+    with pytest.raises(TypeError):
+        normalized[0]["events"][0]["payload"]["labels"][0] = "tampered"
+
+    source["events"][0]["payload"]["labels"][0] = "source-mutated"
+    assert normalized[0]["events"][0]["payload"]["labels"] == ("original",)
+
+
+@pytest.mark.parametrize("container_factory", [list, tuple])
+def test_plain_list_or_tuple_projection_markers_are_revalidated(
+    container_factory,
+) -> None:
+    from werewolf_agent.evaluation.game_projection import (
+        ensure_normalized_acceptance_games,
+        projection_support,
+    )
+
+    forged = {
+        "game_id": "g-forged-normalized-container",
+        "players": {"p01": {"role": "villager"}},
+        "events": {},
+        "_acceptance_projection_supported": True,
+        "_acceptance_projection_unsupported_reason": None,
+    }
+
+    normalized = ensure_normalized_acceptance_games(container_factory([forged]))
+
+    assert projection_support(normalized) == (False, "invalid_events_container")
+
+
+def test_private_normalized_container_rejects_unvalidated_construction() -> None:
+    from werewolf_agent.evaluation import game_projection
+
+    forged = ({
+        "game_id": "g-forged-private-container",
+        "players": {"p01": {"role": "villager"}},
+        "events": {},
+        "_acceptance_projection_supported": True,
+    },)
+
+    with pytest.raises(TypeError, match="internal construction only"):
+        game_projection._NormalizedAcceptanceGames(forged)
+
+
+def test_combined_and_domain_metrics_accept_immutable_normalized_games() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_power_metrics import (
+        compute_power_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_reflection_metrics import (
+        compute_reflection_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_terminal_semantic_metrics import (
+        compute_terminal_semantic_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.acceptance_world_metrics import (
+        compute_world_acceptance_metrics,
+    )
+    from werewolf_agent.evaluation.game_projection import normalize_acceptance_games
+
+    normalized = normalize_acceptance_games([{
+        "game_id": "g-immutable-domains",
+        "players": {"p01": {"role": "villager"}},
+        "events": {},
+    }])
+    results = [
+        (compute_acceptance_audit_metrics(normalized), "acceptance_projection_unsupported_reason"),
+        (compute_world_acceptance_metrics(normalized), "possible_world_metrics_unsupported_reason"),
+        (compute_power_acceptance_metrics(normalized), "power_role_evidence_metrics_unsupported_reason"),
+        (compute_reflection_acceptance_metrics(normalized), "reflection_contamination_metrics_unsupported_reason"),
+        (compute_terminal_semantic_acceptance_metrics(normalized), "semantic_repair_metrics_unsupported_reason"),
+    ]
+
+    for metrics, reason_key in results:
+        assert metrics[reason_key] == "invalid_events_container"
+
+
 def test_direct_domain_apis_expose_projection_unsupported_reason() -> None:
     from werewolf_agent.evaluation.acceptance_power_metrics import (
         compute_power_acceptance_metrics,

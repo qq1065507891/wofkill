@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from werewolf_agent.evaluation.game_projection import (
     ensure_normalized_acceptance_games,
@@ -19,7 +19,7 @@ from werewolf_agent.evaluation.game_projection import (
 
 
 def compute_power_acceptance_metrics(
-    games: list[dict[str, Any]],
+    games: Iterable[Any],
 ) -> dict[str, Any]:
     """对账伤害事实与动作轨迹并投影神职证据指标。"""
     games = ensure_normalized_acceptance_games(games)
@@ -29,7 +29,7 @@ def compute_power_acceptance_metrics(
         power_trace_candidates: list[tuple[str, str | None, str, dict[str, Any]]] = []
         power_damage_events: list[tuple[str, str | None, str]] = []
         for event in game.get("events", []):
-            if not isinstance(event, dict):
+            if not isinstance(event, Mapping):
                 continue
             event_type = event.get("type")
             payload = event.get("payload") or {}
@@ -45,7 +45,7 @@ def compute_power_acceptance_metrics(
             if event_type != "action_trace_audit":
                 continue
             trace = payload.get("action_trace")
-            if not isinstance(trace, dict):
+            if not isinstance(trace, Mapping):
                 continue
             if trace.get("final_action_type") in {"hunter_shot", "use_poison"}:
                 evidence = trace.get("power_role_evidence")
@@ -53,8 +53,8 @@ def compute_power_acceptance_metrics(
                     str(trace.get("final_action_type")),
                     str(payload.get("player_id")) if payload.get("player_id") else None,
                     str((evidence or {}).get("target_id") or "")
-                    if isinstance(evidence, dict) else "",
-                    evidence if isinstance(evidence, dict) else {},
+                    if isinstance(evidence, Mapping) else "",
+                    evidence if isinstance(evidence, Mapping) else {},
                 ))
 
         # deaths 是权威结果；player_died 必须与之逐项一致，不能互相掩盖遗漏。
@@ -66,7 +66,7 @@ def compute_power_acceptance_metrics(
                 str(death.get("player_id") or ""),
             )
             for death in game.get("deaths", [])
-            if isinstance(death, dict) and death.get("reason") in {
+            if isinstance(death, Mapping) and death.get("reason") in {
                 "hunter_shot", "witch_poison",
             }
         ]
@@ -128,10 +128,10 @@ def _power_role_evidence_complete(evidence: dict[str, Any]) -> bool:
         return False
     if not _retain_option_complete(retain):
         return False
-    if not isinstance(comparison, dict):
+    if not isinstance(comparison, Mapping):
         return False
     alternatives = comparison.get("legal_alternatives")
-    if not isinstance(alternatives, list) or not all(
+    if not isinstance(alternatives, (list, tuple)) or not all(
         isinstance(item, str) and bool(item) for item in alternatives
     ):
         return False
@@ -151,9 +151,9 @@ def _target_evidence_complete(evidence: dict[str, Any]) -> bool:
     selected = evidence.get("target_evidence")
     comparison = evidence.get("target_comparison")
     alternatives = evidence.get("alternative_comparison")
-    if not isinstance(selected, dict) or not isinstance(comparison, dict):
+    if not isinstance(selected, Mapping) or not isinstance(comparison, Mapping):
         return False
-    if not isinstance(alternatives, dict):
+    if not isinstance(alternatives, Mapping):
         return False
     selected_score = selected.get("selected_score")
     selected_signals = selected.get("selected_signals")
@@ -181,27 +181,27 @@ def _score(value: Any) -> bool:
 
 
 def _signals(value: Any) -> bool:
-    return isinstance(value, list) and all(
+    return isinstance(value, (list, tuple)) and all(
         isinstance(item, str) and bool(item) for item in value
     )
 
 
 def _friendly_fire_risk_complete(value: Any) -> bool:
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         return False
     targets = value.get("targets")
     return (
         value.get("status") == "assessed"
         and isinstance(value.get("basis"), str)
         and bool(value["basis"].strip())
-        and isinstance(targets, list) and all(
+        and isinstance(targets, (list, tuple)) and all(
             isinstance(item, str) and bool(item) for item in targets
         )
     )
 
 
 def _retain_option_complete(value: Any) -> bool:
-    if not isinstance(value, dict):
+    if not isinstance(value, Mapping):
         return False
     return (
         value.get("action") == "no_action"

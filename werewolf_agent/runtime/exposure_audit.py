@@ -609,16 +609,16 @@ def summarize_persona_prompt_confirmation(
         return _persona_confirmation_summary(configured, confirmed)
 
     def _type(event: Any) -> str:
-        if isinstance(event, dict):
+        if isinstance(event, Mapping):
             return str(event.get("type") or "")
         return str(getattr(event, "type", ""))
 
     def _payload(event: Any) -> dict[str, Any]:
-        if isinstance(event, dict):
+        if isinstance(event, Mapping):
             payload = event.get("payload", event)
         else:
             payload = getattr(event, "payload", {})
-        return payload if isinstance(payload, dict) else {}
+        return payload if isinstance(payload, Mapping) else {}
 
     configured = {
         str(_payload(event).get("trace_id") or "")

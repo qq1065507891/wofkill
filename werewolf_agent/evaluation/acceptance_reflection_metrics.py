@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from werewolf_agent.evaluation.acceptance_shared import (
     _is_non_negative_int,
@@ -22,7 +22,7 @@ from werewolf_agent.evaluation.game_projection import (
 
 
 def compute_reflection_acceptance_metrics(
-    games: list[dict[str, Any]],
+    games: Iterable[Any],
 ) -> dict[str, Any]:
     """扫描每局最新反思事务并投影持久化验收指标。"""
     games = ensure_normalized_acceptance_games(games)
@@ -43,7 +43,7 @@ def compute_reflection_acceptance_metrics(
         latest_reflection_payload: dict[str, Any] | None = None
         persistence_events: list[tuple[int, dict[str, Any]]] = []
         for event_index, event in enumerate(game.get("events", [])):
-            if not isinstance(event, dict):
+            if not isinstance(event, Mapping):
                 continue
             event_type = event.get("type")
             payload = event.get("payload") or {}
@@ -53,11 +53,11 @@ def compute_reflection_acceptance_metrics(
                 latest_reflection_payload = payload
                 latest_reflections = {}
                 for entry in payload.get("entries", []):
-                    if not isinstance(entry, dict):
+                    if not isinstance(entry, Mapping):
                         continue
                     player_id = entry.get("player_id")
                     verification = entry.get("verification")
-                    if isinstance(player_id, str) and isinstance(verification, dict):
+                    if isinstance(player_id, str) and isinstance(verification, Mapping):
                         latest_reflections[player_id] = (event_index, verification)
             if event_type == "reflection_persistence_audit":
                 persistence_events.append((event_index, payload))
@@ -71,21 +71,21 @@ def compute_reflection_acceptance_metrics(
             persistence_index, authoritative_persistence = post_reflection_transactions[0]
             entries = authoritative_persistence.get("entries")
             transaction_structure_valid = (
-                isinstance(entries, list)
+                isinstance(entries, (list, tuple))
                 and authoritative_persistence.get("expected_entry_count") == len(entries)
                 and authoritative_persistence.get("persistence_complete") is True
                 and authoritative_persistence.get("rollback_complete") is True
             )
-            if transaction_structure_valid and isinstance(entries, list):
+            if transaction_structure_valid and isinstance(entries, (list, tuple)):
                 player_ids = [
                     entry.get("player_id") for entry in entries
-                    if isinstance(entry, dict)
+                    if isinstance(entry, Mapping)
                     and isinstance(entry.get("player_id"), str)
                     and entry.get("player_id")
                 ]
                 entry_ids = [
                     entry.get("entry_id") for entry in entries
-                    if isinstance(entry, dict)
+                    if isinstance(entry, Mapping)
                     and isinstance(entry.get("entry_id"), str)
                     and entry.get("entry_id")
                 ]
@@ -109,8 +109,8 @@ def compute_reflection_acceptance_metrics(
         game_reflection_complete = True
         for player_id, (reflection_index, verification) in latest_reflections.items():
             lessons = verification.get("verified_lessons")
-            expects_persistence = isinstance(lessons, list) and any(
-                isinstance(lesson, dict)
+            expects_persistence = isinstance(lessons, (list, tuple)) and any(
+                isinstance(lesson, Mapping)
                 and isinstance(lesson.get("abstraction"), str)
                 and bool(lesson["abstraction"].strip())
                 for lesson in lessons
@@ -159,7 +159,7 @@ def compute_reflection_acceptance_metrics(
         if is_completed_game:
             reflection_completed_game_count += 1
             player_ids = set(game.get("players", {})) if isinstance(
-                game.get("players"), dict
+                game.get("players"), Mapping
             ) else set()
             reflection_payload_valid = _reflection_payload_matches_players(
                 latest_reflection_payload, player_ids
@@ -203,15 +203,18 @@ def _reflection_payload_matches_players(
     player_ids: set[str],
 ) -> bool:
     """完成局必须逐玩家反思；只有真实零玩家局可接受零条目。"""
-    if not isinstance(payload, dict):
+    if not isinstance(payload, Mapping):
         return False
     entries = payload.get("entries")
-    if not isinstance(entries, list) or payload.get("player_count") != len(player_ids):
+    if (
+        not isinstance(entries, (list, tuple))
+        or payload.get("player_count") != len(player_ids)
+    ):
         return False
     entry_players = [
         entry.get("player_id")
         for entry in entries
-        if isinstance(entry, dict) and isinstance(entry.get("player_id"), str)
+        if isinstance(entry, Mapping) and isinstance(entry.get("player_id"), str)
     ]
     return (
         len(entry_players) == len(entries)

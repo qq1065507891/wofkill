@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import json
 import hashlib
 import unicodedata
 from collections import Counter
-from typing import Any
+from typing import Any, Mapping
 
 from werewolf_agent.cognition.public_evidence import PublicEvidenceIndex
 from werewolf_agent.cognition.visibility import VisibilityPolicy
@@ -41,11 +42,11 @@ def _public_assignment_support_before(
     policy = VisibilityPolicy()
     evidence = PublicEvidenceIndex()
     for index, raw_event in enumerate(game.get("events", [])[:before_index]):
-        if not isinstance(raw_event, dict):
+        if not isinstance(raw_event, Mapping):
             continue
         event_type = raw_event.get("type")
         payload = raw_event.get("payload")
-        if not isinstance(event_type, str) or not isinstance(payload, dict):
+        if not isinstance(event_type, str) or not isinstance(payload, Mapping):
             continue
         event = GameEvent(type=event_type, payload=payload)
         for fact in extract_facts(event, state):
@@ -100,7 +101,7 @@ def _world_identifier(world: dict[str, Any]) -> str:
 
 def _canonical_world_assignment(world: dict[str, Any]) -> str | None:
     assignments = world.get("key_assignments")
-    if not isinstance(assignments, dict) or not assignments:
+    if not isinstance(assignments, Mapping) or not assignments:
         return None
     normalized: dict[str, str] = {}
     for raw_player, raw_role in assignments.items():
@@ -120,10 +121,10 @@ def _authoritative_world_assignments(
     """重算完整 assignment 的 SHA256；无效、重复证明一律剔除。"""
     candidates: list[tuple[str, dict[str, str], bytes]] = []
     for proof in proofs:
-        if not isinstance(proof, dict):
+        if not isinstance(proof, Mapping):
             continue
         pairs = proof.get("canonical_assignment")
-        if not isinstance(pairs, list) or not pairs:
+        if not isinstance(pairs, (list, tuple)) or not pairs:
             continue
         normalized: dict[str, str] = {}
         valid = True
@@ -187,7 +188,7 @@ def _support_matches_world(
 ) -> bool:
     """一个 why 引用必须语义上支撑该世界中的至少一个身份分配。"""
     assignments = world.get("key_assignments")
-    if not isinstance(assignments, dict):
+    if not isinstance(assignments, Mapping):
         return False
     for raw_player, raw_role in assignments.items():
         player = unicodedata.normalize("NFKC", str(raw_player)).strip().casefold()

@@ -4,11 +4,12 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 
 def _non_negative_int(value: Any) -> int:
@@ -21,11 +22,11 @@ def _is_non_negative_int(value: Any) -> bool:
 
 def _game_player_roles(game: dict[str, Any]) -> dict[str, str] | None:
     players = game.get("players")
-    if not isinstance(players, dict) or not players:
+    if not isinstance(players, Mapping) or not players:
         return None
     roles: dict[str, str] = {}
     for player_id, player in players.items():
-        role = player.get("role") if isinstance(player, dict) else None
+        role = player.get("role") if isinstance(player, Mapping) else None
         if not isinstance(player_id, str) or not isinstance(role, str) or not role:
             return None
         roles[player_id] = role

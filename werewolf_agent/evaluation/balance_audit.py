@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from werewolf_agent.core.resolution_batches import valid_resolution_batch
 
@@ -60,7 +60,7 @@ def load_game_logs(paths: Iterable[str | Path]) -> list[dict[str, Any]]:
         resolved = Path(path).resolve(strict=True)
         game = json.loads(resolved.read_text(encoding="utf-8"))
         quality = game.get("quality_score")
-        if isinstance(quality, dict):
+        if isinstance(quality, Mapping):
             game["quality_score"] = normalize_quality_score(quality)
         game["__source_path"] = str(resolved)
         games.append(game)
@@ -135,7 +135,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         event
         for game in games
         for event in game.get("events", [])
-        if isinstance(event, dict)
+        if isinstance(event, Mapping)
     ])
     acceptance_metrics = compute_acceptance_audit_metrics(games)
     mean_vote_concentration = (
@@ -272,7 +272,7 @@ def compute_wolf_plan_outcome_metrics(games: list[dict[str, Any]]) -> dict[str, 
                 },
             )
             repairs = payload.get("normalization_repairs")
-            if isinstance(repairs, list):
+            if isinstance(repairs, (list, tuple)):
                 decision["normalization_repairs"] = list(dict.fromkeys([
                     *decision["normalization_repairs"],
                     *(str(item) for item in repairs if item),
@@ -378,7 +378,7 @@ def _roles(game: dict[str, Any]) -> dict[Any, str]:
     return {
         player_id: str(data.get("role", "")).lower()
         for player_id, data in players.items()
-        if isinstance(data, dict)
+        if isinstance(data, Mapping)
     }
 
 
@@ -505,7 +505,7 @@ def _fallback_plan_kill_evidence_counts(game: dict[str, Any]) -> tuple[int, int]
         targets = {
             item.get("target")
             for item in payload.get("evidence_from_discussion") or []
-            if isinstance(item, dict) and item.get("target")
+            if isinstance(item, Mapping) and item.get("target")
         }
         fallback_evidence_targets_by_night[night] = targets
 
@@ -529,16 +529,16 @@ def _fallback_plan_kill_evidence_counts(game: dict[str, Any]) -> tuple[int, int]
 def _vote_concentration(event: dict[str, Any]) -> float:
     payload = event.get("payload") or {}
     voters = payload.get("voters")
-    if isinstance(voters, dict) and voters:
+    if isinstance(voters, Mapping) and voters:
         targets = list(voters.values())
     else:
         votes = payload.get("votes")
-        if not isinstance(votes, list) or not votes:
+        if not isinstance(votes, (list, tuple)) or not votes:
             return 0.0
         targets = [
             vote.get("target")
             for vote in votes
-            if isinstance(vote, dict) and vote.get("target")
+            if isinstance(vote, Mapping) and vote.get("target")
         ]
     if not targets:
         return 0.0
@@ -630,7 +630,7 @@ def _template_vote_reason_counts(games: list[dict[str, Any]]) -> tuple[int, int]
                 continue
             payload = event.get("payload") or {}
             for vote in payload.get("votes") or []:
-                if not isinstance(vote, dict):
+                if not isinstance(vote, Mapping):
                     continue
                 reason = str(vote.get("reason") or "")
                 if not reason:

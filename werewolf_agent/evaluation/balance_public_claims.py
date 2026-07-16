@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-14
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.evaluation.balance_public_claims import (
@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Mapping
 
 _PUBLIC_ROLE_CLAIM_REF = re.compile(
     r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,10}"
@@ -205,7 +205,7 @@ def unsupported_public_fact_claim_count(game: dict[str, Any]) -> int:
     for event in game.get("events", []):
         event_type = event.get("type")
         payload = event.get("payload") or {}
-        if not isinstance(payload, dict):
+        if not isinstance(payload, Mapping):
             continue
 
         if event_type in {
@@ -230,7 +230,7 @@ def unsupported_public_fact_claim_count(game: dict[str, Any]) -> int:
 
         if event_type == "vote_resolved":
             for vote in payload.get("votes") or []:
-                if isinstance(vote, dict):
+                if isinstance(vote, Mapping):
                     count += unsupported_claims_in_text(
                         str(vote.get("reason") or ""),
                         public_speeches,
@@ -396,7 +396,7 @@ def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:
     for event in events:
         event_type = getattr(event, "type", None)
         payload = getattr(event, "payload", {}) or {}
-        if isinstance(event, dict):
+        if isinstance(event, Mapping):
             event_type = event.get("type")
             payload = event.get("payload") or {}
         if event_type not in {
@@ -406,7 +406,7 @@ def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:
             "tie_pk_speech",
             "exile_last_words",
             "night_death_last_words",
-        } or not isinstance(payload, dict):
+        } or not isinstance(payload, Mapping):
             continue
         speaker = str(
             payload.get("speaker")

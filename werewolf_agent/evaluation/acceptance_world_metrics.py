@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from werewolf_agent.evaluation.acceptance_shared import _game_player_roles
 from werewolf_agent.evaluation.game_projection import (
@@ -25,7 +25,7 @@ from werewolf_agent.evaluation.world_evidence_audit import (
 
 
 def compute_world_acceptance_metrics(
-    games: list[dict[str, Any]],
+    games: Iterable[Any],
 ) -> dict[str, Any]:
     """扫描世界模型审计并投影其验收指标。"""
     games = ensure_normalized_acceptance_games(games)
@@ -40,21 +40,21 @@ def compute_world_acceptance_metrics(
     ] = []
     for game in games:
         for event_index, event in enumerate(game.get("events", [])):
-            if not isinstance(event, dict) or event.get("type") != "action_trace_audit":
+            if not isinstance(event, Mapping) or event.get("type") != "action_trace_audit":
                 continue
             payload = event.get("payload") or {}
             trace = payload.get("action_trace")
-            if not isinstance(trace, dict):
+            if not isinstance(trace, Mapping):
                 continue
             audit = trace.get("world_model_audit")
-            possible = audit.get("possible_worlds") if isinstance(audit, dict) else None
-            top_worlds = possible.get("top_worlds") if isinstance(possible, dict) else None
-            if not isinstance(top_worlds, list):
+            possible = audit.get("possible_worlds") if isinstance(audit, Mapping) else None
+            top_worlds = possible.get("top_worlds") if isinstance(possible, Mapping) else None
+            if not isinstance(top_worlds, (list, tuple)):
                 continue
             authoritative_refs = audit.get("public_evidence_ids")
             authoritative = _current_game_public_evidence_refs(
                 game,
-                authoritative_refs if isinstance(authoritative_refs, list) else [],
+                authoritative_refs if isinstance(authoritative_refs, (list, tuple)) else [],
             )
             semantic_support = _public_assignment_support_before(game, event_index)
             valid_support = {
@@ -63,9 +63,9 @@ def compute_world_acceptance_metrics(
             }
             identity_proofs = audit.get("authoritative_world_identities")
             world_groups.append((
-                [item for item in top_worlds if isinstance(item, dict)],
+                [item for item in top_worlds if isinstance(item, Mapping)],
                 valid_support,
-                identity_proofs if isinstance(identity_proofs, list) else [],
+                identity_proofs if isinstance(identity_proofs, (list, tuple)) else [],
                 _game_player_roles(game),
             ))
 
@@ -75,7 +75,7 @@ def compute_world_acceptance_metrics(
         for group, _, proofs, expected_roles in world_groups
     )
     evidence_covered = sum(
-        isinstance(world.get("why"), list)
+        isinstance(world.get("why"), (list, tuple))
         and bool(world["why"])
         and all(
             isinstance(ref, str)

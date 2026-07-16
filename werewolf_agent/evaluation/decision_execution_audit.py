@@ -4,13 +4,13 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
+from typing import Any, Mapping
 
 from werewolf_agent.model_gateway.execution_records import (
     AttemptExecutionRecord,
@@ -85,7 +85,7 @@ def compute_decision_execution_metrics(
             normalized_trace = normalize_decision_execution_trace(trace)
             if all(isinstance(item, AttemptExecutionRecord) for item in raw_attempts):
                 translated = translate_decision_outcome(tuple(raw_attempts))
-            elif all(isinstance(item, dict) for item in raw_attempts):
+            elif all(isinstance(item, Mapping) for item in raw_attempts):
                 translated = translate_serialized_decision_outcome(raw_attempts)
             else:
                 raise TypeError("execution attempts must share one schema")
@@ -288,7 +288,7 @@ def _critical_reasoning_status_metrics(
         for attempt in attempts:
             if isinstance(attempt, AttemptExecutionRecord):
                 statuses.append(attempt.normalized_reasoning_status)
-            elif isinstance(attempt, dict):
+            elif isinstance(attempt, Mapping):
                 statuses.append(attempt.get("normalized_reasoning_status"))
             else:
                 statuses.append(None)
@@ -318,7 +318,7 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
         for event in game.get("events", []):
             payload = event.get("payload") or {}
             trace = payload.get("action_trace")
-            if isinstance(trace, dict):
+            if isinstance(trace, Mapping):
                 yield {
                     "trace": trace,
                     "actor": _trace_actor(payload, trace),
@@ -339,9 +339,9 @@ def _iter_action_trace_records(games: list[dict[str, Any]]):
                     "game": game,
                 }
             traces = payload.get("action_traces")
-            if isinstance(traces, dict):
+            if isinstance(traces, Mapping):
                 for actor_id, item in traces.items():
-                    if isinstance(item, dict):
+                    if isinstance(item, Mapping):
                         yield {
                             "trace": item,
                             "actor": _trace_actor(payload, item) or actor_id,

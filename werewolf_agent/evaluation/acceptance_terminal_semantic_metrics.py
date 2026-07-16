@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from werewolf_agent.evaluation.acceptance_shared import (
     _is_non_negative_int,
@@ -30,7 +30,7 @@ _SEMANTIC_FALLBACK_KINDS = frozenset({
 
 
 def compute_terminal_semantic_acceptance_metrics(
-    games: list[dict[str, Any]],
+    games: Iterable[Any],
 ) -> dict[str, Any]:
     """扫描终局与语义事件并投影对应验收指标。"""
     games = ensure_normalized_acceptance_games(games)
@@ -47,7 +47,7 @@ def compute_terminal_semantic_acceptance_metrics(
         ] = {}
         semantic_trace_identities: list[tuple[str, str, int, str]] = []
         for event in game.get("events", []):
-            if not isinstance(event, dict):
+            if not isinstance(event, Mapping):
                 continue
             event_type = event.get("type")
             payload = event.get("payload") or {}
@@ -69,10 +69,10 @@ def compute_terminal_semantic_acceptance_metrics(
             if event_type != "action_trace_audit":
                 continue
             trace = payload.get("action_trace")
-            if not isinstance(trace, dict):
+            if not isinstance(trace, Mapping):
                 continue
             semantic = trace.get("semantic_repair_audit")
-            if isinstance(semantic, dict) and semantic.get("repairable") is True:
+            if isinstance(semantic, Mapping) and semantic.get("repairable") is True:
                 semantic_eligible_count += 1
                 identity = _semantic_identity(payload)
                 if identity is None:

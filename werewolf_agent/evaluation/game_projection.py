@@ -19,7 +19,7 @@ from enum import Enum
 import math
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from werewolf_agent.core.resolution_batches import serialize_resolution_batch
 from werewolf_agent.runtime.event_metadata import serialize_game_event
@@ -37,14 +37,28 @@ _JSON_BOUND_REASONS = frozenset({
 })
 _MAX_JSON_DEPTH = 32
 _MAX_JSON_ITEMS = 10_000
+_NORMALIZED_GAMES_CONSTRUCTION_TOKEN = object()
 
 
 class _ProjectionValueError(ValueError):
     """标记投影中不支持的结构或非 JSON 值。"""
 
 
-class _NormalizedAcceptanceGames(list[dict[str, Any]]):
-    """标记由投影边界实际验证过的内部游戏列表。"""
+class _NormalizedAcceptanceGames(tuple[Mapping[str, Any], ...]):
+    """保存由投影边界验证并深度冻结的内部游戏序列。"""
+
+    __slots__ = ()
+
+    def __new__(
+        cls,
+        games: Iterable[Mapping[str, Any]],
+        *,
+        _token: object | None = None,
+    ) -> _NormalizedAcceptanceGames:
+        """只允许投影边界构造可信内部载体。"""
+        if _token is not _NORMALIZED_GAMES_CONSTRUCTION_TOKEN:
+            raise TypeError("normalized acceptance games are internal construction only")
+        return super().__new__(cls, games)
 
 
 @dataclass
@@ -189,24 +203,28 @@ def project_acceptance_game(
 
 
 def normalize_acceptance_games(
-    games: list[AcceptanceGameProjection | Mapping[str, Any] | Any],
-) -> list[dict[str, Any]]:
-    """统一验收入口，并保留每局不支持原因。"""
+    games: Iterable[AcceptanceGameProjection | Mapping[str, Any] | Any],
+) -> Sequence[Mapping[str, Any]]:
+    """统一验收入口，并返回深度不可变的已验证游戏序列。"""
     return _NormalizedAcceptanceGames(
-        project_acceptance_game(game).to_mapping() for game in games
+        (
+            _freeze_normalized(project_acceptance_game(game).to_mapping())
+            for game in games
+        ),
+        _token=_NORMALIZED_GAMES_CONSTRUCTION_TOKEN,
     )
 
 
 def ensure_normalized_acceptance_games(
-    games: list[AcceptanceGameProjection | Mapping[str, Any] | Any],
-) -> list[dict[str, Any]]:
-    """复用内部已验证列表；公开 direct API 输入仍执行一次投影。"""
+    games: Iterable[AcceptanceGameProjection | Mapping[str, Any] | Any],
+) -> Sequence[Mapping[str, Any]]:
+    """仅复用内部不可变序列；其余公开输入始终重新验证。"""
     if isinstance(games, _NormalizedAcceptanceGames):
         return games
     return normalize_acceptance_games(games)
 
 
-def projection_support(games: list[Mapping[str, Any]]) -> tuple[bool, str | None]:
+def projection_support(games: Sequence[Mapping[str, Any]]) -> tuple[bool, str | None]:
     """按输入顺序返回首个稳定的不支持原因。"""
     for game in games:
         if game.get("_acceptance_projection_supported") is not True:
