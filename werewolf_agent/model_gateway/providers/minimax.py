@@ -1,9 +1,14 @@
 ﻿# -*- coding: utf-8 -*-
 """
 功能描述：MiniMax Anthropic 兼容 Provider，注意该厂商不完全支持 tool_choice
+
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-13
+修改日期：2026-07-15
+
+2026-07-15 新增：``config.base_url`` 覆盖 provider 实例默认 URL；``config.extra_body``
+合并进 payload。用于与 OpenAI 客户端版本的 native MiniMax 共存。
+
 使用示例：内部模块，无对外接口
 """
 
@@ -97,6 +102,10 @@ class MiniMaxProvider(_BaseHttpProvider):
             payload["system"] = system_prompt
         if tools and mode == StructuredOutputMode.NATIVE_TOOL:
             payload["tools"] = tools
+        # 2026-07-15: per-profile extra_body 合并。
+        if config.extra_body:
+            for key, value in config.extra_body.items():
+                payload.setdefault(key, value)
 
         if final_prompt_observer is not None:
             system_content = str(payload.get("system") or "")
@@ -110,7 +119,7 @@ class MiniMaxProvider(_BaseHttpProvider):
 
         start = time.monotonic()
         response = self._http_client.post(
-            f"{self._base_url}/v1/messages",
+            f"{config.base_url or self._base_url}/v1/messages",
             headers={
                 "x-api-key": self._api_key,
                 "anthropic-version": "2023-06-01",

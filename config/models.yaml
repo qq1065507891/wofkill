@@ -10,9 +10,20 @@ model_profiles:
   # Models randomly assigned across the 4 player-routing llm_profiles
   # (deepseek/minimax/glm/kimi) per request — names are routing labels,
   # the `model:` field is the actual Ark model id.
-  ark_minimax_m3:
+  #
+  # NEW (2026-07-15, ark-dedup): the two Ark profiles that previously
+  # wrapped MiniMax models (``ark_minimax_m3`` → ``minimax-m3`` and
+  # ``ark_minimax_m2_7`` → ``minimax-m2.7``) were renamed and the
+  # ``model:`` field swapped to non-MiniMax IDs so the Ark endpoint
+  # doesn't shadow the new native-minimax routing. The 4 Ark model IDs
+  # now read: Kimi-K2.6, deepseek-v4-flash, deepseek-v4-pro,
+  # DeepSeek-V4-Pro. The internal Ark duplicate (two profiles with
+  # deepseek-v4-pro) is intentional — the secondary profile carries
+  # slightly higher temperature / top_p so it's a distinct sampling
+  # channel, not a copy.
+  ark_kimi_k26:
     provider: openai
-    model: minimax-m3
+    model: Kimi-K2.6
     temperature: 0.5
     top_p: 0.9
     timeout: 120
@@ -49,15 +60,55 @@ model_profiles:
       mode: text_json
       fallback_modes: []
 
-  ark_minimax_m2_7:
+  ark_deepseek_v4_pro_secondary:
     provider: openai
-    model: minimax-m2.7
+    model: DeepSeek-V4-Pro
+    temperature: 0.6
+    top_p: 0.95
+    timeout: 120
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  # --- Native MiniMax (OpenAI-compatible endpoint api.minimaxi.com/v1) ---
+  # NEW (2026-07-15, native-minimax-routing): 5 players are routed through
+  # ``https://api.minimaxi.com/v1`` using the OpenAI client pattern from
+  # the user's MiniMax docs (model="MiniMax-M3" / "MiniMax-M2.7", extra
+  # ``reasoning_split=True`` to surface thinking via reasoning_details).
+  # Per-profile ``base_url`` and ``extra_body`` are read by ``_resolve_config``
+  # and forwarded by every provider's ``generate()`` (see
+  # ``werewolf_agent/model_gateway/`` for the plumbing).
+  minimax_native_m3:
+    provider: openai
+    model: MiniMax-M3
+    base_url: https://api.minimaxi.com/v1
     temperature: 0.5
     top_p: 0.9
     timeout: 120
     reasoning:
       level: high
     allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
+    structured_output:
+      mode: text_json
+      fallback_modes: []
+
+  minimax_native_m2_7:
+    provider: openai
+    model: MiniMax-M2.7
+    base_url: https://api.minimaxi.com/v1
+    temperature: 0.5
+    top_p: 0.9
+    timeout: 120
+    reasoning:
+      level: high
+    allow_text_tool_fallback: true
+    extra_body:
+      reasoning_split: true
     structured_output:
       mode: text_json
       fallback_modes: []
@@ -107,7 +158,7 @@ llm_profiles:
   ark_deepseek:
     default:
       provider: openai
-      model_profile: ark_minimax_m3
+      model_profile: ark_kimi_k26
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
@@ -131,10 +182,33 @@ llm_profiles:
   ark_kimi:
     default:
       provider: openai
-      model_profile: ark_minimax_m2_7
+      model_profile: ark_deepseek_v4_pro_secondary
     fallback:
       provider: minimax
       model_profile: minimax_m27_fast
+
+  # --- Native MiniMax profiles (OpenAI-compatible api.minimaxi.com/v1) ---
+  # NEW (2026-07-15, native-minimax-routing): 5 players (p01/p03/p06/p08/p10)
+  # are routed through ``https://api.minimaxi.com/v1`` instead of the Ark
+  # endpoint. Fixed 3:2 split (M3 : M2.7) approximates the requested 2:1
+  # weight with 5 players; persona logic / fast-burst personas got M2.7.
+  # fallback goes to native MiniMax Anthropic-compatible endpoint
+  # (different provider_name, so the v1.1.4 cross-provider rule holds).
+  minimax_native_m3:
+    default:
+      provider: openai
+      model_profile: minimax_native_m3
+    fallback:
+      provider: minimax
+      model_profile: minimax_m27_default
+
+  minimax_native_m2_7:
+    default:
+      provider: openai
+      model_profile: minimax_native_m2_7
+    fallback:
+      provider: minimax
+      model_profile: minimax_m27_default
 
   # --- MiniMax profiles ---
   # NEW (v1.1.4 fallback-fix, Part C.1):
@@ -149,20 +223,20 @@ llm_profiles:
   minimax_default:
     default:
       provider: openai
-      model_profile: ark_minimax_m3
+      model_profile: ark_kimi_k26
     tasks:
       reflection:
         provider: minimax
         model_profile: minimax_m27_reflection
       speech:
         provider: openai
-        model_profile: ark_minimax_m3
+        model_profile: ark_kimi_k26
       deception:
         provider: openai
-        model_profile: ark_minimax_m3
+        model_profile: ark_kimi_k26
       night_action:
         provider: openai
-        model_profile: ark_minimax_m3
+        model_profile: ark_kimi_k26
       # Phase 2 P2-2: 5 JUDGE_* task types now map to the same
       # model as ``speech`` (per Phase 1 decision).  Judge
       # broadcasts are serial and don't need the extra quality of
@@ -262,16 +336,22 @@ llm_profiles:
       provider: minimax
       model_profile: minimax_m27_fast
 
+# NEW (2026-07-15, native-minimax-routing): 5 players (p01/p03/p06/p08/p10)
+# rerouted through ``https://api.minimaxi.com/v1``. Fixed 3:2 split
+# (M3:M2.7) approximates the requested 2:1 weight; the persona mapping is:
+#   M3 (reasoning-heavy): p01 logic_leader, p03 steady_sider, p08 review_learner
+#   M2.7 (fast/intuitive): p06 emotional_catalyst, p10 burst_visionary
+# The other 7 players keep their prior llm_profile assignments.
 players:
   p01:
     persona_id: logic_leader
-    llm_profile: minimax_default
+    llm_profile: minimax_native_m3
   p02:
     persona_id: aggressive_bluffer
     llm_profile: minimax_default
   p03:
     persona_id: steady_sider
-    llm_profile: ark_glm
+    llm_profile: minimax_native_m3
   p04:
     persona_id: bold_pretender
     llm_profile: minimax_default
@@ -280,19 +360,19 @@ players:
     llm_profile: ark_minimax
   p06:
     persona_id: emotional_catalyst
-    llm_profile: minimax_default
+    llm_profile: minimax_native_m2_7
   p07:
     persona_id: chaos_joker
     llm_profile: ark_kimi
   p08:
     persona_id: review_learner
-    llm_profile: minimax_default
+    llm_profile: minimax_native_m3
   p09:
     persona_id: quiet_observer
     llm_profile: minimax_default
   p10:
     persona_id: burst_visionary
-    llm_profile: minimax_default
+    llm_profile: minimax_native_m2_7
   p11:
     persona_id: structure_analyst
     llm_profile: ark_glm

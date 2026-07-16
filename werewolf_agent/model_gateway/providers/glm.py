@@ -1,9 +1,15 @@
 ﻿# -*- coding: utf-8 -*-
 """
 功能描述：智谱 GLM OpenAI 兼容 Provider
+
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-05
+修改日期：2026-07-15
+
+2026-07-15 新增：``config.base_url`` 覆盖 provider 实例默认 URL（透传给
+``_generate_openai_compatible``）。``config.extra_body`` 在共享 helper
+中已自动合并。
+
 使用示例：内部模块，无对外接口
 """
 
@@ -53,7 +59,7 @@ class GLMProvider(_BaseHttpProvider):
         messages.append({"role": "user", "content": prompt})
         return _generate_openai_compatible(
             provider=self,
-            base_url=self._base_url,
+            base_url=config.base_url or self._base_url,
             api_key=self._api_key,
             http_client=self._http_client,
             messages=messages,
