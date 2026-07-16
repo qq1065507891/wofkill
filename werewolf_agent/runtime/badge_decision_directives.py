@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.badge_decision_directives import build_badge_decision_directive
@@ -69,8 +69,10 @@ def build_badge_decision_result(
             "badge_target_id": target_id,
             "action_trace": action_trace,
         }
-    return {
-        "badge_decision": "tear",
-        "badge_target_id": None,
-        "action_trace": action_trace,
-    }
+    if action_type == ActionType.BADGE_TEAR:
+        return {
+            "badge_decision": "tear",
+            "badge_target_id": None,
+            "action_trace": action_trace,
+        }
+    raise ValueError("badge decision requires BADGE_TRANSFER or BADGE_TEAR")

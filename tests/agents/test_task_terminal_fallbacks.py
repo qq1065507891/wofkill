@@ -118,6 +118,41 @@ def test_night_terminal_fallback_abstains_when_no_legal_target_exists() -> None:
     assert action.reason == "no_legal_deterministic_action"
 
 
+def test_badge_terminal_fallback_transfers_to_first_legal_target() -> None:
+    context = _context(
+        TaskType.LAST_WORDS,
+        legal_actions=[ActionType.BADGE_TRANSFER, ActionType.BADGE_TEAR],
+        legal_targets=["p03", "p02"],
+    )
+
+    action, fallback_kind = build_task_terminal_fallback(
+        context,
+        FallbackAction(action_type=ActionType.NO_ACTION),
+    )
+
+    assert action.action_type is ActionType.BADGE_TRANSFER
+    assert action.target_id == "p03"
+    assert action.speech == ""
+    assert fallback_kind == "badge_transfer"
+
+
+def test_badge_terminal_fallback_tears_when_transfer_has_no_legal_target() -> None:
+    context = _context(
+        TaskType.LAST_WORDS,
+        legal_actions=[ActionType.BADGE_TRANSFER, ActionType.BADGE_TEAR],
+        legal_targets=[],
+    )
+
+    action, fallback_kind = build_task_terminal_fallback(
+        context,
+        FallbackAction(action_type=ActionType.NO_ACTION),
+    )
+
+    assert action.action_type is ActionType.BADGE_TEAR
+    assert action.target_id is None
+    assert fallback_kind == "badge_tear"
+
+
 def _terminal_attempts() -> tuple[AttemptExecutionRecord, ...]:
     request_id = OpaqueRequestId.new("game", "a11f00ba")
     common = {

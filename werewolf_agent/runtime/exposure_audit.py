@@ -98,6 +98,9 @@ _TERMINAL_FALLBACK_KINDS = frozenset({
     "wolf_team_plan_structured_stance",
     "wolf_discussion_speech",
     "safe_action",
+    "badge_transfer",
+    "badge_tear",
+    "badge_unavailable",
     "unknown",
 })
 _SKILL_TOOL_OUTPUT_KEYS = frozenset({

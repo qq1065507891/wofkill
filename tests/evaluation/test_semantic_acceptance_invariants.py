@@ -135,3 +135,32 @@ def test_terminal_failure_coverage_fails_closed_when_required_field_is_missing()
     assert metrics["terminal_fallback_count"] == 1
     assert metrics["terminal_fallback_original_failure_code_covered_count"] == 0
     assert metrics["terminal_fallback_original_failure_code_coverage_rate"] == 0.0
+
+
+def test_terminal_failure_coverage_rejects_uninformative_original_codes() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    games = []
+    for index, original_code in enumerate((None, "", "unknown"), 1):
+        game = _game(speaker_preserved=True, negation_preserved=True)
+        game["game_id"] = f"g-uninformative-{index}"
+        for event in game["events"]:
+            event["payload"]["game_id"] = game["game_id"]
+        trace = game["events"][1]["payload"]["action_trace"]
+        trace.update({
+            "generated_by": "terminal_fallback",
+            "decision_outcome": "terminal_fallback",
+            "terminal_failure_code": original_code or "unknown",
+            "original_failure_code": original_code,
+            "failure_stage": "protocol",
+            "fallback_kind": "ordinary_speech",
+        })
+        games.append(game)
+
+    metrics = compute_acceptance_audit_metrics(games)
+
+    assert metrics["terminal_fallback_count"] == 3
+    assert metrics["terminal_fallback_original_failure_code_covered_count"] == 0
+    assert metrics["terminal_fallback_original_failure_code_coverage_rate"] == 0.0

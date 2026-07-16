@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_action_audit import _audit_context_kwargs
@@ -13,11 +14,26 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
-from werewolf_agent.agents.schemas import AgentContext
+from werewolf_agent.agents.player_failures import (
+    terminal_failure_code_for_task_failure,
+)
+from werewolf_agent.agents.schemas import ActionTrace, AgentContext
 from werewolf_agent.core.models import GameState
 from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+from werewolf_agent.model_gateway.execution_records import (
+    AttemptExecutionRecord,
+    AttemptOutcome,
+    EvidenceKind,
+    OpaqueRequestId,
+    ReasoningLevel,
+    ReasoningStatus,
+    RootCause,
+    RouteKind,
+)
+from werewolf_agent.runtime.decision_outcomes import translate_decision_outcome
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 
 
@@ -33,6 +49,76 @@ def _audit_context_kwargs(
         "exposure_collector": exposure_collector,
         "decision_trace_sink": decision_trace_sink,
     }
+
+
+def build_runtime_terminal_fallback_trace(
+    *,
+    reason_code: str,
+    failure_stage: str,
+    fallback_kind: str,
+    final_action_type: str,
+    decision_key: str = "",
+) -> dict[str, Any]:
+    """为无模型调用的运行时终退构造完整且一致的 V2 trace。"""
+    terminal_code = terminal_failure_code_for_task_failure(reason_code)
+    entropy = hashlib.sha256(
+        f"{reason_code}:{decision_key}".encode("utf-8")
+    ).hexdigest()[:16]
+    request_id = OpaqueRequestId.new("runtime", entropy)
+    root_cause = _terminal_root_cause(terminal_code)
+    attempts = tuple(
+        AttemptExecutionRecord(
+            opaque_request_id=request_id,
+            ordinal=ordinal,
+            provider="runtime",
+            model="terminal-fallback",
+            route_kind=route_kind,
+            root_cause=root_cause,
+            attempt_outcome=AttemptOutcome.FAILURE,
+            requested_reasoning_level=ReasoningLevel.NONE,
+            normalized_reasoning_status=ReasoningStatus.NOT_REQUESTED,
+            reasoning_token_count=0,
+            evidence_kind=EvidenceKind.NONE,
+        )
+        for ordinal, route_kind in enumerate(
+            (RouteKind.PRIMARY, RouteKind.SAFE_FALLBACK), 1
+        )
+    )
+    translated = translate_decision_outcome(
+        attempts,
+        structured_failure_reason=terminal_code,
+    )
+    return ActionTrace(
+        final_action_type=final_action_type,
+        retry={"error_code": terminal_code},
+        fallback_reason=reason_code,
+        parse_error=terminal_code,
+        attempt_count=translated.attempt_count,
+        retry_count=translated.retry_count,
+        provider_fallback_count=translated.provider_fallback_count,
+        generated_by=translated.generated_by.value,
+        terminal_failure_code=terminal_code,
+        original_failure_code=terminal_code,
+        failure_stage=failure_stage,
+        fallback_kind=fallback_kind,
+        structured_failure_reason=terminal_code,
+        structured_failure_stage=failure_stage,
+        execution_attempts=attempts,
+        decision_outcome=translated.outcome.value,
+    ).model_dump()
+
+
+def _terminal_root_cause(terminal_code: str) -> RootCause:
+    """把稳定失败码压缩为执行记录支持的封闭根因。"""
+    if terminal_code == "timeout":
+        return RootCause.TIMEOUT
+    if terminal_code in {"provider_error", "model_generation_failed"}:
+        return RootCause.PROVIDER_ERROR
+    if terminal_code in {
+        "policy_rejection", "fallback_route_unavailable",
+    }:
+        return RootCause.POLICY_REJECTION
+    return RootCause.INVALID_OUTPUT
 
 
 # M2-2：投票/发言动作的单一 vote_basis 指引来源。该提示必须按回合注入，

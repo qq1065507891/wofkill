@@ -214,6 +214,11 @@ def build_task_terminal_fallback(
             }),
             "reflection_not_generated",
         )
+    if context.task_type is TaskType.LAST_WORDS and any(
+        action in context.legal_actions
+        for action in (ActionType.BADGE_TRANSFER, ActionType.BADGE_TEAR)
+    ):
+        return _build_badge_terminal_fallback(context, base_fallback)
     if context.task_type is TaskType.LAST_WORDS:
         return (
             base_fallback.model_copy(update={
@@ -285,6 +290,45 @@ def _build_night_terminal_fallback(
             "reason": "no_legal_deterministic_action",
         }),
         "night_explicit_abstain",
+    )
+
+
+def _build_badge_terminal_fallback(
+    context: AgentContext,
+    base_fallback: FallbackAction,
+) -> tuple[FallbackAction, str]:
+    """按合法动作和候选确定警徽移交；无候选时仅在合法时撕毁。"""
+    if (
+        ActionType.BADGE_TRANSFER in context.legal_actions
+        and context.legal_targets
+    ):
+        return (
+            base_fallback.model_copy(update={
+                "action_type": ActionType.BADGE_TRANSFER,
+                "target_id": context.legal_targets[0],
+                "speech": "",
+                "reason": "deterministic_legal_badge_transfer",
+            }),
+            "badge_transfer",
+        )
+    if ActionType.BADGE_TEAR in context.legal_actions:
+        return (
+            base_fallback.model_copy(update={
+                "action_type": ActionType.BADGE_TEAR,
+                "target_id": None,
+                "speech": "",
+                "reason": "deterministic_legal_badge_tear",
+            }),
+            "badge_tear",
+        )
+    return (
+        base_fallback.model_copy(update={
+            "action_type": ActionType.NO_ACTION,
+            "target_id": None,
+            "speech": "",
+            "reason": "no_legal_badge_action",
+        }),
+        "badge_unavailable",
     )
 
 

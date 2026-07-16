@@ -20,6 +20,9 @@ from werewolf_agent.evaluation.game_projection import (
     normalize_acceptance_games,
     projection_support,
 )
+from werewolf_agent.agents.player_failures import (
+    is_informative_terminal_failure_code,
+)
 
 _SEMANTIC_FALLBACK_KINDS = frozenset({
     "no_fallback",
@@ -61,8 +64,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         original_code = row.get("original_failure_code")
         terminal_code = row.get("terminal_failure_code")
         if (
-            isinstance(original_code, str)
-            and bool(original_code)
+            is_informative_terminal_failure_code(original_code)
             and original_code == terminal_code
         ):
             terminal_failure_code_covered_count += 1

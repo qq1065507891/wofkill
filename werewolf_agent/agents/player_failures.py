@@ -27,6 +27,12 @@ _TASK_FAILURE_CODE_ALIASES = {
     "no_registry": "fallback_route_unavailable",
     "provider_tool_choice_unsupported": "structured_output_unsupported",
     "schema_validation_failed": "schema_validation",
+    "speech_timeout": "timeout",
+    "pre_supplied_speech_text": "policy_rejection",
+    "agent_dispatch_error": "model_generation_failed",
+    "self_destruct_before_speech": "policy_rejection",
+    "missing_action_trace": "invalid_output",
+    "agent_unavailable": "fallback_route_unavailable",
 }
 
 
@@ -78,3 +84,13 @@ def terminal_failure_code_for_task_failure(reason: object) -> str:
     """把任务局部 reason 映射为不含原始错误正文的 V2 稳定码。"""
     candidate = _TASK_FAILURE_CODE_ALIASES.get(reason, reason)
     return normalize_terminal_failure_code(candidate)
+
+
+def is_informative_terminal_failure_code(value: object) -> bool:
+    """仅认可稳定且能表达根因的终退码；unknown/空值不算覆盖。"""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value != "unknown"
+        and normalize_terminal_failure_code(value) == value
+    )

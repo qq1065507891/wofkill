@@ -10,38 +10,16 @@ from __future__ import annotations
 
 import json
 import pytest
-from dataclasses import replace
 
-from typing import Any
 
 from werewolf_agent.core.models import Death, GameState, PlayerState, GameEvent
-from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.agents.schemas import (
-    ActionType, AgentContext, PlayerAction, RetryInfo, FallbackAction,
-    TaskType,
+    ActionType, PlayerAction, RetryInfo,
 )
 from werewolf_agent.runtime.graph import (
-    RuntimeState,
-    build_game_graph,
-    build_game_graph_with_checkpoint,
     _new_engine,
-    _alive_wolves,
-    _alive_non_wolves,
-    _find_role,
-    _stable_seed,
-    check_victory,
     free_discussion,
-    wolf_consensus,
-    route_after_resolve_night,
-    route_after_hunter_shot,
-    route_after_post_exile,
-    _sheriff_died_this_batch,
-    _route_after_badge_transfer,
-    _action_trace_event,
 )
-from werewolf_agent.runtime.agent_adapter import _single_wolf_vote
-from werewolf_agent.runtime.replay import replay_from_events, extract_event_log
-from werewolf_agent.runtime.checkpoints import make_checkpointer
 
 
 
@@ -256,16 +234,25 @@ def test_free_discussion_always_records_safe_speech_opportunity(
     assert not any(event.type == "speech" for event in final_state.events)
     assert len(audits) == 1
     assert audits[0].payload["visibility"] == "moderator_only"
-    assert audits[0].payload["action_trace"] == {
-        "generated_by": "terminal_fallback",
-        "decision_outcome": "terminal_fallback",
-        "fallback_reason": expected_reason,
-        "final_action_type": "speech",
-    }
+    trace = audits[0].payload["action_trace"]
+    assert trace["generated_by"] == "terminal_fallback"
+    assert trace["decision_outcome"] == "terminal_fallback"
+    assert trace["fallback_reason"] == expected_reason
+    assert trace["final_action_type"] == "speech"
+    assert trace["terminal_failure_code"] != "unknown"
+    assert trace["original_failure_code"] == trace["terminal_failure_code"]
+    assert trace["failure_stage"]
+    assert trace["fallback_kind"] == "ordinary_speech"
+    assert trace["attempt_count"] == len(trace["execution_attempts"]) == 2
+    assert trace["retry_count"] == 0
+    assert [item["route_kind"] for item in trace["execution_attempts"]] == [
+        "primary", "safe_fallback",
+    ]
     assert "PRIVATE" not in json.dumps(audits[0].payload, ensure_ascii=False)
     assert quality["speech_opportunity_count"] == 1
     assert quality["speech_non_empty_rate"] == 0.0
     assert quality["speech_terminal_fallback_rate"] == 1.0
+    assert quality["terminal_fallback_original_failure_code_coverage_rate"] == 1.0
 
 
 # ---------------------------------------------------------------------------

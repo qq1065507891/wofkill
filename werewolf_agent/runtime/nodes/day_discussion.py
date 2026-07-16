@@ -40,16 +40,28 @@ from werewolf_agent.runtime.sheriff_policy import (
 )
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_pick_speech_order
+from werewolf_agent.runtime.agent_action_audit import (
+    build_runtime_terminal_fallback_trace,
+)
 
 
-def _terminal_speech_trace(reason: str) -> dict[str, str]:
+def _terminal_speech_trace(reason: str) -> dict[str, Any]:
     """构造不含模型私密内容的稳定发言机会审计。"""
-    return {
-        "generated_by": "terminal_fallback",
-        "decision_outcome": "terminal_fallback",
-        "fallback_reason": reason,
-        "final_action_type": "speech",
-    }
+    failure_stage = {
+        "speech_timeout": "runtime",
+        "pre_supplied_speech_text": "runtime",
+        "agent_dispatch_error": "provider",
+        "self_destruct_before_speech": "runtime",
+        "missing_action_trace": "protocol",
+        "agent_unavailable": "registry",
+    }.get(reason, "runtime")
+    return build_runtime_terminal_fallback_trace(
+        reason_code=reason,
+        failure_stage=failure_stage,
+        fallback_kind="ordinary_speech",
+        final_action_type="speech",
+        decision_key="day-discussion",
+    )
 
 
 def free_discussion(state: RuntimeState) -> dict[str, Any]:

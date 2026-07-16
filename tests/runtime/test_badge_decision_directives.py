@@ -4,14 +4,24 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-05
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.badge_decision_directives import build_badge_decision_directive
     >>> build_badge_decision_directive("seer", ["p02"])
 """
 
-from werewolf_agent.agents.schemas import ActionType
+import pytest
+
+from werewolf_agent.agents.player_fallback_speech import build_task_terminal_fallback
+from werewolf_agent.agents.schemas import (
+    ActionTrace,
+    ActionType,
+    FallbackAction,
+    RetryInfo,
+)
+from werewolf_agent.core.models import GameState, PlayerState
+from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.badge_decision_directives import (
     build_badge_decision_directive,
     build_badge_decision_result,
@@ -59,3 +69,55 @@ def test_build_badge_decision_result_maps_transfer_and_tear() -> None:
         "badge_target_id": None,
         "action_trace": {"action": "badge_tear"},
     }
+
+
+def test_build_badge_decision_result_rejects_non_badge_fallback_action() -> None:
+    with pytest.raises(ValueError, match="badge decision requires"):
+        build_badge_decision_result(
+            action_type=ActionType.NO_ACTION,
+            target_id=None,
+            action_trace={"fallback_kind": "last_words_not_generated"},
+        )
+
+
+def test_agent_badge_decision_keeps_badge_terminal_fallback_semantics() -> None:
+    from werewolf_agent.runtime.agent_special_actions import agent_badge_decision
+
+    class TerminalAgent:
+        def act(self, context):
+            action, fallback_kind = build_task_terminal_fallback(
+                context,
+                FallbackAction(action_type=ActionType.NO_ACTION),
+            )
+            trace = ActionTrace(
+                generated_by="terminal_fallback",
+                terminal_failure_code="schema_validation",
+                original_failure_code="schema_validation",
+                failure_stage="protocol",
+                fallback_kind=fallback_kind,
+            )
+            return action.model_copy(update={"trace": trace}), RetryInfo()
+
+    class Registry:
+        def get_agent(self, _player_id):
+            return TerminalAgent()
+
+    gs = GameState(
+        game_id="badge-terminal",
+        players={
+            "p01": PlayerState(id="p01", role="seer", alive=False),
+            "p02": PlayerState(id="p02", role="villager", alive=True),
+        },
+        sheriff_id="p01",
+    )
+
+    result = agent_badge_decision(
+        {"game_state": gs},
+        RuleEngine.from_yaml("config/rulesets/pre_witch_hunter_idiot_mixed.yaml"),
+        Registry(),
+        "p01",
+    )
+
+    assert result["badge_decision"] == "transfer"
+    assert result["badge_target_id"] == "p02"
+    assert result["action_trace"]["fallback_kind"] == "badge_transfer"
