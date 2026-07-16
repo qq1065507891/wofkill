@@ -40,6 +40,7 @@ from werewolf_agent.evaluation.decision_execution_audit import (
 from werewolf_agent.evaluation.game_projection import (
     normalize_acceptance_games,
     normalize_quality_score,
+    projection_support,
 )
 from werewolf_agent.evaluation.world_evidence_audit import (
     support_matches_world as _support_matches_world,  # noqa: F401
@@ -70,51 +71,55 @@ def load_game_logs(paths: Iterable[str | Path]) -> list[dict[str, Any]]:
 
 def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute balance and quality metrics from saved game logs."""
-    games = normalize_acceptance_games(games)
-    game_count = len(games)
-    balance_games = [game for game in games if game.get("status") == "finished"]
-    balance_game_count = len(balance_games)
+    all_games = normalize_acceptance_games(games)
+    game_count = len(all_games)
+    finished_games = [
+        game for game in all_games if game.get("status") == "finished"
+    ]
+    balance_game_count = len(finished_games)
     unique_game_ids = {
-        str(game.get("game_id")) for game in games if game.get("game_id")
+        str(game.get("game_id")) for game in all_games if game.get("game_id")
     }
     unique_source_paths = {
-        str(game.get("__source_path")) for game in games if game.get("__source_path")
+        str(game.get("__source_path"))
+        for game in all_games
+        if game.get("__source_path")
     }
     wolf_wins = sum(
-        1 for game in balance_games if game.get("winning_faction") == "werewolf"
+        1 for game in finished_games if game.get("winning_faction") == "werewolf"
     )
     good_wins = sum(
-        1 for game in balance_games if game.get("winning_faction") == "good"
+        1 for game in finished_games if game.get("winning_faction") == "good"
     )
     completed_games = balance_game_count
-    aborted_games = sum(game.get("status") == "aborted" for game in games)
+    aborted_games = sum(game.get("status") == "aborted" for game in all_games)
 
-    action_trace_records = list(_iter_action_trace_records(balance_games))
+    action_trace_records = list(_iter_action_trace_records(finished_games))
     action_traces = [record["trace"] for record in action_trace_records]
     fallback_count = sum(1 for trace in action_traces if trace.get("fallback_reason"))
     schema_failures = sum(
         1 for trace in action_traces
         if trace.get("parse_error") or trace.get("structured_failure_reason")
     )
-    wolf_plan_outcomes = compute_wolf_plan_outcome_metrics(balance_games)
+    wolf_plan_outcomes = compute_wolf_plan_outcome_metrics(finished_games)
     wolf_plan_fallback_count = wolf_plan_outcomes[
         "wolf_team_plan_terminal_fallback_count"
     ]
     wolf_plan_count = wolf_plan_outcomes["wolf_team_plan_total_count"]
 
     weak_wolf_plan_kill_count = sum(
-        _weak_wolf_plan_kills(game) for game in balance_games
+        _weak_wolf_plan_kills(game) for game in finished_games
     )
     fallback_plan_kill_without_target_evidence_count = sum(
         _fallback_plan_kill_without_target_evidence_count(game)
-        for game in balance_games
+        for game in finished_games
     )
     fallback_plan_kill_count = sum(
-        _fallback_plan_kill_count(game) for game in balance_games
+        _fallback_plan_kill_count(game) for game in finished_games
     )
     vote_concentrations = [
         _vote_concentration(event)
-        for game in balance_games
+        for game in finished_games
         for event in game.get("events", [])
         if event.get("type") == "vote_resolved"
     ]
@@ -128,35 +133,42 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         if wolf_plan_count else None
     )
     schema_failure_rate = schema_failures / len(action_traces) if action_traces else 0.0
-    seer_day1_exile_rate = _seer_day1_exile_rate(balance_games)
-    witch_night1_death_rate = _witch_night1_death_rate(balance_games)
-    witch_wolf_kill_death_rate = _witch_wolf_kill_death_rate(balance_games)
-    sheriff_werewolf_rate = _sheriff_werewolf_rate(balance_games)
+    seer_day1_exile_rate = _seer_day1_exile_rate(finished_games)
+    witch_night1_death_rate = _witch_night1_death_rate(finished_games)
+    witch_wolf_kill_death_rate = _witch_wolf_kill_death_rate(finished_games)
+    sheriff_werewolf_rate = _sheriff_werewolf_rate(finished_games)
     sheriff_vote_fallback_rate = _sheriff_vote_fallback_rate(action_trace_records)
-    hunter_friendly_fire_rate = _hunter_friendly_fire_rate(balance_games)
-    weak_plan_kill_rate = _weak_plan_kill_rate(balance_games)
+    hunter_friendly_fire_rate = _hunter_friendly_fire_rate(finished_games)
+    weak_plan_kill_rate = _weak_plan_kill_rate(finished_games)
     fallback_plan_kill_without_target_evidence_rate = (
         fallback_plan_kill_without_target_evidence_count / fallback_plan_kill_count
         if fallback_plan_kill_count else 0.0
     )
     power_role_fallback_rate = _power_role_fallback_rate(action_trace_records)
     template_vote_reason_count, vote_reason_count = _template_vote_reason_counts(
-        balance_games
+        finished_games
     )
     template_vote_reason_rate = (
         template_vote_reason_count / vote_reason_count
         if vote_reason_count else 0.0
     )
     unsupported_public_fact_claim_count = sum(
-        _unsupported_public_fact_claim_count(game) for game in balance_games
+        _unsupported_public_fact_claim_count(game) for game in finished_games
     )
     persona_prompt_confirmation = summarize_persona_prompt_confirmation([
         event
-        for game in balance_games
+        for game in finished_games
         for event in game.get("events", [])
         if isinstance(event, Mapping)
     ])
-    acceptance_metrics = _compute_acceptance_audit_metrics_from_normalized(games)
+    acceptance_metrics = _compute_acceptance_audit_metrics_from_normalized(
+        finished_games
+    )
+    all_projection_supported, all_projection_reason = projection_support(all_games)
+    acceptance_metrics["acceptance_projection_supported"] = all_projection_supported
+    acceptance_metrics["acceptance_projection_unsupported_reason"] = (
+        all_projection_reason
+    )
     mean_vote_concentration = (
         sum(vote_concentrations) / len(vote_concentrations)
         if vote_concentrations else 0.0

@@ -51,6 +51,7 @@ def abort_game(
 ) -> GameState:
     """记录一次 moderator-only V2 事件并转为中止终态。"""
     if state.status == "aborted":
+        validate_aborted_game(state)
         return state
     if state.status == "finished":
         raise RuntimeError("terminal game state cannot transition from finished to aborted")
@@ -80,10 +81,58 @@ def abort_game(
     )
 
 
+def validate_aborted_game(state: GameState) -> None:
+    """对 runtime 新写 aborted 终态执行完整、失败关闭的校验。"""
+    if state.status != "aborted" or not state.termination_reason:
+        raise ValueError("runtime aborted game requires termination_reason")
+    events = [item for item in state.events if item.type == _ABORT_EVENT_TYPE]
+    if len(events) != 1:
+        raise ValueError("aborted game requires exactly one game_aborted event")
+    event = events[0]
+    if event.visibility is not EventVisibility.MODERATOR_ONLY:
+        raise ValueError("game_aborted event must be moderator_only")
+    if (
+        event.schema_version != "2"
+        or event.event_id is None
+        or event.sequence_number is None
+        or event.occurred_at is None
+        or event.game_id is None
+    ):
+        raise ValueError("game_aborted event must have complete V2 metadata")
+    if event.game_id != state.game_id:
+        raise ValueError("game_aborted event game_id must match state")
+    sequence = event.sequence_number
+    if (
+        not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or sequence < 0
+        or event.event_id != f"{state.game_id}:e{sequence:06d}"
+    ):
+        raise ValueError("game_aborted event has invalid V2 identity")
+    required = {
+        "termination_reason", "last_node", "phase", "step", "exception_type",
+    }
+    missing = required.difference(event.payload)
+    if missing:
+        raise ValueError(
+            "game_aborted event missing payload fields: " + ", ".join(sorted(missing))
+        )
+    if event.payload["termination_reason"] != state.termination_reason:
+        raise ValueError("game_aborted termination_reason must match state")
+    if event.payload["phase"] != state.phase:
+        raise ValueError("game_aborted phase must match state")
+    step = event.payload["step"]
+    if not isinstance(step, int) or isinstance(step, bool) or step < 0:
+        raise ValueError("game_aborted step must be a non-negative integer")
+    for field_name in ("last_node", "exception_type"):
+        value = event.payload[field_name]
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"game_aborted {field_name} must be a string or null")
+
+
 def emergency_abort_payload(state: GameState) -> dict[str, Any]:
     """从中止终态生成不包含 prompt、角色或私密事件的白名单。"""
-    if state.status != "aborted" or not state.termination_reason:
-        raise ValueError("emergency artifact requires an aborted game")
+    validate_aborted_game(state)
     event = next(
         (item for item in reversed(state.events) if item.type == _ABORT_EVENT_TYPE),
         None,
@@ -141,5 +190,6 @@ __all__ = [
     "abort_game",
     "emergency_abort_payload",
     "finish_game",
+    "validate_aborted_game",
     "write_emergency_abort",
 ]

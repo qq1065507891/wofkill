@@ -3,7 +3,7 @@
 功能描述：内存游戏仓库，保留完整 GameEvent 并规范化 Death 批次。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-15
+修改日期：2026-07-16
 使用示例：内部模块，无对外接口
 """
 
@@ -13,6 +13,7 @@ from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import normalize_resolution_batch_fields
+from werewolf_agent.runtime.game_termination import validate_aborted_game
 
 
 class InMemoryGameRepository:
@@ -32,6 +33,8 @@ class InMemoryGameRepository:
         self._custom_configs: dict[str, dict[str, Any]] = {}
 
     def save_game(self, state: GameState) -> None:
+        if state.status == "aborted":
+            validate_aborted_game(state)
         self._games[state.game_id] = state
 
     def load_game(self, game_id: str) -> GameState | None:

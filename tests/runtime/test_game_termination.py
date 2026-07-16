@@ -19,6 +19,7 @@ from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.game_termination import (
     abort_game,
     finish_game,
+    validate_aborted_game,
     write_emergency_abort,
 )
 
@@ -77,6 +78,136 @@ def test_abort_game_records_one_moderator_only_v2_event_with_context() -> None:
     assert len([event for event in aborted.events if event.type == "game_aborted"]) == 1
     with pytest.raises(RuntimeError, match="terminal"):
         finish_game(aborted)
+
+
+def test_legacy_aborted_state_is_constructible_but_runtime_validation_fails_closed() -> None:
+    legacy = GameState(
+        game_id="g-legacy-abort",
+        status="aborted",
+        termination_reason="legacy_runtime_error",
+    )
+
+    with pytest.raises(ValueError, match="exactly one.*game_aborted"):
+        validate_aborted_game(legacy)
+    with pytest.raises(ValueError, match="exactly one.*game_aborted"):
+        abort_game(
+            legacy,
+            reason="legacy_runtime_error",
+            last_node="unknown",
+            step=0,
+        )
+
+
+def test_repository_boundary_rejects_direct_malformed_aborted_write() -> None:
+    from werewolf_agent.storage.memory_store import InMemoryGameRepository
+
+    malformed = GameState(
+        game_id="g-direct-abort",
+        status="aborted",
+        termination_reason="legacy_runtime_error",
+    )
+
+    with pytest.raises(ValueError, match="exactly one.*game_aborted"):
+        InMemoryGameRepository().save_game(malformed)
+
+
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (
+            lambda state, event: replace(state, events=[]),
+            "exactly one.*game_aborted",
+        ),
+        (
+            lambda state, event: replace(
+                state,
+                events=[replace(event, payload={
+                    key: value for key, value in event.payload.items() if key != "step"
+                })],
+            ),
+            "missing payload fields.*step",
+        ),
+        (
+            lambda state, event: replace(
+                state,
+                events=[replace(event, visibility=EventVisibility.PUBLIC)],
+            ),
+            "moderator_only",
+        ),
+        (
+            lambda state, event: replace(
+                state,
+                events=[GameEvent(
+                    type="game_aborted",
+                    payload=event.payload,
+                    visibility=EventVisibility.MODERATOR_ONLY,
+                )],
+            ),
+            "complete V2",
+        ),
+        (
+            lambda state, event: replace(state, events=[event, event]),
+            "exactly one.*game_aborted",
+        ),
+        (
+            lambda state, event: replace(
+                state,
+                events=[replace(event, payload={
+                    **event.payload, "termination_reason": "conflict",
+                })],
+            ),
+            "termination_reason.*match",
+        ),
+        (
+            lambda state, event: replace(
+                state,
+                events=[replace(event, payload={**event.payload, "phase": "day"})],
+            ),
+            "phase.*match",
+        ),
+    ],
+)
+def test_aborted_runtime_validation_rejects_incomplete_or_conflicting_event(
+    mutate, expected,
+) -> None:
+    valid = abort_game(
+        GameState(game_id="g-invalid-event", phase="night"),
+        reason="step_limit",
+        last_node="wolf_action",
+        step=12,
+    )
+    event = next(item for item in valid.events if item.type == "game_aborted")
+    invalid = mutate(valid, event)
+
+    with pytest.raises(ValueError, match=expected):
+        validate_aborted_game(invalid)
+    with pytest.raises(ValueError, match=expected):
+        abort_game(
+            invalid,
+            reason="step_limit",
+            last_node="wolf_action",
+            step=12,
+        )
+
+
+def test_valid_aborted_state_is_idempotent_without_second_event() -> None:
+    aborted = abort_game(
+        GameState(game_id="g-idempotent", phase="day"),
+        reason="step_limit",
+        last_node="vote",
+        step=50,
+    )
+
+    validate_aborted_game(aborted)
+    repeated = abort_game(
+        aborted,
+        reason="unrecoverable_runtime_error",
+        last_node="other",
+        step=99,
+    )
+
+    assert repeated is aborted
+    assert len([event for event in repeated.events if event.type == "game_aborted"]) == 1
 
 
 def test_game_state_rejects_invalid_explicit_terminal_contracts() -> None:

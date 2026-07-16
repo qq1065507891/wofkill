@@ -22,6 +22,7 @@ from werewolf_agent.runtime.event_metadata import stamp_new_events
 from werewolf_agent.runtime.game_termination import (
     abort_game,
     finish_game,
+    validate_aborted_game,
     write_emergency_abort,
 )
 
@@ -232,6 +233,8 @@ class GameRunnerExecutionMixin:
     def _persist_if_configured(self) -> None:
         """配置 repository 时保存当前游戏状态。"""
         repository = self._config.repository
+        if self._state.status == "aborted":
+            validate_aborted_game(self._state)
         if repository is None:
             if self._state.status == "aborted":
                 write_emergency_abort(

@@ -3,7 +3,7 @@
 功能描述：PostgreSQL 游戏仓库，支持 GameEvent 与死亡批次 V2、V1 只读兼容。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-15
+修改日期：2026-07-16
 使用示例：内部模块，无对外接口
 """
 
@@ -24,6 +24,7 @@ from werewolf_agent.runtime.event_metadata import (
     serialize_game_event,
     serialize_legacy_event_payload,
 )
+from werewolf_agent.runtime.game_termination import validate_aborted_game
 from werewolf_agent.storage.sqlite_store import _deserialize_game_state, _serialize_game_state
 
 
@@ -44,6 +45,8 @@ class PostgresGameRepository:
             self._conn = None
 
     def save_game(self, state: GameState) -> None:
+        if state.status == "aborted":
+            validate_aborted_game(state)
         with self._lock:
             conn = self._ensure_connection()
             conn.execute(

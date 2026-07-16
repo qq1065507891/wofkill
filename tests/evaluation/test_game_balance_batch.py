@@ -239,6 +239,69 @@ def test_balance_excludes_aborted_gameplay_but_stability_counts_all_games():
     assert audit["schema_failure_rate"] == 0.0
 
 
+def test_aborted_acceptance_evidence_does_not_enter_gameplay_metrics():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    aborted = {
+        "game_id": "g-aborted-only",
+        "status": "aborted",
+        "termination_reason": "unrecoverable_runtime_error",
+        "players": {
+            "p01": {"role": "seer", "alive": True},
+            "p02": {"role": "werewolf", "alive": True},
+        },
+        "events": [
+            {
+                "type": "action_trace_audit",
+                "payload": {
+                    "task_type": "seer_check",
+                    "action_trace": {
+                        "task_type": "seer_check",
+                        "final_action_type": "seer_check",
+                        "execution_attempts": [{"attempt_outcome": "success"}],
+                    },
+                },
+            },
+            {
+                "type": "seer_check",
+                "payload": {
+                    "actor": "p01", "target": "p02", "result": "werewolf",
+                },
+            },
+            {
+                "type": "reflection_complete",
+                "payload": {"entries": [{
+                    "player_id": "p01",
+                    "verification": {
+                        "status": "verified",
+                        "verified_fact_count": 1,
+                        "verified_lessons": [{"lesson_id": "l1"}],
+                        "rejected_fact_count": 0,
+                        "rejected_lesson_count": 0,
+                    },
+                }]},
+            },
+            {
+                "type": "semantic_repair_audit",
+                "payload": {"success": True, "verified_claim_retention_rate": 1.0},
+            },
+        ],
+        "deaths": [],
+    }
+
+    audit = compute_balance_audit([aborted])
+
+    assert audit["games"] == 1
+    assert audit["completed_game_count"] == 0
+    assert audit["aborted_game_count"] == 1
+    assert audit["decision_count"] == 0
+    assert audit["critical_task_reasoning_status_request_count"] == 0
+    assert audit["power_role_evidence_metrics_supported"] is False
+    assert audit["reflection_contamination_metrics_supported"] is False
+    assert audit["semantic_repair_metrics_supported"] is False
+    assert audit["possible_world_metrics_supported"] is False
+
+
 def test_balance_audit_normalizes_each_game_once(monkeypatch) -> None:
     from werewolf_agent.evaluation import game_projection
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
