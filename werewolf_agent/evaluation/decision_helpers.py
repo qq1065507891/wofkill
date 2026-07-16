@@ -31,7 +31,12 @@ def decision_is_legal_from_trace(trace: dict[str, Any]) -> bool | None:
     legal_* lists recorded), so callers can distinguish "unknown" from
     "illegal".
     """
-    parsed = trace.get("parsed_action")
+    parsed = (
+        trace.get("final_action")
+        if trace.get("generated_by") == "terminal_fallback"
+        or trace.get("decision_outcome") == "terminal_fallback"
+        else trace.get("parsed_action")
+    )
     parsed = parsed if isinstance(parsed, dict) else {}
     decision = parsed.get("decision_plan")
     decision = decision if isinstance(decision, dict) else {}
@@ -65,7 +70,12 @@ def dialogue_leaked_from_trace(trace: dict[str, Any]) -> bool | None:
 
     Returns None when there is no dialogue_plan to inspect.
     """
-    parsed = trace.get("parsed_action")
+    parsed = (
+        trace.get("final_action")
+        if trace.get("generated_by") == "terminal_fallback"
+        or trace.get("decision_outcome") == "terminal_fallback"
+        else trace.get("parsed_action")
+    )
     if not isinstance(parsed, dict):
         return None
     dialogue = parsed.get("dialogue_plan")

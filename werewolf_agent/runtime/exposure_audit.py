@@ -20,6 +20,10 @@ from werewolf_agent.runtime.decision_outcomes import (
     DecisionGeneratedBy,
     normalize_terminal_failure_code,
 )
+from werewolf_agent.agents.player_failures import (
+    TERMINAL_FAILURE_STAGES as _TERMINAL_FAILURE_STAGES,
+    TERMINAL_FALLBACK_KINDS as _TERMINAL_FALLBACK_KINDS,
+)
 
 _RAG_KEYS = frozenset({
     "entry_id",
@@ -83,25 +87,6 @@ _SKILL_TOOL_INPUT_KEYS = frozenset({
     "legal_target_count",
     "candidate_count",
     "has_wolf_team_plan",
-})
-_TERMINAL_FAILURE_STAGES = frozenset({
-    "provider", "protocol", "schema", "semantic",
-    "model_output", "registry", "runtime", "unknown",
-})
-_TERMINAL_FALLBACK_KINDS = frozenset({
-    "ordinary_speech",
-    "sheriff_speech",
-    "night_legal_action",
-    "night_explicit_abstain",
-    "reflection_not_generated",
-    "last_words_not_generated",
-    "wolf_team_plan_structured_stance",
-    "wolf_discussion_speech",
-    "safe_action",
-    "badge_transfer",
-    "badge_tear",
-    "badge_unavailable",
-    "unknown",
 })
 _SKILL_TOOL_OUTPUT_KEYS = frozenset({
     "confidence",

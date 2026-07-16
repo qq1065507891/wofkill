@@ -225,6 +225,40 @@ def test_outcome_flags_illegal_action_type():
     assert traces[0].outcome.legal is False
 
 
+def test_terminal_fallback_evaluation_uses_final_action_not_rejected_payload():
+    from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
+
+    action_trace = {
+        "generated_by": "terminal_fallback",
+        "decision_outcome": "terminal_fallback",
+        "final_action_type": "vote",
+        "final_action": {
+            "action_type": "vote",
+            "target_id": "p03",
+            "reason": "deterministic fallback",
+        },
+        "legal_actions": ["vote"],
+        "legal_targets": ["p03"],
+        "parsed_action": {
+            "action_type": "vote",
+            "target_id": "p99",
+            "reason": "rejected model payload",
+        },
+    }
+    result = _build_result_with_action_trace(action_trace, player_id="p01")
+    result.player_roles.update({"p03": "werewolf", "p99": "villager"})
+    result.player_factions.update({"p03": "werewolf", "p99": "good"})
+
+    trace = EvaluationTraceBuilder().build(result)[0]
+
+    assert trace.decision.target_id == "p03"
+    assert trace.decision.reason == "deterministic fallback"
+    assert trace.decision.raw == action_trace["final_action"]
+    assert trace.outcome.legal is True
+    assert trace.outcome.target_role == "werewolf"
+    assert trace.outcome.vote_hit_wolf is True
+
+
 def test_outcome_flags_dialogue_leak():
     from werewolf_agent.evaluation.trace_builder import EvaluationTraceBuilder
 
@@ -251,4 +285,3 @@ def test_outcome_legal_unknown_without_action_type():
     traces = EvaluationTraceBuilder().build(result)
     assert traces[0].outcome.legal is None
     assert traces[0].outcome.leaked_hidden_info is False
-

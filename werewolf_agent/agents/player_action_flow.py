@@ -588,7 +588,6 @@ def run_player_action_flow(
         retry=retry,
         raw_text=raw_text,
         parsed_action=parsed_action,
-        fallback_target_used=True,
         tool_call_required=tool_call_required,
         tool_call_received=tool_call_received,
         parse_success=parse_success,

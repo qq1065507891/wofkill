@@ -187,6 +187,11 @@ def test_terminal_trace_preserves_stable_failure_without_raw_error_text() -> Non
         raw_text="failed model text, not an exception body",
         parsed_action=None,
         final_action_type=ActionType.SPEECH,
+        final_action={
+            "action_type": "speech",
+            "target_id": None,
+            "reason": "fallback speech",
+        },
         retry=RetryInfo(
             error_code="schema_validation",
             error_message="private provider exception body",
@@ -204,6 +209,7 @@ def test_terminal_trace_preserves_stable_failure_without_raw_error_text() -> Non
     assert payload["original_failure_code"] == "schema_validation"
     assert payload["failure_stage"] == "protocol"
     assert payload["fallback_kind"] == "ordinary_speech"
+    assert payload["final_action"]["reason"] == "fallback speech"
     assert "private provider exception body" not in trace.model_dump_json()
 
 

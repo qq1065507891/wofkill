@@ -21,7 +21,7 @@ from werewolf_agent.evaluation.game_projection import (
     projection_support,
 )
 from werewolf_agent.agents.player_failures import (
-    is_informative_terminal_failure_code,
+    is_complete_terminal_fallback_v2,
 )
 
 _SEMANTIC_FALLBACK_KINDS = frozenset({
@@ -53,21 +53,29 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
     post_win_calls = 0
     terminal_fallback_count = 0
     terminal_failure_code_covered_count = 0
+    terminal_fallback_invalid_count = 0
     terminal_fallback_kind_counts: Counter[str] = Counter()
 
-    def record_terminal_fallback(row: Mapping[str, Any]) -> None:
+    def record_terminal_fallback(
+        row: Mapping[str, Any],
+        *,
+        source_type: str,
+    ) -> None:
         """统一统计玩家动作与狼队计划的终退 V2 字段。"""
         nonlocal terminal_fallback_count, terminal_failure_code_covered_count
-        if row.get("generated_by") != "terminal_fallback":
+        nonlocal terminal_fallback_invalid_count
+        is_candidate = (
+            source_type == "wolf_team_plan_fallback"
+            or row.get("generated_by") == "terminal_fallback"
+            or row.get("decision_outcome") == "terminal_fallback"
+        )
+        if not is_candidate:
             return
         terminal_fallback_count += 1
-        original_code = row.get("original_failure_code")
-        terminal_code = row.get("terminal_failure_code")
-        if (
-            is_informative_terminal_failure_code(original_code)
-            and original_code == terminal_code
-        ):
-            terminal_failure_code_covered_count += 1
+        if not is_complete_terminal_fallback_v2(row, source_type=source_type):
+            terminal_fallback_invalid_count += 1
+            return
+        terminal_failure_code_covered_count += 1
         fallback_kind = row.get("fallback_kind")
         if isinstance(fallback_kind, str) and fallback_kind:
             terminal_fallback_kind_counts[fallback_kind] += 1
@@ -95,7 +103,10 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
                 if task not in {"reflection", "post_game_reflection"}:
                     post_win_calls += 1
             if event_type == "wolf_team_plan_fallback":
-                record_terminal_fallback(payload)
+                record_terminal_fallback(
+                    payload,
+                    source_type="wolf_team_plan_fallback",
+                )
             if event_type == "semantic_repair_audit" and payload.get("repairable") is True:
                 identity = _semantic_identity(payload)
                 if identity is not None:
@@ -105,7 +116,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
             trace = payload.get("action_trace")
             if not isinstance(trace, Mapping):
                 continue
-            record_terminal_fallback(trace)
+            record_terminal_fallback(trace, source_type="action_trace_audit")
             semantic = trace.get("semantic_repair_audit")
             if isinstance(semantic, Mapping) and semantic.get("repairable") is True:
                 semantic_eligible_count += 1
@@ -198,23 +209,31 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         if semantic_source_complete
         else None
     )
+    terminal_metrics_supported = (
+        projection_is_supported
+        and terminal_fallback_count > 0
+        and terminal_fallback_invalid_count == 0
+    )
     return {
         "terminal_post_win_game_model_call_count": post_win_calls,
         "terminal_fallback_count": terminal_fallback_count,
         "terminal_fallback_original_failure_code_metrics_supported": (
-            projection_is_supported and terminal_fallback_count > 0
+            terminal_metrics_supported
         ),
         "terminal_fallback_original_failure_code_unsupported_reason": (
             projection_reason if not projection_is_supported
-            else None if terminal_fallback_count > 0
             else "no_terminal_fallback_observations"
+            if terminal_fallback_count == 0
+            else "incomplete_terminal_fallback_v2"
+            if terminal_fallback_invalid_count
+            else None
         ),
         "terminal_fallback_original_failure_code_covered_count": (
             terminal_failure_code_covered_count
         ),
         "terminal_fallback_original_failure_code_coverage_rate": (
             terminal_failure_code_covered_count / terminal_fallback_count
-            if projection_is_supported and terminal_fallback_count else None
+            if terminal_metrics_supported else None
         ),
         "terminal_fallback_kind_counts": dict(sorted(terminal_fallback_kind_counts.items())),
         "semantic_repair_metrics_supported": semantic_source_complete,

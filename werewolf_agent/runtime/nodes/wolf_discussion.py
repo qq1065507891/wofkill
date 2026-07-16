@@ -457,10 +457,17 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
         )
         fallback_payload.update({
             "generated_by": "terminal_fallback",
+            "decision_outcome": "terminal_fallback",
             "terminal_failure_code": terminal_code,
             "original_failure_code": terminal_code,
             "failure_stage": failure_stage,
             "fallback_kind": "wolf_team_plan_structured_stance",
+            "attempts": int(failure_meta.get("attempts") or 0),
+            "final_action": {
+                "action_type": "wolf_team_plan",
+                "target_id": plan.get("night_kill_primary"),
+                "reason": fallback_reason,
+            },
         })
         for key in (
             "stage",

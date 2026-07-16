@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from werewolf_agent.agents.schemas import ActionType, FallbackAction
 from werewolf_agent.runtime.decision_outcomes import normalize_terminal_failure_code
 
@@ -34,6 +36,30 @@ _TASK_FAILURE_CODE_ALIASES = {
     "missing_action_trace": "invalid_output",
     "agent_unavailable": "fallback_route_unavailable",
 }
+
+TERMINAL_FAILURE_STAGES = frozenset({
+    "provider",
+    "protocol",
+    "schema",
+    "semantic",
+    "model_output",
+    "registry",
+    "runtime",
+})
+TERMINAL_FALLBACK_KINDS = frozenset({
+    "ordinary_speech",
+    "sheriff_speech",
+    "night_legal_action",
+    "night_explicit_abstain",
+    "reflection_not_generated",
+    "last_words_not_generated",
+    "wolf_team_plan_structured_stance",
+    "wolf_discussion_speech",
+    "safe_action",
+    "badge_transfer",
+    "badge_tear",
+    "badge_unavailable",
+})
 
 
 def fallback_reason(action: FallbackAction) -> str:
@@ -94,3 +120,50 @@ def is_informative_terminal_failure_code(value: object) -> bool:
         and value != "unknown"
         and normalize_terminal_failure_code(value) == value
     )
+
+
+def is_complete_terminal_fallback_v2(
+    row: Mapping[str, object],
+    *,
+    source_type: str,
+) -> bool:
+    """校验终退 V2 的闭集字段、最终动作和事实执行证据。"""
+    terminal_code = row.get("terminal_failure_code")
+    original_code = row.get("original_failure_code")
+    final_action = row.get("final_action")
+    if not (
+        row.get("generated_by") == "terminal_fallback"
+        and row.get("decision_outcome") == "terminal_fallback"
+        and is_informative_terminal_failure_code(terminal_code)
+        and original_code == terminal_code
+        and row.get("failure_stage") in TERMINAL_FAILURE_STAGES
+        and row.get("fallback_kind") in TERMINAL_FALLBACK_KINDS
+        and isinstance(final_action, Mapping)
+        and isinstance(final_action.get("action_type"), str)
+        and bool(final_action.get("action_type"))
+        and "target_id" in final_action
+        and isinstance(final_action.get("reason"), str)
+    ):
+        return False
+    final_action_type = row.get("final_action_type")
+    if (
+        isinstance(final_action_type, str)
+        and final_action_type
+        and final_action.get("action_type") != final_action_type
+    ):
+        return False
+    if source_type == "wolf_team_plan_fallback":
+        return _is_non_negative_int(row.get("attempts"))
+    attempts = row.get("execution_attempts")
+    return (
+        isinstance(attempts, Sequence)
+        and not isinstance(attempts, (str, bytes, bytearray))
+        and _is_non_negative_int(row.get("attempt_count"))
+        and row.get("attempt_count") == len(attempts)
+        and _is_non_negative_int(row.get("retry_count"))
+        and _is_non_negative_int(row.get("provider_fallback_count"))
+    )
+
+
+def _is_non_negative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0

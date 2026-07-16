@@ -243,16 +243,71 @@ def test_free_discussion_always_records_safe_speech_opportunity(
     assert trace["original_failure_code"] == trace["terminal_failure_code"]
     assert trace["failure_stage"]
     assert trace["fallback_kind"] == "ordinary_speech"
-    assert trace["attempt_count"] == len(trace["execution_attempts"]) == 2
+    assert trace["attempt_count"] == len(trace["execution_attempts"]) == 0
     assert trace["retry_count"] == 0
-    assert [item["route_kind"] for item in trace["execution_attempts"]] == [
-        "primary", "safe_fallback",
-    ]
+    assert trace["provider_fallback_count"] == 0
+    assert not trace["execution_attempts"]
+    assert trace["final_action"] == {
+        "action_type": "speech",
+        "target_id": None,
+        "reason": expected_reason,
+    }
     assert "PRIVATE" not in json.dumps(audits[0].payload, ensure_ascii=False)
     assert quality["speech_opportunity_count"] == 1
     assert quality["speech_non_empty_rate"] == 0.0
     assert quality["speech_terminal_fallback_rate"] == 1.0
     assert quality["terminal_fallback_original_failure_code_coverage_rate"] == 1.0
+
+
+def test_runtime_terminal_fallback_events_use_unique_decision_identity() -> None:
+    from werewolf_agent.runtime.agent_action_audit import (
+        build_runtime_terminal_fallback_trace,
+    )
+    from werewolf_agent.runtime.nodes.action_audit import (
+        _action_trace_event,
+        _allocate_decision_identity,
+    )
+
+    state = {
+        "game_state": GameState(
+            game_id="runtime_identity",
+            day_number=1,
+            players={
+                "p01": PlayerState(id="p01", role="villager"),
+                "p02": PlayerState(id="p02", role="villager"),
+            },
+        ),
+    }
+    trace = build_runtime_terminal_fallback_trace(
+        reason_code="agent_unavailable",
+        failure_stage="registry",
+        fallback_kind="ordinary_speech",
+        final_action_type="speech",
+    )
+    identities = [
+        _allocate_decision_identity(
+            state,
+            player_id=player_id,
+            phase="speech",
+            task_type="speech",
+            day_number=1,
+            night_number=0,
+        )
+        for player_id in ("p01", "p02")
+    ]
+    events = [
+        _action_trace_event(
+            player_id=identity.player_id,
+            phase="speech",
+            action_trace=trace,
+            decision_identity=identity,
+        )
+        for identity in identities
+    ]
+
+    assert events[0].payload["trace_id"] != events[1].payload["trace_id"]
+    assert [event.payload["action_index"] for event in events] == [0, 1]
+    assert all(not event.payload["action_trace"]["execution_attempts"] for event in events)
 
 
 # ---------------------------------------------------------------------------

@@ -60,7 +60,6 @@ def _terminal_speech_trace(reason: str) -> dict[str, Any]:
         failure_stage=failure_stage,
         fallback_kind="ordinary_speech",
         final_action_type="speech",
-        decision_key="day-discussion",
     )
 
 

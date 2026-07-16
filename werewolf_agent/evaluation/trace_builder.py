@@ -147,10 +147,11 @@ class EvaluationTraceBuilder:
         night_number = _int(payload.get("night_number"))
         parsed_action = action_trace.get("parsed_action")
         parsed_action = parsed_action if isinstance(parsed_action, dict) else {}
+        decision_action = _effective_decision_action(action_trace, parsed_action)
         task_type = str(
             action_trace.get("task_type")
-            or parsed_action.get("task_type")
-            or parsed_action.get("action_type")
+            or decision_action.get("task_type")
+            or decision_action.get("action_type")
             or action_trace.get("final_action_type")
             or ""
         )
@@ -165,7 +166,7 @@ class EvaluationTraceBuilder:
                 task_type=task_type,
                 action_index=action_index,
             )
-        decision = _decision_snapshot(action_trace, parsed_action)
+        decision = _decision_snapshot(action_trace, decision_action)
         exposures = []
         exposures.extend(_world_model_exposures(action_trace.get("world_model_audit")))
         exposures.extend(exposure_by_trace.get(trace_id, []))
@@ -562,6 +563,20 @@ def _decision_snapshot(
         confidence=_float(parsed_action.get("confidence", decision_plan.get("confidence"))),
         raw=dict(parsed_action),
     )
+
+
+def _effective_decision_action(
+    action_trace: dict[str, Any],
+    parsed_action: dict[str, Any],
+) -> dict[str, Any]:
+    """终退只消费实际 fallback；被拒 parsed_action 永远只用于审计。"""
+    if (
+        action_trace.get("generated_by") == "terminal_fallback"
+        or action_trace.get("decision_outcome") == "terminal_fallback"
+    ):
+        final_action = action_trace.get("final_action")
+        return dict(final_action) if isinstance(final_action, dict) else {}
+    return parsed_action
 
 
 def _decision_outcome(

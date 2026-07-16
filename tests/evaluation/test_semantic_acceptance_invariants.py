@@ -91,15 +91,23 @@ def test_terminal_failure_coverage_is_independent_from_semantic_acceptance() -> 
         "original_failure_code": "schema_validation",
         "failure_stage": "protocol",
         "fallback_kind": "ordinary_speech",
+        "attempt_count": 0,
+        "retry_count": 0,
+        "provider_fallback_count": 0,
+        "execution_attempts": [],
+        "final_action": {"action_type": "speech", "target_id": None, "reason": "fallback"},
     })
     game["events"].append({
         "type": "wolf_team_plan_fallback",
         "payload": {
             "generated_by": "terminal_fallback",
+            "decision_outcome": "terminal_fallback",
             "terminal_failure_code": "empty_response",
             "original_failure_code": "empty_response",
             "failure_stage": "model_output",
             "fallback_kind": "wolf_team_plan_structured_stance",
+            "attempts": 0,
+            "final_action": {"action_type": "wolf_team_plan", "target_id": None, "reason": "fallback"},
         },
     })
 
@@ -134,7 +142,8 @@ def test_terminal_failure_coverage_fails_closed_when_required_field_is_missing()
 
     assert metrics["terminal_fallback_count"] == 1
     assert metrics["terminal_fallback_original_failure_code_covered_count"] == 0
-    assert metrics["terminal_fallback_original_failure_code_coverage_rate"] == 0.0
+    assert metrics["terminal_fallback_original_failure_code_metrics_supported"] is False
+    assert metrics["terminal_fallback_original_failure_code_coverage_rate"] is None
 
 
 def test_terminal_failure_coverage_rejects_uninformative_original_codes() -> None:
@@ -163,4 +172,29 @@ def test_terminal_failure_coverage_rejects_uninformative_original_codes() -> Non
 
     assert metrics["terminal_fallback_count"] == 3
     assert metrics["terminal_fallback_original_failure_code_covered_count"] == 0
-    assert metrics["terminal_fallback_original_failure_code_coverage_rate"] == 0.0
+    assert metrics["terminal_fallback_original_failure_code_metrics_supported"] is False
+    assert metrics["terminal_fallback_original_failure_code_coverage_rate"] is None
+
+
+def test_terminal_metrics_reject_spoofed_or_inconsistent_v2_rows() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import compute_acceptance_audit_metrics
+
+    game = _game(speaker_preserved=True, negation_preserved=True)
+    trace = game["events"][1]["payload"]["action_trace"]
+    trace.update({
+        "generated_by": "model",
+        "decision_outcome": "terminal_fallback",
+        "terminal_failure_code": "schema_validation",
+        "original_failure_code": "schema_validation",
+        "failure_stage": "made_up_stage",
+        "fallback_kind": "invented_kind",
+        "attempt_count": 1,
+        "execution_attempts": [],
+        "final_action": {"action_type": "speech", "target_id": None, "reason": "fallback"},
+    })
+
+    metrics = compute_acceptance_audit_metrics([game])
+
+    assert metrics["terminal_fallback_count"] == 1
+    assert metrics["terminal_fallback_original_failure_code_metrics_supported"] is False
+    assert metrics["terminal_fallback_original_failure_code_coverage_rate"] is None

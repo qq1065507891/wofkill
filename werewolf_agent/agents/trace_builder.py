@@ -26,6 +26,7 @@ def build_action_trace(
     parsed_action: PlayerAction | dict[str, Any] | None,
     final_action_type: Any,
     retry: RetryInfo | None,
+    final_action: PlayerAction | dict[str, Any] | None = None,
     fallback_reason: str | None = None,
     fallback_target_used: bool = False,
     fallback_target_id: str | None = None,
@@ -57,6 +58,11 @@ def build_action_trace(
         if isinstance(parsed_action, PlayerAction)
         else parsed_action
     )
+    final_payload = (
+        final_action.model_dump(exclude={"trace"})
+        if isinstance(final_action, PlayerAction)
+        else final_action
+    )
     translated = (
         translate_decision_outcome(
             execution_attempts,
@@ -82,6 +88,7 @@ def build_action_trace(
     return ActionTrace(
         raw_text=raw_text,
         parsed_action=parsed_payload,
+        final_action=final_payload,
         final_action_type=final_type_value,
         legal_actions=[action.value for action in context.legal_actions],
         legal_targets=list(context.legal_targets),

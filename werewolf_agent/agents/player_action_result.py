@@ -48,6 +48,7 @@ def finalize_successful_player_action(
         raw_text=raw_text,
         parsed_action=parsed_action,
         final_action_type=action.action_type,
+        final_action=action,
         retry=retry,
         tool_call_required=tool_call_required,
         tool_call_received=tool_call_received,
@@ -87,22 +88,28 @@ def finalize_fallback_player_action(
     structured_failure_reason: str | None,
     structured_output_mode: str,
     structured_failure_stage: str | None,
-    fallback_target_used: bool = False,
     metrics_error_code: str | None = None,
     execution_attempts: tuple[AttemptExecutionRecord, ...] = (),
     semantic_repair_audit: dict[str, Any] | None = None,
     fallback_kind: str | None = None,
 ) -> FallbackAction:
     """为 fallback 行动附加审计 trace，并记录 fallback metrics。"""
+    final_action = {
+        "action_type": fallback.action_type.value,
+        "target_id": fallback.target_id,
+        "reason": fallback.reason,
+    }
+    actual_fallback_target_used = fallback.target_id is not None
     trace = _build_action_trace(
         context,
         raw_text=raw_text,
         parsed_action=parsed_action,
         final_action_type=fallback.action_type,
+        final_action=final_action,
         retry=retry,
         fallback_reason=fallback.reason,
-        fallback_target_used=fallback_target_used,
-        fallback_target_id=fallback.target_id if fallback_target_used else None,
+        fallback_target_used=actual_fallback_target_used,
+        fallback_target_id=fallback.target_id if actual_fallback_target_used else None,
         tool_call_required=tool_call_required,
         tool_call_received=tool_call_received,
         parse_success=parse_success,

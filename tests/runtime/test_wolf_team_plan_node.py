@@ -105,10 +105,17 @@ class TestNoRegistryFallback:
             "night_number": 1,
             "reason": "no_registry",
             "generated_by": "terminal_fallback",
+            "decision_outcome": "terminal_fallback",
             "terminal_failure_code": "fallback_route_unavailable",
             "original_failure_code": "fallback_route_unavailable",
             "failure_stage": "registry",
             "fallback_kind": "wolf_team_plan_structured_stance",
+            "attempts": 0,
+            "final_action": {
+                "action_type": "wolf_team_plan",
+                "target_id": None,
+                "reason": "no_registry",
+            },
         }
         assert fallback_event.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
 

@@ -86,6 +86,8 @@ class ActionTrace(BaseModel):
     """Moderator/audit trace for a model action attempt."""
     raw_text: str = ""
     parsed_action: dict[str, Any] | None = None
+    # 终退时 parsed_action 仅保留被拒输出用于审计；最终执行语义只读此快照。
+    final_action: dict[str, Any] | None = None
     final_action_type: str = ""
     legal_actions: list[str] = Field(default_factory=list)
     legal_targets: list[str] = Field(default_factory=list)

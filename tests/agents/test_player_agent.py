@@ -2095,6 +2095,10 @@ class TestMandatoryVote:
         assert action.trace.legal_actions == ["vote"]
         assert action.trace.legal_targets == ["p05"]
         assert action.trace.final_action_type == "vote"
+        assert action.trace.final_action is not None
+        assert action.trace.final_action["target_id"] is None
+        assert action.trace.fallback_target_used is False
+        assert action.trace.fallback_target_id is None
         assert action.trace.fallback_reason is not None
         assert action.trace.fallback_reason.startswith("fallback:")
 
@@ -2126,6 +2130,8 @@ class TestMandatoryVote:
         assert action.trace is not None
         assert action.trace.fallback_target_used is True
         assert action.trace.fallback_target_id == "p02"
+        assert action.trace.final_action is not None
+        assert action.trace.final_action["target_id"] == "p02"
 
     def test_good_speech_fallback_emits_visible_fact_terminal_speech(self) -> None:
         agent = self._make_agent("")
@@ -2153,6 +2159,10 @@ class TestMandatoryVote:
         assert action.speech.startswith("[FALLBACK]普通发言仅基于公开信息：")
         assert action.trace is not None
         assert action.trace.fallback_kind == "ordinary_speech"
+        assert action.trace.fallback_target_used is False
+        assert action.trace.fallback_target_id is None
+        assert action.trace.final_action is not None
+        assert action.trace.final_action["target_id"] is None
         assert action.action_type == ActionType.SPEECH
         assert action.reason
 
