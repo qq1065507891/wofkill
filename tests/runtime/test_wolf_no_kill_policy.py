@@ -251,6 +251,36 @@ def test_repeated_resolve_after_forced_recovery_preserves_selected_target() -> N
     assert len(repeated["game_state"].events) == len(recovered_state.events)
 
 
+def test_repeated_resolve_preserves_selected_target_after_resolution_death() -> None:
+    from werewolf_agent.runtime.event_metadata import new_game_event
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    gs = _game_state()
+    selected = new_game_event(
+        gs,
+        "wolf_kill_selected",
+        {"night_number": 3, "target_id": "p1"},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+    resolved_state = replace(
+        gs,
+        players={
+            **gs.players,
+            "p1": replace(gs.players["p1"], alive=False),
+        },
+        events=[selected],
+    )
+
+    repeated = NoKillPolicy().resolve(
+        resolved_state,
+        reason_code="provider_unavailable",
+    )
+
+    assert repeated["game_state"] is resolved_state
+    assert repeated["wolf_kill_target_id"] == "p1"
+    assert repeated["game_state"].events == [selected]
+
+
 def test_v1_checkpoint_no_kill_forms_trigger_third_night_recovery() -> None:
     from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
 

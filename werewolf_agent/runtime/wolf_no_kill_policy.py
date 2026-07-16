@@ -561,7 +561,7 @@ def _current_night_wolf_choice(
         choice = _normalized_wolf_choice(
             game_state,
             event,
-            require_alive_target=True,
+            require_alive_target=False,
         )
         if choice is None or choice.night_number != game_state.night_number:
             continue
