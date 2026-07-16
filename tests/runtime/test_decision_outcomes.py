@@ -171,6 +171,26 @@ def test_provider_fallback_preserves_reasoning_evidence() -> None:
     assert result.attempts[0].root_cause is RootCause.TIMEOUT
 
 
+def test_fallback_route_unavailable_remains_a_stable_terminal_classification() -> None:
+    attempts = (
+        _attempt(
+            1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+            cause=RootCause.PROVIDER_ERROR,
+        ),
+        _attempt(
+            2, RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
+            cause=RootCause.POLICY_REJECTION,
+        ),
+    )
+
+    result = translate_decision_outcome(
+        attempts,
+        structured_failure_reason="fallback_route_unavailable",
+    )
+
+    assert result.terminal_failure_code == "fallback_route_unavailable"
+
+
 @pytest.mark.parametrize(
     ("attempts", "expected_generated_by", "expected_outcome"),
     [

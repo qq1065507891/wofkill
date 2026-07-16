@@ -244,8 +244,8 @@ llm_profiles:
         provider: minimax
         model_profile: minimax_m27_fast
     fallback:
-      provider: minimax
-      model_profile: minimax_m27_fast
+      provider: openai
+      model_profile: ark_deepseek_v4_flash
 
   balanced:
     default:
@@ -259,8 +259,8 @@ llm_profiles:
         provider: minimax
         model_profile: minimax_m27_reflection
     fallback:
-      provider: minimax
-      model_profile: minimax_m27_fast
+      provider: openai
+      model_profile: ark_deepseek_v4_flash
 
 players:
   p01:

@@ -78,6 +78,7 @@ class DecisionGeneratedBy(str, Enum):
 
 STABLE_TERMINAL_FAILURE_CODES = frozenset({
     "empty_response",
+    "fallback_route_unavailable",
     "illegal_action",
     "invalid_output",
     "invalid_tool_arguments",

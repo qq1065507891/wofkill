@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
+修改日期: 2026-07-16
 
 使用示例:
     >>> _configured_provider_names({"p": {"provider": "mock"}}, {})
@@ -13,6 +14,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+from werewolf_agent.model_gateway.usage_records import ModelConfig
 
 
 _KNOWN_PROVIDER_NAMES = {"anthropic", "openai", "glm", "minimax", "mock"}
@@ -63,6 +66,65 @@ def _validate_config(
             )
         # 保留旧实现触碰 factory 的导入副作用。
         _ = create_provider_from_env
+
+    _validate_declared_fallback_routes(model_profiles, llm_profiles)
+
+
+def _validate_declared_fallback_routes(
+    model_profiles: dict[str, dict[str, Any]],
+    llm_profiles: dict[str, dict[str, Any]],
+) -> None:
+    """启动时拒绝声明了 fallback 却不存在合法切换的静态路由图。"""
+    from werewolf_agent.model_gateway.fallback_policy import build_fallback_routes
+    from werewolf_agent.model_gateway.providers.base import ProviderConfigError
+    from werewolf_agent.model_gateway.reasoning_policy import minimum_reasoning_level
+
+    for profile_id, llm_profile in llm_profiles.items():
+        fallback_raw = llm_profile.get("fallback")
+        if not fallback_raw:
+            continue
+        fallback_items = (
+            fallback_raw if isinstance(fallback_raw, list) else [fallback_raw]
+        )
+        sources = [("default", llm_profile.get("default") or {})]
+        sources.extend((llm_profile.get("tasks") or {}).items())
+        for task_type, source in sources:
+            if not source:
+                continue
+            minimum = (
+                "none"
+                if task_type == "default"
+                else minimum_reasoning_level(task_type).value
+            )
+            primary = _route_config(source, model_profiles)
+            candidates = tuple(
+                _route_config(item, model_profiles) for item in fallback_items
+            )
+            plan = build_fallback_routes(primary, candidates, minimum)
+            if not plan.routes:
+                raise ProviderConfigError(
+                    f"fallback_route_unavailable: llm_profile {profile_id!r} "
+                    f"task {task_type!r} has no legal fallback route"
+                )
+
+
+def _route_config(
+    route: dict[str, Any],
+    model_profiles: dict[str, dict[str, Any]],
+) -> ModelConfig:
+    """构造只供启动门禁使用的最小 ModelConfig。"""
+    profile_id = route.get("model_profile", "")
+    profile = model_profiles.get(profile_id, {})
+    reasoning = profile.get("reasoning", "none")
+    if isinstance(reasoning, dict):
+        reasoning = reasoning.get("level", "none")
+    if str(profile.get("provider", "")).lower() == "glm":
+        reasoning = "none"
+    return ModelConfig(
+        provider=str(route.get("provider", "mock")),
+        model=str(profile.get("model", profile_id)),
+        reasoning_capability=str(reasoning or "none"),
+    )
 
 
 def _configured_provider_names(

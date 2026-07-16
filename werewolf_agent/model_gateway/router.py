@@ -3,7 +3,7 @@
     功能描述：模型路由器网关 facade，负责配置解析、provider 路由、fallback 和用量追踪协调。
     作者：Mike
     创建日期：2025-01-15
-    修改日期：2026-07-15
+    修改日期：2026-07-16
     使用示例：内部模块，无对外接口
 """
 
@@ -35,6 +35,10 @@ from werewolf_agent.model_gateway.execution_records import (
     RouteKind,
 )
 from werewolf_agent.model_gateway.generation_attempt_context import GenerationAttemptContext
+from werewolf_agent.model_gateway.fallback_policy import (
+    FALLBACK_ROUTE_UNAVAILABLE,
+    route_switch_is_valid,
+)
 from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver, bind_attempt
 from werewolf_agent.model_gateway.retry_policy import (
     _failure_reason,
@@ -60,6 +64,7 @@ from werewolf_agent.model_gateway.router_probe import probe_tool_call_support
 from werewolf_agent.model_gateway.router_selection import (
     _resolve_config,
     _resolve_fallback_model,
+    _resolve_fallback_routes,
 )
 from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
@@ -461,7 +466,7 @@ class ModelRouter:
                 break
 
         # Try fallback
-        chain_result = self._generate_fallback_chain(
+        chain_result, route_failure = self._generate_fallback_chain(
             agent_id=agent_id,
             task_type=task_type,
             prompt=prompt,
@@ -525,8 +530,14 @@ class ModelRouter:
             last_empty_result=last_empty_result,
             attempts=tuple(attempts),
         )
+        if route_failure is not None:
+            empty_result = replace(
+                empty_result,
+                structured_failure_reason=route_failure,
+            )
         if generation_attempt_context:
             generation_attempt_context.accept(tuple(attempts))
+            generation_attempt_context.terminal_failure_reason = route_failure
         return empty_result
 
     def _resolve_fallback_model(
@@ -558,22 +569,28 @@ class ModelRouter:
         attempts: list[AttemptExecutionRecord],
         generation_attempt_context: GenerationAttemptContext | None,
         final_prompt_observer: FinalPromptObserver | None,
-    ) -> GenerateResult | None:
+    ) -> tuple[GenerateResult | None, str | None]:
         """按配置顺序尝试所有能力合格的 fallback 候选。"""
         profile_id = self._player_assignments.get(agent_id, "")
-        index = 0
-        while True:
-            config = self._resolve_fallback_model(
-                profile_id,
-                primary_config.reasoning_level,
-                index,
-            )
-            if config is None:
-                return None
-            index += 1
+        plan = _resolve_fallback_routes(
+            model_profiles=self._model_profiles,
+            llm_profiles=self._llm_profiles,
+            llm_profile_id=profile_id,
+            primary_config=primary_config,
+            required_reasoning_level=primary_config.reasoning_level,
+        )
+        if not plan.routes:
+            return None, _fallback_route_failure_code(primary_error)
+        current_route = primary_config
+        provider_route_attempted = False
+        for config in plan.routes:
+            # 热更新或共享映射污染不能绕过执行前的最后一道门禁。
+            if not route_switch_is_valid(current_route, config):
+                return None, FALLBACK_ROUTE_UNAVAILABLE
             provider = self._providers.get(config.provider)
             if provider is None:
                 continue
+            provider_route_attempted = True
             config = replace(
                 config,
                 reasoning_level=primary_config.reasoning_level,
@@ -671,7 +688,7 @@ class ModelRouter:
                         reasoning_status=result.reasoning_status,
                         reasoning_tokens=result.reasoning_tokens,
                     )
-                    return result
+                    return result, None
                 except Exception as exc:
                     attempts.append(_attempt_record(
                         request_id, len(attempts) + 1, config, None,
@@ -690,6 +707,11 @@ class ModelRouter:
                         time.sleep(delay)
                         continue
                     break
+            current_route = config
+        return (
+            None,
+            None if provider_route_attempted else _fallback_route_failure_code(primary_error),
+        )
 
     def _configured_provider_names(self) -> set[str]:
         return _configured_provider_names(self._model_profiles, self._llm_profiles)
@@ -785,6 +807,13 @@ def _root_cause(exc: Exception) -> RootCause:
     if isinstance(exc, EmptyModelResponseError):
         return RootCause.INVALID_OUTPUT
     return RootCause.PROVIDER_ERROR
+
+
+def _fallback_route_failure_code(primary_error: Exception | None) -> str | None:
+    """内容错误保留给结构化修复；仅切换型故障报告路由不可用。"""
+    if isinstance(primary_error, EmptyModelResponseError):
+        return None
+    return FALLBACK_ROUTE_UNAVAILABLE
 
 
 def _attempt_record(

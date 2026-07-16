@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ class GenerationAttemptContext:
     opaque_request_id: OpaqueRequestId = field(init=False)
     attempts: tuple[AttemptExecutionRecord, ...] = ()
     next_route_kind: RouteKind = RouteKind.PRIMARY
+    terminal_failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         scope = self.run_scope if len(self.run_scope) >= 4 else "game"
@@ -45,8 +47,10 @@ class GenerationAttemptContext:
         ))
         self.next_route_kind = RouteKind.REPAIR
 
-    def append_terminal_fallback(self) -> None:
+    def append_terminal_fallback(self, failure_reason: str | None = None) -> None:
         """为 action 层确定性 fallback 添加可翻译的终止边界。"""
+        if failure_reason is not None:
+            self.terminal_failure_reason = failure_reason
         if not self.attempts or self.attempts[-1].route_kind is RouteKind.SAFE_FALLBACK:
             return
         latest = self.attempts[-1]

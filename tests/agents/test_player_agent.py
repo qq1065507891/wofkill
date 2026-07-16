@@ -3,7 +3,7 @@
 测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -1376,6 +1376,46 @@ class TestPlayerAgentRetryFallback:
         assert retry.error_code == "model_generation_failed"
         assert action.trace is not None
         assert action.trace.retry_count == _v2_retry_count(action.trace)
+
+    def test_unavailable_fallback_route_is_terminal_without_outer_retry(self) -> None:
+        class FailingProvider:
+            name = "primary"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                self.calls += 1
+                raise RuntimeError("provider unavailable")
+
+        provider = FailingProvider()
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary", "model": "same",
+                    "retry_count": 0, "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "primary", "model": "same",
+                    "retry_count": 0, "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "primary", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": provider},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+
+        action, retry = agent.act(self._make_context())
+
+        assert provider.calls == 1
+        assert retry.error_code == "fallback_route_unavailable"
+        assert action.trace is not None
+        assert action.trace.structured_failure_reason == "fallback_route_unavailable"
+        assert action.trace.provider_fallback_count == 0
 
     def test_provider_failure_trace_appends_terminal_safe_fallback(self) -> None:
         router = ModelRouter(

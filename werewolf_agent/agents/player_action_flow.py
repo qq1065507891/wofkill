@@ -181,19 +181,26 @@ def run_player_action_flow(
         )
 
         if not result.text:
-            failure_reason = agent._latest_generation_failure_reason()
-            if any(
+            route_failure = getattr(result, "structured_failure_reason", None)
+            failure_reason = route_failure or agent._latest_generation_failure_reason()
+            if not route_failure and any(
                 item.root_cause.value == "invalid_output"
                 for item in getattr(result, "attempts", ())
             ):
                 failure_reason = "empty_response"
             if failure_reason and "empty_response" not in failure_reason:
-                if "NotImplementedError" in failure_reason:
+                if route_failure == "fallback_route_unavailable":
+                    structured_failure_reason = route_failure
+                    structured_failure_stage = StructuredFailureStage.PROVIDER.value
+                    retry_error_code = route_failure
+                elif "NotImplementedError" in failure_reason:
                     structured_failure_reason = "structured_output_unsupported"
                     structured_failure_stage = StructuredFailureStage.PROTOCOL.value
+                    retry_error_code = "model_generation_failed"
                 else:
                     structured_failure_reason = "model_generation_failed"
                     structured_failure_stage = StructuredFailureStage.PROVIDER.value
+                    retry_error_code = "model_generation_failed"
                 failure_category = _categorize_failure_category(
                     latency_ms=_latency_from_result(result),
                     raw_error=failure_reason,
@@ -202,7 +209,7 @@ def run_player_action_flow(
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=agent.max_retries,
-                    error_code="model_generation_failed",
+                    error_code=retry_error_code,
                     error_message=failure_reason,
                     failure_category=failure_category,
                     correction_hint=(
@@ -210,7 +217,9 @@ def run_player_action_flow(
                         "using fallback action."
                     ),
                 )
-                generation_attempt_context.append_terminal_fallback()
+                generation_attempt_context.append_terminal_fallback(
+                    structured_failure_reason
+                )
                 fallback = finalize_fallback_player_action(
                     agent=agent,
                     context=context,
@@ -228,7 +237,7 @@ def run_player_action_flow(
                     structured_failure_reason=structured_failure_reason,
                     structured_output_mode=structured_output_mode,
                     structured_failure_stage=structured_failure_stage,
-                    metrics_error_code="model_generation_failed",
+                    metrics_error_code=retry_error_code,
                     execution_attempts=generation_attempt_context.attempts,
                 )
                 return fallback, retry

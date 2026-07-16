@@ -3,7 +3,7 @@
 验证 ModelRouter 的配置解析、provider 路由、重试与 fallback 记录。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 import pytest
@@ -240,6 +240,51 @@ class TestResolveConfig:
 
 
 class TestGenerateWithMockProvider:
+    def test_dynamic_same_route_fallback_becomes_controlled_terminal_failure(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+        from werewolf_agent.runtime.decision_outcomes import (
+            summarize_attempt_counts,
+            translate_decision_outcome,
+        )
+
+        primary = _SequenceProvider([RuntimeError("provider unavailable")], "primary")
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary", "model": "same-model",
+                    "retry_count": 0, "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback", "model": "different-model",
+                    "retry_count": 0, "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary},
+        )
+        # 模拟启动校验后配置被热更新为与主路由完全相同。
+        router._llm_profiles["profile"]["fallback"]["provider"] = "primary"
+        router._model_profiles["fallback"]["model"] = "same-model"
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert primary.calls == 1
+        assert result.text == ""
+        assert result.structured_failure_reason == "fallback_route_unavailable"
+        assert [item.route_kind.value for item in result.attempts] == [
+            "primary", "safe_fallback",
+        ]
+        assert summarize_attempt_counts(result.attempts).provider_fallback_count == 0
+        translated = translate_decision_outcome(
+            result.attempts,
+            structured_failure_reason=result.structured_failure_reason,
+        )
+        assert translated.terminal_failure_code == "fallback_route_unavailable"
+
     def test_success_exposes_one_primary_attempt(self) -> None:
         router = _make_router(providers={"anthropic": _mock_provider("anthropic")})
         router._model_profiles["claude_default"]["reasoning"] = {"level": "medium"}
@@ -911,6 +956,33 @@ class TestRetryHelpers:
 
 
 class TestFromYamlValidation:
+    def test_from_yaml_rejects_declared_same_route_fallback(self, tmp_path) -> None:
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        yaml_path = tmp_path / "same_route.yaml"
+        yaml_path.write_text(
+            "model_profiles:\n"
+            "  primary:\n"
+            "    provider: openai\n"
+            "    model: shared-model\n"
+            "    reasoning: {level: high}\n"
+            "  fallback:\n"
+            "    provider: openai\n"
+            "    model: shared-model\n"
+            "    reasoning: {level: high}\n"
+            "llm_profiles:\n"
+            "  default:\n"
+            "    default: {provider: openai, model_profile: primary}\n"
+            "    fallback: {provider: openai, model_profile: fallback}\n"
+            "players:\n"
+            "  p01: {llm_profile: default}\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ProviderConfigError, match="fallback_route_unavailable"):
+            ModelRouter.from_yaml(yaml_path)
+
     def test_from_yaml_raises_on_unknown_model_profile(self, tmp_path) -> None:
         """R3-MG-1: typos in model_profile references must surface at load time."""
         from werewolf_agent.model_gateway.router import ModelRouter
