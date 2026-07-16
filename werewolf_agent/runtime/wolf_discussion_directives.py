@@ -35,6 +35,38 @@ def living_wolf_teammates(gs: GameState, wolf_id: str) -> list[str]:
     return [player_id for player_id in living_wolf_ids(gs) if player_id != wolf_id]
 
 
+def _trusted_current_wolf_discussion_event(
+    gs: GameState,
+    event: GameEvent,
+    *,
+    wolf_ids: set[str] | None = None,
+) -> bool:
+    """判断事件能否作为本夜狼队 prompt 或 stance 的权威来源。"""
+    if event.type != "wolf_discussion":
+        return False
+    try:
+        validate_v2_event_identity(
+            gs.game_id,
+            event,
+            required_visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        )
+    except ValueError:
+        return False
+    wolf_id = event.payload.get("wolf_id")
+    round_number = event.payload.get("round")
+    wolf = gs.players.get(str(wolf_id))
+    return bool(
+        event.payload.get("night_number") == gs.night_number
+        and isinstance(round_number, int)
+        and not isinstance(round_number, bool)
+        and round_number >= 1
+        and wolf is not None
+        and wolf.alive
+        and wolf.role == "werewolf"
+        and (wolf_ids is None or wolf_id in wolf_ids)
+    )
+
+
 def collect_wolf_discussion_speeches(
     gs: GameState,
     wolf_ids: list[str],
@@ -43,7 +75,11 @@ def collect_wolf_discussion_speeches(
     wolf_id_set = set(wolf_ids)
     speeches: list[dict[str, str]] = []
     for event in gs.events:
-        if event.type == "wolf_discussion" and event.payload.get("wolf_id") in wolf_id_set:
+        if _trusted_current_wolf_discussion_event(
+            gs,
+            event,
+            wolf_ids=wolf_id_set,
+        ):
             speeches.append({
                 "wolf_id": str(event.payload.get("wolf_id", "")),
                 "round": str(event.payload.get("round", "")),
@@ -56,17 +92,7 @@ def collect_current_wolf_target_stances(gs: GameState) -> list[dict[str, Any]]:
     """读取本夜已验证的结构化 stance，不读取或解析自由文本。"""
     stances: list[dict[str, Any]] = []
     for event in gs.events:
-        if event.type != "wolf_discussion":
-            continue
-        try:
-            validate_v2_event_identity(
-                gs.game_id,
-                event,
-                required_visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
-            )
-        except ValueError:
-            continue
-        if event.payload.get("night_number") != gs.night_number:
+        if not _trusted_current_wolf_discussion_event(gs, event):
             continue
         raw_stance = event.payload.get("target_stance")
         if not isinstance(raw_stance, dict):
@@ -110,13 +136,17 @@ def build_validated_wolf_target_stance(
     wolf = gs.players.get(wolf_id)
     if wolf is None or not wolf.alive or wolf.role != "werewolf":
         raise ValueError("wolf_id must identify a current alive werewolf")
-    if (
-        discussion_event.type != "wolf_discussion"
-        or discussion_event.schema_version != "2"
-        or not discussion_event.event_id
-        or discussion_event.payload.get("night_number") != gs.night_number
+    if not _trusted_current_wolf_discussion_event(
+        gs,
+        discussion_event,
+        wolf_ids={wolf_id},
     ):
         raise ValueError("source_event_id must reference this night's V2 wolf_discussion")
+    if (
+        discussion_event.payload.get("wolf_id") != wolf_id
+        or discussion_event.payload.get("round") != round_number
+    ):
+        raise ValueError("source wolf_id/round must match target stance")
 
     draft = WolfTargetStanceAction.model_validate(
         raw_stance

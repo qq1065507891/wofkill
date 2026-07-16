@@ -54,11 +54,28 @@ def _make_game_state() -> GameState:
         phase="night",
         night_number=1,
         players=players,
-        events=[
-            GameEvent(type="wolf_discussion", payload={"wolf_id": "w1", "round": 1, "text": "我想刀p1"}),
-            GameEvent(type="wolf_discussion", payload={"wolf_id": "w2", "round": 1, "text": "我同意"}),
-            GameEvent(type="wolf_discussion", payload={"wolf_id": "w3", "round": 1, "text": "死狼不应出现"}),
-        ],
+        events=[],
+    )
+
+
+def _trusted_discussion_event(
+    gs: GameState,
+    *,
+    wolf_id: str,
+    round_number: int,
+    text: str,
+) -> GameEvent:
+    return new_game_event(
+        gs,
+        "wolf_discussion",
+        {
+            "wolf_id": wolf_id,
+            "round": round_number,
+            "night_number": gs.night_number,
+            "text": text,
+        },
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        now=datetime(2026, 7, 16, tzinfo=timezone.utc),
     )
 
 
@@ -72,7 +89,22 @@ def test_living_wolf_ids_and_teammates_use_alive_wolves_only() -> None:
 
 def test_collect_wolf_discussion_speeches_filters_non_members() -> None:
     """夜聊历史只收集存活狼队成员的发言。"""
-    speeches = collect_wolf_discussion_speeches(_make_game_state(), ["w1", "w2"])
+    gs = _make_game_state()
+    first = _trusted_discussion_event(
+        gs, wolf_id="w1", round_number=1, text="我想刀p1"
+    )
+    gs = replace(gs, events=[first])
+    second = _trusted_discussion_event(
+        gs, wolf_id="w2", round_number=1, text="我同意"
+    )
+    dead = _trusted_discussion_event(
+        replace(gs, events=[first, second]),
+        wolf_id="w3",
+        round_number=1,
+        text="死狼不应出现",
+    )
+    gs = replace(gs, events=[first, second, dead])
+    speeches = collect_wolf_discussion_speeches(gs, ["w1", "w2"])
 
     assert speeches == [
         {"wolf_id": "w1", "round": "1", "text": "我想刀p1"},
@@ -82,11 +114,91 @@ def test_collect_wolf_discussion_speeches_filters_non_members() -> None:
 
 def test_teammate_discussion_speeches_excludes_self() -> None:
     """队友发言不包含当前狼人自己的历史发言。"""
-    speeches = collect_wolf_discussion_speeches(_make_game_state(), ["w1", "w2"])
+    gs = _make_game_state()
+    first = _trusted_discussion_event(
+        gs, wolf_id="w1", round_number=1, text="我想刀p1"
+    )
+    gs = replace(gs, events=[first])
+    second = _trusted_discussion_event(
+        gs, wolf_id="w2", round_number=1, text="我同意"
+    )
+    speeches = collect_wolf_discussion_speeches(
+        replace(gs, events=[first, second]),
+        ["w1", "w2"],
+    )
 
     assert teammate_discussion_speeches(speeches, "w1") == [
         {"wolf_id": "w2", "round": "1", "text": "我同意"},
     ]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda event: replace(event, schema_version=None),
+        lambda event: replace(event, game_id="other_game"),
+        lambda event: replace(event, visibility=EventVisibility.PUBLIC),
+        lambda event: replace(event, visibility=EventVisibility.MODERATOR_ONLY),
+        lambda event: replace(
+            event,
+            payload={**event.payload, "night_number": 2},
+        ),
+        lambda event: replace(
+            event,
+            payload={**event.payload, "round": 0},
+        ),
+        lambda event: replace(
+            event,
+            payload={**event.payload, "wolf_id": "p1"},
+        ),
+    ],
+)
+def test_collect_wolf_discussion_speeches_rejects_untrusted_events(mutate) -> None:
+    """队友 prompt 不得接收旧版、跨局、跨夜或错误可见性的文本。"""
+    gs = _make_game_state()
+    event = _trusted_discussion_event(
+        gs, wolf_id="w1", round_number=1, text="trusted text"
+    )
+    gs = replace(gs, events=[mutate(event)])
+
+    assert collect_wolf_discussion_speeches(gs, ["w1", "w2"]) == []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda event: replace(event, game_id="other_game"),
+        lambda event: replace(event, visibility=EventVisibility.PUBLIC),
+        lambda event: replace(
+            event,
+            payload={**event.payload, "wolf_id": "w2"},
+        ),
+        lambda event: replace(
+            event,
+            payload={**event.payload, "round": 2},
+        ),
+    ],
+    ids=["cross_game", "public", "actor_mismatch", "round_mismatch"],
+)
+def test_build_validated_stance_rejects_mismatched_source_event(mutate) -> None:
+    """构造边界直接拒绝跨局、公开、actor 或轮次不一致的 source。"""
+    gs = _make_game_state()
+    event = _trusted_discussion_event(
+        gs, wolf_id="w1", round_number=1, text=""
+    )
+
+    with pytest.raises(ValueError):
+        build_validated_wolf_target_stance(
+            gs,
+            mutate(event),
+            wolf_id="w1",
+            round_number=1,
+            raw_stance={
+                "target_id": "p1",
+                "stance": "propose",
+                "priority": "primary",
+            },
+        )
 
 
 def test_build_wolf_discussion_instruction_adds_response_and_first_night_role_split() -> None:
