@@ -184,6 +184,48 @@ def test_balance_audit_flags_high_wolf_win_rate():
     assert "wolf_win_rate_high" in audit["warnings"]
 
 
+def test_balance_audit_normalizes_each_game_once(monkeypatch) -> None:
+    from werewolf_agent.evaluation import game_projection
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    source = {
+        "game_id": "g-balance-normalize-once",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+        "deaths": [],
+    }
+    original = game_projection.project_acceptance_game
+    calls = []
+
+    def counting_project(value, **kwargs):
+        calls.append(value)
+        return original(value, **kwargs)
+
+    monkeypatch.setattr(game_projection, "project_acceptance_game", counting_project)
+
+    compute_balance_audit([source])
+
+    assert calls == [source]
+
+
+def test_balance_audit_does_not_trust_forged_projection_markers() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    audit = compute_balance_audit([{
+        "game_id": "g-forged-projection",
+        "players": {"p01": {"role": "villager"}},
+        "events": {},
+        "deaths": [],
+        "_acceptance_projection_supported": True,
+        "_acceptance_projection_unsupported_reason": None,
+    }])
+
+    assert audit["acceptance_projection_supported"] is False
+    assert audit["acceptance_projection_unsupported_reason"] == (
+        "invalid_events_container"
+    )
+
+
 def test_balance_audit_counts_schema_failures_and_weak_wolf_plan_kills():
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit
 

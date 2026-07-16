@@ -539,7 +539,7 @@ def _resolve_within_output_root(
     trusted_root: Path, candidate: Path,
 ) -> Path:
     """解析 junction/symlink 后仍要求候选路径位于原始信任根。"""
-    root = trusted_root.resolve()
+    root = trusted_root
     resolved = candidate.resolve()
     if resolved != root and not resolved.is_relative_to(root):
         raise ValueError("artifact path is outside output_dir")

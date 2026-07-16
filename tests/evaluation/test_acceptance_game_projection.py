@@ -860,6 +860,50 @@ def test_low_quality_resolved_directory_cannot_escape_original_output_root(
     assert list(outside.iterdir()) == []
 
 
+def test_save_pins_first_resolved_output_root_against_later_root_drift(
+    tmp_path, monkeypatch,
+) -> None:
+    from scripts import run_real_game
+    from werewolf_agent.evaluation.game_projection import AcceptanceGameProjection
+
+    requested = tmp_path / "requested"
+    canonical = tmp_path / "trusted"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_resolve = run_real_game.Path.resolve
+    resolve_calls = []
+
+    def drifting_resolve(path, *args, **kwargs):
+        resolve_calls.append(path)
+        if path == requested:
+            return canonical
+        if path == canonical or path.is_relative_to(canonical):
+            return outside / path.relative_to(canonical)
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_real_game.Path, "resolve", drifting_resolve)
+    projection = AcceptanceGameProjection(
+        game_id="g-pinned-root",
+        events=(),
+        players={},
+        winning_faction=None,
+        status="running",
+    )
+
+    with pytest.raises(ValueError, match="outside output_dir"):
+        run_real_game.save_game_log(
+            None,
+            0.1,
+            projection=projection,
+            quality_score={"fallback_rate": 1.0, "total_quality_events": 6},
+            output_dir=requested,
+        )
+
+    assert resolve_calls[0] == requested
+    assert canonical not in resolve_calls
+    assert not list(outside.rglob("game_*.json"))
+
+
 def test_atomic_writer_rejects_target_parent_outside_trusted_root(tmp_path) -> None:
     from scripts.run_real_game import _atomic_write_json
 
@@ -876,6 +920,39 @@ def test_atomic_writer_rejects_target_parent_outside_trusted_root(tmp_path) -> N
         )
 
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("escape_stage", ["target", "temporary"])
+def test_atomic_writer_rejects_resolved_target_or_temp_escape(
+    tmp_path, monkeypatch, escape_stage,
+) -> None:
+    from scripts import run_real_game
+
+    trusted_root = tmp_path / "trusted"
+    trusted_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = trusted_root / "game_safe.json"
+    real_resolve = run_real_game.Path.resolve
+
+    def redirected_resolve(path, *args, **kwargs):
+        if escape_stage == "target" and path == target:
+            return outside / path.name
+        if escape_stage == "temporary" and path.suffix == ".tmp":
+            return outside / path.name
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_real_game.Path, "resolve", redirected_resolve)
+
+    with pytest.raises(ValueError, match="outside output_dir"):
+        run_real_game._atomic_write_json(
+            target,
+            {"game_id": "safe"},
+            trusted_root=trusted_root,
+        )
+
+    assert list(outside.iterdir()) == []
+    assert not target.exists()
 
 
 def test_save_game_log_never_reads_runner(tmp_path) -> None:

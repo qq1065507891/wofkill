@@ -41,7 +41,7 @@ from werewolf_agent.evaluation.decision_execution_audit import (
     compute_decision_execution_metrics,
 )
 from werewolf_agent.evaluation.game_projection import (
-    normalize_acceptance_games,
+    ensure_normalized_acceptance_games,
     projection_support,
 )
 
@@ -50,7 +50,7 @@ def compute_acceptance_audit_metrics(
     games: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """组合执行 taxonomy 与跨责任域验收指标，供单局和批量报告复用。"""
-    normalized = normalize_acceptance_games(games)
+    normalized = ensure_normalized_acceptance_games(games)
     supported, unsupported_reason = projection_support(normalized)
     return {
         **compute_decision_execution_metrics(normalized),
