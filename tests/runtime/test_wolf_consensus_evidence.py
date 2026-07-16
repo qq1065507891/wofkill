@@ -8,9 +8,14 @@
 
 from __future__ import annotations
 
+import pickle
+from dataclasses import replace
+
 import pytest
 
 from werewolf_agent.agents.schemas import WolfTargetStance
+from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.core.models import GameState, PlayerState
 
 
 def _stance(
@@ -164,3 +169,163 @@ def test_two_simultaneous_strict_majorities_fail_closed() -> None:
                 "p2": {"w2", "w3"},
             },
         )
+
+
+def _runtime_state_with_stances(
+    entries: tuple[tuple[str, str, str], ...],
+) -> dict[str, object]:
+    from werewolf_agent.runtime.event_metadata import new_game_event
+    from werewolf_agent.runtime.wolf_discussion_directives import (
+        build_validated_wolf_target_stance,
+    )
+
+    players = {
+        **{
+            wolf_id: PlayerState(id=wolf_id, role="werewolf", alive=True)
+            for wolf_id in ("w1", "w2", "w3")
+        },
+        "p1": PlayerState(id="p1", role="villager", alive=True),
+        "p2": PlayerState(id="p2", role="seer", alive=True),
+    }
+    gs = GameState(game_id="authoritative-runtime", players=players, night_number=1)
+    for round_number, (wolf_id, target_id, stance_name) in enumerate(
+        entries,
+        start=1,
+    ):
+        payload = {
+            "wolf_id": wolf_id,
+            "round": round_number,
+            "night_number": 1,
+            "text": "",
+        }
+        event = new_game_event(
+            gs,
+            "wolf_discussion",
+            payload,
+            visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        )
+        stance = build_validated_wolf_target_stance(
+            gs,
+            event,
+            wolf_id=wolf_id,
+            round_number=round_number,
+            raw_stance={
+                "target_id": target_id,
+                "stance": stance_name,
+                "priority": "primary",
+            },
+        )
+        event = replace(
+            event,
+            payload={**payload, "target_stance": stance.model_dump()},
+        )
+        gs = replace(gs, events=[*gs.events, event])
+    return {"game_state": gs}
+
+
+def test_no_plan_valid_stance_majority_still_executes_authoritative_target() -> None:
+    from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+    state = _runtime_state_with_stances((
+        ("w1", "p1", "support"),
+        ("w2", "p1", "support"),
+        ("w3", "p2", "support"),
+    ))
+
+    result = _planned_wolf_kill(state)
+
+    assert result is not None
+    assert result["wolf_kill_target_id"] == "p1"
+
+
+def test_execution_reaggregates_later_stance_changes_instead_of_using_cache() -> None:
+    from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+    initial = _runtime_state_with_stances((
+        ("w1", "p1", "support"),
+        ("w2", "p1", "support"),
+        ("w3", "p2", "support"),
+    ))
+    initial_result = _planned_wolf_kill(initial)
+    assert initial_result is not None
+    assert initial_result["wolf_kill_target_id"] == "p1"
+
+    changed = _runtime_state_with_stances((
+        ("w1", "p1", "support"),
+        ("w2", "p1", "support"),
+        ("w3", "p2", "support"),
+        ("w1", "p2", "support"),
+        ("w2", "p2", "support"),
+    ))
+    changed["wolf_consensus_evidence"] = _derive(
+        _stance("w1", "p1"),
+        _stance("w2", "p1"),
+        _stance("w3", "p2"),
+    )
+
+    changed_result = _planned_wolf_kill(changed)
+
+    assert changed_result is not None
+    assert changed_result["wolf_kill_target_id"] == "p2"
+
+
+def test_hand_constructed_cached_majority_cannot_authorize_without_events() -> None:
+    from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+    from werewolf_agent.runtime.wolf_consensus_evidence import (
+        WolfConsensusEvidenceV2,
+        WolfPriorityConsensus,
+    )
+
+    state = _runtime_state_with_stances(())
+    state["wolf_consensus_evidence"] = WolfConsensusEvidenceV2(
+        night_number=1,
+        alive_wolf_ids=("w1", "w2", "w3"),
+        stances=(),
+        quorum=2,
+        primary=WolfPriorityConsensus(
+            priority="primary",
+            target_id="p1",
+            status="majority",
+            supporters_by_target={},
+        ),
+        backup=WolfPriorityConsensus(
+            priority="backup",
+            target_id=None,
+            status="all_abstain",
+            supporters_by_target={},
+        ),
+    )
+
+    result = _planned_wolf_kill(state)
+
+    assert result is not None
+    assert result["wolf_kill_target_id"] is None
+    assert result["game_state"].events[-1].payload["reason"] == "strategic_abstain"
+
+
+def test_evidence_is_pickle_safe_and_retained_by_real_checkpointed_graph() -> None:
+    from werewolf_agent.runtime.checkpoints import make_checkpointer
+    from werewolf_agent.runtime.graph import build_game_graph_with_checkpoint
+    from werewolf_agent.runtime.wolf_consensus_evidence import (
+        deserialize_wolf_consensus_evidence,
+        serialize_wolf_consensus_evidence,
+    )
+
+    evidence = _derive(_stance("w1", "p1"), _stance("w2", "p1"))
+    assert pickle.loads(pickle.dumps(evidence)) == evidence
+    serialized = serialize_wolf_consensus_evidence(evidence)
+    assert deserialize_wolf_consensus_evidence(serialized) == evidence
+
+    graph = build_game_graph_with_checkpoint(make_checkpointer())
+    config = {"configurable": {"thread_id": "wolf-consensus-channel"}}
+    graph.update_state(
+        config,
+        {"wolf_consensus_evidence": serialized},
+        as_node="wolf_team_plan",
+    )
+    restored = graph.get_state(config)
+
+    assert restored.values["wolf_consensus_evidence"] == serialized
+    assert deserialize_wolf_consensus_evidence(
+        restored.values["wolf_consensus_evidence"]
+    ) == evidence

@@ -481,6 +481,7 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
     from werewolf_agent.runtime.wolf_consensus_evidence import (
         ConsensusInvariantViolation,
         derive_wolf_consensus_evidence,
+        serialize_wolf_consensus_evidence,
     )
     from werewolf_agent.runtime.wolf_discussion_directives import (
         collect_current_wolf_target_stances,
@@ -544,5 +545,7 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
     result = {"game_state": gs, "wolf_team_plan": plan}
     if consensus is not None:
-        result["wolf_consensus_evidence"] = consensus
+        result["wolf_consensus_evidence"] = (
+            serialize_wolf_consensus_evidence(consensus)
+        )
     return result

@@ -420,6 +420,39 @@ def test_structured_stance_collector_rejects_forged_non_v2_or_dead_target() -> N
     assert collect_current_wolf_target_stances(gs) == []
 
 
+def test_collector_retains_valid_stance_when_target_dies_after_event() -> None:
+    """事件写入时合法的目标稍后死亡，权威立场仍用于判断主刀失效与备刀。"""
+    gs = _make_game_state()
+    event = new_game_event(
+        gs,
+        "wolf_discussion",
+        {"wolf_id": "w1", "round": 1, "night_number": 1, "text": ""},
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+    stance = build_validated_wolf_target_stance(
+        gs,
+        event,
+        wolf_id="w1",
+        round_number=1,
+        raw_stance={
+            "target_id": "p1",
+            "stance": "support",
+            "priority": "primary",
+        },
+    )
+    event = replace(
+        event,
+        payload={**event.payload, "target_stance": stance.model_dump()},
+    )
+    players = {
+        **gs.players,
+        "p1": replace(gs.players["p1"], alive=False),
+    }
+    gs = replace(gs, players=players, events=[event])
+
+    assert collect_current_wolf_target_stances(gs) == [stance.model_dump()]
+
+
 def _with_naive_occurred_at(event: GameEvent) -> GameEvent:
     """构造绕过 dataclass 入口的损坏内存事件，验证读取边界 fail closed。"""
     forged = replace(event)

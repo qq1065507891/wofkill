@@ -49,7 +49,8 @@ def test_wolf_night_node_groups_are_importable() -> None:
     assert wolf_consensus.wolf_consensus is wolf_night_nodes.wolf_consensus
 
 
-def test_wolf_nodes_respect_old_agent_monkeypatch_path(monkeypatch) -> None:
+def test_wolf_discussion_keeps_compat_patch_but_consensus_does_not(monkeypatch) -> None:
+    """夜聊兼容旧补丁；无 stance 时旧共识 agent 不再具备执行权。"""
     from werewolf_agent.runtime.nodes import night as night_mod
 
     calls: list[Any] = []
@@ -84,4 +85,4 @@ def test_wolf_nodes_respect_old_agent_monkeypatch_path(monkeypatch) -> None:
     night_mod.wolf_consensus({**state, "game_state": discussion_result["game_state"]})
 
     assert fake_wolf_discussion in calls
-    assert fake_wolf_consensus in calls
+    assert fake_wolf_consensus not in calls

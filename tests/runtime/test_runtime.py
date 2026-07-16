@@ -91,7 +91,7 @@ from tests.runtime.test_wolf_flow import (
     test_wolf_consensus_timeout_defaults_to_no_kill_event,
     test_wolf_consensus_explicit_no_kill_records_declared_event,
     test_wolf_consensus_kill_records_selected_target,
-    test_wolf_consensus_prefers_planned_primary_then_backup_target,
+    test_wolf_consensus_does_not_execute_legacy_plan_evidence,
     test_wolf_discussion_timer_expiration_forces_no_kill_timeout,
     test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan,
     test_later_night_wolf_discussion_runs_two_rounds_and_revises_plan,

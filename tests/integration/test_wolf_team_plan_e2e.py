@@ -1,12 +1,10 @@
-"""End-to-end smoke: real wolf_discussion → wolf_team_plan_node → wolf_consensus
-chain with mock LLM that returns a valid WolfTeamPlan JSON.
+# -*- coding: utf-8 -*-
+"""
+验证狼队夜聊、队伍计划与权威结构化共识的端到端衔接。
 
-Verifies the new LLM-path produces a wolf_team_plan event with
-consensus_method='llm' and that wolf_consensus picks the captain's chosen
-primary kill target.
-
-This substitutes for the real-LLM game smoke test (T9 of plan) when the
-remote provider is rate-limited (HTTP 429 baidu/qianfan).
+作者: Project contributors
+创建日期: 2026-07-16
+修改日期: 2026-07-16
 """
 from __future__ import annotations
 

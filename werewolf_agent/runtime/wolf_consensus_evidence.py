@@ -11,9 +11,10 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
 from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Literal, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from pydantic import ConfigDict
 
@@ -42,10 +43,57 @@ class ConsensusInvariantViolation(ValueError):
         )
 
 
-class _ImmutableWolfTargetStance(WolfTargetStance):
+class ImmutableWolfTargetStance(WolfTargetStance):
     """隔离调用方可变对象，防止聚合后立场历史被原地篡改。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+@dataclass(frozen=True)
+class FrozenSupportersByTarget(Mapping[str, tuple[str, ...]]):
+    """使用纯 tuple 保存支持者映射，兼容 pickle/checkpoint 且不可原地修改。"""
+
+    entries: tuple[tuple[str, tuple[str, ...]], ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "entries",
+            tuple(
+                (str(target_id), tuple(str(wolf_id) for wolf_id in supporters))
+                for target_id, supporters in self.entries
+            ),
+        )
+
+    @classmethod
+    def from_mapping(
+        cls,
+        supporters_by_target: Mapping[str, Sequence[str]],
+    ) -> "FrozenSupportersByTarget":
+        return cls(tuple(
+            (
+                target_id,
+                tuple(sorted(set(supporters))),
+            )
+            for target_id, supporters in sorted(supporters_by_target.items())
+        ))
+
+    def __getitem__(self, target_id: str) -> tuple[str, ...]:
+        for current_target, supporters in self.entries:
+            if current_target == target_id:
+                return supporters
+        raise KeyError(target_id)
+
+    def __iter__(self) -> Iterator[str]:
+        return (target_id for target_id, _supporters in self.entries)
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return False
+        return dict(self.items()) == dict(other.items())
 
 
 @dataclass(frozen=True)
@@ -55,18 +103,17 @@ class WolfPriorityConsensus:
     priority: WolfPriority
     target_id: str | None
     status: WolfConsensusStatus
-    supporters_by_target: dict[str, tuple[str, ...]]
+    supporters_by_target: Mapping[str, tuple[str, ...]]
 
     def __post_init__(self) -> None:
-        frozen_supporters = {
-            target_id: tuple(sorted(set(supporters)))
-            for target_id, supporters in sorted(self.supporters_by_target.items())
-        }
-        object.__setattr__(
-            self,
-            "supporters_by_target",
-            MappingProxyType(frozen_supporters),
-        )
+        if not isinstance(self.supporters_by_target, FrozenSupportersByTarget):
+            object.__setattr__(
+                self,
+                "supporters_by_target",
+                FrozenSupportersByTarget.from_mapping(
+                    self.supporters_by_target
+                ),
+            )
 
 
 @dataclass(frozen=True)
@@ -79,6 +126,23 @@ class WolfConsensusEvidenceV2:
     quorum: int
     primary: WolfPriorityConsensus
     backup: WolfPriorityConsensus
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "alive_wolf_ids", tuple(self.alive_wolf_ids))
+        object.__setattr__(
+            self,
+            "stances",
+            tuple(
+                stance
+                if isinstance(stance, ImmutableWolfTargetStance)
+                else ImmutableWolfTargetStance.model_validate(
+                    stance.model_dump()
+                    if isinstance(stance, WolfTargetStance)
+                    else stance
+                )
+                for stance in self.stances
+            ),
+        )
 
 
 def _consensus_from_supporters(
@@ -148,7 +212,7 @@ def derive_wolf_consensus_evidence(
         raise ValueError("alive_wolf_ids must be unique")
 
     stance_history = tuple(
-        _ImmutableWolfTargetStance.model_validate(stance.model_dump())
+        ImmutableWolfTargetStance.model_validate(stance.model_dump())
         for stance in stances
     )
     alive_wolf_set = set(alive_wolves)
@@ -183,9 +247,74 @@ def derive_wolf_consensus_evidence(
     )
 
 
+def serialize_wolf_consensus_evidence(
+    evidence: WolfConsensusEvidenceV2,
+) -> str:
+    """把不可变证据编码为 checkpoint 安全的规范 JSON 字符串。"""
+    def priority_payload(priority: WolfPriorityConsensus) -> dict[str, Any]:
+        return {
+            "priority": priority.priority,
+            "target_id": priority.target_id,
+            "status": priority.status,
+            "supporters_by_target": {
+                target_id: list(supporters)
+                for target_id, supporters
+                in priority.supporters_by_target.items()
+            },
+        }
+
+    return json.dumps(
+        {
+            "night_number": evidence.night_number,
+            "alive_wolf_ids": list(evidence.alive_wolf_ids),
+            "stances": [
+                stance.model_dump(mode="json")
+                for stance in evidence.stances
+            ],
+            "quorum": evidence.quorum,
+            "primary": priority_payload(evidence.primary),
+            "backup": priority_payload(evidence.backup),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def deserialize_wolf_consensus_evidence(
+    serialized: str,
+) -> WolfConsensusEvidenceV2:
+    """从规范 JSON 恢复不可变证据，仅供审计、检查点与回放读取。"""
+    payload = json.loads(serialized)
+
+    def priority_from_payload(raw: Mapping[str, Any]) -> WolfPriorityConsensus:
+        return WolfPriorityConsensus(
+            priority=raw["priority"],
+            target_id=raw.get("target_id"),
+            status=raw["status"],
+            supporters_by_target=raw.get("supporters_by_target") or {},
+        )
+
+    return WolfConsensusEvidenceV2(
+        night_number=payload["night_number"],
+        alive_wolf_ids=tuple(payload["alive_wolf_ids"]),
+        stances=tuple(
+            ImmutableWolfTargetStance.model_validate(raw_stance)
+            for raw_stance in payload["stances"]
+        ),
+        quorum=payload["quorum"],
+        primary=priority_from_payload(payload["primary"]),
+        backup=priority_from_payload(payload["backup"]),
+    )
+
+
 __all__ = [
     "ConsensusInvariantViolation",
+    "FrozenSupportersByTarget",
+    "ImmutableWolfTargetStance",
     "WolfConsensusEvidenceV2",
     "WolfPriorityConsensus",
+    "deserialize_wolf_consensus_evidence",
     "derive_wolf_consensus_evidence",
+    "serialize_wolf_consensus_evidence",
 ]

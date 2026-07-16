@@ -187,10 +187,11 @@ class TestWeakPlanQuorum:
 
     @staticmethod
     def _state(evidence, *, wolf_count=3, primary="p10", backup=None):
+        from dataclasses import replace
+
         from werewolf_agent.agents.schemas import WolfTargetStance
-        from werewolf_agent.runtime.wolf_consensus_evidence import (
-            derive_wolf_consensus_evidence,
-        )
+        from werewolf_agent.core.event_visibility import EventVisibility
+        from werewolf_agent.runtime.event_metadata import new_game_event
 
         players = {
             **{
@@ -201,17 +202,32 @@ class TestWeakPlanQuorum:
             "p11": PlayerState(id="p11", role="villager", alive=True),
         }
         gs = GameState(game_id="weak-quorum", players=players, night_number=1)
-        stances = tuple(
-            WolfTargetStance(
+        for index, item in enumerate(evidence, start=1):
+            payload = {
+                "wolf_id": item["wolf_id"],
+                "round": index,
+                "night_number": 1,
+                "text": "",
+            }
+            event = new_game_event(
+                gs,
+                "wolf_discussion",
+                payload,
+                visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+            )
+            stance = WolfTargetStance(
                 wolf_id=item["wolf_id"],
                 target_id=item["target"],
                 stance="support",
                 priority="primary",
-                source_event_id=f"weak-quorum:e{index:06d}",
+                source_event_id=event.event_id,
                 round_number=index,
             )
-            for index, item in enumerate(evidence, start=1)
-        )
+            event = replace(
+                event,
+                payload={**payload, "target_stance": stance.model_dump()},
+            )
+            gs = replace(gs, events=[*gs.events, event])
         return {
             "game_state": gs,
             "wolf_team_plan": {
@@ -220,11 +236,6 @@ class TestWeakPlanQuorum:
                 "evidence_quality": "weak",
                 "evidence_from_discussion": evidence,
             },
-            "wolf_consensus_evidence": derive_wolf_consensus_evidence(
-                1,
-                tuple(f"w{i}" for i in range(1, wolf_count + 1)),
-                stances,
-            ),
         }
 
     def test_three_wolves_need_two_unique_supporters(self):

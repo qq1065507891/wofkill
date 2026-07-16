@@ -114,7 +114,6 @@ def collect_current_wolf_target_stances(gs: GameState) -> list[dict[str, Any]]:
                 stance.target_id is not None
                 and (
                     target is None
-                    or not target.alive
                     or target.role == "werewolf"
                 )
             )

@@ -292,7 +292,6 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     """只依据本夜结构化 stance 共识选择主刀，必要时再读取备刀。"""
     from werewolf_agent.runtime.wolf_consensus_evidence import (
         ConsensusInvariantViolation,
-        WolfConsensusEvidenceV2,
         WolfPriorityConsensus,
         derive_wolf_consensus_evidence,
     )
@@ -301,45 +300,36 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     )
 
     gs: GameState = state["game_state"]
-    plan = state.get("wolf_team_plan") or {}
-    if not plan and state.get("wolf_consensus_evidence") is None:
-        return None
     alive_wolves = tuple(_alive_wolves(gs))
     if not alive_wolves:
         return None
 
-    consensus = state.get("wolf_consensus_evidence")
-    if not (
-        isinstance(consensus, WolfConsensusEvidenceV2)
-        and consensus.night_number == gs.night_number
-        and consensus.alive_wolf_ids == alive_wolves
-    ):
-        raw_stances = collect_current_wolf_target_stances(gs)
-        stances = tuple(
-            WolfTargetStance.model_validate(raw_stance)
-            for raw_stance in raw_stances
+    raw_stances = collect_current_wolf_target_stances(gs)
+    stances = tuple(
+        WolfTargetStance.model_validate(raw_stance)
+        for raw_stance in raw_stances
+    )
+    try:
+        consensus = derive_wolf_consensus_evidence(
+            gs.night_number,
+            alive_wolves,
+            stances,
         )
-        try:
-            consensus = derive_wolf_consensus_evidence(
-                gs.night_number,
-                alive_wolves,
-                stances,
-            )
-        except ConsensusInvariantViolation as exc:
-            event = GameEvent(
-                type="wolf_consensus_invariant_violation",
-                payload={
-                    "night_number": gs.night_number,
-                    "reason": exc.reason_code,
-                    "priority": exc.priority,
-                    "targets": list(exc.targets),
-                    "visibility": "moderator_only",
-                },
-            )
-            return {
-                "game_state": replace(gs, events=[*gs.events, event]),
-                "wolf_kill_target_id": None,
-            }
+    except ConsensusInvariantViolation as exc:
+        event = GameEvent(
+            type="wolf_consensus_invariant_violation",
+            payload={
+                "night_number": gs.night_number,
+                "reason": exc.reason_code,
+                "priority": exc.priority,
+                "targets": list(exc.targets),
+                "visibility": "moderator_only",
+            },
+        )
+        return {
+            "game_state": replace(gs, events=[*gs.events, event]),
+            "wolf_kill_target_id": None,
+        }
 
     def no_kill(priority: WolfPriorityConsensus, reason: str) -> dict[str, Any]:
         event = GameEvent(

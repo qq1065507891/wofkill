@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.runtime_state import _new_engine
@@ -70,6 +71,7 @@ class RuntimeState(TypedDict, total=False):
     agent_call_timeout: float
     wolf_discussion_round: int
     wolf_team_plan: dict[str, Any]
+    wolf_consensus_evidence: str
     repository: Any
     discussion_positions: list[dict[str, Any]]
     judge_agent: Any
