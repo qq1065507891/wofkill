@@ -14,9 +14,7 @@ import json
 from dataclasses import replace
 from typing import Any
 
-import pytest
-
-from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.core.models import GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.nodes import night as night_mod
 
@@ -61,11 +59,10 @@ class _DispatchStubbedRegistry:
         return None
 
 
-def test_e2e_n1_llm_captain_produces_plan_and_consensus_picks_target(monkeypatch):
+def test_e2e_n1_authoritative_stances_override_llm_recommendation(monkeypatch):
     """Full N1 chain: wolf_discussion → wolf_team_plan_node → wolf_consensus.
 
-    The captain LLM returns a valid WolfTeamPlan that names p06 (alive seer)
-    as primary kill. wolf_consensus must pick p06 via _planned_wolf_kill.
+    队长 LLM 推荐 backup，但结构化 stance 多数支持 primary；执行只能服从 stance。
     """
     engine = _new_engine()
     players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=1)
@@ -78,8 +75,8 @@ def test_e2e_n1_llm_captain_produces_plan_and_consensus_picks_target(monkeypatch
 
     plan_payload = {
         "night_number": 1,
-        "night_kill_primary": target,
-        "night_kill_backup": backup_target,
+        "night_kill_primary": backup_target,
+        "night_kill_backup": target,
         "fake_seer": alive_wolves[0],
         "pusher": alive_wolves[1],
         "hooker": alive_wolves[2],
@@ -94,7 +91,14 @@ def test_e2e_n1_llm_captain_produces_plan_and_consensus_picks_target(monkeypatch
     # Stub wolf_discussion's dispatch so it doesn't try to call real LLM
     def fake_dispatch_agent(_state, _fn, *_extra_args, **_kwargs):
         wolf_id = _extra_args[0]
-        return {"speech_text": f"{wolf_id} round {_state.get('wolf_discussion_round')}: 刀 {target}, 分工见队长"}
+        return {
+            "speech_text": f"{wolf_id} 支持刀 {target}",
+            "target_stance": {
+                "target_id": target,
+                "stance": "support",
+                "priority": "primary",
+            },
+        }
 
     monkeypatch.setattr(night_mod, "_dispatch_agent", fake_dispatch_agent)
 
@@ -122,7 +126,7 @@ def test_e2e_n1_llm_captain_produces_plan_and_consensus_picks_target(monkeypatch
     assert plan["captain_id"] == captain
     assert plan["fake_seer"] == alive_wolves[0]
     assert plan["pusher"] == alive_wolves[1]
-    assert plan["night_kill_primary"] == target
+    assert plan["night_kill_primary"] == backup_target
 
     plan_events = [e for e in state2["game_state"].events if e.type == "wolf_team_plan"]
     fallback_events = [e for e in state2["game_state"].events if e.type == "wolf_team_plan_fallback"]
@@ -131,12 +135,12 @@ def test_e2e_n1_llm_captain_produces_plan_and_consensus_picks_target(monkeypatch
     assert plan_events[0].payload["consensus_method"] == "llm"
     assert len(fallback_events) == 0
 
-    # Step 3: wolf_consensus reads the plan and picks the captain's target
+    # Step 3: wolf_consensus derives authority from stance, not the LLM target.
     from werewolf_agent.runtime.graph import wolf_consensus
     state3 = {**state2, "engine": engine}
     result = wolf_consensus(state3)
     assert result["wolf_kill_target_id"] == target, (
-        f"wolf_consensus should pick captain's planned target {target}, "
+        f"wolf_consensus should pick authoritative stance target {target}, "
         f"got {result.get('wolf_kill_target_id')}"
     )
 
@@ -144,6 +148,106 @@ def test_e2e_n1_llm_captain_produces_plan_and_consensus_picks_target(monkeypatch
     kill_events = [e for e in result["game_state"].events if e.type == "wolf_kill_selected"]
     assert len(kill_events) == 1
     assert kill_events[0].payload["target_id"] == target
+    mismatch_events = [
+        e
+        for e in result["game_state"].events
+        if e.type == "wolf_consensus_plan_mismatch"
+    ]
+    assert mismatch_events
+    primary_mismatch = next(
+        event
+        for event in mismatch_events
+        if event.payload["priority"] == "primary"
+    )
+    assert primary_mismatch.payload["visibility"] == "moderator_only"
+    assert primary_mismatch.payload["authoritative_target_id"] == target
+    assert primary_mismatch.payload["recommended_target_id"] == backup_target
+
+
+def test_e2e_dead_authoritative_primary_uses_independent_majority_backup() -> None:
+    """主刀执行前非法时才读取独立达到多数的备刀。"""
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf", alive=True),
+        "w2": PlayerState(id="w2", role="werewolf", alive=True),
+        "w3": PlayerState(id="w3", role="werewolf", alive=True),
+        "p1": PlayerState(id="p1", role="villager", alive=False),
+        "p2": PlayerState(id="p2", role="seer", alive=True),
+        "p3": PlayerState(id="p3", role="villager", alive=True),
+    }
+    from werewolf_agent.runtime.event_metadata import new_game_event
+    from werewolf_agent.runtime.wolf_discussion_directives import (
+        build_validated_wolf_target_stance,
+    )
+
+    gs = GameState(game_id="backup-majority", players=players, night_number=1)
+    for index, (wolf_id, target_id, priority) in enumerate((
+        ("w1", "p3", "primary"),
+        ("w2", "p3", "primary"),
+        ("w1", "p2", "backup"),
+        ("w2", "p2", "backup"),
+    ), start=1):
+        base = {
+            "wolf_id": wolf_id,
+            "round": index,
+            "night_number": 1,
+            "text": "",
+            "visibility": "werewolf_team_only",
+        }
+        event = new_game_event(gs, "wolf_discussion", base)
+        stance = build_validated_wolf_target_stance(
+            gs,
+            event,
+            wolf_id=wolf_id,
+            round_number=index,
+            raw_stance={
+                "target_id": target_id,
+                "stance": "support",
+                "priority": priority,
+            },
+        )
+        event = replace(event, payload={**base, "target_stance": stance.model_dump()})
+        gs = replace(gs, events=[*gs.events, event])
+
+    from werewolf_agent.agents.schemas import WolfTargetStance
+    from werewolf_agent.runtime.wolf_consensus_evidence import (
+        derive_wolf_consensus_evidence,
+    )
+    from werewolf_agent.runtime.wolf_discussion_directives import (
+        collect_current_wolf_target_stances,
+    )
+
+    consensus = derive_wolf_consensus_evidence(
+        1,
+        ("w1", "w2", "w3"),
+        tuple(
+            WolfTargetStance.model_validate(raw_stance)
+            for raw_stance in collect_current_wolf_target_stances(gs)
+        ),
+    )
+
+    # 共识形成后 primary p3 在执行前死亡，backup p2 仍合法。
+    players["p3"] = replace(players["p3"], alive=False)
+    gs = replace(gs, players=players)
+    from werewolf_agent.runtime.graph import wolf_consensus
+
+    result = wolf_consensus({
+        "game_state": gs,
+        "wolf_team_plan": {
+            "night_kill_primary": "p3",
+            "night_kill_backup": "p2",
+            "evidence_quality": "none",
+            "evidence_from_discussion": [],
+        },
+        "wolf_consensus_evidence": consensus,
+    })
+
+    assert result["wolf_kill_target_id"] == "p2"
+    selected = [
+        event
+        for event in result["game_state"].events
+        if event.type == "wolf_kill_selected"
+    ]
+    assert selected[-1].payload["plan_key"] == "night_kill_backup"
 
 
 def test_e2e_n1_llm_failure_triggers_fallback_with_audit_event(monkeypatch):

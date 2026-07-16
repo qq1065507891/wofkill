@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-13
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.wolf_team_plan_support import build_prior_plan_summary
@@ -113,7 +113,7 @@ def build_wolf_team_plan_evidence(
     plan_dict: Mapping[str, Any],
     captain_id: str,
 ) -> list[dict[str, Any]]:
-    """为 LLM 队长选择的击杀目标生成下游审计需要的合成证据。"""
+    """生成 LLM 推荐的展示证据；该返回值不得参与 V2 执行授权。"""
     synthetic_evidence: list[dict[str, Any]] = []
     if plan_dict.get("night_kill_primary"):
         synthetic_evidence.append({

@@ -552,7 +552,7 @@ def test_wolf_discussion_drops_stale_targets_without_current_discussion_evidence
     assert plan["day_push_target"] is None
     assert plan["evidence_quality"] == "none"
 
-def test_wolf_consensus_prefers_planned_primary_then_backup_target() -> None:
+def test_wolf_consensus_does_not_execute_legacy_plan_evidence() -> None:
     from werewolf_agent.runtime.graph import wolf_consensus
 
     players = {
@@ -574,10 +574,10 @@ def test_wolf_consensus_prefers_planned_primary_then_backup_target() -> None:
         },
     })
 
-    assert result["wolf_kill_target_id"] == "v2"
+    assert result["wolf_kill_target_id"] is None
     event = _last_non_broadcast_event(result["game_state"])
-    assert event.type == "wolf_kill_selected"
-    assert event.payload["target_id"] == "v2"
+    assert event.type == "wolf_no_kill_timeout"
+    assert event.payload["reason"] == "strategic_abstain"
 
 
 def test_wolf_consensus_rejects_fallback_plan_without_target_evidence() -> None:
@@ -745,7 +745,27 @@ class TestPlannedWolfKillPrimaryAlive:
             players=players,
             night_number=1,
         )
+        from werewolf_agent.agents.schemas import WolfTargetStance
+        from werewolf_agent.runtime.wolf_consensus_evidence import (
+            derive_wolf_consensus_evidence,
+        )
+
         evidence = [{"wolf_id": "w1", "target": t} for t in (evidence_targets or [])]
+        stances = tuple(
+            WolfTargetStance(
+                wolf_id="w1",
+                target_id=target,
+                stance="support",
+                priority=(
+                    "backup"
+                    if target == backup and target != primary
+                    else "primary"
+                ),
+                source_event_id=f"planned:e{index:06d}",
+                round_number=index,
+            )
+            for index, target in enumerate(evidence_targets or [], start=1)
+        )
         return {
             "game_state": gs,
             "wolf_team_plan": {
@@ -755,6 +775,11 @@ class TestPlannedWolfKillPrimaryAlive:
                 "evidence_from_discussion": evidence,
                 "consensus_method": consensus_method,
             },
+            "wolf_consensus_evidence": derive_wolf_consensus_evidence(
+                1,
+                ("w1",),
+                stances,
+            ),
         }
 
     def test_dead_primary_weak_backup_without_evidence_returns_none(self) -> None:
@@ -770,7 +795,9 @@ class TestPlannedWolfKillPrimaryAlive:
             evidence_targets=[],   # backup 也没有 evidence
         )
         result = _planned_wolf_kill(state)
-        assert result is None
+        assert result is not None
+        assert result["wolf_kill_target_id"] is None
+        assert result["game_state"].events[-1].payload["reason"] == "strategic_abstain"
 
     def test_fallback_plan_with_weak_evidence_uses_quorum(self) -> None:
         """Fallback weak plans use the same independent-wolf quorum gate."""
@@ -820,7 +847,9 @@ class TestPlannedWolfKillPrimaryAlive:
             evidence_targets=["p07", "p03"],
         )
         result = _planned_wolf_kill(state)
-        assert result is None, f"expected None when both dead, got {result}"
+        assert result is not None
+        assert result["wolf_kill_target_id"] is None
+        assert result["game_state"].events[-1].payload["reason"] == "invalid_backup"
 
     def test_dead_primary_with_evidence_only_for_primary_returns_none(self) -> None:
         """Primary 死亡、evidence 只列 primary 时，不能借 backup 自动落刀。"""
@@ -835,7 +864,9 @@ class TestPlannedWolfKillPrimaryAlive:
             evidence_targets=["p07"],  # 只有死人 primary 在 evidence 里
         )
         result = _planned_wolf_kill(state)
-        assert result is None
+        assert result is not None
+        assert result["wolf_kill_target_id"] is None
+        assert result["game_state"].events[-1].payload["reason"] == "strategic_abstain"
 
     def test_dead_primary_picks_backup_with_matching_evidence(self) -> None:
         """Primary 不可达时，backup 必须有自己的讨论证据才可落刀。"""
@@ -847,7 +878,7 @@ class TestPlannedWolfKillPrimaryAlive:
             primary_alive=False,
             backup_alive=True,
             evidence_quality="weak",
-            evidence_targets=["p03"],
+            evidence_targets=["p07", "p03"],
         )
         result = _planned_wolf_kill(state)
         assert result is not None
@@ -866,7 +897,9 @@ class TestPlannedWolfKillPrimaryAlive:
             evidence_targets=[],
         )
         result = _planned_wolf_kill(state)
-        assert result is None
+        assert result is not None
+        assert result["wolf_kill_target_id"] is None
+        assert result["game_state"].events[-1].payload["reason"] == "strategic_abstain"
 
     def test_fallback_plan_with_two_illegal_targets_records_no_kill(self) -> None:
         """Fallback 计划双非法时不应随机强刀，必须记录安全空刀原因。"""
@@ -891,4 +924,4 @@ class TestPlannedWolfKillPrimaryAlive:
             if event.type == "wolf_no_kill_timeout"
         ]
         assert no_kill_events
-        assert no_kill_events[-1].payload["reason"] == "wolf_plan_invalid_no_kill"
+        assert no_kill_events[-1].payload["reason"] == "invalid_backup"

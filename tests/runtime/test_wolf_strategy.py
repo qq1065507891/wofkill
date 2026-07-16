@@ -176,7 +176,10 @@ class TestWolfPlanDerivedFromDiscussion:
             },
         }
 
-        assert _planned_wolf_kill(state) is None
+        result = _planned_wolf_kill(state)
+        assert result is not None
+        assert result["wolf_kill_target_id"] is None
+        assert result["game_state"].events[-1].payload["reason"] == "strategic_abstain"
 
 
 class TestWeakPlanQuorum:
@@ -184,6 +187,11 @@ class TestWeakPlanQuorum:
 
     @staticmethod
     def _state(evidence, *, wolf_count=3, primary="p10", backup=None):
+        from werewolf_agent.agents.schemas import WolfTargetStance
+        from werewolf_agent.runtime.wolf_consensus_evidence import (
+            derive_wolf_consensus_evidence,
+        )
+
         players = {
             **{
                 f"w{i}": PlayerState(id=f"w{i}", role="werewolf", alive=True)
@@ -193,6 +201,17 @@ class TestWeakPlanQuorum:
             "p11": PlayerState(id="p11", role="villager", alive=True),
         }
         gs = GameState(game_id="weak-quorum", players=players, night_number=1)
+        stances = tuple(
+            WolfTargetStance(
+                wolf_id=item["wolf_id"],
+                target_id=item["target"],
+                stance="support",
+                priority="primary",
+                source_event_id=f"weak-quorum:e{index:06d}",
+                round_number=index,
+            )
+            for index, item in enumerate(evidence, start=1)
+        )
         return {
             "game_state": gs,
             "wolf_team_plan": {
@@ -201,6 +220,11 @@ class TestWeakPlanQuorum:
                 "evidence_quality": "weak",
                 "evidence_from_discussion": evidence,
             },
+            "wolf_consensus_evidence": derive_wolf_consensus_evidence(
+                1,
+                tuple(f"w{i}" for i in range(1, wolf_count + 1)),
+                stances,
+            ),
         }
 
     def test_three_wolves_need_two_unique_supporters(self):
@@ -227,7 +251,7 @@ class TestWeakPlanQuorum:
         ))
         assert result["wolf_kill_target_id"] == "p10"
 
-    def test_tied_qualified_targets_result_in_no_kill(self):
+    def test_latest_wolf_stance_replaces_old_target_support(self):
         from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
 
         result = _planned_wolf_kill(self._state([
@@ -236,8 +260,7 @@ class TestWeakPlanQuorum:
             {"wolf_id": "w2", "target": "p11"},
             {"wolf_id": "w3", "target": "p11"},
         ], backup="p11"))
-        assert result["wolf_kill_target_id"] is None
-        assert result["game_state"].events[-1].payload["reason"] == "weak_plan_quorum_tie"
+        assert result["wolf_kill_target_id"] == "p11"
 
 
 class TestWolfDiscussionEarlyStop:

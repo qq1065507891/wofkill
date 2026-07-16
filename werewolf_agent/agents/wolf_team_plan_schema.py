@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-13
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.agents.wolf_team_plan_schema import WolfTeamPlan
@@ -52,7 +52,7 @@ class WolfTeamPlan(BaseModel):
     )
     evidence_quality: Literal["strong", "weak", "none"] = Field(
         "weak",
-        description="队长对夜聊共识度的评估",
+        description="队长对夜聊共识度的展示评估，不参与 V2 执行判定",
     )
     reasoning: str = Field(
         ...,

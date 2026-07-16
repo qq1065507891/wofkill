@@ -18,6 +18,7 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from werewolf_agent.agents.schemas import WolfTargetStance
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import (
     carrier_matches_resolution_batch,
@@ -288,111 +289,122 @@ def _first_alive_target(gs: GameState, player_id: str | None) -> str | None:
 
 
 def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
+    """只依据本夜结构化 stance 共识选择主刀，必要时再读取备刀。"""
+    from werewolf_agent.runtime.wolf_consensus_evidence import (
+        ConsensusInvariantViolation,
+        WolfConsensusEvidenceV2,
+        WolfPriorityConsensus,
+        derive_wolf_consensus_evidence,
+    )
+    from werewolf_agent.runtime.wolf_discussion_directives import (
+        collect_current_wolf_target_stances,
+    )
+
     gs: GameState = state["game_state"]
     plan = state.get("wolf_team_plan") or {}
-    evidence_quality = plan.get("evidence_quality")
-    if evidence_quality == "none":
+    if not plan and state.get("wolf_consensus_evidence") is None:
         return None
-    if plan.get("consensus_method") == "fallback" and evidence_quality == "none":
+    alive_wolves = tuple(_alive_wolves(gs))
+    if not alive_wolves:
         return None
-    evidence = plan.get("evidence_from_discussion") or []
-    # 弱证据计划必须在执行边界重新验证独立狼人多数。计划可能来自
-    # LLM 或 fallback，不能仅凭生成阶段的 evidence_quality 放行。
-    if evidence_quality == "weak":
-        alive_wolves = set(_alive_wolves(gs))
-        quorum = len(alive_wolves) // 2 + 1
-        supporters_by_target: dict[str, set[str]] = {}
-        for item in evidence:
-            if not isinstance(item, dict):
-                continue
-            target_id = item.get("target")
-            wolf_id = item.get("wolf_id")
-            if target_id and wolf_id in alive_wolves:
-                supporters_by_target.setdefault(target_id, set()).add(wolf_id)
-        qualified = {
-            target_id: supporters
-            for target_id, supporters in supporters_by_target.items()
-            if len(supporters) >= quorum
-        }
-        # 两个目标同票时保持安全空刀，避免按计划顺序隐式裁决平票。
-        if qualified:
-            max_support = max(len(supporters) for supporters in qualified.values())
-            leaders = [
-                target_id
-                for target_id, supporters in qualified.items()
-                if len(supporters) == max_support
-            ]
-            if len(leaders) != 1:
-                event = GameEvent(
-                    type="wolf_no_kill_timeout",
-                    payload={
-                        "night_number": gs.night_number,
-                        "reason": "weak_plan_quorum_tie",
-                        "quorum": quorum,
-                        "supporters": {
-                            target_id: sorted(supporters)
-                            for target_id, supporters in supporters_by_target.items()
-                        },
-                    },
-                )
-                return {
-                    "game_state": replace(gs, events=gs.events + [event]),
-                    "wolf_kill_target_id": None,
-                }
-        else:
-            # 完全没有讨论证据时保持旧调用契约，由上层继续走通用安全路径；
-            # 只有存在但不足的证据才记录明确的 quorum 空刀。
-            if not supporters_by_target:
-                return None
+
+    consensus = state.get("wolf_consensus_evidence")
+    if not (
+        isinstance(consensus, WolfConsensusEvidenceV2)
+        and consensus.night_number == gs.night_number
+        and consensus.alive_wolf_ids == alive_wolves
+    ):
+        raw_stances = collect_current_wolf_target_stances(gs)
+        stances = tuple(
+            WolfTargetStance.model_validate(raw_stance)
+            for raw_stance in raw_stances
+        )
+        try:
+            consensus = derive_wolf_consensus_evidence(
+                gs.night_number,
+                alive_wolves,
+                stances,
+            )
+        except ConsensusInvariantViolation as exc:
             event = GameEvent(
-                type="wolf_no_kill_timeout",
+                type="wolf_consensus_invariant_violation",
                 payload={
                     "night_number": gs.night_number,
-                    "reason": "weak_plan_quorum_not_met",
-                    "quorum": quorum,
-                    "supporters": {
-                        target_id: sorted(supporters)
-                        for target_id, supporters in supporters_by_target.items()
-                    },
+                    "reason": exc.reason_code,
+                    "priority": exc.priority,
+                    "targets": list(exc.targets),
+                    "visibility": "moderator_only",
                 },
             )
             return {
-                "game_state": replace(gs, events=gs.events + [event]),
+                "game_state": replace(gs, events=[*gs.events, event]),
                 "wolf_kill_target_id": None,
             }
-    evidenced_targets = {
-        item.get("target")
-        for item in evidence
-        if isinstance(item, dict) and item.get("target")
-    }
-    primary_alive = _first_alive_target(gs, plan.get("night_kill_primary"))
-    primary_unavailable = primary_alive is None
-    for key in ("night_kill_primary", "night_kill_backup"):
-        target = _first_alive_target(gs, plan.get(key))
-        if target is None:
-            continue
-        has_target_evidence = target in evidenced_targets
-        if plan.get("consensus_method") == "fallback" and not has_target_evidence:
-            continue
-        if evidence_quality == "weak" and not has_target_evidence:
-            continue
-        if key == "night_kill_backup" and primary_unavailable and not has_target_evidence:
-            continue
-        if evidence_quality not in ("strong", "weak") and not has_target_evidence:
-            continue
-        logger.debug(f"  [狼人决策] 按狼队计划击杀: {_player_display(state, target)}")
+
+    def no_kill(priority: WolfPriorityConsensus, reason: str) -> dict[str, Any]:
         event = GameEvent(
-            type="wolf_kill_selected",
+            type="wolf_no_kill_timeout",
             payload={
                 "night_number": gs.night_number,
-                "target_id": target,
-                "reason": "wolf_team_plan",
-                "plan_key": key,
+                "reason": reason,
+                "consensus_priority": priority.priority,
+                "consensus_status": priority.status,
+                "quorum": consensus.quorum,
+                "supporters": {
+                    target_id: list(supporters)
+                    for target_id, supporters
+                    in priority.supporters_by_target.items()
+                },
             },
         )
-        gs = replace(gs, events=gs.events + [event])
-        return {"game_state": gs, "wolf_kill_target_id": target}
-    return None
+        return {
+            "game_state": replace(gs, events=[*gs.events, event]),
+            "wolf_kill_target_id": None,
+        }
+
+    authorized_statuses = {"majority", "single_wolf"}
+    primary = consensus.primary
+    if primary.status not in authorized_statuses or primary.target_id is None:
+        reason_by_status = {
+            "tie": "true_tie",
+            "insufficient": "insufficient_quorum",
+            "all_abstain": "strategic_abstain",
+        }
+        return no_kill(primary, reason_by_status[primary.status])
+
+    primary_target = _first_alive_target(gs, primary.target_id)
+    if primary_target is not None:
+        selected_target = primary_target
+        plan_key = "night_kill_primary"
+    else:
+        backup = consensus.backup
+        if backup.status not in authorized_statuses or backup.target_id is None:
+            reason_by_status = {
+                "tie": "true_tie",
+                "insufficient": "insufficient_quorum",
+                "all_abstain": "strategic_abstain",
+            }
+            return no_kill(backup, reason_by_status[backup.status])
+        selected_target = _first_alive_target(gs, backup.target_id)
+        if selected_target is None:
+            return no_kill(backup, "invalid_backup")
+        plan_key = "night_kill_backup"
+
+    logger.debug(
+        "  [狼人决策] 按结构化 stance 共识击杀: %s",
+        _player_display(state, selected_target),
+    )
+    event = GameEvent(
+        type="wolf_kill_selected",
+        payload={
+            "night_number": gs.night_number,
+            "target_id": selected_target,
+            "reason": "wolf_stance_consensus",
+            "plan_key": plan_key,
+        },
+    )
+    gs = replace(gs, events=[*gs.events, event])
+    return {"game_state": gs, "wolf_kill_target_id": selected_target}
 
 
 def _sheriff_died_this_batch(gs: GameState) -> bool:

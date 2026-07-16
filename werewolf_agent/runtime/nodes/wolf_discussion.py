@@ -477,6 +477,61 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
 
 
+    from werewolf_agent.agents.schemas import WolfTargetStance
+    from werewolf_agent.runtime.wolf_consensus_evidence import (
+        ConsensusInvariantViolation,
+        derive_wolf_consensus_evidence,
+    )
+    from werewolf_agent.runtime.wolf_discussion_directives import (
+        collect_current_wolf_target_stances,
+    )
+
+    consensus = None
+    try:
+        consensus = derive_wolf_consensus_evidence(
+            gs.night_number,
+            tuple(wolves),
+            tuple(
+                WolfTargetStance.model_validate(raw_stance)
+                for raw_stance in collect_current_wolf_target_stances(gs)
+            ),
+        )
+    except ConsensusInvariantViolation as exc:
+        events.append(GameEvent(
+            type="wolf_consensus_invariant_violation",
+            payload={
+                "night_number": gs.night_number,
+                "reason": exc.reason_code,
+                "priority": exc.priority,
+                "targets": list(exc.targets),
+                "visibility": "moderator_only",
+            },
+        ))
+
+    if consensus is not None:
+        mismatches = []
+        for priority, plan_key in (
+            (consensus.primary, "night_kill_primary"),
+            (consensus.backup, "night_kill_backup"),
+        ):
+            recommended = plan.get(plan_key)
+            if recommended != priority.target_id:
+                mismatches.append({
+                    "priority": priority.priority,
+                    "recommended_target_id": recommended,
+                    "authoritative_target_id": priority.target_id,
+                    "authoritative_status": priority.status,
+                })
+        for mismatch in mismatches:
+            events.append(GameEvent(
+                type="wolf_consensus_plan_mismatch",
+                payload={
+                    "night_number": gs.night_number,
+                    **mismatch,
+                    "visibility": "moderator_only",
+                },
+            ))
+
     events.append(GameEvent(
 
         type="wolf_team_plan",
@@ -487,4 +542,7 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
     gs = replace(gs, events=gs.events + events)
 
-    return {"game_state": gs, "wolf_team_plan": plan}
+    result = {"game_state": gs, "wolf_team_plan": plan}
+    if consensus is not None:
+        result["wolf_consensus_evidence"] = consensus
+    return result
