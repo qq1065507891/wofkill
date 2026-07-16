@@ -40,7 +40,6 @@ from werewolf_agent.evaluation.decision_execution_audit import (
 from werewolf_agent.evaluation.game_projection import (
     normalize_acceptance_games,
     normalize_quality_score,
-    projection_support,
 )
 from werewolf_agent.evaluation.world_evidence_audit import (
     support_matches_world as _support_matches_world,  # noqa: F401
@@ -163,11 +162,6 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     ])
     acceptance_metrics = _compute_acceptance_audit_metrics_from_normalized(
         finished_games
-    )
-    all_projection_supported, all_projection_reason = projection_support(all_games)
-    acceptance_metrics["acceptance_projection_supported"] = all_projection_supported
-    acceptance_metrics["acceptance_projection_unsupported_reason"] = (
-        all_projection_reason
     )
     mean_vote_concentration = (
         sum(vote_concentrations) / len(vote_concentrations)

@@ -21,12 +21,21 @@ from typing import Any
 import uuid
 
 from werewolf_agent.core.event_visibility import EventVisibility
-from werewolf_agent.core.models import GameState
+from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.event_metadata import new_game_event
 
 
 _SAFE_GAME_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _ABORT_EVENT_TYPE = "game_aborted"
+_ABORT_PAYLOAD_FIELDS = frozenset({
+    "termination_reason", "last_node", "phase", "step", "exception_type",
+})
+
+
+def _require_non_blank_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-blank string")
+    return value
 
 
 def finish_game(state: GameState) -> GameState:
@@ -55,8 +64,8 @@ def abort_game(
         return state
     if state.status == "finished":
         raise RuntimeError("terminal game state cannot transition from finished to aborted")
-    if not reason:
-        raise ValueError("aborted game requires termination_reason")
+    _require_non_blank_string(reason, "termination_reason")
+    _require_non_blank_string(state.phase, "phase")
     occurred_at = now or datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "termination_reason": reason,
@@ -83,12 +92,23 @@ def abort_game(
 
 def validate_aborted_game(state: GameState) -> None:
     """对 runtime 新写 aborted 终态执行完整、失败关闭的校验。"""
-    if state.status != "aborted" or not state.termination_reason:
-        raise ValueError("runtime aborted game requires termination_reason")
-    events = [item for item in state.events if item.type == _ABORT_EVENT_TYPE]
-    if len(events) != 1:
-        raise ValueError("aborted game requires exactly one game_aborted event")
-    event = events[0]
+    if state.status != "aborted":
+        raise ValueError("runtime aborted game requires status=aborted")
+    reason = _require_non_blank_string(
+        state.termination_reason, "termination_reason",
+    )
+    phase = _require_non_blank_string(state.phase, "phase")
+    event = validate_game_aborted_event_log(state.game_id, state.events)
+    if event.payload["termination_reason"] != reason:
+        raise ValueError("game_aborted termination_reason must match state")
+    if event.payload["phase"] != phase:
+        raise ValueError("game_aborted phase must match state")
+
+
+def validate_game_aborted_event(event: GameEvent, game_id: str) -> None:
+    """校验单个新写 game_aborted 事件的 V2 合同。"""
+    if event.type != _ABORT_EVENT_TYPE:
+        raise ValueError("expected game_aborted event")
     if event.visibility is not EventVisibility.MODERATOR_ONLY:
         raise ValueError("game_aborted event must be moderator_only")
     if (
@@ -99,28 +119,26 @@ def validate_aborted_game(state: GameState) -> None:
         or event.game_id is None
     ):
         raise ValueError("game_aborted event must have complete V2 metadata")
-    if event.game_id != state.game_id:
+    if event.game_id != game_id:
         raise ValueError("game_aborted event game_id must match state")
     sequence = event.sequence_number
     if (
         not isinstance(sequence, int)
         or isinstance(sequence, bool)
         or sequence < 0
-        or event.event_id != f"{state.game_id}:e{sequence:06d}"
+        or event.event_id != f"{game_id}:e{sequence:06d}"
     ):
         raise ValueError("game_aborted event has invalid V2 identity")
-    required = {
-        "termination_reason", "last_node", "phase", "step", "exception_type",
-    }
-    missing = required.difference(event.payload)
+    missing = _ABORT_PAYLOAD_FIELDS.difference(event.payload)
     if missing:
         raise ValueError(
             "game_aborted event missing payload fields: " + ", ".join(sorted(missing))
         )
-    if event.payload["termination_reason"] != state.termination_reason:
-        raise ValueError("game_aborted termination_reason must match state")
-    if event.payload["phase"] != state.phase:
-        raise ValueError("game_aborted phase must match state")
+    _require_non_blank_string(
+        event.payload["termination_reason"],
+        "game_aborted termination_reason",
+    )
+    _require_non_blank_string(event.payload["phase"], "game_aborted phase")
     step = event.payload["step"]
     if not isinstance(step, int) or isinstance(step, bool) or step < 0:
         raise ValueError("game_aborted step must be a non-negative integer")
@@ -128,6 +146,37 @@ def validate_aborted_game(state: GameState) -> None:
         value = event.payload[field_name]
         if value is not None and not isinstance(value, str):
             raise ValueError(f"game_aborted {field_name} must be a string or null")
+
+
+def validate_game_aborted_event_log(
+    game_id: str,
+    events: list[GameEvent],
+) -> GameEvent:
+    """要求完整事件流仅有一个、且最终为合法中止事件。"""
+    aborted = [item for item in events if item.type == _ABORT_EVENT_TYPE]
+    if len(aborted) != 1:
+        raise ValueError("aborted game requires exactly one game_aborted event")
+    event = aborted[0]
+    if not events or events[-1] is not event:
+        raise ValueError("game_aborted event must be the final event")
+    validate_game_aborted_event(event, game_id)
+    assert event.event_id is not None and event.sequence_number is not None
+    if sum(item.event_id == event.event_id for item in events) != 1 or sum(
+        item.sequence_number == event.sequence_number for item in events
+    ) != 1:
+        raise ValueError("game_aborted event must have unique V2 identity")
+    return event
+
+
+def validate_game_aborted_append(
+    game_id: str,
+    existing_events: list[GameEvent],
+    new_events: list[GameEvent],
+) -> None:
+    """在 repository append 前校验组合后的中止事件流。"""
+    combined = [*existing_events, *new_events]
+    if any(item.type == _ABORT_EVENT_TYPE for item in combined):
+        validate_game_aborted_event_log(game_id, combined)
 
 
 def emergency_abort_payload(state: GameState) -> dict[str, Any]:
@@ -191,5 +240,8 @@ __all__ = [
     "emergency_abort_payload",
     "finish_game",
     "validate_aborted_game",
+    "validate_game_aborted_append",
+    "validate_game_aborted_event",
+    "validate_game_aborted_event_log",
     "write_emergency_abort",
 ]

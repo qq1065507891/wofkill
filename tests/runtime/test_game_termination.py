@@ -210,6 +210,46 @@ def test_valid_aborted_state_is_idempotent_without_second_event() -> None:
     assert len([event for event in repeated.events if event.type == "game_aborted"]) == 1
 
 
+@pytest.mark.parametrize(
+    "field_name, invalid_value, expected",
+    [
+        ("termination_reason", 7, "termination_reason.*non-blank string"),
+        ("termination_reason", "   ", "termination_reason.*non-blank string"),
+        ("phase", 7, "phase.*non-blank string"),
+        ("phase", "   ", "phase.*non-blank string"),
+    ],
+)
+def test_aborted_validation_rejects_non_string_or_blank_state_fields(
+    field_name, invalid_value, expected,
+) -> None:
+    valid = abort_game(
+        GameState(game_id="g-state-fields", phase="night"),
+        reason="step_limit", last_node="node", step=1,
+    )
+    invalid = replace(valid, **{field_name: invalid_value})
+
+    with pytest.raises(ValueError, match=expected):
+        validate_aborted_game(invalid)
+
+
+def test_aborted_event_must_be_final_and_have_unique_v2_identity() -> None:
+    valid = abort_game(
+        GameState(game_id="g-final-event", phase="night"),
+        reason="step_limit", last_node="node", step=1,
+    )
+    aborted_event = valid.events[-1]
+    trailing = replace(aborted_event, type="diagnostic")
+
+    with pytest.raises(ValueError, match="final event"):
+        validate_aborted_game(replace(valid, events=[aborted_event, trailing]))
+
+    duplicate_identity = replace(aborted_event, type="diagnostic")
+    with pytest.raises(ValueError, match="unique V2 identity"):
+        validate_aborted_game(
+            replace(valid, events=[duplicate_identity, aborted_event])
+        )
+
+
 def test_game_state_rejects_invalid_explicit_terminal_contracts() -> None:
     with pytest.raises(ValueError, match="finished.*winner"):
         GameState(game_id="g-invalid-finish", status="finished")

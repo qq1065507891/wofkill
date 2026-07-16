@@ -340,8 +340,37 @@ def test_balance_audit_does_not_trust_forged_projection_markers() -> None:
 
     assert audit["acceptance_projection_supported"] is False
     assert audit["acceptance_projection_unsupported_reason"] == (
-        "invalid_events_container"
+        "no_games"
     )
+
+
+def test_aborted_invalid_projection_cannot_override_finished_acceptance() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    finished = {
+        "game_id": "g-valid-finished",
+        "status": "finished",
+        "winning_faction": "good",
+        "players": {"p01": {"role": "villager", "alive": True}},
+        "events": [],
+        "deaths": [],
+    }
+    aborted_invalid = {
+        "game_id": "g-invalid-aborted",
+        "status": "aborted",
+        "termination_reason": "step_limit",
+        "players": {"p02": {"role": "seer", "alive": True}},
+        "events": {"forged": "container"},
+        "deaths": [],
+    }
+
+    audit = compute_balance_audit([finished, aborted_invalid])
+
+    assert audit["games"] == 2
+    assert audit["completed_game_count"] == 1
+    assert audit["aborted_game_count"] == 1
+    assert audit["acceptance_projection_supported"] is True
+    assert audit["acceptance_projection_unsupported_reason"] is None
 
 
 def test_balance_audit_counts_schema_failures_and_weak_wolf_plan_kills():

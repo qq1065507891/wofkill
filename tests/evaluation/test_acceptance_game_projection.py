@@ -765,11 +765,13 @@ def test_plain_list_or_tuple_projection_markers_are_revalidated(
         (compute_power_acceptance_metrics(games), "power_role_evidence_metrics_unsupported_reason"),
         (compute_reflection_acceptance_metrics(games), "reflection_contamination_metrics_unsupported_reason"),
         (compute_terminal_semantic_acceptance_metrics(games), "semantic_repair_metrics_unsupported_reason"),
-        (compute_balance_audit(games), "acceptance_projection_unsupported_reason"),
     ]
 
     for metrics, reason_key in results:
         assert metrics[reason_key] == "invalid_events_container"
+    assert compute_balance_audit(games)[
+        "acceptance_projection_unsupported_reason"
+    ] == "no_games"
 
 
 def test_projection_module_exposes_no_nominal_trust_token_or_type() -> None:
@@ -828,11 +830,13 @@ def test_all_public_acceptance_apis_revalidate_nominal_tuple_forgery(
         (compute_power_acceptance_metrics(games), "power_role_evidence_metrics_unsupported_reason"),
         (compute_reflection_acceptance_metrics(games), "reflection_contamination_metrics_unsupported_reason"),
         (compute_terminal_semantic_acceptance_metrics(games), "semantic_repair_metrics_unsupported_reason"),
-        (compute_balance_audit(games), "acceptance_projection_unsupported_reason"),
     ]
 
     for metrics, reason_key in results:
         assert metrics[reason_key] == "invalid_events_container"
+    assert compute_balance_audit(games)[
+        "acceptance_projection_unsupported_reason"
+    ] == "no_games"
 
 
 @pytest.mark.parametrize(

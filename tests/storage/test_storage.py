@@ -1,16 +1,9 @@
-"""Storage tests: repository interface contract and SQLite implementation.
+# -*- coding: utf-8 -*-
+"""
+验证游戏仓库接口、SQLite/内存实现与终止事件写入边界。
 
-Covers:
-1. Round-trip create/load/update game state
-2. Append and load event log with ordering and metadata
-3. Store and load deaths
-4. Store and load model usage records
-5. Store and load evaluation results (GameResult)
-6. Store config snapshots
-7. List games
-8. Delete game
-9. Restart-like reload: close and reopen SQLite, verify data survives
-10. In-memory repository works for tests without file
+作者: Project contributors
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -28,6 +21,7 @@ from werewolf_agent.core.resolution_batches import ResolutionBatchV2
 from werewolf_agent.storage.repository import GameRepository
 from werewolf_agent.storage.sqlite_store import SqliteGameRepository
 from werewolf_agent.storage.memory_store import InMemoryGameRepository
+from werewolf_agent.runtime.game_termination import abort_game
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +247,104 @@ class TestProductionStorageBoundary:
 
 
 class TestEventLog:
+    def test_postgres_append_validates_game_aborted_before_insert(self) -> None:
+        from werewolf_agent.storage.postgres_store import PostgresGameRepository
+
+        class Result:
+            def __init__(self, *, rows=(), one=(0,)) -> None:
+                self._rows = rows
+                self._one = one
+
+            def fetchall(self):
+                return list(self._rows)
+
+            def fetchone(self):
+                return self._one
+
+        class Connection:
+            def __init__(self) -> None:
+                self.inserts = 0
+
+            def execute(self, sql, _params=()):
+                if "SELECT event_type" in sql:
+                    return Result(rows=[])
+                if "MAX(seq)" in sql:
+                    return Result(one=(0,))
+                if "INSERT INTO events" in sql:
+                    self.inserts += 1
+                return Result()
+
+            def commit(self) -> None:
+                return None
+
+        repository = PostgresGameRepository("postgresql://unused", initialize=False)
+        connection = Connection()
+        repository._ensure_connection = lambda: connection
+        state = _make_game_state("postgres-abort")
+        valid = abort_game(
+            state,
+            reason="step_limit",
+            last_node="wolf_action",
+            step=50,
+        ).events[-1]
+
+        repository.append_events(state.game_id, [valid])
+
+        assert connection.inserts == 1
+        malformed = GameEvent(type="game_aborted", payload=valid.payload)
+        with pytest.raises(ValueError, match="game_aborted"):
+            repository.append_events(state.game_id, [malformed])
+        assert connection.inserts == 1
+
+    def test_append_valid_game_aborted_event_and_reject_followup(
+        self, repo: GameRepository,
+    ) -> None:
+        state = _make_game_state("abort-event")
+        repo.save_game(state)
+        aborted = abort_game(
+            state,
+            reason="step_limit",
+            last_node="wolf_action",
+            step=50,
+        )
+        event = aborted.events[-1]
+
+        repo.append_events(state.game_id, [event])
+
+        assert repo.load_events(state.game_id) == [event]
+        with pytest.raises(ValueError, match="final event"):
+            repo.append_events(
+                state.game_id,
+                [GameEvent(type="late_diagnostic", payload={})],
+            )
+
+    @pytest.mark.parametrize("corruption", ["v1", "visibility", "payload"])
+    def test_append_events_rejects_malformed_game_aborted(
+        self, repo: GameRepository, corruption: str,
+    ) -> None:
+        state = _make_game_state(f"bad-abort-{corruption}")
+        repo.save_game(state)
+        valid = abort_game(
+            state,
+            reason="step_limit",
+            last_node="wolf_action",
+            step=50,
+        ).events[-1]
+        if corruption == "v1":
+            event = GameEvent(type="game_aborted", payload=valid.payload)
+        elif corruption == "visibility":
+            event = replace(valid, visibility=None)
+        else:
+            event = replace(valid, payload={
+                key: value
+                for key, value in valid.payload.items()
+                if key != "exception_type"
+            })
+
+        with pytest.raises(ValueError, match="game_aborted"):
+            repo.append_events(state.game_id, [event])
+
+        assert repo.load_events(state.game_id) == []
     def test_sqlite_serializes_nested_resolution_batch_payload(
         self,
         tmp_path: Path,

@@ -25,7 +25,10 @@ from werewolf_agent.runtime.event_metadata import (
     serialize_game_event,
     serialize_legacy_event_payload,
 )
-from werewolf_agent.runtime.game_termination import validate_aborted_game
+from werewolf_agent.runtime.game_termination import (
+    validate_aborted_game,
+    validate_game_aborted_append,
+)
 
 
 def _serialize_game_state(gs: GameState) -> str:
@@ -199,6 +202,20 @@ class SqliteGameRepository:
 
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
         with self._lock:
+            rows = self._conn.execute(
+                "SELECT event_type, payload_json, event_json FROM events "
+                "WHERE game_id = ? ORDER BY seq",
+                (game_id,),
+            ).fetchall()
+            existing = [
+                (
+                    deserialize_game_event(json.loads(row[2]))
+                    if row[2] is not None
+                    else GameEvent(type=row[0], payload=json.loads(row[1]))
+                )
+                for row in rows
+            ]
+            validate_game_aborted_append(game_id, existing, events)
             current_max = self._conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
                 (game_id,),

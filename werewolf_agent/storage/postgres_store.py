@@ -24,7 +24,10 @@ from werewolf_agent.runtime.event_metadata import (
     serialize_game_event,
     serialize_legacy_event_payload,
 )
-from werewolf_agent.runtime.game_termination import validate_aborted_game
+from werewolf_agent.runtime.game_termination import (
+    validate_aborted_game,
+    validate_game_aborted_append,
+)
 from werewolf_agent.storage.sqlite_store import _deserialize_game_state, _serialize_game_state
 
 
@@ -75,6 +78,29 @@ class PostgresGameRepository:
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
         with self._lock:
             conn = self._ensure_connection()
+            rows = conn.execute(
+                "SELECT event_type, payload_json, event_json FROM events "
+                "WHERE game_id = %s ORDER BY seq",
+                (game_id,),
+            ).fetchall()
+            existing = [
+                (
+                    deserialize_game_event(
+                        row[2] if isinstance(row[2], dict) else json.loads(row[2])
+                    )
+                    if len(row) > 2 and row[2] is not None
+                    else GameEvent(
+                        type=row[0],
+                        payload=(
+                            row[1]
+                            if isinstance(row[1], dict)
+                            else json.loads(row[1])
+                        ),
+                    )
+                )
+                for row in rows
+            ]
+            validate_game_aborted_append(game_id, existing, events)
             current = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = %s",
                 (game_id,),
