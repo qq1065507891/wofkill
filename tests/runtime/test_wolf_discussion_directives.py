@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-09
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.wolf_discussion_directives import build_wolf_discussion_instruction
