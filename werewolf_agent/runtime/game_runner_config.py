@@ -4,7 +4,7 @@ GameRunner 的配置数据结构。
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-14
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_config import GameRunnerConfig
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -45,6 +46,7 @@ class GameRunnerConfig:
     judge_hitl_auto_pause_triggers: list[str] | None = None
     agent_call_delay_ms: int = 0
     game_id: str = ""
+    emergency_artifact_dir: str | Path = Path("artifacts/emergency_game_aborts")
 
     def __post_init__(self) -> None:
         if not isinstance(self.game_id, str):

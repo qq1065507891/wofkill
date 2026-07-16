@@ -36,6 +36,49 @@ def _save_game_log(run_real_game, runner, elapsed, **kwargs):
     )
 
 
+def test_runner_config_routes_cli_output_dir_to_emergency_artifacts(tmp_path) -> None:
+    from scripts import run_real_game
+
+    args = run_real_game._build_argument_parser().parse_args([
+        "--seed", "42", "--output-dir", str(tmp_path),
+    ])
+    config = run_real_game._build_runner_config(
+        args, game_repo=None, memory_coordinator=None,
+    )
+
+    assert config.emergency_artifact_dir == tmp_path
+
+
+def test_terminal_log_message_distinguishes_finished_and_aborted(caplog) -> None:
+    from scripts import run_real_game
+
+    finished = SimpleNamespace(
+        state=GameState(
+            game_id="g-finished", phase="finished", status="finished",
+            winning_faction="good",
+        ),
+        step_count=7,
+    )
+    aborted = SimpleNamespace(
+        state=GameState(
+            game_id="g-aborted", phase="night", status="aborted",
+            termination_reason="step_limit",
+        ),
+        step_count=50,
+    )
+
+    with caplog.at_level("INFO"):
+        assert run_real_game.log_terminal_outcome(finished, 1.5, {"fallback_rate": 0.0}) == 0
+    assert "GAME_COMPLETE winner=good" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        assert run_real_game.log_terminal_outcome(aborted, 2.5, {"fallback_rate": 0.0}) == 1
+
+    assert "GAME_ABORTED reason=step_limit" in caplog.text
+    assert "GAME_COMPLETE" not in caplog.text
+
+
 def test_finalize_game_log_projects_after_persistence_audit_and_scores_once(
     monkeypatch,
 ) -> None:

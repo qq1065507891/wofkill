@@ -89,6 +89,10 @@ class GameState:
     paused: bool = False
 
     def __post_init__(self) -> None:
+        if self.status == "finished" and not self.winning_faction:
+            raise ValueError("finished game requires a winner")
+        if self.status == "aborted" and not self.termination_reason:
+            raise ValueError("aborted game requires termination_reason")
         # 防御性浅拷贝：防止外部可变容器被意外修改
         object.__setattr__(self, "players", dict(self.players) if self.players else {})
         object.__setattr__(self, "events", list(self.events) if self.events else [])

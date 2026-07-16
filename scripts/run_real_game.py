@@ -646,7 +646,33 @@ def _build_runner_config(
         repository=game_repo,
         memory_coordinator=memory_coordinator,
         agent_call_delay_ms=args.delay,
+        emergency_artifact_dir=(
+            args.output_dir
+            if args.output_dir is not None
+            else ROOT / "artifacts" / "emergency_game_aborts"
+        ),
     )
+
+
+def log_terminal_outcome(
+    runner: GameRunner,
+    elapsed: float,
+    quality: dict[str, Any],
+) -> int:
+    """记录可机读终态，中止局返回非零退出码。"""
+    gs = runner.state
+    if gs.status == "finished":
+        logger.info(
+            "GAME_COMPLETE winner=%s day=%d night=%d steps=%d elapsed=%.1f fallback_rate=%.3f",
+            gs.winning_faction, gs.day_number, gs.night_number,
+            runner.step_count, elapsed, quality["fallback_rate"],
+        )
+        return 0
+    logger.error(
+        "GAME_ABORTED reason=%s phase=%s steps=%d elapsed=%.1f",
+        gs.termination_reason, gs.phase, runner.step_count, elapsed,
+    )
+    return 1
 
 
 def main() -> None:
@@ -742,7 +768,8 @@ def main() -> None:
     runner.run(max_steps=args.max_steps)
     elapsed = time.monotonic() - start
 
-    print(f"\n  Finished in {elapsed:.1f}s ({runner.step_count} steps)")
+    outcome_label = "Finished" if runner.state.status == "finished" else "Aborted"
+    print(f"\n  {outcome_label} in {elapsed:.1f}s ({runner.step_count} steps)")
 
     print_game_summary(runner)
     print_usage_stats(runner)
@@ -755,12 +782,7 @@ def main() -> None:
         elapsed,
         output_dir=args.output_dir,
     )
-    gs = runner.state
-    logger.info(
-        "GAME_COMPLETE winner=%s day=%d night=%d steps=%d elapsed=%.1f fallback_rate=%.3f",
-        gs.winning_faction, gs.day_number, gs.night_number,
-        runner.step_count, elapsed, quality["fallback_rate"],
-    )
+    exit_code = log_terminal_outcome(runner, elapsed, quality)
 
     print(f"\n  Game log: {log_path}")
 
@@ -768,6 +790,8 @@ def main() -> None:
     audit_script = ROOT / "scripts" / "print_game_audit.py"
     if audit_script.exists():
         print(f"  Audit:    python {audit_script} {log_path}")
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

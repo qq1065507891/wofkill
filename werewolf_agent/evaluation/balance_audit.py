@@ -72,69 +72,87 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute balance and quality metrics from saved game logs."""
     games = normalize_acceptance_games(games)
     game_count = len(games)
+    balance_games = [game for game in games if game.get("status") == "finished"]
+    balance_game_count = len(balance_games)
     unique_game_ids = {
         str(game.get("game_id")) for game in games if game.get("game_id")
     }
     unique_source_paths = {
         str(game.get("__source_path")) for game in games if game.get("__source_path")
     }
-    wolf_wins = sum(1 for game in games if game.get("winning_faction") == "werewolf")
-    good_wins = sum(1 for game in games if game.get("winning_faction") == "good")
-    completed_games = sum(game.get("status") == "finished" for game in games)
+    wolf_wins = sum(
+        1 for game in balance_games if game.get("winning_faction") == "werewolf"
+    )
+    good_wins = sum(
+        1 for game in balance_games if game.get("winning_faction") == "good"
+    )
+    completed_games = balance_game_count
+    aborted_games = sum(game.get("status") == "aborted" for game in games)
 
-    action_trace_records = list(_iter_action_trace_records(games))
+    action_trace_records = list(_iter_action_trace_records(balance_games))
     action_traces = [record["trace"] for record in action_trace_records]
     fallback_count = sum(1 for trace in action_traces if trace.get("fallback_reason"))
     schema_failures = sum(
         1 for trace in action_traces
         if trace.get("parse_error") or trace.get("structured_failure_reason")
     )
-    wolf_plan_outcomes = compute_wolf_plan_outcome_metrics(games)
+    wolf_plan_outcomes = compute_wolf_plan_outcome_metrics(balance_games)
     wolf_plan_fallback_count = wolf_plan_outcomes[
         "wolf_team_plan_terminal_fallback_count"
     ]
     wolf_plan_count = wolf_plan_outcomes["wolf_team_plan_total_count"]
 
-    weak_wolf_plan_kill_count = sum(_weak_wolf_plan_kills(game) for game in games)
+    weak_wolf_plan_kill_count = sum(
+        _weak_wolf_plan_kills(game) for game in balance_games
+    )
     fallback_plan_kill_without_target_evidence_count = sum(
         _fallback_plan_kill_without_target_evidence_count(game)
-        for game in games
+        for game in balance_games
     )
-    fallback_plan_kill_count = sum(_fallback_plan_kill_count(game) for game in games)
-    vote_concentrations = [_vote_concentration(event) for game in games for event in game.get("events", []) if event.get("type") == "vote_resolved"]
+    fallback_plan_kill_count = sum(
+        _fallback_plan_kill_count(game) for game in balance_games
+    )
+    vote_concentrations = [
+        _vote_concentration(event)
+        for game in balance_games
+        for event in game.get("events", [])
+        if event.get("type") == "vote_resolved"
+    ]
     warnings: list[str] = []
 
-    wolf_win_rate = wolf_wins / game_count if game_count else 0.0
-    good_win_rate = good_wins / game_count if game_count else 0.0
+    wolf_win_rate = wolf_wins / balance_game_count if balance_game_count else 0.0
+    good_win_rate = good_wins / balance_game_count if balance_game_count else 0.0
     fallback_action_rate = fallback_count / len(action_traces) if action_traces else 0.0
     wolf_team_plan_fallback_rate = (
         wolf_plan_fallback_count / wolf_plan_count
         if wolf_plan_count else None
     )
     schema_failure_rate = schema_failures / len(action_traces) if action_traces else 0.0
-    seer_day1_exile_rate = _seer_day1_exile_rate(games)
-    witch_night1_death_rate = _witch_night1_death_rate(games)
-    witch_wolf_kill_death_rate = _witch_wolf_kill_death_rate(games)
-    sheriff_werewolf_rate = _sheriff_werewolf_rate(games)
+    seer_day1_exile_rate = _seer_day1_exile_rate(balance_games)
+    witch_night1_death_rate = _witch_night1_death_rate(balance_games)
+    witch_wolf_kill_death_rate = _witch_wolf_kill_death_rate(balance_games)
+    sheriff_werewolf_rate = _sheriff_werewolf_rate(balance_games)
     sheriff_vote_fallback_rate = _sheriff_vote_fallback_rate(action_trace_records)
-    hunter_friendly_fire_rate = _hunter_friendly_fire_rate(games)
-    weak_plan_kill_rate = _weak_plan_kill_rate(games)
+    hunter_friendly_fire_rate = _hunter_friendly_fire_rate(balance_games)
+    weak_plan_kill_rate = _weak_plan_kill_rate(balance_games)
     fallback_plan_kill_without_target_evidence_rate = (
         fallback_plan_kill_without_target_evidence_count / fallback_plan_kill_count
         if fallback_plan_kill_count else 0.0
     )
     power_role_fallback_rate = _power_role_fallback_rate(action_trace_records)
-    template_vote_reason_count, vote_reason_count = _template_vote_reason_counts(games)
+    template_vote_reason_count, vote_reason_count = _template_vote_reason_counts(
+        balance_games
+    )
     template_vote_reason_rate = (
         template_vote_reason_count / vote_reason_count
         if vote_reason_count else 0.0
     )
     unsupported_public_fact_claim_count = sum(
-        _unsupported_public_fact_claim_count(game) for game in games
+        _unsupported_public_fact_claim_count(game) for game in balance_games
     )
     persona_prompt_confirmation = summarize_persona_prompt_confirmation([
         event
-        for game in games
+        for game in balance_games
         for event in game.get("events", [])
         if isinstance(event, Mapping)
     ])
@@ -144,7 +162,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         if vote_concentrations else 0.0
     )
 
-    if game_count >= 3 and wolf_win_rate > 0.75:
+    if balance_game_count >= 3 and wolf_win_rate > 0.75:
         warnings.append("wolf_win_rate_high")
     if schema_failure_rate > 0.05:
         warnings.append("schema_failure_high")
@@ -153,7 +171,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         and wolf_team_plan_fallback_rate > 0.5
     ):
         warnings.append("wolf_team_plan_fallback_high")
-    if game_count >= 3 and seer_day1_exile_rate > 0.35:
+    if balance_game_count >= 3 and seer_day1_exile_rate > 0.35:
         warnings.append("seer_day1_exile_high")
     if weak_wolf_plan_kill_count:
         warnings.append("weak_wolf_plan_kills_present")
@@ -177,6 +195,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
         "unique_game_id_count": len(unique_game_ids),
         "unique_game_artifact_path_count": len(unique_source_paths),
         "completed_game_count": completed_games,
+        "aborted_game_count": aborted_games,
         "completion_rate": completed_games / game_count if game_count else None,
         "wolf_win_rate": wolf_win_rate,
         "good_win_rate": good_win_rate,

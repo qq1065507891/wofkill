@@ -184,6 +184,61 @@ def test_balance_audit_flags_high_wolf_win_rate():
     assert "wolf_win_rate_high" in audit["warnings"]
 
 
+def test_balance_excludes_aborted_gameplay_but_stability_counts_all_games():
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    finished = {
+        "game_id": "g-finished",
+        "status": "finished",
+        "winning_faction": "good",
+        "players": {"p01": {"role": "villager"}},
+        "events": [{
+            "type": "vote_resolved",
+            "payload": {"votes": [
+                {"target": "p02"}, {"target": "p02"},
+            ]},
+        }],
+        "deaths": [],
+    }
+    aborted = {
+        "game_id": "g-aborted",
+        "status": "aborted",
+        "termination_reason": "step_limit",
+        "players": {"p01": {"role": "seer"}},
+        "events": [
+            {
+                "type": "vote_resolved",
+                "payload": {
+                    "day_number": 1,
+                    "exiled": "p01",
+                    "votes": [{"target": "p01"}, {"target": "p02"}],
+                },
+            },
+            {
+                "type": "action_trace_audit",
+                "payload": {"action_trace": {
+                    "fallback_reason": "runtime abort fallback",
+                    "parse_error": "runtime abort schema error",
+                }},
+            },
+        ],
+        "deaths": [],
+    }
+
+    audit = compute_balance_audit([finished, aborted])
+
+    assert audit["games"] == 2
+    assert audit["completed_game_count"] == 1
+    assert audit["aborted_game_count"] == 1
+    assert audit["completion_rate"] == 0.5
+    assert audit["good_win_rate"] == 1.0
+    assert audit["wolf_win_rate"] == 0.0
+    assert audit["mean_vote_concentration"] == 1.0
+    assert audit["seer_day1_exile_rate"] == 0.0
+    assert audit["fallback_action_rate"] == 0.0
+    assert audit["schema_failure_rate"] == 0.0
+
+
 def test_balance_audit_normalizes_each_game_once(monkeypatch) -> None:
     from werewolf_agent.evaluation import game_projection
     from werewolf_agent.evaluation.balance_audit import compute_balance_audit

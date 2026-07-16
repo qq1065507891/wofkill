@@ -484,6 +484,175 @@ class TestGameRunnerStepByStep:
             runner.run_step()
         assert len(runner.state.players) == 12
 
+    @pytest.mark.parametrize("entrypoint", ["run", "run_scripted", "run_step"])
+    def test_entrypoints_abort_unrecoverable_exception_with_context(
+        self, entrypoint: str, tmp_path,
+    ) -> None:
+        runner = GameRunner(GameRunnerConfig(
+            seed=42, emergency_artifact_dir=tmp_path,
+        ))
+
+        class BrokenGraph:
+            def stream(self, *_args, **_kwargs):
+                raise RuntimeError("provider secret")
+
+        runner._graph = BrokenGraph()
+        result = getattr(runner, entrypoint)()
+
+        assert result.status == "aborted"
+        assert result.termination_reason == "unrecoverable_runtime_error"
+        event = next(event for event in result.events if event.type == "game_aborted")
+        assert event.payload["phase"] == "setup"
+        assert event.payload["step"] == 0
+        assert event.payload["exception_type"] == "RuntimeError"
+        assert (tmp_path / f"emergency_abort_{runner.game_id}.json").exists()
+
+    def test_graph_recursion_error_maps_to_graph_recursion_limit(self, tmp_path) -> None:
+        from langgraph.errors import GraphRecursionError
+
+        runner = GameRunner(GameRunnerConfig(
+            seed=43, emergency_artifact_dir=tmp_path,
+        ))
+
+        class RecursiveGraph:
+            def stream(self, *_args, **_kwargs):
+                raise GraphRecursionError("limit")
+
+        runner._graph = RecursiveGraph()
+        result = runner.run()
+
+        assert result.status == "aborted"
+        assert result.termination_reason == "graph_recursion_limit"
+
+    def test_run_aborts_stuck_game_at_fifty_repeated_snapshots(self, tmp_path) -> None:
+        runner = GameRunner(GameRunnerConfig(
+            seed=44, emergency_artifact_dir=tmp_path,
+        ))
+
+        class StuckGraph:
+            def stream(self, *_args, **_kwargs):
+                for _ in range(51):
+                    yield {"stuck_node": {"game_state": runner.state}}
+
+        runner._graph = StuckGraph()
+        result = runner.run(max_steps=100)
+
+        assert result.status == "aborted"
+        assert result.termination_reason == "step_limit"
+        assert next(event for event in result.events if event.type == "game_aborted").payload["last_node"] == "stuck_node"
+
+    def test_run_aborts_when_stream_ends_without_winner(self, tmp_path) -> None:
+        runner = GameRunner(GameRunnerConfig(
+            seed=45, emergency_artifact_dir=tmp_path,
+        ))
+        runner._graph = type("ShortGraph", (), {"stream": lambda *_args, **_kwargs: iter(())})()
+
+        result = runner.run(max_steps=1)
+
+        assert result.status == "aborted"
+        assert result.termination_reason == "step_limit"
+
+    def test_abort_skips_reflection_and_persists_state_and_event(self, tmp_path) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+
+        repo = InMemoryGameRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=46, repository=repo, emergency_artifact_dir=tmp_path,
+        ))
+        runner._graph = type("ShortGraph", (), {"stream": lambda *_args, **_kwargs: iter(())})()
+        runner._save_memory_snapshot = lambda: pytest.fail("aborted game reflected")
+
+        result = runner.run(max_steps=1)
+
+        assert repo.load_game(runner.game_id) == result
+        stored_events = repo.load_events(runner.game_id)
+        assert [event.type for event in stored_events] == ["game_aborted"]
+        assert not (tmp_path / f"emergency_abort_{runner.game_id}.json").exists()
+
+    def test_repository_failure_falls_back_to_emergency_artifact(self, tmp_path) -> None:
+        class BrokenRepository:
+            def save_game(self, _state):
+                raise OSError("database unavailable")
+
+        runner = GameRunner(GameRunnerConfig(
+            seed=47, repository=BrokenRepository(), emergency_artifact_dir=tmp_path,
+        ))
+        runner._graph = type("ShortGraph", (), {"stream": lambda *_args, **_kwargs: iter(())})()
+
+        result = runner.run(max_steps=1)
+
+        assert result.status == "aborted"
+        assert (tmp_path / f"emergency_abort_{runner.game_id}.json").exists()
+
+    def test_event_persistence_failure_falls_back_to_emergency_artifact(
+        self, tmp_path,
+    ) -> None:
+        from werewolf_agent.storage.memory_store import InMemoryGameRepository
+
+        class BrokenEventRepository(InMemoryGameRepository):
+            def append_events(self, _game_id, _events):
+                raise OSError("event store unavailable")
+
+        repo = BrokenEventRepository()
+        runner = GameRunner(GameRunnerConfig(
+            seed=49, repository=repo, emergency_artifact_dir=tmp_path,
+        ))
+        runner._graph = type(
+            "ShortGraph", (), {"stream": lambda *_args, **_kwargs: iter(())}
+        )()
+
+        result = runner.run(max_steps=1)
+
+        assert repo.load_game(runner.game_id) == result
+        assert (tmp_path / f"emergency_abort_{runner.game_id}.json").exists()
+
+    def test_finished_persistence_failure_is_not_masked_as_abort(self, tmp_path) -> None:
+        class BrokenRepository:
+            def save_game(self, _state):
+                raise OSError("finished save unavailable")
+
+        runner = GameRunner(GameRunnerConfig(
+            seed=50, repository=BrokenRepository(), emergency_artifact_dir=tmp_path,
+        ))
+        won = replace(
+            runner.state, phase="finished", winning_faction="good",
+        )
+        runner._graph = type(
+            "WonGraph", (),
+            {"stream": lambda *_args, **_kwargs: iter([
+                {"victory": {"game_state": won}},
+            ])},
+        )()
+
+        with pytest.raises(OSError, match="finished save unavailable"):
+            runner.run(max_steps=1)
+
+        assert runner.state.status == "finished"
+        assert runner.state.winning_faction == "good"
+        assert not (tmp_path / f"emergency_abort_{runner.game_id}.json").exists()
+
+    def test_repository_and_emergency_failure_is_critical_and_raised(
+        self, monkeypatch, tmp_path, caplog,
+    ) -> None:
+        class BrokenRepository:
+            def save_game(self, _state):
+                raise OSError("database unavailable")
+
+        runner = GameRunner(GameRunnerConfig(
+            seed=48, repository=BrokenRepository(), emergency_artifact_dir=tmp_path,
+        ))
+        runner._graph = type("ShortGraph", (), {"stream": lambda *_args, **_kwargs: iter(())})()
+        monkeypatch.setattr(
+            "werewolf_agent.runtime.game_runner_execution.write_emergency_abort",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk unavailable")),
+        )
+
+        with caplog.at_level("CRITICAL"):
+            with pytest.raises(RuntimeError, match="emergency abort persistence failed"):
+                runner.run(max_steps=1)
+
+        assert "CRITICAL" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Runtime execution coordinator tests
@@ -577,6 +746,30 @@ class TestRuntimeExecutionCoordinator:
         status = executor.status("g_exec")
         assert status.state == "error"
         assert "boom" in status.error
+
+    def test_executor_reports_aborted_runner_as_error(self) -> None:
+        from werewolf_agent.runtime.executor import LocalRuntimeExecutor
+
+        executor = LocalRuntimeExecutor()
+        runner = _FakeRunner()
+
+        def abort_step() -> GameState:
+            runner.step_count += 1
+            runner.finished = True
+            runner.state = replace(
+                runner.state,
+                status="aborted",
+                termination_reason="unrecoverable_runtime_error",
+            )
+            return runner.state
+
+        runner.run_step = abort_step
+        result = executor.try_step("g_exec", runner)
+
+        assert result.success is False
+        assert result.status == "error"
+        assert "unrecoverable_runtime_error" in result.message
+        assert executor.status("g_exec").state == "error"
 
 
 # ---------------------------------------------------------------------------

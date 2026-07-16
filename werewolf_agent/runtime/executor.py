@@ -2,7 +2,7 @@
 """Local runtime execution coordination.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-05
+    修改日期: 2026-07-16
     使用示例: 内部模块，无对外接口
 This module owns process-local scheduling concerns: per-game locks,
 background thread state, and execution status. It does not adjudicate rules
@@ -70,7 +70,14 @@ class LocalRuntimeExecutor:
         try:
             self._set_status(game_id, runner, "running")
             runner.run_step()
-            state = "finished" if getattr(runner, "finished", False) else "idle"
+            terminal = getattr(getattr(runner, "state", None), "status", "running")
+            if terminal == "aborted":
+                reason = getattr(runner.state, "termination_reason", "") or "aborted"
+                self._set_status(game_id, runner, "error", error=reason, finished=True)
+                return RuntimeExecutionResult(
+                    game_id=game_id, success=False, status="error", message=reason,
+                )
+            state = "finished" if terminal == "finished" else "idle"
             self._set_status(game_id, runner, state, finished=state == "finished")
             return RuntimeExecutionResult(game_id=game_id, success=True, status=state)
         except Exception as exc:
@@ -105,7 +112,14 @@ class LocalRuntimeExecutor:
         def _target() -> None:
             try:
                 runner.run(max_steps=max_steps)
-                self._set_status(game_id, runner, "finished", finished=True)
+                terminal = getattr(getattr(runner, "state", None), "status", "running")
+                if terminal == "aborted":
+                    reason = getattr(runner.state, "termination_reason", "") or "aborted"
+                    self._set_status(
+                        game_id, runner, "error", error=reason, finished=True,
+                    )
+                else:
+                    self._set_status(game_id, runner, "finished", finished=True)
             except Exception as exc:
                 self._set_status(game_id, runner, "error", error=str(exc), finished=True)
             finally:
