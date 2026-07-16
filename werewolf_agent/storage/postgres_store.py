@@ -25,8 +25,8 @@ from werewolf_agent.runtime.event_metadata import (
     serialize_legacy_event_payload,
 )
 from werewolf_agent.runtime.game_termination import (
-    validate_aborted_game,
     validate_game_aborted_append,
+    validate_game_state_save,
 )
 from werewolf_agent.storage.sqlite_store import _deserialize_game_state, _serialize_game_state
 
@@ -48,19 +48,28 @@ class PostgresGameRepository:
             self._conn = None
 
     def save_game(self, state: GameState) -> None:
-        if state.status == "aborted":
-            validate_aborted_game(state)
         with self._lock:
             conn = self._ensure_connection()
-            conn.execute(
-                """
-                INSERT INTO games (game_id, state_json)
-                VALUES (%s, %s::jsonb)
-                ON CONFLICT (game_id) DO UPDATE SET state_json = EXCLUDED.state_json
-                """,
-                (state.game_id, _serialize_game_state(state)),
-            )
-            conn.commit()
+            try:
+                self._lock_game_transaction(conn, state.game_id)
+                row = conn.execute(
+                    "SELECT state_json FROM games WHERE game_id = %s FOR UPDATE",
+                    (state.game_id,),
+                ).fetchone()
+                existing = self._deserialize_state_row(row)
+                validate_game_state_save(existing, state)
+                conn.execute(
+                    """
+                    INSERT INTO games (game_id, state_json)
+                    VALUES (%s, %s::jsonb)
+                    ON CONFLICT (game_id) DO UPDATE SET state_json = EXCLUDED.state_json
+                    """,
+                    (state.game_id, _serialize_game_state(state)),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def load_game(self, game_id: str) -> GameState | None:
         with self._lock:
@@ -78,61 +87,79 @@ class PostgresGameRepository:
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
         with self._lock:
             conn = self._ensure_connection()
-            state_row = conn.execute(
-                "SELECT state_json FROM games WHERE game_id = %s",
-                (game_id,),
-            ).fetchone()
-            if state_row is None:
-                saved_state = None
-            else:
-                raw_state = state_row[0]
-                if not isinstance(raw_state, str):
-                    raw_state = json.dumps(raw_state, ensure_ascii=False)
-                saved_state = _deserialize_game_state(raw_state)
-            rows = conn.execute(
-                "SELECT event_type, payload_json, event_json FROM events "
-                "WHERE game_id = %s ORDER BY seq",
-                (game_id,),
-            ).fetchall()
-            existing = [
-                (
-                    deserialize_game_event(
-                        row[2] if isinstance(row[2], dict) else json.loads(row[2])
+            try:
+                self._lock_game_transaction(conn, game_id)
+                state_row = conn.execute(
+                    "SELECT state_json FROM games WHERE game_id = %s FOR UPDATE",
+                    (game_id,),
+                ).fetchone()
+                saved_state = self._deserialize_state_row(state_row)
+                rows = conn.execute(
+                    "SELECT event_type, payload_json, event_json FROM events "
+                    "WHERE game_id = %s ORDER BY seq",
+                    (game_id,),
+                ).fetchall()
+                existing = [
+                    (
+                        deserialize_game_event(
+                            row[2] if isinstance(row[2], dict) else json.loads(row[2])
+                        )
+                        if len(row) > 2 and row[2] is not None
+                        else GameEvent(
+                            type=row[0],
+                            payload=(
+                                row[1]
+                                if isinstance(row[1], dict)
+                                else json.loads(row[1])
+                            ),
+                        )
                     )
-                    if len(row) > 2 and row[2] is not None
-                    else GameEvent(
-                        type=row[0],
-                        payload=(
-                            row[1]
-                            if isinstance(row[1], dict)
-                            else json.loads(row[1])
+                    for row in rows
+                ]
+                validate_game_aborted_append(
+                    game_id, saved_state, existing, events,
+                )
+                current = conn.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = %s",
+                    (game_id,),
+                ).fetchone()[0]
+                for i, event in enumerate(events):
+                    conn.execute(
+                        """
+                        INSERT INTO events (game_id, seq, event_type, payload_json, event_json)
+                        VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
+                        """,
+                        (
+                            game_id,
+                            current + i + 1,
+                            event.type,
+                            json.dumps(
+                                serialize_legacy_event_payload(event), ensure_ascii=False,
+                            ),
+                            json.dumps(serialize_game_event(event), ensure_ascii=False),
                         ),
                     )
-                )
-                for row in rows
-            ]
-            validate_game_aborted_append(
-                game_id, saved_state, existing, events,
-            )
-            current = conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = %s",
-                (game_id,),
-            ).fetchone()[0]
-            for i, event in enumerate(events):
-                conn.execute(
-                    """
-                    INSERT INTO events (game_id, seq, event_type, payload_json, event_json)
-                    VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
-                    """,
-                    (
-                        game_id,
-                        current + i + 1,
-                        event.type,
-                        json.dumps(serialize_legacy_event_payload(event), ensure_ascii=False),
-                        json.dumps(serialize_game_event(event), ensure_ascii=False),
-                    ),
-                )
-            conn.commit()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def _lock_game_transaction(conn: Any, game_id: str) -> None:
+        """使用事务级 advisory lock 串行化同一 game_id 的跨实例写入。"""
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (game_id,),
+        )
+
+    @staticmethod
+    def _deserialize_state_row(row: Any) -> GameState | None:
+        if row is None:
+            return None
+        raw = row[0]
+        if not isinstance(raw, str):
+            raw = json.dumps(raw, ensure_ascii=False)
+        return _deserialize_game_state(raw)
 
     def load_events(self, game_id: str) -> list[GameEvent]:
         with self._lock:
@@ -507,6 +534,18 @@ class PostgresGameRepository:
         """)
         conn.execute(
             "ALTER TABLE events ADD COLUMN IF NOT EXISTS event_json JSONB"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_seq "
+            "ON events (game_id, seq)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_game_event_id "
+            "ON events (game_id, (event_json->>'event_id')) "
+            "WHERE event_json->>'event_id' IS NOT NULL"
+        )
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (3) ON CONFLICT DO NOTHING"
         )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS deaths (

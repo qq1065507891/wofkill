@@ -182,6 +182,88 @@ class TestGameCreateLoad:
         assert loaded.players["idiot"].vote_enabled is False
 
 
+class TestTerminalStateImmutability:
+    def test_identical_terminal_resave_is_idempotent(
+        self, repo: GameRepository,
+    ) -> None:
+        base = _make_game_state("terminal_idempotent")
+        aborted = abort_game(
+            base, reason="step_limit", last_node="day_vote", step=9,
+        )
+
+        repo.save_game(aborted)
+        repo.save_game(aborted)
+
+        assert repo.load_game(base.game_id) == aborted
+
+    @pytest.mark.parametrize(
+        ("initial_kind", "replacement_kind"),
+        [
+            ("aborted", "running"),
+            ("aborted", "conflicting_aborted"),
+            ("aborted", "finished"),
+            ("finished", "running"),
+            ("finished", "conflicting_finished"),
+            ("finished", "aborted"),
+        ],
+    )
+    def test_terminal_state_rejects_conflicting_rewrite_and_preserves_state(
+        self,
+        repo: GameRepository,
+        initial_kind: str,
+        replacement_kind: str,
+    ) -> None:
+        base = _make_game_state("terminal_immutable")
+        aborted = abort_game(
+            base, reason="step_limit", last_node="day_vote", step=9,
+        )
+        conflicting_aborted = abort_game(
+            base, reason="runtime_error", last_node="night", step=10,
+        )
+        finished = replace(
+            base, status="finished", phase="finished", winning_faction="good",
+        )
+        conflicting_finished = replace(finished, winning_faction="werewolf")
+        states = {
+            "running": base,
+            "aborted": aborted,
+            "conflicting_aborted": conflicting_aborted,
+            "finished": finished,
+            "conflicting_finished": conflicting_finished,
+        }
+        initial = states[initial_kind]
+        replacement = states[replacement_kind]
+        repo.save_game(initial)
+        if initial.status == "aborted":
+            repo.append_events(base.game_id, [initial.events[-1]])
+
+        with pytest.raises(ValueError, match="terminal game state is immutable"):
+            repo.save_game(replacement)
+
+        assert repo.load_game(base.game_id) == initial
+        expected_events = [initial.events[-1]] if initial.status == "aborted" else []
+        assert repo.load_events(base.game_id) == expected_events
+
+    def test_sqlite_identical_aborted_resave_preserves_terminal_event(
+        self, tmp_path: Path,
+    ) -> None:
+        repo = SqliteGameRepository(str(tmp_path / "terminal.db"))
+        aborted = abort_game(
+            _make_game_state("sqlite_terminal"),
+            reason="step_limit",
+            last_node="day_vote",
+            step=9,
+        )
+        terminal_event = aborted.events[-1]
+
+        repo.save_game(aborted)
+        repo.append_events(aborted.game_id, [terminal_event])
+        repo.save_game(aborted)
+
+        assert repo.load_game(aborted.game_id) == aborted
+        assert repo.load_events(aborted.game_id) == [terminal_event]
+
+
 class TestProductionStorageBoundary:
     def test_sqlite_backend_factory_returns_sqlite_repo(self, tmp_path: object) -> None:
         from werewolf_agent.storage.production import (
@@ -278,6 +360,9 @@ class TestEventLog:
                 return Result()
 
             def commit(self) -> None:
+                return None
+
+            def rollback(self) -> None:
                 return None
 
         repository = PostgresGameRepository("postgresql://unused", initialize=False)

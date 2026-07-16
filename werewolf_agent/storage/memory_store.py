@@ -9,13 +9,14 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import normalize_resolution_batch_fields
 from werewolf_agent.runtime.game_termination import (
-    validate_aborted_game,
     validate_game_aborted_append,
+    validate_game_state_save,
 )
 
 
@@ -34,29 +35,33 @@ class InMemoryGameRepository:
         self._evaluations: dict[str, dict[str, Any]] = {}
         self._configs: dict[str, dict[str, Any]] = {}
         self._custom_configs: dict[str, dict[str, Any]] = {}
+        self._lock = threading.RLock()
 
     def save_game(self, state: GameState) -> None:
-        if state.status == "aborted":
-            validate_aborted_game(state)
-        self._games[state.game_id] = state
+        with self._lock:
+            validate_game_state_save(self._games.get(state.game_id), state)
+            self._games[state.game_id] = state
 
     def load_game(self, game_id: str) -> GameState | None:
-        return self._games.get(game_id)
+        with self._lock:
+            return self._games.get(game_id)
 
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
         """保留事件的完整 V1/V2 数据类，不经过降级序列化。"""
-        validate_game_aborted_append(
-            game_id,
-            self._games.get(game_id),
-            self._events.get(game_id, []),
-            events,
-        )
-        if game_id not in self._events:
-            self._events[game_id] = []
-        self._events[game_id].extend(events)
+        with self._lock:
+            validate_game_aborted_append(
+                game_id,
+                self._games.get(game_id),
+                self._events.get(game_id, []),
+                events,
+            )
+            if game_id not in self._events:
+                self._events[game_id] = []
+            self._events[game_id].extend(events)
 
     def load_events(self, game_id: str) -> list[GameEvent]:
-        return list(self._events.get(game_id, []))
+        with self._lock:
+            return list(self._events.get(game_id, []))
 
     def save_deaths(self, game_id: str, deaths: list[Death]) -> None:
         self._deaths[game_id] = list(deaths)

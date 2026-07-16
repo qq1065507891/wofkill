@@ -105,6 +105,21 @@ def validate_aborted_game(state: GameState) -> None:
         raise ValueError("game_aborted phase must match state")
 
 
+def validate_game_state_save(
+    existing_state: GameState | None,
+    new_state: GameState,
+) -> None:
+    """校验新写状态完整，并禁止已持久化终局被改写。"""
+    if new_state.status == "aborted":
+        validate_aborted_game(new_state)
+    if existing_state is None or existing_state.status not in {"finished", "aborted"}:
+        return
+    if existing_state.status == "aborted":
+        validate_aborted_game(existing_state)
+    if new_state != existing_state:
+        raise ValueError("terminal game state is immutable")
+
+
 def validate_game_aborted_event(event: GameEvent, game_id: str) -> None:
     """校验单个新写 game_aborted 事件的 V2 合同。"""
     if event.type != _ABORT_EVENT_TYPE:
@@ -258,6 +273,7 @@ __all__ = [
     "emergency_abort_payload",
     "finish_game",
     "validate_aborted_game",
+    "validate_game_state_save",
     "validate_game_aborted_append",
     "validate_game_aborted_event",
     "validate_game_aborted_event_log",

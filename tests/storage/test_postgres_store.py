@@ -3,7 +3,7 @@
 使用 mock psycopg 验证 PostgreSQL 仓库与 GameEvent V1/V2 存储兼容。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 import types
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -121,6 +122,29 @@ def _setup_repo_with_mock_conn() -> tuple[Any, MagicMock]:
     return repo, mock_conn
 
 
+def _configure_empty_event_write(mock_conn: MagicMock, current: int = 0) -> None:
+    """为事件写入测试模拟空游戏状态、空事件流和当前序号。"""
+    def execute(sql: str, _params=None):
+        cursor = MagicMock()
+        normalized = " ".join(sql.split())
+        if normalized.startswith("SELECT state_json"):
+            cursor.fetchone.return_value = None
+        elif normalized.startswith("SELECT event_type"):
+            cursor.fetchall.return_value = []
+        elif "SELECT COALESCE(MAX(seq)" in normalized:
+            cursor.fetchone.return_value = (current,)
+        return cursor
+
+    mock_conn.execute.side_effect = execute
+
+
+def _event_insert_calls(mock_conn: MagicMock) -> list[Any]:
+    return [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO events" in call.args[0]
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Fixture: patched psycopg
 # ---------------------------------------------------------------------------
@@ -209,26 +233,136 @@ class TestEnsureSchema:
 class TestSaveGame:
     def test_save_game_executes_upsert(self) -> None:
         repo, mock_conn = _setup_repo_with_mock_conn()
+        _configure_empty_event_write(mock_conn)
         gs = _make_game_state("g1")
         repo.save_game(gs)
 
-        mock_conn.execute.assert_called_once()
-        sql_arg = mock_conn.execute.call_args[0][0]
+        upsert = next(
+            call for call in mock_conn.execute.call_args_list
+            if "INSERT INTO games" in call.args[0]
+        )
+        sql_arg = upsert.args[0]
         assert "INSERT INTO games" in sql_arg
         assert "ON CONFLICT" in sql_arg
         mock_conn.commit.assert_called_once()
 
     def test_save_game_serializes_state(self) -> None:
         repo, mock_conn = _setup_repo_with_mock_conn()
+        _configure_empty_event_write(mock_conn)
         gs = _make_game_state("g2")
         repo.save_game(gs)
 
-        args = mock_conn.execute.call_args[0][1]
+        upsert = next(
+            call for call in mock_conn.execute.call_args_list
+            if "INSERT INTO games" in call.args[0]
+        )
+        args = upsert.args[1]
         assert args[0] == "g2"
         # Second arg is JSON string
         parsed = json.loads(args[1])
         assert parsed["game_id"] == "g2"
         assert parsed["phase"] == "night"
+
+    @pytest.mark.parametrize(
+        ("initial_kind", "replacement_kind"),
+        [
+            ("aborted", "running"),
+            ("aborted", "conflicting_aborted"),
+            ("aborted", "finished"),
+            ("finished", "running"),
+            ("finished", "conflicting_finished"),
+            ("finished", "aborted"),
+        ],
+    )
+    def test_terminal_state_is_immutable_inside_postgres_transaction(
+        self, initial_kind: str, replacement_kind: str,
+    ) -> None:
+        from werewolf_agent.runtime.game_termination import abort_game
+
+        class Cursor:
+            def __init__(self, row=None):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class StatefulConnection:
+            def __init__(self) -> None:
+                self.state = None
+                self.rollbacks = 0
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split())
+                if normalized.startswith("SELECT state_json"):
+                    return Cursor(None if self.state is None else (self.state,))
+                if normalized.startswith("INSERT INTO games"):
+                    self.state = json.loads(params[1])
+                return Cursor()
+
+            def commit(self):
+                return None
+
+            def rollback(self):
+                self.rollbacks += 1
+
+        base = _make_game_state("pg_terminal")
+        aborted = abort_game(
+            base, reason="step_limit", last_node="day_vote", step=9,
+        )
+        conflicting_aborted = abort_game(
+            base, reason="runtime_error", last_node="night", step=10,
+        )
+        finished = replace(
+            base, status="finished", phase="finished", winning_faction="good",
+        )
+        conflicting_finished = replace(finished, winning_faction="werewolf")
+        states = {
+            "running": base,
+            "aborted": aborted,
+            "conflicting_aborted": conflicting_aborted,
+            "finished": finished,
+            "conflicting_finished": conflicting_finished,
+        }
+        repo = _make_repo_without_init()
+        connection = StatefulConnection()
+        repo._conn = connection
+        initial = states[initial_kind]
+        repo.save_game(initial)
+        persisted = connection.state
+
+        with pytest.raises(ValueError, match="terminal game state is immutable"):
+            repo.save_game(states[replacement_kind])
+
+        assert connection.state == persisted
+        assert connection.rollbacks == 1
+
+    def test_identical_postgres_terminal_resave_is_idempotent(self) -> None:
+        from werewolf_agent.runtime.game_termination import abort_game
+        from werewolf_agent.storage.sqlite_store import _serialize_game_state
+
+        repo, mock_conn = _setup_repo_with_mock_conn()
+        aborted = abort_game(
+            _make_game_state("pg_terminal_idempotent"),
+            reason="step_limit",
+            last_node="day_vote",
+            step=9,
+        )
+        existing = json.loads(_serialize_game_state(aborted))
+
+        def execute(sql, _params=None):
+            cursor = MagicMock()
+            if "SELECT state_json" in sql:
+                cursor.fetchone.return_value = (existing,)
+            return cursor
+
+        mock_conn.execute.side_effect = execute
+
+        repo.save_game(aborted)
+
+        assert any(
+            "INSERT INTO games" in call.args[0]
+            for call in mock_conn.execute.call_args_list
+        )
 
 
 class TestLoadGame:
@@ -322,39 +456,30 @@ class TestAppendEvents:
         events = _make_events()  # 2 events
 
         # First execute call returns current max seq = 0
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = (0,)
-        mock_conn.execute.return_value = mock_cursor
+        _configure_empty_event_write(mock_conn)
 
         repo.append_events("g1", events)
 
-        # Should have 1 (max seq) + 2 (inserts) = 3 execute calls + 1 commit
-        assert mock_conn.execute.call_count == 3
-
         # Check seq numbering: event 1 -> seq 1, event 2 -> seq 2
-        insert_calls = mock_conn.execute.call_args_list[1:]
+        insert_calls = _event_insert_calls(mock_conn)
         assert insert_calls[0][0][1][1] == 1  # first event seq
         assert insert_calls[1][0][1][1] == 2  # second event seq
 
     def test_append_events_continues_from_existing_seq(self) -> None:
         repo, mock_conn = _setup_repo_with_mock_conn()
 
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = (5,)  # max seq is 5
-        mock_conn.execute.return_value = mock_cursor
+        _configure_empty_event_write(mock_conn, current=5)
 
         events = [GameEvent(type="test", payload={"k": "v"})]
         repo.append_events("g1", events)
 
-        insert_calls = mock_conn.execute.call_args_list[1:]
+        insert_calls = _event_insert_calls(mock_conn)
         assert insert_calls[0][0][1][1] == 6  # continues from 5
 
     def test_append_events_commit(self) -> None:
         repo, mock_conn = _setup_repo_with_mock_conn()
 
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.return_value = (0,)
-        mock_conn.execute.return_value = mock_cursor
+        _configure_empty_event_write(mock_conn)
 
         repo.append_events("g1", _make_events())
         mock_conn.commit.assert_called_once()
@@ -871,6 +996,114 @@ def test_postgres_ensure_schema_adds_event_json_column() -> None:
     assert "ALTER TABLE events ADD COLUMN IF NOT EXISTS event_json JSONB" in sql
 
 
+def test_postgres_ensure_schema_adds_unique_event_sequence_and_identity() -> None:
+    repo, mock_conn = _setup_repo_with_mock_conn()
+
+    repo._ensure_schema()
+
+    sql = " ".join(call.args[0] for call in mock_conn.execute.call_args_list)
+    assert "UNIQUE INDEX IF NOT EXISTS uq_events_game_seq" in sql
+    assert "UNIQUE INDEX IF NOT EXISTS uq_events_game_event_id" in sql
+
+
+def test_postgres_append_events_serializes_across_repository_instances() -> None:
+    """两个 repository 实例也必须由数据库事务锁串行化同局事件序号。"""
+
+    class Result:
+        def __init__(self, *, one=None, rows=None):
+            self._one = one
+            self._rows = rows or []
+
+        def fetchone(self):
+            return self._one
+
+        def fetchall(self):
+            return self._rows
+
+    class SharedDatabase:
+        def __init__(self) -> None:
+            self.advisory = threading.Lock()
+            self.data_lock = threading.Lock()
+            self.max_barrier = threading.Barrier(2)
+            self.state = asdict(_make_game_state("shared_game"))
+            self.events: list[tuple[int, str, str, str]] = []
+
+    class Session:
+        def __init__(self, shared: SharedDatabase) -> None:
+            self.shared = shared
+            self.has_advisory_lock = False
+
+        def execute(self, sql, params=None):
+            normalized = " ".join(sql.split())
+            if "pg_advisory_xact_lock" in normalized:
+                self.shared.advisory.acquire()
+                self.has_advisory_lock = True
+                return Result(one=(None,))
+            if normalized.startswith("SELECT state_json"):
+                return Result(one=(self.shared.state,))
+            if normalized.startswith("SELECT event_type"):
+                with self.shared.data_lock:
+                    rows = [
+                        (event_type, payload_json, event_json)
+                        for _, event_type, payload_json, event_json
+                        in sorted(self.shared.events)
+                    ]
+                return Result(rows=rows)
+            if "SELECT COALESCE(MAX(seq)" in normalized:
+                with self.shared.data_lock:
+                    current = max(
+                        (seq for seq, *_ in self.shared.events), default=0,
+                    )
+                if not self.has_advisory_lock:
+                    self.shared.max_barrier.wait(timeout=2)
+                    time.sleep(0.01)
+                return Result(one=(current,))
+            if normalized.startswith("INSERT INTO events"):
+                assert params is not None
+                seq = params[1]
+                with self.shared.data_lock:
+                    if any(row[0] == seq for row in self.shared.events):
+                        raise RuntimeError("duplicate game_id, seq")
+                    self.shared.events.append((seq, params[2], params[3], params[4]))
+                return Result()
+            raise AssertionError(f"unexpected SQL: {normalized}")
+
+        def commit(self):
+            if self.has_advisory_lock:
+                self.has_advisory_lock = False
+                self.shared.advisory.release()
+
+        def rollback(self):
+            self.commit()
+
+    shared = SharedDatabase()
+    first = _make_repo_without_init()
+    second = _make_repo_without_init()
+    first._conn = Session(shared)
+    second._conn = Session(shared)
+    errors: list[BaseException] = []
+
+    def append(repo, event_type: str) -> None:
+        try:
+            repo.append_events(
+                "shared_game", [GameEvent(type=event_type, payload={})],
+            )
+        except BaseException as exc:  # pragma: no cover - 仅收集并发线程异常
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=append, args=(first, "first")),
+        threading.Thread(target=append, args=(second, "second")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert errors == []
+    assert [row[0] for row in sorted(shared.events)] == [1, 2]
+
+
 def test_postgres_append_events_always_writes_full_event_json() -> None:
     from datetime import datetime, timezone
 
@@ -878,9 +1111,7 @@ def test_postgres_append_events_always_writes_full_event_json() -> None:
     from werewolf_agent.runtime.event_metadata import deserialize_game_event
 
     repo, mock_conn = _setup_repo_with_mock_conn()
-    mock_cursor = MagicMock()
-    mock_cursor.fetchone.return_value = (0,)
-    mock_conn.execute.return_value = mock_cursor
+    _configure_empty_event_write(mock_conn)
     event = GameEvent(
         type="seer_check",
         payload={"target_id": "p02"},
@@ -894,7 +1125,7 @@ def test_postgres_append_events_always_writes_full_event_json() -> None:
 
     repo.append_events("g1", [event])
 
-    insert = mock_conn.execute.call_args_list[1]
+    insert = _event_insert_calls(mock_conn)[0]
     assert "event_json" in insert.args[0]
     serialized = json.loads(insert.args[1][4])
     assert deserialize_game_event(serialized) == event
@@ -904,9 +1135,7 @@ def test_postgres_append_events_serializes_nested_resolution_batches() -> None:
     from werewolf_agent.core.event_visibility import EventVisibility
 
     repo, mock_conn = _setup_repo_with_mock_conn()
-    mock_cursor = MagicMock()
-    mock_cursor.fetchone.return_value = (0,)
-    mock_conn.execute.return_value = mock_cursor
+    _configure_empty_event_write(mock_conn)
     batch = ResolutionBatchV2("day", 2, "hunter_shot")
     event = GameEvent(
         type="nested_batch",
@@ -917,7 +1146,7 @@ def test_postgres_append_events_serializes_nested_resolution_batches() -> None:
 
     repo.append_events("g1", [event])
 
-    insert_args = mock_conn.execute.call_args_list[1].args[1]
+    insert_args = _event_insert_calls(mock_conn)[0].args[1]
     legacy_payload = json.loads(insert_args[3])
     event_json = json.loads(insert_args[4])
     expected = {"phase": "day", "number": 2, "cause": "hunter_shot"}
@@ -931,9 +1160,7 @@ def test_postgres_dual_write_keeps_private_visibility_for_legacy_reader() -> Non
     from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
 
     repo, mock_conn = _setup_repo_with_mock_conn()
-    mock_cursor = MagicMock()
-    mock_cursor.fetchone.return_value = (0,)
-    mock_conn.execute.return_value = mock_cursor
+    _configure_empty_event_write(mock_conn)
     event = GameEvent(
         type="seer_check",
         payload={"target_id": "p02"},
@@ -947,7 +1174,7 @@ def test_postgres_dual_write_keeps_private_visibility_for_legacy_reader() -> Non
 
     repo.append_events("g1", [event])
 
-    insert_args = mock_conn.execute.call_args_list[1].args[1]
+    insert_args = _event_insert_calls(mock_conn)[0].args[1]
     legacy_event = GameEvent(
         type=insert_args[2],
         payload=json.loads(insert_args[3]),

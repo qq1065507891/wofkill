@@ -3,7 +3,7 @@
 验证 GameRunner 编排、终局边界与持久化行为。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-16
 """
 
 from __future__ import annotations
@@ -568,6 +568,25 @@ class TestGameRunnerStepByStep:
         stored_events = repo.load_events(runner.game_id)
         assert [event.type for event in stored_events] == ["game_aborted"]
         assert not (tmp_path / f"emergency_abort_{runner.game_id}.json").exists()
+
+    def test_repeated_abort_persistence_keeps_single_sqlite_terminal_event(
+        self, tmp_path,
+    ) -> None:
+        from werewolf_agent.storage.sqlite_store import SqliteGameRepository
+
+        repo = SqliteGameRepository(str(tmp_path / "runner.db"))
+        runner = GameRunner(GameRunnerConfig(
+            seed=51, repository=repo, emergency_artifact_dir=tmp_path,
+        ))
+        runner._graph = type(
+            "ShortGraph", (), {"stream": lambda *_args, **_kwargs: iter(())}
+        )()
+
+        result = runner.run(max_steps=1)
+        runner._persist_if_configured()
+
+        assert repo.load_game(runner.game_id) == result
+        assert repo.load_events(runner.game_id) == [result.events[-1]]
 
     def test_repository_failure_falls_back_to_emergency_artifact(self, tmp_path) -> None:
         class BrokenRepository:

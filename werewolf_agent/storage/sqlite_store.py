@@ -26,8 +26,8 @@ from werewolf_agent.runtime.event_metadata import (
     serialize_legacy_event_payload,
 )
 from werewolf_agent.runtime.game_termination import (
-    validate_aborted_game,
     validate_game_aborted_append,
+    validate_game_state_save,
 )
 
 
@@ -178,12 +178,19 @@ class SqliteGameRepository:
     # -- Game state --------------------------------------------------------
 
     def save_game(self, state: GameState) -> None:
-        if state.status == "aborted":
-            validate_aborted_game(state)
         with self._lock:
+            row = self._conn.execute(
+                "SELECT state_json FROM games WHERE game_id = ?",
+                (state.game_id,),
+            ).fetchone()
+            existing = _deserialize_game_state(row[0]) if row is not None else None
+            validate_game_state_save(existing, state)
             data = _serialize_game_state(state)
             self._conn.execute(
-                "INSERT OR REPLACE INTO games (game_id, state_json) VALUES (?, ?)",
+                """
+                INSERT INTO games (game_id, state_json) VALUES (?, ?)
+                ON CONFLICT(game_id) DO UPDATE SET state_json = excluded.state_json
+                """,
                 (state.game_id, data),
             )
             self._conn.commit()
