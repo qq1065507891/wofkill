@@ -46,7 +46,10 @@ class InMemoryGameRepository:
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
         """保留事件的完整 V1/V2 数据类，不经过降级序列化。"""
         validate_game_aborted_append(
-            game_id, self._events.get(game_id, []), events,
+            game_id,
+            self._games.get(game_id),
+            self._events.get(game_id, []),
+            events,
         )
         if game_id not in self._events:
             self._events[game_id] = []

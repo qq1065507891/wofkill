@@ -170,13 +170,31 @@ def validate_game_aborted_event_log(
 
 def validate_game_aborted_append(
     game_id: str,
+    saved_state: GameState | None,
     existing_events: list[GameEvent],
     new_events: list[GameEvent],
 ) -> None:
-    """在 repository append 前校验组合后的中止事件流。"""
+    """在 repository append 前联合校验已存状态与事件流。"""
     combined = [*existing_events, *new_events]
+    if saved_state is not None and saved_state.status == "aborted":
+        validate_aborted_game(saved_state)
+        if not any(item.type == _ABORT_EVENT_TYPE for item in combined):
+            raise ValueError(
+                "saved aborted game requires its final game_aborted event"
+            )
+        appended_terminal = validate_game_aborted_event_log(game_id, combined)
+        saved_terminal = validate_game_aborted_event_log(
+            game_id, saved_state.events,
+        )
+        if appended_terminal != saved_terminal:
+            raise ValueError(
+                "appended game_aborted must be consistent with saved aborted state"
+            )
+        return
     if any(item.type == _ABORT_EVENT_TYPE for item in combined):
-        validate_game_aborted_event_log(game_id, combined)
+        raise ValueError(
+            "game_aborted append requires a matching saved aborted state"
+        )
 
 
 def emergency_abort_payload(state: GameState) -> dict[str, Any]:

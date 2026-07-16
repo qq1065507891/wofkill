@@ -202,6 +202,15 @@ class SqliteGameRepository:
 
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
         with self._lock:
+            state_row = self._conn.execute(
+                "SELECT state_json FROM games WHERE game_id = ?",
+                (game_id,),
+            ).fetchone()
+            saved_state = (
+                _deserialize_game_state(state_row[0])
+                if state_row is not None
+                else None
+            )
             rows = self._conn.execute(
                 "SELECT event_type, payload_json, event_json FROM events "
                 "WHERE game_id = ? ORDER BY seq",
@@ -215,7 +224,9 @@ class SqliteGameRepository:
                 )
                 for row in rows
             ]
-            validate_game_aborted_append(game_id, existing, events)
+            validate_game_aborted_append(
+                game_id, saved_state, existing, events,
+            )
             current_max = self._conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = ?",
                 (game_id,),

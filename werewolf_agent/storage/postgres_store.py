@@ -78,6 +78,17 @@ class PostgresGameRepository:
     def append_events(self, game_id: str, events: list[GameEvent]) -> None:
         with self._lock:
             conn = self._ensure_connection()
+            state_row = conn.execute(
+                "SELECT state_json FROM games WHERE game_id = %s",
+                (game_id,),
+            ).fetchone()
+            if state_row is None:
+                saved_state = None
+            else:
+                raw_state = state_row[0]
+                if not isinstance(raw_state, str):
+                    raw_state = json.dumps(raw_state, ensure_ascii=False)
+                saved_state = _deserialize_game_state(raw_state)
             rows = conn.execute(
                 "SELECT event_type, payload_json, event_json FROM events "
                 "WHERE game_id = %s ORDER BY seq",
@@ -100,7 +111,9 @@ class PostgresGameRepository:
                 )
                 for row in rows
             ]
-            validate_game_aborted_append(game_id, existing, events)
+            validate_game_aborted_append(
+                game_id, saved_state, existing, events,
+            )
             current = conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) FROM events WHERE game_id = %s",
                 (game_id,),

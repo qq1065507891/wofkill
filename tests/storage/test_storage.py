@@ -262,10 +262,13 @@ class TestEventLog:
                 return self._one
 
         class Connection:
-            def __init__(self) -> None:
+            def __init__(self, state_json: str) -> None:
                 self.inserts = 0
+                self.state_json = state_json
 
             def execute(self, sql, _params=()):
+                if "SELECT state_json" in sql:
+                    return Result(one=(self.state_json,))
                 if "SELECT event_type" in sql:
                     return Result(rows=[])
                 if "MAX(seq)" in sql:
@@ -278,15 +281,18 @@ class TestEventLog:
                 return None
 
         repository = PostgresGameRepository("postgresql://unused", initialize=False)
-        connection = Connection()
-        repository._ensure_connection = lambda: connection
         state = _make_game_state("postgres-abort")
-        valid = abort_game(
+        aborted = abort_game(
             state,
             reason="step_limit",
             last_node="wolf_action",
             step=50,
-        ).events[-1]
+        )
+        valid = aborted.events[-1]
+        from werewolf_agent.storage.sqlite_store import _serialize_game_state
+
+        connection = Connection(_serialize_game_state(aborted))
+        repository._ensure_connection = lambda: connection
 
         repository.append_events(state.game_id, [valid])
 
@@ -295,6 +301,22 @@ class TestEventLog:
         with pytest.raises(ValueError, match="game_aborted"):
             repository.append_events(state.game_id, [malformed])
         assert connection.inserts == 1
+
+        empty_connection = Connection(_serialize_game_state(aborted))
+        repository._ensure_connection = lambda: empty_connection
+        with pytest.raises(ValueError, match="saved aborted"):
+            repository.append_events(
+                state.game_id, [GameEvent(type="late", payload={})]
+            )
+        conflicting = abort_game(
+            state,
+            reason="unrecoverable_runtime_error",
+            last_node="wolf_action",
+            step=50,
+        ).events[-1]
+        with pytest.raises(ValueError, match="consistent with saved aborted"):
+            repository.append_events(state.game_id, [conflicting])
+        assert empty_connection.inserts == 0
 
     def test_append_valid_game_aborted_event_and_reject_followup(
         self, repo: GameRepository,
@@ -308,6 +330,13 @@ class TestEventLog:
             step=50,
         )
         event = aborted.events[-1]
+        repo.save_game(aborted)
+
+        with pytest.raises(ValueError, match="saved aborted"):
+            repo.append_events(
+                state.game_id,
+                [GameEvent(type="late_diagnostic", payload={})],
+            )
 
         repo.append_events(state.game_id, [event])
 
@@ -318,18 +347,42 @@ class TestEventLog:
                 [GameEvent(type="late_diagnostic", payload={})],
             )
 
+    def test_append_conflicting_terminal_event_rejects_saved_aborted_state(
+        self, repo: GameRepository,
+    ) -> None:
+        state = _make_game_state("abort-conflict")
+        aborted = abort_game(
+            state,
+            reason="step_limit",
+            last_node="wolf_action",
+            step=50,
+        )
+        repo.save_game(aborted)
+        conflicting = abort_game(
+            state,
+            reason="unrecoverable_runtime_error",
+            last_node="wolf_action",
+            step=50,
+        ).events[-1]
+
+        with pytest.raises(ValueError, match="consistent with saved aborted"):
+            repo.append_events(state.game_id, [conflicting])
+
+        assert repo.load_events(state.game_id) == []
+
     @pytest.mark.parametrize("corruption", ["v1", "visibility", "payload"])
     def test_append_events_rejects_malformed_game_aborted(
         self, repo: GameRepository, corruption: str,
     ) -> None:
         state = _make_game_state(f"bad-abort-{corruption}")
-        repo.save_game(state)
-        valid = abort_game(
+        aborted = abort_game(
             state,
             reason="step_limit",
             last_node="wolf_action",
             step=50,
-        ).events[-1]
+        )
+        repo.save_game(aborted)
+        valid = aborted.events[-1]
         if corruption == "v1":
             event = GameEvent(type="game_aborted", payload=valid.payload)
         elif corruption == "visibility":
