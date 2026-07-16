@@ -1417,6 +1417,48 @@ class TestPlayerAgentRetryFallback:
         assert action.trace.structured_failure_reason == "fallback_route_unavailable"
         assert action.trace.provider_fallback_count == 0
 
+    def test_fallback_timeout_category_reaches_action_without_private_error(self) -> None:
+        class FailingProvider:
+            def __init__(self, name, error) -> None:
+                self.name = name
+                self.error = error
+
+            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+                raise self.error
+
+        primary = FailingProvider("primary", RuntimeError("primary private detail"))
+        fallback = FailingProvider(
+            "fallback", TimeoutError("fallback timed out private detail")
+        )
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary", "model": "p", "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback", "model": "f", "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "fallback": fallback},
+        )
+        agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=3)
+
+        action, retry = agent.act(self._make_context())
+
+        assert retry.failure_category == "timeout"
+        assert action.trace is not None
+        assert action.trace.structured_failure_reason == "model_generation_failed"
+        public_trace = action.trace.model_dump_json()
+        assert "primary private detail" not in public_trace
+        assert "fallback timed out private detail" not in public_trace
+
     def test_provider_failure_trace_appends_terminal_safe_fallback(self) -> None:
         router = ModelRouter(
             model_profiles={

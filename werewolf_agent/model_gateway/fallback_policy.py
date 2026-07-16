@@ -32,6 +32,10 @@ class FallbackRoute(Protocol):
 RouteT = TypeVar("RouteT", bound=FallbackRoute)
 
 
+class RouteIdentityError(ValueError):
+    """provider/model 无法构成可执行路由身份。"""
+
+
 @dataclass(frozen=True)
 class FallbackRouteFailure:
     """不含 provider 原始错误或密钥的结构化路由失败。"""
@@ -61,12 +65,25 @@ def build_fallback_routes(
     candidate_items = tuple(candidates)
     accepted: list[RouteT] = []
     rejected: list[str] = []
-    seen = {(primary.provider, primary.model)}
+    try:
+        primary_identity = normalize_route_identity(primary)
+    except RouteIdentityError:
+        return FallbackRoutePlan(
+            routes=(),
+            failure=FallbackRouteFailure(
+                rejected_reasons=("invalid_primary_route",),
+            ),
+        )
+    seen = {primary_identity}
     for candidate in candidate_items:
-        identity = (candidate.provider, candidate.model)
+        try:
+            identity = normalize_route_identity(candidate)
+        except RouteIdentityError:
+            rejected.append("invalid_route_identity")
+            continue
         if identity in seen:
             rejected.append(
-                "same_as_primary" if identity == (primary.provider, primary.model)
+                "same_as_primary" if identity == primary_identity
                 else "duplicate_candidate"
             )
             continue
@@ -90,10 +107,23 @@ def build_fallback_routes(
 
 def route_switch_is_valid(current: FallbackRoute, next_route: FallbackRoute) -> bool:
     """运行时门禁：下一路由必须与当前 provider/model 对不同。"""
-    return (current.provider, current.model) != (
-        next_route.provider,
-        next_route.model,
-    )
+    try:
+        return normalize_route_identity(current) != normalize_route_identity(next_route)
+    except RouteIdentityError:
+        return False
+
+
+def normalize_route_identity(route: FallbackRoute) -> tuple[str, str]:
+    """仅规范化身份比较；执行配置仍保留原 provider/model 字面值。"""
+    provider = route.provider
+    model = route.model
+    if not isinstance(provider, str) or not isinstance(model, str):
+        raise RouteIdentityError("route provider and model must be strings")
+    normalized_provider = provider.strip().casefold()
+    normalized_model = model.strip()
+    if not normalized_provider or not normalized_model:
+        raise RouteIdentityError("route provider and model must be non-empty")
+    return normalized_provider, normalized_model
 
 
 def _reasoning_satisfies(capability: str, required: str) -> bool:
@@ -105,6 +135,8 @@ __all__ = [
     "FALLBACK_ROUTE_UNAVAILABLE",
     "FallbackRouteFailure",
     "FallbackRoutePlan",
+    "RouteIdentityError",
     "build_fallback_routes",
+    "normalize_route_identity",
     "route_switch_is_valid",
 ]

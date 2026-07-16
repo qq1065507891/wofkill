@@ -78,3 +78,34 @@ def test_plan_and_routes_are_immutable() -> None:
 
     with pytest.raises((AttributeError, TypeError)):
         plan.routes += (_route("third", "model-c"),)
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        _route("openai", "model-a"),
+        _route(" OpenAI ", " model-a "),
+    ],
+)
+def test_route_identity_normalizes_provider_case_and_outer_whitespace(candidate) -> None:
+    plan = build_fallback_routes(
+        _route("OpenAI", "model-a"), [candidate], "none"
+    )
+
+    assert plan.routes == ()
+    assert plan.failure is not None
+    assert plan.failure.rejected_reasons == ("same_as_primary",)
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [_route("   ", "model-b"), _route("backup", "   ")],
+)
+def test_empty_normalized_route_fields_are_rejected(candidate) -> None:
+    plan = build_fallback_routes(
+        _route("primary", "model-a"), [candidate], "none"
+    )
+
+    assert plan.routes == ()
+    assert plan.failure is not None
+    assert plan.failure.rejected_reasons == ("invalid_route_identity",)

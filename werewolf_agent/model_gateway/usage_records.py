@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-13
+修改日期: 2026-07-16
 
 使用示例:
     >>> from werewolf_agent.model_gateway.usage_records import ModelConfig
@@ -92,8 +92,17 @@ class UsageRecord:
             "retry_count",
             sum(item.route_kind.value == "retry" for item in self.attempts),
         )
-        failures = [item for item in self.attempts if item.root_cause.value != "none"]
-        cause = failures[0].root_cause.value if failures else None
+        failures = [
+            item for item in self.attempts
+            if item.root_cause.value != "none"
+            and item.route_kind.value != "safe_fallback"
+        ]
+        decisive_failure = (
+            failures[-1]
+            if failures and final.attempt_outcome.value == "attempt_failure"
+            else failures[0] if failures else None
+        )
+        cause = decisive_failure.root_cause.value if decisive_failure else None
         object.__setattr__(self, "fallback_reason", cause)
         object.__setattr__(self, "failure_category", cause)
         object.__setattr__(self, "reasoning_level", final.requested_reasoning_level.value)

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-13
+修改日期: 2026-07-16
 
 使用示例:
     >>> isinstance(_empty_result(config_provider="mock", config_model="mock", active_mode="native_tool"), object)
@@ -93,7 +93,7 @@ def _record_failure_usage(
     reasoning_status: str = "not_requested",
     reasoning_tokens: int = 0,
     attempts: tuple = (),
-) -> None:
+) -> UsageRecord:
     """记录最终失败的路由用量。"""
     usage = UsageRecord(
         agent_id=agent_id,
@@ -116,6 +116,7 @@ def _record_failure_usage(
         attempts=attempts,
     )
     _append_usage(usage_log, usage_lock, usage)
+    return usage
 
 
 def _empty_result(
@@ -138,10 +139,10 @@ def _empty_result(
             if last_empty_result and last_empty_result.usage
             else None
         ),
-        http_status=_http_status_from_exception(primary_error)
-        or _http_status_from_exception(fallback_error),
-        raw_error=_raw_error_from_exception(primary_error)
-        or _raw_error_from_exception(fallback_error),
+        http_status=_http_status_from_exception(fallback_error)
+        or _http_status_from_exception(primary_error),
+        raw_error=_raw_error_from_exception(fallback_error)
+        or _raw_error_from_exception(primary_error),
         structured_output_mode=(
             last_empty_result.structured_output_mode
             if last_empty_result

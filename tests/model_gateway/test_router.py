@@ -240,6 +240,83 @@ class TestResolveConfig:
 
 
 class TestGenerateWithMockProvider:
+    @pytest.mark.parametrize(
+        ("fallback_provider", "fallback_model"),
+        [("PRIMARY", "same-model"), (" primary ", " same-model ")],
+    )
+    def test_route_identity_alias_never_calls_same_fallback(
+        self, fallback_provider, fallback_model,
+    ) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([RuntimeError("primary failed")], "primary")
+        alias = _StaticTextProvider("must not run", fallback_provider)
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary", "model": "same-model",
+                    "retry_count": 0, "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": fallback_provider, "model": fallback_model,
+                    "retry_count": 0, "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {
+                    "provider": fallback_provider, "model_profile": "fallback",
+                },
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, fallback_provider: alias},
+        )
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert primary.calls == 1
+        assert alias.calls == 0
+        assert result.structured_failure_reason == "fallback_route_unavailable"
+        assert [item.route_kind.value for item in result.attempts] == [
+            "primary", "safe_fallback",
+        ]
+
+    def test_terminal_failure_uses_last_fallback_exception_and_category(self) -> None:
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        primary = _SequenceProvider([RuntimeError("primary private detail")], "primary")
+        fallback = _SequenceProvider(
+            [TimeoutError("fallback timed out private detail")], "fallback"
+        )
+        router = ModelRouter(
+            model_profiles={
+                "primary": {
+                    "provider": "primary", "model": "p", "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+                "fallback": {
+                    "provider": "fallback", "model": "f", "retry_count": 0,
+                    "reasoning": {"level": "high"},
+                },
+            },
+            llm_profiles={"profile": {
+                "default": {"provider": "primary", "model_profile": "primary"},
+                "fallback": {"provider": "fallback", "model_profile": "fallback"},
+            }},
+            player_assignments={"p01": "profile"},
+            providers={"primary": primary, "fallback": fallback},
+        )
+
+        result = router.generate("p01", "speech", "hello", jitter_seconds=(0, 0))
+
+        assert result.raw_error == "fallback timed out private detail"
+        assert result.usage is not None
+        assert result.usage.failure_category == "timeout"
+        assert result.usage.fallback_reason == "timeout"
+        assert [item.root_cause.value for item in result.attempts] == [
+            "provider_error", "timeout", "policy_rejection",
+        ]
+
     def test_dynamic_same_route_fallback_becomes_controlled_terminal_failure(self) -> None:
         from werewolf_agent.model_gateway.router import ModelRouter
         from werewolf_agent.runtime.decision_outcomes import (
@@ -956,6 +1033,49 @@ class TestRetryHelpers:
 
 
 class TestFromYamlValidation:
+    @pytest.mark.parametrize(
+        ("profile", "expected_context"),
+        [
+            ("not-a-mapping", "llm_profile 'default'"),
+            ({"default": "bad"}, ".default"),
+            ({"default": {"provider": "openai", "model_profile": "primary"}, "tasks": []}, ".tasks"),
+            ({"default": {"provider": "openai", "model_profile": "primary"}, "tasks": {"speech": "bad"}}, ".tasks.speech"),
+            ({"default": {"provider": "openai", "model_profile": "primary"}, "fallback": "bad"}, ".fallback"),
+            ({"default": {"provider": "openai", "model_profile": "primary"}, "fallback": [{"provider": "openai", "model_profile": "backup"}, "bad"]}, ".fallback[1]"),
+            ({"default": {"provider": "openai", "model_profile": "primary"}, "fallback": {"provider": "openai"}}, "model_profile"),
+            ({"default": {"provider": "openai", "model_profile": "primary"}, "fallback": {"provider": " ", "model_profile": "backup"}}, "provider"),
+            ({"default": {"provider": "openai", "model_profile": "primary"}, "fallback": {"provider": "openai", "model_profile": "ghost"}}, "ghost"),
+        ],
+    )
+    def test_from_yaml_rejects_malformed_route_shapes_with_context(
+        self, tmp_path, profile, expected_context,
+    ) -> None:
+        import re
+
+        import yaml
+
+        from werewolf_agent.model_gateway.providers import ProviderConfigError
+        from werewolf_agent.model_gateway.router import ModelRouter
+
+        payload = {
+            "model_profiles": {
+                "primary": {
+                    "provider": "openai", "model": "primary-model",
+                    "reasoning": {"level": "high"},
+                },
+                "backup": {
+                    "provider": "openai", "model": "backup-model",
+                    "reasoning": {"level": "high"},
+                },
+            },
+            "llm_profiles": {"default": profile},
+            "players": {"p01": {"llm_profile": "default"}},
+        }
+        yaml_path = tmp_path / "malformed_routes.yaml"
+        yaml_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+        with pytest.raises(ProviderConfigError, match=re.escape(expected_context)):
+            ModelRouter.from_yaml(yaml_path)
     def test_from_yaml_rejects_declared_same_route_fallback(self, tmp_path) -> None:
         from werewolf_agent.model_gateway.providers import ProviderConfigError
         from werewolf_agent.model_gateway.router import ModelRouter

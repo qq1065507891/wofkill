@@ -201,16 +201,21 @@ def run_player_action_flow(
                     structured_failure_reason = "model_generation_failed"
                     structured_failure_stage = StructuredFailureStage.PROVIDER.value
                     retry_error_code = "model_generation_failed"
-                failure_category = _categorize_failure_category(
-                    latency_ms=_latency_from_result(result),
-                    raw_error=failure_reason,
-                    http_status=int(getattr(result, "http_status", 0) or 0),
+                usage = getattr(result, "usage", None)
+                failure_category = (
+                    getattr(usage, "failure_category", None)
+                    or _categorize_failure_category(
+                        latency_ms=_latency_from_result(result),
+                        raw_error=(getattr(result, "raw_error", None) or failure_reason),
+                        http_status=int(getattr(result, "http_status", 0) or 0),
+                    )
                 )
+                public_failure_reason = structured_failure_reason
                 retry = RetryInfo(
                     attempt=attempt,
                     max_retries=agent.max_retries,
                     error_code=retry_error_code,
-                    error_message=failure_reason,
+                    error_message=public_failure_reason,
                     failure_category=failure_category,
                     correction_hint=(
                         f"Provider generation failed (category={failure_category}); "
@@ -230,7 +235,7 @@ def run_player_action_flow(
                     tool_call_required=tool_call_required,
                     tool_call_received=False,
                     parse_success=False,
-                    parse_error=failure_reason,
+                    parse_error=public_failure_reason,
                     retry_count=summarize_attempt_counts(
                         generation_attempt_context.attempts
                     ).retry_count,

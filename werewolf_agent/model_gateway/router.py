@@ -153,9 +153,32 @@ class ModelRouter:
         register_env_providers: bool = False,
     ) -> "ModelRouter":
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        from werewolf_agent.model_gateway.providers.base import ProviderConfigError
+
+        if not isinstance(data, dict):
+            raise ProviderConfigError("router config root must be a mapping")
         model_profiles = data.get("model_profiles", {})
         llm_profiles = data.get("llm_profiles", {})
         players = data.get("players", {})
+        for section_name, section in (
+            ("model_profiles", model_profiles),
+            ("llm_profiles", llm_profiles),
+            ("players", players),
+        ):
+            if not isinstance(section, dict):
+                raise ProviderConfigError(
+                    f"router config {section_name} must be a mapping"
+                )
+        for pid, player in players.items():
+            if not isinstance(player, dict):
+                raise ProviderConfigError(f"player {pid!r} must be a mapping")
+            profile_id = player.get("llm_profile")
+            if profile_id is not None and (
+                not isinstance(profile_id, str) or not profile_id.strip()
+            ):
+                raise ProviderConfigError(
+                    f"player {pid!r}.llm_profile must be a nonblank string"
+                )
         assignments = {
             pid: cfg["llm_profile"]
             for pid, cfg in players.items()
@@ -466,7 +489,7 @@ class ModelRouter:
                 break
 
         # Try fallback
-        chain_result, route_failure = self._generate_fallback_chain(
+        chain_result, route_failure, fallback_error = self._generate_fallback_chain(
             agent_id=agent_id,
             task_type=task_type,
             prompt=prompt,
@@ -496,7 +519,7 @@ class ModelRouter:
                 terminal_root,
                 terminal=True,
             ))
-        _record_failure_usage(
+        failure_usage = _record_failure_usage(
             usage_log=self._usage_log,
             usage_lock=self._usage_lock,
             agent_id=agent_id,
@@ -510,7 +533,10 @@ class ModelRouter:
             primary_model=config.model,
             fallback_provider=fallback_provider,
             retry_count=primary_attempts - 1,
-            failure_category="unknown" if primary_error else None,
+            failure_category=(
+                _root_cause(fallback_error or primary_error).value
+                if fallback_error or primary_error else None
+            ),
             reasoning_level=config.reasoning_level,
             reasoning_status=(
                 "requested_unconfirmed" if config.reasoning_requested
@@ -535,6 +561,8 @@ class ModelRouter:
                 empty_result,
                 structured_failure_reason=route_failure,
             )
+        if empty_result.usage is None:
+            empty_result = replace(empty_result, usage=failure_usage)
         if generation_attempt_context:
             generation_attempt_context.accept(tuple(attempts))
             generation_attempt_context.terminal_failure_reason = route_failure
@@ -569,7 +597,7 @@ class ModelRouter:
         attempts: list[AttemptExecutionRecord],
         generation_attempt_context: GenerationAttemptContext | None,
         final_prompt_observer: FinalPromptObserver | None,
-    ) -> tuple[GenerateResult | None, str | None]:
+    ) -> tuple[GenerateResult | None, str | None, Exception | None]:
         """按配置顺序尝试所有能力合格的 fallback 候选。"""
         profile_id = self._player_assignments.get(agent_id, "")
         plan = _resolve_fallback_routes(
@@ -580,13 +608,14 @@ class ModelRouter:
             required_reasoning_level=primary_config.reasoning_level,
         )
         if not plan.routes:
-            return None, _fallback_route_failure_code(primary_error)
+            return None, _fallback_route_failure_code(primary_error), None
         current_route = primary_config
         provider_route_attempted = False
+        final_fallback_error: Exception | None = None
         for config in plan.routes:
             # 热更新或共享映射污染不能绕过执行前的最后一道门禁。
             if not route_switch_is_valid(current_route, config):
-                return None, FALLBACK_ROUTE_UNAVAILABLE
+                return None, FALLBACK_ROUTE_UNAVAILABLE, final_fallback_error
             provider = self._providers.get(config.provider)
             if provider is None:
                 continue
@@ -638,9 +667,11 @@ class ModelRouter:
                             route_kind, AttemptOutcome.FAILURE,
                             RootCause.POLICY_REJECTION,
                         ))
+                        final_fallback_error = RuntimeError("reasoning_unsupported")
                         break
                     if not result.text:
                         empty_error = EmptyModelResponseError("empty_response")
+                        final_fallback_error = empty_error
                         attempts.append(_attempt_record(
                             request_id, len(attempts) + 1, config, result,
                             route_kind, AttemptOutcome.FAILURE,
@@ -688,8 +719,9 @@ class ModelRouter:
                         reasoning_status=result.reasoning_status,
                         reasoning_tokens=result.reasoning_tokens,
                     )
-                    return result, None
+                    return result, None, None
                 except Exception as exc:
+                    final_fallback_error = exc
                     attempts.append(_attempt_record(
                         request_id, len(attempts) + 1, config, None,
                         route_kind, AttemptOutcome.FAILURE,
@@ -711,6 +743,7 @@ class ModelRouter:
         return (
             None,
             None if provider_route_attempted else _fallback_route_failure_code(primary_error),
+            final_fallback_error,
         )
 
     def _configured_provider_names(self) -> set[str]:

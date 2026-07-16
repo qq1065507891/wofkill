@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from werewolf_agent.model_gateway.usage_records import ModelConfig
@@ -31,32 +32,13 @@ def _validate_config(
     from werewolf_agent.model_gateway.providers.base import ProviderConfigError
     from werewolf_agent.model_gateway.providers.factory import create_provider_from_env
 
+    _validate_config_shapes(model_profiles, llm_profiles, player_assignments)
+
     for pid, profile_id in player_assignments.items():
         if profile_id not in llm_profiles:
             raise ProviderConfigError(
                 f"player {pid!r} references unknown llm_profile {profile_id!r}"
             )
-
-    for profile_id, profile in llm_profiles.items():
-        for block_name in ("default", "fallback"):
-            raw = profile.get(block_name) or {}
-            blocks = raw if isinstance(raw, list) else [raw]
-            for block in blocks:
-                if not block:
-                    continue
-                mp_id = block.get("model_profile")
-                if mp_id and mp_id not in model_profiles:
-                    raise ProviderConfigError(
-                        f"llm_profile {profile_id!r}.{block_name} "
-                        f"references unknown model_profile {mp_id!r}"
-                    )
-        for task_type, task_cfg in (profile.get("tasks") or {}).items():
-            mp_id = task_cfg.get("model_profile")
-            if mp_id and mp_id not in model_profiles:
-                raise ProviderConfigError(
-                    f"llm_profile {profile_id!r}.tasks.{task_type} "
-                    f"references unknown model_profile {mp_id!r}"
-                )
 
     for provider_name in _configured_provider_names(model_profiles, llm_profiles):
         if provider_name.lower() not in _KNOWN_PROVIDER_NAMES:
@@ -68,6 +50,93 @@ def _validate_config(
         _ = create_provider_from_env
 
     _validate_declared_fallback_routes(model_profiles, llm_profiles)
+
+
+def _validate_config_shapes(
+    model_profiles: dict[str, dict[str, Any]],
+    llm_profiles: dict[str, dict[str, Any]],
+    player_assignments: dict[str, str],
+) -> None:
+    """在任何 `.get` 前校验 YAML 映射形状与 route 必填字段。"""
+    from werewolf_agent.model_gateway.providers.base import ProviderConfigError
+
+    if not isinstance(model_profiles, Mapping):
+        raise ProviderConfigError("model_profiles must be a mapping")
+    if not isinstance(llm_profiles, Mapping):
+        raise ProviderConfigError("llm_profiles must be a mapping")
+    if not isinstance(player_assignments, Mapping):
+        raise ProviderConfigError("player assignments must be a mapping")
+    for model_profile_id, profile in model_profiles.items():
+        if not isinstance(profile, Mapping):
+            raise ProviderConfigError(
+                f"model_profile {model_profile_id!r} must be a mapping"
+            )
+    for profile_id, profile in llm_profiles.items():
+        if not isinstance(profile, Mapping):
+            raise ProviderConfigError(
+                f"llm_profile {profile_id!r} must be a mapping"
+            )
+        default = profile.get("default")
+        if default is not None:
+            _validate_route_block(
+                default,
+                f"llm_profile {profile_id!r}.default",
+                model_profiles,
+            )
+        tasks = profile.get("tasks")
+        if tasks is not None:
+            if not isinstance(tasks, Mapping):
+                raise ProviderConfigError(
+                    f"llm_profile {profile_id!r}.tasks must be a mapping"
+                )
+            for task_type, task_route in tasks.items():
+                _validate_route_block(
+                    task_route,
+                    f"llm_profile {profile_id!r}.tasks.{task_type}",
+                    model_profiles,
+                )
+        fallback = profile.get("fallback")
+        if fallback is None:
+            continue
+        if isinstance(fallback, Mapping):
+            fallback_items = [fallback]
+        elif isinstance(fallback, list):
+            fallback_items = fallback
+        else:
+            raise ProviderConfigError(
+                f"llm_profile {profile_id!r}.fallback must be a mapping "
+                "or list of mappings"
+            )
+        for index, fallback_route in enumerate(fallback_items):
+            context = (
+                f"llm_profile {profile_id!r}.fallback"
+                if isinstance(fallback, Mapping)
+                else f"llm_profile {profile_id!r}.fallback[{index}]"
+            )
+            _validate_route_block(fallback_route, context, model_profiles)
+
+
+def _validate_route_block(
+    route: Any,
+    context: str,
+    model_profiles: Mapping[str, Any],
+) -> None:
+    """校验单个 default/task/fallback route，并保留精确配置上下文。"""
+    from werewolf_agent.model_gateway.providers.base import ProviderConfigError
+
+    if not isinstance(route, Mapping):
+        raise ProviderConfigError(f"{context} must be a mapping")
+    for field_name in ("provider", "model_profile"):
+        value = route.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ProviderConfigError(
+                f"{context} requires nonblank {field_name}"
+            )
+    model_profile_id = route["model_profile"]
+    if model_profile_id not in model_profiles:
+        raise ProviderConfigError(
+            f"{context} references unknown model_profile {model_profile_id!r}"
+        )
 
 
 def _validate_declared_fallback_routes(
