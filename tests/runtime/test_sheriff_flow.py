@@ -20,8 +20,6 @@ from werewolf_agent.agents.schemas import (
     TaskType,
 )
 from werewolf_agent.runtime.graph import (
-    RuntimeState,
-    build_game_graph,
     build_game_graph_with_checkpoint,
     _new_engine,
     _alive_wolves,
@@ -37,6 +35,7 @@ from werewolf_agent.runtime.graph import (
     _sheriff_died_this_batch,
     _route_after_badge_transfer,
     _action_trace_event,
+    resolve_night,
 )
 from werewolf_agent.runtime.agent_adapter import _single_wolf_vote
 from werewolf_agent.runtime.replay import replay_from_events, extract_event_log
@@ -51,15 +50,16 @@ class TestSheriffBadgeAfterNightDeath:
     route to badge transfer/tear before the next night when the game continues."""
 
     def test_sheriff_night_kill_routes_to_badge_transfer(self) -> None:
-        graph = build_game_graph()
+        """已确定的夜刀结算杀死警长后，返回状态必须进入警徽处理。"""
         engine = _new_engine()
         players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=42)
         # Find a non-wolf target to be the sheriff
         sheriff_candidate = next(
-            pid for pid, p in players.items() if p.role not in ("werewolf", "hybrid") and p.alive
+            pid
+            for pid, p in players.items()
+            if p.role not in ("werewolf", "hybrid", "hunter")
+            and p.alive
         )
-        # Set the sheriff and mark badge active
-        players[sheriff_candidate] = replace(players[sheriff_candidate],)
         gs = GameState(
             game_id="badge_night",
             players=players,
@@ -70,58 +70,24 @@ class TestSheriffBadgeAfterNightDeath:
             sheriff_badge_state="active",
         )
 
-        # Kill the sheriff with wolf kill
-        state: RuntimeState = {
+        result = resolve_night({
             "game_state": gs,
             "engine": engine,
             "wolf_kill_target_id": sheriff_candidate,
             "use_antidote": False,
             "poison_target_id": None,
             "seer_target_id": None,
-            "hybrid_master_target_id": None,
-            "self_destruct_wolf_id": None,
-            "exile_votes": {},
-            "revote": False,
-            "sheriff_candidates": [],
-            "sheriff_votes": {},
-            "sheriff_withdrawing": [],
-            "badge_decision": "tear",
-            "badge_target_id": None,
-            "hunter_shot_target_id": None,
+        })
+        resolved = result["game_state"]
+
+        assert not resolved.players[sheriff_candidate].alive
+        assert sheriff_candidate in {
+            death.player_id
+            for death in resolved.deaths
         }
-
-        nodes_seen = []
-        try:
-            for chunk in graph.stream(state, {"recursion_limit": 120}):
-                for node_name in chunk.keys():
-                    nodes_seen.append(node_name)
-        except Exception:
-            pass  # Game may not terminate, but we just need to see the nodes
-
-        # After resolve_night_node, if sheriff died and game continues,
-        # badge transfer must be visited before entering night again
-        if sheriff_candidate in [d.player_id for d in gs.deaths]:
-            pytest.skip("Sheriff not killed in this scenario")
-
-        # Check if resolve_night_node was visited and sheriff badge_transfer appeared
-        # after it but before the second enter_night
-        resolve_idx = None
-        badge_idx = None
-        enter_night_indices = []
-        for i, n in enumerate(nodes_seen):
-            if n == "resolve_night_node" and resolve_idx is None:
-                resolve_idx = i
-            if n == "sheriff_badge_transfer":
-                badge_idx = i
-            if n == "enter_night":
-                enter_night_indices.append(i)
-
-        # If sheriff died and game didn't end, badge transfer should have been visited
-        if resolve_idx is not None:
-            assert badge_idx is not None, (
-                f"Sheriff killed at night but badge_transfer was not visited. "
-                f"Nodes: {nodes_seen[:30]}"
-            )
+        assert route_after_resolve_night(
+            {"game_state": resolved, "engine": engine}
+        ) == "sheriff_badge_transfer"
 
 
 
