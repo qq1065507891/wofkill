@@ -129,7 +129,8 @@ def test_e2e_n1_authoritative_stances_override_llm_recommendation(monkeypatch):
     plan_events = [e for e in state2["game_state"].events if e.type == "wolf_team_plan"]
     fallback_events = [e for e in state2["game_state"].events if e.type == "wolf_team_plan_fallback"]
     assert len(plan_events) == 1
-    assert plan_events[0].payload["visibility"] == "werewolf_team_only"
+    assert plan_events[0].visibility.value == "werewolf_team_only"
+    assert plan_events[0].schema_version == "2"
     assert plan_events[0].payload["consensus_method"] == "llm"
     assert len(fallback_events) == 0
 
@@ -157,7 +158,8 @@ def test_e2e_n1_authoritative_stances_override_llm_recommendation(monkeypatch):
         for event in mismatch_events
         if event.payload["priority"] == "primary"
     )
-    assert primary_mismatch.payload["visibility"] == "moderator_only"
+    assert primary_mismatch.visibility.value == "moderator_only"
+    assert primary_mismatch.schema_version == "2"
     assert primary_mismatch.payload["authoritative_target_id"] == target
     assert primary_mismatch.payload["recommended_target_id"] == backup_target
 

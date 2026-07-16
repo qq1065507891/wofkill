@@ -19,6 +19,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.agents.schemas import WolfTargetStance
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import Death, GameEvent, GameState
 from werewolf_agent.core.resolution_batches import (
     carrier_matches_resolution_batch,
@@ -31,6 +32,7 @@ from werewolf_agent.runtime.nodes.judge_broadcast_helpers import (
     _judge_broadcast,
 )
 from werewolf_agent.runtime.nodes.runtime_state import RuntimeState, _stable_seed
+from werewolf_agent.runtime.event_metadata import validate_v2_event_identity
 from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeline import phase_label
 from werewolf_agent.runtime.wolf_no_kill_policy import (
@@ -295,6 +297,45 @@ def _first_alive_target(gs: GameState, player_id: str | None) -> str | None:
     return None
 
 
+def _trusted_wolf_plan_failure_reason(
+    gs: GameState,
+) -> NoKillReasonCode | None:
+    """仅从本夜私有 V2 fallback 事件读取失败类别，不授予目标执行权。"""
+    for event in reversed(gs.events):
+        if event.type != "wolf_team_plan_fallback":
+            continue
+        try:
+            validate_v2_event_identity(
+                gs.game_id,
+                event,
+                required_visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+            )
+        except ValueError:
+            continue
+        if event.payload.get("night_number") != gs.night_number:
+            continue
+        raw_reason = event.payload.get("reason")
+        if not isinstance(raw_reason, str):
+            continue
+        normalized = raw_reason.strip().lower()
+        if (
+            normalized in {
+                "llm_failed_or_unavailable",
+                "provider_unavailable",
+                "captain_agent_missing",
+                "no_registry",
+            }
+            or normalized.startswith((
+                "agent_exception:",
+                "provider_exception:",
+                "model_exception:",
+            ))
+        ):
+            return "provider_unavailable"
+        return "plan_generation_failed"
+    return None
+
+
 def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     """只依据本夜结构化 stance 共识选择主刀，必要时再读取备刀。"""
     from werewolf_agent.runtime.wolf_consensus_evidence import (
@@ -372,12 +413,15 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
             },
         )
     authorized_statuses = {"majority", "single_wolf"}
+    trusted_plan_failure = _trusted_wolf_plan_failure_reason(gs)
     primary = consensus.primary
     if primary.status not in authorized_statuses or primary.target_id is None:
         reason_by_status = {
             "tie": "true_tie",
             "insufficient": "insufficient_quorum",
-            "all_abstain": "strategic_abstain",
+            "all_abstain": (
+                trusted_plan_failure or "strategic_abstain"
+            ),
         }
         return no_kill(primary, reason_by_status[primary.status])
 
@@ -391,7 +435,9 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
             reason_by_status = {
                 "tie": "true_tie",
                 "insufficient": "insufficient_quorum",
-                "all_abstain": "strategic_abstain",
+                "all_abstain": (
+                    trusted_plan_failure or "strategic_abstain"
+                ),
             }
             return no_kill(backup, reason_by_status[backup.status])
         selected_target = _first_alive_target(gs, backup.target_id)

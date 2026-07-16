@@ -86,6 +86,12 @@ class NoKillPolicy:
         """生成统一空刀事件，超过阈值时确定性恢复合法狼刀。"""
         if reason_code not in NO_KILL_REASON_CODES:
             raise ValueError(f"unsupported no-kill reason code: {reason_code}")
+        already_resolved, existing_target = _current_night_wolf_choice(game_state)
+        if already_resolved:
+            return {
+                "game_state": game_state,
+                "wolf_kill_target_id": existing_target,
+            }
 
         prior_reasons = _consecutive_no_kill_reasons(game_state)
         count = len(prior_reasons) + 1
@@ -245,6 +251,29 @@ def _consecutive_no_kill_reasons(game_state: GameState) -> list[NoKillReasonCode
             reasons.append(raw_reason)
     reasons.reverse()
     return reasons
+
+
+def _current_night_wolf_choice(
+    game_state: GameState,
+) -> tuple[bool, str | None]:
+    """返回本夜已有选刀终态，重复调用不得追加事件或推进计数。"""
+    for event in reversed(game_state.events):
+        if (
+            event.type == "wolf_kill_selected"
+            and event.payload.get("night_number") == game_state.night_number
+        ):
+            target_id = event.payload.get("target_id")
+            return True, target_id if isinstance(target_id, str) else None
+        if (
+            event.type in {
+                "wolf_no_kill_timeout",
+                "wolf_no_kill_declared",
+                "forced_recovery_no_legal_target",
+            }
+            and event.payload.get("night_number") == game_state.night_number
+        ):
+            return True, None
+    return False, None
 
 
 def _candidate_scores(

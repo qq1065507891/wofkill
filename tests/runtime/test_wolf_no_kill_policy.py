@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
@@ -177,6 +178,77 @@ def test_duplicate_no_kill_events_in_one_night_count_only_once() -> None:
     assert decision["forced_recovery_applied"] is False
 
 
+def test_repeated_resolve_in_same_night_is_idempotent() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    first = NoKillPolicy().resolve(
+        _game_state(),
+        reason_code="strategic_abstain",
+    )
+    first_state = first["game_state"]
+
+    second = NoKillPolicy().resolve(
+        first_state,
+        reason_code="provider_unavailable",
+    )
+
+    assert second["game_state"] is first_state
+    assert second["wolf_kill_target_id"] is None
+    assert len(second["game_state"].events) == 1
+    assert (
+        second["game_state"].events[-1]
+        .payload["no_kill_decision"]
+        ["consecutive_pre_resolution_no_kill_count"]
+        == 1
+    )
+
+
+def test_threshold_one_does_not_recover_on_second_same_night_resolve() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    policy = NoKillPolicy(max_consecutive_pre_resolution_no_kill=1)
+    first = policy.resolve(_game_state(), reason_code="true_tie")
+
+    repeated = policy.resolve(
+        first["game_state"],
+        reason_code="plan_generation_failed",
+    )
+
+    assert repeated["game_state"] is first["game_state"]
+    assert repeated["wolf_kill_target_id"] is None
+    assert len(repeated["game_state"].events) == 1
+
+    next_night = replace(first["game_state"], night_number=4)
+    recovered = policy.resolve(
+        next_night,
+        reason_code="plan_generation_failed",
+    )
+    assert recovered["wolf_kill_target_id"] is not None
+    assert recovered["game_state"].events[-2].type == "wolf_kill_forced_recovery"
+
+
+def test_repeated_resolve_after_forced_recovery_preserves_selected_target() -> None:
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    policy = NoKillPolicy(max_consecutive_pre_resolution_no_kill=1)
+    first_night = policy.resolve(_game_state(), reason_code="true_tie")
+    next_night = replace(first_night["game_state"], night_number=4)
+    recovered = policy.resolve(
+        next_night,
+        reason_code="plan_generation_failed",
+    )
+    recovered_state = recovered["game_state"]
+
+    repeated = policy.resolve(
+        recovered_state,
+        reason_code="provider_unavailable",
+    )
+
+    assert repeated["game_state"] is recovered_state
+    assert repeated["wolf_kill_target_id"] == recovered["wolf_kill_target_id"]
+    assert len(repeated["game_state"].events) == len(recovered_state.events)
+
+
 def test_forced_recovery_without_legal_target_keeps_auditable_count() -> None:
     from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
 
@@ -282,6 +354,275 @@ def test_custom_ruleset_validator_rejects_invalid_no_kill_threshold() -> None:
         == "constraints.max_consecutive_pre_resolution_no_kill"
         for issue in result.errors
     )
+
+
+def _runtime_state_with_authoritative_stances(
+    stances: tuple[tuple[str, str | None, str, str], ...],
+    *,
+    fallback_reason: str | None = None,
+    fallback_night: int = 1,
+    fallback_visibility: EventVisibility = EventVisibility.WEREWOLF_TEAM_ONLY,
+    forged_fallback: bool = False,
+    dead_after_stances: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    from werewolf_agent.runtime.event_metadata import new_game_event
+    from werewolf_agent.runtime.wolf_discussion_directives import (
+        build_validated_wolf_target_stance,
+    )
+
+    players = {
+        "w1": PlayerState(id="w1", role="werewolf"),
+        "w2": PlayerState(id="w2", role="werewolf"),
+        "w3": PlayerState(id="w3", role="werewolf"),
+        "p1": PlayerState(id="p1", role="villager"),
+        "p2": PlayerState(id="p2", role="seer"),
+        "p3": PlayerState(id="p3", role="witch"),
+    }
+    gs = GameState(
+        game_id="route-no-kill-reasons",
+        players=players,
+        night_number=1,
+    )
+    if fallback_reason is not None:
+        payload = {
+            "night_number": fallback_night,
+            "reason": fallback_reason,
+        }
+        fallback = (
+            GameEvent(
+                type="wolf_team_plan_fallback",
+                payload={**payload, "visibility": fallback_visibility.value},
+            )
+            if forged_fallback
+            else new_game_event(
+                gs,
+                "wolf_team_plan_fallback",
+                payload,
+                visibility=fallback_visibility,
+            )
+        )
+        gs = replace(gs, events=[*gs.events, fallback])
+
+    for round_number, (wolf_id, target_id, stance, priority) in enumerate(
+        stances,
+        start=1,
+    ):
+        payload = {
+            "wolf_id": wolf_id,
+            "round": round_number,
+            "night_number": 1,
+            "text": "",
+        }
+        discussion = new_game_event(
+            gs,
+            "wolf_discussion",
+            payload,
+            visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        )
+        target_stance = build_validated_wolf_target_stance(
+            gs,
+            discussion,
+            wolf_id=wolf_id,
+            round_number=round_number,
+            raw_stance={
+                "target_id": target_id,
+                "stance": stance,
+                "priority": priority,
+            },
+        )
+        discussion = replace(
+            discussion,
+            payload={
+                **payload,
+                "target_stance": target_stance.model_dump(),
+            },
+        )
+        gs = replace(gs, events=[*gs.events, discussion])
+
+    if dead_after_stances:
+        gs = replace(
+            gs,
+            players={
+                player_id: (
+                    replace(player, alive=False)
+                    if player_id in dead_after_stances
+                    else player
+                )
+                for player_id, player in gs.players.items()
+            },
+        )
+    return {"game_state": gs}
+
+
+@pytest.mark.parametrize(
+    ("state", "runtime_function", "expected_reason"),
+    [
+        (
+            _runtime_state_with_authoritative_stances((
+                ("w1", None, "abstain", "primary"),
+                ("w2", None, "abstain", "primary"),
+                ("w3", None, "abstain", "primary"),
+            )),
+            "planned",
+            "strategic_abstain",
+        ),
+        (
+            _runtime_state_with_authoritative_stances((
+                ("w1", "p1", "support", "primary"),
+                ("w2", "p2", "support", "primary"),
+                ("w3", "p3", "support", "primary"),
+            )),
+            "planned",
+            "true_tie",
+        ),
+        (
+            _runtime_state_with_authoritative_stances((
+                ("w1", "p1", "support", "primary"),
+            )),
+            "planned",
+            "insufficient_quorum",
+        ),
+        (
+            _runtime_state_with_authoritative_stances(
+                (
+                    ("w1", "p1", "support", "primary"),
+                    ("w2", "p1", "support", "primary"),
+                    ("w1", "p2", "support", "backup"),
+                    ("w2", "p2", "support", "backup"),
+                ),
+                dead_after_stances=("p1", "p2"),
+            ),
+            "planned",
+            "invalid_backup",
+        ),
+        (
+            _runtime_state_with_authoritative_stances(()),
+            "legacy_invalid",
+            "invalid_primary",
+        ),
+        (
+            _runtime_state_with_authoritative_stances(
+                (),
+                fallback_reason="schema_validation_failed",
+            ),
+            "planned",
+            "plan_generation_failed",
+        ),
+        (
+            _runtime_state_with_authoritative_stances(
+                (),
+                fallback_reason="llm_failed_or_unavailable",
+            ),
+            "planned",
+            "provider_unavailable",
+        ),
+    ],
+)
+def test_all_reason_codes_flow_through_real_runtime_routes(
+    state: dict[str, Any],
+    runtime_function: str,
+    expected_reason: str,
+) -> None:
+    if runtime_function == "planned":
+        from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+        result = _planned_wolf_kill(state)
+    else:
+        from werewolf_agent.runtime.nodes.wolf_consensus import (
+            _legacy_wolf_consensus,
+        )
+
+        result = _legacy_wolf_consensus({
+            **state,
+            "wolf_action": "kill",
+            "wolf_kill_target_id": "missing",
+        })
+
+    assert result is not None
+    event = result["game_state"].events[-1]
+    assert event.payload["reason"] == expected_reason
+    assert event.payload["no_kill_decision"]["reason_code"] == expected_reason
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        _runtime_state_with_authoritative_stances(
+            (),
+            fallback_reason="schema_validation_failed",
+            fallback_night=0,
+        ),
+        _runtime_state_with_authoritative_stances(
+            (),
+            fallback_reason="schema_validation_failed",
+            fallback_visibility=EventVisibility.PUBLIC,
+        ),
+        _runtime_state_with_authoritative_stances(
+            (),
+            fallback_reason="schema_validation_failed",
+            forged_fallback=True,
+        ),
+    ],
+)
+def test_untrusted_fallback_metadata_cannot_override_genuine_abstain(
+    state: dict[str, Any],
+) -> None:
+    from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+    result = _planned_wolf_kill(state)
+
+    assert result is not None
+    event = result["game_state"].events[-1]
+    assert event.payload["reason"] == "strategic_abstain"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda event: replace(event, game_id="other-game"),
+        lambda event: replace(event, event_id="forged:e999999"),
+    ],
+    ids=["cross_game", "noncanonical_event_id"],
+)
+def test_failure_classifier_rejects_mismatched_v2_fallback_identity(
+    mutate,
+) -> None:
+    state = _runtime_state_with_authoritative_stances(
+        (),
+        fallback_reason="schema_validation_failed",
+    )
+    gs = state["game_state"]
+    gs = replace(gs, events=[mutate(gs.events[0]), *gs.events[1:]])
+
+    from werewolf_agent.runtime.nodes.node_helpers import (
+        _trusted_wolf_plan_failure_reason,
+    )
+
+    assert _trusted_wolf_plan_failure_reason(gs) is None
+
+
+def test_trusted_failure_metadata_cannot_authorize_its_own_target() -> None:
+    state = _runtime_state_with_authoritative_stances(
+        (
+            ("w1", "p1", "support", "primary"),
+            ("w2", "p1", "support", "primary"),
+        ),
+        fallback_reason="schema_validation_failed",
+    )
+    gs = state["game_state"]
+    fallback = replace(
+        gs.events[0],
+        payload={**gs.events[0].payload, "target_id": "p3"},
+    )
+    state = {"game_state": replace(gs, events=[fallback, *gs.events[1:]])}
+
+    from werewolf_agent.runtime.nodes.node_helpers import _planned_wolf_kill
+
+    result = _planned_wolf_kill(state)
+
+    assert result is not None
+    assert result["wolf_kill_target_id"] == "p1"
+    assert result["game_state"].events[-1].payload["target_id"] == "p1"
 
 
 @pytest.mark.parametrize("value", [True, 0, -1, "2"])

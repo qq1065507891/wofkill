@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from tests.runtime.test_agent_wolf_team_plan import _FakeAgent, _FakeModelRouter
 
@@ -105,8 +106,8 @@ class TestNoRegistryFallback:
         assert fallback_event.payload == {
             "night_number": 1,
             "reason": "no_registry",
-            "visibility": "werewolf_team_only",
         }
+        assert fallback_event.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
 
     def test_no_alive_wolves_returns_empty(self):
         from werewolf_agent.runtime.nodes.night import wolf_team_plan_node
@@ -159,7 +160,8 @@ class TestLLMSuccess:
         with patch("werewolf_agent.runtime.agent_adapter.agent_wolf_team_plan", return_value=llm_plan):
             result = night_mod.wolf_team_plan_node(state)
         evt = next(e for e in result["game_state"].events if e.type == "wolf_team_plan")
-        assert evt.payload["visibility"] == "werewolf_team_only"
+        assert evt.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
+        assert evt.schema_version == "2"
 
 
 class TestLLMFallback:
@@ -177,6 +179,8 @@ class TestLLMFallback:
         fallback_events = [e for e in result["game_state"].events if e.type == "wolf_team_plan_fallback"]
         assert len(fallback_events) == 1
         assert fallback_events[0].payload["reason"] == "llm_failed_or_unavailable"
+        assert fallback_events[0].schema_version == "2"
+        assert fallback_events[0].visibility is EventVisibility.WEREWOLF_TEAM_ONLY
 
     def test_llm_raises_exception_triggers_fallback(self):
         from werewolf_agent.runtime.nodes import night as night_mod

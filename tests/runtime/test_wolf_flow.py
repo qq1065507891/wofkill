@@ -461,7 +461,8 @@ def test_first_night_wolf_discussion_runs_three_rounds_and_builds_team_plan(monk
     plan_events = [event for event in plan_result["game_state"].events if event.type == "wolf_team_plan"]
 
     assert len(plan_events) == 1
-    assert plan_events[0].payload["visibility"] == "werewolf_team_only"
+    assert plan_events[0].visibility.value == "werewolf_team_only"
+    assert plan_events[0].schema_version == "2"
     for key in (
         "fake_seer",
         "pusher",

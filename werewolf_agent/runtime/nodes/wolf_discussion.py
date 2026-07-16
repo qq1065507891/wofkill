@@ -541,7 +541,7 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
     ))
 
-    gs = replace(gs, events=gs.events + events)
+    gs = _append_stamped_events(gs, events)
 
     result = {"game_state": gs, "wolf_team_plan": plan}
     if consensus is not None:
