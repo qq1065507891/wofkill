@@ -18,6 +18,10 @@ import json
 import logging
 from typing import Any
 
+from werewolf_agent.agents.wolf_prompt_contract import (
+    WEREWOLF_CRITICAL_SEMANTIC_CLAUSES,
+    WEREWOLF_TARGET_SEMANTICS_HEADER,
+)
 from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
@@ -114,8 +118,11 @@ def _wolf_team_plan_prompt_observer(
             ("captain_role", "你是狼队队长".encode("utf-8")),
             ("hard_constraints", "【硬约束】".encode("utf-8")),
             ("output_protocol", "【输出协议】".encode("utf-8")),
-            ("backup_semantics", "备刀不是女巫救人后的第二刀".encode("utf-8")),
-            ("authoritative_stance", "source_event_id".encode("utf-8")),
+            ("wolf_target_semantics", WEREWOLF_TARGET_SEMANTICS_HEADER.encode("utf-8")),
+            *(
+                (section_id, clause.encode("utf-8"))
+                for section_id, clause in WEREWOLF_CRITICAL_SEMANTIC_CLAUSES
+            ),
         ),
     )
 
@@ -231,9 +238,12 @@ def agent_wolf_team_plan(
         f"{contract['public_story']['max_length']} 字\n"
         f"- reasoning: {contract['reasoning']['min_length']}~"
         f"{contract['reasoning']['max_length']} 字"
-        "\n- 备刀不是女巫救人后的第二刀；每夜最多执行一次狼刀"
-        "\n- 死亡玩家不可作为击杀目标；alive 候选是系统约束，不是局内事实"
-        "\n- 队长不得伪造支持者；只有本夜 stance 的 source_event_id 可证明支持"
+        + "\n"
+        + WEREWOLF_TARGET_SEMANTICS_HEADER
+        + "\n"
+        + "\n".join(
+            f"- {clause}" for _section_id, clause in WEREWOLF_CRITICAL_SEMANTIC_CLAUSES
+        )
     )
 
     user_prompt = (

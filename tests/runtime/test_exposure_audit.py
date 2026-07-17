@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import ast
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,6 +33,69 @@ from werewolf_agent.runtime.nodes import skills as skill_nodes
 
 def _identity() -> DecisionIdentity:
     return DecisionIdentity("g1", "p01", "vote", 2, 1, "vote", 4)
+
+
+def _provider_payload_hmac(provider: Any, *, game_id: str) -> str:
+    collector = ModuleExposureAuditCollector(prompt_proof_key_provider=provider)
+    collector.record_provider_persona_prompt_proof(
+        DecisionIdentity(game_id, "p01", "vote", 1, 1, "vote", 1),
+        b"stable final system",
+        "",
+        "initial",
+        attempt_ordinal=1,
+        provider="test",
+        model="test",
+        final_system_location="messages",
+        final_system_message_index=0,
+        provider_payload_bytes=b"stable provider payload",
+    )
+    return collector.flush_events()[0].payload["proof"]["provider_payload_hmac_sha256"]
+
+
+def test_runtime_node_collectors_always_receive_state_prompt_proof_key_provider() -> None:
+    nodes_dir = Path(day_nodes.__file__).parent
+    missing_provider: list[str] = []
+    for source_path in nodes_dir.glob("*.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8-sig"))
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call):
+                continue
+            if not (
+                isinstance(call.func, ast.Name)
+                and call.func.id == "ModuleExposureAuditCollector"
+            ):
+                continue
+            if not any(
+                keyword.arg == "prompt_proof_key_provider"
+                for keyword in call.keywords
+            ):
+                missing_provider.append(f"{source_path.name}:{call.lineno}")
+
+    assert missing_provider == []
+
+
+def test_same_game_id_uses_one_runner_key_but_distinct_runners_use_distinct_keys() -> None:
+    from werewolf_agent.runtime.game_runner import GameRunner
+    from werewolf_agent.runtime.game_runner_config import GameRunnerConfig
+
+    config = GameRunnerConfig(
+        game_id="same-game-id",
+        enable_default_rag_service=False,
+    )
+    first_runner = GameRunner(config)
+    second_runner = GameRunner(config)
+    first_state = first_runner._build_runtime_state()
+    second_state = second_runner._build_runtime_state()
+
+    first_provider = first_state["prompt_proof_key_provider"]
+    second_provider = second_state["prompt_proof_key_provider"]
+    assert first_provider is first_runner._prompt_proof_key_provider
+    assert second_provider is second_runner._prompt_proof_key_provider
+    assert first_provider is not second_provider
+
+    first_proof = _provider_payload_hmac(first_provider, game_id="same-game-id")
+    assert first_proof == _provider_payload_hmac(first_provider, game_id="same-game-id")
+    assert first_proof != _provider_payload_hmac(second_provider, game_id="same-game-id")
 
 
 def test_collector_builds_rag_reflection_skill_persona_events() -> None:

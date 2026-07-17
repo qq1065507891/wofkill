@@ -19,6 +19,12 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+
+from werewolf_agent.agents.wolf_prompt_contract import (
+    WEREWOLF_CRITICAL_SEMANTIC_CLAUSES,
+    WEREWOLF_TARGET_SEMANTICS_HEADER,
+)
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.runtime.agent_adapter import (
@@ -214,6 +220,71 @@ def test_wolf_team_plan_delivered_proof_hmac_covers_dynamic_stance_ids_without_t
     serialized = str(proof)
     assert "test_wtp:e000001" not in serialized
     assert "建议刀 p01" not in serialized
+
+
+def test_production_captain_contract_rejects_missing_duplicate_and_reordered_semantics() -> None:
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptAssembly,
+        FinalPromptContractError,
+    )
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    gs = _make_gs()
+    router = _FakeModelRouter([(_valid_plan_json(), None)])
+    collector = ModuleExposureAuditCollector(prompt_proof_secret=b"captain-contract")
+    identity = DecisionIdentity("test_wtp", "p04", "night", 0, 1, "wolf_team_plan", 1)
+    registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+    assert agent_wolf_team_plan(
+        {"game_state": gs},
+        engine=None,
+        registry=registry,
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+    observer = router.calls[0]["final_prompt_observer"]
+    system_prompt = router.calls[0]["system_prompt"]
+    clauses = [clause for _section_id, clause in WEREWOLF_CRITICAL_SEMANTIC_CLAUSES]
+
+    def observe(system: str) -> None:
+        observer(FinalPromptAssembly(
+            system_bytes=system.encode("utf-8"),
+            final_system_location="messages",
+            final_system_message_index=0,
+            provider="test",
+            model="test",
+        ))
+
+    observe(system_prompt)
+    proof = collector.flush_events()[0].payload["proof"]
+    assert {row["section_id"] for row in proof["required_section_confirmations"]} >= {
+        section_id for section_id, _clause in WEREWOLF_CRITICAL_SEMANTIC_CLAUSES
+    }
+    assert system_prompt.count(WEREWOLF_TARGET_SEMANTICS_HEADER) == 1
+    assert all(system_prompt.count(clause) == 1 for clause in clauses)
+    assert [system_prompt.index(clause) for clause in clauses] == sorted(
+        system_prompt.index(clause) for clause in clauses
+    )
+
+    with pytest.raises(FinalPromptContractError):
+        observe(WEREWOLF_TARGET_SEMANTICS_HEADER)
+
+    removed = system_prompt
+    for clause in clauses:
+        removed = removed.replace(clause, "")
+    with pytest.raises(FinalPromptContractError):
+        observe(removed)
+
+    for clause in clauses:
+        with pytest.raises(FinalPromptContractError):
+            observe(system_prompt + "\n" + clause)
+
+    reordered = system_prompt.replace(clauses[0], "__first_clause__")
+    reordered = reordered.replace(clauses[1], clauses[0])
+    reordered = reordered.replace("__first_clause__", clauses[1])
+    with pytest.raises(FinalPromptContractError):
+        observe(reordered)
 
     def test_captain_skipped_when_dead_uses_next_alive(self):
         gs = _make_gs(wolves=("p04", "p05", "p08", "p10"))

@@ -12,10 +12,43 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+from werewolf_agent.agents.prompt_sections import (
+    player_system_prompt_required_sections,
+)
 from werewolf_agent.agents.schemas import AgentContext, TaskType
+from werewolf_agent.agents.wolf_prompt_contract import (
+    WEREWOLF_CRITICAL_SEMANTIC_CLAUSES,
+    WEREWOLF_TARGET_SEMANTICS_HEADER,
+)
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptAssembly,
+    FinalPromptContract,
+    FinalPromptContractError,
+    validate_final_prompt_contract,
+)
+
+
+def _validate_werewolf_player_system_prompt(system_prompt: str) -> None:
+    contract = FinalPromptContract(
+        contract_id="production-werewolf-player",
+        version="test",
+        required_sections=player_system_prompt_required_sections("werewolf"),
+    )
+    validate_final_prompt_contract(
+        FinalPromptAssembly(
+            system_bytes=system_prompt.encode("utf-8"),
+            final_system_location="messages",
+            final_system_message_index=0,
+            provider="test",
+            model="test",
+        ),
+        contract,
+    )
 def _discussion_state() -> GameState:
     players = {
         **{
@@ -149,6 +182,44 @@ def test_werewolf_system_prompt_states_target_and_evidence_semantics() -> None:
     assert "死亡玩家不可作为击杀目标" in system_prompt
     assert "系统提供的候选列表不是局内事实" in system_prompt
     assert "队长不得伪造支持者" in system_prompt
+
+
+def test_production_werewolf_player_contract_rejects_missing_duplicate_and_reordered_semantics() -> None:
+    context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+    )
+    system_prompt = PlayerPromptBuilder(context).build_system_prompt()
+    clauses = [clause for _section_id, clause in WEREWOLF_CRITICAL_SEMANTIC_CLAUSES]
+
+    _validate_werewolf_player_system_prompt(system_prompt)
+    assert system_prompt.count(WEREWOLF_TARGET_SEMANTICS_HEADER) == 1
+    assert [system_prompt.index(clause) for clause in clauses] == sorted(
+        system_prompt.index(clause) for clause in clauses
+    )
+    assert all(system_prompt.count(clause) == 1 for clause in clauses)
+
+    with pytest.raises(FinalPromptContractError):
+        _validate_werewolf_player_system_prompt(WEREWOLF_TARGET_SEMANTICS_HEADER)
+
+    removed = system_prompt
+    for clause in clauses:
+        removed = removed.replace(clause, "")
+    with pytest.raises(FinalPromptContractError):
+        _validate_werewolf_player_system_prompt(removed)
+
+    for clause in clauses:
+        with pytest.raises(FinalPromptContractError):
+            _validate_werewolf_player_system_prompt(system_prompt + "\n" + clause)
+
+    reordered = system_prompt.replace(clauses[0], "__first_clause__")
+    reordered = reordered.replace(clauses[1], clauses[0])
+    reordered = reordered.replace("__first_clause__", clauses[1])
+    with pytest.raises(FinalPromptContractError):
+        _validate_werewolf_player_system_prompt(reordered)
 
 
 def test_wolf_action_injects_layered_context_and_sanitized_audit(monkeypatch) -> None:

@@ -65,20 +65,30 @@ def test_latest_generation_failure_reason_reads_last_failed_usage_record() -> No
     assert latest_generation_failure_reason(_Router()) == "primary_failed:timeout"
 
 
-def test_final_prompt_observer_keeps_legacy_router_test_double_compatible() -> None:
+def test_final_prompt_observer_rejects_legacy_router_before_generate() -> None:
     from werewolf_agent.agents.player_generation import generate_player_response
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        RouterPromptContractCompatibilityError,
+    )
+
+    calls = 0
 
     class _LegacyRouter:
         def generate(
             self, *, agent_id, task_type, prompt, system_prompt, tools,
             tool_choice, structured_output_mode,
         ):
+            nonlocal calls
+            calls += 1
             return GenerateResult(text="{}", provider="legacy", model="m")
 
-    result = generate_player_response(
-        _LegacyRouter(), agent_id="p01", task_type="vote", prompt="user",
-        system_prompt="system", tools=[], tool_choice=None,
-        structured_output_mode="json_object", final_prompt_observer=lambda _: None,
-    )
+    import pytest
 
-    assert result.text == "{}"
+    with pytest.raises(RouterPromptContractCompatibilityError):
+        generate_player_response(
+            _LegacyRouter(), agent_id="p01", task_type="vote", prompt="user",
+            system_prompt="system", tools=[], tool_choice=None,
+            structured_output_mode="json_object", final_prompt_observer=lambda _: None,
+        )
+
+    assert calls == 0

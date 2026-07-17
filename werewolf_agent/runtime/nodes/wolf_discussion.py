@@ -171,7 +171,9 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             )
-            exposure_collector = ModuleExposureAuditCollector()
+            exposure_collector = ModuleExposureAuditCollector(
+                prompt_proof_key_provider=round_state.get("prompt_proof_key_provider"),
+            )
             result = _compat("_dispatch_agent", _dispatch_agent)(
                 round_state,
                 _compat("agent_wolf_discussion", agent_wolf_discussion),

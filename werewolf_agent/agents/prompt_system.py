@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES
 from werewolf_agent.agents.prompt_sections import PLAYER_SYSTEM_PROMPT_CONTRACT_HEADER
+from werewolf_agent.agents.wolf_prompt_contract import WEREWOLF_ROLE_GUIDE
 
 
 class PromptSystemMixin:
@@ -166,7 +167,9 @@ class PromptSystemMixin:
         # in agent_adapter.py for VOTE/SPEECH task types only. The
         # seer exemption also lives there (it still applies — seer
         # legitimately uses seer_check for their own checks).
-        if role in role_rules:
+        if role == "werewolf":
+            lines.append(WEREWOLF_ROLE_GUIDE)
+        elif role in role_rules:
             lines.append(role_rules[role])
         return "\n".join(lines) if lines else ""
 

@@ -14,6 +14,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from werewolf_agent.agents.wolf_prompt_contract import (
+    WEREWOLF_CRITICAL_SEMANTIC_CLAUSES,
+    WEREWOLF_TARGET_SEMANTICS_HEADER,
+)
+
 
 @dataclass(frozen=True)
 class _SectionSpec:
@@ -64,7 +69,8 @@ def player_system_prompt_required_sections(
         rows.append(("persona", persona_text))
     rows.append(("game_rules", markers["game_rules"]))
     if own_role == "werewolf":
-        rows.append(("wolf_target_semantics", "\u3010\u72fc\u4eba\u591c\u95f4\u76ee\u6807\u8bed\u4e49\u3011"))
+        rows.append(("wolf_target_semantics", WEREWOLF_TARGET_SEMANTICS_HEADER))
+        rows.extend(WEREWOLF_CRITICAL_SEMANTIC_CLAUSES)
     rows.extend(
         (section_id, markers[section_id])
         for section_id in (

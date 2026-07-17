@@ -16,6 +16,10 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    RouterPromptContractCompatibilityError,
+)
+
 
 def generate_player_response(
     model_router: Any,
@@ -46,9 +50,14 @@ def generate_player_response(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
         for parameter in router_parameters.values()
     )
-    if final_prompt_observer is not None and (
+    supports_observer = (
         "final_prompt_observer" in router_parameters or accepts_extra_kwargs
-    ):
+    )
+    if final_prompt_observer is not None and not supports_observer:
+        raise RouterPromptContractCompatibilityError(
+            "model router does not support final_prompt_observer"
+        )
+    if final_prompt_observer is not None:
         kwargs["final_prompt_observer"] = final_prompt_observer
     return model_router.generate(**kwargs)
 
