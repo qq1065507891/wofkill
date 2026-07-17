@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import copy
 import pickle
 from dataclasses import replace
 
@@ -154,6 +155,94 @@ def test_factory_controlled_transaction_survives_pickle_checkpoint() -> None:
     assert restored.to_payload() == entry.to_payload()
     assert result.status == "complete"
     assert result.persistence_complete is True
+
+
+def test_snapshot_type_constructor_cannot_clone_registered_provenance() -> None:
+    legitimate = _advance_valid_entry(persisted=True)
+    forged = type(legitimate)(tuple(legitimate))
+
+    result = summarize_reflection_transaction(
+        [forged], persistence_attempted=True,
+    )
+
+    assert result.status == "no_valid_entries"
+    assert result.persistence_complete is False
+
+
+def test_snapshot_builtin_new_cannot_clone_registered_provenance() -> None:
+    legitimate = _advance_valid_entry(persisted=True)
+    try:
+        forged = tuple.__new__(type(legitimate), tuple(legitimate))
+    except TypeError:
+        return
+
+    result = summarize_reflection_transaction(
+        [forged], persistence_attempted=True,
+    )
+
+    assert result.status == "no_valid_entries"
+    assert result.persistence_complete is False
+
+
+def test_snapshot_new_immutable_base_cannot_clone_registered_provenance() -> None:
+    legitimate = _advance_valid_entry(persisted=True)
+    forged = frozenset.__new__(type(legitimate), legitimate)
+
+    result = summarize_reflection_transaction(
+        [forged], persistence_attempted=True,
+    )
+
+    assert result.status == "no_valid_entries"
+    assert result.persistence_complete is False
+
+
+def test_snapshot_object_new_is_rejected_by_immutable_builtin() -> None:
+    legitimate = _advance_valid_entry(persisted=True)
+
+    with pytest.raises(TypeError):
+        object.__new__(type(legitimate))
+
+
+def test_registered_snapshot_cannot_be_mutated_with_object_setattr() -> None:
+    legitimate = _advance_valid_entry(persisted=True)
+
+    with pytest.raises((AttributeError, TypeError)):
+        object.__setattr__(legitimate, "stage", ReflectionStage.NOT_REQUESTED)
+
+
+def test_legitimate_snapshot_supports_copy_deepcopy_and_pickle() -> None:
+    legitimate = _advance_valid_entry(persisted=True)
+    shallow = copy.copy(legitimate)
+    deep = copy.deepcopy(legitimate)
+    candidates = (
+        shallow,
+        deep,
+        pickle.loads(pickle.dumps(legitimate)),
+    )
+
+    assert shallow is legitimate
+    assert deep is legitimate
+    for candidate in candidates:
+        result = summarize_reflection_transaction(
+            [candidate], persistence_attempted=True,
+        )
+        assert candidate.to_payload() == legitimate.to_payload()
+        assert result.status == "complete"
+        assert result.persistence_complete is True
+
+
+def test_copy_and_pickle_cannot_register_forged_snapshot() -> None:
+    legitimate = _advance_valid_entry(persisted=True)
+    forged = type(legitimate)(tuple(legitimate))
+
+    for candidate in (forged, copy.copy(forged), copy.deepcopy(forged)):
+        result = summarize_reflection_transaction(
+            [candidate], persistence_attempted=True,
+        )
+        assert result.status == "no_valid_entries"
+        assert result.persistence_complete is False
+    with pytest.raises(ValueError, match="provenance"):
+        pickle.dumps(forged)
 
 
 def test_object_new_cannot_call_instance_assign_to_mint_valid_provenance() -> None:

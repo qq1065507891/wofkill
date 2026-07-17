@@ -2,6 +2,10 @@
 """
 定义赛后反思的逐玩家事务状态机与局级结果汇总。
 
+安全边界:
+    防止通过模块全局、type/object/builtin 构造器及 object.__setattr__ 伪造事务。
+    本模块不是针对 Python closure introspection 或原生内存篡改的安全沙箱。
+
 作者: Project contributors
 创建日期: 2026-07-17
 修改日期: 2026-07-18
@@ -14,6 +18,7 @@
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Literal
@@ -119,21 +124,25 @@ def _validate_transaction_values(
 
 
 def _build_transaction_api():
-    """创建闭包内不可变快照类型以及公开的初态工厂。"""
-    class _TransactionSnapshot(tuple):
+    """创建闭包内身份登记、不可变快照类型以及公开初态工厂。"""
+    registry: dict[int, weakref.ReferenceType[object]] = {}
+
+    class _TransactionSnapshot(frozenset):
         __slots__ = ()
 
-        player_id = property(lambda self: self[0])
-        decision_id = property(lambda self: self[1])
-        stage = property(lambda self: self[2])
-        failure_stage = property(lambda self: self[3])
-        failure_code = property(lambda self: self[4])
-        verified_claim_ids = property(lambda self: self[5])
-        verified_lesson_ids = property(lambda self: self[6])
-        entry_id = property(lambda self: self[7])
-        _stage_path = property(lambda self: self[8])
+        player_id = property(lambda self: _snapshot_values(self)[0])
+        decision_id = property(lambda self: _snapshot_values(self)[1])
+        stage = property(lambda self: _snapshot_values(self)[2])
+        failure_stage = property(lambda self: _snapshot_values(self)[3])
+        failure_code = property(lambda self: _snapshot_values(self)[4])
+        verified_claim_ids = property(lambda self: _snapshot_values(self)[5])
+        verified_lesson_ids = property(lambda self: _snapshot_values(self)[6])
+        entry_id = property(lambda self: _snapshot_values(self)[7])
+        _stage_path = property(lambda self: _snapshot_values(self)[8])
 
         def validate(self) -> None:
+            if not _is_registered(self):
+                raise ValueError("reflection transaction provenance is missing")
             _validate_transaction_values(
                 player_id=self.player_id,
                 decision_id=self.decision_id,
@@ -235,6 +244,48 @@ def _build_transaction_api():
         def __reduce__(self):
             return (_restore_reflection_transaction, (self.to_payload(),))
 
+        def __copy__(self):
+            return self
+
+        def __deepcopy__(self, memo: dict[int, object]):
+            memo[id(self)] = self
+            return self
+
+    def _snapshot_values(snapshot: _TransactionSnapshot) -> tuple[object, ...]:
+        """从不可变键值集合恢复固定字段序列，并拒绝重复或缺失索引。"""
+        values: dict[int, object] = {}
+        for pair in snapshot:
+            if (
+                not isinstance(pair, tuple)
+                or len(pair) != 2
+                or not isinstance(pair[0], int)
+                or pair[0] in values
+            ):
+                raise ValueError("invalid reflection transaction snapshot encoding")
+            values[pair[0]] = pair[1]
+        if len(snapshot) != 9 or set(values) != set(range(9)):
+            raise ValueError("invalid reflection transaction snapshot encoding")
+        return tuple(values[index] for index in range(9))
+
+    def _is_registered(value: object) -> bool:
+        """要求闭包登记的对象 ID 仍解析到同一个活对象，避免 ID 复用。"""
+        if type(value) is not _TransactionSnapshot:
+            return False
+        reference = registry.get(id(value))
+        return reference is not None and reference() is value
+
+    def _register(snapshot: _TransactionSnapshot) -> _TransactionSnapshot:
+        """登记工厂产物；弱引用回调只清理仍指向本对象的同一条记录。"""
+        object_id = id(snapshot)
+
+        def _remove(reference: weakref.ReferenceType[object]) -> None:
+            if registry.get(object_id) is reference:
+                registry.pop(object_id, None)
+
+        reference = weakref.ref(snapshot, _remove)
+        registry[object_id] = reference
+        return snapshot
+
     def _make_snapshot(
         player_id: str,
         decision_id: str,
@@ -257,7 +308,7 @@ def _build_transaction_api():
             entry_id=entry_id,
             stage_path=stage_path,
         )
-        return tuple.__new__(_TransactionSnapshot, (
+        values = (
             player_id,
             decision_id,
             stage,
@@ -267,11 +318,16 @@ def _build_transaction_api():
             verified_lesson_ids,
             entry_id,
             stage_path,
-        ))
+        )
+        snapshot = frozenset.__new__(
+            _TransactionSnapshot,
+            ((index, value) for index, value in enumerate(values)),
+        )
+        return _register(snapshot)
 
     class _TransactionFacadeMeta(type):
         def __instancecheck__(cls, instance: object) -> bool:
-            return type(instance) is _TransactionSnapshot
+            return _is_registered(instance)
 
     class PlayerReflectionTransaction(metaclass=_TransactionFacadeMeta):
         """创建玩家反思初态；后续状态由不可变快照逐级产生。"""
@@ -290,7 +346,7 @@ def _build_transaction_api():
             )
 
     def _is_snapshot(value: object) -> bool:
-        return type(value) is _TransactionSnapshot
+        return _is_registered(value)
 
     return PlayerReflectionTransaction, _is_snapshot
 
