@@ -280,6 +280,14 @@ def test_production_captain_contract_rejects_missing_duplicate_and_reordered_sem
         with pytest.raises(FinalPromptContractError):
             observe(system_prompt + "\n" + clause)
 
+    support_clause = dict(WEREWOLF_CRITICAL_SEMANTIC_CLAUSES)[
+        "captain_support_requires_source"
+    ]
+    assert support_clause.endswith("才能作为队友支持证据")
+    prefix_only = support_clause.removesuffix("才能作为队友支持证据")
+    with pytest.raises(FinalPromptContractError):
+        observe(system_prompt.replace(support_clause, prefix_only))
+
     reordered = system_prompt.replace(clauses[0], "__first_clause__")
     reordered = reordered.replace(clauses[1], clauses[0])
     reordered = reordered.replace("__first_clause__", clauses[1])

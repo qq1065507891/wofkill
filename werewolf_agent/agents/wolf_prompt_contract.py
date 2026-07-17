@@ -19,7 +19,7 @@ WEREWOLF_CRITICAL_SEMANTIC_CLAUSES: tuple[tuple[str, str], ...] = (
     ("backup_not_second_kill", "\u5907\u5200\u4e0d\u662f\u5973\u5deb\u6551\u4eba\u540e\u7684\u7b2c\u4e8c\u5200"),
     ("dead_player_not_target", "\u6b7b\u4ea1\u73a9\u5bb6\u4e0d\u53ef\u4f5c\u4e3a\u51fb\u6740\u76ee\u6807"),
     ("candidate_list_not_fact", "\u7cfb\u7edf\u63d0\u4f9b\u7684\u5019\u9009\u5217\u8868\u4e0d\u662f\u5c40\u5185\u4e8b\u5b9e"),
-    ("captain_support_requires_source", "\u961f\u957f\u4e0d\u5f97\u4f2a\u9020\u652f\u6301\u8005\uff1b\u53ea\u6709\u5e26 source_event_id \u7684\u672c\u591c\u7ed3\u6784\u5316 stance"),
+    ("captain_support_requires_source", "\u961f\u957f\u4e0d\u5f97\u4f2a\u9020\u652f\u6301\u8005\uff1b\u53ea\u6709\u5e26 source_event_id \u7684\u672c\u591c\u7ed3\u6784\u5316 stance \u624d\u80fd\u4f5c\u4e3a\u961f\u53cb\u652f\u6301\u8bc1\u636e"),
 )
 
 WEREWOLF_ROLE_GUIDE = (

@@ -222,6 +222,31 @@ def test_production_werewolf_player_contract_rejects_missing_duplicate_and_reord
         _validate_werewolf_player_system_prompt(reordered)
 
 
+def test_player_contract_rejects_prefix_only_wolf_support_evidence_clause() -> None:
+    support_clause = dict(WEREWOLF_CRITICAL_SEMANTIC_CLAUSES)[
+        "captain_support_requires_source"
+    ]
+    assert support_clause == (
+        "队长不得伪造支持者；只有带 source_event_id 的本夜结构化 stance "
+        "才能作为队友支持证据"
+    )
+    context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+    )
+    system_prompt = PlayerPromptBuilder(context).build_system_prompt()
+    assert system_prompt.count(support_clause) == 1
+
+    prefix_only = support_clause.removesuffix("才能作为队友支持证据")
+    with pytest.raises(FinalPromptContractError):
+        _validate_werewolf_player_system_prompt(
+            system_prompt.replace(support_clause, prefix_only)
+        )
+
+
 def test_wolf_action_injects_layered_context_and_sanitized_audit(monkeypatch) -> None:
     from werewolf_agent.evaluation.trace_identity import DecisionIdentity
     from werewolf_agent.runtime import agent_wolf_actions
