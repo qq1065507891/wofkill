@@ -171,8 +171,6 @@ def _build_provider_prompt_observer(
     """创建合同校验与 HMAC 证明共用的 provider 最终 system 回调。"""
     identity = getattr(context, "decision_identity", None)
     collector = getattr(context, "exposure_collector", None)
-    if identity is None or collector is None:
-        return None
 
     contract = FinalPromptContract(
         contract_id=request.prompt_contract_id,
@@ -182,6 +180,8 @@ def _build_provider_prompt_observer(
 
     def _observe(assembly: FinalPromptAssembly) -> None:
         confirmations = validate_final_prompt_contract(assembly, contract)
+        if identity is None or collector is None:
+            return
         collector.record_provider_persona_prompt_proof(
             identity,
             assembly.system_bytes,

@@ -9,6 +9,8 @@ later tasks will add their own tests below.
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_reflection_hints_slice_uses_card_budget_3() -> None:
     """Reflection live prompt rendering must cap cards at the V2 card budget."""
@@ -464,6 +466,196 @@ def test_player_generation_enforces_versioned_contract_without_persona(monkeypat
     assert all(
         row["confirmed"] for row in proof["required_section_confirmations"]
     )
+
+
+@pytest.mark.parametrize(
+    ("has_identity", "has_collector"),
+    ((False, True), (True, False), (False, False)),
+)
+def test_player_generation_contract_fails_closed_without_optional_audit_dependencies(
+    monkeypatch,
+    has_identity: bool,
+    has_collector: bool,
+) -> None:
+    from werewolf_agent.agents import player_generation_request as generation_request
+    from werewolf_agent.agents.schemas import AgentContext, RetryInfo, TaskType
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptContractError
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+    from werewolf_agent.model_gateway.structured_output import StructuredOutputMode
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    class _Client:
+        post_calls = 0
+
+        def post(self, *_args, **_kwargs):
+            self.post_calls += 1
+            return _Response()
+
+    class _Agent:
+        agent_id = "w1"
+        model_router = object()
+
+        def _player_action_tool(self, _context):
+            return {"name": "submit_player_action"}
+
+        def _build_prompt(self, _context, _retry):
+            return "user action"
+
+        def _build_system_prompt(self, _context):
+            return "malformed system without required contract sections"
+
+    collector = ModuleExposureAuditCollector() if has_collector else None
+    identity = (
+        DecisionIdentity("g1", "w1", "night", 0, 1, "wolf_discussion", 1)
+        if has_identity
+        else None
+    )
+    context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+    request = generation_request.build_player_generation_request(
+        _Agent(), context, RetryInfo(attempt=1), StructuredOutputMode.NATIVE_TOOL,
+    )
+    client = _Client()
+
+    def _fake_generate(*_args, **kwargs):
+        assert kwargs["final_prompt_observer"] is not None
+        return OpenAIProvider(
+            api_key="k",
+            base_url="https://example.test/v1",
+            http_client=client,
+        ).generate(
+            kwargs["prompt"],
+            ModelConfig(provider="openai", model="m"),
+            system_prompt=kwargs["system_prompt"],
+            final_prompt_observer=kwargs["final_prompt_observer"],
+        )
+
+    monkeypatch.setattr(generation_request, "_generate_player_response", _fake_generate)
+
+    with pytest.raises(FinalPromptContractError):
+        generation_request.call_player_generation_request(
+            _Agent(), context, request,
+        )
+
+    assert client.post_calls == 0
+    if collector is not None:
+        assert collector.flush_events() == []
+
+
+@pytest.mark.parametrize(
+    ("has_identity", "has_collector"),
+    ((False, True), (True, False), (False, False)),
+)
+def test_player_generation_valid_contract_proceeds_without_optional_audit(
+    monkeypatch,
+    has_identity: bool,
+    has_collector: bool,
+) -> None:
+    from werewolf_agent.agents import player_generation_request as generation_request
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.schemas import AgentContext, RetryInfo, TaskType
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+    from werewolf_agent.model_gateway.structured_output import StructuredOutputMode
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    class _Client:
+        post_calls = 0
+
+        def post(self, *_args, **_kwargs):
+            self.post_calls += 1
+            return _Response()
+
+    class _Agent:
+        agent_id = "w1"
+        model_router = object()
+
+        def _player_action_tool(self, _context):
+            return {"name": "submit_player_action"}
+
+        def _build_prompt(self, _context, _retry):
+            return "user action"
+
+        def _build_system_prompt(self, current_context):
+            return PlayerPromptBuilder(current_context).build_system_prompt()
+
+    collector = ModuleExposureAuditCollector() if has_collector else None
+    identity = (
+        DecisionIdentity("g1", "w1", "night", 0, 1, "wolf_discussion", 1)
+        if has_identity
+        else None
+    )
+    context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+        decision_identity=identity,
+        exposure_collector=collector,
+    )
+    request = generation_request.build_player_generation_request(
+        _Agent(), context, RetryInfo(attempt=1), StructuredOutputMode.NATIVE_TOOL,
+    )
+    client = _Client()
+
+    def _fake_generate(*_args, **kwargs):
+        assert kwargs["final_prompt_observer"] is not None
+        return OpenAIProvider(
+            api_key="k",
+            base_url="https://example.test/v1",
+            http_client=client,
+        ).generate(
+            kwargs["prompt"],
+            ModelConfig(provider="openai", model="m"),
+            system_prompt=kwargs["system_prompt"],
+            final_prompt_observer=kwargs["final_prompt_observer"],
+        )
+
+    monkeypatch.setattr(generation_request, "_generate_player_response", _fake_generate)
+
+    result = generation_request.call_player_generation_request(
+        _Agent(), context, request,
+    )
+
+    assert result.text == "ok"
+    assert client.post_calls == 1
+    if collector is not None:
+        assert collector.flush_events() == []
 
 
 def test_villager_role_guide_is_concise():
