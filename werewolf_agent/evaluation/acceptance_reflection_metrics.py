@@ -162,7 +162,9 @@ def _audit_reflection_transaction(
     if (
         not isinstance(rows, (list, tuple))
         or not rows
-        or persistence.get("expected_entry_count") != len(rows)
+        or not _matches_count(
+            persistence.get("expected_entry_count"), len(rows)
+        )
         or persistence.get("persistence_complete") is not True
         or persistence.get("rollback_complete") is not True
     ):
@@ -197,16 +199,10 @@ def _audit_reflection_transaction(
     failure_count = reflection_payload.get("failure_count")
     if (
         valid_entry_count is not None
-        and (
-            not _is_non_negative_int(valid_entry_count)
-            or valid_entry_count != len(eligible_players)
-        )
+        and not _matches_count(valid_entry_count, len(eligible_players))
     ) or (
         failure_count is not None
-        and (
-            not _is_non_negative_int(failure_count)
-            or failure_count != explicit_failure_count
-        )
+        and not _matches_count(failure_count, explicit_failure_count)
     ):
         return False, 0, "incomplete_reflection_audit"
     if status == "complete" and (eligible_players != player_ids or failed_players):
@@ -253,7 +249,9 @@ def _audit_reflection_transaction(
             or entry_id in entry_ids
             or audit_entry.get("row_found") is not True
             or audit_entry.get("persistence_complete") is not True
-            or audit_entry.get("persisted_rejected_fact_count") != 0
+            or not _matches_count(
+                audit_entry.get("persisted_rejected_fact_count"), 0
+            )
         ):
             return False, 0, "incomplete_reflection_audit"
         entry_ids.add(entry_id)
@@ -312,6 +310,11 @@ def _same_unique_identifiers(left: Any, right: Any) -> bool:
     )
 
 
+def _matches_count(value: Any, expected: int) -> bool:
+    """只接受非布尔、非负的原生整数，并与权威计数精确相等。"""
+    return _is_non_negative_int(value) and value == expected
+
+
 def _reflection_payload_matches_players(
     payload: dict[str, Any] | None,
     player_ids: set[str],
@@ -322,7 +325,7 @@ def _reflection_payload_matches_players(
     entries = payload.get("entries")
     if (
         not isinstance(entries, (list, tuple))
-        or payload.get("player_count") != len(player_ids)
+        or not _matches_count(payload.get("player_count"), len(player_ids))
     ):
         return False
     entry_players = [

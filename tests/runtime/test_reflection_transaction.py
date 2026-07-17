@@ -540,6 +540,54 @@ def test_acceptance_rejects_conflicting_persisted_event_entry_id() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (
+        ("player_count", True),
+        ("player_count", False),
+        ("player_count", 2.0),
+        ("player_count", 0.0),
+        ("player_count", "2"),
+        ("player_count", -1),
+        ("expected_entry_count", True),
+        ("expected_entry_count", False),
+        ("expected_entry_count", 2.0),
+        ("expected_entry_count", 0.0),
+        ("expected_entry_count", "2"),
+        ("expected_entry_count", -1),
+        ("persisted_rejected_fact_count", True),
+        ("persisted_rejected_fact_count", False),
+        ("persisted_rejected_fact_count", 1.0),
+        ("persisted_rejected_fact_count", 0.0),
+        ("persisted_rejected_fact_count", "0"),
+        ("persisted_rejected_fact_count", -1),
+    ),
+)
+def test_acceptance_rejects_non_integer_transaction_counts(
+    field: str,
+    invalid_value: object,
+) -> None:
+    game = _reflection_game(
+        status="complete",
+        entries=[_verified_event_entry(), _verified_event_entry("p02")],
+        persistence_status="complete",
+        persistence_entries=[
+            _persisted_audit_entry(), _persisted_audit_entry("p02"),
+        ],
+    )
+    if field == "player_count":
+        game["events"][0]["payload"][field] = invalid_value
+    elif field == "expected_entry_count":
+        game["events"][1]["payload"][field] = invalid_value
+    else:
+        game["events"][1]["payload"]["entries"][0][field] = invalid_value
+
+    metrics = compute_reflection_acceptance_metrics([game])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
+@pytest.mark.parametrize(
     ("field", "wrong_value"),
     (
         ("decision_id", "reflection:g1:other"),
