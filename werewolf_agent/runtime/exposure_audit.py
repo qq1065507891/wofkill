@@ -2,7 +2,7 @@
 """Runtime audit events for module exposure, call monitoring, and prompt injection.
     作者: Mike
     创建日期: 2025-01-15
-    修改日期: 2026-07-16
+    修改日期: 2026-07-18
     使用示例: 内部模块，无对外接口
 """
 
@@ -121,6 +121,13 @@ _PERSONA_PROOF_KEYS = frozenset({
     "provider",
     "model",
     "sanitized",
+    "prompt_contract_id",
+    "prompt_contract_version",
+    "system_byte_length",
+    "system_hmac_sha256",
+    "required_section_confirmations",
+    "section_id",
+    "confirmed",
 })
 _PROMPT_INJECTION_FIELDS = (
     ("public_summary", "public_summary", "text_section", "public"),
@@ -145,6 +152,12 @@ _PRIVATE_WOLF_STANCE_KEYS = frozenset({
     "wolf_id",
     "target_stance",
     "source_event_id",
+})
+_WOLF_PROMPT_CONTEXT_KEYS = frozenset({
+    "injected_event_ids",
+    "raw_text_count",
+    "summarized_text_count",
+    "truncated_text_count",
 })
 
 
@@ -359,9 +372,10 @@ def _prompt_injection_rows(context: Any) -> list[dict[str, Any]]:
 class ModuleExposureAuditCollector:
     """Collect sanitized module exposure audit events for one agent action."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, prompt_proof_secret: bytes | None = None) -> None:
         self._events: list[GameEvent] = []
-        self._persona_proof_secret = secrets.token_bytes(32)
+        # persona 与通用 prompt 合同证明必须复用同一份 run-scoped HMAC 密钥。
+        self._persona_proof_secret = prompt_proof_secret or secrets.token_bytes(32)
         self._persona_proof_keys: set[tuple[str, str, int | None, str]] = set()
 
     def record_rag(self, identity: DecisionIdentity, hits: list[dict[str, Any]] | None) -> None:
@@ -420,6 +434,19 @@ class ModuleExposureAuditCollector:
         if not rows:
             return
         self._append("prompt_injection_audit", identity, {"injections": rows})
+
+    def record_wolf_prompt_context(
+        self,
+        identity: DecisionIdentity,
+        audit_context: Mapping[str, Any],
+    ) -> None:
+        """记录夜聊分层注入的事件引用和计数，不记录原文或 stance。"""
+        sanitized = _sanitize_allowed(audit_context, _WOLF_PROMPT_CONTEXT_KEYS)
+        self._append(
+            "wolf_prompt_context_audit",
+            identity,
+            {"context": sanitized},
+        )
 
     def record_action_tool_call(
         self,
@@ -573,14 +600,17 @@ class ModuleExposureAuditCollector:
         model: str,
         final_system_location: str,
         final_system_message_index: int | None,
+        prompt_contract_id: str = "",
+        prompt_contract_version: str = "",
+        required_section_confirmations: Mapping[str, bool] | None = None,
     ) -> None:
         """在 provider HTTP 前把真实 system 字节转为 run-scoped HMAC 证明。"""
-        digest = hmac.new(
+        full_digest = hmac.new(
             self._persona_proof_secret,
             system_bytes,
             hashlib.sha256,
-        ).hexdigest()[:24]
-        fingerprint = f"run_hmac_{digest}"
+        ).hexdigest()
+        fingerprint = f"run_hmac_{full_digest[:24]}"
         persona_bytes = persona_text.encode("utf-8") if persona_text else b""
         proof = {
             "final_system_location": str(final_system_location),
@@ -593,6 +623,16 @@ class ModuleExposureAuditCollector:
             "provider": str(provider),
             "model": str(model),
             "sanitized": True,
+            "prompt_contract_id": str(prompt_contract_id),
+            "prompt_contract_version": str(prompt_contract_version),
+            "system_byte_length": len(system_bytes),
+            "system_hmac_sha256": full_digest,
+            "required_section_confirmations": [
+                {"section_id": str(section_id), "confirmed": bool(confirmed)}
+                for section_id, confirmed in (
+                    required_section_confirmations or {}
+                ).items()
+            ],
         }
         dedupe_key = (
             identity.trace_id(),
@@ -604,7 +644,11 @@ class ModuleExposureAuditCollector:
             return
         self._persona_proof_keys.add(dedupe_key)
         self._append(
-            "persona_prompt_injection_audit",
+            (
+                "persona_prompt_injection_audit"
+                if persona_text
+                else "final_prompt_contract_audit"
+            ),
             identity,
             {"proof": _sanitize_allowed(proof, _PERSONA_PROOF_KEYS)},
         )

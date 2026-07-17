@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-05
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.wolf_discussion_directives import build_wolf_discussion_instruction
@@ -123,6 +123,86 @@ def collect_current_wolf_target_stances(gs: GameState) -> list[dict[str, Any]]:
     return stances
 
 
+def build_layered_wolf_discussion_context(
+    gs: GameState,
+    wolf_ids: list[str],
+    *,
+    recent_raw_limit: int = 8,
+    older_summary_chars: int = 120,
+) -> dict[str, Any]:
+    """分离权威结构化状态与有界夜聊文本，并返回脱敏审计计数。"""
+    if recent_raw_limit < 0:
+        raise ValueError("recent_raw_limit must be non-negative")
+    if older_summary_chars < 1:
+        raise ValueError("older_summary_chars must be positive")
+
+    wolf_id_set = set(wolf_ids)
+    rows: list[dict[str, Any]] = []
+    for event in gs.events:
+        if not _trusted_current_wolf_discussion_event(
+            gs,
+            event,
+            wolf_ids=wolf_id_set,
+        ):
+            continue
+        rows.append({
+            "event_id": str(event.event_id),
+            "wolf_id": str(event.payload["wolf_id"]),
+            "round": int(event.payload["round"]),
+            "text": str(event.payload.get("text") or ""),
+        })
+
+    raw_start = max(0, len(rows) - recent_raw_limit)
+    older_rows = rows[:raw_start]
+    recent_rows = rows[raw_start:]
+    older_summary: list[dict[str, Any]] = []
+    truncated_count = 0
+    for row in older_rows:
+        normalized = " ".join(row["text"].split())
+        truncated = len(normalized) > older_summary_chars
+        if truncated:
+            normalized = normalized[:older_summary_chars].rstrip() + "…"
+            truncated_count += 1
+        older_summary.append({
+            "event_id": row["event_id"],
+            "wolf_id": row["wolf_id"],
+            "round": row["round"],
+            "summary": normalized,
+        })
+
+    alive_wolves = sorted(
+        player_id
+        for player_id, player in gs.players.items()
+        if player.alive and player.role == "werewolf"
+    )
+    alive_non_wolves = sorted(
+        player_id
+        for player_id, player in gs.players.items()
+        if player.alive and player.role != "werewolf"
+    )
+    return {
+        "structured": {
+            "live_status": {
+                "night_number": gs.night_number,
+                "alive_wolves": alive_wolves,
+                "alive_non_wolves": alive_non_wolves,
+            },
+            # stance 不受原文条数和摘要长度预算影响。
+            "target_stances": collect_current_wolf_target_stances(gs),
+        },
+        "text": {
+            "recent_raw": recent_rows,
+            "older_summary": older_summary,
+        },
+        "audit": {
+            "injected_event_ids": [row["event_id"] for row in rows],
+            "raw_text_count": len(recent_rows),
+            "summarized_text_count": len(older_summary),
+            "truncated_text_count": truncated_count,
+        },
+    }
+
+
 def build_validated_wolf_target_stance(
     gs: GameState,
     discussion_event: GameEvent,
@@ -227,14 +307,19 @@ def build_wolf_discussion_strategy_directive(
     round_focus: str,
     wolf_teammates: list[str],
     previous_speeches: list[dict[str, str]],
+    layered_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建狼队夜聊的策略指令字典。"""
-    return {
+    directive = {
         "wolf_team_discussion": discussion_instruction,
         "round_focus": round_focus,
         "wolf_teammates": wolf_teammates,
         "previous_discussion": previous_speeches[-8:],
     }
+    if layered_context is not None:
+        directive["wolf_universal_rules"] = layered_context["structured"]
+        directive["previous_discussion"] = layered_context["text"]
+    return directive
 
 
 def build_teammate_transcript(

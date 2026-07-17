@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 
 class _Response:
     status_code = 200
@@ -100,6 +102,40 @@ def test_observer_exception_does_not_block_provider_http_request() -> None:
 
     assert result.text == "ok"
     assert client.post_calls == 1
+
+
+def test_contract_failure_blocks_provider_before_http_request() -> None:
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptContract,
+        FinalPromptContractError,
+        validate_final_prompt_contract,
+    )
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _Client()
+    contract = FinalPromptContract(
+        contract_id="player-system",
+        version="2026-07-18",
+        required_sections=(("wolf_semantics", b"WOLF-SEMANTICS"),),
+    )
+
+    with pytest.raises(FinalPromptContractError, match="wolf_semantics"):
+        OpenAIProvider(
+            api_key="k",
+            base_url="https://example.test/v1",
+            http_client=client,
+        ).generate(
+            "user",
+            ModelConfig(provider="openai", model="m"),
+            system_prompt="rules without required block",
+            final_prompt_observer=lambda assembly: validate_final_prompt_contract(
+                assembly,
+                contract,
+            ),
+        )
+
+    assert client.post_calls == 0
 
 
 def test_router_does_not_record_observer_exception_as_provider_failure() -> None:

@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_strategy import PromptStrategyMixin
@@ -102,6 +103,51 @@ class PromptStrategyMixin:
         section contains a string ``reflection_task``, render that key
         verbatim as plain text and render the rest via ``_compact_json``.
         """
+        wolf_structured = section.get("wolf_universal_rules")
+        if isinstance(wolf_structured, dict) and wolf_structured:
+            # 狼队权威状态和完整 stance 不属于自由文本预算，不能经 compact_json 摘要。
+            structured_text = (
+                "狼队权威结构化状态（不受文本预算裁剪）:\n"
+                + json.dumps(
+                    wolf_structured,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            rest = {
+                key: value
+                for key, value in section.items()
+                if key != "wolf_universal_rules"
+            }
+            if not rest:
+                return structured_text
+            return structured_text + "\n" + self._render_strategy_section(rest)
+
+        wolf_text_context = section.get("previous_discussion")
+        if (
+            isinstance(wolf_text_context, dict)
+            and "recent_raw" in wolf_text_context
+            and "older_summary" in wolf_text_context
+        ):
+            # 该层已由夜聊构建器执行最近 8 条/更早摘要的明确预算，不再二次摘要。
+            text_context = (
+                "狼队夜聊文本层（最近原文与更早摘要）:\n"
+                + json.dumps(
+                    wolf_text_context,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            rest = {
+                key: value
+                for key, value in section.items()
+                if key != "previous_discussion"
+            }
+            if not rest:
+                return text_context
+            return text_context + "\n" + self._render_strategy_section(rest)
+
         advice = section.get("skill_tactical_advice")
         if isinstance(advice, list) and advice:
             # Render the advice as a human-readable bullet list. Other

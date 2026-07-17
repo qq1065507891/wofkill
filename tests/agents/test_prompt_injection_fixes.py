@@ -221,7 +221,11 @@ def test_generation_request_records_only_unconfirmed_assembly_debug_for_retries(
             return f"user attempt {retry.attempt}"
 
         def _build_system_prompt(self, context):
-            return "system rules\npersona-final-fragment"
+            from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+            return (
+                PlayerPromptBuilder(context).build_system_prompt()
+                + "\npersona-final-fragment"
+            )
 
         def _build_persona_prompt(self, context):
             return "persona-final-fragment"
@@ -278,7 +282,11 @@ def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch
             return "user action"
 
         def _build_system_prompt(self, context):
-            return "system rules\npersona-final-fragment"
+            from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+            return (
+                PlayerPromptBuilder(context).build_system_prompt()
+                + "\npersona-final-fragment"
+            )
 
         def _build_persona_prompt(self, context):
             return "persona-final-fragment"
@@ -300,7 +308,7 @@ def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch
     def _fake_generate(*args, **kwargs):
         observer = kwargs["final_prompt_observer"]
         observer(FinalPromptAssembly(
-            system_bytes=b"system rules\npersona-final-fragment\nprimary-assembly",
+            system_bytes=(request.system_prompt + "\nprimary-assembly").encode("utf-8"),
             final_system_location="messages",
             final_system_message_index=0,
             provider="primary",
@@ -309,7 +317,7 @@ def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch
             attempt_ordinal=1,
         ))
         observer(FinalPromptAssembly(
-            system_bytes=b"system rules\npersona-final-fragment\nfallback-assembly",
+            system_bytes=(request.system_prompt + "\nfallback-assembly").encode("utf-8"),
             final_system_location="system",
             final_system_message_index=None,
             provider="anthropic",
@@ -337,6 +345,125 @@ def test_provider_fallback_reuses_final_persona_system_message_proof(monkeypatch
     assert fallback["final_system_location"] == "system"
     assert fallback["final_system_message_index"] is None
     assert fallback["confirmed_injection"] is True
+
+
+def test_provider_prompt_proof_records_recomputable_contract_hmac_without_raw_data() -> None:
+    import hashlib
+    import hmac
+
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    secret = b"fixed-task-13-test-key"
+    system_bytes = b"contract-header\nrules\nwolf-semantics"
+    collector = ModuleExposureAuditCollector(prompt_proof_secret=secret)
+    identity = DecisionIdentity("g1", "w1", "night", 1, 1, "wolf_discussion", 1)
+
+    collector.record_provider_persona_prompt_proof(
+        identity,
+        system_bytes,
+        "",
+        "primary",
+        attempt_ordinal=1,
+        provider="openai",
+        model="m",
+        final_system_location="messages",
+        final_system_message_index=0,
+        prompt_contract_id="player-system",
+        prompt_contract_version="2026-07-18",
+        required_section_confirmations={
+            "contract_header": True,
+            "wolf_semantics": True,
+        },
+    )
+
+    proof = collector.flush_events()[0].payload["proof"]
+    assert proof["prompt_contract_id"] == "player-system"
+    assert proof["prompt_contract_version"] == "2026-07-18"
+    assert proof["system_byte_length"] == len(system_bytes)
+    assert proof["system_hmac_sha256"] == hmac.new(
+        secret,
+        system_bytes,
+        hashlib.sha256,
+    ).hexdigest()
+    assert proof["required_section_confirmations"] == [
+        {"section_id": "contract_header", "confirmed": True},
+        {"section_id": "wolf_semantics", "confirmed": True},
+    ]
+    serialized = str(proof)
+    assert system_bytes.decode() not in serialized
+    assert secret.decode() not in serialized
+
+
+def test_player_generation_enforces_versioned_contract_without_persona(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from werewolf_agent.agents import player_generation_request as generation_request
+    from werewolf_agent.agents.prompt_builder import PlayerPromptBuilder
+    from werewolf_agent.agents.prompt_sections import (
+        PLAYER_SYSTEM_PROMPT_CONTRACT_ID,
+        PLAYER_SYSTEM_PROMPT_CONTRACT_VERSION,
+    )
+    from werewolf_agent.agents.schemas import AgentContext, RetryInfo, TaskType
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
+    from werewolf_agent.model_gateway.structured_output import StructuredOutputMode
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    collector = ModuleExposureAuditCollector(prompt_proof_secret=b"fixed-contract-key")
+    context = AgentContext(
+        agent_id="w1",
+        task_type=TaskType.WOLF_DISCUSSION,
+        phase="night",
+        night_number=1,
+        own_role="werewolf",
+        decision_identity=DecisionIdentity(
+            "g1", "w1", "night", 0, 1, "wolf_discussion", 1,
+        ),
+        exposure_collector=collector,
+    )
+
+    class _Agent:
+        agent_id = "w1"
+        model_router = object()
+
+        def _player_action_tool(self, _context):
+            return {"name": "submit_player_action"}
+
+        def _build_prompt(self, _context, _retry):
+            return "user action"
+
+        def _build_system_prompt(self, current_context):
+            return PlayerPromptBuilder(current_context).build_system_prompt()
+
+    request = generation_request.build_player_generation_request(
+        _Agent(), context, RetryInfo(attempt=1), StructuredOutputMode.NATIVE_TOOL,
+    )
+
+    def _fake_generate(*_args, **kwargs):
+        kwargs["final_prompt_observer"](FinalPromptAssembly(
+            system_bytes=request.system_prompt.encode("utf-8"),
+            final_system_location="messages",
+            final_system_message_index=0,
+            provider="openai",
+            model="m",
+            attempt_kind="primary",
+            attempt_ordinal=1,
+        ))
+        return SimpleNamespace(text="ok")
+
+    monkeypatch.setattr(generation_request, "_generate_player_response", _fake_generate)
+
+    generation_request.call_player_generation_request(_Agent(), context, request)
+
+    proof_event = collector.flush_events()[-1]
+    assert proof_event.type == "final_prompt_contract_audit"
+    proof = proof_event.payload["proof"]
+    assert proof["prompt_contract_id"] == PLAYER_SYSTEM_PROMPT_CONTRACT_ID
+    assert proof["prompt_contract_version"] == PLAYER_SYSTEM_PROMPT_CONTRACT_VERSION
+    assert all(
+        row["confirmed"] for row in proof["required_section_confirmations"]
+    )
 
 
 def test_villager_role_guide_is_concise():

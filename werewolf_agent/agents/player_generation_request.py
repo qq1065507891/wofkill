@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-13
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.agents.player_generation_request import build_player_generation_request
@@ -25,6 +25,15 @@ from werewolf_agent.model_gateway.structured_output import (
     StructuredOutputMode,
 )
 from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptContract,
+    validate_final_prompt_contract,
+)
+from werewolf_agent.agents.prompt_sections import (
+    PLAYER_SYSTEM_PROMPT_CONTRACT_ID,
+    PLAYER_SYSTEM_PROMPT_CONTRACT_VERSION,
+    player_system_prompt_required_sections,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +48,9 @@ class PlayerGenerationRequest:
     tool_choice: dict[str, str] | None
     tool_call_required: bool
     structured_output_mode: str
+    prompt_contract_id: str
+    prompt_contract_version: str
+    required_system_sections: tuple[tuple[str, bytes], ...]
 
 
 def build_player_generation_request(
@@ -72,6 +84,12 @@ def build_player_generation_request(
         tool_choice=tool_choice,
         tool_call_required=tool_choice is not None,
         structured_output_mode=active_structured_mode.value,
+        prompt_contract_id=PLAYER_SYSTEM_PROMPT_CONTRACT_ID,
+        prompt_contract_version=PLAYER_SYSTEM_PROMPT_CONTRACT_VERSION,
+        required_system_sections=player_system_prompt_required_sections(
+            context.own_role,
+            persona_text=persona_text,
+        ),
     )
     _record_final_persona_proof(context, retry, request, persona_text)
     return request
@@ -137,21 +155,33 @@ def call_player_generation_request(
         tool_choice=request.tool_choice,
         structured_output_mode=request.structured_output_mode,
         generation_attempt_context=generation_attempt_context,
-        final_prompt_observer=_build_provider_persona_observer(context, persona_text),
+        final_prompt_observer=_build_provider_prompt_observer(
+            context,
+            request,
+            persona_text,
+        ),
     )
 
 
-def _build_provider_persona_observer(
+def _build_provider_prompt_observer(
     context: AgentContext,
+    request: PlayerGenerationRequest,
     persona_text: str,
 ) -> Any | None:
-    """为本次玩家请求创建 provider 最终 system 观察回调。"""
+    """创建合同校验与 HMAC 证明共用的 provider 最终 system 回调。"""
     identity = getattr(context, "decision_identity", None)
     collector = getattr(context, "exposure_collector", None)
-    if identity is None or collector is None or not context.persona_snapshot:
+    if identity is None or collector is None:
         return None
 
+    contract = FinalPromptContract(
+        contract_id=request.prompt_contract_id,
+        version=request.prompt_contract_version,
+        required_sections=request.required_system_sections,
+    )
+
     def _observe(assembly: FinalPromptAssembly) -> None:
+        confirmations = validate_final_prompt_contract(assembly, contract)
         collector.record_provider_persona_prompt_proof(
             identity,
             assembly.system_bytes,
@@ -162,6 +192,9 @@ def _build_provider_persona_observer(
             model=assembly.model,
             final_system_location=assembly.final_system_location,
             final_system_message_index=assembly.final_system_message_index,
+            prompt_contract_id=contract.contract_id,
+            prompt_contract_version=contract.version,
+            required_section_confirmations=confirmations,
         )
 
     return _observe

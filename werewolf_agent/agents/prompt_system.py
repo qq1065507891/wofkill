@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-15
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_system import PromptSystemMixin
@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from werewolf_agent.runtime.private_memory import _ROLE_LABEL_CN as _ROLE_NAMES
+from werewolf_agent.agents.prompt_sections import PLAYER_SYSTEM_PROMPT_CONTRACT_HEADER
 
 
 class PromptSystemMixin:
@@ -22,6 +23,7 @@ class PromptSystemMixin:
     def _build_core_identity(self) -> str:
         role_cn = _ROLE_NAMES.get(self.context.own_role or "", self.context.own_role or "")
         lines = [
+            PLAYER_SYSTEM_PROMPT_CONTRACT_HEADER,
             "你是一场狼人杀游戏的玩家。请用中文发言和思考。",
             f"你的玩家ID: {self.context.agent_id}",
             f"你的名字: {self.player_name}",
@@ -136,7 +138,12 @@ class PromptSystemMixin:
             "werewolf": (
                 "狼人规则：夜间与队友讨论击杀目标，可按合法行动选择击杀、自刀或空刀。"
                 "白天可在规则允许时自爆；自爆后立即出局、无遗言，并中断当前白天。"
-                "可以悍跳预言家上警对抗真预言家。"
+                "可以悍跳预言家上警对抗真预言家。\n"
+                "【狼人夜间目标语义】备刀不是女巫救人后的第二刀；每夜最多执行一次狼刀，"
+                "备刀只在主刀执行前已不合法时作为替代候选。死亡玩家不可作为击杀目标。"
+                "系统提供的候选列表不是局内事实，不得声称候选玩家曾提出或支持某刀口。"
+                "队长不得伪造支持者；只有带 source_event_id 的本夜结构化 stance "
+                "才能作为队友支持证据。"
             ),
             "hybrid": (
                 "混血儿规则：N1 / 首夜选择一名主人，跟随主人阵营获胜。"

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-13
+修改日期: 2026-07-18
 
 使用示例:
     >>> proof = FinalPromptAssembly(b"rules", "system", None, "anthropic", "m")
@@ -33,6 +33,38 @@ class FinalPromptAssembly:
     model: str
     attempt_kind: str = ""
     attempt_ordinal: int | None = None
+
+
+@dataclass(frozen=True)
+class FinalPromptContract:
+    """定义 provider 调用前必须出现在最终 system 字节中的稳定区块。"""
+
+    contract_id: str
+    version: str
+    required_sections: tuple[tuple[str, bytes], ...]
+
+
+class FinalPromptContractError(RuntimeError):
+    """最终 system 缺少合同区块，必须在 provider HTTP 前终止调用。"""
+
+
+def validate_final_prompt_contract(
+    assembly: FinalPromptAssembly,
+    contract: FinalPromptContract,
+) -> dict[str, bool]:
+    """只检查真实 provider payload 的 system 字节，不持久化提示词原文。"""
+    confirmations = {
+        section_id: marker in assembly.system_bytes
+        for section_id, marker in contract.required_sections
+    }
+    missing = [
+        section_id for section_id, confirmed in confirmations.items() if not confirmed
+    ]
+    if missing:
+        raise FinalPromptContractError(
+            "final prompt contract missing required sections: " + ",".join(missing)
+        )
+    return confirmations
 
 
 FinalPromptObserver = Callable[[FinalPromptAssembly], None]
@@ -67,7 +99,10 @@ def notify_final_prompt_observer(
         return
     try:
         observer(assembly)
-    except Exception as exc:  # noqa: BLE001 - 观察器不得阻断模型调用
+    except FinalPromptContractError:
+        # 合同缺失是请求本身不安全，而不是监控故障；必须在 HTTP 前失败。
+        raise
+    except Exception as exc:  # noqa: BLE001 - 普通监控故障不得阻断模型调用
         _LOGGER.warning(
             "final prompt observer failed stage=final_payload error_type=%s",
             type(exc).__name__,
@@ -76,7 +111,10 @@ def notify_final_prompt_observer(
 
 __all__ = [
     "FinalPromptAssembly",
+    "FinalPromptContract",
+    "FinalPromptContractError",
     "FinalPromptObserver",
     "bind_attempt",
     "notify_final_prompt_observer",
+    "validate_final_prompt_contract",
 ]

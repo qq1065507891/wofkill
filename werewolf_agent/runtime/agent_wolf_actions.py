@@ -4,7 +4,7 @@
 
 作者: Mike
 创建日期: 2026-07-07
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.agent_wolf_actions import agent_wolf_discussion
@@ -34,7 +34,7 @@ from werewolf_agent.runtime.json_extract import (
 )
 from werewolf_agent.runtime.wolf_discussion_directives import (
     build_empty_wolf_discussion_fallback,
-    build_teammate_transcript,
+    build_layered_wolf_discussion_context,
     build_wolf_discussion_instruction,
     build_wolf_discussion_strategy_directive,
     collect_current_wolf_target_stances,
@@ -180,6 +180,9 @@ def agent_wolf_team_plan(
         f"{contract['public_story']['max_length']} 字\n"
         f"- reasoning: {contract['reasoning']['min_length']}~"
         f"{contract['reasoning']['max_length']} 字"
+        "\n- 备刀不是女巫救人后的第二刀；每夜最多执行一次狼刀"
+        "\n- 死亡玩家不可作为击杀目标；alive 候选是系统约束，不是局内事实"
+        "\n- 队长不得伪造支持者；只有本夜 stance 的 source_event_id 可证明支持"
     )
 
     user_prompt = (
@@ -444,6 +447,7 @@ def agent_wolf_discussion(
 
     wolf_ids = living_wolf_ids(gs)
     prev_speeches = collect_wolf_discussion_speeches(gs, wolf_ids)
+    layered_context = build_layered_wolf_discussion_context(gs, wolf_ids)
     wolf_teammates = living_wolf_teammates(gs, wolf_id)
     teammate_speeches = teammate_discussion_speeches(prev_speeches, wolf_id)
     discussion_instruction = build_wolf_discussion_instruction(
@@ -457,13 +461,24 @@ def agent_wolf_discussion(
         round_focus=requirements.get("required", "讨论狼队策略。"),
         wolf_teammates=wolf_teammates,
         previous_speeches=prev_speeches,
+        layered_context=layered_context,
     )
-    # 注入高优先级击杀目标，帮助夜聊收敛到同一刀口。
-    strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
-        gs,
-        wolf_id=wolf_id,
-        plan=state.get("wolf_team_plan"),
+    stored_plan = state.get("wolf_team_plan")
+    current_plan = (
+        stored_plan
+        if isinstance(stored_plan, dict)
+        and stored_plan.get("night_number") == gs.night_number
+        else None
     )
+    if current_plan is not None:
+        # 仅本夜计划能成为高优先级刀口；跨夜计划不能恢复执行权威。
+        strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
+            gs,
+            wolf_id=wolf_id,
+            plan=current_plan,
+        )
+    elif isinstance(stored_plan, dict) and stored_plan:
+        strategy_directive["wolf_plan_history"] = build_prior_plan_summary(stored_plan)
 
     context = build_agent_context(
         engine,
@@ -471,7 +486,7 @@ def agent_wolf_discussion(
         wolf_id,
         TaskType.WOLF_DISCUSSION,
         legal_actions=[ActionType.SPEECH],
-        wolf_team_plan=state.get("wolf_team_plan"),
+        wolf_team_plan=current_plan,
         rag_service=state.get("rag_service"),
         restored_memory=state.get("restored_memory"),
         cognition_state_manager=state.get("cognition_state_manager"),
@@ -480,12 +495,14 @@ def agent_wolf_discussion(
         ),
     )
 
-    extra_transcript = build_teammate_transcript(teammate_speeches)
-    merged_transcript = extra_transcript + list(context.recent_transcript)
+    if decision_identity is not None and exposure_collector is not None:
+        exposure_collector.record_wolf_prompt_context(
+            decision_identity,
+            layered_context["audit"],
+        )
     context = context.model_copy(
         update={
             "strategy_directive": strategy_directive,
-            "recent_transcript": merged_transcript[-8:],
         }
     )
 

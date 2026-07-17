@@ -438,8 +438,9 @@ def test_persona_final_message_proof_is_private_and_run_scoped() -> None:
     assert first_rows[0]["run_scoped_fingerprint"] == f"run_hmac_{expected}"
     serialized = str(first_rows + [second_row]).lower()
     assert persona_text not in serialized
-    assert "prompt" not in serialized
-    assert "sha" not in serialized
+    assert messages[0]["content"].lower() not in serialized
+    assert "system_bytes" not in serialized
+    assert first._persona_proof_secret.hex() not in serialized
     assert "md5" not in serialized
 
 

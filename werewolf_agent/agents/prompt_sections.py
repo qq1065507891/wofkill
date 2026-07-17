@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.agents.prompt_sections import PromptSectionMixin
@@ -29,6 +30,37 @@ class _SectionSpec:
 _NEVER_DROP_TIER: int | None = None
 _USER_PROMPT_BUDGET_CHARS = 20_000
 USER_PROMPT_BUDGET_CHARS = _USER_PROMPT_BUDGET_CHARS
+
+PLAYER_SYSTEM_PROMPT_CONTRACT_ID = "werewolf-player-system"
+PLAYER_SYSTEM_PROMPT_CONTRACT_VERSION = "2026-07-18.v1"
+PLAYER_SYSTEM_PROMPT_CONTRACT_HEADER = (
+    "【提示词合同】"
+    f"id={PLAYER_SYSTEM_PROMPT_CONTRACT_ID};"
+    f"version={PLAYER_SYSTEM_PROMPT_CONTRACT_VERSION}"
+)
+
+_BASE_SYSTEM_PROMPT_REQUIRED_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("contract_header", PLAYER_SYSTEM_PROMPT_CONTRACT_HEADER),
+    ("core_identity", "你是一场狼人杀游戏的玩家"),
+    ("game_rules", "【禁止事项】"),
+    ("information_boundaries", "【信息边界】"),
+    ("reasoning_method", "【推理方法-3 步】"),
+    ("output_contract", "【结构化输出】"),
+)
+
+
+def player_system_prompt_required_sections(
+    own_role: str | None,
+    *,
+    persona_text: str = "",
+) -> tuple[tuple[str, bytes], ...]:
+    """返回按角色确定的最终 system 必需区块及其 UTF-8 标记。"""
+    rows = list(_BASE_SYSTEM_PROMPT_REQUIRED_SECTIONS)
+    if own_role == "werewolf":
+        rows.append(("wolf_target_semantics", "【狼人夜间目标语义】"))
+    if persona_text:
+        rows.append(("persona", persona_text))
+    return tuple((section_id, marker.encode("utf-8")) for section_id, marker in rows)
 
 USER_SECTION_SPECS: tuple[_SectionSpec, ...] = (
     _SectionSpec("_build_phase_context", "【辅助】", "阶段上下文", "action_context", _NEVER_DROP_TIER),
