@@ -328,11 +328,18 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
         reflection_entries.append(entry)
 
     transaction_result = summarize_reflection_transaction(transactions)
+    game_status = (
+        "complete"
+        if transactions
+        and transaction_result.valid_entry_count == len(transactions)
+        and transaction_result.failure_count == 0
+        else transaction_result.status
+    )
     event = GameEvent(
         type="reflection_complete",
         payload={
             "visibility": "moderator_only",
-            "status": transaction_result.status,
+            "status": game_status,
             "persistence_complete": transaction_result.persistence_complete,
             "player_count": len(reflection_entries),
             "valid_entry_count": transaction_result.valid_entry_count,
@@ -341,7 +348,7 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
         },
     )
     events = [*gs.events, event]
-    if transaction_result.status == "no_valid_entries":
+    if game_status == "no_valid_entries":
         events.append(GameEvent(
             type="reflection_no_valid_entries",
             payload={
@@ -418,6 +425,11 @@ def _reflection_transaction_from_verification(
         return transaction.fail(
             failure_stage="lessons_verified",
             failure_code="reflection_no_verified_lessons",
+        )
+    if not transaction.verified_claim_ids:
+        return transaction.fail(
+            failure_stage="lessons_verified",
+            failure_code="reflection_lessons_without_verified_claims",
         )
     return transaction.advance(
         ReflectionStage.LESSONS_VERIFIED,

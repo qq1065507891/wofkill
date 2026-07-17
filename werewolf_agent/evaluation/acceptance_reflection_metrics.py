@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
-from werewolf_agent.evaluation.acceptance_shared import _non_negative_int
+from werewolf_agent.evaluation.acceptance_shared import (
+    _is_non_negative_int,
+    _non_negative_int,
+)
 from werewolf_agent.evaluation.game_projection import (
     normalize_acceptance_games,
     projection_support,
@@ -136,23 +139,23 @@ def _audit_reflection_transaction(
     """验证 complete/partial 事务及 decision/claim/entry 全链。"""
     if not _reflection_payload_matches_players(reflection_payload, player_ids):
         return False, 0, "incomplete_reflection_audit"
+    assert reflection_payload is not None
+    reflection_status = reflection_payload.get("status")
+    if reflection_status == "no_valid_entries":
+        return False, 0, "reflection_no_valid_entries"
+    if reflection_status == "persistence_failed":
+        return False, 0, "reflection_persistence_failed"
+    if reflection_status not in {"complete", "partial"}:
+        return False, 0, "incomplete_reflection_audit"
     if len(persistence_events) != 1:
         return False, 0, "incomplete_reflection_audit"
     persistence = persistence_events[0][1]
     status = persistence.get("status")
-    if status is None:
-        expected = persistence.get("expected_entry_count")
-        if expected == 0:
-            status = "no_valid_entries"
-        elif persistence.get("persistence_complete") is True:
-            status = "complete" if expected == len(player_ids) else "partial"
-        else:
-            status = "persistence_failed"
     if status == "no_valid_entries":
         return False, 0, "reflection_no_valid_entries"
     if status == "persistence_failed":
         return False, 0, "reflection_persistence_failed"
-    if status not in {"complete", "partial"}:
+    if status not in {"complete", "partial"} or status != reflection_status:
         return False, 0, "incomplete_reflection_audit"
 
     rows = persistence.get("entries")
@@ -186,6 +189,26 @@ def _audit_reflection_transaction(
     if not eligible_players or set(audit_entries) != eligible_players:
         return False, 0, "incomplete_reflection_audit"
     failed_players = player_ids - eligible_players
+    explicit_failure_count = sum(
+        1 for player_id in failed_players
+        if _entry_has_explicit_failure(event_entries[player_id])
+    )
+    valid_entry_count = reflection_payload.get("valid_entry_count")
+    failure_count = reflection_payload.get("failure_count")
+    if (
+        valid_entry_count is not None
+        and (
+            not _is_non_negative_int(valid_entry_count)
+            or valid_entry_count != len(eligible_players)
+        )
+    ) or (
+        failure_count is not None
+        and (
+            not _is_non_negative_int(failure_count)
+            or failure_count != explicit_failure_count
+        )
+    ):
+        return False, 0, "incomplete_reflection_audit"
     if status == "complete" and (eligible_players != player_ids or failed_players):
         return False, 0, "incomplete_reflection_audit"
     if status == "partial" and (
@@ -207,12 +230,25 @@ def _audit_reflection_transaction(
         verified_claim_ids = verification.get("verified_claim_ids", [])
         audited_claim_ids = audit_entry.get("verified_claim_ids")
         entry_id = audit_entry.get("entry_id")
+        transaction_state = event_entry.get("transaction_state")
         if (
             not isinstance(decision_id, str)
             or not decision_id
             or event_decision_id != decision_id
             or audit_entry.get("decision_id") != decision_id
+            or not verified_claim_ids
             or not _same_unique_identifiers(verified_claim_ids, audited_claim_ids)
+            or transaction_state not in {
+                "lessons_verified", "persisted",
+            }
+            or (
+                transaction_state == "persisted"
+                and event_entry.get("entry_id") != entry_id
+            )
+            or (
+                transaction_state == "lessons_verified"
+                and event_entry.get("entry_id") not in {None, ""}
+            )
             or entry_id != f"reflection_{game_id}_{player_id}"
             or entry_id in entry_ids
             or audit_entry.get("row_found") is not True
@@ -240,11 +276,26 @@ def _entry_has_verified_lessons(entry: Mapping[str, Any]) -> bool:
 
 
 def _entry_has_explicit_failure(entry: Mapping[str, Any]) -> bool:
+    transaction_state = entry.get("transaction_state")
+    expected_failure_stage = {
+        "not_requested": "generated",
+        "generated": "schema_validated",
+        "schema_validated": "facts_verified",
+        "facts_verified": "lessons_verified",
+    }.get(transaction_state)
+    verification = entry.get("verification")
+    decision_id = entry.get("decision_id")
     return (
-        isinstance(entry.get("failure_stage"), str)
+        expected_failure_stage is not None
+        and entry.get("failure_stage") == expected_failure_stage
+        and isinstance(entry.get("failure_stage"), str)
         and bool(entry.get("failure_stage"))
         and isinstance(entry.get("failure_code"), str)
         and bool(entry.get("failure_code"))
+        and isinstance(decision_id, str)
+        and bool(decision_id)
+        and isinstance(verification, Mapping)
+        and verification.get("decision_id") == decision_id
     )
 
 

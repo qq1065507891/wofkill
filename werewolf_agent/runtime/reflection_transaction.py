@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Literal
 
@@ -49,6 +49,11 @@ _NEXT_STAGE = {
     ReflectionStage.FACTS_VERIFIED: ReflectionStage.LESSONS_VERIFIED,
     ReflectionStage.LESSONS_VERIFIED: ReflectionStage.PERSISTED,
 }
+_TRANSACTION_SEAL = object()
+_STAGE_PATHS = {
+    stage: tuple(list(ReflectionStage)[:index + 1])
+    for index, stage in enumerate(ReflectionStage)
+}
 
 
 def _identifiers(values: Iterable[str]) -> tuple[str, ...]:
@@ -62,30 +67,133 @@ def _identifiers(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(result)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, init=False)
 class PlayerReflectionTransaction:
-    """一名玩家的反思事务快照。"""
+    """一名玩家的反思事务快照；公开构造器只能创建初态。"""
 
     player_id: str
     decision_id: str
-    stage: ReflectionStage = ReflectionStage.NOT_REQUESTED
-    failure_stage: str | None = None
-    failure_code: str | None = None
-    verified_claim_ids: tuple[str, ...] = ()
-    verified_lesson_ids: tuple[str, ...] = ()
-    entry_id: str | None = None
+    stage: ReflectionStage
+    failure_stage: str | None
+    failure_code: str | None
+    verified_claim_ids: tuple[str, ...]
+    verified_lesson_ids: tuple[str, ...]
+    entry_id: str | None
+    _stage_path: tuple[ReflectionStage, ...]
+    _seal: object
 
-    def __post_init__(self) -> None:
+    def __init__(self, player_id: str, decision_id: str) -> None:
+        """创建 not_requested 初态，禁止调用方直接注入后续状态。"""
+        self._assign(
+            player_id=player_id,
+            decision_id=decision_id,
+            stage=ReflectionStage.NOT_REQUESTED,
+            failure_stage=None,
+            failure_code=None,
+            verified_claim_ids=(),
+            verified_lesson_ids=(),
+            entry_id=None,
+            stage_path=(ReflectionStage.NOT_REQUESTED,),
+        )
+        self.validate()
+
+    def _assign(
+        self,
+        *,
+        player_id: str,
+        decision_id: str,
+        stage: ReflectionStage,
+        failure_stage: str | None,
+        failure_code: str | None,
+        verified_claim_ids: tuple[str, ...],
+        verified_lesson_ids: tuple[str, ...],
+        entry_id: str | None,
+        stage_path: tuple[ReflectionStage, ...],
+    ) -> None:
+        """集中写入冻结字段，仅由受控构造和相邻转换调用。"""
+        values = {
+            "player_id": player_id,
+            "decision_id": decision_id,
+            "stage": stage,
+            "failure_stage": failure_stage,
+            "failure_code": failure_code,
+            "verified_claim_ids": verified_claim_ids,
+            "verified_lesson_ids": verified_lesson_ids,
+            "entry_id": entry_id,
+            "_stage_path": stage_path,
+            "_seal": _TRANSACTION_SEAL,
+        }
+        for field, value in values.items():
+            object.__setattr__(self, field, value)
+
+    def _derive(self, **changes: object) -> PlayerReflectionTransaction:
+        """从已验证快照生成下一个受控快照。"""
+        self.validate()
+        values = {
+            "player_id": self.player_id,
+            "decision_id": self.decision_id,
+            "stage": self.stage,
+            "failure_stage": self.failure_stage,
+            "failure_code": self.failure_code,
+            "verified_claim_ids": self.verified_claim_ids,
+            "verified_lesson_ids": self.verified_lesson_ids,
+            "entry_id": self.entry_id,
+            "stage_path": self._stage_path,
+        }
+        values.update(changes)
+        candidate = object.__new__(type(self))
+        candidate._assign(**values)  # type: ignore[arg-type]
+        candidate.validate()
+        return candidate
+
+    def validate(self) -> None:
+        """独立验证阶段、字段组合、失败位置和完整转换路径。"""
+        if getattr(self, "_seal", None) is not _TRANSACTION_SEAL:
+            raise ValueError("reflection transaction provenance is missing")
         if not self.player_id or not self.decision_id:
             raise ValueError("player_id and decision_id are required")
+        if not isinstance(self.stage, ReflectionStage):
+            raise ValueError("invalid reflection stage")
+        if self._stage_path != _STAGE_PATHS[self.stage]:
+            raise ValueError("reflection transaction stage provenance is invalid")
         if (self.failure_stage is None) != (self.failure_code is None):
             raise ValueError("failure_stage and failure_code must be provided together")
         if self.failure_stage is not None and (
             not self.failure_stage or not self.failure_code
         ):
             raise ValueError("failure_stage and failure_code must be non-empty")
-        if self.stage is ReflectionStage.PERSISTED and not self.entry_id:
-            raise ValueError("persisted reflection requires entry_id")
+        if self.failure_stage is not None:
+            expected_failure = _NEXT_STAGE.get(self.stage)
+            if (
+                expected_failure is None
+                or self.failure_stage != expected_failure.value
+            ):
+                raise ValueError("failure_stage must name the next uncompleted stage")
+
+        if self.stage in {
+            ReflectionStage.NOT_REQUESTED,
+            ReflectionStage.GENERATED,
+            ReflectionStage.SCHEMA_VALIDATED,
+        } and (self.verified_claim_ids or self.verified_lesson_ids or self.entry_id):
+            raise ValueError("early reflection stage cannot carry verified identities")
+        if self.stage is ReflectionStage.FACTS_VERIFIED and (
+            self.verified_lesson_ids or self.entry_id
+        ):
+            raise ValueError("facts_verified cannot carry lesson or entry identity")
+        if self.stage in {
+            ReflectionStage.LESSONS_VERIFIED,
+            ReflectionStage.PERSISTED,
+        } and (not self.verified_claim_ids or not self.verified_lesson_ids):
+            raise ValueError(
+                "verified lesson requires a non-empty claim and lesson identity chain"
+            )
+        if self.stage is ReflectionStage.PERSISTED:
+            if not self.entry_id:
+                raise ValueError("persisted reflection requires entry_id")
+        elif self.entry_id is not None:
+            raise ValueError("entry_id belongs only to persisted reflection")
+        _identifiers(self.verified_claim_ids)
+        _identifiers(self.verified_lesson_ids)
 
     def advance(
         self,
@@ -106,7 +214,10 @@ class PlayerReflectionTransaction:
             raise ReflectionTransitionError(
                 "illegal reflection transition: failed entry cannot advance"
             )
-        changes: dict[str, object] = {"stage": next_stage}
+        changes: dict[str, object] = {
+            "stage": next_stage,
+            "stage_path": (*self._stage_path, next_stage),
+        }
         if verified_claim_ids is not None:
             if next_stage is not ReflectionStage.FACTS_VERIFIED:
                 raise ValueError("verified_claim_ids belong to facts_verified")
@@ -128,7 +239,7 @@ class PlayerReflectionTransaction:
             changes["entry_id"] = entry_id
         elif entry_id is not None:
             raise ValueError("entry_id belongs to persisted")
-        return replace(self, **changes)
+        return self._derive(**changes)
 
     def fail(
         self,
@@ -141,14 +252,14 @@ class PlayerReflectionTransaction:
             raise ReflectionTransitionError("persisted reflection cannot fail")
         if not failure_stage or not failure_code:
             raise ValueError("failure_stage and failure_code must be non-empty")
-        return replace(
-            self,
+        return self._derive(
             failure_stage=failure_stage,
             failure_code=failure_code,
         )
 
     def to_payload(self) -> dict[str, object]:
         """生成可安全写入 moderator-only 事件的事务字段。"""
+        self.validate()
         return {
             "player_id": self.player_id,
             "decision_id": self.decision_id,
@@ -179,9 +290,21 @@ def summarize_reflection_transaction(
     persistence_attempted: bool = False,
 ) -> ReflectionTransactionResult:
     """汇总非真空事务；空集合永远不能成为成功证明。"""
-    items = tuple(entries)
+    raw_items = tuple(entries)
     if not transaction_run:
         return ReflectionTransactionResult("not_run", False, 0, 0, 0)
+
+    items: list[PlayerReflectionTransaction] = []
+    invalid_count = 0
+    for item in raw_items:
+        try:
+            if not isinstance(item, PlayerReflectionTransaction):
+                raise ValueError("unexpected reflection transaction type")
+            item.validate()
+        except (AttributeError, TypeError, ValueError):
+            invalid_count += 1
+            continue
+        items.append(item)
 
     valid = tuple(
         item for item in items
@@ -193,7 +316,7 @@ def summarize_reflection_transaction(
     failures = tuple(item for item in items if item.failure_stage is not None)
     if not valid:
         return ReflectionTransactionResult(
-            "no_valid_entries", False, 0, 0, len(failures),
+            "no_valid_entries", False, 0, 0, len(failures) + invalid_count,
         )
 
     all_valid_persisted = len(persisted) == len(valid)
@@ -202,7 +325,7 @@ def summarize_reflection_transaction(
         or (item.failure_stage is not None and item.failure_code is not None)
         for item in items
     )
-    if persistence_attempted and not all_valid_persisted:
+    if invalid_count or (persistence_attempted and not all_valid_persisted):
         status: ReflectionTransactionStatus = "persistence_failed"
         complete = False
     elif persistence_attempted and all_valid_persisted and all_other_entries_attributed:
@@ -216,7 +339,7 @@ def summarize_reflection_transaction(
         complete,
         len(valid),
         len(persisted),
-        len(failures),
+        len(failures) + invalid_count,
     )
 
 

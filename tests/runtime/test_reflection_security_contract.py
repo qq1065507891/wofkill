@@ -116,7 +116,7 @@ def test_agent_reflection_verifies_real_ids_before_anonymization(monkeypatch) ->
 def test_reflection_complete_contains_only_moderator_safe_verification(monkeypatch) -> None:
     safe = {
         "status": "verified", "verified_fact_count": 1,
-        "verified_claim_ids": [], "rejected_claim_ids": [],
+        "verified_claim_ids": ["c1"], "rejected_claim_ids": [],
         "verified_lessons": [{"lesson_id": "l1", "abstraction": "先复核公开票型"}],
         "rejected_fact_count": 0, "rejected_lesson_count": 0,
     }
@@ -171,6 +171,7 @@ def test_reflection_complete_rebuilds_strict_allowlist_from_untrusted_adapter_re
     poisoned = {
         "status": "verified", "decision_id": "reflection:p01:1",
         "verified_fact_count": 1,
+        "verified_claim_ids": ["c1"],
         "verified_lessons": [{
             "lesson_id": "l1", "abstraction": "p01 应先复核 p02 的票型",
             "provider_response": "SECRET_IN_LESSON",

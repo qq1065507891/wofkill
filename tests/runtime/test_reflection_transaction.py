@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
@@ -68,6 +70,47 @@ def test_player_reflection_transaction_accepts_only_adjacent_transitions() -> No
         PlayerReflectionTransaction(
             player_id="p01", decision_id="reflection:g1:p01",
         ).advance(ReflectionStage.FACTS_VERIFIED)
+
+
+def test_direct_constructor_and_dataclass_replace_cannot_forge_persisted_state() -> None:
+    with pytest.raises(TypeError):
+        PlayerReflectionTransaction(  # type: ignore[call-arg]
+            player_id="p01",
+            decision_id="reflection:g1:p01",
+            stage=ReflectionStage.PERSISTED,
+            verified_claim_ids=("claim-p01",),
+            verified_lesson_ids=("lesson-p01",),
+            entry_id="reflection_g1_p01",
+        )
+
+    initial = PlayerReflectionTransaction("p01", "reflection:g1:p01")
+    with pytest.raises((TypeError, ValueError)):
+        replace(
+            initial,
+            stage=ReflectionStage.PERSISTED,
+            verified_claim_ids=("claim-p01",),
+            verified_lesson_ids=("lesson-p01",),
+            entry_id="reflection_g1_p01",
+        )
+
+
+def test_summarizer_rejects_object_new_bypass_without_transition_provenance() -> None:
+    forged = object.__new__(PlayerReflectionTransaction)
+    object.__setattr__(forged, "player_id", "p01")
+    object.__setattr__(forged, "decision_id", "reflection:g1:p01")
+    object.__setattr__(forged, "stage", ReflectionStage.PERSISTED)
+    object.__setattr__(forged, "failure_stage", None)
+    object.__setattr__(forged, "failure_code", None)
+    object.__setattr__(forged, "verified_claim_ids", ("claim-p01",))
+    object.__setattr__(forged, "verified_lesson_ids", ("lesson-p01",))
+    object.__setattr__(forged, "entry_id", "reflection_g1_p01")
+
+    result = summarize_reflection_transaction(
+        [forged], persistence_attempted=True,
+    )
+
+    assert result.status == "no_valid_entries"
+    assert result.persistence_complete is False
 
 
 def test_failed_player_requires_explicit_stage_and_code() -> None:
@@ -274,6 +317,15 @@ def _reflection_game(
             {"type": "reflection_complete", "payload": {
                 "status": status,
                 "player_count": 2,
+                "valid_entry_count": sum(
+                    1 for entry in entries
+                    if entry.get("transaction_state") in {
+                        "lessons_verified", "persisted",
+                    }
+                ),
+                "failure_count": sum(
+                    1 for entry in entries if entry.get("failure_code")
+                ),
                 "entries": entries,
             }},
             {"type": "reflection_persistence_audit", "payload": {
@@ -347,6 +399,144 @@ def test_acceptance_allows_attributed_partial_transaction() -> None:
     assert metrics["reflection_audited_game_count"] == 1
     assert metrics["reflection_contamination_metrics_supported"] is True
     assert metrics["reflection_persisted_rejected_fact_count"] == 0
+
+
+def test_acceptance_allows_exact_complete_transaction_summary() -> None:
+    second_event = _verified_event_entry("p02")
+    second_audit = _persisted_audit_entry("p02")
+    metrics = compute_reflection_acceptance_metrics([_reflection_game(
+        status="complete",
+        entries=[_verified_event_entry(), second_event],
+        persistence_status="complete",
+        persistence_entries=[_persisted_audit_entry(), second_audit],
+    )])
+
+    assert metrics["reflection_audited_game_count"] == 1
+    assert metrics["reflection_contamination_metrics_supported"] is True
+
+
+@pytest.mark.parametrize(
+    "reflection_status",
+    (None, "not_run", "no_valid_entries", "persistence_failed"),
+)
+def test_acceptance_rejects_unsuccessful_or_missing_game_summary_status(
+    reflection_status: str | None,
+) -> None:
+    game = _reflection_game(
+        status="complete",
+        entries=[_verified_event_entry(), _verified_event_entry("p02")],
+        persistence_status="complete",
+        persistence_entries=[
+            _persisted_audit_entry(), _persisted_audit_entry("p02"),
+        ],
+    )
+    payload = game["events"][0]["payload"]
+    if reflection_status is None:
+        del payload["status"]
+    else:
+        payload["status"] = reflection_status
+
+    metrics = compute_reflection_acceptance_metrics([game])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
+def test_acceptance_rejects_conflicting_summary_status_and_counts() -> None:
+    failed = {
+        "player_id": "p02",
+        "decision_id": "reflection:g1:p02",
+        "transaction_state": "generated",
+        "failure_stage": "schema_validated",
+        "failure_code": "invalid_structured_draft",
+        "verification": {
+            "status": "invalid_structured_draft",
+            "decision_id": "reflection:g1:p02",
+            "verified_claim_ids": [],
+            "verified_lessons": [],
+        },
+    }
+    game = _reflection_game(
+        status="complete",
+        entries=[_verified_event_entry(), failed],
+        persistence_status="partial",
+        persistence_entries=[_persisted_audit_entry()],
+    )
+    game["events"][0]["payload"]["valid_entry_count"] = 2
+
+    metrics = compute_reflection_acceptance_metrics([game])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
+def test_acceptance_rejects_boolean_summary_counts() -> None:
+    failed = {
+        "player_id": "p02",
+        "decision_id": "reflection:g1:p02",
+        "transaction_state": "generated",
+        "failure_stage": "schema_validated",
+        "failure_code": "invalid_structured_draft",
+        "verification": {
+            "status": "invalid_structured_draft",
+            "decision_id": "reflection:g1:p02",
+            "verified_claim_ids": [],
+            "verified_lessons": [],
+        },
+    }
+    game = _reflection_game(
+        status="partial",
+        entries=[_verified_event_entry(), failed],
+        persistence_status="partial",
+        persistence_entries=[_persisted_audit_entry()],
+    )
+    game["events"][0]["payload"]["valid_entry_count"] = True
+
+    metrics = compute_reflection_acceptance_metrics([game])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
+def test_acceptance_rejects_failed_player_decision_mismatch() -> None:
+    failed = {
+        "player_id": "p02",
+        "decision_id": "reflection:g1:p02",
+        "transaction_state": "generated",
+        "failure_stage": "schema_validated",
+        "failure_code": "invalid_structured_draft",
+        "verification": {
+            "status": "invalid_structured_draft",
+            "decision_id": "reflection:g1:other",
+            "verified_claim_ids": [],
+            "verified_lessons": [],
+        },
+    }
+    metrics = compute_reflection_acceptance_metrics([_reflection_game(
+        status="partial",
+        entries=[_verified_event_entry(), failed],
+        persistence_status="partial",
+        persistence_entries=[_persisted_audit_entry()],
+    )])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
+def test_acceptance_rejects_conflicting_persisted_event_entry_id() -> None:
+    first = _verified_event_entry()
+    first["entry_id"] = "reflection_g1_other"
+    metrics = compute_reflection_acceptance_metrics([_reflection_game(
+        status="complete",
+        entries=[first, _verified_event_entry("p02")],
+        persistence_status="complete",
+        persistence_entries=[
+            _persisted_audit_entry(), _persisted_audit_entry("p02"),
+        ],
+    )])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
 
 
 @pytest.mark.parametrize(
