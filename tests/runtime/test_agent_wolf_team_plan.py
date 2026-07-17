@@ -94,10 +94,12 @@ class _FakeModelRouter:
         system_prompt,
         tools=None,
         tool_choice=None,
+        final_prompt_observer=None,
     ):
         self.calls.append({
             "agent_id": agent_id, "task_type": task_type, "prompt": prompt,
             "system_prompt": system_prompt, "tool_choice": tool_choice,
+            "final_prompt_observer": final_prompt_observer,
         })
         if not self._responses:
             raise RuntimeError("test bug: no more mock responses")
@@ -161,6 +163,57 @@ class TestCaptainSelection:
         assert plan["captain_id"] == "p04"
         # p04's router was called, p05's wasn't
         assert len(router.calls) == 1
+
+
+def test_wolf_team_plan_always_supplies_final_prompt_observer() -> None:
+    gs = _make_gs()
+    router = _FakeModelRouter([(_valid_plan_json(), None)])
+    registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+    assert agent_wolf_team_plan({"game_state": gs}, engine=None, registry=registry)
+    assert callable(router.calls[0]["final_prompt_observer"])
+
+
+def test_wolf_team_plan_delivered_proof_hmac_covers_dynamic_stance_ids_without_text() -> None:
+    from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+    from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
+    from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+
+    class _ObservingRouter(_FakeModelRouter):
+        def generate(self, **kwargs):
+            kwargs["final_prompt_observer"](FinalPromptAssembly(
+                system_bytes=kwargs["system_prompt"].encode("utf-8"),
+                provider_payload_bytes=(
+                    kwargs["system_prompt"] + "\n" + kwargs["prompt"]
+                ).encode("utf-8"),
+                final_system_location="messages",
+                final_system_message_index=0,
+                provider="test",
+                model="m",
+            ))
+            return super().generate(**kwargs)
+
+    gs = _make_gs()
+    collector = ModuleExposureAuditCollector(prompt_proof_secret=b"task13-proof")
+    identity = DecisionIdentity("test_wtp", "p04", "night", 0, 1, "wolf_team_plan", 1)
+    router = _ObservingRouter([(_valid_plan_json(), None)])
+    registry = _FakeRegistry({"p04": _FakeAgent("p04", router)})
+
+    assert agent_wolf_team_plan(
+        {"game_state": gs}, engine=None, registry=registry,
+        decision_identity=identity, exposure_collector=collector,
+    )
+
+    event = collector.flush_events()[0]
+    proof = event.payload["proof"]
+    assert event.type == "final_prompt_contract_audit"
+    assert proof["dynamic_token_count"] == 4
+    assert proof["dynamic_tokens_hmac_sha256"]
+    assert proof["provider_payload_hmac_sha256"]
+    assert all(row["confirmed"] for row in proof["required_section_confirmations"])
+    serialized = str(proof)
+    assert "test_wtp:e000001" not in serialized
+    assert "建议刀 p01" not in serialized
 
     def test_captain_skipped_when_dead_uses_next_alive(self):
         gs = _make_gs(wolves=("p04", "p05", "p08", "p10"))

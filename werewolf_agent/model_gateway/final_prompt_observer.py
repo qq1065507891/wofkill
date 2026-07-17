@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
@@ -33,6 +34,7 @@ class FinalPromptAssembly:
     model: str
     attempt_kind: str = ""
     attempt_ordinal: int | None = None
+    provider_payload_bytes: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -48,21 +50,41 @@ class FinalPromptContractError(RuntimeError):
     """最终 system 缺少合同区块，必须在 provider HTTP 前终止调用。"""
 
 
+
+class RouterPromptContractCompatibilityError(RuntimeError):
+    """不支持最终 prompt 观察器的旧 provider 不能绕过送达前合同。"""
+
+
+def canonical_provider_payload(payload: object) -> bytes:
+    """稳定序列化实际 provider 请求体，供 HMAC 证明且不持久化原文。"""
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def validate_final_prompt_contract(
     assembly: FinalPromptAssembly,
     contract: FinalPromptContract,
 ) -> dict[str, bool]:
     """只检查真实 provider payload 的 system 字节，不持久化提示词原文。"""
-    confirmations = {
-        section_id: marker in assembly.system_bytes
-        for section_id, marker in contract.required_sections
-    }
+    ordered_offsets: list[int] = []
+    confirmations: dict[str, bool] = {}
+    for section_id, marker in contract.required_sections:
+        first = assembly.system_bytes.find(marker)
+        duplicate = first >= 0 and assembly.system_bytes.find(marker, first + 1) >= 0
+        confirmations[section_id] = first >= 0 and not duplicate
+        if section_id != "persona":
+            ordered_offsets.append(first)
     missing = [
         section_id for section_id, confirmed in confirmations.items() if not confirmed
     ]
-    if missing:
+    if missing or ordered_offsets != sorted(ordered_offsets):
+        detail = missing or ["section_order"]
         raise FinalPromptContractError(
-            "final prompt contract missing required sections: " + ",".join(missing)
+            "final prompt contract missing required sections: " + ",".join(detail)
         )
     return confirmations
 
@@ -113,8 +135,10 @@ __all__ = [
     "FinalPromptAssembly",
     "FinalPromptContract",
     "FinalPromptContractError",
+    "RouterPromptContractCompatibilityError",
     "FinalPromptObserver",
     "bind_attempt",
+    "canonical_provider_payload",
     "notify_final_prompt_observer",
     "validate_final_prompt_contract",
 ]

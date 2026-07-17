@@ -125,6 +125,10 @@ _PERSONA_PROOF_KEYS = frozenset({
     "prompt_contract_version",
     "system_byte_length",
     "system_hmac_sha256",
+    "provider_payload_byte_length",
+    "provider_payload_hmac_sha256",
+    "dynamic_token_count",
+    "dynamic_tokens_hmac_sha256",
     "required_section_confirmations",
     "section_id",
     "confirmed",
@@ -159,6 +163,43 @@ _WOLF_PROMPT_CONTEXT_KEYS = frozenset({
     "summarized_text_count",
     "truncated_text_count",
 })
+
+
+class PromptProofVerifier:
+    """持有验证能力的句柄；密钥从不进入事件或日志。"""
+
+    def __init__(self, secret: bytes) -> None:
+        self._secret = secret
+
+    def verify(self, payload: bytes, digest: str) -> bool:
+        """验证脱敏证明，不暴露 HMAC 密钥。"""
+        expected = hmac.new(self._secret, payload, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, digest)
+
+
+class PromptProofKeyProvider:
+    """为一个运行实例提供按 game_id 隔离、可验证的 prompt HMAC 密钥。"""
+
+    def __init__(self, deployment_secret: bytes | None = None) -> None:
+        self._deployment_secret = deployment_secret
+        self._run_keys: dict[str, bytes] = {}
+
+    def key_for_run(self, game_id: str) -> bytes:
+        """同一 game_id 稳定复用，独立运行默认获得独立随机密钥。"""
+        if self._deployment_secret is not None:
+            return hmac.new(
+                self._deployment_secret,
+                game_id.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        return self._run_keys.setdefault(game_id, secrets.token_bytes(32))
+
+    def verifier_for_run(self, game_id: str) -> PromptProofVerifier:
+        """返回验证句柄，不返回原始密钥。"""
+        return PromptProofVerifier(self.key_for_run(game_id))
+
+
+_DEFAULT_PROMPT_PROOF_KEY_PROVIDER = PromptProofKeyProvider()
 
 
 def _identity_payload(identity: DecisionIdentity) -> dict[str, Any]:
@@ -372,10 +413,18 @@ def _prompt_injection_rows(context: Any) -> list[dict[str, Any]]:
 class ModuleExposureAuditCollector:
     """Collect sanitized module exposure audit events for one agent action."""
 
-    def __init__(self, *, prompt_proof_secret: bytes | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        prompt_proof_secret: bytes | None = None,
+        prompt_proof_key_provider: PromptProofKeyProvider | None = None,
+    ) -> None:
         self._events: list[GameEvent] = []
-        # persona 与通用 prompt 合同证明必须复用同一份 run-scoped HMAC 密钥。
-        self._persona_proof_secret = prompt_proof_secret or secrets.token_bytes(32)
+        # 显式测试密钥保持兼容；生产路径由 run/game scoped provider 统一供给。
+        self._legacy_prompt_proof_secret = prompt_proof_secret
+        self._prompt_proof_key_provider = (
+            prompt_proof_key_provider or _DEFAULT_PROMPT_PROOF_KEY_PROVIDER
+        )
         self._persona_proof_keys: set[tuple[str, str, int | None, str]] = set()
 
     def record_rag(self, identity: DecisionIdentity, hits: list[dict[str, Any]] | None) -> None:
@@ -603,11 +652,19 @@ class ModuleExposureAuditCollector:
         prompt_contract_id: str = "",
         prompt_contract_version: str = "",
         required_section_confirmations: Mapping[str, bool] | None = None,
+        provider_payload_bytes: bytes | None = None,
+        dynamic_content_tokens: tuple[str, ...] = (),
     ) -> None:
-        """在 provider HTTP 前把真实 system 字节转为 run-scoped HMAC 证明。"""
+        """在 provider HTTP 前证明真实完整请求体，且不持久化任何 prompt 原文。"""
+        proof_secret = (
+            self._legacy_prompt_proof_secret
+            or self._prompt_proof_key_provider.key_for_run(identity.game_id)
+        )
+        full_payload = provider_payload_bytes or system_bytes
+        dynamic_tokens_bytes = "\x1e".join(dynamic_content_tokens).encode("utf-8")
         full_digest = hmac.new(
-            self._persona_proof_secret,
-            system_bytes,
+            proof_secret,
+            full_payload,
             hashlib.sha256,
         ).hexdigest()
         fingerprint = f"run_hmac_{full_digest[:24]}"
@@ -627,6 +684,13 @@ class ModuleExposureAuditCollector:
             "prompt_contract_version": str(prompt_contract_version),
             "system_byte_length": len(system_bytes),
             "system_hmac_sha256": full_digest,
+            "provider_payload_byte_length": len(full_payload),
+            "provider_payload_hmac_sha256": full_digest,
+            "dynamic_token_count": len(dynamic_content_tokens),
+            "dynamic_tokens_hmac_sha256": (
+                hmac.new(proof_secret, dynamic_tokens_bytes, hashlib.sha256).hexdigest()
+                if dynamic_content_tokens else ""
+            ),
             "required_section_confirmations": [
                 {"section_id": str(section_id), "confirmed": bool(confirmed)}
                 for section_id, confirmed in (

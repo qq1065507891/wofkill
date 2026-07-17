@@ -62,6 +62,28 @@ def test_openai_observer_receives_actual_final_messages_system_bytes() -> None:
     assert assemblies[0].final_system_message_index == 0
 
 
+def test_openai_observer_receives_canonical_full_provider_payload() -> None:
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        canonical_provider_payload,
+    )
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _Client()
+    observed = []
+    OpenAIProvider(api_key="k", base_url="https://example.test/v1", http_client=client).generate(
+        "dynamic live_status and stance source_event_id=e-1",
+        ModelConfig(provider="openai", model="m"),
+        system_prompt="rules",
+        final_prompt_observer=observed.append,
+    )
+
+    assert client.payload is not None
+    assert observed[0].provider_payload_bytes == canonical_provider_payload(client.payload)
+    assert b"dynamic live_status" in observed[0].provider_payload_bytes
+    assert b"source_event_id=e-1" in observed[0].provider_payload_bytes
+
+
 def test_anthropic_observer_reports_top_level_system_with_no_message_index() -> None:
     from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptAssembly
     from werewolf_agent.model_gateway.providers.anthropic import AnthropicProvider
@@ -132,6 +154,50 @@ def test_contract_failure_blocks_provider_before_http_request() -> None:
             final_prompt_observer=lambda assembly: validate_final_prompt_contract(
                 assembly,
                 contract,
+            ),
+        )
+
+    assert client.post_calls == 0
+
+
+@pytest.mark.parametrize(
+    "system_prompt",
+    (
+        "HEADER\nCLAUSE-A",
+        "HEADER\nCLAUSE-A\nHEADER\nCLAUSE-B",
+        "CLAUSE-A\nHEADER\nCLAUSE-B",
+    ),
+)
+def test_contract_rejects_header_only_duplicate_or_reordered_sections_before_http(
+    system_prompt: str,
+) -> None:
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptContract,
+        FinalPromptContractError,
+        validate_final_prompt_contract,
+    )
+    from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
+    from werewolf_agent.model_gateway.router import ModelConfig
+
+    client = _Client()
+    contract = FinalPromptContract(
+        contract_id="strict",
+        version="v1",
+        required_sections=(
+            ("header", b"HEADER"),
+            ("critical_clause_a", b"CLAUSE-A"),
+            ("critical_clause_b", b"CLAUSE-B"),
+        ),
+    )
+
+    with pytest.raises(FinalPromptContractError):
+        OpenAIProvider(
+            api_key="k", base_url="https://example.test/v1", http_client=client,
+        ).generate(
+            "user", ModelConfig(provider="openai", model="m"),
+            system_prompt=system_prompt,
+            final_prompt_observer=lambda assembly: validate_final_prompt_contract(
+                assembly, contract,
             ),
         )
 

@@ -99,7 +99,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             )
-            exposure_collector = ModuleExposureAuditCollector()
+            exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
             shot_result = _dispatch_agent(
                 shot_state,
                 agent_hunter_shot,
@@ -257,7 +257,7 @@ def sheriff_badge_transfer(state: RuntimeState) -> dict[str, Any]:
             day_number=gs.day_number,
             night_number=gs.night_number,
         )
-        exposure_collector = ModuleExposureAuditCollector()
+        exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
         result = _dispatch_agent(
             state,
             agent_badge_decision,
@@ -373,7 +373,7 @@ def tie_pk_speech(state: RuntimeState) -> dict[str, Any]:
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             )
-            exposure_collector = ModuleExposureAuditCollector()
+            exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
             result = _dispatch_agent(
                 state,
                 agent_pk_speech,

@@ -98,7 +98,7 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             )
-            exposure_collector = ModuleExposureAuditCollector()
+            exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
             agent_order_result = _dispatch_agent(
                 state,
                 agent_sheriff_pick_speech_order,
@@ -179,7 +179,7 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
             day_number=gs.day_number,
             night_number=gs.night_number,
         )
-        exposure_collector = ModuleExposureAuditCollector()
+        exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
         events = _action_audit_events(
             state=state,
             player_id=speaker_id,
@@ -217,7 +217,7 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
             day_number=gs.day_number,
             night_number=gs.night_number,
         )
-        exposure_collector = ModuleExposureAuditCollector()
+        exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
         action_trace = (
             _terminal_speech_trace("pre_supplied_speech_text")
             if speech_text else None

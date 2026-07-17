@@ -82,6 +82,7 @@ class RuntimeState(TypedDict, total=False):
     agent_call_delay_ms: int
     action_index_by_game: dict[str, int]
     pending_exposure_events_by_trace: dict[str, list[GameEvent]]
+    prompt_proof_key_provider: Any
 
 
 def _new_engine() -> RuleEngine:

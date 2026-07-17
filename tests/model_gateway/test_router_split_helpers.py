@@ -170,7 +170,10 @@ def test_provider_call_adapts_tools_and_observer_independently(
         "both": _BothProvider,
         "kwargs": _KwargsProvider,
     }
-    observer = lambda _assembly: None
+    observer = (
+        None if signature_kind in {"legacy", "tools"}
+        else lambda _assembly: None
+    )
     result = provider_call._call_provider_generate(
         provider_types[signature_kind](),
         "prompt",
@@ -185,3 +188,30 @@ def test_provider_call_adapts_tools_and_observer_independently(
     assert set(captured) == expected_keys
     if "final_prompt_observer" in expected_keys:
         assert captured["final_prompt_observer"] is observer
+
+
+def test_legacy_provider_without_observer_fails_closed_before_generate() -> None:
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        RouterPromptContractCompatibilityError,
+    )
+
+    calls = 0
+
+    class _LegacyProvider:
+        def generate(self, prompt, config, system_prompt=None):
+            nonlocal calls
+            calls += 1
+            return usage_records.GenerateResult(text="bad", provider="test", model="m")
+
+    with pytest.raises(RouterPromptContractCompatibilityError):
+        provider_call._call_provider_generate(
+            _LegacyProvider(),
+            "prompt",
+            usage_records.ModelConfig(provider="test", model="m"),
+            "system",
+            tools=None,
+            tool_choice=None,
+            final_prompt_observer=lambda _assembly: None,
+        )
+
+    assert calls == 0

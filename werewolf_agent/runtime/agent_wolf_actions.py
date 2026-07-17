@@ -94,10 +94,61 @@ def _record_wolf_team_plan_failure(
     state[_WOLF_TEAM_PLAN_FAILURE_KEY] = failure
 
 
+def _wolf_team_plan_prompt_observer(
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
+    stance_source_event_ids: tuple[str, ...] = (),
+) -> Any:
+    """为队长计划的工具与纯 JSON 路径复用同一送达前合同门禁。"""
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptAssembly,
+        FinalPromptContract,
+        validate_final_prompt_contract,
+    )
+
+    contract = FinalPromptContract(
+        contract_id="werewolf-team-plan",
+        version="2026-07-18.v1",
+        required_sections=(
+            ("captain_role", "你是狼队队长".encode("utf-8")),
+            ("hard_constraints", "【硬约束】".encode("utf-8")),
+            ("output_protocol", "【输出协议】".encode("utf-8")),
+            ("backup_semantics", "备刀不是女巫救人后的第二刀".encode("utf-8")),
+            ("authoritative_stance", "source_event_id".encode("utf-8")),
+        ),
+    )
+
+    def _observe(assembly: FinalPromptAssembly) -> None:
+        confirmations = validate_final_prompt_contract(assembly, contract)
+        if decision_identity is not None and exposure_collector is not None:
+            exposure_collector.record_provider_persona_prompt_proof(
+                decision_identity,
+                assembly.system_bytes,
+                "",
+                assembly.attempt_kind,
+                attempt_ordinal=assembly.attempt_ordinal,
+                provider=assembly.provider,
+                model=assembly.model,
+                final_system_location=assembly.final_system_location,
+                final_system_message_index=assembly.final_system_message_index,
+                prompt_contract_id=contract.contract_id,
+                prompt_contract_version=contract.version,
+                required_section_confirmations=confirmations,
+                provider_payload_bytes=assembly.provider_payload_bytes,
+                dynamic_content_tokens=stance_source_event_ids,
+            )
+
+    return _observe
+
+
 def agent_wolf_team_plan(
     state: dict[str, Any],
     engine: RuleEngine,
     registry: AgentRegistry,
+    *,
+    decision_identity: DecisionIdentity | None = None,
+    exposure_collector: ModuleExposureAuditCollector | None = None,
 ) -> dict[str, Any] | None:
     """LLM wolf-team captain produces structured WolfTeamPlan once per night.
 
@@ -203,6 +254,15 @@ def agent_wolf_team_plan(
     last_stage = "unknown"
     use_tool_choice = True
     observed_normalization_repairs: list[str] = []
+    final_prompt_observer = _wolf_team_plan_prompt_observer(
+        decision_identity=decision_identity,
+        exposure_collector=exposure_collector,
+        stance_source_event_ids=tuple(
+            str(stance.get("source_event_id") or "")
+            for stance in discussion_stances
+            if stance.get("source_event_id")
+        ),
+    )
 
     for attempt in range(1, max_retries + 1):
         retry_suffix = (
@@ -231,6 +291,7 @@ def agent_wolf_team_plan(
                 system_prompt=system_text,
                 tools=tools_arg,
                 tool_choice=tool_choice_arg,
+                final_prompt_observer=final_prompt_observer,
             )
         except NotImplementedError:
             logger.debug(
@@ -254,6 +315,7 @@ def agent_wolf_team_plan(
                     ),
                     tools=None,
                     tool_choice=None,
+                    final_prompt_observer=final_prompt_observer,
                 )
             except Exception as e:  # noqa: BLE001
                 last_err = f"plain_json_generate_error: {e}"

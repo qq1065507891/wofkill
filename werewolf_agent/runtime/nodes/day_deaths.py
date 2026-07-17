@@ -168,7 +168,7 @@ def night_death_last_words(state: RuntimeState) -> dict[str, Any]:
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             )
-            exposure_collector = ModuleExposureAuditCollector()
+            exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
             result = _dispatch_agent(
                 call_state,
                 agent_exile_last_words,
@@ -243,7 +243,7 @@ def exile_last_words(state: RuntimeState) -> dict[str, Any]:
             day_number=gs.day_number,
             night_number=gs.night_number,
         )
-        exposure_collector = ModuleExposureAuditCollector()
+        exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
         result = _dispatch_agent(
             state,
             agent_exile_last_words,

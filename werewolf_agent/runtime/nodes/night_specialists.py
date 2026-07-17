@@ -124,7 +124,7 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
         day_number=gs.day_number,
         night_number=gs.night_number,
     )
-    exposure_collector = ModuleExposureAuditCollector()
+    exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
     result = _compat("_dispatch_agent", _dispatch_agent)(
         state,
         _compat("agent_night_seer", agent_night_seer),
@@ -224,7 +224,7 @@ def first_night_hybrid_master(state: RuntimeState) -> dict[str, Any]:
             day_number=gs.day_number,
             night_number=gs.night_number,
         )
-        hybrid_exposure_collector = ModuleExposureAuditCollector()
+        hybrid_exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
         result = _compat("_dispatch_agent", _dispatch_agent)(
             state,
             _compat("agent_hybrid_choose_master", agent_hybrid_choose_master),

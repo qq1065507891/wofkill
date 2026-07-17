@@ -386,6 +386,18 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
     plan: dict[str, Any] | None = None
 
     fallback_reason: str | None = None
+    _ensure_runtime_audit_state(state)
+    plan_identity = _allocate_decision_identity(
+        state,
+        player_id=wolves[0],
+        phase="wolf_team_plan",
+        task_type="wolf_team_plan",
+        day_number=gs.day_number,
+        night_number=gs.night_number,
+    )
+    plan_collector = ModuleExposureAuditCollector(
+        prompt_proof_key_provider=state.get("prompt_proof_key_provider"),
+    )
 
 
 
@@ -400,6 +412,8 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
             plan = agent_wolf_team_plan(
 
                 state, engine=state.get("engine"), registry=registry,
+                decision_identity=plan_identity,
+                exposure_collector=plan_collector,
 
             )
 
@@ -418,6 +432,7 @@ def wolf_team_plan_node(state: RuntimeState) -> dict[str, Any]:
 
 
     events: list[GameEvent] = []
+    events.extend(plan_collector.flush_events())
 
     if plan is None:
 

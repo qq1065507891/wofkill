@@ -115,7 +115,7 @@ def day_vote(state: RuntimeState) -> dict[str, Any]:
                 day_number=gs.day_number,
                 night_number=gs.night_number,
             )
-            exposure_collector = ModuleExposureAuditCollector()
+            exposure_collector = ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
             result = _dispatch_agent(
                 state,
                 agent_day_vote,

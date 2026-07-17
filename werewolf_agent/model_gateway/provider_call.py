@@ -18,7 +18,10 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.model_gateway.usage_records import GenerateResult, LLMProvider, ModelConfig
-from werewolf_agent.model_gateway.final_prompt_observer import FinalPromptObserver
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptObserver,
+    RouterPromptContractCompatibilityError,
+)
 
 
 def _call_provider_generate(
@@ -37,7 +40,14 @@ def _call_provider_generate(
         for parameter in signature.parameters.values()
     )
     kwargs: dict[str, Any] = {}
-    if "final_prompt_observer" in signature.parameters or accepts_extra_kwargs:
+    supports_observer = (
+        "final_prompt_observer" in signature.parameters or accepts_extra_kwargs
+    )
+    if final_prompt_observer is not None and not supports_observer:
+        raise RouterPromptContractCompatibilityError(
+            "provider does not support final_prompt_observer"
+        )
+    if supports_observer:
         kwargs["final_prompt_observer"] = final_prompt_observer
     if "tools" in signature.parameters or accepts_extra_kwargs:
         kwargs["tools"] = tools

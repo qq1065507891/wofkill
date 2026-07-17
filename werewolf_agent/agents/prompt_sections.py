@@ -55,11 +55,24 @@ def player_system_prompt_required_sections(
     persona_text: str = "",
 ) -> tuple[tuple[str, bytes], ...]:
     """返回按角色确定的最终 system 必需区块及其 UTF-8 标记。"""
-    rows = list(_BASE_SYSTEM_PROMPT_REQUIRED_SECTIONS)
-    if own_role == "werewolf":
-        rows.append(("wolf_target_semantics", "【狼人夜间目标语义】"))
+    markers = dict(_BASE_SYSTEM_PROMPT_REQUIRED_SECTIONS)
+    rows = [
+        (section_id, markers[section_id])
+        for section_id in ("contract_header", "core_identity")
+    ]
     if persona_text:
         rows.append(("persona", persona_text))
+    rows.append(("game_rules", markers["game_rules"]))
+    if own_role == "werewolf":
+        rows.append(("wolf_target_semantics", "\u3010\u72fc\u4eba\u591c\u95f4\u76ee\u6807\u8bed\u4e49\u3011"))
+    rows.extend(
+        (section_id, markers[section_id])
+        for section_id in (
+            "information_boundaries",
+            "reasoning_method",
+            "output_contract",
+        )
+    )
     return tuple((section_id, marker.encode("utf-8")) for section_id, marker in rows)
 
 USER_SECTION_SPECS: tuple[_SectionSpec, ...] = (

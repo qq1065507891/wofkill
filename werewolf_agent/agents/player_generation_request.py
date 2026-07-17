@@ -195,6 +195,7 @@ def _build_provider_prompt_observer(
             prompt_contract_id=contract.contract_id,
             prompt_contract_version=contract.version,
             required_section_confirmations=confirmations,
+            provider_payload_bytes=assembly.provider_payload_bytes,
         )
 
     return _observe

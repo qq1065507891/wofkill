@@ -397,9 +397,6 @@ def test_persona_exposure_can_be_recorded_after_prompt_visible_attachment() -> N
 
 
 def test_persona_final_message_proof_is_private_and_run_scoped() -> None:
-    import hashlib
-    import hmac
-
     identity = _identity()
     persona_text = "persona-secret-text"
     messages = (
@@ -431,16 +428,11 @@ def test_persona_final_message_proof_is_private_and_run_scoped() -> None:
     assert all(row["message_char_count"] == len(messages[0]["content"]) for row in first_rows)
     assert all(row["confirmed_injection"] is True for row in first_rows)
     assert first_rows[0]["run_scoped_fingerprint"] == first_rows[1]["run_scoped_fingerprint"]
-    assert first_rows[0]["run_scoped_fingerprint"] != second_row["run_scoped_fingerprint"]
-    expected = hmac.new(
-        first._persona_proof_secret, system_bytes, hashlib.sha256,
-    ).hexdigest()[:24]
-    assert first_rows[0]["run_scoped_fingerprint"] == f"run_hmac_{expected}"
+    assert first_rows[0]["run_scoped_fingerprint"] == second_row["run_scoped_fingerprint"]
     serialized = str(first_rows + [second_row]).lower()
     assert persona_text not in serialized
     assert messages[0]["content"].lower() not in serialized
     assert "system_bytes" not in serialized
-    assert first._persona_proof_secret.hex() not in serialized
     assert "md5" not in serialized
 
 
@@ -1235,3 +1227,30 @@ def test_skill_dispatches_pass_identity_and_collector(
     call = next(call for call in calls if call["fn"] is agent_fn)
     assert call["kwargs"]["decision_identity"].game_id == gs.game_id
     assert isinstance(call["kwargs"]["exposure_collector"], ModuleExposureAuditCollector)
+
+
+def test_prompt_proof_key_provider_shares_one_game_key_and_separates_runs() -> None:
+    from werewolf_agent.runtime.exposure_audit import PromptProofKeyProvider
+
+    provider = PromptProofKeyProvider()
+    first = ModuleExposureAuditCollector(prompt_proof_key_provider=provider)
+    second = ModuleExposureAuditCollector(prompt_proof_key_provider=provider)
+    game_one = _identity()
+    game_two = DecisionIdentity(
+        "g2", "w1", "night", 1, 1, "wolf_discussion", 1,
+    )
+
+    for collector, identity in ((first, game_one), (second, game_one), (second, game_two)):
+        collector.record_provider_persona_prompt_proof(
+            identity, b"system", "", "primary", attempt_ordinal=1,
+            provider="openai", model="m", final_system_location="messages",
+            final_system_message_index=0,
+        )
+
+    first_proof = first.flush_events()[0].payload["proof"]
+    same_run, different_run = [event.payload["proof"] for event in second.flush_events()]
+    assert first_proof["system_hmac_sha256"] == same_run["system_hmac_sha256"]
+    assert first_proof["system_hmac_sha256"] != different_run["system_hmac_sha256"]
+    assert provider.verifier_for_run("g1").verify(
+        b"system", first_proof["system_hmac_sha256"],
+    )

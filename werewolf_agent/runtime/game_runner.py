@@ -36,6 +36,7 @@ from werewolf_agent.runtime.event_metadata import stamp_new_events
 from werewolf_agent.runtime.game_runner_memory import GameRunnerMemoryMixin
 from werewolf_agent.runtime.game_runner_setup import GameRunnerSetupMixin
 from werewolf_agent.runtime.graph import RuntimeState, build_game_graph
+from werewolf_agent.runtime.exposure_audit import PromptProofKeyProvider
 
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ class GameRunner(
             game_id=self._game_id,
             ruleset_id=config.ruleset_id,
         )
+        self._prompt_proof_key_provider = PromptProofKeyProvider()
         self._graph = build_game_graph()
         self._step_count: int = 0
         self._finished: bool = False

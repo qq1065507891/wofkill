@@ -74,7 +74,7 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
             for wolf_id in wolves
         }
         exposure_collectors = {
-            wolf_id: ModuleExposureAuditCollector()
+            wolf_id: ModuleExposureAuditCollector(prompt_proof_key_provider=state.get("prompt_proof_key_provider"))
             for wolf_id in wolves
         }
         result = _compat("_dispatch_agent", _dispatch_agent)(

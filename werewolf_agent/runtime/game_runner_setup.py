@@ -60,6 +60,7 @@ class GameRunnerSetupMixin:
             "hunter_shot_target_id": None,
             "action_index_by_game": {},
             "pending_exposure_events_by_trace": {},
+            "prompt_proof_key_provider": self._prompt_proof_key_provider,
         }
         if self._agent_registry is not None:
             rt["agent_registry"] = self._agent_registry
