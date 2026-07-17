@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-15
+修改日期: 2026-07-17
 使用示例: 内部模块，无对外接口
 - ``summarize_positions`` — per-player LLM summarisation after free discussion
 - ``summarize_context`` — daily structured context summary for pruning
@@ -24,6 +24,11 @@ from werewolf_agent.agents.schemas import ActionType, TaskType
 from werewolf_agent.runtime.context import build_agent_context
 from werewolf_agent.runtime.agent_adapter import _agent_reflection
 from werewolf_agent.runtime.reflection_events import safe_reflection_verification
+from werewolf_agent.runtime.reflection_transaction import (
+    PlayerReflectionTransaction,
+    ReflectionStage,
+    summarize_reflection_transaction,
+)
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     _dispatch_agent,
@@ -280,6 +285,7 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
 
     # Build per-player reflection via agent calls when registry is available
     reflection_entries: list[dict[str, Any]] = []
+    transactions: list[PlayerReflectionTransaction] = []
     for i, (pid, player) in enumerate(gs.players.items()):
         if i > 0:
             _sleep_between_agent_calls(state, default_ms=20000)
@@ -287,6 +293,7 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
         verification = safe_reflection_verification(
             {"status": "not_generated"}, decision_id=decision_id,
         )
+        dispatch_failed = False
         try:
             result = _dispatch_agent(state, _agent_reflection, pid, post_game=True)
             if result:
@@ -295,30 +302,124 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
                     decision_id=decision_id,
                 )
         except Exception:
+            dispatch_failed = True
             logger.warning(
                 "Failed to generate reflection for %s", _player_display(state, pid),
                 exc_info=True,
             )
 
+        transaction = _reflection_transaction_from_verification(
+            pid,
+            verification,
+            decision_id=verification["decision_id"],
+            dispatch_failed=dispatch_failed,
+        )
+        transactions.append(transaction)
         entry = {
             "player_id": pid,
             "role": player.role,
             "alive": player.alive,
             "decision_id": verification["decision_id"],
+            "transaction_state": transaction.stage.value,
+            "failure_stage": transaction.failure_stage,
+            "failure_code": transaction.failure_code,
             "verification": verification,
         }
         reflection_entries.append(entry)
 
+    transaction_result = summarize_reflection_transaction(transactions)
     event = GameEvent(
         type="reflection_complete",
         payload={
             "visibility": "moderator_only",
+            "status": transaction_result.status,
+            "persistence_complete": transaction_result.persistence_complete,
             "player_count": len(reflection_entries),
+            "valid_entry_count": transaction_result.valid_entry_count,
+            "failure_count": transaction_result.failure_count,
             "entries": reflection_entries,
         },
     )
-    gs = replace(gs, events=gs.events + [event])
+    events = [*gs.events, event]
+    if transaction_result.status == "no_valid_entries":
+        events.append(GameEvent(
+            type="reflection_no_valid_entries",
+            payload={
+                "visibility": "moderator_only",
+                "status": "no_valid_entries",
+                "player_count": len(reflection_entries),
+                "failures": [
+                    {
+                        "player_id": item.player_id,
+                        "decision_id": item.decision_id,
+                        "failure_stage": item.failure_stage,
+                        "failure_code": item.failure_code,
+                    }
+                    for item in transactions
+                ],
+            },
+        ))
+    gs = replace(gs, events=events)
 
     logger.debug(f"  [复盘] 完成 {len(reflection_entries)} 位玩家的对局复盘")
 
     return {"game_state": gs}
+
+
+def _reflection_transaction_from_verification(
+    player_id: str,
+    verification: dict[str, Any],
+    *,
+    decision_id: str,
+    dispatch_failed: bool,
+) -> PlayerReflectionTransaction:
+    """把安全 verification 映射为逐级事务状态和稳定失败原因。"""
+    transaction = PlayerReflectionTransaction(player_id, decision_id)
+    status = verification.get("status")
+    if dispatch_failed:
+        return transaction.fail(
+            failure_stage="generated",
+            failure_code="agent_error",
+        )
+    if status in {"not_generated", "agent_error"}:
+        return transaction.fail(
+            failure_stage=verification.get("failure_stage") or "generated",
+            failure_code=verification.get("failure_code") or (
+                "agent_error" if status == "agent_error" else "reflection_not_generated"
+            ),
+        )
+
+    transaction = transaction.advance(ReflectionStage.GENERATED)
+    if status == "invalid_structured_draft":
+        return transaction.fail(
+            failure_stage="schema_validated",
+            failure_code="invalid_structured_draft",
+        )
+    if status != "verified":
+        return transaction.fail(
+            failure_stage="schema_validated",
+            failure_code="invalid_reflection_status",
+        )
+
+    transaction = transaction.advance(ReflectionStage.SCHEMA_VALIDATED)
+    transaction = transaction.advance(
+        ReflectionStage.FACTS_VERIFIED,
+        verified_claim_ids=verification.get("verified_claim_ids") or (),
+    )
+    lessons = verification.get("verified_lessons")
+    lesson_ids = [
+        lesson.get("lesson_id")
+        for lesson in lessons
+        if isinstance(lesson, dict)
+        and isinstance(lesson.get("lesson_id"), str)
+        and lesson.get("lesson_id")
+    ] if isinstance(lessons, list) else []
+    if not lesson_ids:
+        return transaction.fail(
+            failure_stage="lessons_verified",
+            failure_code="reflection_no_verified_lessons",
+        )
+    return transaction.advance(
+        ReflectionStage.LESSONS_VERIFIED,
+        verified_lesson_ids=lesson_ids,
+    )

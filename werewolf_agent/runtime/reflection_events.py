@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-14
+修改日期: 2026-07-17
 
 使用示例:
     >>> canonical_verified_reflections([])
@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable
 
 from werewolf_agent.memory.reflection_sanitization import (
@@ -22,6 +23,7 @@ from werewolf_agent.memory.reflection_sanitization import (
 _STATUSES = frozenset({
     "not_generated", "invalid_structured_draft", "verified", "agent_error",
 })
+_SAFE_FAILURE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 
 
 def safe_reflection_verification(
@@ -77,6 +79,13 @@ def safe_reflection_verification(
         "rejected_fact_count": count("rejected_fact_count"),
         "rejected_lesson_count": count("rejected_lesson_count"),
     }
+    safe_failures: dict[str, str] = {}
+    for field in ("failure_stage", "failure_code"):
+        value = source.get(field)
+        if isinstance(value, str) and _SAFE_FAILURE_IDENTIFIER.fullmatch(value):
+            safe_failures[field] = value
+    if set(safe_failures) == {"failure_stage", "failure_code"}:
+        result.update(safe_failures)
     return result
 
 

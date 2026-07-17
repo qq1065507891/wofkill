@@ -4,7 +4,7 @@ GameRunner 的跨局记忆恢复、终局快照和 V2 持久化审计事件逻�
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-15
+修改日期: 2026-07-17
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_memory import GameRunnerMemoryMixin
@@ -224,6 +224,28 @@ class GameRunnerMemoryMixin:
                         exc_info=True,
                     )
 
+            if not expected_entries and self._has_reflection_complete_event():
+                self._ensure_reflection_no_valid_entries_event()
+                self._append_reflection_persistence_audit(
+                    [],
+                    upstream_complete=False,
+                    transaction_status="no_valid_entries",
+                )
+                audit_appended = True
+                return
+
+            if not expected_entries:
+                coordinator.save_all(
+                    memory_store=mem_store,
+                    retriever=None,
+                    snapshot_id=self._game_id,
+                )
+                logger.info(
+                    "Saved memory snapshot for game %s without reflection transaction",
+                    self._game_id,
+                )
+                return
+
             if persistence_complete:
                 try:
                     coordinator.save_all(
@@ -271,11 +293,18 @@ class GameRunnerMemoryMixin:
                     current_rows=current_rows,
                     snapshot_backups=snapshot_backups,
                 )
-            if expected_entries and not audit_appended:
+            if self._has_reflection_complete_event() and not audit_appended:
                 self._append_reflection_persistence_audit(
                     expected_entries,
                     upstream_complete=False,
                     rollback_complete=rollback_complete,
+                    transaction_status=(
+                        "persistence_failed" if (
+                            expected_entries
+                            or self._has_valid_reflection_candidates()
+                        )
+                        else "no_valid_entries"
+                    ),
                 )
 
     def _append_reflection_persistence_audit(
@@ -284,6 +313,7 @@ class GameRunnerMemoryMixin:
         *,
         upstream_complete: bool,
         rollback_complete: bool = True,
+        transaction_status: str | None = None,
     ) -> bool:
         """逐条回读预期反思行；写入或回读不完整时显式失败关闭。"""
         repository_read_complete = True
@@ -342,6 +372,9 @@ class GameRunnerMemoryMixin:
             entries.append({
                 "player_id": expected.get("player_id"),
                 "decision_id": expected.get("decision_id"),
+                "verified_claim_ids": list(
+                    expected.get("verified_claim_ids", [])
+                ),
                 "entry_id": entry_id,
                 "row_found": row_found,
                 "persistence_complete": entry_complete,
@@ -350,15 +383,28 @@ class GameRunnerMemoryMixin:
                 ),
             })
         complete = (
+            bool(expected_entries)
+            and
             upstream_complete
             and repository_read_complete
             and snapshot_read_complete
             and all(entry["persistence_complete"] is True for entry in entries)
         )
+        status = transaction_status or self._reflection_persistence_status(
+            expected_entries,
+            persistence_complete=complete,
+        )
+        if status not in {
+            "complete", "partial", "no_valid_entries", "persistence_failed",
+        }:
+            status = "persistence_failed"
+        if status not in {"complete", "partial"}:
+            complete = False
         event = new_game_event(
             self._state,
             "reflection_persistence_audit",
             payload={
+                "status": status,
                 "expected_entry_count": len(expected_entries),
                 "persistence_complete": complete,
                 "rollback_complete": rollback_complete,
@@ -368,6 +414,116 @@ class GameRunnerMemoryMixin:
         )
         self._state = replace(self._state, events=[*self._state.events, event])
         return complete
+
+    def _reflection_persistence_status(
+        self,
+        expected_entries: list[dict],
+        *,
+        persistence_complete: bool,
+    ) -> str:
+        """根据玩家全集和明确失败归因判定局级事务终态。"""
+        if not expected_entries:
+            return "no_valid_entries"
+        if not persistence_complete:
+            return "persistence_failed"
+
+        expected_players = {
+            item.get("player_id") for item in expected_entries
+            if isinstance(item.get("player_id"), str)
+        }
+        reflection_entries = self._latest_reflection_event_entries()
+        if not reflection_entries:
+            return "persistence_failed"
+        event_players = {
+            item.get("player_id") for item in reflection_entries
+            if isinstance(item.get("player_id"), str)
+        }
+        if event_players == expected_players == set(self._state.players):
+            return "complete"
+        failed_players = {
+            item.get("player_id") for item in reflection_entries
+            if isinstance(item.get("player_id"), str)
+            and isinstance(item.get("failure_stage"), str)
+            and bool(item.get("failure_stage"))
+            and isinstance(item.get("failure_code"), str)
+            and bool(item.get("failure_code"))
+        }
+        if (
+            expected_players
+            and event_players == set(self._state.players)
+            and expected_players.isdisjoint(failed_players)
+            and expected_players | failed_players == event_players
+        ):
+            return "partial"
+        return "persistence_failed"
+
+    def _latest_reflection_event_entries(self) -> list[dict]:
+        """返回最近一次局级反思事件中结构有效的玩家条目。"""
+        for event in reversed(self._state.events):
+            if event.type != "reflection_complete":
+                continue
+            entries = event.payload.get("entries")
+            if not isinstance(entries, list):
+                return []
+            return [item for item in entries if isinstance(item, dict)]
+        return []
+
+    def _has_reflection_complete_event(self) -> bool:
+        return any(event.type == "reflection_complete" for event in self._state.events)
+
+    def _has_valid_reflection_candidates(self) -> bool:
+        """异常发生在合成前时，仍根据 verification 区分持久化失败与空事务。"""
+        for item in self._latest_reflection_event_entries():
+            verification = item.get("verification")
+            lessons = verification.get("verified_lessons") if isinstance(
+                verification, dict
+            ) else None
+            if isinstance(lessons, list) and any(
+                isinstance(lesson, dict)
+                and isinstance(lesson.get("abstraction"), str)
+                and bool(lesson.get("abstraction", "").strip())
+                for lesson in lessons
+            ):
+                return True
+        return False
+
+    def _ensure_reflection_no_valid_entries_event(self) -> None:
+        """缺少有效 lesson 时写唯一的 moderator-only 诊断事件。"""
+        latest_reflection_index = max(
+            (
+                index for index, event in enumerate(self._state.events)
+                if event.type == "reflection_complete"
+            ),
+            default=-1,
+        )
+        if latest_reflection_index < 0 or any(
+            event.type == "reflection_no_valid_entries"
+            for event in self._state.events[latest_reflection_index + 1:]
+        ):
+            return
+        failures = [
+            {
+                "player_id": item.get("player_id"),
+                "decision_id": item.get("decision_id"),
+                "failure_stage": item.get("failure_stage"),
+                "failure_code": item.get("failure_code"),
+            }
+            for item in self._latest_reflection_event_entries()
+        ]
+        event = new_game_event(
+            self._state,
+            "reflection_no_valid_entries",
+            payload={
+                "status": "no_valid_entries",
+                "player_count": len(failures),
+                "failures": failures,
+            },
+            visibility=EventVisibility.MODERATOR_ONLY,
+        )
+        self._state = replace(
+            self._state,
+            events=[*self._state.events, event],
+        )
 
     def _reflection_snapshots_match(self, expected_entry_ids: set[str]) -> bool:
         """回读本局与 latest 快照，要求元数据一致并包含本批反思 ID。"""

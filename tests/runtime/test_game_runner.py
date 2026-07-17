@@ -1364,6 +1364,7 @@ class TestGameRunnerMemoryLifecycle:
         assert audit.payload["entries"] == [{
             "player_id": "p01",
             "decision_id": "reflection:g:p01",
+            "verified_claim_ids": ["c-good"],
             "entry_id": f"reflection_{runner.game_id}_p01",
             "row_found": True,
             "persistence_complete": False,
@@ -1400,6 +1401,7 @@ class TestGameRunnerMemoryLifecycle:
         assert audit.payload["entries"] == [{
             "player_id": "p01",
             "decision_id": "reflection:g:p01",
+            "verified_claim_ids": ["c-good"],
             "entry_id": f"reflection_{runner.game_id}_p01",
             "row_found": False,
             "persistence_complete": False,
@@ -1656,7 +1658,7 @@ class TestGameRunnerMemoryLifecycle:
         assert repo.load_memory_snapshot(runner.game_id) is None
         assert repo.load_memory_snapshot("latest") is None
 
-    def test_empty_verified_reflection_batch_is_a_successful_empty_transaction(self) -> None:
+    def test_empty_verified_reflection_batch_is_no_valid_entries(self) -> None:
         from werewolf_agent.core.models import GameEvent, GameState, PlayerState
         from werewolf_agent.storage.memory_store import InMemoryGameRepository
         from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
@@ -1686,11 +1688,16 @@ class TestGameRunnerMemoryLifecycle:
         assert audit.visibility is EventVisibility.MODERATOR_ONLY
         assert audit.schema_version == "2"
         assert audit.payload == {
+            "status": "no_valid_entries",
             "expected_entry_count": 0,
-            "persistence_complete": True,
+            "persistence_complete": False,
             "rollback_complete": True,
             "entries": [],
         }
+        assert any(
+            event.type == "reflection_no_valid_entries"
+            for event in runner.state.events
+        )
 
     def test_reflection_persistence_audit_fails_closed_when_expected_row_missing(self) -> None:
         from werewolf_agent.storage.memory_store import InMemoryGameRepository

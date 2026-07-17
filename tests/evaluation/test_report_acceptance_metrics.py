@@ -1192,12 +1192,12 @@ def test_reflection_coverage_requires_each_completed_game_audit() -> None:
     metrics = compute_acceptance_audit_metrics([clean, missing])
 
     assert metrics["reflection_completed_game_count"] == 2
-    assert metrics["reflection_audited_game_count"] == 1
+    assert metrics["reflection_audited_game_count"] == 0
     assert metrics["reflection_contamination_metrics_supported"] is False
     assert metrics["reflection_persisted_rejected_fact_count"] is None
 
 
-def test_reflection_empty_transaction_is_supported_when_explicit() -> None:
+def test_reflection_empty_transaction_is_never_supported() -> None:
     from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
 
     game = {
@@ -1216,7 +1216,7 @@ def test_reflection_empty_transaction_is_supported_when_explicit() -> None:
 
     metrics = compute_acceptance_audit_metrics([game])
 
-    assert metrics["reflection_audited_game_count"] == 1
+    assert metrics["reflection_audited_game_count"] == 0
     assert metrics["reflection_contamination_metrics_supported"] is False
     assert metrics["acceptance_projection_unsupported_reason"] == "missing_players"
     assert metrics["reflection_persisted_rejected_fact_count"] is None
