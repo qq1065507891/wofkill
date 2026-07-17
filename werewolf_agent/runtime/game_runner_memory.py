@@ -4,7 +4,7 @@ GameRunner 的跨局记忆恢复、终局快照和 V2 持久化审计事件逻�
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-17
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_memory import GameRunnerMemoryMixin
@@ -106,6 +106,12 @@ class GameRunnerMemoryMixin:
             from werewolf_agent.memory.reflection_sanitization import anonymize_player_ids
 
             mem_store = self._cognition_state_manager.memory_store
+            decision_failures = self._reflection_decision_preflight_failures()
+            if decision_failures:
+                self._append_reflection_decision_preflight_failure(
+                    decision_failures,
+                )
+                return
             local_v2_entries = {
                 entry.entry_id: entry
                 for entry in mem_store.reflections.all_v2_entries()
@@ -467,6 +473,69 @@ class GameRunnerMemoryMixin:
                 return []
             return [item for item in entries if isinstance(item, dict)]
         return []
+
+    def _reflection_decision_preflight_failures(self) -> list[dict]:
+        """在合成或写入前拒绝不属于本局当前玩家的反思决策。"""
+        failures: list[dict] = []
+        entries = [
+            item
+            for event in self._state.events
+            if event.type == "reflection_complete"
+            for item in event.payload.get("entries", [])
+            if isinstance(item, dict)
+        ]
+        for item in entries:
+            player_id = item.get("player_id")
+            if not isinstance(player_id, str) or player_id not in self._state.players:
+                failures.append({
+                    "player_id": player_id if isinstance(player_id, str) else "unknown",
+                    "decision_id": None,
+                    "failure_stage": "persisted",
+                    "failure_code": "reflection_decision_id_mismatch",
+                    "persistence_complete": False,
+                })
+                continue
+            expected_decision_id = f"reflection:{self._game_id}:{player_id}"
+            verification = item.get("verification")
+            verification_decision_id = (
+                verification.get("decision_id")
+                if isinstance(verification, dict)
+                else None
+            )
+            if (
+                item.get("decision_id") != expected_decision_id
+                or verification_decision_id != expected_decision_id
+            ):
+                failures.append({
+                    "player_id": player_id,
+                    "decision_id": expected_decision_id,
+                    "failure_stage": "persisted",
+                    "failure_code": "reflection_decision_id_mismatch",
+                    "persistence_complete": False,
+                })
+        return failures
+
+    def _append_reflection_decision_preflight_failure(
+        self,
+        failures: list[dict],
+    ) -> None:
+        """记录可归属的持久化前置失败，且不触碰仓储或跨局内存。"""
+        event = new_game_event(
+            self._state,
+            "reflection_persistence_audit",
+            payload={
+                "status": "persistence_failed",
+                "expected_entry_count": len(failures),
+                "persistence_complete": False,
+                "rollback_complete": True,
+                "entries": failures,
+            },
+            visibility=EventVisibility.MODERATOR_ONLY,
+        )
+        self._state = replace(
+            self._state,
+            events=[*self._state.events, event],
+        )
 
     def _has_reflection_complete_event(self) -> bool:
         return any(event.type == "reflection_complete" for event in self._state.events)

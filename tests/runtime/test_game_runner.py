@@ -3,7 +3,7 @@
 验证 GameRunner 编排、终局边界与持久化行为。
 
 作者: Project contributors
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 """
 
 from __future__ import annotations
@@ -1215,10 +1215,12 @@ class TestGameRunnerMemoryLifecycle:
                         "entries": [
                             {
                                 "player_id": "p01",
+                                "decision_id": f"reflection:{runner.game_id}:p01",
                                 "role": "seer",
                                 "alive": True,
                                 "verification": {
                                     "status": "verified",
+                                    "decision_id": f"reflection:{runner.game_id}:p01",
                                     "verified_fact_count": 1,
                                     "verified_lessons": [{
                                         "lesson_id": "l1",
@@ -1244,10 +1246,12 @@ class TestGameRunnerMemoryLifecycle:
                             },
                             {
                                 "player_id": "p02",
+                                "decision_id": f"reflection:{runner.game_id}:p02",
                                 "role": "werewolf",
                                 "alive": False,
                                 "verification": {
                                     "status": "verified",
+                                    "decision_id": f"reflection:{runner.game_id}:p02",
                                     "verified_fact_count": 1,
                                     "verified_lessons": [{
                                         "lesson_id": "l2",
@@ -1340,9 +1344,10 @@ class TestGameRunnerMemoryLifecycle:
             events=[GameEvent(type="reflection_complete", payload={
                 "player_count": 1, "entries": [{
                 "player_id": "p01",
+                "decision_id": f"reflection:{runner.game_id}:p01",
                 "verification": {
                     "status": "verified",
-                    "decision_id": "reflection:g:p01",
+                    "decision_id": f"reflection:{runner.game_id}:p01",
                     "verified_fact_count": 1,
                     "verified_claim_ids": ["c-good"],
                     "rejected_claim_ids": ["c-bad"],
@@ -1363,7 +1368,7 @@ class TestGameRunnerMemoryLifecycle:
         )
         assert audit.payload["entries"] == [{
             "player_id": "p01",
-            "decision_id": "reflection:g:p01",
+            "decision_id": f"reflection:{runner.game_id}:p01",
             "verified_claim_ids": ["c-good"],
             "entry_id": f"reflection_{runner.game_id}_p01",
             "row_found": True,
@@ -1400,7 +1405,7 @@ class TestGameRunnerMemoryLifecycle:
         assert audit.payload["persistence_complete"] is False
         assert audit.payload["entries"] == [{
             "player_id": "p01",
-            "decision_id": "reflection:g:p01",
+            "decision_id": f"reflection:{runner.game_id}:p01",
             "verified_claim_ids": ["c-good"],
             "entry_id": f"reflection_{runner.game_id}_p01",
             "row_found": False,
@@ -1902,9 +1907,10 @@ class TestGameRunnerMemoryLifecycle:
             },
             events=[GameEvent(type="reflection_complete", payload={"entries": [{
                 "player_id": player_id,
+                "decision_id": f"reflection:{game_id}:{player_id}",
                 "verification": {
                     "status": "verified",
-                    "decision_id": f"reflection:g:{player_id}",
+                    "decision_id": f"reflection:{game_id}:{player_id}",
                     "verified_fact_count": 1,
                     "verified_claim_ids": [
                         "c-good" if player_id == "p01" else f"c-good-{player_id}"

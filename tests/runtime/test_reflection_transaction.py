@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-17
+修改日期: 2026-07-18
 
 使用示例:
     python -m pytest tests/runtime/test_reflection_transaction.py -q
@@ -11,10 +12,12 @@
 
 from __future__ import annotations
 
+import pickle
 from dataclasses import replace
 
 import pytest
 
+from werewolf_agent.runtime import reflection_transaction as transaction_module
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.evaluation.acceptance_reflection_metrics import (
     compute_reflection_acceptance_metrics,
@@ -112,6 +115,45 @@ def test_summarizer_rejects_object_new_bypass_without_transition_provenance() ->
 
     assert result.status == "no_valid_entries"
     assert result.persistence_complete is False
+
+
+def test_summarizer_rejects_forged_complete_object_with_importable_seal() -> None:
+    assert "_TRANSACTION_SEAL" not in vars(transaction_module)
+    forged = object.__new__(PlayerReflectionTransaction)
+    values = {
+        "player_id": "p01",
+        "decision_id": "reflection:g1:p01",
+        "stage": ReflectionStage.PERSISTED,
+        "failure_stage": None,
+        "failure_code": None,
+        "verified_claim_ids": ("claim-p01",),
+        "verified_lesson_ids": ("lesson-p01",),
+        "entry_id": "reflection_g1_p01",
+        "_stage_path": tuple(ReflectionStage),
+        "_seal": object(),
+    }
+    for field, value in values.items():
+        object.__setattr__(forged, field, value)
+
+    result = summarize_reflection_transaction(
+        [forged], persistence_attempted=True,
+    )
+
+    assert result.status == "no_valid_entries"
+    assert result.persistence_complete is False
+
+
+def test_factory_controlled_transaction_survives_pickle_checkpoint() -> None:
+    entry = _advance_valid_entry(persisted=True)
+
+    restored = pickle.loads(pickle.dumps(entry))
+    result = summarize_reflection_transaction(
+        [restored], persistence_attempted=True,
+    )
+
+    assert restored.to_payload() == entry.to_payload()
+    assert result.status == "complete"
+    assert result.persistence_complete is True
 
 
 def test_object_new_cannot_call_instance_assign_to_mint_valid_provenance() -> None:
@@ -447,6 +489,120 @@ def test_snapshot_preflight_failure_with_valid_lesson_is_persistence_failed() ->
     )
     assert audit.payload["status"] == "persistence_failed"
     assert audit.payload["persistence_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "mismatched_field",
+    ("entry", "verification", "earlier_event"),
+)
+def test_persistence_rejects_stale_decision_before_memory_or_repository_write(
+    mismatched_field: str,
+) -> None:
+    class WriteSpyRepository(InMemoryGameRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reflection_memory_writes: list[tuple[str, str]] = []
+
+        def save_reflection(self, entry: dict) -> None:
+            self.reflection_memory_writes.append(("save_reflection", entry.get("entry_id", "")))
+            super().save_reflection(entry)
+
+        def delete_reflection(self, entry_id: str) -> None:
+            self.reflection_memory_writes.append(("delete_reflection", entry_id))
+            super().delete_reflection(entry_id)
+
+        def save_memory_snapshot(self, snapshot_id: str, data: dict) -> None:
+            self.reflection_memory_writes.append(("save_memory_snapshot", snapshot_id))
+            super().save_memory_snapshot(snapshot_id, data)
+
+        def delete_memory_snapshot(self, snapshot_id: str) -> None:
+            self.reflection_memory_writes.append(("delete_memory_snapshot", snapshot_id))
+            super().delete_memory_snapshot(snapshot_id)
+
+    repo = WriteSpyRepository()
+    runner = GameRunner(GameRunnerConfig(
+        seed=1202,
+        repository=repo,
+        memory_coordinator=PersistentMemoryCoordinator(repo),
+    ))
+    canonical_decision_id = f"reflection:{runner.game_id}:p01"
+    entry_decision_id = canonical_decision_id
+    verification_decision_id = canonical_decision_id
+    if mismatched_field == "entry":
+        entry_decision_id = "reflection:stale:p01"
+    elif mismatched_field == "verification":
+        verification_decision_id = "reflection:stale:p01"
+    runner._state = GameState(
+        game_id=runner.game_id,
+        phase="finished",
+        status="finished",
+        winning_faction="good",
+        players={"p01": PlayerState(id="p01", role="seer")},
+        events=[GameEvent(type="reflection_complete", payload={
+            "status": "complete",
+            "player_count": 1,
+            "entries": [{
+                "player_id": "p01",
+                "decision_id": entry_decision_id,
+                "transaction_state": "lessons_verified",
+                "failure_stage": None,
+                "failure_code": None,
+                "verification": {
+                    "status": "verified",
+                    "decision_id": verification_decision_id,
+                    "verified_claim_ids": ["claim-p01"],
+                    "rejected_claim_ids": [],
+                    "verified_lessons": [{
+                        "lesson_id": "lesson-p01",
+                        "abstraction": "先核验公开票型",
+                    }],
+                    "rejected_fact_count": 0,
+                    "rejected_lesson_count": 0,
+                },
+            }],
+        })],
+    )
+    if mismatched_field == "earlier_event":
+        stale_event = GameEvent(type="reflection_complete", payload={
+            "entries": [{
+                "player_id": "p01",
+                "decision_id": "reflection:stale:p01",
+                "verification": {
+                    "status": "verified",
+                    "decision_id": "reflection:stale:p01",
+                },
+            }],
+        })
+        runner._state = replace(
+            runner._state,
+            events=[stale_event, *runner._state.events],
+        )
+    mem_store = runner._cognition_state_manager.memory_store
+    relation_graph_before = mem_store.relation_graph
+    repo.reflection_memory_writes.clear()
+
+    runner._save_memory_snapshot()
+
+    audit = next(
+        event for event in runner.state.events
+        if event.type == "reflection_persistence_audit"
+    )
+    assert audit.payload["status"] == "persistence_failed"
+    assert audit.payload["persistence_complete"] is False
+    assert audit.payload["entries"] == [{
+        "player_id": "p01",
+        "decision_id": canonical_decision_id,
+        "failure_stage": "persisted",
+        "failure_code": "reflection_decision_id_mismatch",
+        "persistence_complete": False,
+    }]
+    assert repo.reflection_memory_writes == []
+    assert repo.load_reflections_by_game(runner.game_id) == []
+    assert repo.load_memory_snapshot(runner.game_id) is None
+    assert repo.load_memory_snapshot("latest") is None
+    assert mem_store.relation_graph is relation_graph_before
+    assert mem_store.cognition_matrices == {}
+    assert mem_store.reflections.all_v2_entries() == []
 
 
 def _reflection_game(
