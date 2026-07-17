@@ -308,18 +308,37 @@ def reflection(state: RuntimeState) -> dict[str, Any]:
                 exc_info=True,
             )
 
-        transaction = _reflection_transaction_from_verification(
-            pid,
-            verification,
-            decision_id=verification["decision_id"],
-            dispatch_failed=dispatch_failed,
-        )
+        try:
+            transaction = _reflection_transaction_from_verification(
+                pid,
+                verification,
+                decision_id=decision_id,
+                dispatch_failed=dispatch_failed,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to reconstruct reflection transaction for %s",
+                _player_display(state, pid),
+                exc_info=True,
+            )
+            verification = safe_reflection_verification(
+                {
+                    "status": "agent_error",
+                    "failure_stage": "generated",
+                    "failure_code": "reflection_transaction_reconstruction_failed",
+                },
+                decision_id=decision_id,
+            )
+            transaction = PlayerReflectionTransaction(pid, decision_id).fail(
+                failure_stage="generated",
+                failure_code="reflection_transaction_reconstruction_failed",
+            )
         transactions.append(transaction)
         entry = {
             "player_id": pid,
             "role": player.role,
             "alive": player.alive,
-            "decision_id": verification["decision_id"],
+            "decision_id": decision_id,
             "transaction_state": transaction.stage.value,
             "failure_stage": transaction.failure_stage,
             "failure_code": transaction.failure_code,

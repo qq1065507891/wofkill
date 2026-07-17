@@ -193,24 +193,29 @@ def _audit_reflection_transaction(
     failed_players = player_ids - eligible_players
     explicit_failure_count = sum(
         1 for player_id in failed_players
-        if _entry_has_explicit_failure(event_entries[player_id])
+        if _entry_has_explicit_failure(
+            event_entries[player_id],
+            expected_decision_id=_canonical_decision_id(game_id, player_id),
+        )
     )
     valid_entry_count = reflection_payload.get("valid_entry_count")
     failure_count = reflection_payload.get("failure_count")
     if (
-        valid_entry_count is not None
-        and not _matches_count(valid_entry_count, len(eligible_players))
-    ) or (
-        failure_count is not None
-        and not _matches_count(failure_count, explicit_failure_count)
+        not _matches_count(valid_entry_count, len(eligible_players))
+        or not _matches_count(failure_count, explicit_failure_count)
     ):
         return False, 0, "incomplete_reflection_audit"
     if status == "complete" and (eligible_players != player_ids or failed_players):
         return False, 0, "incomplete_reflection_audit"
     if status == "partial" and (
         not failed_players
-        or not all(_entry_has_explicit_failure(event_entries[player_id])
-                   for player_id in failed_players)
+        or not all(
+            _entry_has_explicit_failure(
+                event_entries[player_id],
+                expected_decision_id=_canonical_decision_id(game_id, player_id),
+            )
+            for player_id in failed_players
+        )
     ):
         return False, 0, "incomplete_reflection_audit"
 
@@ -227,9 +232,11 @@ def _audit_reflection_transaction(
         audited_claim_ids = audit_entry.get("verified_claim_ids")
         entry_id = audit_entry.get("entry_id")
         transaction_state = event_entry.get("transaction_state")
+        canonical_decision_id = _canonical_decision_id(game_id, player_id)
         if (
             not isinstance(decision_id, str)
             or not decision_id
+            or decision_id != canonical_decision_id
             or event_decision_id != decision_id
             or audit_entry.get("decision_id") != decision_id
             or not verified_claim_ids
@@ -273,7 +280,11 @@ def _entry_has_verified_lessons(entry: Mapping[str, Any]) -> bool:
     )
 
 
-def _entry_has_explicit_failure(entry: Mapping[str, Any]) -> bool:
+def _entry_has_explicit_failure(
+    entry: Mapping[str, Any],
+    *,
+    expected_decision_id: str,
+) -> bool:
     transaction_state = entry.get("transaction_state")
     expected_failure_stage = {
         "not_requested": "generated",
@@ -292,6 +303,7 @@ def _entry_has_explicit_failure(entry: Mapping[str, Any]) -> bool:
         and bool(entry.get("failure_code"))
         and isinstance(decision_id, str)
         and bool(decision_id)
+        and decision_id == expected_decision_id
         and isinstance(verification, Mapping)
         and verification.get("decision_id") == decision_id
     )
@@ -313,6 +325,11 @@ def _same_unique_identifiers(left: Any, right: Any) -> bool:
 def _matches_count(value: Any, expected: int) -> bool:
     """只接受非布尔、非负的原生整数，并与权威计数精确相等。"""
     return _is_non_negative_int(value) and value == expected
+
+
+def _canonical_decision_id(game_id: str, player_id: str) -> str:
+    """反思 decision 只允许绑定当前游戏和当前玩家。"""
+    return f"reflection:{game_id}:{player_id}"
 
 
 def _reflection_payload_matches_players(

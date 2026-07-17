@@ -84,67 +84,21 @@ class PlayerReflectionTransaction:
 
     def __init__(self, player_id: str, decision_id: str) -> None:
         """创建 not_requested 初态，禁止调用方直接注入后续状态。"""
-        self._assign(
-            player_id=player_id,
-            decision_id=decision_id,
-            stage=ReflectionStage.NOT_REQUESTED,
-            failure_stage=None,
-            failure_code=None,
-            verified_claim_ids=(),
-            verified_lesson_ids=(),
-            entry_id=None,
-            stage_path=(ReflectionStage.NOT_REQUESTED,),
-        )
-        self.validate()
-
-    def _assign(
-        self,
-        *,
-        player_id: str,
-        decision_id: str,
-        stage: ReflectionStage,
-        failure_stage: str | None,
-        failure_code: str | None,
-        verified_claim_ids: tuple[str, ...],
-        verified_lesson_ids: tuple[str, ...],
-        entry_id: str | None,
-        stage_path: tuple[ReflectionStage, ...],
-    ) -> None:
-        """集中写入冻结字段，仅由受控构造和相邻转换调用。"""
         values = {
             "player_id": player_id,
             "decision_id": decision_id,
-            "stage": stage,
-            "failure_stage": failure_stage,
-            "failure_code": failure_code,
-            "verified_claim_ids": verified_claim_ids,
-            "verified_lesson_ids": verified_lesson_ids,
-            "entry_id": entry_id,
-            "_stage_path": stage_path,
+            "stage": ReflectionStage.NOT_REQUESTED,
+            "failure_stage": None,
+            "failure_code": None,
+            "verified_claim_ids": (),
+            "verified_lesson_ids": (),
+            "entry_id": None,
+            "_stage_path": (ReflectionStage.NOT_REQUESTED,),
             "_seal": _TRANSACTION_SEAL,
         }
         for field, value in values.items():
             object.__setattr__(self, field, value)
-
-    def _derive(self, **changes: object) -> PlayerReflectionTransaction:
-        """从已验证快照生成下一个受控快照。"""
         self.validate()
-        values = {
-            "player_id": self.player_id,
-            "decision_id": self.decision_id,
-            "stage": self.stage,
-            "failure_stage": self.failure_stage,
-            "failure_code": self.failure_code,
-            "verified_claim_ids": self.verified_claim_ids,
-            "verified_lesson_ids": self.verified_lesson_ids,
-            "entry_id": self.entry_id,
-            "stage_path": self._stage_path,
-        }
-        values.update(changes)
-        candidate = object.__new__(type(self))
-        candidate._assign(**values)  # type: ignore[arg-type]
-        candidate.validate()
-        return candidate
 
     def validate(self) -> None:
         """独立验证阶段、字段组合、失败位置和完整转换路径。"""
@@ -239,7 +193,27 @@ class PlayerReflectionTransaction:
             changes["entry_id"] = entry_id
         elif entry_id is not None:
             raise ValueError("entry_id belongs to persisted")
-        return self._derive(**changes)
+        candidate = object.__new__(type(self))
+        values = {
+            "player_id": self.player_id,
+            "decision_id": self.decision_id,
+            "stage": changes.get("stage", self.stage),
+            "failure_stage": self.failure_stage,
+            "failure_code": self.failure_code,
+            "verified_claim_ids": changes.get(
+                "verified_claim_ids", self.verified_claim_ids,
+            ),
+            "verified_lesson_ids": changes.get(
+                "verified_lesson_ids", self.verified_lesson_ids,
+            ),
+            "entry_id": changes.get("entry_id", self.entry_id),
+            "_stage_path": changes.get("stage_path", self._stage_path),
+            "_seal": _TRANSACTION_SEAL,
+        }
+        for field, value in values.items():
+            object.__setattr__(candidate, field, value)
+        candidate.validate()
+        return candidate
 
     def fail(
         self,
@@ -252,10 +226,23 @@ class PlayerReflectionTransaction:
             raise ReflectionTransitionError("persisted reflection cannot fail")
         if not failure_stage or not failure_code:
             raise ValueError("failure_stage and failure_code must be non-empty")
-        return self._derive(
-            failure_stage=failure_stage,
-            failure_code=failure_code,
-        )
+        candidate = object.__new__(type(self))
+        values = {
+            "player_id": self.player_id,
+            "decision_id": self.decision_id,
+            "stage": self.stage,
+            "failure_stage": failure_stage,
+            "failure_code": failure_code,
+            "verified_claim_ids": self.verified_claim_ids,
+            "verified_lesson_ids": self.verified_lesson_ids,
+            "entry_id": self.entry_id,
+            "_stage_path": self._stage_path,
+            "_seal": _TRANSACTION_SEAL,
+        }
+        for field, value in values.items():
+            object.__setattr__(candidate, field, value)
+        candidate.validate()
+        return candidate
 
     def to_payload(self) -> dict[str, object]:
         """生成可安全写入 moderator-only 事件的事务字段。"""
@@ -296,14 +283,34 @@ def summarize_reflection_transaction(
 
     items: list[PlayerReflectionTransaction] = []
     invalid_count = 0
+    seen_objects: set[int] = set()
+    seen_players: set[str] = set()
+    seen_decisions: set[str] = set()
+    seen_entries: set[str] = set()
     for item in raw_items:
         try:
             if not isinstance(item, PlayerReflectionTransaction):
                 raise ValueError("unexpected reflection transaction type")
             item.validate()
+            object_id = id(item)
+            if (
+                object_id in seen_objects
+                or item.player_id in seen_players
+                or item.decision_id in seen_decisions
+                or (
+                    item.entry_id is not None
+                    and item.entry_id in seen_entries
+                )
+            ):
+                raise ValueError("duplicate reflection transaction identity")
         except (AttributeError, TypeError, ValueError):
             invalid_count += 1
             continue
+        seen_objects.add(object_id)
+        seen_players.add(item.player_id)
+        seen_decisions.add(item.decision_id)
+        if item.entry_id is not None:
+            seen_entries.add(item.entry_id)
         items.append(item)
 
     valid = tuple(

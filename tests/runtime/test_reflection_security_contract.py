@@ -169,7 +169,7 @@ def test_prompt_refs_and_verifier_share_supported_fact_registry() -> None:
 
 def test_reflection_complete_rebuilds_strict_allowlist_from_untrusted_adapter_result(monkeypatch) -> None:
     poisoned = {
-        "status": "verified", "decision_id": "reflection:p01:1",
+        "status": "verified", "decision_id": "reflection:g-live:p01",
         "verified_fact_count": 1,
         "verified_claim_ids": ["c1"],
         "verified_lessons": [{

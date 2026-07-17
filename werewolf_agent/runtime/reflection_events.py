@@ -33,13 +33,17 @@ def safe_reflection_verification(
 ) -> dict[str, Any]:
     """从不可信 adapter 返回值按严格 allowlist 重建可持久化摘要。"""
     source = candidate if isinstance(candidate, dict) else {}
-    status = source.get("status")
-    safe_status = status if isinstance(status, str) and status in _STATUSES else "agent_error"
+    raw_status = source.get("status")
+    safe_status = (
+        raw_status
+        if isinstance(raw_status, str) and raw_status in _STATUSES
+        else "agent_error"
+    )
+    status_invalid = not isinstance(raw_status, str) or raw_status not in _STATUSES
     candidate_decision_id = source.get("decision_id")
-    safe_decision_id = (
-        candidate_decision_id
-        if isinstance(candidate_decision_id, str) and candidate_decision_id
-        else decision_id
+    decision_mismatch = (
+        candidate_decision_id is not None
+        and candidate_decision_id != decision_id
     )
 
     def count(name: str) -> int:
@@ -69,9 +73,9 @@ def safe_reflection_verification(
                 "lesson_id": lesson_id,
                 "abstraction": anonymize_player_ids_recursive(abstraction, labels),
             })
-    result = {
+    result: dict[str, Any] = {
         "status": safe_status,
-        "decision_id": safe_decision_id,
+        "decision_id": decision_id,
         "verified_fact_count": count("verified_fact_count"),
         "verified_claim_ids": identifiers("verified_claim_ids"),
         "rejected_claim_ids": identifiers("rejected_claim_ids"),
@@ -79,13 +83,55 @@ def safe_reflection_verification(
         "rejected_fact_count": count("rejected_fact_count"),
         "rejected_lesson_count": count("rejected_lesson_count"),
     }
-    safe_failures: dict[str, str] = {}
-    for field in ("failure_stage", "failure_code"):
-        value = source.get(field)
-        if isinstance(value, str) and _SAFE_FAILURE_IDENTIFIER.fullmatch(value):
-            safe_failures[field] = value
-    if set(safe_failures) == {"failure_stage", "failure_code"}:
-        result.update(safe_failures)
+    if decision_mismatch:
+        result.update({
+            "status": "agent_error",
+            "verified_fact_count": 0,
+            "verified_claim_ids": [],
+            "rejected_claim_ids": [],
+            "verified_lessons": [],
+            "rejected_fact_count": 0,
+            "rejected_lesson_count": 0,
+            "failure_stage": "generated",
+            "failure_code": "reflection_decision_id_mismatch",
+        })
+        return result
+
+    if safe_status in {"not_generated", "agent_error"}:
+        raw_stage = source.get("failure_stage")
+        raw_code = source.get("failure_code")
+        stage_invalid = raw_stage is not None and raw_stage != "generated"
+        safe_code = (
+            raw_code
+            if isinstance(raw_code, str)
+            and _SAFE_FAILURE_IDENTIFIER.fullmatch(raw_code)
+            else "agent_error" if safe_status == "agent_error"
+            else "reflection_not_generated"
+        )
+        result.update({
+            "verified_fact_count": 0,
+            "verified_claim_ids": [],
+            "rejected_claim_ids": [],
+            "verified_lessons": [],
+            "rejected_fact_count": 0,
+            "rejected_lesson_count": 0,
+            "failure_stage": "generated",
+            "failure_code": (
+                "invalid_reflection_failure_stage" if stage_invalid
+                else "invalid_reflection_status"
+                if status_invalid
+                else safe_code
+            ),
+        })
+    elif safe_status == "invalid_structured_draft":
+        result.update({
+            "verified_fact_count": 0,
+            "verified_claim_ids": [],
+            "rejected_claim_ids": [],
+            "verified_lessons": [],
+            "failure_stage": "schema_validated",
+            "failure_code": "invalid_structured_draft",
+        })
     return result
 
 

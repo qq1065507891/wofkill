@@ -21,6 +21,7 @@ from werewolf_agent.evaluation.acceptance_reflection_metrics import (
 )
 from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
 from werewolf_agent.runtime.nodes import summary
+from werewolf_agent.runtime.reflection_events import safe_reflection_verification
 from werewolf_agent.runtime.reflection_transaction import (
     PlayerReflectionTransaction,
     ReflectionStage,
@@ -110,6 +111,64 @@ def test_summarizer_rejects_object_new_bypass_without_transition_provenance() ->
     )
 
     assert result.status == "no_valid_entries"
+    assert result.persistence_complete is False
+
+
+def test_object_new_cannot_call_instance_assign_to_mint_valid_provenance() -> None:
+    forged = object.__new__(PlayerReflectionTransaction)
+
+    with pytest.raises(AttributeError):
+        forged._assign(  # type: ignore[attr-defined]
+            player_id="p01",
+            decision_id="reflection:g1:p01",
+            stage=ReflectionStage.PERSISTED,
+            failure_stage=None,
+            failure_code=None,
+            verified_claim_ids=("claim-p01",),
+            verified_lesson_ids=("lesson-p01",),
+            entry_id="reflection_g1_p01",
+            stage_path=tuple(ReflectionStage),
+        )
+
+
+@pytest.mark.parametrize("duplicate_kind", ("object", "identity", "decision", "entry"))
+def test_summarizer_rejects_duplicate_transaction_identities(
+    duplicate_kind: str,
+) -> None:
+    first = _advance_valid_entry(persisted=True)
+    if duplicate_kind == "object":
+        second = first
+    elif duplicate_kind == "identity":
+        second = _advance_valid_entry(persisted=True)
+    else:
+        decision_id = (
+            "reflection:g1:p01" if duplicate_kind == "decision"
+            else "reflection:g1:p02"
+        )
+        second = PlayerReflectionTransaction("p02", decision_id)
+        second = second.advance(ReflectionStage.GENERATED)
+        second = second.advance(ReflectionStage.SCHEMA_VALIDATED)
+        second = second.advance(
+            ReflectionStage.FACTS_VERIFIED,
+            verified_claim_ids=("claim-p02",),
+        )
+        second = second.advance(
+            ReflectionStage.LESSONS_VERIFIED,
+            verified_lesson_ids=("lesson-p02",),
+        )
+        second = second.advance(
+            ReflectionStage.PERSISTED,
+            entry_id=(
+                "reflection_g1_p01" if duplicate_kind == "entry"
+                else "reflection_g1_p02"
+            ),
+        )
+
+    result = summarize_reflection_transaction(
+        [first, second], persistence_attempted=True,
+    )
+
+    assert result.status == "persistence_failed"
     assert result.persistence_complete is False
 
 
@@ -243,6 +302,98 @@ def test_reflection_generation_exception_has_explicit_game_and_player_failure(
     assert entry["failure_code"] == "agent_error"
     assert entry["decision_id"] == "reflection:g1:p01"
     assert no_valid_event.type == "reflection_no_valid_entries"
+
+
+def test_safe_verification_normalizes_impossible_agent_error_stage() -> None:
+    safe = safe_reflection_verification(
+        {
+            "status": "agent_error",
+            "failure_stage": "facts_verified",
+            "failure_code": "provider_error",
+        },
+        decision_id="reflection:g1:p01",
+    )
+
+    assert safe["status"] == "agent_error"
+    assert safe["decision_id"] == "reflection:g1:p01"
+    assert safe["failure_stage"] == "generated"
+    assert safe["failure_code"] == "invalid_reflection_failure_stage"
+
+
+def test_safe_verification_normalizes_unhashable_status_without_crashing() -> None:
+    safe = safe_reflection_verification(
+        {"status": {"unexpected": "mapping"}},
+        decision_id="reflection:g1:p01",
+    )
+
+    assert safe["status"] == "agent_error"
+    assert safe["decision_id"] == "reflection:g1:p01"
+    assert safe["failure_stage"] == "generated"
+    assert safe["failure_code"] == "invalid_reflection_status"
+
+
+def test_impossible_adapter_failure_metadata_records_failure_without_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        summary,
+        "_dispatch_agent",
+        lambda *_args, **_kwargs: {"reflection_verification": {
+            "status": "agent_error",
+            "failure_stage": "facts_verified",
+            "failure_code": "provider_error",
+        }},
+    )
+    state = GameState(
+        game_id="g1", phase="finished", status="finished",
+        winning_faction="good",
+        players={"p01": PlayerState(id="p01", role="seer")},
+    )
+
+    result = summary.reflection({"game_state": state, "engine": None})
+
+    complete = next(
+        event for event in result["game_state"].events
+        if event.type == "reflection_complete"
+    )
+    entry = complete.payload["entries"][0]
+    assert complete.payload["status"] == "no_valid_entries"
+    assert entry["failure_stage"] == "generated"
+    assert entry["failure_code"] == "invalid_reflection_failure_stage"
+
+
+def test_adapter_decision_mismatch_becomes_canonical_attributed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        summary,
+        "_dispatch_agent",
+        lambda *_args, **_kwargs: {"reflection_verification": {
+            "status": "verified",
+            "decision_id": "reflection:stale:p99",
+            "verified_claim_ids": ["claim-p01"],
+            "verified_lessons": [{
+                "lesson_id": "lesson-p01", "abstraction": "先核验公开票型",
+            }],
+        }},
+    )
+    state = GameState(
+        game_id="g1", phase="finished", status="finished",
+        winning_faction="good",
+        players={"p01": PlayerState(id="p01", role="seer")},
+    )
+
+    result = summary.reflection({"game_state": state, "engine": None})
+
+    complete = next(
+        event for event in result["game_state"].events
+        if event.type == "reflection_complete"
+    )
+    entry = complete.payload["entries"][0]
+    assert entry["decision_id"] == "reflection:g1:p01"
+    assert entry["verification"]["decision_id"] == "reflection:g1:p01"
+    assert entry["failure_stage"] == "generated"
+    assert entry["failure_code"] == "reflection_decision_id_mismatch"
 
 
 def test_snapshot_preflight_failure_with_valid_lesson_is_persistence_failed() -> None:
@@ -498,6 +649,26 @@ def test_acceptance_rejects_boolean_summary_counts() -> None:
     assert metrics["reflection_contamination_metrics_supported"] is False
 
 
+@pytest.mark.parametrize("missing_count", ("valid_entry_count", "failure_count"))
+def test_acceptance_requires_game_summary_transaction_counts(
+    missing_count: str,
+) -> None:
+    game = _reflection_game(
+        status="complete",
+        entries=[_verified_event_entry(), _verified_event_entry("p02")],
+        persistence_status="complete",
+        persistence_entries=[
+            _persisted_audit_entry(), _persisted_audit_entry("p02"),
+        ],
+    )
+    del game["events"][0]["payload"][missing_count]
+
+    metrics = compute_reflection_acceptance_metrics([game])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
 def test_acceptance_rejects_failed_player_decision_mismatch() -> None:
     failed = {
         "player_id": "p02",
@@ -508,6 +679,54 @@ def test_acceptance_rejects_failed_player_decision_mismatch() -> None:
         "verification": {
             "status": "invalid_structured_draft",
             "decision_id": "reflection:g1:other",
+            "verified_claim_ids": [],
+            "verified_lessons": [],
+        },
+    }
+    metrics = compute_reflection_acceptance_metrics([_reflection_game(
+        status="partial",
+        entries=[_verified_event_entry(), failed],
+        persistence_status="partial",
+        persistence_entries=[_persisted_audit_entry()],
+    )])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
+@pytest.mark.parametrize(
+    "wrong_decision_id",
+    ("reflection:stale:p01", "reflection:g1:p02"),
+)
+def test_acceptance_binds_success_decision_to_current_game_and_player(
+    wrong_decision_id: str,
+) -> None:
+    event_entry = _verified_event_entry()
+    event_entry["decision_id"] = wrong_decision_id
+    event_entry["verification"]["decision_id"] = wrong_decision_id
+    audit_entry = _persisted_audit_entry()
+    audit_entry["decision_id"] = wrong_decision_id
+    metrics = compute_reflection_acceptance_metrics([_reflection_game(
+        status="complete",
+        entries=[event_entry, _verified_event_entry("p02")],
+        persistence_status="complete",
+        persistence_entries=[audit_entry, _persisted_audit_entry("p02")],
+    )])
+
+    assert metrics["reflection_audited_game_count"] == 0
+    assert metrics["reflection_contamination_metrics_supported"] is False
+
+
+def test_acceptance_binds_failed_decision_to_current_game_and_player() -> None:
+    failed = {
+        "player_id": "p02",
+        "decision_id": "reflection:stale:p02",
+        "transaction_state": "generated",
+        "failure_stage": "schema_validated",
+        "failure_code": "invalid_structured_draft",
+        "verification": {
+            "status": "invalid_structured_draft",
+            "decision_id": "reflection:stale:p02",
             "verified_claim_ids": [],
             "verified_lessons": [],
         },
