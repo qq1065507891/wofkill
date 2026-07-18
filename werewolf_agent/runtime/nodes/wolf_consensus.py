@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.wolf_consensus import wolf_consensus
@@ -18,7 +18,6 @@ from typing import Any
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.agent_adapter import agent_wolf_consensus
-from werewolf_agent.runtime.event_metadata import new_game_event
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes._shared import (
     AGENT_TIMEOUTS,
@@ -35,6 +34,11 @@ from werewolf_agent.runtime.nodes._shared import (
     logger,
 )
 from werewolf_agent.runtime.wolf_no_kill_policy import no_kill_policy_for_state
+from werewolf_agent.runtime.wolf_decision_trace import (
+    WOLF_KILL_EXPLICIT_STATE,
+    WOLF_KILL_LEGACY_AGENT,
+    new_wolf_decision_event,
+)
 
 
 def _compat(name: str, fallback: Any) -> Any:
@@ -133,7 +137,7 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
                     "  [狼人决策] 击杀目标: %s",
                     _player_display(state, target),
                 )
-                event = new_game_event(
+                event = new_wolf_decision_event(
                     audited_gs,
                     "wolf_kill_selected",
                     {
@@ -142,6 +146,7 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
                         "action_traces": result.get("action_traces", {}),
                     },
                     visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+                    decision_kind=WOLF_KILL_LEGACY_AGENT,
                 )
                 return {
                     "game_state": replace(
@@ -179,11 +184,12 @@ def _legacy_wolf_consensus(state: RuntimeState) -> dict[str, Any]:
             or target_state.role == "werewolf"
         ):
             return policy.resolve(gs, reason_code="invalid_primary")
-        event = new_game_event(
+        event = new_wolf_decision_event(
             gs,
             "wolf_kill_selected",
             {"night_number": gs.night_number, "target_id": target},
             visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+            decision_kind=WOLF_KILL_EXPLICIT_STATE,
         )
         return {
             "game_state": replace(gs, events=[*gs.events, event]),

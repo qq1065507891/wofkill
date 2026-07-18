@@ -18,12 +18,11 @@ from typing import Any, Literal, Mapping
 
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState
-from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.event_metadata import (
-    new_game_event,
     validate_v2_event_identity,
     validate_v2_event_log_identity,
 )
+from werewolf_agent.runtime.wolf_decision_trace import new_wolf_decision_event
 
 
 NoKillReasonCode = Literal[
@@ -82,33 +81,6 @@ class NoKillDecision:
         return asdict(self)
 
 
-def _new_no_kill_policy_event(
-    game_state: GameState,
-    event_type: str,
-    payload: Mapping[str, Any],
-    *,
-    visibility: EventVisibility,
-    action_index: int = 0,
-) -> GameEvent:
-    """按狼人团队决策语义创建带稳定 trace 身份的 V2 事件。"""
-    identity = DecisionIdentity(
-        game_id=game_state.game_id,
-        player_id="werewolf_team",
-        phase="wolf_consensus",
-        day_number=game_state.day_number,
-        night_number=game_state.night_number,
-        task_type=event_type,
-        action_index=action_index,
-    )
-    return new_game_event(
-        game_state,
-        event_type,
-        payload,
-        visibility=visibility,
-        trace_id=identity.trace_id(),
-    )
-
-
 class NoKillPolicy:
     """根据不可变游戏历史解析一次空刀，不持有跨局可变状态。"""
 
@@ -162,7 +134,7 @@ class NoKillPolicy:
                 forced_recovery_applied=False,
                 recovered_target_id=None,
             )
-            event = _new_no_kill_policy_event(
+            event = new_wolf_decision_event(
                 game_state,
                 event_type,
                 {
@@ -196,7 +168,7 @@ class NoKillPolicy:
                 forced_recovery_applied=True,
                 recovered_target_id=None,
             )
-            event = _new_no_kill_policy_event(
+            event = new_wolf_decision_event(
                 game_state,
                 "forced_recovery_no_legal_target",
                 {
@@ -225,7 +197,7 @@ class NoKillPolicy:
             forced_recovery_applied=True,
             recovered_target_id=target_id,
         )
-        recovery = _new_no_kill_policy_event(
+        recovery = new_wolf_decision_event(
             game_state,
             "wolf_kill_forced_recovery",
             {
@@ -244,7 +216,7 @@ class NoKillPolicy:
             game_state,
             events=[*game_state.events, recovery],
         )
-        selected = _new_no_kill_policy_event(
+        selected = new_wolf_decision_event(
             recovered_state,
             "wolf_kill_selected",
             {

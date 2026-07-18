@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.node_helpers import _alive_wolves
@@ -33,7 +33,6 @@ from werewolf_agent.runtime.nodes.judge_broadcast_helpers import (
 )
 from werewolf_agent.runtime.nodes.runtime_state import RuntimeState, _stable_seed
 from werewolf_agent.runtime.event_metadata import (
-    new_game_event,
     validate_v2_event_identity,
     validate_v2_event_log_identity,
 )
@@ -43,6 +42,11 @@ from werewolf_agent.runtime.wolf_no_kill_policy import (
     NoKillPolicy,
     NoKillReasonCode,
     no_kill_policy_for_state,
+)
+from werewolf_agent.runtime.wolf_decision_trace import (
+    WOLF_KILL_FORCED_FALLBACK,
+    new_wolf_decision_event,
+    wolf_stance_kill_decision_kind,
 )
 
 
@@ -73,11 +77,12 @@ def _force_wolf_kill(gs: GameState, reason: str) -> dict[str, Any]:
         )
     rng = _random.Random(_stable_seed(gs.game_id, reason, gs.night_number))
     target = rng.choice(non_wolves)
-    event = new_game_event(
+    event = new_wolf_decision_event(
         gs,
         "wolf_kill_selected",
         {"night_number": gs.night_number, "target_id": target, "reason": reason},
         visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        decision_kind=WOLF_KILL_FORCED_FALLBACK,
     )
     gs = replace(gs, events=gs.events + [event])
     return {"game_state": gs, "wolf_kill_target_id": target}
@@ -446,6 +451,7 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     if primary_target is not None:
         selected_target = primary_target
         plan_key = "night_kill_primary"
+        selected_consensus_status = primary.status
     else:
         backup = consensus.backup
         if backup.status not in authorized_statuses or backup.target_id is None:
@@ -461,12 +467,13 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
         if selected_target is None:
             return no_kill(backup, "invalid_backup")
         plan_key = "night_kill_backup"
+        selected_consensus_status = backup.status
 
     logger.debug(
         "  [狼人决策] 按结构化 stance 共识击杀: %s",
         _player_display(state, selected_target),
     )
-    event = new_game_event(
+    event = new_wolf_decision_event(
         gs,
         "wolf_kill_selected",
         {
@@ -476,6 +483,10 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
             "plan_key": plan_key,
         },
         visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        decision_kind=wolf_stance_kill_decision_kind(
+            consensus_status=selected_consensus_status,
+            plan_key=plan_key,
+        ),
     )
     gs = replace(gs, events=[*gs.events, event])
     return {"game_state": gs, "wolf_kill_target_id": selected_target}

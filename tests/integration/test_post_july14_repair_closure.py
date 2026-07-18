@@ -48,6 +48,10 @@ from werewolf_agent.runtime.skill_opportunity_events import (
     append_self_destruct_selected,
 )
 from werewolf_agent.runtime.timers import ManualTimer
+from werewolf_agent.runtime.wolf_decision_trace import (
+    WOLF_KILL_EXPLICIT_STATE,
+    wolf_decision_trace_id,
+)
 from werewolf_agent.runtime.wolf_discussion_directives import (
     build_validated_wolf_target_stance,
 )
@@ -378,7 +382,7 @@ def test_running_wolf_discussion_checkpoint_aborts_at_step_limit(tmp_path) -> No
 
 
 def test_runtime_no_kill_event_has_complete_v2_audit_identity() -> None:
-    """真实 timeout 节点新增事件具有完整、唯一且连续的 V2 审计身份。"""
+    """真实空刀和合法落刀节点都具有完整、稳定的 V2 审计身份。"""
     game_state = GameState(
         game_id="closure-v2-no-kill",
         players=_players(),
@@ -410,6 +414,24 @@ def test_runtime_no_kill_event_has_complete_v2_audit_identity() -> None:
         task_type="wolf_no_kill_timeout",
         action_index=0,
     ).trace_id()
+
+    selected_state = replace(game_state, game_id="closure-v2-selected")
+    selected_result = wolf_consensus({
+        "game_state": selected_state,
+        "wolf_action": "kill",
+        "wolf_kill_target_id": "v1",
+    })
+    selected_events = selected_result["game_state"].events
+    validate_v2_event_log_identity(selected_state.game_id, selected_events)
+    selected = next(
+        event for event in selected_events
+        if event.type == "wolf_kill_selected"
+    )
+    assert selected.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
+    assert selected.trace_id == wolf_decision_trace_id(
+        selected_state,
+        decision_kind=WOLF_KILL_EXPLICIT_STATE,
+    )
 
 
 def _run_reflection_transaction(
