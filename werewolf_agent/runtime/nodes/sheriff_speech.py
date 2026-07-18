@@ -17,7 +17,11 @@ from typing import Any
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_election_speech
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
+from werewolf_agent.runtime.skill_opportunity_events import (
+    append_private_skill_event,
+    can_select_self_destruct,
+    is_live_werewolf,
+)
 from werewolf_agent.runtime.nodes._shared import (
     AGENT_TIMEOUTS,
     RuntimeState,
@@ -83,10 +87,7 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
 
     if registry:
         for candidate_id in speech_order:
-            candidate = gs.players.get(candidate_id)
-            self_destruct_available = bool(
-                candidate and candidate.alive and candidate.role == "werewolf"
-            )
+            self_destruct_available = is_live_werewolf(gs, candidate_id)
             if self_destruct_available:
                 gs = append_private_skill_event(
                     gs,
@@ -113,7 +114,12 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
             )
-            if result and result.get("self_destruct") and self_destruct_available:
+            if result and result.get("self_destruct") and can_select_self_destruct(
+                gs,
+                actor_id=candidate_id,
+                day_number=gs.day_number,
+                opportunity_phase="sheriff_speech",
+            ):
                 gs = append_private_skill_event(
                     gs,
                     "self_destruct_selected",

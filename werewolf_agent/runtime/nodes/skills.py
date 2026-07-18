@@ -48,6 +48,9 @@ from werewolf_agent.runtime.nodes.day_finish import _commit_victory
 from werewolf_agent.runtime.skill_opportunity_events import (
     build_private_skill_event,
     build_public_skill_resolution,
+    has_authorized_self_destruct_selection,
+    has_canonical_self_destruct_resolution,
+    is_live_werewolf,
 )
 
 
@@ -390,7 +393,16 @@ def resolve_self_destruct_node(state: RuntimeState) -> dict[str, Any]:
     engine: RuleEngine = state["engine"]
     gs: GameState = state["game_state"]
     wolf_id = state.get("self_destruct_wolf_id")
-    if wolf_id:
+    if (
+        isinstance(wolf_id, str)
+        and is_live_werewolf(gs, wolf_id)
+        and has_authorized_self_destruct_selection(
+            gs,
+            actor_id=wolf_id,
+            day_number=gs.day_number,
+        )
+        and not has_canonical_self_destruct_resolution(gs, actor_id=wolf_id)
+    ):
         gs, events = engine.resolve_self_destruct(gs, wolf_id=wolf_id, day_number=gs.day_number)
         # If sheriff election was in progress (no sheriff yet), track interruption
         if gs.sheriff_id is None or gs.sheriff_badge_state == "none":

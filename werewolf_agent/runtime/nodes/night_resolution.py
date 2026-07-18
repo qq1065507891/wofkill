@@ -15,7 +15,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from werewolf_agent.core.models import GameState
+from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
@@ -26,6 +27,78 @@ from werewolf_agent.runtime.nodes._shared import (
 )
 from werewolf_agent.runtime.nodes.day_finish import _commit_victory
 from werewolf_agent.runtime.skill_opportunity_events import build_private_skill_event
+
+
+def _has_valid_v2_or_legacy_identity(event: GameEvent, game_id: str) -> bool:
+    """接受完整 V2 或完整旧格式事件，拒绝可伪造的半截身份元数据。"""
+    metadata = (
+        event.event_id,
+        event.sequence_number,
+        event.occurred_at,
+        event.game_id,
+        event.schema_version,
+    )
+    if all(value is None for value in metadata):
+        return True
+    return (
+        event.schema_version == "2"
+        and event.game_id == game_id
+        and isinstance(event.sequence_number, int)
+        and event.sequence_number >= 0
+        and event.event_id == f"{game_id}:e{event.sequence_number:06d}"
+        and event.occurred_at is not None
+    )
+
+
+def _canonical_seer_choice_for_result(
+    game_state: GameState,
+    *,
+    target_id: str,
+) -> tuple[str, int] | None:
+    """从当前夜的权威机会链中找到与引擎查验目标完全一致的真实预言家选择。"""
+    for index in range(len(game_state.events) - 1, -1, -1):
+        choice = game_state.events[index]
+        if (
+            choice.type not in {"seer_check_selected", "seer_check_repaired"}
+            or choice.visibility is not EventVisibility.MODERATOR_ONLY
+            or choice.payload.get("night_number") != game_state.night_number
+            or choice.payload.get("target_id") != target_id
+            or not _has_valid_v2_or_legacy_identity(choice, game_state.game_id)
+        ):
+            continue
+        actor_id = choice.payload.get("actor_id")
+        player = game_state.players.get(actor_id) if isinstance(actor_id, str) else None
+        if not player or not player.alive or player.role != "seer":
+            continue
+        has_linked_opportunity = any(
+            event.type == "seer_check_opportunity"
+            and event.visibility is EventVisibility.MODERATOR_ONLY
+            and event.payload.get("actor_id") == actor_id
+            and event.payload.get("night_number") == game_state.night_number
+            and isinstance(event.payload.get("legal_targets"), list)
+            and target_id in event.payload["legal_targets"]
+            and _has_valid_v2_or_legacy_identity(event, game_state.game_id)
+            for event in game_state.events[:index]
+        )
+        if has_linked_opportunity:
+            return actor_id, index
+    return None
+
+
+def _has_canonical_seer_resolution(
+    game_state: GameState,
+    *,
+    actor_id: str,
+    target_id: str,
+) -> bool:
+    return any(
+        event.type == "seer_check_resolved"
+        and event.visibility is EventVisibility.MODERATOR_ONLY
+        and event.payload.get("actor_id") == actor_id
+        and event.payload.get("night_number") == game_state.night_number
+        and event.payload.get("target_id") == target_id
+        for event in game_state.events
+    )
 
 def resolve_night(state: RuntimeState) -> dict[str, Any]:
 
@@ -114,26 +187,30 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
     for seer_event in events:
         if seer_event.type != "seer_check":
             continue
-        seer_id = next((
-            event.payload.get("actor_id")
-            for event in reversed(gs.events)
-            if event.type in {"seer_check_selected", "seer_check_repaired"}
-            and event.payload.get("night_number") == gs.night_number
-        ), None)
-        if not isinstance(seer_id, str) or not seer_id:
-            seer_id = next((
-                player_id for player_id, player in gs.players.items()
-                if player.role == "seer"
-            ), "")
-        if seer_id:
-            gs = replace(gs, events=gs.events + list(build_private_skill_event(
-                "seer_check_resolved",
-                actor_id=seer_id,
-                night_number=gs.night_number,
-                target_id=seer_event.payload.get("target_id"),
-                alignment=seer_event.payload.get("alignment"),
-                resolution="checked",
-            )))
+        target_id = seer_event.payload.get("target_id")
+        if not isinstance(target_id, str) or not target_id:
+            continue
+        canonical_choice = _canonical_seer_choice_for_result(
+            gs,
+            target_id=target_id,
+        )
+        if canonical_choice is None:
+            continue
+        seer_id, _choice_index = canonical_choice
+        if _has_canonical_seer_resolution(
+            gs,
+            actor_id=seer_id,
+            target_id=target_id,
+        ):
+            continue
+        gs = replace(gs, events=gs.events + list(build_private_skill_event(
+            "seer_check_resolved",
+            actor_id=seer_id,
+            night_number=gs.night_number,
+            target_id=target_id,
+            alignment=seer_event.payload.get("alignment"),
+            resolution="checked",
+        )))
 
     if seer_woke:
 

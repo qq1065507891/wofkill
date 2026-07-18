@@ -19,7 +19,11 @@ from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_vote
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
+from werewolf_agent.runtime.skill_opportunity_events import (
+    append_private_skill_event,
+    can_select_self_destruct,
+    is_live_werewolf,
+)
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     logger,
@@ -101,8 +105,7 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
     vote_records: list[dict[str, Any]] = []
     audit_events: list[GameEvent] = []
     for voter_id in voters:
-        voter = gs.players.get(voter_id)
-        self_destruct_available = bool(voter and voter.role == "werewolf" and voter.alive)
+        self_destruct_available = is_live_werewolf(gs, voter_id)
         if self_destruct_available:
             gs = append_private_skill_event(
                 gs,
@@ -143,7 +146,12 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
                 ))
             else:
                 exposure_collector.flush_events()
-            if result.get("self_destruct"):
+            if result.get("self_destruct") and can_select_self_destruct(
+                gs,
+                actor_id=voter_id,
+                day_number=gs.day_number,
+                opportunity_phase="sheriff_vote",
+            ):
                 gs = append_private_skill_event(
                     gs,
                     "self_destruct_selected",

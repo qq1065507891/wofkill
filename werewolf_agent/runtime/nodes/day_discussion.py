@@ -39,7 +39,11 @@ from werewolf_agent.runtime.sheriff_policy import (
     choose_sheriff_led_speech_order,
 )
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
-from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
+from werewolf_agent.runtime.skill_opportunity_events import (
+    append_private_skill_event,
+    can_select_self_destruct,
+    is_live_werewolf,
+)
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_pick_speech_order
 from werewolf_agent.runtime.agent_action_audit import (
     build_runtime_terminal_fallback_trace,
@@ -226,8 +230,7 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
         seer_credibility_audit = None
         self_destruct_available = (
             not speech_text
-            and gs.players.get(speaker_id) is not None
-            and gs.players[speaker_id].role == "werewolf"
+            and is_live_werewolf(gs, speaker_id)
         )
         if not speech_text:
             if self_destruct_available:
@@ -252,7 +255,16 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 result = None
                 action_trace = _terminal_speech_trace("agent_dispatch_error")
             if result is not None:
-                if result.get("self_destruct"):
+                if (
+                    result.get("self_destruct")
+                    and self_destruct_available
+                    and can_select_self_destruct(
+                        gs,
+                        actor_id=speaker_id,
+                        day_number=gs.day_number,
+                        opportunity_phase="day_speech",
+                    )
+                ):
                     gs = append_private_skill_event(
                         gs,
                         "self_destruct_selected",

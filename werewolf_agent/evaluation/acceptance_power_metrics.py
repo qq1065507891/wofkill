@@ -107,7 +107,11 @@ def _compute_power_acceptance_metrics_from_normalized(
         _power_role_evidence_complete(evidence) for evidence in power_decisions
     )
     power_count = len(power_decisions)
-    opportunity_metrics = _power_role_opportunity_metrics(games)
+    opportunity_metrics = _power_role_opportunity_metrics(
+        games,
+        projection_is_supported=projection_is_supported,
+        projection_reason=projection_reason,
+    )
     return {
         "power_role_evidence_metrics_supported": (
             projection_is_supported and power_count > 0
@@ -128,31 +132,22 @@ def _compute_power_acceptance_metrics_from_normalized(
 
 def _power_role_opportunity_metrics(
     games: Sequence[Mapping[str, Any]],
+    *,
+    projection_is_supported: bool,
+    projection_reason: str | None,
 ) -> dict[str, Any]:
     """按神职实际机会而非伤害结果计算技能选择分母。"""
-    counts: Counter[str] = Counter()
-    event_to_bucket = {
-        "hunter_shot_opportunity": "opportunity",
-        "seer_check_opportunity": "opportunity",
-        "hunter_shot_selected": "selected",
-        "seer_check_selected": "selected",
-        "seer_check_repaired": "repaired",
-        "hunter_shot_declined": "declined",
-        "seer_check_skipped": "skipped",
-        "hunter_shot_blocked": "blocked",
-        "hunter_shot_resolved": "resolved",
-        "seer_check_resolved": "resolved",
-    }
-    for game in games:
-        for event in game.get("events", []):
-            if not isinstance(event, Mapping):
-                continue
-            bucket = event_to_bucket.get(str(event.get("type") or ""))
-            if bucket is not None:
-                counts[bucket] += 1
-
+    if not projection_is_supported:
+        return _unsupported_power_opportunity_metrics(projection_reason)
+    if any(game.get("status") != "finished" for game in games):
+        return _unsupported_power_opportunity_metrics("unfinished_game")
+    valid, reason, counts = _validated_power_opportunity_counts(games)
+    if not valid:
+        return _unsupported_power_opportunity_metrics(reason)
     opportunities = counts["opportunity"]
     return {
+        "power_role_opportunity_metrics_supported": True,
+        "power_role_opportunity_metrics_unsupported_reason": None,
         "power_role_opportunity_count": opportunities,
         "power_role_selected_count": counts["selected"],
         "power_role_repaired_count": counts["repaired"],
@@ -164,6 +159,164 @@ def _power_role_opportunity_metrics(
             counts["selected"] / opportunities if opportunities else None
         ),
     }
+
+def _unsupported_power_opportunity_metrics(reason: str | None) -> dict[str, Any]:
+    return {
+        "power_role_opportunity_metrics_supported": False,
+        "power_role_opportunity_metrics_unsupported_reason": (
+            reason or "unsupported_power_opportunity_metrics"
+        ),
+        "power_role_opportunity_count": None,
+        "power_role_selected_count": None,
+        "power_role_repaired_count": None,
+        "power_role_declined_count": None,
+        "power_role_skipped_count": None,
+        "power_role_blocked_count": None,
+        "power_role_resolved_count": None,
+        "power_role_selection_rate": None,
+    }
+
+
+def _validated_power_opportunity_counts(
+    games: Sequence[Mapping[str, Any]],
+) -> tuple[bool, str | None, Counter[str]]:
+    counts: Counter[str] = Counter()
+    for game in games:
+        game_id = game.get("game_id")
+        events = game.get("events")
+        players = game.get("players")
+        if not isinstance(game_id, str) or not isinstance(events, (list, tuple)) or not isinstance(players, Mapping):
+            return False, "invalid_power_opportunity_log", Counter()
+        used_event_ids: set[str] = set()
+        identities: set[tuple[str, str, int]] = set()
+        for index, opportunity in enumerate(events):
+            if not isinstance(opportunity, Mapping):
+                return False, "invalid_power_opportunity_event", Counter()
+            spec = _power_opportunity_spec(str(opportunity.get("type") or ""))
+            if spec is None:
+                continue
+            role, choice_types, resolution_type, resolution_visibility = spec
+            payload = opportunity.get("payload")
+            if not isinstance(payload, Mapping) or not _is_canonical_power_event(
+                opportunity, game_id, "moderator_only", used_event_ids
+            ):
+                return False, "noncanonical_power_opportunity", Counter()
+            actor_id = payload.get("actor_id")
+            night_number = payload.get("night_number")
+            player = players.get(actor_id) if isinstance(actor_id, str) else None
+            if (
+                not isinstance(player, Mapping)
+                or player.get("role") != role
+                or isinstance(night_number, bool)
+                or not isinstance(night_number, int)
+                or night_number < 1
+            ):
+                return False, "invalid_power_opportunity_actor", Counter()
+            identity = (role, actor_id, night_number)
+            if identity in identities:
+                return False, "duplicate_power_opportunity_identity", Counter()
+            identities.add(identity)
+            choice_index = _find_power_chain_event(
+                events, index + 1, actor_id, night_number, choice_types,
+                "moderator_only", game_id, used_event_ids,
+            )
+            if choice_index is None:
+                return False, "missing_power_opportunity_choice", Counter()
+            resolution_index = _find_power_chain_event(
+                events, choice_index + 1, actor_id, night_number, {resolution_type},
+                resolution_visibility, game_id, used_event_ids,
+                allow_missing_night=(role == "hunter"),
+            )
+            if resolution_index is None:
+                return False, "missing_power_opportunity_resolution", Counter()
+            counts["opportunity"] += 1
+            choice_type = str(events[choice_index].get("type"))
+            counts[_power_choice_bucket(choice_type)] += 1
+            counts["resolved"] += 1
+    return True, None, counts
+
+
+def _power_opportunity_spec(
+    event_type: str,
+) -> tuple[str, set[str], str, str] | None:
+    if event_type == "hunter_shot_opportunity":
+        return (
+            "hunter",
+            {"hunter_shot_selected", "hunter_shot_declined", "hunter_shot_blocked"},
+            "hunter_shot_resolved",
+            "public",
+        )
+    if event_type == "seer_check_opportunity":
+        return (
+            "seer",
+            {"seer_check_selected", "seer_check_repaired", "seer_check_skipped"},
+            "seer_check_resolved",
+            "moderator_only",
+        )
+    return None
+
+
+def _power_choice_bucket(event_type: str) -> str:
+    return {
+        "hunter_shot_selected": "selected",
+        "seer_check_selected": "selected",
+        "seer_check_repaired": "repaired",
+        "hunter_shot_declined": "declined",
+        "seer_check_skipped": "skipped",
+        "hunter_shot_blocked": "blocked",
+    }[event_type]
+
+
+def _is_canonical_power_event(
+    event: Mapping[str, Any],
+    game_id: str,
+    visibility: str,
+    used_event_ids: set[str],
+) -> bool:
+    event_id = event.get("event_id")
+    sequence_number = event.get("sequence_number")
+    if (
+        event.get("visibility") != visibility
+        or event.get("schema_version") != "2"
+        or event.get("game_id") != game_id
+        or not isinstance(event_id, str)
+        or isinstance(sequence_number, bool)
+        or not isinstance(sequence_number, int)
+        or sequence_number < 0
+        or event_id != f"{game_id}:e{sequence_number:06d}"
+        or not event.get("occurred_at")
+        or event_id in used_event_ids
+    ):
+        return False
+    used_event_ids.add(event_id)
+    return True
+
+
+def _find_power_chain_event(
+    events: Sequence[Any],
+    start: int,
+    actor_id: str,
+    night_number: int,
+    allowed_types: set[str],
+    visibility: str,
+    game_id: str,
+    used_event_ids: set[str],
+    *,
+    allow_missing_night: bool = False,
+) -> int | None:
+    for index in range(start, len(events)):
+        event = events[index]
+        if not isinstance(event, Mapping) or str(event.get("type") or "") not in allowed_types:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping) or payload.get("actor_id") != actor_id:
+            continue
+        if payload.get("night_number") not in ({None, night_number} if allow_missing_night else {night_number}):
+            continue
+        if _is_canonical_power_event(event, game_id, visibility, used_event_ids):
+            return index
+        return None
+    return None
 
 
 def _power_role_evidence_complete(evidence: dict[str, Any]) -> bool:

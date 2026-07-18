@@ -22,7 +22,11 @@ from werewolf_agent.runtime.agent_adapter import (
     agent_sheriff_withdraw,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
-from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
+from werewolf_agent.runtime.skill_opportunity_events import (
+    append_private_skill_event,
+    can_select_self_destruct,
+    is_live_werewolf,
+)
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     logger,
@@ -67,7 +71,7 @@ def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
     for pid, p in gs.players.items():
         if not p.alive:
             continue
-        self_destruct_available = p.role == "werewolf"
+        self_destruct_available = is_live_werewolf(gs, pid)
         if self_destruct_available:
             gs = append_private_skill_event(
                 gs,
@@ -107,7 +111,12 @@ def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
                 ))
             else:
                 exposure_collector.flush_events()
-            if result.get("self_destruct"):
+            if result.get("self_destruct") and can_select_self_destruct(
+                gs,
+                actor_id=pid,
+                day_number=gs.day_number,
+                opportunity_phase="sheriff_registration",
+            ):
                 gs = append_private_skill_event(
                     gs,
                     "self_destruct_selected",
@@ -187,8 +196,7 @@ def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
     withdrawing: list[str] = []
     has_agents = False
     for candidate_id in candidates:
-        candidate = gs.players.get(candidate_id)
-        self_destruct_available = bool(candidate and candidate.alive and candidate.role == "werewolf")
+        self_destruct_available = is_live_werewolf(gs, candidate_id)
         if self_destruct_available:
             gs = append_private_skill_event(
                 gs,
@@ -228,7 +236,12 @@ def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
                 ))
             else:
                 exposure_collector.flush_events()
-            if result.get("self_destruct"):
+            if result.get("self_destruct") and can_select_self_destruct(
+                gs,
+                actor_id=candidate_id,
+                day_number=gs.day_number,
+                opportunity_phase="sheriff_withdraw",
+            ):
                 gs = append_private_skill_event(
                     gs,
                     "self_destruct_selected",

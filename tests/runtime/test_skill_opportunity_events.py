@@ -65,6 +65,8 @@ def test_private_self_destruct_chain_has_authority_and_actor_projection() -> Non
 
 
 def test_public_skill_resolution_excludes_private_reason_and_true_role() -> None:
+    import pytest
+
     from werewolf_agent.runtime.exposure_audit import (
         is_safe_public_skill_resolution_payload,
     )
@@ -88,6 +90,13 @@ def test_public_skill_resolution_excludes_private_reason_and_true_role() -> None
         **event.payload,
         "private_reason": "sensitive",
     })
+    with pytest.raises(ValueError, match="public_skill_resolution_event_type"):
+        build_public_skill_resolution(
+            "seer_check_resolved",
+            actor_id="seer",
+            target_id="wolf",
+            public_result="werewolf",
+        )
 
 
 def test_seer_chain_is_never_public_and_actor_projection_is_owner_scoped() -> None:
@@ -124,6 +133,76 @@ def test_seer_chain_is_never_public_and_actor_projection_is_owner_scoped() -> No
         "seer_check_resolved_actor_view",
     ]
     assert wolf_facts == []
+
+
+def test_night_resolution_rejects_forged_or_cross_role_seer_choice() -> None:
+    from werewolf_agent.runtime.graph import _new_engine
+    from werewolf_agent.runtime.nodes.night_resolution import resolve_night
+
+    gs = GameState(
+        game_id="forged_seer_choice",
+        night_number=2,
+        players={
+            "seer": PlayerState(id="seer", role="seer"),
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "villager": PlayerState(id="villager", role="villager"),
+        },
+        events=list(build_private_skill_event(
+            "seer_check_selected",
+            actor_id="wolf",
+            night_number=2,
+            target_id="villager",
+        )),
+    )
+
+    result = resolve_night({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "seer_target_id": "villager",
+    })["game_state"]
+
+    assert not [
+        event for event in result.events
+        if event.type == "seer_check_resolved"
+    ]
+
+
+def test_night_seer_same_night_reentry_does_not_duplicate_choice_chain(
+    monkeypatch,
+) -> None:
+    from importlib import import_module
+
+    night_specialists = import_module(
+        "werewolf_agent.runtime.nodes.night_specialists"
+    )
+    monkeypatch.setattr(
+        night_specialists,
+        "_dispatch_agent",
+        lambda *_args, **_kwargs: {"seer_target_id": "villager"},
+    )
+    initial = {
+        "game_state": GameState(
+            game_id="seer_reentry",
+            night_number=2,
+            players={
+                "seer": PlayerState(id="seer", role="seer"),
+                "villager": PlayerState(id="villager", role="villager"),
+            },
+        ),
+        "seer_target_id": "villager",
+    }
+    first = night_specialists.night_seer(initial)
+    replay = night_specialists.night_seer({
+        **initial,
+        "game_state": first["game_state"],
+    })
+
+    for event_type in ("seer_check_opportunity", "seer_check_selected"):
+        assert len([
+            event for event in replay["game_state"].events
+            if event.type == event_type
+            and event.visibility is EventVisibility.MODERATOR_ONLY
+        ]) == 1
 
 
 def test_self_destruct_is_recorded_only_for_an_available_wolf_choice() -> None:
@@ -253,6 +332,44 @@ def test_sheriff_speech_records_private_wolf_choice_and_routes_to_resolver(
     }
 
 
+def test_self_destruct_resolution_ignores_stale_reentry_after_canonical_result() -> None:
+    from werewolf_agent.runtime.graph import _new_engine
+    from werewolf_agent.runtime.nodes.skills import resolve_self_destruct_node
+
+    gs = GameState(
+        game_id="self_destruct_reentry",
+        day_number=2,
+        players={"wolf": PlayerState(id="wolf", role="werewolf")},
+        events=[
+            *build_private_skill_event(
+                "self_destruct_opportunity",
+                actor_id="wolf",
+                day_number=2,
+                opportunity_phase="sheriff_speech",
+            ),
+            *build_private_skill_event(
+                "self_destruct_selected",
+                actor_id="wolf",
+                day_number=2,
+                opportunity_phase="sheriff_speech",
+            ),
+        ],
+    )
+    first = resolve_self_destruct_node({
+        "game_state": gs,
+        "engine": _new_engine(),
+        "self_destruct_wolf_id": "wolf",
+    })["game_state"]
+    replay = resolve_self_destruct_node({
+        "game_state": first,
+        "engine": _new_engine(),
+        "self_destruct_wolf_id": "wolf",
+    })["game_state"]
+
+    assert replay.events == first.events
+    assert replay.sheriff_interrupt_count == first.sheriff_interrupt_count
+
+
 def test_sheriff_speech_declines_once_for_wolf_fallback_but_not_nonwolf(
     monkeypatch,
 ) -> None:
@@ -312,7 +429,7 @@ def test_sheriff_speech_declines_once_for_wolf_fallback_but_not_nonwolf(
     villager_events = run(
         ["villager"],
         {"villager": PlayerState(id="villager", role="villager")},
-        {"speech_text": "normal speech"},
+        {"self_destruct": True},
     )
     assert not [
         event for event in villager_events
@@ -325,22 +442,58 @@ def test_power_metrics_use_private_opportunity_events_as_the_denominator() -> No
         compute_power_acceptance_metrics,
     )
 
+    def event(sequence_number, event_type, payload, visibility):
+        return {
+            "type": event_type,
+            "payload": payload,
+            "visibility": visibility,
+            "event_id": f"power_opportunity_denominator:e{sequence_number:06d}",
+            "sequence_number": sequence_number,
+            "game_id": "power_opportunity_denominator",
+            "schema_version": "2",
+            "occurred_at": "2026-07-18T00:00:00+00:00",
+        }
+
     metrics = compute_power_acceptance_metrics([{
         "game_id": "power_opportunity_denominator",
-        "status": "running",
+        "status": "finished",
+        "winning_faction": "good",
         "players": {
             "hunter": {"role": "hunter"},
             "seer": {"role": "seer"},
             "wolf": {"role": "werewolf"},
         },
         "events": [
-            {"type": "hunter_shot_opportunity", "payload": {}},
-            {"type": "hunter_shot_selected", "payload": {}},
-            {"type": "seer_check_opportunity", "payload": {}},
-            {"type": "seer_check_skipped", "payload": {}},
+            event(0, "hunter_shot_opportunity", {"actor_id": "hunter", "night_number": 1}, "moderator_only"),
+            event(1, "hunter_shot_selected", {"actor_id": "hunter", "night_number": 1}, "moderator_only"),
+            event(2, "hunter_shot_resolved", {"actor_id": "hunter"}, "public"),
+            event(3, "seer_check_opportunity", {"actor_id": "seer", "night_number": 1}, "moderator_only"),
+            event(4, "seer_check_skipped", {"actor_id": "seer", "night_number": 1}, "moderator_only"),
+            event(5, "seer_check_resolved", {"actor_id": "seer", "night_number": 1}, "moderator_only"),
         ],
     }])
 
     assert metrics["power_role_opportunity_count"] == 2
     assert metrics["power_role_selected_count"] == 1
     assert metrics["power_role_selection_rate"] == 0.5
+
+
+def test_power_opportunity_metrics_reject_unfinished_or_forged_event_chain() -> None:
+    from werewolf_agent.evaluation.acceptance_power_metrics import (
+        compute_power_acceptance_metrics,
+    )
+
+    metrics = compute_power_acceptance_metrics([{
+        "game_id": "unfinished_power_metrics",
+        "status": "running",
+        "players": {"villager": {"role": "villager"}},
+        "events": [{
+            "type": "seer_check_opportunity",
+            "payload": {"actor_id": "villager", "night_number": 1},
+            "visibility": "public",
+        }],
+    }])
+
+    assert metrics["power_role_opportunity_metrics_supported"] is False
+    assert metrics["power_role_opportunity_count"] is None
+    assert metrics["power_role_selection_rate"] is None

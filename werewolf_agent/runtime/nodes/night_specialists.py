@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import (
@@ -58,6 +59,32 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     if seer_id is None:
 
         return {"game_state": gs, "seer_target_id": None}
+
+    has_current_opportunity = any(
+        event.type == "seer_check_opportunity"
+        and event.visibility is EventVisibility.MODERATOR_ONLY
+        and event.payload.get("actor_id") == seer_id
+        and event.payload.get("night_number") == gs.night_number
+        for event in gs.events
+    )
+    if has_current_opportunity:
+        existing_choice = next((
+            event for event in reversed(gs.events)
+            if event.type in {
+                "seer_check_selected",
+                "seer_check_repaired",
+                "seer_check_skipped",
+            }
+            and event.visibility is EventVisibility.MODERATOR_ONLY
+            and event.payload.get("actor_id") == seer_id
+            and event.payload.get("night_number") == gs.night_number
+        ), None)
+        if existing_choice is not None:
+            target_id = existing_choice.payload.get("target_id")
+            return {
+                "game_state": gs,
+                "seer_target_id": target_id if isinstance(target_id, str) else None,
+            }
 
     legal_targets = build_seer_legal_targets(
         gs,
