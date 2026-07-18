@@ -10,6 +10,111 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+
+import pytest
+
+
+def _v2_event(
+    game_id: str,
+    sequence_number: int,
+    event_type: str,
+    payload: dict[str, object],
+    *,
+    visibility: str = "moderator_only",
+    trace_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "type": event_type,
+        "payload": payload,
+        "visibility": visibility,
+        "event_id": f"{game_id}:e{sequence_number:06d}",
+        "sequence_number": sequence_number,
+        "occurred_at": "2026-07-18T00:00:00+00:00",
+        "game_id": game_id,
+        "trace_id": trace_id,
+        "schema_version": "2",
+    }
+
+
+def _closure_game(game_id: str, *, single_wolf: bool) -> dict[str, object]:
+    wolf_ids = ["w1"] if single_wolf else ["w1", "w2"]
+    events: list[dict[str, object]] = []
+    for wolf_id in wolf_ids:
+        sequence = len(events)
+        event_id = f"{game_id}:e{sequence:06d}"
+        events.append(_v2_event(
+            game_id,
+            sequence,
+            "wolf_discussion",
+            {
+                "wolf_id": wolf_id,
+                "night_number": 1,
+                "target_stance": {
+                    "wolf_id": wolf_id,
+                    "target_id": "v1",
+                    "stance": "support",
+                    "priority": "primary",
+                    "round_number": sequence + 1,
+                    "source_event_id": event_id,
+                },
+            },
+            visibility="werewolf_team_only",
+        ))
+    status = "single_wolf" if single_wolf else "majority"
+    sequence = len(events)
+    events.append(_v2_event(
+        game_id,
+        sequence,
+        "wolf_kill_selected",
+        {
+            "night_number": 1,
+            "target_id": "v1",
+            "reason": "wolf_stance_consensus",
+            "plan_key": "night_kill_primary",
+        },
+        visibility="werewolf_team_only",
+        trace_id=(
+            f"{game_id}:werewolf_team:wolf_consensus:D1:N1:"
+            f"wolf_kill_selected:stance:{status}:primary:0"
+        ),
+    ))
+    events.append(_v2_event(
+        game_id,
+        len(events),
+        "reflection_complete",
+        {
+            "status": "complete",
+            "valid_entry_count": 1,
+            "entries": [{"player_id": "w1"}],
+        },
+    ))
+    events.append(_v2_event(
+        game_id,
+        len(events),
+        "hunter_shot_resolved",
+        {
+            "actor_id": "w1",
+            "target_id": None,
+            "public_result": "declined",
+        },
+        visibility="public",
+    ))
+    players = {
+        wolf_id: {"id": wolf_id, "role": "werewolf", "alive": True}
+        for wolf_id in wolf_ids
+    }
+    players["v1"] = {"id": "v1", "role": "villager", "alive": True}
+    return {
+        "game_id": game_id,
+        "status": "finished",
+        "winning_faction": "werewolf",
+        "phase": "finished",
+        "players": players,
+        "events": events,
+        "deaths": [],
+        "quality_score": {"probe": game_id},
+    }
 
 
 def _passing_report() -> dict[str, object]:
@@ -64,6 +169,30 @@ def _passing_report() -> dict[str, object]:
         "power_role_evidence_completeness_rate": 1.0,
         "decision_execution_metrics_supported": True,
         "attempt_retry_consistency_error_count": 0,
+        "resolution_batch_integrity_metrics_supported": True,
+        "malformed_resolution_batch_count": 0,
+        "provider_fallback_route_metrics_supported": True,
+        "same_route_provider_fallback_count": 0,
+        "saved_offline_quality_consistency_metrics_supported": True,
+        "saved_offline_quality_diff_count": 0,
+        "terminal_integrity_metrics_supported": True,
+        "finished_without_winner_count": 0,
+        "abort_terminal_coverage_metrics_supported": True,
+        "abort_terminal_coverage_rate": 1.0,
+        "wolf_consensus_execution_metrics_supported": True,
+        "majority_wolf_kill_execution_metrics_supported": True,
+        "majority_wolf_kill_execution_rate": 1.0,
+        "single_wolf_kill_execution_metrics_supported": True,
+        "single_wolf_kill_execution_rate": 1.0,
+        "reflection_transaction_metrics_supported": True,
+        "empty_reflection_success_count": 0,
+        "source_event_traceability_metrics_supported": True,
+        "source_event_id_traceability_rate": 1.0,
+        "public_exposure_metrics_supported": True,
+        "public_skill_resolution_leak_count": 0,
+        "soak_launch_count": 10,
+        "soak_finished_count": 10,
+        "soak_aborted_count": 0,
         "wolf_win_rate": 0.5,
         "good_win_rate": 0.5,
     }
@@ -76,7 +205,12 @@ def test_all_hard_thresholds_pass_with_complete_descriptors() -> None:
 
     assert result["overall_pass"] is True
     assert result["requires_more_samples"] is False
-    assert len(result["thresholds"]) == 34
+    assert result["soak_summary"] == {
+        "launch_count": 10,
+        "finished_count": 10,
+        "aborted_count": 0,
+    }
+    assert len(result["thresholds"]) == 44
     assert all(set(item) == {
         "name", "supported", "actual", "operator", "expected", "passed"
     } for item in result["thresholds"])
@@ -105,6 +239,239 @@ def test_missing_metric_fails_closed_and_boundary_operators_are_exact() -> None:
     assert by_name["wolf_plan_schema_fallback_rate"]["passed"] is False
     assert by_name["semantic_repair_success_rate"]["passed"] is True
     assert result["overall_pass"] is False
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "failing_value"),
+    [
+        ("malformed_resolution_batch_count", 1),
+        ("same_route_provider_fallback_count", 1),
+        ("saved_offline_quality_diff_count", 1),
+        ("finished_without_winner_count", 1),
+        ("abort_terminal_coverage_rate", 0.9),
+        ("majority_wolf_kill_execution_rate", 0.9),
+        ("single_wolf_kill_execution_rate", 0.9),
+        ("empty_reflection_success_count", 1),
+        ("source_event_id_traceability_rate", 0.9),
+        ("public_skill_resolution_leak_count", 1),
+    ],
+)
+def test_post_july14_closure_metric_is_a_hard_gate(
+    metric_name: str,
+    failing_value: float,
+) -> None:
+    from scripts.evaluate_audit_closure_thresholds import evaluate_thresholds
+
+    report = _passing_report()
+    report[metric_name] = failing_value
+
+    result = evaluate_thresholds(report)
+    by_name = {item["name"]: item for item in result["thresholds"]}
+
+    assert by_name[metric_name]["passed"] is False
+    assert result["overall_pass"] is False
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "support_name"),
+    [
+        (
+            "malformed_resolution_batch_count",
+            "resolution_batch_integrity_metrics_supported",
+        ),
+        (
+            "same_route_provider_fallback_count",
+            "provider_fallback_route_metrics_supported",
+        ),
+        (
+            "saved_offline_quality_diff_count",
+            "saved_offline_quality_consistency_metrics_supported",
+        ),
+        ("finished_without_winner_count", "terminal_integrity_metrics_supported"),
+        (
+            "abort_terminal_coverage_rate",
+            "abort_terminal_coverage_metrics_supported",
+        ),
+        (
+            "majority_wolf_kill_execution_rate",
+            "majority_wolf_kill_execution_metrics_supported",
+        ),
+        (
+            "single_wolf_kill_execution_rate",
+            "single_wolf_kill_execution_metrics_supported",
+        ),
+        (
+            "empty_reflection_success_count",
+            "reflection_transaction_metrics_supported",
+        ),
+        (
+            "source_event_id_traceability_rate",
+            "source_event_traceability_metrics_supported",
+        ),
+        (
+            "public_skill_resolution_leak_count",
+            "public_exposure_metrics_supported",
+        ),
+    ],
+)
+def test_post_july14_closure_gate_fails_closed_without_support(
+    metric_name: str,
+    support_name: str,
+) -> None:
+    from scripts.evaluate_audit_closure_thresholds import evaluate_thresholds
+
+    report = _passing_report()
+    report[support_name] = False
+
+    result = evaluate_thresholds(report)
+    by_name = {item["name"]: item for item in result["thresholds"]}
+
+    assert by_name[metric_name]["supported"] is False
+    assert by_name[metric_name]["actual"] is None
+    assert by_name[metric_name]["passed"] is False
+    assert result["overall_pass"] is False
+
+
+def test_balance_audit_derives_supported_post_july14_closure_metrics() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    games = [
+        _closure_game("closure-majority", single_wolf=False),
+        _closure_game("closure-single", single_wolf=True),
+    ]
+
+    report = compute_balance_audit(
+        games,
+        quality_recomputer=lambda game: dict(game["quality_score"]),
+    )
+
+    assert report["resolution_batch_integrity_metrics_supported"] is True
+    assert report["malformed_resolution_batch_count"] == 0
+    assert report["provider_fallback_route_metrics_supported"] is True
+    assert report["same_route_provider_fallback_count"] == 0
+    assert report["saved_offline_quality_consistency_metrics_supported"] is True
+    assert report["saved_offline_quality_diff_count"] == 0
+    assert report["terminal_integrity_metrics_supported"] is True
+    assert report["finished_without_winner_count"] == 0
+    assert report["abort_terminal_coverage_metrics_supported"] is True
+    assert report["abort_terminal_coverage_rate"] == 1.0
+    assert report["wolf_consensus_execution_metrics_supported"] is True
+    assert report["majority_wolf_kill_execution_metrics_supported"] is True
+    assert report["majority_wolf_kill_execution_rate"] == 1.0
+    assert report["single_wolf_kill_execution_metrics_supported"] is True
+    assert report["single_wolf_kill_execution_rate"] == 1.0
+    assert report["reflection_transaction_metrics_supported"] is True
+    assert report["empty_reflection_success_count"] == 0
+    assert report["source_event_traceability_metrics_supported"] is True
+    assert report["source_event_id_traceability_rate"] == 1.0
+    assert report["public_exposure_metrics_supported"] is True
+    assert report["public_skill_resolution_leak_count"] == 0
+
+
+def test_wolf_consensus_execution_rates_are_non_vacuous_per_route() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = _closure_game("closure-majority-only", single_wolf=False)
+    report = compute_balance_audit(
+        [game],
+        quality_recomputer=lambda source: dict(source["quality_score"]),
+    )
+
+    assert report["majority_wolf_kill_execution_metrics_supported"] is True
+    assert report["majority_wolf_kill_execution_rate"] == 1.0
+    assert report["single_wolf_kill_execution_metrics_supported"] is False
+    assert report["single_wolf_kill_execution_rate"] is None
+
+
+def test_balance_audit_surfaces_every_decisive_post_july14_failure() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    game = _closure_game("closure-corrupt", single_wolf=False)
+    events = game["events"]
+    assert isinstance(events, list)
+    discussion = events[0]
+    stance = discussion["payload"]["target_stance"]
+    stance["source_event_id"] = "wrong-source"
+    del events[2]
+    reflection = next(event for event in events if event["type"] == "reflection_complete")
+    reflection["payload"].update({"status": "complete", "valid_entry_count": 0, "entries": []})
+    public_resolution = next(
+        event for event in events if event["type"] == "hunter_shot_resolved"
+    )
+    public_resolution["payload"]["private_reason"] = "must-not-leak"
+    events.append(_v2_event(
+        "closure-corrupt",
+        len(events),
+        "action_trace_audit",
+        {
+            "task_type": "speech",
+            "action_trace": {
+                "execution_attempts": [
+                    {
+                        "provider": "same",
+                        "model": "same-model",
+                        "route_kind": "primary",
+                    },
+                    {
+                        "provider": "same",
+                        "model": "same-model",
+                        "route_kind": "provider_fallback",
+                    },
+                ],
+            },
+        },
+    ))
+    game["deaths"] = [{
+        "player_id": "v1",
+        "reason": "wolf_kill",
+        "resolution_batch": "night_?",
+        "resolution_batch_parse_failed": True,
+    }]
+    aborted = deepcopy(_closure_game("closure-aborted", single_wolf=True))
+    aborted.update({
+        "status": "aborted",
+        "winning_faction": None,
+        "termination_reason": "step_limit",
+        "quality_score": {"probe": "saved"},
+    })
+    aborted_events = aborted["events"]
+    assert isinstance(aborted_events, list)
+    aborted["events"] = [
+        event for event in aborted_events if event["type"] != "game_aborted"
+    ]
+
+    report = compute_balance_audit(
+        [game, aborted],
+        quality_recomputer=lambda source: {"probe": "offline"},
+    )
+
+    assert report["malformed_resolution_batch_count"] == 1
+    assert report["same_route_provider_fallback_count"] == 1
+    assert report["saved_offline_quality_diff_count"] == 2
+    assert report["abort_terminal_coverage_rate"] == 0.0
+    assert report["majority_wolf_kill_execution_rate"] == 0.0
+    assert report["empty_reflection_success_count"] == 1
+    assert report["source_event_id_traceability_rate"] < 1.0
+    assert report["public_skill_resolution_leak_count"] == 1
+
+
+def test_balance_audit_fails_closed_when_closure_evidence_is_legacy_or_missing() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    report = compute_balance_audit([{
+        "game_id": "legacy-incomplete",
+        "winning_faction": "good",
+        "players": {"p01": {"role": "villager"}},
+        "events": [],
+        "deaths": [],
+    }])
+
+    assert report["saved_offline_quality_consistency_metrics_supported"] is False
+    assert report["provider_fallback_route_metrics_supported"] is False
+    assert report["terminal_integrity_metrics_supported"] is False
+    assert report["wolf_consensus_execution_metrics_supported"] is False
+    assert report["source_event_traceability_metrics_supported"] is False
+    assert report["public_exposure_metrics_supported"] is False
 
 
 def test_eighty_percent_faction_skew_only_requires_more_samples() -> None:

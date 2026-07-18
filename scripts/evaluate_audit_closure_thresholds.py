@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-14
+修改日期: 2026-07-18
 
 使用示例:
     python scripts/evaluate_audit_closure_thresholds.py report.json thresholds.json
@@ -52,6 +52,16 @@ _THRESHOLDS = (
     ("possible_world_evidence_coverage_rate", "==", 1.0, "possible_world_metrics_supported"),
     ("power_role_evidence_completeness_rate", "==", 1.0, "power_role_evidence_metrics_supported"),
     ("attempt_retry_consistency_error_count", "==", 0, "decision_execution_metrics_supported"),
+    ("malformed_resolution_batch_count", "==", 0, "resolution_batch_integrity_metrics_supported"),
+    ("same_route_provider_fallback_count", "==", 0, "provider_fallback_route_metrics_supported"),
+    ("saved_offline_quality_diff_count", "==", 0, "saved_offline_quality_consistency_metrics_supported"),
+    ("finished_without_winner_count", "==", 0, "terminal_integrity_metrics_supported"),
+    ("abort_terminal_coverage_rate", "==", 1.0, "abort_terminal_coverage_metrics_supported"),
+    ("majority_wolf_kill_execution_rate", "==", 1.0, "majority_wolf_kill_execution_metrics_supported"),
+    ("single_wolf_kill_execution_rate", "==", 1.0, "single_wolf_kill_execution_metrics_supported"),
+    ("empty_reflection_success_count", "==", 0, "reflection_transaction_metrics_supported"),
+    ("source_event_id_traceability_rate", "==", 1.0, "source_event_traceability_metrics_supported"),
+    ("public_skill_resolution_leak_count", "==", 0, "public_exposure_metrics_supported"),
     ("semantic_repair_verified_claim_retention_rate", "==", 1.0, "semantic_repair_verified_claim_retention_metrics_supported"),
 )
 
@@ -113,6 +123,14 @@ def evaluate_thresholds(report: dict[str, Any]) -> dict[str, Any]:
         or isinstance(confirmation_review_count, bool)
         or confirmation_review_count > 0
     )
+    def soak_count(name: str) -> int | None:
+        value = report.get(name)
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else None
+        )
+
     return {
         "overall_pass": all(item["passed"] for item in thresholds),
         "requires_more_samples": requires_more_samples,
@@ -123,6 +141,11 @@ def evaluate_thresholds(report: dict[str, Any]) -> dict[str, Any]:
             and not isinstance(confirmed_rate, bool)
             else None
         ),
+        "soak_summary": {
+            "launch_count": soak_count("soak_launch_count"),
+            "finished_count": soak_count("soak_finished_count"),
+            "aborted_count": soak_count("soak_aborted_count"),
+        },
         "thresholds": thresholds,
     }
 

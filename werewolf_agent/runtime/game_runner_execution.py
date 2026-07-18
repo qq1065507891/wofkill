@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.game_runner_execution import GameRunnerExecutionMixin
@@ -28,6 +28,42 @@ from werewolf_agent.runtime.game_termination import (
 
 
 logger = logging.getLogger("werewolf_agent.runtime.game_runner")
+
+
+class _GameProgressGuard:
+    """同时拦截阶段卡死与仅增长昼夜编号的伪进展。"""
+
+    def __init__(self) -> None:
+        self._last_phase_snapshot: tuple[str, int, int] | None = None
+        self._same_phase_count = 0
+        self._last_alive_ids: tuple[str, ...] | None = None
+        self._same_alive_count = 0
+
+    def observe(self, state: GameState) -> str | None:
+        """返回卡死类型；存活集合变化视为一次决定性进展。"""
+        phase_snapshot = (state.phase, state.day_number, state.night_number)
+        if phase_snapshot == self._last_phase_snapshot:
+            self._same_phase_count += 1
+        else:
+            self._last_phase_snapshot = phase_snapshot
+            self._same_phase_count = 0
+
+        alive_ids = tuple(sorted(
+            player_id
+            for player_id, player in state.players.items()
+            if player.alive
+        ))
+        if alive_ids == self._last_alive_ids:
+            self._same_alive_count += 1
+        else:
+            self._last_alive_ids = alive_ids
+            self._same_alive_count = 0
+
+        if self._same_phase_count >= 50:
+            return "phase_snapshot"
+        if self._same_alive_count >= 100:
+            return "alive_set"
+        return None
 
 
 class GameRunnerExecutionMixin:
@@ -64,8 +100,7 @@ class GameRunnerExecutionMixin:
             return self._state
 
         initial = self._build_runtime_state()
-        last_phase_snapshot: tuple[str, int, int] | None = None
-        stuck_count = 0
+        progress_guard = _GameProgressGuard()
 
         try:
             for chunk in self._graph.stream(
@@ -75,19 +110,16 @@ class GameRunnerExecutionMixin:
                 self._process_chunk(chunk)
                 if self._state.phase == "finished":
                     return self._finish_terminal_game()
-                snapshot = (self._state.phase, self._state.day_number, self._state.night_number)
-                if snapshot == last_phase_snapshot:
-                    stuck_count += 1
-                    if stuck_count >= 50:
-                        logger.warning(
-                            "Game stuck detected at step %d: phase=%s day=%d night=%d - forcing finish",
-                            self._step_count, self._state.phase,
-                            self._state.day_number, self._state.night_number,
-                        )
-                        return self._abort_terminal_game("step_limit")
-                else:
-                    stuck_count = 0
-                    last_phase_snapshot = snapshot
+                stuck_kind = progress_guard.observe(self._state)
+                if stuck_kind is not None:
+                    logger.warning(
+                        "Game stuck detected at step %d: kind=%s "
+                        "phase=%s day=%d night=%d - aborting",
+                        self._step_count, stuck_kind,
+                        self._state.phase,
+                        self._state.day_number, self._state.night_number,
+                    )
+                    return self._abort_terminal_game("step_limit")
         except GraphRecursionError as exc:
             logger.warning(
                 "Graph recursion limit in run() at step %d (phase=%s): %s",
@@ -127,6 +159,7 @@ class GameRunnerExecutionMixin:
             poison_target_id=poison_target_id,
             seer_target_id=seer_target_id,
         )
+        progress_guard = _GameProgressGuard()
 
         try:
             for chunk in self._graph.stream(
@@ -136,6 +169,15 @@ class GameRunnerExecutionMixin:
                 self._process_chunk(chunk)
                 if self._state.phase == "finished":
                     return self._finish_terminal_game()
+                stuck_kind = progress_guard.observe(self._state)
+                if stuck_kind is not None:
+                    logger.warning(
+                        "Scripted game stuck detected at step %d: "
+                        "kind=%s phase=%s day=%d night=%d - aborting",
+                        self._step_count, stuck_kind, self._state.phase,
+                        self._state.day_number, self._state.night_number,
+                    )
+                    return self._abort_terminal_game("step_limit")
         except GraphRecursionError as exc:
             logger.warning(
                 "Graph recursion limit in run_scripted() at step %d: %s",

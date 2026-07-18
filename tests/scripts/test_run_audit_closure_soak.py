@@ -75,10 +75,24 @@ if script_name == "run_real_game.py":
     else:
         game_path = output_dir / "game.json"
     game_path.write_text(
-        json.dumps({"game_id": values["--game-id"], "seed": int(values["--seed"])}),
+        json.dumps({
+            "game_id": values["--game-id"],
+            "seed": int(values["--seed"]),
+            "status": "aborted" if call_number == int(
+                os.environ.get("FAKE_ABORT_AT", "0")
+            ) else "finished",
+            "winning_faction": None if call_number == int(
+                os.environ.get("FAKE_ABORT_AT", "0")
+            ) else "good",
+            "termination_reason": "step_limit" if call_number == int(
+                os.environ.get("FAKE_ABORT_AT", "0")
+            ) else None,
+        }),
         encoding="utf-8",
     )
     print(f"Game log: {game_path.resolve()}")
+    if call_number == int(os.environ.get("FAKE_ABORT_AT", "0")):
+        raise SystemExit(1)
 elif script_name == "analyze_recent_balance.py":
     print(json.dumps({"completion_rate": 1.0, "input_count": len(args)}))
 elif script_name == "evaluate_audit_closure_thresholds.py":
@@ -107,23 +121,30 @@ def _run_soak(
     fake_python: tuple[Path, Path],
     *,
     extra_env: dict[str, str] | None = None,
+    include_seeds: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]], dict[str, str], Path]:
     if POWERSHELL is None:
         pytest.skip("PowerShell is required for soak orchestration tests")
 
     shim, call_log = fake_python
     artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    (artifact_root / "game_stale.json").write_text(
+        json.dumps({"game_id": "stale-must-not-be-read"}),
+        encoding="utf-8",
+    )
     state_path = tmp_path / "state.json"
     launch_cwd = tmp_path / "caller-cwd"
     launch_cwd.mkdir()
     wrapper = tmp_path / "invoke-soak.ps1"
+    seeds_argument = " -Seeds (714001..714010)" if include_seeds else ""
     wrapper.write_text(
         f"""$ErrorActionPreference = 'Stop'
 $originalLocation = (Get-Location).Path
 $env:WEREWOLF_GAME_LOG_PATH = 'sentinel-log-path'
 $exitCode = 0
 try {{
-    & '{SOAK_SCRIPT}' -PythonCommand '{shim}' -ArtifactRoot '{artifact_root}'
+    & '{SOAK_SCRIPT}'{seeds_argument} -PythonCommand '{shim}' -ArtifactRoot '{artifact_root}'
 }}
 catch {{
     Write-Error $_
@@ -144,7 +165,15 @@ exit $exitCode
     env["FAKE_PYTHON_CALL_LOG"] = str(call_log)
     env.update(extra_env or {})
     result = subprocess.run(
-        [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(wrapper)],
+        [
+            POWERSHELL,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(wrapper),
+        ],
         cwd=launch_cwd,
         env=env,
         capture_output=True,
@@ -179,11 +208,70 @@ def test_soak_runs_exactly_ten_isolated_games_then_analyzer_and_evaluator(
         "evaluate_audit_closure_thresholds.py",
     ]
     runners = calls[:10]
-    assert len({_option_value(call, "--seed") for call in runners}) == 10
+    assert [_option_value(call, "--seed") for call in runners] == [
+        str(seed) for seed in range(714001, 714011)
+    ]
     assert len({_option_value(call, "--game-id") for call in runners}) == 10
     assert len({_option_value(call, "--output-dir") for call in runners}) == 10
     assert state["cwd"] == state["original_cwd"]
     assert state["game_log_path"] == "sentinel-log-path"
+
+
+def test_soak_requires_ten_explicit_seeds(
+    tmp_path: Path,
+    fake_python: tuple[Path, Path],
+) -> None:
+    result, calls, state, _ = _run_soak(
+        tmp_path,
+        fake_python,
+        include_seeds=False,
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert state["cwd"] == state["original_cwd"]
+    assert state["game_log_path"] == "sentinel-log-path"
+
+
+def test_soak_retains_aborted_launch_without_replacement_and_reports_counts(
+    tmp_path: Path,
+    fake_python: tuple[Path, Path],
+) -> None:
+    result, calls, state, artifact_root = _run_soak(
+        tmp_path,
+        fake_python,
+        extra_env={"FAKE_ABORT_AT": "3"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [call["script"] for call in calls[:10]] == ["run_real_game.py"] * 10
+    manifests = list(artifact_root.rglob("audit-closure-soak-manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8-sig"))
+    assert manifest["launch_count"] == 10
+    assert manifest["finished_count"] == 9
+    assert manifest["aborted_count"] == 1
+    assert [row["status"] for row in manifest["games"]].count("aborted") == 1
+    assert state["cwd"] == state["original_cwd"]
+    assert state["game_log_path"] == "sentinel-log-path"
+
+
+def test_soak_analyzes_only_new_run_scoped_game_artifacts(
+    tmp_path: Path,
+    fake_python: tuple[Path, Path],
+) -> None:
+    result, calls, _, artifact_root = _run_soak(tmp_path, fake_python)
+
+    assert result.returncode == 0, result.stderr
+    analyzer = next(
+        call for call in calls if call["script"] == "analyze_recent_balance.py"
+    )
+    analyzer_args = analyzer["args"]
+    assert isinstance(analyzer_args, list)
+    assert len(analyzer_args) == 10
+    assert all("game_stale.json" not in str(path) for path in analyzer_args)
+    run_dirs = [path for path in artifact_root.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
 
 
 def test_soak_stops_immediately_when_a_runner_fails_and_restores_state(

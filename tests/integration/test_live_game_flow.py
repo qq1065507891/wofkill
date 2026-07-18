@@ -15,15 +15,18 @@ from dataclasses import replace
 import pytest
 
 from werewolf_agent.agents.player import PlayerAgent, DefaultActionValidator
-from werewolf_agent.agents.schemas import ActionType, TaskType
+from werewolf_agent.agents.schemas import TaskType
 from werewolf_agent.core.models import GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.model_gateway.router import (
     GenerateResult,
-    LLMProvider,
     ModelConfig,
     ModelRouter,
     UsageRecord,
+)
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptAssembly,
+    notify_final_prompt_observer,
 )
 from werewolf_agent.runtime.agent_adapter import SimpleAgentRegistry
 from werewolf_agent.runtime.graph import (
@@ -33,6 +36,66 @@ from werewolf_agent.runtime.graph import (
 )
 
 RULESET_PATH = "config/rulesets/pre_witch_hunter_idiot_mixed.yaml"
+
+
+def _project_tool_payload(action: dict[str, Any], tool: dict[str, Any]) -> dict[str, Any]:
+    """Project a full mock action onto the active structured-output schema."""
+    properties = tool["input_schema"]["properties"]
+    action_values = properties.get("action_type", {}).get("enum", [])
+    force_seer_check = (
+        "check_alignment" in action_values
+        and action.get("action_type") == "no_action"
+    )
+    projected: dict[str, Any] = {}
+    for field, schema in properties.items():
+        schema_type = schema.get("type")
+        schema_types = [schema_type] if isinstance(schema_type, str) else schema_type or []
+        if field == "speech":
+            projected[field] = (
+                "我是好人阵营。根据公开发言与投票变化，p01的站边有连续性，"
+                "p02的票型却缺少解释；我当前更怀疑p03前后逻辑不一致。"
+                "今天我会继续核对p03的发言并给出明确票型，若其无法回应矛盾，"
+                "我倾向投票p03，同时保留复查p02的可能。"
+            )
+        elif field == "target_stance":
+            target_schema = schema["properties"]["target_id"]
+            target_id = next(
+                (value for value in target_schema.get("enum", []) if value is not None),
+                None,
+            )
+            projected[field] = (
+                {"target_id": target_id, "stance": "propose", "priority": "primary"}
+                if target_id is not None else None
+            )
+        elif field == "action_type" and force_seer_check:
+            projected[field] = "check_alignment"
+        elif field == "target_id" and force_seer_check:
+            projected[field] = next(
+                (value for value in schema.get("enum", []) if value is not None),
+                None,
+            )
+        elif field in action:
+            projected[field] = action[field]
+        elif field in {"reason", "suspect_reason", "not_voting_reason", "candidate_comparison"}:
+            projected[field] = "基于公开发言、站边和票型进行对比判断"
+        elif schema.get("enum"):
+            projected[field] = next(
+                (value for value in schema["enum"] if value is not None),
+                None,
+            )
+        elif "null" in schema_types:
+            projected[field] = None
+        elif "array" in schema_types:
+            projected[field] = []
+        elif "object" in schema_types:
+            projected[field] = {}
+        elif "integer" in schema_types:
+            projected[field] = 1
+        elif "number" in schema_types:
+            projected[field] = 0.7
+        else:
+            projected[field] = "test"
+    return projected
 
 
 # ---------------------------------------------------------------------------
@@ -59,13 +122,32 @@ class _DeterministicMockProvider:
         prompt: str,
         config: ModelConfig,
         system_prompt: str | None = None,
+        tools=None,
+        tool_choice=None,
+        final_prompt_observer=None,
     ) -> GenerateResult:
+        if final_prompt_observer is not None and system_prompt:
+            notify_final_prompt_observer(
+                final_prompt_observer,
+                FinalPromptAssembly(
+                    system_bytes=system_prompt.encode("utf-8"),
+                    final_system_location="messages",
+                    final_system_message_index=0,
+                    provider=self.name,
+                    model=config.model,
+                ),
+            )
         action = self._decide(system_prompt or "", prompt)
+        if tools:
+            action = _project_tool_payload(action, tools[0])
         text = json.dumps(action, ensure_ascii=False)
         return GenerateResult(
             text=text,
             provider=self._name,
             model=config.model,
+            tool_call_required=bool(tool_choice),
+            tool_call_received=bool(tool_choice),
+            tool_call_name=(tool_choice or {}).get("name", ""),
             usage=UsageRecord(
                 agent_id="", task_type="",
                 provider=self._name, model=config.model,
@@ -502,13 +584,6 @@ class TestLiveGameFlow:
         if final_gs is None:
             pytest.skip("Game did not reach announce_deaths")
 
-        # Check all events for information leakage
-        forbidden_in_public = {
-            "seer_check", "wolf_discussion", "hybrid_master_chosen",
-            "witch_antidote_used", "witch_poison_used",
-            "hunter_idiot_status_confirmed",
-        }
-
         # Events with visibility markers must not be public
         for event in final_gs.events:
             vis = event.payload.get("visibility", "")
@@ -552,7 +627,6 @@ class TestLiveGameFlow:
 
         engine = _new_engine()
         players = engine.assign_roles([f"p{i:02d}" for i in range(1, 13)], seed=42)
-        seer_id = next(pid for pid, p in players.items() if p.role == "seer")
         target = next(pid for pid, p in players.items() if p.role != "seer" and p.alive)
         gs = GameState(game_id="audit_test", players=players, night_number=1)
 

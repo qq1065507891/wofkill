@@ -3,7 +3,7 @@
 功能描述：消费已保存的 JSON 对局和强类型运行时审计，汇总平衡与验收指标。
 作者: Project contributors
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-18
 使用示例：内部模块，无对外接口
 """
 
@@ -41,6 +41,10 @@ from werewolf_agent.evaluation.game_projection import (
     normalize_acceptance_games,
     normalize_quality_score,
 )
+from werewolf_agent.evaluation.post_july14_closure_metrics import (
+    QualityRecomputer,
+    compute_post_july14_closure_metrics,
+)
 from werewolf_agent.evaluation.world_evidence_audit import (
     support_matches_world as _support_matches_world,  # noqa: F401
 )
@@ -68,8 +72,16 @@ def load_game_logs(paths: Iterable[str | Path]) -> list[dict[str, Any]]:
     return games
 
 
-def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
+def compute_balance_audit(
+    games: list[dict[str, Any]],
+    *,
+    quality_recomputer: QualityRecomputer | None = None,
+) -> dict[str, Any]:
     """Compute balance and quality metrics from saved game logs."""
+    closure_metrics = compute_post_july14_closure_metrics(
+        games,
+        quality_recomputer=quality_recomputer,
+    )
     all_games = normalize_acceptance_games(games)
     game_count = len(all_games)
     finished_games = [
@@ -245,6 +257,7 @@ def compute_balance_audit(games: list[dict[str, Any]]) -> dict[str, Any]:
             persona_prompt_confirmation["confirmation_rate"]
         ),
         **acceptance_metrics,
+        **closure_metrics,
         "warnings": warnings,
     }
 

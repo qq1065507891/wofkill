@@ -877,6 +877,10 @@ def test_real_player_repair_usage_does_not_duplicate_reasoning_denominator():
     from werewolf_agent.agents.player import PlayerAgent
     from werewolf_agent.agents.schemas import ActionType, AgentContext, TaskType
     from werewolf_agent.model_gateway.router import GenerateResult, ModelRouter, UsageRecord
+    from werewolf_agent.model_gateway.final_prompt_observer import (
+        FinalPromptAssembly,
+        notify_final_prompt_observer,
+    )
     from scripts.run_real_game_reports import _reasoning_evidence_summary
 
     class SequenceProvider:
@@ -892,7 +896,21 @@ def test_real_player_repair_usage_does_not_duplicate_reasoning_denominator():
         def name(self):
             return "sequence"
 
-        def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        def generate(
+            self, prompt, config, system_prompt=None, tools=None,
+            tool_choice=None, final_prompt_observer=None,
+        ):
+            if final_prompt_observer is not None and system_prompt:
+                notify_final_prompt_observer(
+                    final_prompt_observer,
+                    FinalPromptAssembly(
+                        system_bytes=system_prompt.encode("utf-8"),
+                        final_system_location="messages",
+                        final_system_message_index=0,
+                        provider=self.name,
+                        model=config.model,
+                    ),
+                )
             text = self.responses.pop(0)
             return GenerateResult(
                 text=text,

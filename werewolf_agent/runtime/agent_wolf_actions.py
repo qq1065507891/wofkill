@@ -33,6 +33,7 @@ from werewolf_agent.runtime.context import (
     build_agent_context,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+from werewolf_agent.runtime.strategy.seer import public_seer_claimants
 from werewolf_agent.runtime.json_extract import (
     extract_first_balanced_json_object as _extract_first_balanced_json_object,
 )
@@ -542,14 +543,16 @@ def agent_wolf_discussion(
         and stored_plan.get("night_number") == gs.night_number
         else None
     )
-    if current_plan is not None:
-        # 仅本夜计划能成为高优先级刀口；跨夜计划不能恢复执行权威。
+    if current_plan is not None or public_seer_claimants(gs):
+        # 公开跳预言家只作为讨论提示，最终击杀仍必须由本夜结构化 stance
+        # 与共识节点授权；因此这里不会恢复旧计划的执行权威。
         strategy_directive["wolf_high_priority_target"] = _build_wolf_kill_directive(
             gs,
             wolf_id=wolf_id,
             plan=current_plan,
         )
-    elif isinstance(stored_plan, dict) and stored_plan:
+    if current_plan is None and isinstance(stored_plan, dict) and stored_plan:
+        # 跨夜计划只作为历史摘要，不能恢复执行权威。
         strategy_directive["wolf_plan_history"] = build_prior_plan_summary(stored_plan)
 
     context = build_agent_context(

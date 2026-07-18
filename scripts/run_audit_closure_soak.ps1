@@ -3,7 +3,7 @@
 运行固定十个种子的真实模型验收浸泡测试，并隔离本次全部产物。
 
 .DESCRIPTION
-默认种子为 713001..713010；自定义 Seeds 也必须恰好包含十项。脚本从自身目录
+Seeds 必须由调用方显式传入且恰好包含十项。脚本从自身目录
 推导仓库根和 Python 脚本绝对路径，因此可从任意当前目录调用。每局标准输出和游戏
 JSON 均写入本次时间戳 artifact 目录，任一命令失败立即停止。
 
@@ -12,15 +12,12 @@ JSON 均写入本次时间戳 artifact 目录，任一命令失败立即停止�
 fallback_disabled、不支持事实和聚合差异均须为零。此脚本不会自行扩大付费样本数。
 
 .EXAMPLE
-pwsh -File scripts/run_audit_closure_soak.ps1
-
-.EXAMPLE
-pwsh -File scripts/run_audit_closure_soak.ps1 -Seeds (800001..800010)
+pwsh -File scripts/run_audit_closure_soak.ps1 -Seeds (714001..714010)
 #>
 
 [CmdletBinding()]
 param(
-    [int[]]$Seeds = (713001..713010),
+    [Parameter(Mandatory = $true)][int[]]$Seeds,
     [int]$MaxSteps = 500,
     [double]$TimeoutSeconds = 120,
     [int]$DelayMilliseconds = 0,
@@ -102,10 +99,14 @@ if (Test-Path -LiteralPath $outputDir) {
     throw "Refusing to reuse audit closure artifact directory: $outputDir"
 }
 New-Item -ItemType Directory -Path $outputDir | Out-Null
+if (@(Get-ChildItem -LiteralPath $outputDir -Force).Count -ne 0) {
+    throw "Audit closure artifact directory must start empty: $outputDir"
+}
 
 $previousGameLogPath = $env:WEREWOLF_GAME_LOG_PATH
 $gameFiles = [System.Collections.Generic.List[string]]::new()
 $gameIds = [System.Collections.Generic.HashSet[string]]::new()
+$launchRecords = [System.Collections.Generic.List[object]]::new()
 Push-Location -LiteralPath $root
 try {
     foreach ($seed in $Seeds) {
@@ -125,14 +126,14 @@ try {
             --output-dir $gameOutputDir 2>&1
         $runExitCode = $LASTEXITCODE
         $runOutput | ForEach-Object { Write-Host $_ }
-        if ($runExitCode -ne 0) {
-            throw "Real game failed for seed $seed with exit code $runExitCode"
-        }
 
         $gameLogLine = $runOutput | Where-Object {
             $_ -match '^\s*Game log:\s*(.+\.json)\s*$'
         } | Select-Object -Last 1
         if (-not $gameLogLine -or $gameLogLine -notmatch '^\s*Game log:\s*(.+\.json)\s*$') {
+            if ($runExitCode -ne 0) {
+                throw "Real game failed for seed $seed with exit code $runExitCode and no JSON artifact"
+            }
             throw "Real game for seed $seed did not report its JSON path"
         }
         $reportedGamePath = $Matches[1].Trim()
@@ -146,19 +147,63 @@ try {
         if ($gameData.game_id -ne $gameId) {
             throw "Game JSON ID mismatch: expected $gameId, got $($gameData.game_id)"
         }
+        if ($gameData.status -eq 'finished') {
+            if ($runExitCode -ne 0) {
+                throw "Finished game for seed $seed returned exit code $runExitCode"
+            }
+            if (-not $gameData.winning_faction) {
+                throw "Finished game for seed $seed is missing winning_faction"
+            }
+        }
+        elseif ($gameData.status -eq 'aborted') {
+            if ($runExitCode -ne 1) {
+                throw "Aborted game for seed $seed must return exit code 1; got $runExitCode"
+            }
+            if (-not $gameData.termination_reason) {
+                throw "Aborted game for seed $seed is missing termination_reason"
+            }
+        }
+        else {
+            throw "Game for seed $seed has non-terminal status: $($gameData.status)"
+        }
         $gameFiles.Add($gamePath)
+        $launchRecords.Add([ordered]@{
+            seed = $seed
+            game_id = $gameId
+            status = [string]$gameData.status
+            termination_reason = $gameData.termination_reason
+            exit_code = $runExitCode
+            artifact_path = $gamePath
+        })
     }
 
     if ($gameFiles.Count -ne 10) {
         throw "Expected 10 game JSON files, collected $($gameFiles.Count)"
     }
+    $finishedCount = @($launchRecords | Where-Object { $_.status -eq 'finished' }).Count
+    $abortedCount = @($launchRecords | Where-Object { $_.status -eq 'aborted' }).Count
+    $manifestPath = Join-Path $outputDir 'audit-closure-soak-manifest.json'
+    [ordered]@{
+        run_id = $runId
+        launch_count = $launchRecords.Count
+        finished_count = $finishedCount
+        aborted_count = $abortedCount
+        seeds = @($Seeds)
+        games = @($launchRecords)
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+    Write-Host "Audit closure launches: $($launchRecords.Count) (finished=$finishedCount, aborted=$abortedCount)"
+    Write-Host "Audit closure manifest: $manifestPath"
 
     $reportPath = Join-Path $outputDir 'audit-closure-report.json'
     $reportJson = & $PythonCommand $analyzerScript @gameFiles
     if ($LASTEXITCODE -ne 0) {
         throw "Audit analyzer failed with exit code $LASTEXITCODE"
     }
-    $reportJson | Set-Content -LiteralPath $reportPath -Encoding utf8
+    $reportData = ($reportJson -join [Environment]::NewLine) | ConvertFrom-Json
+    $reportData | Add-Member -NotePropertyName soak_launch_count -NotePropertyValue $launchRecords.Count -Force
+    $reportData | Add-Member -NotePropertyName soak_finished_count -NotePropertyValue $finishedCount -Force
+    $reportData | Add-Member -NotePropertyName soak_aborted_count -NotePropertyValue $abortedCount -Force
+    $reportData | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $reportPath -Encoding utf8
     Write-Host "Audit closure report: $reportPath"
 
     $thresholdPath = Join-Path $outputDir 'audit-closure-thresholds.json'

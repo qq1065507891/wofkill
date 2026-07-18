@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-16
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 """
 from __future__ import annotations
 
@@ -14,6 +14,10 @@ from typing import Any
 
 from werewolf_agent.core.models import GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptAssembly,
+    notify_final_prompt_observer,
+)
 from werewolf_agent.runtime.nodes import night as night_mod
 
 
@@ -28,8 +32,29 @@ class _ScriptedRouter:
         self.plan_payload = plan_payload
         self.call_count = 0
 
-    def generate(self, *, agent_id, task_type, prompt, system_prompt, tools, tool_choice):
+    def generate(
+        self,
+        *,
+        agent_id,
+        task_type,
+        prompt,
+        system_prompt,
+        tools,
+        tool_choice,
+        final_prompt_observer=None,
+    ):
         self.call_count += 1
+        if final_prompt_observer is not None:
+            notify_final_prompt_observer(
+                final_prompt_observer,
+                FinalPromptAssembly(
+                    system_bytes=system_prompt.encode("utf-8"),
+                    final_system_location="messages",
+                    final_system_message_index=0,
+                    provider="scripted",
+                    model="scripted",
+                ),
+            )
 
         class _Result:
             def __init__(self, text):

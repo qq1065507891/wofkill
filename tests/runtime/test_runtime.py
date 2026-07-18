@@ -169,7 +169,7 @@ from tests.runtime.test_graph_lifecycle import (
     test_setup_game_node,
     test_assign_roles_node,
     test_enter_night_increments_night,
-    test_reflection_node_records_self_reviews_without_persisting_v1,
+    test_reflection_node_does_not_report_success_without_valid_v2_entries,
     test_single_wolf_vote_uses_global_agent_timeout,
     test_dispatch_agent_direct_call_when_timeout_zero,
     test_manual_timer_expiration_is_deterministic,

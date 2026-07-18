@@ -61,13 +61,14 @@ def test_recent_balance_report_includes_new_guardrails(tmp_path):
     assert "hunter_friendly_fire_rate" in report
 
 
-def test_soak_script_is_isolated_and_uses_exact_default_seeds() -> None:
+def test_soak_script_is_isolated_and_requires_explicit_exact_seeds() -> None:
     root = Path(__file__).resolve().parents[2]
     script = root / "scripts" / "run_audit_closure_soak.ps1"
 
     text = script.read_text(encoding="utf-8")
 
-    assert "[int[]]$Seeds = (713001..713010)" in text
+    assert "[Parameter(Mandatory = $true)][int[]]$Seeds" in text
+    assert "(714001..714010)" in text
     assert "$Seeds.Count -ne 10" in text
     assert "Select-Object -Unique" in text
     assert "$env:WEREWOLF_GAME_LOG_PATH" in text
@@ -87,7 +88,9 @@ def test_soak_script_is_isolated_and_uses_exact_default_seeds() -> None:
     assert "audit-closure-report.json" in text
     assert "audit-closure-thresholds.json" in text
     assert "Test-Path -LiteralPath $thresholdPath" in text
-    assert "Get-ChildItem" not in text
+    assert "audit-closure-soak-manifest.json" in text
+    assert "finished_count" in text
+    assert "aborted_count" in text
 
 
 def test_soak_script_has_valid_powershell_ast() -> None:

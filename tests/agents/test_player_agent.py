@@ -3,7 +3,7 @@
 测试 PlayerAgent 的重试、兜底、投票质量、发言质量、结构化输出和技能处理。
 
 作者: Project contributors
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 """
 
 from __future__ import annotations
@@ -29,10 +29,35 @@ from werewolf_agent.model_gateway.router import (
     ModelRouter,
     UsageRecord,
 )
+from werewolf_agent.model_gateway.final_prompt_observer import (
+    FinalPromptAssembly,
+    notify_final_prompt_observer,
+)
 from werewolf_agent.persona_runtime.router import PersonaRouter
 
 
 _ProductionModelRouter = ModelRouter
+
+
+def _observe_test_provider_prompt(
+    observer,
+    system_prompt: str | None,
+    provider: str,
+    model: str,
+) -> None:
+    """让测试 provider 遵守生产协议，在生成前提交最终 system 证明。"""
+    if observer is None or not system_prompt:
+        return
+    notify_final_prompt_observer(
+        observer,
+        FinalPromptAssembly(
+            system_bytes=system_prompt.encode("utf-8"),
+            final_system_location="messages",
+            final_system_message_index=0,
+            provider=provider,
+            model=model,
+        ),
+    )
 
 
 class ModelRouter(_ProductionModelRouter):
@@ -67,7 +92,13 @@ def test_provider_fallback_parser_rejection_updates_shared_attempt_chain() -> No
         def name(self) -> str:
             return self._name
 
-        def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+        def generate(
+            self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+            final_prompt_observer=None,
+        ):
+            _observe_test_provider_prompt(
+                final_prompt_observer, system_prompt, self.name, config.model,
+            )
             response = self.responses.pop(0)
             if isinstance(response, Exception):
                 raise response
@@ -138,7 +169,12 @@ class _FailProvider:
     def name(self) -> str:
         return "fail_provider"
 
-    def generate(self, prompt, config, system_prompt=None):
+    def generate(
+        self, prompt, config, system_prompt=None, final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         raise RuntimeError("always fails")
 
 
@@ -152,7 +188,13 @@ class _JsonProvider:
     def name(self) -> str:
         return "json_provider"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         # D4-4 follow-up: production providers set text_fallback_used
         # when they return text without a tool call on a model that
         # allows text fallback. Mirror that so the agent's missing_tool_call
@@ -189,7 +231,13 @@ class _SequenceJsonProvider:
     def name(self) -> str:
         return "sequence_json_provider"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         self.calls += 1
         self.prompts.append(prompt)
         self.system_prompts.append(system_prompt or "")
@@ -244,7 +292,13 @@ class ToolAwareProvider:
     def __init__(self) -> None:
         self.calls = []
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         self.calls.append({"tools": tools, "tool_choice": tool_choice})
         return GenerateResult(
             text='{"action_type":"vote","target_id":"p07","speech":"归7","reason":"可疑","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","candidate_comparison":"p07发言矛盾比p08更具体","private_reason":"我投p07"}',
@@ -296,7 +350,13 @@ class ToolProbeProvider:
     def name(self) -> str:
         return "tool_probe"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         return GenerateResult(
             text='{"action_type":"no_action","target_id":null,"speech":"","reason":"probe","confidence":0.5}',
             provider=self.name,
@@ -312,7 +372,13 @@ class TextProbeProvider:
     def name(self) -> str:
         return "text_probe"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         return GenerateResult(
             text='{"action_type":"no_action"}',
             provider=self.name,
@@ -329,7 +395,13 @@ class TextOnlyProvider:
     def name(self) -> str:
         return "text_only"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         return GenerateResult(
             text='{"action_type":"vote","target_id":"p07","speech":"","reason":"x","confidence":0.8,"suspect_reason":"p07发言矛盾","not_voting_reason":"p08没有证据","candidate_comparison":"p07发言矛盾比p08更具体","private_reason":"我投p07"}',
             provider=self.name,
@@ -346,7 +418,13 @@ class TextJsonProvider:
     def name(self) -> str:
         return "text_json"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         return GenerateResult(
             text='{"action_type":"speech","target_id":null,"speech":"我是好人阵营。我怀疑p02，他的站边没有说清楚，发言前后存在矛盾。我倾向投票p02，并继续对比他的票型。","reason":"补充视角","confidence":0.7}',
             provider=self.name,
@@ -366,7 +444,13 @@ class ProtocolSequenceProvider:
     def name(self) -> str:
         return "protocol_sequence"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         self.modes.append(config.structured_output_mode)
         if len(self.modes) == 1:
             text = "not json"
@@ -398,7 +482,13 @@ class EmptyThenJsonObjectProvider:
     def name(self) -> str:
         return "empty_then_json_object"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         self.modes.append(config.structured_output_mode)
         if config.structured_output_mode == "json_object":
             text = (
@@ -434,7 +524,13 @@ class AlwaysInvalidProtocolProvider:
     def name(self) -> str:
         return "always_invalid_protocol"
 
-    def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+    def generate(
+        self, prompt, config, system_prompt=None, tools=None, tool_choice=None,
+        final_prompt_observer=None,
+    ):
+        _observe_test_provider_prompt(
+            final_prompt_observer, system_prompt, self.name, config.model,
+        )
         self.modes.append(config.structured_output_mode)
         return GenerateResult(
             text="not json",
@@ -452,6 +548,9 @@ class NoToolProvider:
         return "notool"
 
     def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None, **kwargs):
+        _observe_test_provider_prompt(
+            kwargs.get("final_prompt_observer"), system_prompt, self.name, config.model,
+        )
         # Returns None or raises an error for tool_choice
         if tool_choice:
             raise NotImplementedError("This provider does not support tool_choice")
@@ -1381,7 +1480,13 @@ class TestPlayerAgentRetryFallback:
             def __init__(self) -> None:
                 self.calls = 0
 
-            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+            def generate(
+                self, prompt, config, system_prompt=None, tools=None,
+                tool_choice=None, final_prompt_observer=None,
+            ):
+                _observe_test_provider_prompt(
+                    final_prompt_observer, system_prompt, self.name, config.model,
+                )
                 self.calls += 1
                 raise RuntimeError("provider unavailable")
 
@@ -1420,7 +1525,13 @@ class TestPlayerAgentRetryFallback:
                 self.name = name
                 self.error = error
 
-            def generate(self, prompt, config, system_prompt=None, tools=None, tool_choice=None):
+            def generate(
+                self, prompt, config, system_prompt=None, tools=None,
+                tool_choice=None, final_prompt_observer=None,
+            ):
+                _observe_test_provider_prompt(
+                    final_prompt_observer, system_prompt, self.name, config.model,
+                )
                 raise self.error
 
         primary = FailingProvider("primary", RuntimeError("primary private detail"))
@@ -3477,7 +3588,13 @@ class TestRetryCountConsistency:
             def name(self) -> str:
                 return "always_empty"
 
-            def generate(self, prompt, config, system_prompt=None):
+            def generate(
+                self, prompt, config, system_prompt=None,
+                final_prompt_observer=None,
+            ):
+                _observe_test_provider_prompt(
+                    final_prompt_observer, system_prompt, self.name, config.model,
+                )
                 # R3-MG-2: include the new http_status / raw_error so the
                 # categorizer classifies this as a clean "unknown" rather
                 # than timing out. We do NOT set retry_count here — the
@@ -3562,7 +3679,13 @@ class TestEmptyResponseHintValidatesNoAction:
             def name(self) -> str:
                 return "timeout"
 
-            def generate(self, prompt, config, system_prompt=None):
+            def generate(
+                self, prompt, config, system_prompt=None,
+                final_prompt_observer=None,
+            ):
+                _observe_test_provider_prompt(
+                    final_prompt_observer, system_prompt, self.name, config.model,
+                )
                 return GenerateResult(
                     text="",
                     provider="timeout",
@@ -3736,7 +3859,13 @@ class TestMissingToolCallHintAdaptsToTextFallback:
             def name(self) -> str:
                 return "text_fallback_no_tool"
 
-            def generate(self, prompt, config, system_prompt=None):
+            def generate(
+                self, prompt, config, system_prompt=None,
+                final_prompt_observer=None,
+            ):
+                _observe_test_provider_prompt(
+                    final_prompt_observer, system_prompt, self.name, config.model,
+                )
                 return GenerateResult(
                     text="<some non-JSON text response>",
                     provider="text_fallback_no_tool",
@@ -3814,7 +3943,13 @@ class TestMissingToolCallHintAdaptsToTextFallback:
             def name(self) -> str:
                 return "tool_only_no_tool"
 
-            def generate(self, prompt, config, system_prompt=None):
+            def generate(
+                self, prompt, config, system_prompt=None,
+                final_prompt_observer=None,
+            ):
+                _observe_test_provider_prompt(
+                    final_prompt_observer, system_prompt, self.name, config.model,
+                )
                 return GenerateResult(
                     text="<some non-JSON text response>",
                     provider="tool_only_no_tool",

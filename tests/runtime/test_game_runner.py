@@ -302,7 +302,7 @@ class TestGameRunnerConstructor:
 
 
 class TestGameRunnerScriptedGame:
-    def test_full_game_with_kill_completes(self) -> None:
+    def test_full_game_with_kill_completes(self, tmp_path) -> None:
         """A scripted game with wolf kill targets must complete with a winner.
 
         Without agent registry, the graph uses scripted inputs. We provide
@@ -311,6 +311,7 @@ class TestGameRunnerScriptedGame:
         runner = GameRunner(GameRunnerConfig(
             ruleset_id="pre_witch_hunter_idiot_mixed",
             seed=42,
+            emergency_artifact_dir=tmp_path,
         ))
         # Pre-assign roles to determine a non-wolf target
         engine = runner.engine
@@ -327,6 +328,7 @@ class TestGameRunnerScriptedGame:
         runner._state = gs
         # Run with a wolf kill target via the scripted interface
         final_state = runner.run_scripted(
+            max_steps=60,
             wolf_kill_target_id=non_wolves[0] if non_wolves else None,
         )
         # The game should have progressed past setup
@@ -335,12 +337,16 @@ class TestGameRunnerScriptedGame:
             "night", "day", "roles_assigned", "finished", "setup",
         )
 
-    def test_game_runner_deterministic_with_seed(self) -> None:
+    def test_game_runner_deterministic_with_seed(self, tmp_path) -> None:
         """Two runners with the same seed must produce the same final state."""
-        r1 = GameRunner(GameRunnerConfig(seed=123))
-        s1 = r1.run()
-        r2 = GameRunner(GameRunnerConfig(seed=123))
-        s2 = r2.run()
+        r1 = GameRunner(GameRunnerConfig(
+            seed=123, emergency_artifact_dir=tmp_path / "r1",
+        ))
+        s1 = r1.run(max_steps=100)
+        r2 = GameRunner(GameRunnerConfig(
+            seed=123, emergency_artifact_dir=tmp_path / "r2",
+        ))
+        s2 = r2.run(max_steps=100)
         # Both should reach the same phase with same player count
         assert s1.phase == s2.phase
         assert len(s1.players) == len(s2.players)
@@ -360,33 +366,39 @@ class TestGameRunnerScriptedGame:
 
         assert runner.game_id == "g_123"
 
-    def test_full_game_has_events(self) -> None:
+    def test_full_game_has_events(self, tmp_path) -> None:
         """A completed game must have recorded events."""
-        runner = GameRunner(GameRunnerConfig(seed=42))
-        final = runner.run()
+        runner = GameRunner(GameRunnerConfig(
+            seed=42, emergency_artifact_dir=tmp_path,
+        ))
+        final = runner.run(max_steps=100)
         assert len(final.events) > 0
         event_types = {e.type for e in final.events}
         # At minimum, setup and role assignment should appear
         assert "roles_assigned" in event_types or "enter_night" in event_types
 
-    def test_full_game_players_assigned(self) -> None:
+    def test_full_game_players_assigned(self, tmp_path) -> None:
         """After running, all 12 players must be assigned."""
-        runner = GameRunner(GameRunnerConfig(seed=7))
-        final = runner.run()
+        runner = GameRunner(GameRunnerConfig(
+            seed=7, emergency_artifact_dir=tmp_path,
+        ))
+        final = runner.run(max_steps=100)
         assert len(final.players) == 12
         from collections import Counter
         roles = Counter(p.role for p in final.players.values())
         assert roles["werewolf"] == 4
         assert roles["villager"] == 3
 
-    def test_default_run_completes_without_crash(self) -> None:
+    def test_default_run_completes_without_crash(self, tmp_path) -> None:
         """Running without explicit wolf kill target should not crash.
 
         The graph will loop with wolf_no_kill_timeout until max_steps is reached.
         The game state should still be valid with 12 players assigned.
         """
-        runner = GameRunner(GameRunnerConfig(seed=10))
-        final = runner.run()
+        runner = GameRunner(GameRunnerConfig(
+            seed=10, emergency_artifact_dir=tmp_path,
+        ))
+        final = runner.run(max_steps=100)
         assert final is not None
         assert len(final.players) == 12
 
@@ -524,22 +536,58 @@ class TestGameRunnerStepByStep:
         assert result.status == "aborted"
         assert result.termination_reason == "graph_recursion_limit"
 
-    def test_run_aborts_stuck_game_at_fifty_repeated_snapshots(self, tmp_path) -> None:
+    @pytest.mark.parametrize("entrypoint", ["run", "run_scripted"])
+    def test_run_aborts_stuck_game_at_fifty_repeated_snapshots(
+        self, entrypoint: str, tmp_path,
+    ) -> None:
         runner = GameRunner(GameRunnerConfig(
             seed=44, emergency_artifact_dir=tmp_path,
         ))
 
         class StuckGraph:
             def stream(self, *_args, **_kwargs):
-                for _ in range(51):
+                for _ in range(100):
                     yield {"stuck_node": {"game_state": runner.state}}
 
         runner._graph = StuckGraph()
-        result = runner.run(max_steps=100)
+        result = getattr(runner, entrypoint)(max_steps=100)
 
         assert result.status == "aborted"
         assert result.termination_reason == "step_limit"
+        assert runner.step_count == 51
         assert next(event for event in result.events if event.type == "game_aborted").payload["last_node"] == "stuck_node"
+
+    @pytest.mark.parametrize("entrypoint", ["run", "run_scripted"])
+    def test_entrypoints_abort_after_one_hundred_nodes_without_alive_change(
+        self, entrypoint: str, tmp_path,
+    ) -> None:
+        runner = GameRunner(GameRunnerConfig(
+            seed=144, emergency_artifact_dir=tmp_path,
+        ))
+        players = runner.engine.assign_roles(
+            [f"p{i:02d}" for i in range(1, 13)], seed=144,
+        )
+        runner._state = replace(
+            runner.state, players=players, phase="night", night_number=1,
+        )
+
+        class CosmeticProgressGraph:
+            def stream(self, *_args, **_kwargs):
+                for index in range(150):
+                    phase = "day" if index % 2 else "night"
+                    yield {"cosmetic_node": {"game_state": replace(
+                        runner.state,
+                        phase=phase,
+                        day_number=index + 1,
+                        night_number=index + 1,
+                    )}}
+
+        runner._graph = CosmeticProgressGraph()
+        result = getattr(runner, entrypoint)(max_steps=200)
+
+        assert result.status == "aborted"
+        assert result.termination_reason == "step_limit"
+        assert runner.step_count == 101
 
     def test_run_aborts_when_stream_ends_without_winner(self, tmp_path) -> None:
         runner = GameRunner(GameRunnerConfig(
@@ -815,7 +863,7 @@ class TestGameRunnerAPIIntegration:
             seed=42,
             repository=repo,
         ))
-        runner.run()
+        runner.run(max_steps=100)
         loaded = repo.load_game(runner.game_id)
         # Repository should have the game after run
         assert loaded is not None
@@ -1042,7 +1090,7 @@ class TestGameRunnerMemoryLifecycle:
             seed=42,
             repository=repo,
         ))
-        runner.run()
+        runner.run(max_steps=100)
         # No memory snapshot should exist
         snapshot = repo.load_memory_snapshot(runner.game_id)
         assert snapshot is None
