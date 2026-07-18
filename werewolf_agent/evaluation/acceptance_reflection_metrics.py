@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 """
 
 from __future__ import annotations
@@ -71,7 +71,11 @@ def _compute_reflection_acceptance_metrics_from_normalized(
                 verification.get("rejected_lesson_count")
             )
 
-        is_completed_game = game.get("winning_faction") in {"good", "werewolf"}
+        winning_faction = game.get("winning_faction")
+        is_completed_game = (
+            isinstance(winning_faction, str)
+            and winning_faction in {"good", "werewolf"}
+        )
         if is_completed_game:
             reflection_completed_game_count += 1
             player_ids = set(game.get("players", {})) if isinstance(
@@ -81,8 +85,9 @@ def _compute_reflection_acceptance_metrics_from_normalized(
                 item for item in persistence_events
                 if item[0] > latest_reflection_index
             ]
+            game_id = game.get("game_id")
             audited, rejected_count, reason = _audit_reflection_transaction(
-                game_id=str(game.get("game_id") or ""),
+                game_id=game_id if isinstance(game_id, str) else "",
                 player_ids=player_ids,
                 reflection_payload=latest_reflection_payload,
                 persistence_events=post_reflection_transactions,
@@ -145,7 +150,10 @@ def _audit_reflection_transaction(
         return False, 0, "reflection_no_valid_entries"
     if reflection_status == "persistence_failed":
         return False, 0, "reflection_persistence_failed"
-    if reflection_status not in {"complete", "partial"}:
+    if (
+        not isinstance(reflection_status, str)
+        or reflection_status not in {"complete", "partial"}
+    ):
         return False, 0, "incomplete_reflection_audit"
     if len(persistence_events) != 1:
         return False, 0, "incomplete_reflection_audit"
@@ -155,7 +163,11 @@ def _audit_reflection_transaction(
         return False, 0, "reflection_no_valid_entries"
     if status == "persistence_failed":
         return False, 0, "reflection_persistence_failed"
-    if status not in {"complete", "partial"} or status != reflection_status:
+    if (
+        not isinstance(status, str)
+        or status not in {"complete", "partial"}
+        or status != reflection_status
+    ):
         return False, 0, "incomplete_reflection_audit"
 
     rows = persistence.get("entries")
@@ -241,6 +253,7 @@ def _audit_reflection_transaction(
             or audit_entry.get("decision_id") != decision_id
             or not verified_claim_ids
             or not _same_unique_identifiers(verified_claim_ids, audited_claim_ids)
+            or not isinstance(transaction_state, str)
             or transaction_state not in {
                 "lessons_verified", "persisted",
             }
@@ -250,8 +263,10 @@ def _audit_reflection_transaction(
             )
             or (
                 transaction_state == "lessons_verified"
-                and event_entry.get("entry_id") not in {None, ""}
+                and event_entry.get("entry_id") is not None
+                and event_entry.get("entry_id") != ""
             )
+            or not isinstance(entry_id, str)
             or entry_id != f"reflection_{game_id}_{player_id}"
             or entry_id in entry_ids
             or audit_entry.get("row_found") is not True
@@ -291,7 +306,7 @@ def _entry_has_explicit_failure(
         "generated": "schema_validated",
         "schema_validated": "facts_verified",
         "facts_verified": "lessons_verified",
-    }.get(transaction_state)
+    }.get(transaction_state) if isinstance(transaction_state, str) else None
     verification = entry.get("verification")
     decision_id = entry.get("decision_id")
     return (

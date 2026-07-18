@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import is_dataclass, replace
 import hashlib
 import json
 import logging
@@ -848,6 +849,99 @@ def _serialize_projected_event_for_log(
     return serialized
 
 
+def _source_events_for_log_sanitization(
+    source: AcceptanceGameProjection | Mapping[str, Any] | Any,
+    projected_events: list[dict[str, Any]],
+) -> tuple[list[Any], bool]:
+    """优先读取原始事件，使首次投影丢弃的敏感反思字段仍可安全重建。"""
+    if isinstance(source, AcceptanceGameProjection):
+        return projected_events, False
+    raw_events = (
+        source.get("events", ())
+        if isinstance(source, Mapping)
+        else getattr(source, "events", ())
+    )
+    if not isinstance(raw_events, (list, tuple)):
+        return projected_events, False
+    serialized: list[Any] = []
+    try:
+        for event in raw_events:
+            serialized.append(
+                serialize_game_event(event)
+                if isinstance(event, GameEvent)
+                else dict(event) if isinstance(event, Mapping)
+                else event
+            )
+    except (AttributeError, TypeError, ValueError):
+        return projected_events, False
+    return serialized, True
+
+
+def _source_without_events_is_supported(
+    source: Mapping[str, Any] | Any,
+    *,
+    steps: int,
+) -> bool:
+    """确认 invalid_event_payload 没有遮蔽玩家、死亡等第二结构错误。"""
+    try:
+        if isinstance(source, Mapping):
+            eventless_source = dict(source)
+            eventless_source["events"] = []
+            eventless_source.pop("_acceptance_projection_supported", None)
+            eventless_source.pop("_acceptance_projection_unsupported_reason", None)
+        elif is_dataclass(source):
+            eventless_source = replace(source, events=[])
+        else:
+            return False
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return project_acceptance_game(eventless_source, steps=steps).supported
+
+
+def sanitize_projected_game_for_log(
+    source: AcceptanceGameProjection | Mapping[str, Any] | Any,
+    *,
+    steps: int | None = None,
+) -> AcceptanceGameProjection:
+    """生成评分与落盘共用的不可变、脱敏验收投影。"""
+    baseline = project_acceptance_game(source, steps=steps)
+    projected = baseline.to_mapping()
+    raw_events, read_raw_events = _source_events_for_log_sanitization(
+        source,
+        projected["events"],
+    )
+    safe_events: list[Any] = []
+    for event in raw_events:
+        if not isinstance(event, Mapping):
+            safe_events.append(event)
+            continue
+        event_mapping = dict(event)
+        try:
+            safe_events.append(_serialize_projected_event_for_log(
+                event_mapping,
+                game_id=baseline.game_id,
+                players=projected["players"],
+            ))
+        except (AttributeError, TypeError, ValueError):
+            # 非反思事件仍交回统一投影验证器 fail closed，不能静默删除。
+            safe_events.append(event_mapping)
+    projected["events"] = safe_events
+    if (
+        read_raw_events
+        and baseline.unsupported_reason == "invalid_event_payload"
+        and _source_without_events_is_supported(source, steps=baseline.steps)
+    ):
+        projected.pop("_acceptance_projection_supported", None)
+        projected.pop("_acceptance_projection_unsupported_reason", None)
+    sanitized = project_acceptance_game(projected, steps=baseline.steps)
+    if (
+        isinstance(source, AcceptanceGameProjection)
+        and sanitized.to_mapping() == baseline.to_mapping()
+    ):
+        return source
+    return sanitized
+
+
 def _categorical_speech_observation(
     traces: list[dict[str, Any]],
     *,
@@ -887,6 +981,10 @@ def save_game_log(
     output_dir: str | Path | None = None,
 ) -> Path:
     """保存单局 JSON；显式目录用于隔离批量验收产物。"""
+    sanitized_projection = sanitize_projected_game_for_log(projection)
+    if sanitized_projection is not projection:
+        quality_score = compute_game_quality_score(sanitized_projection)
+    projection = sanitized_projection
     if not _SAFE_GAME_ID.fullmatch(projection.game_id) or projection.game_id in {".", ".."}:
         raise ValueError(f"invalid game_id: {projection.game_id!r}")
     quality = normalize_quality_score(quality_score)
@@ -924,14 +1022,9 @@ def save_game_log(
         "hybrid_result": projected.get("hybrid_result"),
         "players": projected["players"],
         "deaths": projected["deaths"],
-        "events": [
-            _serialize_projected_event_for_log(
-                event,
-                game_id=projection.game_id,
-                players=projected["players"],
-            )
-            for event in projected["events"]
-        ],
+        "events": projected["events"],
+        "_acceptance_projection_supported": projection.supported,
+        "_acceptance_projection_unsupported_reason": projection.unsupported_reason,
         "elapsed_seconds": round(elapsed, 1),
         "steps": projection.steps,
         "quality_score": quality,
@@ -994,7 +1087,10 @@ def finalize_game_log(
     output_dir: str | Path | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """在赛后反思与持久化审计完成后固定投影、评分一次并保存。"""
-    projection = project_acceptance_game(runner.state, steps=runner.step_count)
+    projection = sanitize_projected_game_for_log(
+        runner.state,
+        steps=runner.step_count,
+    )
     quality = compute_game_quality_score(projection)
     path = save_game_log(
         runner,

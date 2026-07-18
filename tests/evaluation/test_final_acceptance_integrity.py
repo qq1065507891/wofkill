@@ -10,6 +10,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
+
+
+class _MaliciousEnumMapping(Mapping):
+    """覆盖普通 dict 之外仍不可散列的 Mapping 输入。"""
+
+    def __init__(self) -> None:
+        self._data = {"nested": "malicious"}
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
 
 
 def _world_id(assignments: dict[str, str]) -> str:
@@ -366,6 +383,87 @@ def _persistence_event(
         "expected_entry_count": expected, "persistence_complete": True,
         "rollback_complete": rollback_complete, "entries": rows,
     }}
+
+
+def _valid_reflection_transaction() -> dict[str, object]:
+    """构造可分别污染枚举字段的完整成功事务。"""
+    decision_id = "reflection:g1:p01"
+    claim_ids = ["claim:g1:1"]
+    return {
+        "game_id": "g1",
+        "winning_faction": "good",
+        "players": {"p01": {"role": "seer"}},
+        "events": [
+            {"type": "reflection_complete", "payload": {
+                "status": "complete",
+                "player_count": 1,
+                "valid_entry_count": 1,
+                "failure_count": 0,
+                "entries": [{
+                    "player_id": "p01",
+                    "decision_id": decision_id,
+                    "transaction_state": "lessons_verified",
+                    "entry_id": None,
+                    "verification": {
+                        "decision_id": decision_id,
+                        "verified_claim_ids": claim_ids,
+                        "verified_lessons": [{
+                            "lesson_id": "lesson:g1:1",
+                            "abstraction": "先核验公开票型",
+                        }],
+                        "rejected_fact_count": 0,
+                        "rejected_lesson_count": 0,
+                    },
+                }],
+            }},
+            {"type": "reflection_persistence_audit", "payload": {
+                "status": "complete",
+                "expected_entry_count": 1,
+                "persistence_complete": True,
+                "rollback_complete": True,
+                "entries": [{
+                    "player_id": "p01",
+                    "decision_id": decision_id,
+                    "verified_claim_ids": claim_ids,
+                    "entry_id": "reflection_g1_p01",
+                    "row_found": True,
+                    "persistence_complete": True,
+                    "persisted_rejected_fact_count": 0,
+                }],
+            }},
+        ],
+    }
+
+
+def test_reflection_public_metrics_fail_closed_for_unhashable_enum_values() -> None:
+    """所有公开入口面对 dict/list/set/自定义 Mapping 都不得抛异常。"""
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    baseline = compute_acceptance_audit_metrics([_valid_reflection_transaction()])
+    assert baseline["reflection_contamination_metrics_supported"] is True
+
+    malicious_values = ({}, [], set(), _MaliciousEnumMapping())
+    for field in (
+        "winning_faction",
+        "reflection_status",
+        "persistence_status",
+        "transaction_state",
+    ):
+        for malicious in malicious_values:
+            game = _valid_reflection_transaction()
+            events = game["events"]
+            if field == "winning_faction":
+                game["winning_faction"] = malicious
+            elif field == "reflection_status":
+                events[0]["payload"]["status"] = malicious
+            elif field == "persistence_status":
+                events[1]["payload"]["status"] = malicious
+            else:
+                events[0]["payload"]["entries"][0]["transaction_state"] = malicious
+
+            metrics = compute_acceptance_audit_metrics([game])
+
+            assert metrics["reflection_contamination_metrics_supported"] is False
 
 
 def test_reflection_rejects_multiple_post_reflection_transactions() -> None:

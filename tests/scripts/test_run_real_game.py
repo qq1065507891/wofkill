@@ -98,10 +98,10 @@ def test_finalize_game_log_projects_after_persistence_audit_and_scores_once(
     expected_projection = object()
     quality = {"fallback_rate": 0.0, "total_quality_events": 0}
 
-    def project(state, *, steps):
+    def sanitize(state, *, steps):
         assert state.events[-1].type == "reflection_persistence_audit"
         assert steps == 3
-        calls.append("project")
+        calls.append("sanitize")
         return expected_projection
 
     def compute(value):
@@ -116,7 +116,9 @@ def test_finalize_game_log_projects_after_persistence_audit_and_scores_once(
         calls.append("save")
         return "game.json"
 
-    monkeypatch.setattr(run_real_game, "project_acceptance_game", project)
+    monkeypatch.setattr(
+        run_real_game, "sanitize_projected_game_for_log", sanitize,
+    )
     monkeypatch.setattr(run_real_game, "compute_game_quality_score", compute)
     monkeypatch.setattr(run_real_game, "save_game_log", save)
 
@@ -124,7 +126,7 @@ def test_finalize_game_log_projects_after_persistence_audit_and_scores_once(
 
     assert path == "game.json"
     assert returned_quality is quality
-    assert calls == ["project", "compute", "save"]
+    assert calls == ["sanitize", "compute", "save"]
 
 
 def test_quality_score_counts_rejected_reflection_claims_and_lessons_separately() -> None:
@@ -335,6 +337,149 @@ class _UntrustedReflectionMapping(Mapping):
 
     def __len__(self) -> int:
         return len(self._data)
+
+
+def _reflection_runner_for_finalize(
+    complete_status,
+    persistence_status,
+) -> SimpleNamespace:
+    """构造覆盖最终清洗、评分和保存边界的完整反思事务。"""
+    game_id = "g-finalize-reflection-boundary"
+    decision_id = f"reflection:{game_id}:p01"
+    claim_ids = ["RAW_CLAIM_MARKER"]
+    return SimpleNamespace(
+        game_id=game_id,
+        state=GameState(
+            game_id=game_id,
+            phase="finished",
+            status="finished",
+            winning_faction="good",
+            players={"p01": PlayerState(id="p01", role="seer", alive=True)},
+            events=[
+                GameEvent(type="reflection_complete", payload={
+                    "status": complete_status,
+                    "persistence_complete": True,
+                    "player_count": 1,
+                    "valid_entry_count": 1,
+                    "failure_count": 0,
+                    "raw_prompt": "RAW_PROMPT_MARKER",
+                    "entries": [{
+                        "player_id": "p01",
+                        "decision_id": decision_id,
+                        "transaction_state": "lessons_verified",
+                        "entry_id": None,
+                        "verification": {
+                            "status": "verified",
+                            "decision_id": decision_id,
+                            "verified_fact_count": 1,
+                            "verified_claim_ids": claim_ids,
+                            "rejected_claim_ids": [],
+                            "verified_lessons": [{
+                                "lesson_id": "RAW_LESSON_MARKER",
+                                "abstraction": "RAW_ABSTRACTION_MARKER",
+                            }],
+                            "rejected_fact_count": 0,
+                            "rejected_lesson_count": 0,
+                        },
+                    }],
+                }),
+                GameEvent(type="reflection_persistence_audit", payload={
+                    "status": persistence_status,
+                    "expected_entry_count": 1,
+                    "persistence_complete": True,
+                    "rollback_complete": True,
+                    "provider_response": "RAW_PROVIDER_MARKER",
+                    "entries": [{
+                        "player_id": "p01",
+                        "decision_id": decision_id,
+                        "verified_claim_ids": claim_ids,
+                        "entry_id": f"reflection_{game_id}_p01",
+                        "row_found": True,
+                        "persistence_complete": True,
+                        "persisted_rejected_fact_count": 0,
+                    }],
+                }),
+            ],
+        ),
+        step_count=2,
+    )
+
+
+@pytest.mark.parametrize(
+    ("complete_status", "persistence_status", "expected_supported"),
+    [
+        ("complete", "complete", True),
+        ({"nested": "BAD"}, "complete", False),
+        ([], "complete", False),
+        (set(), "complete", False),
+        (_UntrustedReflectionMapping(), "complete", False),
+        ("complete", {"nested": "BAD"}, False),
+        ("complete", [], False),
+        ("complete", set(), False),
+        ("complete", _UntrustedReflectionMapping(), False),
+    ],
+)
+def test_finalize_uses_one_sanitized_projection_for_online_saved_and_offline_quality(
+    tmp_path,
+    complete_status,
+    persistence_status,
+    expected_supported,
+) -> None:
+    """恶意枚举值必须 fail closed，且三个质量快照逐字段一致。"""
+    from scripts import run_real_game
+
+    runner = _reflection_runner_for_finalize(
+        complete_status,
+        persistence_status,
+    )
+
+    path, online_quality = run_real_game.finalize_game_log(
+        runner,
+        elapsed=0.1,
+        output_dir=tmp_path,
+    )
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    offline_quality = run_real_game.compute_game_quality_score(
+        run_real_game.project_acceptance_game(saved)
+    )
+    serialized_events = json.dumps(saved["events"], ensure_ascii=False).lower()
+
+    assert saved["quality_score"] == online_quality == offline_quality
+    assert (
+        online_quality["reflection_contamination_metrics_supported"]
+        is expected_supported
+    )
+    for marker in (
+        "raw_prompt_marker",
+        "raw_claim_marker",
+        "raw_lesson_marker",
+        "raw_abstraction_marker",
+        "raw_provider_marker",
+    ):
+        assert marker not in serialized_events
+
+
+def test_finalize_never_hides_non_event_projection_failure_when_repairing_events(
+    tmp_path,
+) -> None:
+    """清洗反思事件时不得把并存的死亡结构错误洗成 supported。"""
+    from scripts import run_real_game
+
+    runner = _reflection_runner_for_finalize(set(), "complete")
+    object.__setattr__(runner.state, "deaths", [object()])
+
+    path, online_quality = run_real_game.finalize_game_log(
+        runner,
+        elapsed=0.1,
+        output_dir=tmp_path,
+    )
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    offline_quality = run_real_game.compute_game_quality_score(
+        run_real_game.project_acceptance_game(saved)
+    )
+
+    assert online_quality["acceptance_projection_supported"] is False
+    assert saved["quality_score"] == online_quality == offline_quality
 
 
 def test_reflection_sanitizer_never_stringifies_untrusted_nested_values() -> None:
