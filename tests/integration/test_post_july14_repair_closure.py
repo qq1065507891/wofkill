@@ -28,6 +28,7 @@ from werewolf_agent.evaluation.game_projection import (
     normalize_acceptance_games,
     project_acceptance_game,
 )
+from werewolf_agent.evaluation.trace_identity import DecisionIdentity
 from werewolf_agent.runtime.decision_outcomes import (
     normalize_decision_execution_trace,
 )
@@ -400,6 +401,15 @@ def test_runtime_no_kill_event_has_complete_v2_audit_identity() -> None:
     assert no_kill.schema_version == "2"
     assert no_kill.occurred_at is not None
     assert no_kill.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
+    assert no_kill.trace_id == DecisionIdentity(
+        game_id=game_state.game_id,
+        player_id="werewolf_team",
+        phase="wolf_consensus",
+        day_number=game_state.day_number,
+        night_number=game_state.night_number,
+        task_type="wolf_no_kill_timeout",
+        action_index=0,
+    ).trace_id()
 
 
 def _run_reflection_transaction(

@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     >>> python -m pytest tests/runtime/test_wolf_no_kill_policy.py -q
@@ -18,6 +19,20 @@ import pytest
 
 from werewolf_agent.core.models import GameEvent, GameState, PlayerState
 from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.evaluation.trace_identity import DecisionIdentity
+
+
+def _expected_trace_id(game_state: GameState, event_type: str, index: int) -> str:
+    """按统一狼人决策身份契约计算生产事件的稳定 trace ID。"""
+    return DecisionIdentity(
+        game_id=game_state.game_id,
+        player_id="werewolf_team",
+        phase="wolf_consensus",
+        day_number=game_state.day_number,
+        night_number=game_state.night_number,
+        task_type=event_type,
+        action_index=index,
+    ).trace_id()
 
 
 def _game_state(*, events: list[GameEvent] | None = None) -> GameState:
@@ -56,6 +71,9 @@ def test_every_no_kill_reason_has_one_decision_schema(reason_code: str) -> None:
     assert event.type == "wolf_no_kill_timeout"
     assert event.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
     assert event.schema_version == "2"
+    assert event.trace_id == _expected_trace_id(
+        result["game_state"], "wolf_no_kill_timeout", 0
+    )
     assert event.payload["reason"] == reason_code
     assert event.payload["no_kill_decision"] == {
         "reason_code": reason_code,
@@ -123,8 +141,15 @@ def test_third_consecutive_pre_resolution_no_kill_forces_deterministic_target() 
         "final_target_id": "p1",
     }
     assert recovery.visibility is EventVisibility.MODERATOR_ONLY
+    assert recovery.trace_id == _expected_trace_id(
+        result["game_state"], "wolf_kill_forced_recovery", 0
+    )
     assert selected.type == "wolf_kill_selected"
     assert selected.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
+    assert selected.trace_id == _expected_trace_id(
+        result["game_state"], "wolf_kill_selected", 1
+    )
+    assert recovery.trace_id != selected.trace_id
     assert selected.payload["target_id"] == "p1"
     assert selected.payload["reason"] == "forced_recovery"
 
@@ -202,6 +227,59 @@ def test_repeated_resolve_in_same_night_is_idempotent() -> None:
         .payload["no_kill_decision"]
         ["consecutive_pre_resolution_no_kill_count"]
         == 1
+    )
+
+
+def test_no_kill_trace_identity_is_stable_on_replay_and_declared_route() -> None:
+    """同一输入重放保持 trace 稳定，主动空刀使用独立语义身份。"""
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    initial = _game_state()
+    first = NoKillPolicy().resolve(initial, reason_code="provider_unavailable")
+    replay = NoKillPolicy().resolve(initial, reason_code="provider_unavailable")
+    declared = NoKillPolicy().resolve(
+        initial,
+        reason_code="strategic_abstain",
+        event_type="wolf_no_kill_declared",
+    )
+
+    timeout_event = first["game_state"].events[-1]
+    replay_event = replay["game_state"].events[-1]
+    declared_event = declared["game_state"].events[-1]
+    assert timeout_event.trace_id == replay_event.trace_id
+    assert timeout_event.trace_id == _expected_trace_id(
+        initial, "wolf_no_kill_timeout", 0
+    )
+    assert declared_event.trace_id == _expected_trace_id(
+        initial, "wolf_no_kill_declared", 0
+    )
+    assert declared_event.trace_id != timeout_event.trace_id
+
+    from werewolf_agent.runtime.event_metadata import (
+        deserialize_game_event,
+        serialize_game_event,
+    )
+
+    restored = deserialize_game_event(serialize_game_event(timeout_event))
+    assert restored.trace_id == timeout_event.trace_id
+
+
+def test_new_no_kill_trace_does_not_backfill_legacy_v1_event() -> None:
+    """V1 历史事件保持只读无 trace，新写 V2 事件才获得权威身份。"""
+    from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
+
+    legacy = GameEvent(
+        type="wolf_no_kill_timeout",
+        payload={"night_number": 2, "reason": "provider_unavailable"},
+    )
+    initial = _game_state(events=[legacy])
+
+    result = NoKillPolicy().resolve(initial, reason_code="true_tie")
+
+    assert result["game_state"].events[0] is legacy
+    assert result["game_state"].events[0].trace_id is None
+    assert result["game_state"].events[-1].trace_id == _expected_trace_id(
+        initial, "wolf_no_kill_timeout", 0
     )
 
 
@@ -563,6 +641,9 @@ def test_forced_recovery_without_legal_target_keeps_auditable_count() -> None:
     event = result["game_state"].events[-1]
     assert event.type == "forced_recovery_no_legal_target"
     assert event.visibility is EventVisibility.MODERATOR_ONLY
+    assert event.trace_id == _expected_trace_id(
+        result["game_state"], "forced_recovery_no_legal_target", 0
+    )
     assert event.payload["consecutive_pre_resolution_no_kill_count"] == 3
     assert event.payload["original_reasons"] == [
         "true_tie",
