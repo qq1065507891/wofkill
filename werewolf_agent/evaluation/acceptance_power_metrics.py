@@ -18,6 +18,20 @@ from werewolf_agent.evaluation.game_projection import (
 )
 
 
+_POWER_CHAIN_EVENT_TYPES = frozenset({
+    "hunter_shot_opportunity",
+    "hunter_shot_selected",
+    "hunter_shot_declined",
+    "hunter_shot_blocked",
+    "hunter_shot_resolved",
+    "seer_check_opportunity",
+    "seer_check_selected",
+    "seer_check_repaired",
+    "seer_check_skipped",
+    "seer_check_resolved",
+})
+
+
 def compute_power_acceptance_metrics(
     games: Iterable[Any],
 ) -> dict[str, Any]:
@@ -187,7 +201,11 @@ def _validated_power_opportunity_counts(
         players = game.get("players")
         if not isinstance(game_id, str) or not isinstance(events, (list, tuple)) or not isinstance(players, Mapping):
             return False, "invalid_power_opportunity_log", Counter()
+        ordered, order_reason = _power_chain_log_is_ordered(events, game_id)
+        if not ordered:
+            return False, order_reason, Counter()
         used_event_ids: set[str] = set()
+        consumed_indexes: set[int] = set()
         identities: set[tuple[str, str, int]] = set()
         for index, opportunity in enumerate(events):
             if not isinstance(opportunity, Mapping):
@@ -216,12 +234,14 @@ def _validated_power_opportunity_counts(
             if identity in identities:
                 return False, "duplicate_power_opportunity_identity", Counter()
             identities.add(identity)
+            consumed_indexes.add(index)
             choice_index = _find_power_chain_event(
                 events, index + 1, actor_id, night_number, choice_types,
                 "moderator_only", game_id, used_event_ids,
             )
             if choice_index is None:
                 return False, "missing_power_opportunity_choice", Counter()
+            consumed_indexes.add(choice_index)
             resolution_index = _find_power_chain_event(
                 events, choice_index + 1, actor_id, night_number, {resolution_type},
                 resolution_visibility, game_id, used_event_ids,
@@ -229,11 +249,51 @@ def _validated_power_opportunity_counts(
             )
             if resolution_index is None:
                 return False, "missing_power_opportunity_resolution", Counter()
+            consumed_indexes.add(resolution_index)
             counts["opportunity"] += 1
             choice_type = str(events[choice_index].get("type"))
             counts[_power_choice_bucket(choice_type)] += 1
             counts["resolved"] += 1
+        if any(
+            isinstance(event, Mapping)
+            and str(event.get("type") or "") in _POWER_CHAIN_EVENT_TYPES
+            and index not in consumed_indexes
+            for index, event in enumerate(events)
+        ):
+            return False, "unconsumed_power_chain_event", Counter()
     return True, None, counts
+
+
+def _power_chain_log_is_ordered(
+    events: Sequence[Any],
+    game_id: str,
+) -> tuple[bool, str | None]:
+    """检查相关 V2 日志在事件列表中具备唯一且严格递增的序号。"""
+    seen_event_ids: set[str] = set()
+    last_sequence = -1
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if str(event.get("type") or "") not in _POWER_CHAIN_EVENT_TYPES:
+            continue
+        event_id = event.get("event_id")
+        sequence_number = event.get("sequence_number")
+        if (
+            event.get("schema_version") != "2"
+            or event.get("game_id") != game_id
+            or not isinstance(event_id, str)
+            or isinstance(sequence_number, bool)
+            or not isinstance(sequence_number, int)
+            or sequence_number < 0
+            or event_id != f"{game_id}:e{sequence_number:06d}"
+            or not event.get("occurred_at")
+            or event_id in seen_event_ids
+            or sequence_number <= last_sequence
+        ):
+            return False, "out_of_order_power_chain_log"
+        seen_event_ids.add(event_id)
+        last_sequence = sequence_number
+    return True, None
 
 
 def _power_opportunity_spec(

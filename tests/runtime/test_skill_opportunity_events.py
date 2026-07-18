@@ -370,6 +370,42 @@ def test_self_destruct_resolution_ignores_stale_reentry_after_canonical_result()
     assert replay.sheriff_interrupt_count == first.sheriff_interrupt_count
 
 
+def test_day_speech_reentry_does_not_duplicate_canonical_self_destruct_chain() -> None:
+    from werewolf_agent.runtime.graph import _new_engine, free_discussion
+
+    class Registry:
+        def get_agent(self, _player_id):
+            return None
+
+    state = {
+        "game_state": GameState(
+            game_id="day_self_destruct_reentry",
+            day_number=2,
+            players={"wolf": PlayerState(id="wolf", role="werewolf")},
+        ),
+        "agent_registry": Registry(),
+        "speech_order": ["wolf"],
+        "speech_index": 0,
+    }
+    first = free_discussion({
+        **state,
+        "engine": _new_engine(),
+    })
+    replay = free_discussion({
+        **state,
+        **first,
+        "engine": _new_engine(),
+        "speech_index": 0,
+    })
+
+    for event_type in ("self_destruct_opportunity", "self_destruct_declined"):
+        assert len([
+            event for event in replay["game_state"].events
+            if event.type == event_type
+            and event.visibility is EventVisibility.MODERATOR_ONLY
+        ]) == 1
+
+
 def test_sheriff_speech_declines_once_for_wolf_fallback_but_not_nonwolf(
     monkeypatch,
 ) -> None:
@@ -483,6 +519,18 @@ def test_power_opportunity_metrics_reject_unfinished_or_forged_event_chain() -> 
         compute_power_acceptance_metrics,
     )
 
+    def event(sequence_number, event_type, visibility):
+        return {
+            "type": event_type,
+            "payload": {"actor_id": "seer", "night_number": 2},
+            "visibility": visibility,
+            "event_id": f"duplicate_power_chain:e{sequence_number:06d}",
+            "sequence_number": sequence_number,
+            "game_id": "duplicate_power_chain",
+            "schema_version": "2",
+            "occurred_at": "2026-07-18T00:00:00+00:00",
+        }
+
     metrics = compute_power_acceptance_metrics([{
         "game_id": "unfinished_power_metrics",
         "status": "running",
@@ -496,4 +544,52 @@ def test_power_opportunity_metrics_reject_unfinished_or_forged_event_chain() -> 
 
     assert metrics["power_role_opportunity_metrics_supported"] is False
     assert metrics["power_role_opportunity_count"] is None
+
+    out_of_order = compute_power_acceptance_metrics([{
+        "game_id": "duplicate_power_chain",
+        "status": "finished",
+        "winning_faction": "good",
+        "players": {"seer": {"role": "seer"}},
+        "events": [
+            event(2, "seer_check_opportunity", "moderator_only"),
+            event(1, "seer_check_selected", "moderator_only"),
+            event(0, "seer_check_resolved", "moderator_only"),
+        ],
+    }])
+    assert out_of_order["power_role_opportunity_metrics_supported"] is False
+
     assert metrics["power_role_selection_rate"] is None
+
+
+def test_power_opportunity_metrics_reject_duplicate_or_out_of_order_v2_chain() -> None:
+    from werewolf_agent.evaluation.acceptance_power_metrics import (
+        compute_power_acceptance_metrics,
+    )
+
+    def event(sequence_number, event_type, visibility):
+        return {
+            "type": event_type,
+            "payload": {"actor_id": "seer", "night_number": 2},
+            "visibility": visibility,
+            "event_id": f"duplicate_power_chain:e{sequence_number:06d}",
+            "sequence_number": sequence_number,
+            "game_id": "duplicate_power_chain",
+            "schema_version": "2",
+            "occurred_at": "2026-07-18T00:00:00+00:00",
+        }
+
+    metrics = compute_power_acceptance_metrics([{
+        "game_id": "duplicate_power_chain",
+        "status": "finished",
+        "winning_faction": "good",
+        "players": {"seer": {"role": "seer"}},
+        "events": [
+            event(0, "seer_check_opportunity", "moderator_only"),
+            event(1, "seer_check_selected", "moderator_only"),
+            event(2, "seer_check_selected", "moderator_only"),
+            event(3, "seer_check_resolved", "moderator_only"),
+        ],
+    }])
+
+    assert metrics["power_role_opportunity_metrics_supported"] is False
+    assert metrics["power_role_opportunity_count"] is None

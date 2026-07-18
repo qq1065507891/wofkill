@@ -29,7 +29,9 @@ from werewolf_agent.runtime.nodes._shared import (
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.skill_opportunity_events import (
     append_private_skill_event,
-    build_private_skill_event,
+    append_self_destruct_declined,
+    append_self_destruct_opportunity,
+    append_self_destruct_selected,
     can_select_self_destruct,
     is_live_werewolf,
 )
@@ -71,12 +73,12 @@ def sheriff_pk_speech(state: RuntimeState) -> dict[str, Any]:
     for candidate_id in pk_candidates:
         self_destruct_available = is_live_werewolf(gs, candidate_id)
         if self_destruct_available:
-            events.extend(build_private_skill_event(
-                "self_destruct_opportunity",
+            gs, self_destruct_available = append_self_destruct_opportunity(
+                gs,
                 actor_id=candidate_id,
                 day_number=gs.day_number,
                 opportunity_phase="sheriff_pk_speech",
-            ))
+            )
         decision_identity = _allocate_decision_identity(
             state,
             player_id=candidate_id,
@@ -101,12 +103,12 @@ def sheriff_pk_speech(state: RuntimeState) -> dict[str, Any]:
             day_number=gs.day_number,
             opportunity_phase="sheriff_pk_speech",
         ):
-            events.extend(build_private_skill_event(
-                "self_destruct_selected",
+            gs, _ = append_self_destruct_selected(
+                gs,
                 actor_id=candidate_id,
                 day_number=gs.day_number,
                 opportunity_phase="sheriff_pk_speech",
-            ))
+            )
             if result.get("action_trace"):
                 events.extend(_action_audit_events(
                     state=state,
@@ -125,13 +127,13 @@ def sheriff_pk_speech(state: RuntimeState) -> dict[str, Any]:
                 "self_destruct_wolf_id": candidate_id,
             }
         if self_destruct_available:
-            events.extend(build_private_skill_event(
-                "self_destruct_declined",
+            gs = append_self_destruct_declined(
+                gs,
                 actor_id=candidate_id,
                 day_number=gs.day_number,
                 opportunity_phase="sheriff_pk_speech",
                 reason_code=("agent_unavailable" if result is None else "continued_speech"),
-            ))
+            )
         speech_text = result.get("speech_text", "") if result else ""
         speech_text, redacted_claims = sanitize_public_text(
             speech_text,

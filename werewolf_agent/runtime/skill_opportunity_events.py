@@ -69,7 +69,7 @@ def append_self_destruct_opportunity(
         opportunity_phase=opportunity_phase,
     ):
         return game_state, True
-    return append_private_skill_event(
+    return _append_private_skill_event_unchecked(
         game_state,
         "self_destruct_opportunity",
         actor_id=actor_id,
@@ -104,7 +104,7 @@ def append_self_destruct_selected(
         opportunity_phase=opportunity_phase,
     ):
         return game_state, True
-    return append_private_skill_event(
+    return _append_private_skill_event_unchecked(
         game_state,
         "self_destruct_selected",
         actor_id=actor_id,
@@ -164,7 +164,7 @@ def append_self_destruct_declined(
         )
     ):
         return game_state
-    return append_private_skill_event(
+    return _append_private_skill_event_unchecked(
         game_state,
         "self_destruct_declined",
         actor_id=actor_id,
@@ -268,7 +268,7 @@ def build_public_skill_resolution(
     )
 
 
-def append_private_skill_event(
+def _append_private_skill_event_unchecked(
     game_state: GameState,
     event_type: str,
     *,
@@ -287,6 +287,51 @@ def append_private_skill_event(
             night_number=night_number,
             **details,
         )),
+    )
+
+
+def append_private_skill_event(
+    game_state: GameState,
+    event_type: str,
+    *,
+    actor_id: str,
+    day_number: int = 0,
+    night_number: int = 0,
+    **details: Any,
+) -> GameState:
+    """写入私有技能事件；自爆链统一经幂等机会、选择和拒绝入口。"""
+    opportunity_phase = details.get("opportunity_phase")
+    if event_type == "self_destruct_opportunity" and isinstance(opportunity_phase, str):
+        return append_self_destruct_opportunity(
+            game_state,
+            actor_id=actor_id,
+            day_number=day_number,
+            opportunity_phase=opportunity_phase,
+        )[0]
+    if event_type == "self_destruct_selected" and isinstance(opportunity_phase, str):
+        return append_self_destruct_selected(
+            game_state,
+            actor_id=actor_id,
+            day_number=day_number,
+            opportunity_phase=opportunity_phase,
+        )[0]
+    if event_type == "self_destruct_declined" and isinstance(opportunity_phase, str):
+        reason_code = details.get("reason_code")
+        if isinstance(reason_code, str):
+            return append_self_destruct_declined(
+                game_state,
+                actor_id=actor_id,
+                day_number=day_number,
+                opportunity_phase=opportunity_phase,
+                reason_code=reason_code,
+            )
+    return _append_private_skill_event_unchecked(
+        game_state,
+        event_type,
+        actor_id=actor_id,
+        day_number=day_number,
+        night_number=night_number,
+        **details,
     )
 
 
