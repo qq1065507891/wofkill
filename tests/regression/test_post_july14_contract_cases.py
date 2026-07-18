@@ -11,6 +11,7 @@ import ast
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -102,6 +103,46 @@ def _junit_closure_counts(report_path: Path) -> dict[str, int]:
     }
 
 
+def _junit_node_coverage(
+    report_path: Path,
+    expected_node_ids: tuple[str, ...],
+) -> dict[str, tuple[str, ...]]:
+    """逐个确认显式映射函数至少产生一个 JUnit testcase。"""
+    report = ElementTree.parse(report_path).getroot()
+    testcases = tuple(report.findall(".//testcase"))
+    observed: list[str] = []
+    missing: list[str] = []
+    for node_id in expected_node_ids:
+        path_text, separator, function_name = node_id.partition("::")
+        if not separator:
+            missing.append(node_id)
+            continue
+        normalized_path = path_text.replace("\\", "/")
+        if normalized_path.endswith(".py"):
+            normalized_path = normalized_path[:-3]
+        expected_classname = normalized_path.replace("/", ".")
+        matched = any(
+            testcase.attrib.get("classname") == expected_classname
+            and (
+                testcase.attrib.get("name") == function_name
+                or str(testcase.attrib.get("name") or "").startswith(
+                    f"{function_name}["
+                )
+            )
+            for testcase in testcases
+        )
+        (observed if matched else missing).append(node_id)
+    return {"observed": tuple(observed), "missing": tuple(missing)}
+
+
+def _pytest_deselected_count(output: str) -> int:
+    """从子 pytest 摘要读取 deselected，和缺失 JUnit node 分开报告。"""
+    return sum(
+        int(match.group(1))
+        for match in re.finditer(r"\b(\d+)\s+deselected\b", output)
+    )
+
+
 def load_cases() -> dict[str, dict[str, object]]:
     """读取审计问题的脱敏回归用例目录。"""
     fixture_path = Path(__file__).parents[1] / "fixtures" / "post_july14_contract_regressions.json"
@@ -171,6 +212,30 @@ def test_junit_closure_counts_do_not_treat_skipped_cases_as_executed(
     }
 
 
+def test_junit_node_coverage_detects_missing_node_despite_parameter_instances(
+    tmp_path,
+) -> None:
+    """一个参数节点的多个实例不能补偿另一个映射节点完全未执行。"""
+    report_path = tmp_path / "parameter-mask.xml"
+    report_path.write_text(
+        """<testsuite tests="3" failures="0" errors="0" skipped="0">
+        <testcase classname="tests.fake.test_one" name="test_param[zero]" />
+        <testcase classname="tests.fake.test_one" name="test_param[one]" />
+        <testcase classname="tests.fake.test_one" name="test_param[two]" />
+        </testsuite>""",
+        encoding="utf-8",
+    )
+    expected = (
+        "tests/fake/test_one.py::test_param",
+        "tests/fake/test_two.py::test_missing",
+    )
+
+    coverage = _junit_node_coverage(report_path, expected)
+
+    assert coverage["observed"] == ("tests/fake/test_one.py::test_param",)
+    assert coverage["missing"] == ("tests/fake/test_two.py::test_missing",)
+
+
 def test_mapped_audit_nodes_execute_as_nonrecursive_closure_batch() -> None:
     """去重执行全部显式映射节点，禁止映射门禁递归调用自身。"""
     sentinel = "WOFKILL_TASK15_NODE_BATCH"
@@ -223,9 +288,15 @@ def test_mapped_audit_nodes_execute_as_nonrecursive_closure_batch() -> None:
         output = "\n".join((completed.stdout, completed.stderr)).strip()
         assert report_path.is_file(), output
         counts = _junit_closure_counts(report_path)
+        coverage = _junit_node_coverage(report_path, node_ids)
+        deselected = _pytest_deselected_count(output)
 
-    assert completed.returncode == 0, output
     assert counts["skipped"] == 0, output
+    assert deselected == 0, f"mapped tests deselected={deselected}\n{output}"
+    assert not coverage["missing"], (
+        f"mapped pytest nodes missing from JUnit={coverage['missing']}\n{output}"
+    )
+    assert completed.returncode == 0, output
     assert counts["executed"] == counts["collected"], output
     assert counts["executed"] >= len(node_ids), (
         f"mapped tests executed={counts['executed']}, "

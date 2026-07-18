@@ -88,6 +88,9 @@ _REFLECTION_ROLES = frozenset({
 _REFLECTION_FAILURE_STAGES = frozenset({
     "generated", "schema_validated", "facts_verified", "lessons_verified",
 })
+_REFLECTION_VERIFICATION_STATUSES = frozenset({
+    "not_generated", "invalid_structured_draft", "verified", "agent_error",
+})
 _REFLECTION_SENSITIVE_MARKERS = frozenset({
     "raw_prompt", "provider_response", "private_prompt", "original_text",
 })
@@ -416,6 +419,11 @@ def _safe_non_negative_int(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def _safe_enum(value: Any, allowed: frozenset[str]) -> str | None:
+    """枚举边界先验证字符串类型，再执行集合 membership。"""
+    return value if isinstance(value, str) and value in allowed else None
+
+
 def _safe_reflection_component(value: Any) -> str | None:
     """验证可进入 canonical reflection 身份的单个安全组件。"""
     if not isinstance(value, str) or not _SAFE_REFLECTION_PLAYER_ID.fullmatch(value):
@@ -508,7 +516,56 @@ def _safe_reflection_verification_payload(
     from werewolf_agent.runtime.reflection_events import safe_reflection_verification
 
     if entry_decision_matches:
-        safe = safe_reflection_verification(candidate, decision_id=decision_id)
+        source = candidate if isinstance(candidate, Mapping) else {}
+        raw_lessons = source.get("verified_lessons")
+        normalized_lessons: list[dict[str, str]] = []
+        if isinstance(raw_lessons, (list, tuple)):
+            for lesson in raw_lessons:
+                if not isinstance(lesson, Mapping):
+                    continue
+                lesson_id = lesson.get("lesson_id")
+                abstraction = lesson.get("abstraction")
+                if isinstance(lesson_id, str) and isinstance(abstraction, str):
+                    normalized_lessons.append({
+                        "lesson_id": lesson_id,
+                        "abstraction": abstraction,
+                    })
+        normalized_candidate = {
+            "status": _safe_enum(
+                source.get("status"), _REFLECTION_VERIFICATION_STATUSES
+            ) or "agent_error",
+            "decision_id": (
+                source.get("decision_id")
+                if isinstance(source.get("decision_id"), str)
+                else None
+            ),
+            "verified_fact_count": source.get("verified_fact_count"),
+            "verified_claim_ids": (
+                source.get("verified_claim_ids")
+                if isinstance(source.get("verified_claim_ids"), (list, tuple))
+                else []
+            ),
+            "rejected_claim_ids": (
+                source.get("rejected_claim_ids")
+                if isinstance(source.get("rejected_claim_ids"), (list, tuple))
+                else []
+            ),
+            "verified_lessons": normalized_lessons,
+            "rejected_fact_count": source.get("rejected_fact_count"),
+            "rejected_lesson_count": source.get("rejected_lesson_count"),
+            "failure_stage": _safe_enum(
+                source.get("failure_stage"), _REFLECTION_FAILURE_STAGES
+            ),
+            "failure_code": (
+                source.get("failure_code")
+                if isinstance(source.get("failure_code"), str)
+                else None
+            ),
+        }
+        safe = safe_reflection_verification(
+            normalized_candidate,
+            decision_id=decision_id,
+        )
     else:
         safe = safe_reflection_verification(
             {
@@ -604,9 +661,9 @@ def _safe_reflection_complete_payload(
             decision_id=decision_id,
             entry_decision_matches=raw_decision_id == decision_id,
         )
-        transaction_state = entry.get("transaction_state")
-        if transaction_state not in _REFLECTION_TRANSACTION_STATES:
-            transaction_state = None
+        transaction_state = _safe_enum(
+            entry.get("transaction_state"), _REFLECTION_TRANSACTION_STATES
+        )
         entry_id = entry.get("entry_id")
         canonical_entry_id = f"reflection_{game_id}_{player_id}"
         if (
@@ -625,9 +682,7 @@ def _safe_reflection_complete_payload(
             "entry_id": entry_id,
             "verification": safe_verification,
         })
-    status = payload.get("status")
-    if status not in _REFLECTION_STATUSES:
-        status = None
+    status = _safe_enum(payload.get("status"), _REFLECTION_STATUSES)
     persistence_complete = payload.get("persistence_complete")
     if not isinstance(persistence_complete, bool):
         persistence_complete = None
@@ -695,9 +750,7 @@ def _safe_reflection_persistence_payload(
                 entry.get("persisted_rejected_fact_count")
             ),
         })
-    status = payload.get("status")
-    if status not in _REFLECTION_STATUSES:
-        status = None
+    status = _safe_enum(payload.get("status"), _REFLECTION_STATUSES)
     return {
         "visibility": "moderator_only",
         "status": status,
@@ -726,10 +779,10 @@ def _safe_event_payload(
     players: Mapping[str, Any] | None = None,
 ) -> dict:
     """按事件类型和权威局上下文重建可持久化摘要。"""
-    if event_type not in {
+    if not isinstance(event_type, str) or event_type not in {
         "reflection_complete", "reflection_persistence_audit",
     }:
-        return payload
+        return payload if isinstance(event_type, str) else {}
     safe_game_id = _safe_reflection_component(game_id)
     if safe_game_id is None:
         safe_game_id = ""
@@ -776,7 +829,12 @@ def _serialize_projected_event_for_log(
     """仅从固定投影生成脱敏日志事件，不回读可变 runner 状态。"""
     serialized = dict(event)
     event_game_id = serialized.get("game_id")
-    context_game_id = game_id if event_game_id in {None, game_id} else ""
+    context_game_id = (
+        game_id
+        if event_game_id is None
+        or (isinstance(event_game_id, str) and event_game_id == game_id)
+        else ""
+    )
     event_type = serialized.get("type")
     safe_payload = dict(_safe_event_payload(
         event_type if isinstance(event_type, str) else "",

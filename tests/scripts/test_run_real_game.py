@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from types import SimpleNamespace
 
 import pytest
@@ -320,6 +321,22 @@ class _UntrustedReflectionValue:
         raise AssertionError("untrusted reflection value was coerced with str()")
 
 
+class _UntrustedReflectionMapping(Mapping):
+    """用于覆盖普通 dict 之外的 Mapping 类型边界。"""
+
+    def __init__(self) -> None:
+        self._data = {"nested": "UNTRUSTED_REFLECTION_VALUE"}
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
 def test_reflection_sanitizer_never_stringifies_untrusted_nested_values() -> None:
     payload = {
         "status": "partial",
@@ -449,6 +466,171 @@ def test_saved_reflection_events_redact_nested_keys_and_marker_values(
     assert lesson["abstraction"] == "[REDACTED_VERIFIED_LESSON]"
     assert saved["quality_score"] == saved_quality
     assert offline_quality == saved_quality
+
+
+def _reflection_complete_fuzz_root() -> dict:
+    game_id = "g-reflection-fuzz"
+    decision_id = f"reflection:{game_id}:p01"
+    return {
+        "event_type": "reflection_complete",
+        "game_id": game_id,
+        "players": {
+            "p01": {"id": "p01", "role": "seer", "alive": True},
+        },
+        "payload": {
+            "status": "complete",
+            "persistence_complete": True,
+            "player_count": 1,
+            "valid_entry_count": 1,
+            "failure_count": 0,
+            "entries": [{
+                "player_id": "p01",
+                "role": "seer",
+                "alive": True,
+                "decision_id": decision_id,
+                "transaction_state": "lessons_verified",
+                "failure_stage": None,
+                "failure_code": None,
+                "entry_id": None,
+                "verification": {
+                    "status": "verified",
+                    "decision_id": decision_id,
+                    "verified_fact_count": 1,
+                    "verified_claim_ids": ["claim-1"],
+                    "rejected_claim_ids": ["claim-2"],
+                    "verified_lessons": [{
+                        "lesson_id": "lesson-1",
+                        "abstraction": "verified lesson",
+                    }],
+                    "rejected_fact_count": 0,
+                    "rejected_lesson_count": 0,
+                },
+            }],
+        },
+    }
+
+
+def _reflection_persistence_fuzz_root() -> dict:
+    game_id = "g-reflection-fuzz"
+    return {
+        "event_type": "reflection_persistence_audit",
+        "game_id": game_id,
+        "players": {
+            "p01": {"id": "p01", "role": "seer", "alive": True},
+        },
+        "payload": {
+            "status": "complete",
+            "expected_entry_count": 1,
+            "persistence_complete": True,
+            "rollback_complete": True,
+            "entries": [{
+                "player_id": "p01",
+                "decision_id": f"reflection:{game_id}:p01",
+                "verified_claim_ids": ["claim-1"],
+                "entry_id": f"reflection_{game_id}_p01",
+                "row_found": True,
+                "persistence_complete": True,
+                "persisted_rejected_fact_count": 0,
+            }],
+        },
+    }
+
+
+def _set_reflection_fuzz_field(root: dict, path: tuple[object, ...], value) -> None:
+    current = root
+    for key in path[:-1]:
+        current = current[key]
+    current[path[-1]] = value
+
+
+_COMPLETE_REFLECTION_FUZZ_FIELDS = (
+    ("event_type",),
+    ("game_id",),
+    ("payload", "status"),
+    ("payload", "entries", 0, "transaction_state"),
+    ("payload", "entries", 0, "player_id"),
+    ("payload", "entries", 0, "role"),
+    ("payload", "entries", 0, "decision_id"),
+    ("payload", "entries", 0, "entry_id"),
+    ("payload", "entries", 0, "verification", "status"),
+    ("payload", "entries", 0, "verification", "decision_id"),
+    ("payload", "entries", 0, "verification", "failure_stage"),
+    ("payload", "entries", 0, "verification", "failure_code"),
+    ("payload", "entries", 0, "verification", "verified_claim_ids", 0),
+    ("payload", "entries", 0, "verification", "rejected_claim_ids", 0),
+    ("payload", "entries", 0, "verification", "verified_lessons", 0, "lesson_id"),
+    ("payload", "entries", 0, "verification", "verified_lessons", 0, "abstraction"),
+    ("players", "p01", "id"),
+    ("players", "p01", "role"),
+    ("players", "p01", "alive"),
+)
+_PERSISTENCE_REFLECTION_FUZZ_FIELDS = (
+    ("payload", "status"),
+    ("payload", "entries", 0, "player_id"),
+    ("payload", "entries", 0, "decision_id"),
+    ("payload", "entries", 0, "verified_claim_ids", 0),
+    ("payload", "entries", 0, "entry_id"),
+)
+_UNHASHABLE_REFLECTION_VALUES = (
+    {"nested": "UNTRUSTED_REFLECTION_VALUE"},
+    ["UNTRUSTED_REFLECTION_VALUE"],
+    {"UNTRUSTED_REFLECTION_VALUE"},
+    _UntrustedReflectionMapping(),
+)
+
+
+@pytest.mark.parametrize(
+    ("event_family", "path"),
+    [
+        *(('complete', path) for path in _COMPLETE_REFLECTION_FUZZ_FIELDS),
+        *(('persistence', path) for path in _PERSISTENCE_REFLECTION_FUZZ_FIELDS),
+    ],
+)
+@pytest.mark.parametrize("bad_value", _UNHASHABLE_REFLECTION_VALUES)
+def test_reflection_sanitizer_fails_closed_for_unhashable_field_values(
+    event_family: str,
+    path: tuple[object, ...],
+    bad_value,
+) -> None:
+    """所有枚举、ID、角色和哈希入口都必须拒绝非字符串容器。"""
+    root = (
+        _reflection_complete_fuzz_root()
+        if event_family == "complete"
+        else _reflection_persistence_fuzz_root()
+    )
+    _set_reflection_fuzz_field(root, path, bad_value)
+
+    safe = _safe_event_payload(
+        root["event_type"],
+        root["payload"],
+        game_id=root["game_id"],
+        players=root["players"],
+    )
+    serialized = json.dumps(safe, ensure_ascii=False)
+
+    assert "UNTRUSTED_REFLECTION_VALUE" not in serialized
+
+
+@pytest.mark.parametrize("bad_value", _UNHASHABLE_REFLECTION_VALUES)
+def test_projected_reflection_serializer_rejects_unhashable_event_game_id(
+    bad_value,
+) -> None:
+    from scripts import run_real_game
+
+    root = _reflection_complete_fuzz_root()
+    event = {
+        "type": root["event_type"],
+        "game_id": bad_value,
+        "payload": root["payload"],
+    }
+
+    safe = run_real_game._serialize_projected_event_for_log(
+        event,
+        game_id=root["game_id"],
+        players=root["players"],
+    )
+
+    assert safe["payload"]["entries"] == []
 
 
 def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():
