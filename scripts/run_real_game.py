@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 import logging
 import os
@@ -80,6 +81,17 @@ _REFLECTION_STATUSES = frozenset({
 _REFLECTION_ENTRY_ID = re.compile(
     r"reflection_[A-Za-z0-9._-]{1,128}_[A-Za-z0-9._-]{1,128}\Z"
 )
+_SAFE_REFLECTION_PLAYER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_REFLECTION_ROLES = frozenset({
+    "villager", "seer", "witch", "hunter", "idiot", "werewolf", "hybrid",
+})
+_REFLECTION_FAILURE_STAGES = frozenset({
+    "generated", "schema_validated", "facts_verified", "lessons_verified",
+})
+_REFLECTION_SENSITIVE_MARKERS = frozenset({
+    "raw_prompt", "provider_response", "private_prompt", "original_text",
+})
+_REDACTED_LESSON_ABSTRACTION = "[REDACTED_VERIFIED_LESSON]"
 _SPEECH_DECISION_OUTCOME_VALUES = frozenset({
     "direct_success", "retry_success", "repaired_success",
     "provider_fallback_success", "terminal_fallback",
@@ -399,38 +411,214 @@ def _final_hybrid_fields(gs) -> dict[str, str | None]:
     return fields
 
 
-def _safe_event_payload(event_type: str, payload: dict) -> dict:
-    """过滤日志中的反思原始草稿和 provider 响应，仅保留核验摘要。"""
-    if event_type != "reflection_complete":
-        return payload
+def _safe_non_negative_int(value: Any) -> int | None:
+    """只接受原生非负整数，拒绝 bool 和隐式字符串转换。"""
+    return value if type(value) is int and value >= 0 else None
+
+
+def _safe_reflection_component(value: Any) -> str | None:
+    """验证可进入 canonical reflection 身份的单个安全组件。"""
+    if not isinstance(value, str) or not _SAFE_REFLECTION_PLAYER_ID.fullmatch(value):
+        return None
+    lowered = value.lower()
+    if any(marker in lowered for marker in _REFLECTION_SENSITIVE_MARKERS):
+        return None
+    return value
+
+
+def _authoritative_reflection_player(
+    players: Mapping[str, Any] | None,
+    player_id: Any,
+) -> tuple[str, str, bool] | None:
+    """仅从投影玩家表重建玩家 ID、固定角色和存活状态。"""
+    safe_player_id = _safe_reflection_component(player_id)
+    if safe_player_id is None or not isinstance(players, Mapping):
+        return None
+    player = players.get(safe_player_id)
+    if not isinstance(player, Mapping):
+        return None
+    authoritative_id = player.get("id", safe_player_id)
+    role = player.get("role")
+    alive = player.get("alive")
+    if (
+        authoritative_id != safe_player_id
+        or not isinstance(role, str)
+        or role not in _REFLECTION_ROLES
+        or not isinstance(alive, bool)
+    ):
+        return None
+    return safe_player_id, role, alive
+
+
+def _redacted_reflection_identifier(
+    raw_identifier: Any,
+    *,
+    game_id: str,
+    player_id: str,
+    identifier_kind: str,
+) -> str | None:
+    """把不可信标识映射为同局同玩家可复算的无原文摘要。"""
+    if not isinstance(raw_identifier, str) or not raw_identifier:
+        return None
+    digest = hashlib.sha256(
+        b"\x00".join((
+            game_id.encode("utf-8"),
+            player_id.encode("utf-8"),
+            identifier_kind.encode("ascii"),
+            raw_identifier.encode("utf-8"),
+        ))
+    ).hexdigest()[:20]
+    return f"redacted_{identifier_kind}_{digest}"
+
+
+def _redacted_reflection_identifiers(
+    value: Any,
+    *,
+    game_id: str,
+    player_id: str,
+    identifier_kind: str,
+) -> list[str]:
+    """按原顺序去重并脱敏一组字符串标识。"""
+    if not isinstance(value, (list, tuple)):
+        return []
+    redacted: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        safe = _redacted_reflection_identifier(
+            item,
+            game_id=game_id,
+            player_id=player_id,
+            identifier_kind=identifier_kind,
+        )
+        if safe is not None and safe not in seen:
+            seen.add(safe)
+            redacted.append(safe)
+    return redacted
+
+
+def _safe_reflection_verification_payload(
+    candidate: Any,
+    *,
+    game_id: str,
+    player_id: str,
+    decision_id: str,
+    entry_decision_matches: bool,
+) -> dict[str, Any]:
+    """重建核验摘要，彻底移除 claim/lesson 原始标识与 lesson 文本。"""
     from werewolf_agent.runtime.reflection_events import safe_reflection_verification
 
-    safe_entries: list[dict] = []
-    for entry in payload.get("entries", []):
-        if not isinstance(entry, dict):
-            continue
-        verification = entry.get("verification", {})
-        player_id = str(entry.get("player_id") or "")
-        decision_id = entry.get("decision_id")
-        if not isinstance(decision_id, str) or not decision_id:
-            decision_id = f"legacy-reflection:{player_id}"
-        safe_verification = safe_reflection_verification(
-            verification,
+    if entry_decision_matches:
+        safe = safe_reflection_verification(candidate, decision_id=decision_id)
+    else:
+        safe = safe_reflection_verification(
+            {
+                "status": "agent_error",
+                "decision_id": decision_id,
+                "failure_stage": "generated",
+                "failure_code": "reflection_decision_id_mismatch",
+            },
             decision_id=decision_id,
+        )
+    lessons: list[dict[str, str]] = []
+    raw_lessons = safe.get("verified_lessons")
+    if isinstance(raw_lessons, list):
+        for lesson in raw_lessons:
+            if not isinstance(lesson, Mapping):
+                continue
+            lesson_id = _redacted_reflection_identifier(
+                lesson.get("lesson_id"),
+                game_id=game_id,
+                player_id=player_id,
+                identifier_kind="lesson",
+            )
+            abstraction = lesson.get("abstraction")
+            if lesson_id is None or not isinstance(abstraction, str) or not abstraction.strip():
+                continue
+            lessons.append({
+                "lesson_id": lesson_id,
+                "abstraction": _REDACTED_LESSON_ABSTRACTION,
+            })
+    result: dict[str, Any] = {
+        "status": safe.get("status"),
+        "decision_id": decision_id,
+        "verified_fact_count": _safe_non_negative_int(
+            safe.get("verified_fact_count")
+        ) or 0,
+        "verified_claim_ids": _redacted_reflection_identifiers(
+            safe.get("verified_claim_ids"),
+            game_id=game_id,
+            player_id=player_id,
+            identifier_kind="claim",
+        ),
+        "rejected_claim_ids": _redacted_reflection_identifiers(
+            safe.get("rejected_claim_ids"),
+            game_id=game_id,
+            player_id=player_id,
+            identifier_kind="claim",
+        ),
+        "verified_lessons": lessons,
+        "rejected_fact_count": _safe_non_negative_int(
+            safe.get("rejected_fact_count")
+        ) or 0,
+        "rejected_lesson_count": _safe_non_negative_int(
+            safe.get("rejected_lesson_count")
+        ) or 0,
+    }
+    failure_stage = safe.get("failure_stage")
+    failure_code = safe.get("failure_code")
+    if (
+        isinstance(failure_stage, str)
+        and failure_stage in _REFLECTION_FAILURE_STAGES
+        and isinstance(failure_code, str)
+        and failure_code
+    ):
+        result["failure_stage"] = failure_stage
+        result["failure_code"] = "reflection_failure"
+    return result
+
+
+def _safe_reflection_complete_payload(
+    payload: Mapping[str, Any],
+    *,
+    game_id: str,
+    players: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """从权威上下文重建 reflection_complete。"""
+    safe_entries: list[dict] = []
+    raw_entries = payload.get("entries")
+    for entry in raw_entries if isinstance(raw_entries, (list, tuple)) else ():
+        if not isinstance(entry, Mapping):
+            continue
+        authoritative = _authoritative_reflection_player(
+            players, entry.get("player_id")
+        )
+        if authoritative is None:
+            continue
+        player_id, role, alive = authoritative
+        decision_id = f"reflection:{game_id}:{player_id}"
+        raw_decision_id = entry.get("decision_id")
+        safe_verification = _safe_reflection_verification_payload(
+            entry.get("verification"),
+            game_id=game_id,
+            player_id=player_id,
+            decision_id=decision_id,
+            entry_decision_matches=raw_decision_id == decision_id,
         )
         transaction_state = entry.get("transaction_state")
         if transaction_state not in _REFLECTION_TRANSACTION_STATES:
             transaction_state = None
         entry_id = entry.get("entry_id")
-        if not isinstance(entry_id, str) or not _REFLECTION_ENTRY_ID.fullmatch(
-            entry_id
+        canonical_entry_id = f"reflection_{game_id}_{player_id}"
+        if (
+            entry_id != canonical_entry_id
+            or not _REFLECTION_ENTRY_ID.fullmatch(canonical_entry_id)
         ):
             entry_id = None
         safe_entries.append({
             "player_id": player_id,
-            "role": str(entry.get("role") or ""),
-            "alive": bool(entry.get("alive", False)),
-            "decision_id": safe_verification["decision_id"],
+            "role": role,
+            "alive": alive,
+            "decision_id": decision_id,
             "transaction_state": transaction_state,
             "failure_stage": safe_verification.get("failure_stage"),
             "failure_code": safe_verification.get("failure_code"),
@@ -443,45 +631,158 @@ def _safe_event_payload(event_type: str, payload: dict) -> dict:
     persistence_complete = payload.get("persistence_complete")
     if not isinstance(persistence_complete, bool):
         persistence_complete = None
-    safe_payload = {
+    return {
         "visibility": "moderator_only",
         "status": status,
         "persistence_complete": persistence_complete,
-        "player_count": int(payload.get("player_count") or len(safe_entries)),
-        "valid_entry_count": (
+        "player_count": _safe_non_negative_int(payload.get("player_count")),
+        "valid_entry_count": _safe_non_negative_int(
             payload.get("valid_entry_count")
-            if type(payload.get("valid_entry_count")) is int
-            and payload["valid_entry_count"] >= 0
+        ),
+        "failure_count": _safe_non_negative_int(payload.get("failure_count")),
+        "entries": safe_entries,
+    }
+
+
+def _safe_reflection_persistence_payload(
+    payload: Mapping[str, Any],
+    *,
+    game_id: str,
+    players: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """从权威上下文重建 reflection_persistence_audit。"""
+    safe_entries: list[dict[str, Any]] = []
+    raw_entries = payload.get("entries")
+    for entry in raw_entries if isinstance(raw_entries, (list, tuple)) else ():
+        if not isinstance(entry, Mapping):
+            continue
+        authoritative = _authoritative_reflection_player(
+            players, entry.get("player_id")
+        )
+        if authoritative is None:
+            continue
+        player_id, _role, _alive = authoritative
+        decision_id = f"reflection:{game_id}:{player_id}"
+        canonical_entry_id = f"reflection_{game_id}_{player_id}"
+        safe_entries.append({
+            "player_id": player_id,
+            "decision_id": (
+                decision_id if entry.get("decision_id") == decision_id else None
+            ),
+            "verified_claim_ids": _redacted_reflection_identifiers(
+                entry.get("verified_claim_ids"),
+                game_id=game_id,
+                player_id=player_id,
+                identifier_kind="claim",
+            ),
+            "entry_id": (
+                canonical_entry_id
+                if entry.get("entry_id") == canonical_entry_id
+                and _REFLECTION_ENTRY_ID.fullmatch(canonical_entry_id)
+                else None
+            ),
+            "row_found": (
+                entry.get("row_found")
+                if isinstance(entry.get("row_found"), bool)
+                else None
+            ),
+            "persistence_complete": (
+                entry.get("persistence_complete")
+                if isinstance(entry.get("persistence_complete"), bool)
+                else None
+            ),
+            "persisted_rejected_fact_count": _safe_non_negative_int(
+                entry.get("persisted_rejected_fact_count")
+            ),
+        })
+    status = payload.get("status")
+    if status not in _REFLECTION_STATUSES:
+        status = None
+    return {
+        "visibility": "moderator_only",
+        "status": status,
+        "expected_entry_count": _safe_non_negative_int(
+            payload.get("expected_entry_count")
+        ),
+        "persistence_complete": (
+            payload.get("persistence_complete")
+            if isinstance(payload.get("persistence_complete"), bool)
             else None
         ),
-        "failure_count": (
-            payload.get("failure_count")
-            if type(payload.get("failure_count")) is int
-            and payload["failure_count"] >= 0
+        "rollback_complete": (
+            payload.get("rollback_complete")
+            if isinstance(payload.get("rollback_complete"), bool)
             else None
         ),
         "entries": safe_entries,
     }
-    return safe_payload
 
 
-def _serialize_event_for_log(event: GameEvent) -> dict[str, Any]:
+def _safe_event_payload(
+    event_type: str,
+    payload: dict,
+    *,
+    game_id: str | None = None,
+    players: Mapping[str, Any] | None = None,
+) -> dict:
+    """按事件类型和权威局上下文重建可持久化摘要。"""
+    if event_type not in {
+        "reflection_complete", "reflection_persistence_audit",
+    }:
+        return payload
+    safe_game_id = _safe_reflection_component(game_id)
+    if safe_game_id is None:
+        safe_game_id = ""
+        players = None
+    if event_type == "reflection_complete":
+        return _safe_reflection_complete_payload(
+            payload,
+            game_id=safe_game_id,
+            players=players,
+        )
+    return _safe_reflection_persistence_payload(
+        payload,
+        game_id=safe_game_id,
+        players=players,
+    )
+
+
+def _serialize_event_for_log(
+    event: GameEvent,
+    *,
+    players: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """复用规范 serializer，并在脱敏后维持 V2 顶层 visibility 权威。"""
     serialized = serialize_game_event(event)
     # 先使用规范 serializer 深拷贝并递归转换批次，再对副本做脱敏。
-    safe_payload = dict(_safe_event_payload(event.type, serialized["payload"]))
+    safe_payload = dict(_safe_event_payload(
+        event.type,
+        serialized["payload"],
+        game_id=event.game_id,
+        players=players,
+    ))
     if event.schema_version == "2" or event.visibility is not None:
         safe_payload.pop("visibility", None)
     serialized["payload"] = safe_payload
     return serialized
 
 
-def _serialize_projected_event_for_log(event: dict[str, Any]) -> dict[str, Any]:
+def _serialize_projected_event_for_log(
+    event: dict[str, Any],
+    *,
+    game_id: str,
+    players: Mapping[str, Any],
+) -> dict[str, Any]:
     """仅从固定投影生成脱敏日志事件，不回读可变 runner 状态。"""
     serialized = dict(event)
+    event_game_id = serialized.get("game_id")
+    context_game_id = game_id if event_game_id in {None, game_id} else ""
+    event_type = serialized.get("type")
     safe_payload = dict(_safe_event_payload(
-        str(serialized.get("type") or ""),
+        event_type if isinstance(event_type, str) else "",
         dict(serialized.get("payload") or {}),
+        game_id=context_game_id,
+        players=players,
     ))
     if serialized.get("schema_version") == "2" or serialized.get("visibility") is not None:
         safe_payload.pop("visibility", None)
@@ -566,7 +867,11 @@ def save_game_log(
         "players": projected["players"],
         "deaths": projected["deaths"],
         "events": [
-            _serialize_projected_event_for_log(event)
+            _serialize_projected_event_for_log(
+                event,
+                game_id=projection.game_id,
+                players=projected["players"],
+            )
             for event in projected["events"]
         ],
         "elapsed_seconds": round(elapsed, 1),

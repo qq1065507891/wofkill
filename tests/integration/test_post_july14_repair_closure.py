@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from dataclasses import replace
+import inspect
 
 import pytest
 
@@ -48,10 +49,6 @@ from werewolf_agent.runtime.skill_opportunity_events import (
     append_self_destruct_selected,
 )
 from werewolf_agent.runtime.timers import ManualTimer
-from werewolf_agent.runtime.wolf_decision_trace import (
-    WOLF_KILL_EXPLICIT_STATE,
-    wolf_decision_trace_id,
-)
 from werewolf_agent.runtime.wolf_discussion_directives import (
     build_validated_wolf_target_stance,
 )
@@ -428,10 +425,15 @@ def test_runtime_no_kill_event_has_complete_v2_audit_identity() -> None:
         if event.type == "wolf_kill_selected"
     )
     assert selected.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
-    assert selected.trace_id == wolf_decision_trace_id(
-        selected_state,
-        decision_kind=WOLF_KILL_EXPLICIT_STATE,
-    )
+    assert selected.trace_id == DecisionIdentity(
+        game_id=selected_state.game_id,
+        player_id="werewolf_team",
+        phase="wolf_consensus",
+        day_number=selected_state.day_number,
+        night_number=selected_state.night_number,
+        task_type="wolf_kill_selected:explicit_state",
+        action_index=0,
+    ).trace_id()
 
 
 def _run_reflection_transaction(
@@ -458,7 +460,6 @@ def _run_reflection_transaction(
         winning_faction="good",
         players={"p01": PlayerState(id="p01", role="seer")},
     )
-    runner._state = terminal
     if valid:
         decision_id = f"reflection:{runner.game_id}:p01"
         dispatch_result = {"reflection_verification": {
@@ -481,14 +482,36 @@ def _run_reflection_transaction(
         lambda *_args, **_kwargs: dispatch_result,
     )
 
-    reflected = summary.reflection({
-        "game_state": terminal,
-        "engine": None,
-        "agent_call_delay_ms": -1,
-    })
-    runner._process_chunk({"reflection": reflected})
-    runner._save_memory_snapshot()
+    class ReflectionLifecycleGraph:
+        """让公共 run 消费真实 reflection 节点输出并自行完成终局保存。"""
+
+        @staticmethod
+        def stream(initial_state, _config):
+            assert initial_state["game_state"].game_id == runner.game_id
+            reflected = summary.reflection({
+                "game_state": terminal,
+                "engine": None,
+                "agent_call_delay_ms": -1,
+            })
+            yield {"reflection": reflected}
+
+    runner._graph = ReflectionLifecycleGraph()
+    result = runner.run()
+
+    assert result is runner.state
+    assert runner.finished is True
     return runner
+
+
+def test_reflection_closure_probe_uses_public_runner_lifecycle() -> None:
+    """N11 探针不得私写 runner 状态或绕过 run 的终局持久化流程。"""
+    source = inspect.getsource(_run_reflection_transaction)
+
+    assert "runner.run(" in source
+    for private_bypass in (
+        "runner._state", "runner._process_chunk", "runner._save_memory_snapshot",
+    ):
+        assert private_bypass not in source
 
 
 def test_final_quality_distinguishes_valid_and_invalid_reflection(

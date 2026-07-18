@@ -292,7 +292,12 @@ def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
         }],
     }
 
-    safe = _safe_event_payload("reflection_complete", payload)
+    safe = _safe_event_payload(
+        "reflection_complete",
+        payload,
+        game_id="g1",
+        players={"p01": {"id": "p01", "role": "seer", "alive": True}},
+    )
     serialized = json.dumps(safe, ensure_ascii=False)
 
     assert "RAW_PROVIDER_DRAFT" not in serialized
@@ -306,6 +311,144 @@ def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
     assert safe["valid_entry_count"] == 1
     assert safe["failure_count"] == 0
     assert safe["entries"][0]["transaction_state"] == "lessons_verified"
+
+
+class _UntrustedReflectionValue:
+    """任何保存边界上的隐式字符串转换都会使探针立即失败。"""
+
+    def __str__(self) -> str:
+        raise AssertionError("untrusted reflection value was coerced with str()")
+
+
+def test_reflection_sanitizer_never_stringifies_untrusted_nested_values() -> None:
+    payload = {
+        "status": "partial",
+        "player_count": 1,
+        "valid_entry_count": 0,
+        "failure_count": 1,
+        "entries": [{
+            "player_id": _UntrustedReflectionValue(),
+            "role": _UntrustedReflectionValue(),
+            "verification": {"status": "agent_error"},
+        }],
+    }
+
+    safe = _safe_event_payload(
+        "reflection_complete",
+        payload,
+        game_id="g-reflection-boundary",
+        players={"p01": {"id": "p01", "role": "seer", "alive": True}},
+    )
+
+    assert safe["entries"] == []
+
+
+def test_saved_reflection_events_redact_nested_keys_and_marker_values(
+    tmp_path,
+) -> None:
+    """complete/audit 同时重建，脱敏后在线与离线 quality 必须逐字段一致。"""
+    from scripts import run_real_game
+
+    game_id = "g-reflection-boundary"
+    decision_id = f"reflection:{game_id}:p01"
+    claim_ids = ["claim-p01", "raw_prompt"]
+    complete = GameEvent(type="reflection_complete", payload={
+        "visibility": "moderator_only",
+        "status": "complete",
+        "persistence_complete": True,
+        "player_count": 1,
+        "valid_entry_count": 1,
+        "failure_count": 0,
+        "raw_prompt": {"nested": "provider_response"},
+        "entries": [{
+            "player_id": "p01",
+            "role": "seer",
+            "alive": True,
+            "decision_id": decision_id,
+            "transaction_state": "lessons_verified",
+            "failure_stage": None,
+            "failure_code": None,
+            "entry_id": None,
+            "private_prompt": {"carrier": "original_text"},
+            "verification": {
+                "status": "verified",
+                "decision_id": decision_id,
+                "verified_fact_count": 2,
+                "verified_claim_ids": claim_ids,
+                "rejected_claim_ids": ["provider_response"],
+                "verified_lessons": [{
+                    "lesson_id": "original_text",
+                    "abstraction": "PRIVATE_PROMPT secret tactical prose",
+                    "provider_response": "must disappear",
+                }],
+                "rejected_fact_count": 0,
+                "rejected_lesson_count": 0,
+            },
+        }],
+    })
+    persistence = GameEvent(type="reflection_persistence_audit", payload={
+        "status": "complete",
+        "expected_entry_count": 1,
+        "persistence_complete": True,
+        "rollback_complete": True,
+        "original_text": {"raw_prompt": "must disappear"},
+        "entries": [{
+            "player_id": "p01",
+            "decision_id": decision_id,
+            "verified_claim_ids": claim_ids,
+            "entry_id": f"reflection_{game_id}_p01",
+            "row_found": True,
+            "persistence_complete": True,
+            "persisted_rejected_fact_count": 0,
+            "provider_response": {"private_prompt": "must disappear"},
+        }],
+    })
+    runner = SimpleNamespace(
+        game_id=game_id,
+        state=GameState(
+            game_id=game_id,
+            phase="finished",
+            status="finished",
+            winning_faction="good",
+            players={"p01": PlayerState(id="p01", role="seer", alive=True)},
+            events=[complete, persistence],
+        ),
+        step_count=2,
+    )
+    projection = run_real_game.project_acceptance_game(
+        runner.state,
+        steps=runner.step_count,
+    )
+    saved_quality = run_real_game.compute_game_quality_score(projection)
+
+    path = run_real_game.save_game_log(
+        runner,
+        elapsed=0.1,
+        projection=projection,
+        quality_score=saved_quality,
+        output_dir=tmp_path,
+    )
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    serialized = json.dumps(saved["events"], ensure_ascii=False).lower()
+    offline_quality = run_real_game.compute_game_quality_score(
+        run_real_game.project_acceptance_game(saved)
+    )
+
+    for marker in (
+        "raw_prompt", "provider_response", "private_prompt", "original_text",
+        "secret tactical prose", "claim-p01",
+    ):
+        assert marker not in serialized
+    complete_entry = saved["events"][0]["payload"]["entries"][0]
+    audit_entry = saved["events"][1]["payload"]["entries"][0]
+    safe_claim_ids = complete_entry["verification"]["verified_claim_ids"]
+    assert safe_claim_ids == audit_entry["verified_claim_ids"]
+    assert all(item.startswith("redacted_claim_") for item in safe_claim_ids)
+    lesson = complete_entry["verification"]["verified_lessons"][0]
+    assert lesson["lesson_id"].startswith("redacted_lesson_")
+    assert lesson["abstraction"] == "[REDACTED_VERIFIED_LESSON]"
+    assert saved["quality_score"] == saved_quality
+    assert offline_quality == saved_quality
 
 
 def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():

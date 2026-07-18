@@ -85,6 +85,23 @@ CASE_TEST_NODE_IDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _junit_closure_counts(report_path: Path) -> dict[str, int]:
+    """读取子 pytest JUnit；skipped 不得计入真正执行数量。"""
+    report = ElementTree.parse(report_path).getroot()
+    summary = report if report.tag == "testsuite" else report.find("testsuite")
+    if summary is None:
+        raise AssertionError("mapped pytest JUnit has no testsuite")
+    collected = int(summary.attrib.get("tests", "0"))
+    skipped = int(summary.attrib.get("skipped", "0"))
+    return {
+        "collected": collected,
+        "executed": max(0, collected - skipped),
+        "failures": int(summary.attrib.get("failures", "0")),
+        "errors": int(summary.attrib.get("errors", "0")),
+        "skipped": skipped,
+    }
+
+
 def load_cases() -> dict[str, dict[str, object]]:
     """读取审计问题的脱敏回归用例目录。"""
     fixture_path = Path(__file__).parents[1] / "fixtures" / "post_july14_contract_regressions.json"
@@ -131,6 +148,27 @@ def test_every_audit_issue_maps_to_an_existing_pytest_node() -> None:
                 invalid_nodes.append(node_id)
 
     assert not invalid_nodes, f"审计问题映射到不存在的 pytest node: {invalid_nodes}"
+
+
+def test_junit_closure_counts_do_not_treat_skipped_cases_as_executed(
+    tmp_path,
+) -> None:
+    """参数实例数量不得掩盖未执行的显式映射节点。"""
+    report_path = tmp_path / "skipped.xml"
+    report_path.write_text(
+        '<testsuite tests="3" failures="0" errors="0" skipped="1" />',
+        encoding="utf-8",
+    )
+
+    counts = _junit_closure_counts(report_path)
+
+    assert counts == {
+        "collected": 3,
+        "executed": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1,
+    }
 
 
 def test_mapped_audit_nodes_execute_as_nonrecursive_closure_batch() -> None:
@@ -184,15 +222,13 @@ def test_mapped_audit_nodes_execute_as_nonrecursive_closure_batch() -> None:
 
         output = "\n".join((completed.stdout, completed.stderr)).strip()
         assert report_path.is_file(), output
-        report = ElementTree.parse(report_path).getroot()
-        summary = report if report.tag == "testsuite" else report.find("testsuite")
-        assert summary is not None, output
-        executed = int(summary.attrib.get("tests", "0"))
-        failures = int(summary.attrib.get("failures", "0"))
-        errors = int(summary.attrib.get("errors", "0"))
+        counts = _junit_closure_counts(report_path)
 
     assert completed.returncode == 0, output
-    assert executed >= len(node_ids), (
-        f"mapped tests executed={executed}, explicit nodes={len(node_ids)}\n{output}"
+    assert counts["skipped"] == 0, output
+    assert counts["executed"] == counts["collected"], output
+    assert counts["executed"] >= len(node_ids), (
+        f"mapped tests executed={counts['executed']}, "
+        f"explicit nodes={len(node_ids)}\n{output}"
     )
-    assert failures == 0 and errors == 0, output
+    assert counts["failures"] == 0 and counts["errors"] == 0, output
