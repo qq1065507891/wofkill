@@ -17,6 +17,7 @@ from typing import Any
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_election_speech
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
 from werewolf_agent.runtime.nodes._shared import (
     AGENT_TIMEOUTS,
     RuntimeState,
@@ -82,6 +83,18 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
 
     if registry:
         for candidate_id in speech_order:
+            candidate = gs.players.get(candidate_id)
+            self_destruct_available = bool(
+                candidate and candidate.alive and candidate.role == "werewolf"
+            )
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_opportunity",
+                    actor_id=candidate_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_speech",
+                )
             decision_identity = _allocate_decision_identity(
                 state,
                 player_id=candidate_id,
@@ -100,6 +113,39 @@ def sheriff_speech(state: RuntimeState) -> dict[str, Any]:
                 decision_identity=decision_identity,
                 exposure_collector=exposure_collector,
             )
+            if result and result.get("self_destruct") and self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_selected",
+                    actor_id=candidate_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_speech",
+                )
+                if result.get("action_trace"):
+                    gs = replace(gs, events=gs.events + _action_audit_events(
+                        state=state,
+                        player_id=candidate_id,
+                        phase="sheriff_speech",
+                        action_trace=result["action_trace"],
+                        decision_identity=decision_identity,
+                        exposure_collector=exposure_collector,
+                        day_number=gs.day_number,
+                        night_number=gs.night_number,
+                    ))
+                else:
+                    exposure_collector.flush_events()
+                return {"game_state": gs, "self_destruct_wolf_id": candidate_id}
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=candidate_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_speech",
+                    reason_code=(
+                        "agent_unavailable" if result is None else "continued_speech"
+                    ),
+                )
             speech_text = result.get("speech_text", "") if result else ""
             speech_text, redacted_claims = sanitize_public_text(
                 speech_text,

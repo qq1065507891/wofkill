@@ -182,6 +182,144 @@ def test_self_destruct_is_recorded_only_for_an_available_wolf_choice() -> None:
     assert not [event for event in unavailable.events if event.type == "self_destruct_opportunity"]
 
 
+def test_sheriff_speech_records_private_wolf_choice_and_routes_to_resolver(
+    monkeypatch,
+) -> None:
+    from importlib import import_module
+
+    from werewolf_agent.runtime.graph import route_after_sheriff_speech
+    sheriff_speech_module = import_module(
+        "werewolf_agent.runtime.nodes.sheriff_speech"
+    )
+
+    gs = GameState(
+        game_id="sheriff_speech_self_destruct",
+        day_number=1,
+        sheriff_candidates=["wolf", "villager"],
+        players={
+            "wolf": PlayerState(id="wolf", role="werewolf"),
+            "villager": PlayerState(id="villager", role="villager"),
+        },
+    )
+
+    class Registry:
+        def get_agent(self, _player_id):
+            return None
+
+    monkeypatch.setattr(
+        sheriff_speech_module,
+        "_dispatch_agent",
+        lambda *_args, **_kwargs: {"self_destruct": True},
+    )
+    result = sheriff_speech_module.sheriff_speech({
+        "game_state": gs,
+        "agent_registry": Registry(),
+    })
+
+    assert result["self_destruct_wolf_id"] == "wolf"
+    assert route_after_sheriff_speech(result) == "resolve_self_destruct"
+    events = result["game_state"].events
+    opportunity = [
+        event for event in events
+        if event.type == "self_destruct_opportunity"
+        and event.visibility is EventVisibility.MODERATOR_ONLY
+    ]
+    selected = [
+        event for event in events
+        if event.type == "self_destruct_selected"
+        and event.visibility is EventVisibility.MODERATOR_ONLY
+    ]
+    assert [event.payload["actor_id"] for event in opportunity] == ["wolf"]
+    assert [event.payload["actor_id"] for event in selected] == ["wolf"]
+    assert not [event for event in events if event.type == "self_destruct_declined"]
+
+    policy = VisibilityPolicy()
+    wolf_facts = policy.filter_visible_facts(
+        build_world_state(result["game_state"]), "wolf", "werewolf"
+    )
+    villager_facts = policy.filter_visible_facts(
+        build_world_state(result["game_state"]), "villager", "villager"
+    )
+    assert {
+        fact.fact_type for fact in wolf_facts
+        if fact.fact_type.startswith("self_destruct_")
+    } == {
+        "self_destruct_opportunity_actor_view",
+        "self_destruct_selected_actor_view",
+    }
+    assert not {
+        fact.fact_type for fact in villager_facts
+        if fact.fact_type.startswith("self_destruct_")
+    }
+
+
+def test_sheriff_speech_declines_once_for_wolf_fallback_but_not_nonwolf(
+    monkeypatch,
+) -> None:
+    from importlib import import_module
+
+    sheriff_speech_module = import_module(
+        "werewolf_agent.runtime.nodes.sheriff_speech"
+    )
+
+    class Registry:
+        def get_agent(self, _player_id):
+            return None
+
+    def run(candidates, players, dispatch_result):
+        monkeypatch.setattr(
+            sheriff_speech_module,
+            "_dispatch_agent",
+            lambda *_args, **_kwargs: dispatch_result,
+        )
+        return sheriff_speech_module.sheriff_speech({
+            "game_state": GameState(
+                game_id="sheriff_speech_declined",
+                day_number=1,
+                sheriff_candidates=candidates,
+                players=players,
+            ),
+            "agent_registry": Registry(),
+        })["game_state"].events
+
+    wolf_events = run(
+        ["wolf"],
+        {"wolf": PlayerState(id="wolf", role="werewolf")},
+        None,
+    )
+    assert len([
+        event for event in wolf_events
+        if event.type == "self_destruct_opportunity"
+        and event.visibility is EventVisibility.MODERATOR_ONLY
+    ]) == 1
+    assert len([
+        event for event in wolf_events
+        if event.type == "self_destruct_declined"
+        and event.visibility is EventVisibility.MODERATOR_ONLY
+    ]) == 1
+
+    continued_events = run(
+        ["wolf"],
+        {"wolf": PlayerState(id="wolf", role="werewolf")},
+        {"speech_text": "continued speech"},
+    )
+    assert len([
+        event for event in continued_events
+        if event.type == "self_destruct_declined"
+        and event.visibility is EventVisibility.MODERATOR_ONLY
+    ]) == 1
+
+    villager_events = run(
+        ["villager"],
+        {"villager": PlayerState(id="villager", role="villager")},
+        {"speech_text": "normal speech"},
+    )
+    assert not [
+        event for event in villager_events
+        if event.type.startswith("self_destruct_")
+    ]
+
+
 def test_power_metrics_use_private_opportunity_events_as_the_denominator() -> None:
     from werewolf_agent.evaluation.acceptance_power_metrics import (
         compute_power_acceptance_metrics,
