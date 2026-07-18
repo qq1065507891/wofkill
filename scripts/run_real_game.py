@@ -3,7 +3,7 @@
 运行一局由 LLM 智能体参与的 12 人狼人杀真实游戏。
 
 作者: Project contributors
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     python scripts/run_real_game.py --seed 42 --max-steps 500
@@ -70,6 +70,16 @@ _SPEECH_GENERATED_BY_VALUES = frozenset({
 _SPEECH_MODEL_SUCCESS_VALUES = frozenset({
     "model", "repair", "provider_fallback",
 })
+_REFLECTION_TRANSACTION_STATES = frozenset({
+    "not_requested", "generated", "schema_validated", "facts_verified",
+    "lessons_verified", "persisted",
+})
+_REFLECTION_STATUSES = frozenset({
+    "complete", "partial", "no_valid_entries", "persistence_failed",
+})
+_REFLECTION_ENTRY_ID = re.compile(
+    r"reflection_[A-Za-z0-9._-]{1,128}_[A-Za-z0-9._-]{1,128}\Z"
+)
 _SPEECH_DECISION_OUTCOME_VALUES = frozenset({
     "direct_success", "retry_success", "repaired_success",
     "provider_fallback_success", "terminal_fallback",
@@ -408,16 +418,48 @@ def _safe_event_payload(event_type: str, payload: dict) -> dict:
             verification,
             decision_id=decision_id,
         )
+        transaction_state = entry.get("transaction_state")
+        if transaction_state not in _REFLECTION_TRANSACTION_STATES:
+            transaction_state = None
+        entry_id = entry.get("entry_id")
+        if not isinstance(entry_id, str) or not _REFLECTION_ENTRY_ID.fullmatch(
+            entry_id
+        ):
+            entry_id = None
         safe_entries.append({
             "player_id": player_id,
             "role": str(entry.get("role") or ""),
             "alive": bool(entry.get("alive", False)),
             "decision_id": safe_verification["decision_id"],
+            "transaction_state": transaction_state,
+            "failure_stage": safe_verification.get("failure_stage"),
+            "failure_code": safe_verification.get("failure_code"),
+            "entry_id": entry_id,
             "verification": safe_verification,
         })
+    status = payload.get("status")
+    if status not in _REFLECTION_STATUSES:
+        status = None
+    persistence_complete = payload.get("persistence_complete")
+    if not isinstance(persistence_complete, bool):
+        persistence_complete = None
     safe_payload = {
         "visibility": "moderator_only",
+        "status": status,
+        "persistence_complete": persistence_complete,
         "player_count": int(payload.get("player_count") or len(safe_entries)),
+        "valid_entry_count": (
+            payload.get("valid_entry_count")
+            if type(payload.get("valid_entry_count")) is int
+            and payload["valid_entry_count"] >= 0
+            else None
+        ),
+        "failure_count": (
+            payload.get("failure_count")
+            if type(payload.get("failure_count")) is int
+            and payload["failure_count"] >= 0
+            else None
+        ),
         "entries": safe_entries,
     }
     return safe_payload

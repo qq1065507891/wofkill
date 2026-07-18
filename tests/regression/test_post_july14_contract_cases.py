@@ -9,7 +9,12 @@
 
 import ast
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from xml.etree import ElementTree
 
 
 CASE_TEST_NODE_IDS: dict[str, tuple[str, ...]] = {
@@ -24,6 +29,10 @@ CASE_TEST_NODE_IDS: dict[str, tuple[str, ...]] = {
     "K3": (
         "tests/integration/test_post_july14_repair_closure.py::"
         "test_invalid_primary_uses_independent_majority_backup",
+        "tests/runtime/test_wolf_prompt_contract.py::"
+        "test_layered_context_rebuilds_live_status_instead_of_trusting_old_plan",
+        "tests/runtime/test_wolf_prompt_contract.py::"
+        "test_werewolf_system_prompt_states_target_and_evidence_semantics",
     ),
     "N1": (
         "tests/integration/test_post_july14_repair_closure.py::"
@@ -35,11 +44,11 @@ CASE_TEST_NODE_IDS: dict[str, tuple[str, ...]] = {
     ),
     "N3": (
         "tests/integration/test_post_july14_repair_closure.py::"
-        "test_graph_recursion_abort_persists_minimal_json",
+        "test_running_wolf_discussion_checkpoint_aborts_at_step_limit",
     ),
     "N4": (
-        "tests/integration/test_wolf_team_plan_e2e.py::"
-        "test_e2e_n1_authoritative_stances_override_llm_recommendation",
+        "tests/integration/test_post_july14_repair_closure.py::"
+        "test_reasoning_claim_cannot_override_structured_support_quorum",
     ),
     "N5": (
         "tests/integration/test_post_july14_repair_closure.py::"
@@ -50,8 +59,8 @@ CASE_TEST_NODE_IDS: dict[str, tuple[str, ...]] = {
         "test_balance_audit_reports_disjoint_wolf_plan_outcomes_with_exact_denominator",
     ),
     "N7": (
-        "tests/runtime/test_event_metadata_v2.py::"
-        "test_stamp_new_events_assigns_stable_v2_metadata",
+        "tests/integration/test_post_july14_repair_closure.py::"
+        "test_runtime_no_kill_event_has_complete_v2_audit_identity",
     ),
     "N8": (
         "tests/runtime/test_reflection_transaction.py::"
@@ -122,3 +131,68 @@ def test_every_audit_issue_maps_to_an_existing_pytest_node() -> None:
                 invalid_nodes.append(node_id)
 
     assert not invalid_nodes, f"审计问题映射到不存在的 pytest node: {invalid_nodes}"
+
+
+def test_mapped_audit_nodes_execute_as_nonrecursive_closure_batch() -> None:
+    """去重执行全部显式映射节点，禁止映射门禁递归调用自身。"""
+    sentinel = "WOFKILL_TASK15_NODE_BATCH"
+    assert os.environ.get(sentinel) != "1", "映射门禁发生递归执行"
+    gate_node = (
+        "tests/regression/test_post_july14_contract_cases.py::"
+        "test_mapped_audit_nodes_execute_as_nonrecursive_closure_batch"
+    )
+    node_ids = tuple(dict.fromkeys(
+        node_id
+        for case_nodes in CASE_TEST_NODE_IDS.values()
+        for node_id in case_nodes
+    ))
+    assert gate_node not in node_ids
+
+    repository_root = Path(__file__).parents[2]
+    temp_root = repository_root / ".tmp"
+    temp_root.mkdir(exist_ok=True)
+    environment = dict(os.environ)
+    environment[sentinel] = "1"
+    environment["PYTEST_ADDOPTS"] = ""
+    with tempfile.TemporaryDirectory(
+        prefix="task15-node-batch-", dir=temp_root
+    ) as temporary:
+        report_path = Path(temporary) / "mapped-nodes.xml"
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            *node_ids,
+            "-q",
+            "-n0",
+            "-p",
+            "no:cacheprovider",
+            "--basetemp",
+            str(Path(temporary) / "pytest"),
+            "--junitxml",
+            str(report_path),
+        ]
+        completed = subprocess.run(
+            command,
+            cwd=repository_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+
+        output = "\n".join((completed.stdout, completed.stderr)).strip()
+        assert report_path.is_file(), output
+        report = ElementTree.parse(report_path).getroot()
+        summary = report if report.tag == "testsuite" else report.find("testsuite")
+        assert summary is not None, output
+        executed = int(summary.attrib.get("tests", "0"))
+        failures = int(summary.attrib.get("failures", "0"))
+        errors = int(summary.attrib.get("errors", "0"))
+
+    assert completed.returncode == 0, output
+    assert executed >= len(node_ids), (
+        f"mapped tests executed={executed}, explicit nodes={len(node_ids)}\n{output}"
+    )
+    assert failures == 0 and errors == 0, output

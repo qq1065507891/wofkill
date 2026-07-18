@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-18
+修改日期: 2026-07-18
 
 使用示例:
     >>> python -m pytest tests/integration/test_post_july14_repair_closure.py -q
@@ -12,27 +13,43 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import replace
 
-from werewolf_agent.core.models import GameEvent, GameState, PlayerState
+import pytest
+
+from werewolf_agent.core.event_visibility import EventVisibility
+from werewolf_agent.core.models import GameState, PlayerState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.evaluation.acceptance_audit import (
     compute_acceptance_audit_metrics,
 )
-from werewolf_agent.evaluation.game_projection import project_acceptance_game
+from werewolf_agent.evaluation.game_projection import (
+    normalize_acceptance_games,
+    project_acceptance_game,
+)
 from werewolf_agent.runtime.decision_outcomes import (
     normalize_decision_execution_trace,
 )
-from werewolf_agent.runtime.event_metadata import new_game_event
+from werewolf_agent.runtime.event_metadata import (
+    new_game_event,
+    validate_v2_event_log_identity,
+)
 from werewolf_agent.runtime.exposure_audit import (
     is_safe_public_skill_resolution_payload,
 )
+from werewolf_agent.runtime.nodes import summary
 from werewolf_agent.runtime.nodes.night_resolution import resolve_night
+from werewolf_agent.runtime.nodes.skills import resolve_self_destruct_node
 from werewolf_agent.runtime.nodes.wolf_consensus import wolf_consensus
+from werewolf_agent.runtime.skill_opportunity_events import (
+    append_self_destruct_opportunity,
+    append_self_destruct_selected,
+)
+from werewolf_agent.runtime.timers import ManualTimer
 from werewolf_agent.runtime.wolf_discussion_directives import (
     build_validated_wolf_target_stance,
 )
-from werewolf_agent.runtime.wolf_no_kill_policy import NoKillPolicy
 
 
 def _engine() -> RuleEngine:
@@ -65,7 +82,7 @@ def _append_stance(
     target_id: str,
     priority: str = "primary",
 ) -> GameState:
-    """通过生产校验器追加一条权威、私有、V2 结构化立场。"""
+    """通过生产校验器追加权威、私有、V2 结构化立场。"""
     round_number = len([
         event for event in game_state.events if event.type == "wolf_discussion"
     ]) + 1
@@ -96,7 +113,7 @@ def _append_stance(
 
 
 def test_majority_kill_saved_by_witch_is_skill_cancellation_not_no_kill() -> None:
-    """三狼 2:1 共识的主刀被救时，平安夜必须归于技能抵消。"""
+    """三狼多数主刀被救时，审计只能归因为技能抵消且不得执行备刀。"""
     game_state = GameState(
         game_id="closure-majority-antidote",
         players=_players(),
@@ -106,6 +123,15 @@ def test_majority_kill_saved_by_witch_is_skill_cancellation_not_no_kill() -> Non
     game_state = _append_stance(game_state, wolf_id="w1", target_id="v1")
     game_state = _append_stance(game_state, wolf_id="w2", target_id="v1")
     game_state = _append_stance(game_state, wolf_id="w3", target_id="v2")
+    game_state = _append_stance(
+        game_state, wolf_id="w1", target_id="v2", priority="backup"
+    )
+    game_state = _append_stance(
+        game_state, wolf_id="w2", target_id="v2", priority="backup"
+    )
+    game_state = _append_stance(
+        game_state, wolf_id="w3", target_id="v1", priority="backup"
+    )
 
     selected = wolf_consensus({"game_state": game_state})
     resolved = resolve_night({
@@ -115,17 +141,21 @@ def test_majority_kill_saved_by_witch_is_skill_cancellation_not_no_kill() -> Non
         "poison_target_id": None,
     })
     final_state = resolved["game_state"]
+    audit_counts = Counter(event.type for event in final_state.events)
 
     assert selected["wolf_kill_target_id"] == "v1"
     assert final_state.players["v1"].alive is True
-    assert any(event.type == "wolf_kill_selected" for event in final_state.events)
-    assert any(event.type == "witch_antidote_used" for event in final_state.events)
-    assert not any(event.type.startswith("wolf_no_kill") for event in final_state.events)
     assert not any(death.player_id == "v1" for death in final_state.deaths)
+    assert audit_counts["wolf_kill_selected"] == 1
+    assert audit_counts["witch_antidote_used"] == 1
+    assert audit_counts["wolf_kill_forced_recovery"] == 0
+    assert not any(
+        event.type.startswith("wolf_no_kill") for event in final_state.events
+    )
 
 
 def test_single_wolf_primary_executes_without_tie() -> None:
-    """只剩单狼时，其合法主刀立场就是权威选择，不制造伪平票。"""
+    """单狼同时给出合法主备立场时，主刀必须优先执行。"""
     game_state = GameState(
         game_id="closure-single-wolf",
         players=_players(three_wolves=False),
@@ -133,6 +163,9 @@ def test_single_wolf_primary_executes_without_tie() -> None:
         night_number=2,
     )
     game_state = _append_stance(game_state, wolf_id="w1", target_id="v2")
+    game_state = _append_stance(
+        game_state, wolf_id="w1", target_id="v1", priority="backup"
+    )
 
     result = wolf_consensus({"game_state": game_state})
 
@@ -142,6 +175,7 @@ def test_single_wolf_primary_executes_without_tie() -> None:
         if event.type == "wolf_kill_selected"
     ]
     assert selected[-1].payload["plan_key"] == "night_kill_primary"
+    assert selected[-1].payload["target_id"] != "v1"
     assert not any(
         event.type.startswith("wolf_no_kill")
         for event in result["game_state"].events
@@ -150,10 +184,9 @@ def test_single_wolf_primary_executes_without_tie() -> None:
 
 def test_invalid_primary_uses_independent_majority_backup() -> None:
     """主刀结算前死亡时，只执行独立达到多数的合法备刀。"""
-    players = _players()
     game_state = GameState(
         game_id="closure-backup",
-        players=players,
+        players=_players(),
         phase="night",
         night_number=1,
     )
@@ -181,60 +214,92 @@ def test_invalid_primary_uses_independent_majority_backup() -> None:
 
 
 def test_third_pre_resolution_no_kill_recovers_deterministically() -> None:
-    """前两夜不同来源空刀后，第三夜按统一策略确定性恢复。"""
-    prior_events = [
-        GameEvent(
-            type="wolf_no_kill_timeout",
-            payload={
-                "night_number": 1,
-                "reason": "provider_unavailable",
-                "no_kill_decision": {
-                    "reason_code": "provider_unavailable",
-                    "consecutive_pre_resolution_no_kill_count": 1,
-                    "forced_recovery_applied": False,
-                    "recovered_target_id": None,
-                },
-            },
-        ),
-        GameEvent(
-            type="wolf_no_kill_declared",
-            payload={
-                "night_number": 2,
-                "reason": "strategic_abstain",
-                "no_kill_decision": {
-                    "reason_code": "strategic_abstain",
-                    "consecutive_pre_resolution_no_kill_count": 2,
-                    "forced_recovery_applied": False,
-                    "recovered_target_id": None,
-                },
-            },
-        ),
-    ]
+    """两条真实空刀路径后，第三条真实共识路径确定性恢复。"""
     game_state = GameState(
         game_id="closure-recovery",
-        players=_players(three_wolves=False),
+        players=_players(),
         phase="night",
-        night_number=3,
-        events=prior_events,
+        night_number=1,
     )
+    first = wolf_consensus({
+        "game_state": game_state,
+        "engine": _engine(),
+        "wolf_action": "kill",
+        "wolf_kill_target_id": "v1",
+        "runtime_timer": ManualTimer(expired_keys={"wolf_discussion"}),
+    })
+    second = wolf_consensus({
+        "game_state": replace(first["game_state"], night_number=2),
+        "engine": _engine(),
+        "wolf_action": "no_kill",
+        "wolf_action_reason": "strategic test route",
+    })
+    third_state = replace(second["game_state"], night_number=3)
+    third_state = _append_stance(third_state, wolf_id="w1", target_id="v1")
+    third_state = _append_stance(third_state, wolf_id="w2", target_id="v2")
+    result = wolf_consensus({"game_state": third_state, "engine": _engine()})
 
-    result = NoKillPolicy(
-        max_consecutive_pre_resolution_no_kill=2
-    ).resolve(
-        game_state,
-        reason_code="true_tie",
-        primary_positive_support={"v1": 1, "v2": 1},
-        backup_positive_support={"v1": 2, "v2": 1},
+    no_kill_events = [
+        event for event in result["game_state"].events
+        if event.type in {"wolf_no_kill_timeout", "wolf_no_kill_declared"}
+    ]
+    recovery = next(
+        event for event in result["game_state"].events
+        if event.type == "wolf_kill_forced_recovery"
     )
+    selected = [
+        event for event in result["game_state"].events
+        if event.type == "wolf_kill_selected"
+    ][-1]
 
     assert result["wolf_kill_target_id"] == "v1"
-    recovery, selected = result["game_state"].events[-2:]
-    assert recovery.type == "wolf_kill_forced_recovery"
+    assert [event.type for event in no_kill_events] == [
+        "wolf_no_kill_timeout", "wolf_no_kill_declared"
+    ]
     assert recovery.payload["original_reasons"] == [
         "provider_unavailable", "strategic_abstain", "true_tie"
     ]
-    assert selected.type == "wolf_kill_selected"
     assert selected.payload["reason"] == "forced_recovery"
+
+
+def test_reasoning_claim_cannot_override_structured_support_quorum() -> None:
+    """计划自由文本声称全票时，结构化支持者不足仍必须空刀。"""
+    game_state = GameState(
+        game_id="closure-authoritative-support",
+        players=_players(),
+        phase="night",
+        night_number=1,
+    )
+    game_state = _append_stance(game_state, wolf_id="w1", target_id="v1")
+    claimed_plan = new_game_event(
+        game_state,
+        "wolf_team_plan",
+        {
+            "night_number": 1,
+            "night_kill_primary": "v1",
+            "reasoning": "三名狼人已经一致同意",
+            "consensus_method": "llm",
+        },
+        visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+    )
+    game_state = replace(game_state, events=[*game_state.events, claimed_plan])
+
+    result = wolf_consensus({
+        "game_state": game_state,
+        "wolf_team_plan": claimed_plan.payload,
+    })
+
+    assert result["wolf_kill_target_id"] is None
+    assert not any(
+        event.type == "wolf_kill_selected"
+        for event in result["game_state"].events
+    )
+    no_kill = next(
+        event for event in result["game_state"].events
+        if event.type == "wolf_no_kill_timeout"
+    )
+    assert no_kill.payload["reason"] == "insufficient_quorum"
+    assert no_kill.payload["supporters"] == {"v1": ["w1"]}
 
 
 def test_graph_recursion_abort_persists_minimal_json(tmp_path) -> None:
@@ -274,79 +339,137 @@ def test_graph_recursion_abort_persists_minimal_json(tmp_path) -> None:
     }
 
 
-def _reflection_game(*, valid: bool) -> dict[str, object]:
-    """构造有效或零有效条目的已结束反思事务。"""
-    events: list[dict[str, object]]
+def test_running_wolf_discussion_checkpoint_aborts_at_step_limit(tmp_path) -> None:
+    """运行中 wolf_discussion 检查点达到 200 步时形成 step-limit 终态。"""
+    from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+
+    runner = GameRunner(GameRunnerConfig(
+        seed=71416,
+        emergency_artifact_dir=tmp_path,
+        enable_default_rag_service=False,
+    ))
+    runner._state = GameState(
+        game_id=runner.game_id,
+        players=_players(),
+        phase="wolf_discussion",
+        status="running",
+        night_number=1,
+    )
+    runner._step_count = 200
+    runner._graph = type(
+        "ExhaustedGraph",
+        (),
+        {"stream": lambda *_args, **_kwargs: iter(())},
+    )()
+
+    result = runner.run(max_steps=200)
+    payload = json.loads(
+        (tmp_path / f"emergency_abort_{runner.game_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result.status == "aborted"
+    assert result.termination_reason == "step_limit"
+    assert result.phase == "wolf_discussion"
+    assert payload["step"] == 200
+    assert payload["phase"] == "wolf_discussion"
+
+
+def test_runtime_no_kill_event_has_complete_v2_audit_identity() -> None:
+    """真实 timeout 节点新增事件具有完整、唯一且连续的 V2 审计身份。"""
+    game_state = GameState(
+        game_id="closure-v2-no-kill",
+        players=_players(),
+        phase="night",
+        night_number=1,
+    )
+    result = wolf_consensus({
+        "game_state": game_state,
+        "engine": _engine(),
+        "runtime_timer": ManualTimer(expired_keys={"wolf_discussion"}),
+    })
+    events = result["game_state"].events
+
+    validate_v2_event_log_identity(game_state.game_id, events)
+    no_kill = next(event for event in events if event.type == "wolf_no_kill_timeout")
+    assert no_kill.event_id == (
+        f"{game_state.game_id}:e{no_kill.sequence_number:06d}"
+    )
+    assert no_kill.game_id == game_state.game_id
+    assert no_kill.schema_version == "2"
+    assert no_kill.occurred_at is not None
+    assert no_kill.visibility is EventVisibility.WEREWOLF_TEAM_ONLY
+
+
+def _run_reflection_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    valid: bool,
+):
+    """从真实终局节点运行可重复的反思生成、事务汇总与持久化审计。"""
+    from werewolf_agent.runtime.game_runner import GameRunner, GameRunnerConfig
+    from werewolf_agent.storage.memory_store import InMemoryGameRepository
+    from werewolf_agent.storage.persistent_memory import PersistentMemoryCoordinator
+
+    repository = InMemoryGameRepository()
+    runner = GameRunner(GameRunnerConfig(
+        seed=71417 if valid else 71418,
+        repository=repository,
+        memory_coordinator=PersistentMemoryCoordinator(repository),
+        enable_default_rag_service=False,
+    ))
+    terminal = GameState(
+        game_id=runner.game_id,
+        phase="finished",
+        status="finished",
+        winning_faction="good",
+        players={"p01": PlayerState(id="p01", role="seer")},
+    )
+    runner._state = terminal
     if valid:
-        events = [
-            {
-                "type": "reflection_complete",
-                "payload": {
-                    "status": "complete",
-                    "player_count": 1,
-                    "valid_entry_count": 1,
-                    "failure_count": 0,
-                    "entries": [{
-                        "player_id": "p01",
-                        "decision_id": "reflection:closure-reflection:p01",
-                        "transaction_state": "persisted",
-                        "entry_id": "reflection_closure-reflection_p01",
-                        "verification": {
-                            "status": "verified",
-                            "decision_id": "reflection:closure-reflection:p01",
-                            "verified_claim_ids": ["claim-p01"],
-                            "rejected_claim_ids": [],
-                            "verified_lessons": [{
-                                "lesson_id": "lesson-1",
-                                "abstraction": "先核验公开票型",
-                            }],
-                            "rejected_fact_count": 0,
-                            "rejected_lesson_count": 0,
-                        },
-                    }],
-                },
-            },
-            {
-                "type": "reflection_persistence_audit",
-                "payload": {
-                    "status": "complete",
-                    "expected_entry_count": 1,
-                    "persistence_complete": True,
-                    "rollback_complete": True,
-                    "entries": [{
-                        "player_id": "p01",
-                        "decision_id": "reflection:closure-reflection:p01",
-                        "verified_claim_ids": ["claim-p01"],
-                        "entry_id": "reflection_closure-reflection_p01",
-                        "row_found": True,
-                        "persistence_complete": True,
-                        "persisted_rejected_fact_count": 0,
-                    }],
-                },
-            },
-        ]
+        decision_id = f"reflection:{runner.game_id}:p01"
+        dispatch_result = {"reflection_verification": {
+            "status": "verified",
+            "decision_id": decision_id,
+            "verified_claim_ids": ["claim-p01"],
+            "rejected_claim_ids": [],
+            "verified_lessons": [{
+                "lesson_id": "lesson-p01",
+                "abstraction": "先核验公开票型",
+            }],
+            "rejected_fact_count": 0,
+            "rejected_lesson_count": 0,
+        }}
     else:
-        events = [{
-            "type": "reflection_no_valid_entries",
-            "payload": {
-                "expected_entry_count": 1,
-                "valid_entry_count": 0,
-                "persistence_complete": False,
-            },
-        }]
-    return {
-        "game_id": "closure-reflection",
-        "status": "finished",
-        "winning_faction": "good",
-        "players": {"p01": {"id": "p01", "role": "seer"}},
-        "events": events,
-    }
+        dispatch_result = None
+    monkeypatch.setattr(
+        summary,
+        "_dispatch_agent",
+        lambda *_args, **_kwargs: dispatch_result,
+    )
+
+    reflected = summary.reflection({
+        "game_state": terminal,
+        "engine": None,
+        "agent_call_delay_ms": -1,
+    })
+    runner._process_chunk({"reflection": reflected})
+    runner._save_memory_snapshot()
+    return runner
 
 
-def test_final_quality_distinguishes_valid_and_invalid_reflection() -> None:
-    """终局 quality 只认可完整持久化事务，零有效条目绝不算成功。"""
-    valid = compute_acceptance_audit_metrics([_reflection_game(valid=True)])
-    invalid = compute_acceptance_audit_metrics([_reflection_game(valid=False)])
+def test_final_quality_distinguishes_valid_and_invalid_reflection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """真实反思事务决定最终 quality，且保存值逐字段等于离线重算值。"""
+    from scripts.run_real_game import compute_game_quality_score, save_game_log
+
+    valid_runner = _run_reflection_transaction(monkeypatch, valid=True)
+    invalid_runner = _run_reflection_transaction(monkeypatch, valid=False)
+    valid = compute_acceptance_audit_metrics([valid_runner.state])
+    invalid = compute_acceptance_audit_metrics([invalid_runner.state])
 
     assert valid["reflection_completed_game_count"] == 1
     assert valid["reflection_audited_game_count"] == 1
@@ -356,9 +479,46 @@ def test_final_quality_distinguishes_valid_and_invalid_reflection() -> None:
     assert invalid["reflection_contamination_metrics_supported"] is False
     assert invalid["reflection_persisted_rejected_fact_count"] is None
 
+    for runner in (valid_runner, invalid_runner):
+        projection = project_acceptance_game(
+            runner.state, steps=runner.step_count
+        )
+        saved_quality = compute_game_quality_score(projection)
+        path = save_game_log(
+            runner,
+            elapsed=0.1,
+            projection=projection,
+            quality_score=saved_quality,
+            output_dir=tmp_path,
+        )
+        complete_json = json.loads(path.read_text(encoding="utf-8"))
+        offline_quality = compute_game_quality_score(
+            project_acceptance_game(complete_json)
+        )
+        assert complete_json["quality_score"] == saved_quality
+        assert offline_quality.keys() == saved_quality.keys()
+        mismatches = {
+            field: {
+                "saved": saved_quality[field],
+                "offline": offline_quality[field],
+            }
+            for field in saved_quality
+            if offline_quality[field] != saved_quality[field]
+        }
+        assert not mismatches, mismatches
+        if runner is invalid_runner:
+            assert offline_quality["reflection_audited_game_count"] == 0
+            assert (
+                offline_quality["reflection_contamination_metrics_supported"]
+                is False
+            )
+            assert offline_quality[
+                "reflection_contamination_metrics_unsupported_reason"
+            ] == "reflection_no_valid_entries"
+
 
 def test_v1_compatibility_marks_normalized_trace_and_unsupported_projection() -> None:
-    """V1 只读兼容必须显式标记归一化或缺失证据，不伪装成原生 V2。"""
+    """同一份 V1 日志经兼容投影后同时给出 normalized 与 unsupported。"""
     legacy_trace = {
         "execution_attempts": [{
             "opaque_request_id": "legacy-request",
@@ -374,30 +534,114 @@ def test_v1_compatibility_marks_normalized_trace_and_unsupported_projection() ->
             "evidence_kind": "none",
         }],
     }
-    normalized = normalize_decision_execution_trace(legacy_trace)
-    projection = project_acceptance_game({
+    legacy_log = {
         "game_id": "legacy-closure",
         "winning_faction": "good",
-        "events": [{"type": "legacy_event", "payload": {}}],
-    })
+        "events": [{
+            "type": "action_trace_audit",
+            "payload": {
+                "task_type": "speech",
+                "action_trace": legacy_trace,
+            },
+        }],
+    }
+    compatibility_games = normalize_acceptance_games([legacy_log])
+    projected_trace = compatibility_games[0]["events"][0]["payload"][
+        "action_trace"
+    ]
+    normalized = normalize_decision_execution_trace(projected_trace)
+    projection = project_acceptance_game(compatibility_games[0])
+    metrics = compute_acceptance_audit_metrics(compatibility_games)
 
     assert normalized["normalized_from_schema_version"] == "1"
     assert "normalized_from_schema_version" not in legacy_trace
     assert projection.supported is False
     assert projection.unsupported_reason == "missing_players"
     assert projection.to_mapping()["_acceptance_projection_supported"] is False
+    assert metrics["decision_count"] == 1
+    assert metrics["attempt_retry_consistency_error_count"] == 0
+    assert metrics["acceptance_projection_unsupported_reason"] == "missing_players"
 
 
 def test_closure_public_skill_payload_has_zero_sensitive_fields() -> None:
-    """公开技能结果只保留白名单字段，私有理由与身份真值泄漏为零。"""
-    public_payload = {
-        "actor_id": "hunter",
-        "target_id": "w1",
-        "public_result": "shot_resolved",
-    }
+    """检查生产节点生成的公开事件，而不是手写安全字典。"""
+    game_state = GameState(
+        game_id="closure-public-skill",
+        players=_players(),
+        phase="day",
+        day_number=1,
+    )
+    game_state, offered = append_self_destruct_opportunity(
+        game_state,
+        actor_id="w1",
+        day_number=1,
+        opportunity_phase="day_discussion",
+    )
+    game_state, selected = append_self_destruct_selected(
+        game_state,
+        actor_id="w1",
+        day_number=1,
+        opportunity_phase="day_discussion",
+    )
+    assert offered is True and selected is True
 
-    assert is_safe_public_skill_resolution_payload(public_payload) is True
-    for sensitive_field in (
-        "reason", "alignment", "candidate_ids", "private_reason", "role"
+    result = resolve_self_destruct_node({
+        "game_state": game_state,
+        "engine": _engine(),
+        "self_destruct_wolf_id": "w1",
+    })
+    majority_state = GameState(
+        game_id="closure-public-majority",
+        players=_players(),
+        phase="night",
+        night_number=1,
+    )
+    for wolf_id, target_id in (
+        ("w1", "v1"), ("w2", "v1"), ("w3", "v2")
     ):
-        assert sensitive_field not in public_payload
+        majority_state = _append_stance(
+            majority_state, wolf_id=wolf_id, target_id=target_id
+        )
+    majority_selected = wolf_consensus({"game_state": majority_state})
+    majority_result = resolve_night({
+        **majority_selected,
+        "engine": _engine(),
+        "use_antidote": True,
+        "poison_target_id": None,
+    })
+    timeout_result = wolf_consensus({
+        "game_state": GameState(
+            game_id="closure-public-timeout",
+            players=_players(),
+            phase="night",
+            night_number=1,
+        ),
+        "engine": _engine(),
+        "runtime_timer": ManualTimer(expired_keys={"wolf_discussion"}),
+    })
+    produced_states = (
+        result["game_state"],
+        majority_result["game_state"],
+        timeout_result["game_state"],
+    )
+    public_events = [
+        event for produced_state in produced_states
+        for event in produced_state.events
+        if event.visibility is EventVisibility.PUBLIC
+    ]
+    skill_events = [
+        event for event in public_events
+        if event.type == "self_destruct_resolved"
+    ]
+
+    assert len(skill_events) == 1
+    assert is_safe_public_skill_resolution_payload(
+        skill_events[0].payload
+    ) is True
+    serialized_public = json.dumps(
+        [event.payload for event in public_events], ensure_ascii=False
+    )
+    for sensitive_field in (
+        '"alignment"', '"candidate_ids"', '"private_reason"', '"role"'
+    ):
+        assert sensitive_field not in serialized_public

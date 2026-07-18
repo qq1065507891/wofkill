@@ -3,7 +3,7 @@
 验证真实游戏脚本的报告辅助函数与结构化质量指标。
 
 作者: Project contributors
-修改日期: 2026-07-15
+修改日期: 2026-07-18
 """
 
 from __future__ import annotations
@@ -266,13 +266,23 @@ def test_reflection_metrics_count_only_latest_canonical_decision_per_player() ->
 def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
     payload = {
         "visibility": "moderator_only",
+        "status": "complete",
+        "persistence_complete": False,
         "player_count": 1,
+        "valid_entry_count": 1,
+        "failure_count": 0,
         "entries": [{
             "player_id": "p01",
             "role": "seer",
             "decision_id": "reflection:g1:p01",
+            "transaction_state": "lessons_verified",
+            "failure_stage": None,
+            "failure_code": None,
+            "entry_id": None,
             "reflection": "RAW_PROVIDER_DRAFT",
             "provider_response": {"thinking": "SECRET"},
+            "private_prompt": "PRIVATE_PROMPT_SECRET",
+            "original_text": "ORIGINAL_REFLECTION_SECRET",
             "verification": {
                 "status": "verified", "decision_id": "reflection:g1:p01",
                 "verified_fact_count": 1,
@@ -287,9 +297,15 @@ def test_game_log_reflection_payload_drops_raw_provider_draft() -> None:
 
     assert "RAW_PROVIDER_DRAFT" not in serialized
     assert "SECRET" not in serialized
+    assert "PRIVATE_PROMPT_SECRET" not in serialized
+    assert "ORIGINAL_REFLECTION_SECRET" not in serialized
     assert safe["entries"][0]["verification"]["verified_fact_count"] == 1
     assert safe["entries"][0]["decision_id"] == "reflection:g1:p01"
     assert safe["entries"][0]["verification"]["decision_id"] == "reflection:g1:p01"
+    assert safe["status"] == "complete"
+    assert safe["valid_entry_count"] == 1
+    assert safe["failure_count"] == 0
+    assert safe["entries"][0]["transaction_state"] == "lessons_verified"
 
 
 def test_reasoning_evidence_summary_is_allowlisted_and_has_exact_denominators():
