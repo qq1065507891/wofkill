@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.sheriff_registration import sheriff_registration
@@ -21,6 +22,7 @@ from werewolf_agent.runtime.agent_adapter import (
     agent_sheriff_withdraw,
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     logger,
@@ -65,6 +67,15 @@ def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
     for pid, p in gs.players.items():
         if not p.alive:
             continue
+        self_destruct_available = p.role == "werewolf"
+        if self_destruct_available:
+            gs = append_private_skill_event(
+                gs,
+                "self_destruct_opportunity",
+                actor_id=pid,
+                day_number=gs.day_number,
+                opportunity_phase="sheriff_registration",
+            )
         decision_identity = _allocate_decision_identity(
             state,
             player_id=pid,
@@ -97,12 +108,37 @@ def sheriff_registration(state: RuntimeState) -> dict[str, Any]:
             else:
                 exposure_collector.flush_events()
             if result.get("self_destruct"):
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_selected",
+                    actor_id=pid,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_registration",
+                )
                 return {"game_state": gs, "self_destruct_wolf_id": pid}
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=pid,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_registration",
+                    reason_code="registered_or_declined",
+                )
             if result.get("registered"):
                 candidates.append(pid)
                 logger.debug(f"  [上警报名] {_player_display(state, pid)} 报名上警")
         else:
             exposure_collector.flush_events()
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=pid,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_registration",
+                    reason_code="agent_unavailable",
+                )
     if not has_agents:
         candidates = state.get("sheriff_candidates", [])
         if not candidates:
@@ -151,6 +187,16 @@ def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
     withdrawing: list[str] = []
     has_agents = False
     for candidate_id in candidates:
+        candidate = gs.players.get(candidate_id)
+        self_destruct_available = bool(candidate and candidate.alive and candidate.role == "werewolf")
+        if self_destruct_available:
+            gs = append_private_skill_event(
+                gs,
+                "self_destruct_opportunity",
+                actor_id=candidate_id,
+                day_number=gs.day_number,
+                opportunity_phase="sheriff_withdraw",
+            )
         decision_identity = _allocate_decision_identity(
             state,
             player_id=candidate_id,
@@ -183,12 +229,37 @@ def sheriff_withdraw(state: RuntimeState) -> dict[str, Any]:
             else:
                 exposure_collector.flush_events()
             if result.get("self_destruct"):
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_selected",
+                    actor_id=candidate_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_withdraw",
+                )
                 return {"game_state": gs, "self_destruct_wolf_id": candidate_id}
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=candidate_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_withdraw",
+                    reason_code="withdrew_or_stayed",
+                )
             if result.get("withdrew"):
                 withdrawing.append(candidate_id)
                 logger.debug(f"  [退水] {_player_display(state, candidate_id)} 退出竞选")
         else:
             exposure_collector.flush_events()
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=candidate_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_withdraw",
+                    reason_code="agent_unavailable",
+                )
     if not has_agents:
         withdrawing = state.get("sheriff_withdrawing", [])
 

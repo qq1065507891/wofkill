@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-13
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.night_resolution import resolve_night
@@ -25,6 +25,7 @@ from werewolf_agent.runtime.nodes._shared import (
     _player_display,
 )
 from werewolf_agent.runtime.nodes.day_finish import _commit_victory
+from werewolf_agent.runtime.skill_opportunity_events import build_private_skill_event
 
 def resolve_night(state: RuntimeState) -> dict[str, Any]:
 
@@ -109,6 +110,30 @@ def resolve_night(state: RuntimeState) -> dict[str, Any]:
             )
 
             logger.debug(f"  [夜晚结算] 预言家查验 {_player_display(state, target)}: {'好人' if alignment == 'good' else '狼人'}")
+
+    for seer_event in events:
+        if seer_event.type != "seer_check":
+            continue
+        seer_id = next((
+            event.payload.get("actor_id")
+            for event in reversed(gs.events)
+            if event.type in {"seer_check_selected", "seer_check_repaired"}
+            and event.payload.get("night_number") == gs.night_number
+        ), None)
+        if not isinstance(seer_id, str) or not seer_id:
+            seer_id = next((
+                player_id for player_id, player in gs.players.items()
+                if player.role == "seer"
+            ), "")
+        if seer_id:
+            gs = replace(gs, events=gs.events + list(build_private_skill_event(
+                "seer_check_resolved",
+                actor_id=seer_id,
+                night_number=gs.night_number,
+                target_id=seer_event.payload.get("target_id"),
+                alignment=seer_event.payload.get("alignment"),
+                resolution="checked",
+            )))
 
     if seer_woke:
 

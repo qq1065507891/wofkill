@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-16
+修改日期: 2026-07-18
 
 使用示例:
     内部运行时节点模块。
@@ -39,6 +39,7 @@ from werewolf_agent.runtime.sheriff_policy import (
     choose_sheriff_led_speech_order,
 )
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
+from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_pick_speech_order
 from werewolf_agent.runtime.agent_action_audit import (
     build_runtime_terminal_fallback_trace,
@@ -223,7 +224,20 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
             if speech_text else None
         )
         seer_credibility_audit = None
+        self_destruct_available = (
+            not speech_text
+            and gs.players.get(speaker_id) is not None
+            and gs.players[speaker_id].role == "werewolf"
+        )
         if not speech_text:
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_opportunity",
+                    actor_id=speaker_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="day_speech",
+                )
             try:
                 result = _dispatch_agent(
                     state,
@@ -239,6 +253,13 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 action_trace = _terminal_speech_trace("agent_dispatch_error")
             if result is not None:
                 if result.get("self_destruct"):
+                    gs = append_private_skill_event(
+                        gs,
+                        "self_destruct_selected",
+                        actor_id=speaker_id,
+                        day_number=gs.day_number,
+                        opportunity_phase="day_speech",
+                    )
                     trace = result.get("action_trace") or _terminal_speech_trace(
                         "self_destruct_before_speech"
                     )
@@ -260,6 +281,15 @@ def free_discussion(state: RuntimeState) -> dict[str, Any]:
                 seer_credibility_audit = result.get("seer_credibility_audit")
             elif action_trace is None:
                 action_trace = _terminal_speech_trace("agent_unavailable")
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=speaker_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="day_speech",
+                    reason_code=("agent_unavailable" if result is None else "continued_speech"),
+                )
         player_role = gs.players[speaker_id].role if speaker_id in gs.players else "?"
         logger.debug(f"  [{_player_display(state, speaker_id)}({player_role})]: {speech_text if speech_text else '(未发言)'}")
         if not speech_text.strip():

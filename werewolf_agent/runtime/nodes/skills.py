@@ -3,7 +3,7 @@
 
 作者: Project contributors
 创建日期: 2025-01-15
-修改日期: 2026-07-15
+修改日期: 2026-07-18
 使用示例: 内部模块，无对外接口
 """
 
@@ -14,6 +14,7 @@ from dataclasses import replace
 from typing import Any
 
 from werewolf_agent.core.models import Death, GameEvent, GameState
+from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.resolution_batches import (
     ResolutionBatchV2,
     serialize_resolution_batch,
@@ -44,6 +45,10 @@ from werewolf_agent.evaluation.balance_public_claims import (
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.timeouts import AGENT_TIMEOUTS
 from werewolf_agent.runtime.nodes.day_finish import _commit_victory
+from werewolf_agent.runtime.skill_opportunity_events import (
+    build_private_skill_event,
+    build_public_skill_resolution,
+)
 
 
 def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
@@ -67,6 +72,17 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         if batch_parse_failed or _hunter_reaction_resolved(gs, death):
             continue
         assert parsed_batch is not None
+        legal_targets = [
+            player_id for player_id, player in gs.players.items()
+            if player.alive and player_id != death.player_id
+        ]
+        gs = replace(gs, events=gs.events + list(build_private_skill_event(
+            "hunter_shot_opportunity",
+            actor_id=death.player_id,
+            day_number=gs.day_number,
+            night_number=gs.night_number,
+            legal_targets=legal_targets,
+        )))
 
         gs, _ = _jb(
             state,
@@ -132,6 +148,13 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
         if target is None:
             target = _hunter_shot_target_from_last_words(gs, death.player_id)
         if target and target in gs.players and gs.players[target].alive and target != death.player_id:
+            gs = replace(gs, events=gs.events + list(build_private_skill_event(
+                "hunter_shot_selected",
+                actor_id=death.player_id,
+                day_number=gs.day_number,
+                night_number=gs.night_number,
+                target_id=target,
+            )))
             gs, _ = _judge_broadcast(
                 phase="hunter_shot_choice",
                 message=f"猎人{_player_display(state, death.player_id)}选择带走{_player_display(state, target)}",
@@ -175,7 +198,37 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                     "night_number": gs.night_number,
                 },
             )])
+            gs = replace(gs, events=gs.events + [build_public_skill_resolution(
+                "hunter_shot_resolved",
+                actor_id=death.player_id,
+                target_id=target,
+                public_result="target_died",
+            )])
         else:
+            outcome_type = "hunter_shot_declined" if target is None else "hunter_shot_blocked"
+            outcome_payload = (
+                {"reason_code": "no_target_selected"}
+                if target is None else {"reason_code": "invalid_hunter_target"}
+            )
+            if target is None:
+                # ``hunter_shot_declined`` 是既有幂等/路由锚点；它本身升级为
+                # 权威事件，另行写入行动者投影，避免同类型双写。
+                actor_projection = build_private_skill_event(
+                    outcome_type,
+                    actor_id=death.player_id,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                    **outcome_payload,
+                )[1]
+                gs = replace(gs, events=gs.events + [actor_projection])
+            else:
+                gs = replace(gs, events=gs.events + list(build_private_skill_event(
+                    outcome_type,
+                    actor_id=death.player_id,
+                    day_number=gs.day_number,
+                    night_number=gs.night_number,
+                    **outcome_payload,
+                )))
             gs, _ = _judge_broadcast(
                 phase="hunter_shot_decline",
                 message=f"猎人{_player_display(state, death.player_id)}选择不开枪",
@@ -190,6 +243,7 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                 type="hunter_shot_declined",
                 payload={
                     "hunter_id": death.player_id,
+                    "actor_id": death.player_id,
                     "day_number": gs.day_number,
                     "night_number": gs.night_number,
                     "resolution_batch": serialize_resolution_batch(
@@ -197,6 +251,13 @@ def resolve_hunter_shot(state: RuntimeState) -> dict[str, Any]:
                     )[0],
                     "resolution_batch_parse_failed": batch_parse_failed,
                 },
+                visibility=EventVisibility.MODERATOR_ONLY,
+            )])
+            gs = replace(gs, events=gs.events + [build_public_skill_resolution(
+                "hunter_shot_resolved",
+                actor_id=death.player_id,
+                target_id=None,
+                public_result=("declined" if target is None else "blocked"),
             )])
         break
 
@@ -343,7 +404,11 @@ def resolve_self_destruct_node(state: RuntimeState) -> dict[str, Any]:
                 gs=gs, day_number=gs.day_number,
                 visibility="public",
             )
-        gs = replace(gs, events=gs.events + events)
+        gs = replace(gs, events=gs.events + events + [build_public_skill_resolution(
+            "self_destruct_resolved",
+            actor_id=wolf_id,
+            public_result=("wolf_died" if events else "blocked"),
+        )])
     return {"game_state": gs, "self_destruct_wolf_id": None}
 
 

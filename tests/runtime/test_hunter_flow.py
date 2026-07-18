@@ -863,3 +863,36 @@ class TestHunterShotPublicEvent:
         new_gs = result.get("game_state", gs)
         event_types = [e.type for e in new_gs.events]
         assert "hunter_shot_public" in event_types, f"Missing hunter_shot_public event. Got: {event_types}"
+
+    def test_hunter_opportunity_selected_and_resolved_are_audited_without_private_reason(self) -> None:
+        from werewolf_agent.core.event_visibility import EventVisibility
+        from werewolf_agent.runtime.graph import resolve_hunter_shot
+
+        death = Death(
+            player_id="hunter", reason="wolf_kill", timing="night",
+            resolution_batch="night_1", triggered_skills=["hunter_shot"],
+        )
+        gs = GameState(
+            game_id="hunter_opportunity_chain",
+            phase="night",
+            night_number=1,
+            players={
+                "hunter": PlayerState(id="hunter", role="hunter", alive=False),
+                "wolf": PlayerState(id="wolf", role="werewolf"),
+                "villager": PlayerState(id="villager", role="villager"),
+            },
+            deaths=[death],
+        )
+
+        result = resolve_hunter_shot({
+            "game_state": gs,
+            "engine": _new_engine(),
+            "hunter_shot_target_id": "wolf",
+        })["game_state"]
+        events = {event.type: event for event in result.events}
+
+        assert events["hunter_shot_opportunity"].visibility is EventVisibility.MODERATOR_ONLY
+        assert events["hunter_shot_selected"].visibility is EventVisibility.MODERATOR_ONLY
+        assert events["hunter_shot_resolved"].visibility is EventVisibility.PUBLIC
+        assert "private_reason" not in events["hunter_shot_resolved"].payload
+        assert "target_true_role" not in events["hunter_shot_resolved"].payload

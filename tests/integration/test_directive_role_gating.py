@@ -601,3 +601,28 @@ class TestDirectiveWolfPrivateNoLeak:
             assert key not in ctx.visible_world_state, (
                 f"hybrid visible_world_state leaks wolf-private key: {key}"
             )
+
+
+def test_skill_opportunity_actor_projection_does_not_enter_other_role_contexts() -> None:
+    from werewolf_agent.cognition.visibility import VisibilityPolicy
+    from werewolf_agent.cognition.world_state import build_world_state
+    from werewolf_agent.runtime.skill_opportunity_events import build_private_skill_event
+
+    state = _make_state()
+    game_state = replace(
+        state["game_state"],
+        events=list(build_private_skill_event(
+            "self_destruct_opportunity",
+            actor_id="w1",
+            day_number=1,
+            available_actions=["self_destruct", "continue"],
+        )),
+    )
+    world = build_world_state(game_state)
+    policy = VisibilityPolicy()
+
+    wolf = policy.filter_visible_facts(world, viewer_id="w1", viewer_role="werewolf")
+    villager = policy.filter_visible_facts(world, viewer_id="v1", viewer_role="villager")
+
+    assert [fact.fact_type for fact in wolf] == ["self_destruct_opportunity_actor_view"]
+    assert villager == []

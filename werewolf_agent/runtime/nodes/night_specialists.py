@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.night_specialists import night_witch
@@ -22,6 +23,8 @@ from werewolf_agent.runtime.agent_adapter import (
 )
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
 from werewolf_agent.runtime.nodes.night_witch_node import night_witch as night_witch
+from werewolf_agent.runtime.seer_night_directives import build_seer_legal_targets
+from werewolf_agent.runtime.skill_opportunity_events import build_private_skill_event
 from werewolf_agent.runtime.nodes._shared import (
     AGENT_TIMEOUTS,
     RuntimeState,
@@ -51,9 +54,22 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
 
     gs: GameState = state["game_state"]
 
-    if _find_role(gs, "seer") is None:
+    seer_id = _find_role(gs, "seer")
+    if seer_id is None:
 
         return {"game_state": gs, "seer_target_id": None}
+
+    legal_targets = build_seer_legal_targets(
+        gs,
+        seer_id=seer_id,
+        counterclaiming_seers=set(),
+    )
+    gs = replace(gs, events=gs.events + list(build_private_skill_event(
+        "seer_check_opportunity",
+        actor_id=seer_id,
+        night_number=gs.night_number,
+        legal_targets=legal_targets,
+    )))
 
     gs, _ = _jb(
 
@@ -114,8 +130,22 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
     _ensure_runtime_audit_state(state)
     state = {**state, "game_state": gs}
 
+    if not legal_targets:
+        gs = replace(gs, events=gs.events + list(build_private_skill_event(
+            "seer_check_skipped",
+            actor_id=seer_id,
+            night_number=gs.night_number,
+            reason_code="no_legal_targets",
+        )) + list(build_private_skill_event(
+            "seer_check_resolved",
+            actor_id=seer_id,
+            night_number=gs.night_number,
+            target_id=None,
+            resolution="skipped",
+        )))
+        return {"game_state": gs, "seer_target_id": None}
+
     # Try agent-driven decision first
-    seer_id = _find_role(gs, "seer") or ""
     decision_identity = _allocate_decision_identity(
         state,
         player_id=seer_id,
@@ -132,8 +162,27 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
         decision_identity=decision_identity,
         exposure_collector=exposure_collector,
     )
+    target = result.get("seer_target_id") if result is not None else state.get("seer_target_id")
+    choice_event = "seer_check_selected"
+    choice_payload: dict[str, Any] = {"target_id": target}
+    if target is None:
+        choice_event = "seer_check_skipped"
+        choice_payload = {"reason_code": "no_target_selected"}
+    elif target not in legal_targets:
+        choice_event = "seer_check_repaired"
+        choice_payload = {
+            "target_id": legal_targets[0],
+            "original_target_id": target,
+            "reason_code": "invalid_seer_target",
+        }
+        target = legal_targets[0]
+    gs = replace(gs, events=gs.events + list(build_private_skill_event(
+        choice_event,
+        actor_id=seer_id,
+        night_number=gs.night_number,
+        **choice_payload,
+    )))
     if result is not None:
-        target = result.get("seer_target_id")
         if target:
             logger.debug(f"  [预言家] 查验目标: {_player_display(state, target)}")
         if result.get("seer_action_trace"):
@@ -149,13 +198,25 @@ def night_seer(state: RuntimeState) -> dict[str, Any]:
             ))
         else:
             exposure_collector.flush_events()
-        return {"game_state": gs, **result}
+        if target is None:
+            gs = replace(gs, events=gs.events + list(build_private_skill_event(
+                "seer_check_resolved",
+                actor_id=seer_id,
+                night_number=gs.night_number,
+                target_id=None,
+                resolution="skipped",
+            )))
+        return {"game_state": gs, **result, "seer_target_id": target}
     exposure_collector.flush_events()
-
-
-    # Scripted fallback
-
-    return {"seer_target_id": state.get("seer_target_id"), "game_state": gs}
+    if target is None:
+        gs = replace(gs, events=gs.events + list(build_private_skill_event(
+            "seer_check_resolved",
+            actor_id=seer_id,
+            night_number=gs.night_number,
+            target_id=None,
+            resolution="skipped",
+        )))
+    return {"seer_target_id": target, "game_state": gs}
 
 
 

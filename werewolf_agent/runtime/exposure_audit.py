@@ -163,6 +163,26 @@ _WOLF_PROMPT_CONTEXT_KEYS = frozenset({
     "summarized_text_count",
     "truncated_text_count",
 })
+_PUBLIC_SKILL_RESOLUTION_KEYS = frozenset({
+    "actor_id",
+    "target_id",
+    "public_result",
+})
+
+
+def is_safe_public_skill_resolution_payload(payload: Mapping[str, Any]) -> bool:
+    """验证公开技能结算没有携带私有理由、候选集或身份真值。"""
+    if not set(payload).issubset(_PUBLIC_SKILL_RESOLUTION_KEYS):
+        return False
+    actor_id = payload.get("actor_id")
+    target_id = payload.get("target_id")
+    public_result = payload.get("public_result")
+    return (
+        isinstance(actor_id, str)
+        and (target_id is None or isinstance(target_id, str))
+        and isinstance(public_result, str)
+        and bool(public_result)
+    )
 
 
 class PromptProofVerifier:

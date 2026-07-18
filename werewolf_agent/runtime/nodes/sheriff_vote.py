@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
+修改日期: 2026-07-18
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.sheriff_vote import sheriff_vote
@@ -18,6 +19,7 @@ from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.engine.rule_engine import RuleEngine
 from werewolf_agent.runtime.agent_adapter import agent_sheriff_vote
 from werewolf_agent.runtime.exposure_audit import ModuleExposureAuditCollector
+from werewolf_agent.runtime.skill_opportunity_events import append_private_skill_event
 from werewolf_agent.runtime.nodes._shared import (
     RuntimeState,
     logger,
@@ -99,6 +101,16 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
     vote_records: list[dict[str, Any]] = []
     audit_events: list[GameEvent] = []
     for voter_id in voters:
+        voter = gs.players.get(voter_id)
+        self_destruct_available = bool(voter and voter.role == "werewolf" and voter.alive)
+        if self_destruct_available:
+            gs = append_private_skill_event(
+                gs,
+                "self_destruct_opportunity",
+                actor_id=voter_id,
+                day_number=gs.day_number,
+                opportunity_phase="sheriff_vote",
+            )
         decision_identity = _allocate_decision_identity(
             state,
             player_id=voter_id,
@@ -132,9 +144,25 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
             else:
                 exposure_collector.flush_events()
             if result.get("self_destruct"):
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_selected",
+                    actor_id=voter_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_vote",
+                )
                 if audit_events:
                     gs = replace(gs, events=gs.events + audit_events)
                 return {"game_state": gs, "self_destruct_wolf_id": voter_id}
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=voter_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_vote",
+                    reason_code="vote_or_abstain",
+                )
             if result.get("vote_target"):
                 votes[voter_id] = result["vote_target"]
                 vote_records.append({"voter": voter_id, "target": result["vote_target"]})
@@ -144,6 +172,15 @@ def sheriff_vote(state: RuntimeState) -> dict[str, Any]:
                 logger.debug(f"  [警长投票] {_player_display(state, voter_id)} 弃票")
         else:
             exposure_collector.flush_events()
+            if self_destruct_available:
+                gs = append_private_skill_event(
+                    gs,
+                    "self_destruct_declined",
+                    actor_id=voter_id,
+                    day_number=gs.day_number,
+                    opportunity_phase="sheriff_vote",
+                    reason_code="agent_unavailable",
+                )
     if not has_agents:
         votes = state.get("sheriff_votes", {})
 

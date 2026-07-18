@@ -107,6 +107,7 @@ def _compute_power_acceptance_metrics_from_normalized(
         _power_role_evidence_complete(evidence) for evidence in power_decisions
     )
     power_count = len(power_decisions)
+    opportunity_metrics = _power_role_opportunity_metrics(games)
     return {
         "power_role_evidence_metrics_supported": (
             projection_is_supported and power_count > 0
@@ -120,6 +121,47 @@ def _compute_power_acceptance_metrics_from_normalized(
         "power_role_evidence_completeness_rate": (
             complete_power_decisions / power_count
             if projection_is_supported and power_count else None
+        ),
+        **opportunity_metrics,
+    }
+
+
+def _power_role_opportunity_metrics(
+    games: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """按神职实际机会而非伤害结果计算技能选择分母。"""
+    counts: Counter[str] = Counter()
+    event_to_bucket = {
+        "hunter_shot_opportunity": "opportunity",
+        "seer_check_opportunity": "opportunity",
+        "hunter_shot_selected": "selected",
+        "seer_check_selected": "selected",
+        "seer_check_repaired": "repaired",
+        "hunter_shot_declined": "declined",
+        "seer_check_skipped": "skipped",
+        "hunter_shot_blocked": "blocked",
+        "hunter_shot_resolved": "resolved",
+        "seer_check_resolved": "resolved",
+    }
+    for game in games:
+        for event in game.get("events", []):
+            if not isinstance(event, Mapping):
+                continue
+            bucket = event_to_bucket.get(str(event.get("type") or ""))
+            if bucket is not None:
+                counts[bucket] += 1
+
+    opportunities = counts["opportunity"]
+    return {
+        "power_role_opportunity_count": opportunities,
+        "power_role_selected_count": counts["selected"],
+        "power_role_repaired_count": counts["repaired"],
+        "power_role_declined_count": counts["declined"],
+        "power_role_skipped_count": counts["skipped"],
+        "power_role_blocked_count": counts["blocked"],
+        "power_role_resolved_count": counts["resolved"],
+        "power_role_selection_rate": (
+            counts["selected"] / opportunities if opportunities else None
         ),
     }
 
