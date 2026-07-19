@@ -90,6 +90,12 @@ _FIRST_PERSON_DENIAL_VERB_PATTERN = "|".join(
 _FIRST_PERSON_EVIDENCE_REF = re.compile(
     rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我"
 )
+_SELF_ROLE_EVIDENCE_REF = re.compile(
+    rf"(?P<subject>我|自己)"
+    rf"(?:(?!我|自己|p\d{{2}})[^，。；;]){{0,8}}?"
+    rf"(?P<relation>{_ROLE_NEGATION_PATTERN}|是)"
+    rf"(?:(?!p\d{{2}})[^，。；;]){{0,4}}"
+)
 _FIRST_PERSON_DENIAL_REF = re.compile(
     rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我"
     rf"(?:{_FIRST_PERSON_DENIAL_PREFIX_PATTERN})"
@@ -547,9 +553,15 @@ def _is_normalizable_public_evidence(
     text: str,
 ) -> bool:
     """仅把明确的一人称或直接目标身份判断补齐为账本说话人的证据。"""
-    if _FIRST_PERSON_EVIDENCE_REF.search(text) and _clause_carries_claim(
+    if (
+        (
+            _FIRST_PERSON_EVIDENCE_REF.search(text)
+            or _self_role_evidence_is_bound(text)
+        )
+        and _clause_carries_claim(
         claim,
         text,
+        )
     ):
         return True
     return bool(
@@ -585,6 +597,13 @@ def _public_evidence_is_negated(
     """识别一人称否认、直接身份判断及权威前缀中的否定极性。"""
     if _FIRST_PERSON_DENIAL_REF.search(text):
         return True
+    self_role_match = _SELF_ROLE_EVIDENCE_REF.search(text)
+    if self_role_match and not _self_role_evidence_is_bound(text):
+        self_role_match = None
+    if self_role_match:
+        if self_role_match.group("relation") in _ROLE_NEGATION_FORMS:
+            return True
+        return public_claim_is_negated(text, self_role_match.start("subject"))
     target_start = text.find(claim.target)
     if target_start >= 0 and public_claim_is_negated(text, target_start):
         return True
@@ -598,6 +617,24 @@ def _public_evidence_is_negated(
     return bool(
         claim.support_kind == "night_info"
         and re.search(r"(?:不|并不|未|没有)(?:知道|获知|掌握)", text)
+    )
+
+
+def _self_role_evidence_is_bound(text: str) -> bool:
+    """仅接受句首或受限第一人称前缀，避免把引用他人内容归给当前说话者。"""
+    match = _SELF_ROLE_EVIDENCE_REF.search(text)
+    if match is None:
+        return False
+    prefix = text[: match.start("subject")]
+    if not prefix or prefix in _HARMLESS_FIRST_PERSON_PREFIXES:
+        return True
+    return bool(
+        re.search(
+            r"(?:不能|无法|不应)说$|(?:并不|不)认为$|"
+            r"(?:并未|没有|未曾|否认)[^，。；;]{0,8}"
+            r"(?:声称|说|表示|宣称|自认)$",
+            prefix,
+        )
     )
 
 

@@ -535,6 +535,30 @@ def _role_relation_supported_in_speech(
         search_speech = _clause_containing_target(speech, target)
         if search_speech is None:
             return False
+    if self_claim:
+        self_match = re.search(
+            rf"(?P<subject>我|自己)"
+            rf"(?:(?!我|自己|p\d{{2}})[^，。；;]){{0,8}}?"
+            rf"(?P<relation>{_ROLE_RELATION_PATTERN})"
+            rf"(?:(?!p\d{{2}})[^，。；;]){{0,4}}{re.escape(role)}",
+            search_speech,
+        )
+        if self_match is not None:
+            relation_negated = (
+                self_match.group("relation") in _ROLE_NEGATION_FORMS
+            )
+            prefix_negated = public_claim_is_negated(
+                search_speech,
+                self_match.start("subject"),
+            )
+            prefix_negated = prefix_negated or bool(
+                re.search(
+                    r"(?:并未|没有|未曾|否认)[^，。；;]{0,8}"
+                    r"(?:声称|说|表示|宣称|自认)",
+                    search_speech[: self_match.start("subject")],
+                )
+            )
+            return (relation_negated or prefix_negated) is negated
     if not self_claim and re.search(
         rf"(?:我|自己)(?:并未|没有|未曾|否认)[^，。；;]{{0,8}}"
         rf"{re.escape(target)}(?:(?!p\d{{2}})[^，。；;]){{0,4}}"
