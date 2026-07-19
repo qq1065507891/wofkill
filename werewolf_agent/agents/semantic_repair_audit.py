@@ -59,10 +59,14 @@ _CORRECTION_HINTS = {
     "speaker_attribution_changed": "恢复公开记录中的说话人归属，或删除该声明",
     "negation_changed": "恢复公开记录中的否定关系，或删除该声明",
 }
-_FIRST_PERSON_EVIDENCE_REF = re.compile(r"(?:^|[，。；;])我")
+_FIRST_PERSON_EVIDENCE_REF = re.compile(r"^(?:其实)?我")
 _FIRST_PERSON_DENIAL_REF = re.compile(
-    r"(?:^|[，。；;])我(?:没有|并未|未曾|从未|不)"
+    r"^(?:其实)?我(?:没有|并未|未曾|从未|不)"
     r"(?:说|声称|表示|宣称|自认|自称|是|知道|获知|掌握|认为)"
+)
+_REPORTING_ATTRIBUTION_FRAGMENT_REF = re.compile(
+    r"^p\d{2}(?:(?!p\d{2})[^，。；;！？]){0,10}"
+    r"(?:声称|说|表示|宣称)$"
 )
 
 
@@ -119,6 +123,7 @@ def build_semantic_repair_audit(
         )
     }
     v2_verified_claims = _polarity_aware_verified_claims(
+        final_claims,
         legacy_final_verified_claims,
         public_speeches,
     )
@@ -322,14 +327,18 @@ def _ordered_reason_codes(reason_codes: Iterable[str]) -> tuple[str, ...]:
 
 
 def _polarity_aware_verified_claims(
+    final_claims: set[PublicClaimAuditKey],
     legacy_verified_claims: set[PublicClaimAuditKey],
     public_speeches: list[tuple[str, str]],
 ) -> set[PublicClaimAuditKey]:
     """仅保留存在同极性公开证据键的 V2 已支持声明。"""
     return {
-        claim for claim in legacy_verified_claims
-        if claim.claim_type == "system_fact"
-        or _has_same_polarity_public_evidence(claim, public_speeches)
+        claim for claim in final_claims
+        if (
+            claim in legacy_verified_claims
+            if claim.claim_type == "system_fact"
+            else _has_same_polarity_public_evidence(claim, public_speeches)
+        )
     }
 
 
@@ -340,6 +349,13 @@ def _has_same_polarity_public_evidence(
     """逐条验证公开来源的说话人、内容和否定极性。"""
     for public_speaker, text in public_speeches:
         speech = [(public_speaker, text)]
+        direct_keys, normalized_keys = _classified_evidence_keys(
+            claim,
+            public_speaker,
+            text,
+        )
+        if claim.claim_type == "player_claim" and claim in direct_keys:
+            return True
         if claim.support_kind == "role":
             supported = role_claim_supported(claim.target, claim.role, speech)
         elif claim.support_kind == "role_assignment":
@@ -353,11 +369,7 @@ def _has_same_polarity_public_evidence(
             supported = night_info_claim_supported(claim.target, speech)
         else:
             supported = False
-        if supported and claim in _classified_evidence_keys(
-            claim,
-            public_speaker,
-            text,
-        ):
+        if supported and claim in normalized_keys:
             return True
     return False
 
@@ -366,9 +378,10 @@ def _classified_evidence_keys(
     claim: PublicClaimAuditKey,
     public_speaker: str,
     text: str,
-) -> set[PublicClaimAuditKey]:
+) -> tuple[set[PublicClaimAuditKey], set[PublicClaimAuditKey]]:
     """按分句合并直接归因与规范化证据，避免跨句污染否定关系。"""
-    evidence_keys: set[PublicClaimAuditKey] = set()
+    direct_evidence_keys: set[PublicClaimAuditKey] = set()
+    normalized_evidence_keys: set[PublicClaimAuditKey] = set()
     for clause in _public_evidence_clauses(text):
         direct_keys = {
             public_claim_audit_key(evidence)
@@ -378,14 +391,14 @@ def _classified_evidence_keys(
             evidence_key for evidence_key in direct_keys
             if evidence_key.content_identity == claim.content_identity
         }
-        evidence_keys.update(matching_direct_keys)
+        direct_evidence_keys.update(matching_direct_keys)
         if matching_direct_keys and any(
             evidence_key.speaker_attribution != public_speaker
             for evidence_key in matching_direct_keys
         ):
             continue
         if _is_normalizable_public_evidence(claim, clause):
-            evidence_keys.add(
+            normalized_evidence_keys.add(
                 PublicClaimAuditKey(
                     claim_type=claim.claim_type,
                     target=claim.target,
@@ -395,16 +408,30 @@ def _classified_evidence_keys(
                     negated=_public_evidence_is_negated(claim, clause),
                 )
             )
-    return evidence_keys
+    return direct_evidence_keys, normalized_evidence_keys
 
 
 def _public_evidence_clauses(text: str) -> list[str]:
     """分离互不影响的公开陈述分句，保留各自的归因和否定范围。"""
-    clauses: list[str] = []
+    raw_clauses: list[str] = []
     for clause in re.split(r"[，。；;！？]", text):
         stripped_clause = clause.strip()
         if stripped_clause:
-            clauses.append(stripped_clause)
+            raw_clauses.append(stripped_clause)
+
+    clauses: list[str] = []
+    index = 0
+    while index < len(raw_clauses):
+        clause = raw_clauses[index]
+        if (
+            index + 1 < len(raw_clauses)
+            and _REPORTING_ATTRIBUTION_FRAGMENT_REF.fullmatch(clause)
+        ):
+            clauses.append(f"{clause}{raw_clauses[index + 1]}")
+            index += 2
+            continue
+        clauses.append(clause)
+        index += 1
     return clauses
 
 

@@ -389,6 +389,106 @@ def test_semantic_repair_keeps_same_clause_first_person_denial_negated() -> None
     assert result.audit["unsupported_public_claim_count"] == 0
 
 
+def test_semantic_repair_rejects_ledger_speaker_for_punctuated_report() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "p06声称，p02是狼人"}],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is False
+    assert result.reason_codes == ("unsupported_public_claim",)
+    assert result.audit["unsupported_public_claim_count"] == 1
+
+
+def test_semantic_repair_allows_reported_speaker_for_punctuated_report() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "p06声称，p02是狼人"}],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p06声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["unsupported_public_claim_count"] == 0
+
+
+def test_semantic_repair_allows_prefixed_affirmative_self_role() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "其实我是预言家"}],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05声称自己是预言家，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["unsupported_public_claim_count"] == 0
+
+
+def test_semantic_repair_rejects_prefixed_affirmative_for_denied_self_role() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "其实我是预言家"}],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05并未声称自己是预言家，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is False
+    assert result.reason_codes == ("unsupported_public_claim",)
+    assert result.audit["unsupported_public_claim_count"] == 1
+
+
+def test_semantic_repair_allows_prefixed_denied_self_role() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": "其实我没有说我是预言家"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05并未声称自己是预言家，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["unsupported_public_claim_count"] == 0
+
+
+def test_semantic_repair_rejects_prefixed_denial_for_affirmative_self_role() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": "其实我没有说我是预言家"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05声称自己是预言家，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is False
+    assert result.reason_codes == ("unsupported_public_claim",)
+    assert result.audit["unsupported_public_claim_count"] == 1
+
+
 def test_claim_key_records_prefix_negation_without_flipping_double_negation() -> None:
     from werewolf_agent.evaluation.balance_public_claims import (
         public_claim_audit_keys,
