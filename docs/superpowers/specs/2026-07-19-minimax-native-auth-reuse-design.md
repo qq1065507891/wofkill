@@ -43,9 +43,11 @@ MiniMax API Key，因此用户已批准在可证明属于 MiniMax 的条件下�
 
 ## 4. 鉴权解析设计
 
-对 `ModelConfig.base_url` 使用 URL 解析得到 hostname。只有 hostname 精确等于
-`api.minimaxi.com` 时进入 MiniMax 原生端点分支，避免使用可被相似恶意域名命中的
-子串判断。
+先按实际请求规则计算最终生效 URL：`ModelConfig.base_url` 存在时使用它，否则使用
+`OpenAIProvider` 实例的默认 base URL。对最终生效 URL 做标准 URL 解析；只有 scheme
+为 `https` 且 hostname 精确等于 `api.minimaxi.com` 时进入 MiniMax 原生端点分支，
+避免使用可被相似恶意域名命中的子串判断。hostname 为 `api.minimaxi.com` 但 scheme
+不是 `https` 时直接抛出 `ProviderConfigError`，不得向明文连接发送任何密钥。
 
 MiniMax 原生端点的密钥优先级固定为：
 
@@ -61,8 +63,8 @@ MiniMax 原生端点的密钥优先级固定为：
 数据流如下：
 
 ```text
-ModelConfig.base_url
-→ 解析 hostname
+ModelConfig.base_url 或 OpenAIProvider 默认 base URL
+→ 得到最终生效 URL并解析 scheme/hostname
 → 非 api.minimaxi.com：使用 OpenAIProvider 默认密钥
 → api.minimaxi.com：按专用键、供应商键、受约束的 Anthropic 键依次解析
 → 缺钥：ProviderConfigError（HTTP 请求前）
@@ -73,7 +75,8 @@ ModelConfig.base_url
 
 先修改测试捕获客户端，使其保存最终请求 headers，再按 TDD 增加并观察以下测试失败：
 
-1. 专用键存在时，最终 `Authorization` 使用 `MINIMAX_NATIVE_API_KEY`。
+1. 专用键与所有低优先级键同时存在时，最终 `Authorization` 使用
+   `MINIMAX_NATIVE_API_KEY`，证明优先级而非单键可用性。
 2. 专用键缺失、`MINIMAX_API_KEY` 存在时使用供应商级键。
 3. 前两者缺失且 `ANTHROPIC_BASE_URL` 指向 MiniMax 时，复用
    `ANTHROPIC_API_KEY`。
@@ -81,6 +84,9 @@ ModelConfig.base_url
 5. 所有 MiniMax 键缺失时抛出 `ProviderConfigError`，不得使用默认 Ark 键。
 6. Ark endpoint 即使存在 MiniMax 键也继续使用默认 Ark 键。
 7. 相似但非精确 hostname 不进入 MiniMax 鉴权分支。
+8. `ModelConfig.base_url=None`、provider 默认 URL 为 MiniMax 时仍进入 MiniMax
+   鉴权分支。
+9. MiniMax hostname 使用非 HTTPS scheme 时在网络调用前失败。
 
 实现后运行相关 provider、dotenv、路由与配置测试，并对修改文件执行 Ruff、
 `git diff --check`。只有离线回归通过后，才执行一次最小真实 MiniMax 请求验证不再
