@@ -393,27 +393,38 @@ def _player_claim_is_negated(text: str, claim_start: int, claim_end: int) -> boo
     )
 
 
+def _public_event_parts(event: Any) -> tuple[Any, Mapping[str, Any]] | None:
+    """提取公开事件的类型和 payload，兼容结构型旧事件。"""
+    if isinstance(event, Mapping):
+        event_type = event.get("type")
+        payload = event.get("payload") or {}
+        visibility = event.get("visibility")
+    elif isinstance(event, GameEvent):
+        if event_visibility(event) is not EventVisibility.PUBLIC:
+            return None
+        return event.type, event.payload or {}
+    else:
+        event_type = getattr(event, "type", None)
+        payload = getattr(event, "payload", {}) or {}
+        visibility = getattr(event, "visibility", None)
+
+    if not isinstance(payload, Mapping):
+        return None
+    if visibility in (None, ""):
+        visibility = payload.get("visibility", "public")
+    if EventVisibility.from_legacy(visibility) is not EventVisibility.PUBLIC:
+        return None
+    return event_type, payload
+
+
 def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:
     """提取当前事件之前已经公开的发言，供发布前事实校验使用。"""
     history: list[tuple[str, str]] = []
     for event in events:
-        if isinstance(event, Mapping):
-            event_type = event.get("type")
-            payload = event.get("payload") or {}
-            if not isinstance(payload, Mapping):
-                continue
-            visibility = event.get("visibility")
-            if visibility is None:
-                visibility = payload.get("visibility", "public")
-            if EventVisibility.from_legacy(visibility) is not EventVisibility.PUBLIC:
-                continue
-        elif isinstance(event, GameEvent):
-            event_type = event.type
-            payload = event.payload or {}
-            if event_visibility(event) is not EventVisibility.PUBLIC:
-                continue
-        else:
+        parts = _public_event_parts(event)
+        if parts is None:
             continue
+        event_type, payload = parts
         if event_type not in {
             "speech",
             "sheriff_speech",

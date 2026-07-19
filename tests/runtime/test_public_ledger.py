@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState
 from werewolf_agent.evaluation.balance_public_claims import (
@@ -236,6 +238,15 @@ def test_public_speech_history_respects_legacy_mapping_visibility() -> None:
             },
         },
         {
+            "type": "speech",
+            "visibility": "",
+            "payload": {
+                "speaker": "p08",
+                "text": "顶层空字符串不能泄露",
+                "visibility": "moderator_only",
+            },
+        },
+        {
             "type": "sheriff_speech",
             "payload": {"speaker": "p05", "text": "缺失可见性默认公开"},
         },
@@ -282,6 +293,24 @@ def test_public_speech_history_respects_legacy_mapping_visibility() -> None:
     assert public_speech_history([typed_private]) == public_speech_history([
         legacy_private,
     ]) == []
+    event_like_public = SimpleNamespace(
+        type="speech",
+        payload={"speaker": "p09", "text": "属性型公开发言"},
+        visibility=None,
+    )
+    event_like_private = SimpleNamespace(
+        type="speech",
+        payload={
+            "speaker": "p10",
+            "text": "属性型私密发言",
+            "visibility": "moderator_only",
+        },
+        visibility=None,
+    )
+    assert public_speech_history([
+        event_like_public,
+        event_like_private,
+    ]) == [("p09", "属性型公开发言")]
 
 
 def test_public_ledger_uses_v2_top_level_visibility_without_payload_marker() -> None:
