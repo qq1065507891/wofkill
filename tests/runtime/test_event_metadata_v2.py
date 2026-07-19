@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-验证 GameEvent V2 元数据盖章、序列化和 V1 只读兼容。
+验证 GameEvent V2 元数据盖章、序列化、V1 只读兼容和原始字符串可见性边界。
 
 作者: Project contributors
 创建日期: 2026-07-15
@@ -136,6 +136,19 @@ def test_empty_typed_visibility_falls_back_to_payload_like_legacy() -> None:
     assert event_visibility(public_event) is EventVisibility.PUBLIC
     assert event_visibility(private_event) is EventVisibility.MODERATOR_ONLY
     assert event_visibility(explicit_public_event) is EventVisibility.PUBLIC
+
+
+def test_raw_typed_visibility_values_normalize_to_enum() -> None:
+    public_event = GameEvent(type="speech", visibility="public")
+    unknown_event = GameEvent(type="speech", visibility="malformed_visibility")
+
+    public_visibility = event_visibility(public_event)
+    unknown_visibility = event_visibility(unknown_event)
+
+    assert public_visibility is EventVisibility.PUBLIC
+    assert isinstance(public_visibility, EventVisibility)
+    assert public_visibility.value == "public"
+    assert unknown_visibility is EventVisibility.MODERATOR_ONLY
 
 
 def test_event_serializer_round_trips_datetime_and_enum() -> None:

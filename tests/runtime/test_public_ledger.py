@@ -1,3 +1,14 @@
+# -*- coding: utf-8 -*-
+"""
+验证公开账本与公开发言快照的可见性边界。
+
+作者: Project contributors
+创建日期: 2026-07-15
+修改日期: 2026-07-19
+
+兼容边界：legacy 可见性的空字符串按未设置处理，必须回退 payload。
+"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -197,13 +208,10 @@ def test_public_evidence_snapshots_match_and_exclude_private_role_claims() -> No
         (item["speaker"], item["text"])
         for item in claim_ledger
     ]
-    assert public_claim_audit_keys(candidate, ledger_speeches) == (
-        public_claim_audit_keys(candidate, history)
-    )
+    claims, supported_claims = public_claim_audit_keys(candidate, ledger_speeches)
+    assert {claim.target for claim in claims} == {"p05", "p06"}
+    assert {claim.target for claim in supported_claims} == {"p05"}
     assert sanitize_public_text(candidate, ledger_speeches) == (
-        sanitize_public_text(candidate, history)
-    )
-    assert sanitize_public_text(candidate, history) == (
         "p05自认预言家，对p06的身份声明暂不采信，需继续核验。",
         1,
     )

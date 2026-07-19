@@ -62,7 +62,7 @@ class EventVisibility(str, Enum):
 def event_visibility(event: GameEvent) -> EventVisibility:
     """读取事件可见性；V2 非空顶层字段优先，V1 回退 payload。"""
     if event.visibility not in (None, ""):
-        return event.visibility
+        return EventVisibility.from_legacy(event.visibility)
     return EventVisibility.from_legacy(event.payload.get("visibility", "public"))
 
 
