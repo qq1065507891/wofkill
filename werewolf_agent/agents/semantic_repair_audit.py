@@ -243,7 +243,11 @@ def _speaker_attribution_preserved(
         attribution_was_missing = any(
             not claim.speaker_attribution for claim in matching_source
         )
-        if known_speakers and not final_claim.speaker_attribution:
+        if (
+            known_speakers
+            and not final_claim.speaker_attribution
+            and not attribution_was_missing
+        ):
             return False
         if (
             final_claim.speaker_attribution
