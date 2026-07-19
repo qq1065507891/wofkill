@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-验证语义修复不会改变公开声明的说话者归属或否定关系。
+验证语义修复 V2 只拒绝不受支持的公开声明及语义关系篡改。
 
 作者: Project contributors
 创建日期: 2026-07-14
+修改日期: 2026-07-19
 """
 
 from __future__ import annotations
+
+import pytest
 
 from werewolf_agent.agents.schemas import (
     ActionType,
@@ -55,32 +58,32 @@ def test_claim_keys_keep_speakers_independent_for_the_same_target() -> None:
 
 def test_semantic_repair_rejects_changed_existing_speaker_attribution() -> None:
     from werewolf_agent.agents.semantic_repair_audit import (
-        build_semantic_repair_audit,
-        semantic_repair_retains_verified_claim,
+        validate_semantic_repair,
     )
 
     source = _action("p05声称p02是狼人，我怀疑p02。")
     changed = _action("p06声称p02是狼人，我怀疑p02。")
 
-    audit = build_semantic_repair_audit(_context(), source, changed, success=True)
+    result = validate_semantic_repair(_context(), source, changed)
 
-    assert audit["speaker_attribution_preserved"] is False
-    assert semantic_repair_retains_verified_claim(_context(), source, changed) is False
+    assert result.accepted is False
+    assert result.reason_codes == ("speaker_attribution_changed",)
+    assert result.audit["speaker_attribution_preserved"] is False
 
 
 def test_semantic_repair_rejects_changed_negation_relation() -> None:
     from werewolf_agent.agents.semantic_repair_audit import (
-        build_semantic_repair_audit,
-        semantic_repair_retains_verified_claim,
+        validate_semantic_repair,
     )
 
     source = _action("p05声称p02是狼人，我怀疑p02。")
     changed = _action("p05并未声称p02是狼人，我怀疑p02。")
 
-    audit = build_semantic_repair_audit(_context(), source, changed, success=True)
+    result = validate_semantic_repair(_context(), source, changed)
 
-    assert audit["negation_preserved"] is False
-    assert semantic_repair_retains_verified_claim(_context(), source, changed) is False
+    assert result.accepted is False
+    assert result.reason_codes == ("negation_changed",)
+    assert result.audit["negation_preserved"] is False
 
 
 def test_claim_key_records_prefix_negation_without_flipping_double_negation() -> None:
@@ -101,16 +104,116 @@ def test_claim_key_records_prefix_negation_without_flipping_double_negation() ->
 
 def test_semantic_repair_allows_supported_missing_attribution_completion() -> None:
     from werewolf_agent.agents.semantic_repair_audit import (
-        build_semantic_repair_audit,
-        semantic_repair_retains_verified_claim,
+        validate_semantic_repair,
     )
 
     source = _action("有人声称p02是狼人，我怀疑p02。")
     attributed = _action("p05声称p02是狼人，我怀疑p02。")
 
-    audit = build_semantic_repair_audit(_context(), source, attributed, success=True)
+    result = validate_semantic_repair(_context(), source, attributed)
 
-    assert audit["speaker_attribution_preserved"] is True
-    assert audit["negation_preserved"] is True
-    assert audit["introduced_claim_count"] == 0
-    assert semantic_repair_retains_verified_claim(_context(), source, attributed) is True
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["speaker_attribution_preserved"] is True
+    assert result.audit["negation_preserved"] is True
+    assert result.audit["introduced_claim_count"] == 0
+    assert result.audit["semantic_gate_version"] == 2
+    assert result.audit["unsupported_public_claim_count"] == 0
+
+
+def test_semantic_repair_rejects_unsupported_public_claim() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    source = _action("p05声称p02是狼人，我怀疑p02。")
+    unsupported = _action(
+        "p05声称p02是狼人，p07声称自己是猎人，我怀疑p02。"
+    )
+
+    result = validate_semantic_repair(_context(), source, unsupported)
+
+    assert result.accepted is False
+    assert result.reason_codes == ("unsupported_public_claim",)
+    assert result.audit["unsupported_public_claim_count"] == 1
+
+
+def test_semantic_repair_reports_all_rejection_reasons_in_stable_order() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    source = _action("p05声称p02是狼人，我怀疑p02。")
+    changed = _action(
+        "p06并未声称p02是狼人，p07声称自己是猎人，我怀疑p02。"
+    )
+
+    result = validate_semantic_repair(_context(), source, changed)
+
+    assert result.accepted is False
+    assert result.reason_codes == (
+        "unsupported_public_claim",
+        "speaker_attribution_changed",
+        "negation_changed",
+    )
+    assert result.audit["rejection_reason_codes"] == list(result.reason_codes)
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "safe_explanation"),
+    [
+        ("unsupported_public_claim", "公开证据"),
+        ("speaker_attribution_changed", "说话人归属"),
+        ("negation_changed", "否定关系"),
+    ],
+)
+def test_semantic_repair_fixed_messages_explain_each_reason_safely(
+    reason_code: str,
+    safe_explanation: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import (
+        semantic_repair_correction_hint,
+        semantic_repair_rejection_message,
+    )
+
+    message = semantic_repair_rejection_message((reason_code,))
+    hint = semantic_repair_correction_hint((reason_code,))
+
+    assert safe_explanation in message
+    assert safe_explanation in hint
+    assert hint.startswith("请")
+
+
+@pytest.mark.parametrize(
+    ("reason_codes", "included_terms", "excluded_terms"),
+    [
+        (
+            ("unsupported_public_claim", "negation_changed"),
+            ("公开证据", "否定关系"),
+            ("说话人归属",),
+        ),
+        (
+            ("speaker_attribution_changed",),
+            ("说话人归属",),
+            ("公开证据", "否定关系"),
+        ),
+    ],
+)
+def test_semantic_repair_fixed_messages_disclose_only_requested_reasons(
+    reason_codes: tuple[str, ...],
+    included_terms: tuple[str, ...],
+    excluded_terms: tuple[str, ...],
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import (
+        semantic_repair_correction_hint,
+        semantic_repair_rejection_message,
+    )
+
+    text = " ".join((
+        semantic_repair_rejection_message(reason_codes),
+        semantic_repair_correction_hint(reason_codes),
+    ))
+
+    assert all(term in text for term in included_terms)
+    assert all(term not in text for term in excluded_terms)
+    assert "SPEECH_SENTINEL_SHOULD_NOT_LEAK" not in text
+    assert "p08是狼人" not in text
+    assert "provider_error" not in text
+    assert "不得新增任何事实" not in text
+    assert "保留全部论点" not in text

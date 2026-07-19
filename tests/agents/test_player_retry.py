@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-14
+修改日期: 2026-07-19
 
 使用示例:
     >>> python -m pytest tests/agents/test_player_retry.py -q
@@ -152,11 +152,11 @@ def test_semantic_repair_uses_complete_authoritative_public_claim_ledger() -> No
     assert audit["retained_verified_claim_count"] == 1
 
 
-def test_semantic_repair_gate_rejects_changed_target_with_partial_claim_retention() -> None:
-    """成功门必须同时保持源目标和全部已验证论点。"""
+def test_semantic_repair_allows_dropping_a_verified_source_claim() -> None:
+    """V2 允许修复结果删除源发言中的已验证论点。"""
     from werewolf_agent.agents.schemas import SpeechPlayerAction
     from werewolf_agent.agents.semantic_repair_audit import (
-        semantic_repair_retains_verified_claim,
+        validate_semantic_repair,
     )
 
     context = AgentContext(
@@ -173,43 +173,81 @@ def test_semantic_repair_gate_rejects_changed_target_with_partial_claim_retentio
         reason="公开引用",
         confidence=0.5,
     )
-    changed = source.model_copy(update={
+    final = source.model_copy(
+        update={"speech": "p05声称自己是预言家，我怀疑p02。"}
+    )
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["semantic_gate_version"] == 2
+    assert result.audit["unsupported_public_claim_count"] == 0
+
+
+def test_semantic_repair_allows_changing_a_legal_unexecuted_speech_target() -> None:
+    """V2 将尚未执行的合法目标变化保留为观察指标。"""
+    from werewolf_agent.agents.schemas import SpeechPlayerAction
+    from werewolf_agent.agents.semantic_repair_audit import (
+        validate_semantic_repair,
+    )
+
+    context = AgentContext(
+        agent_id="p08", task_type=TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH], legal_targets=["p02", "p04"],
+        public_claim_ledger=[{"speaker": "p05", "text": "我是预言家"}],
+    )
+    source = SpeechPlayerAction(
+        target_id="p02",
+        speech="p05声称自己是预言家，我怀疑p02。",
+        reason="公开引用",
+        confidence=0.5,
+    )
+    final = source.model_copy(update={
         "target_id": "p04",
         "speech": "p05声称自己是预言家，我怀疑p04。",
     })
 
-    assert semantic_repair_retains_verified_claim(context, source, changed) is False
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["semantic_gate_version"] == 2
+    assert result.audit["unsupported_public_claim_count"] == 0
+    assert result.audit["target_preserved"] is False
 
 
-def test_semantic_repair_gate_rejects_introduced_claim() -> None:
-    """即使保留全部已验证论点，修复结果也不得新增事实 claim。"""
+def test_semantic_repair_allows_adding_a_publicly_supported_claim() -> None:
+    """V2 允许新增已有权威公开账本支撑的事实 claim。"""
     from werewolf_agent.agents.schemas import SpeechPlayerAction
-    from werewolf_agent.agents.semantic_repair_audit import (
-        semantic_repair_retains_verified_claim,
-    )
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
 
     context = AgentContext(
         agent_id="p08", task_type=TaskType.SPEECH,
         legal_actions=[ActionType.SPEECH], legal_targets=["p02"],
         public_claim_ledger=[
-            {"speaker": "p05", "text": "我是预言家"},
-            {"speaker": "p06", "text": "我是女巫"},
+            {"speaker": "p05", "text": "我认为p02是狼人"},
+            {"speaker": "p06", "text": "我认为p02是狼人"},
         ],
     )
     source = SpeechPlayerAction(
         target_id="p02",
-        speech="p05声称自己是预言家，p06声称自己是女巫，我怀疑p02。",
+        speech="p05声称p02是狼人，我怀疑p02。",
         reason="公开引用",
         confidence=0.5,
     )
-    introduced = source.model_copy(update={
+    final = source.model_copy(update={
         "speech": (
-            "p05声称自己是预言家，p06声称自己是女巫，"
-            "p07声称自己是猎人，我怀疑p02。"
+            "p05声称p02是狼人，p06声称p02是狼人，我怀疑p02。"
         ),
     })
 
-    assert semantic_repair_retains_verified_claim(context, source, introduced) is False
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["semantic_gate_version"] == 2
+    assert result.audit["unsupported_public_claim_count"] == 0
 
 
 def test_semantic_terminal_fallback_preserves_all_verified_claims() -> None:
