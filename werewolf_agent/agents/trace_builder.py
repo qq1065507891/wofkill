@@ -3,7 +3,7 @@
 功能描述：**：从 player.py 拆出，将每次 LLM 调用的完整审计轨迹封装为 ActionTrace 对象。
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-19
 使用示例：内部模块，无对外接口
 """
 
@@ -76,6 +76,8 @@ def build_action_trace(
         else None
     )
     retry_payload = retry.model_dump() if retry else None
+    trace_raw_text = raw_text
+    trace_parsed_payload = parsed_payload
     trace_parse_error = parse_error
     trace_failure_reason = structured_failure_reason
     if terminal_failure_code is not None:
@@ -83,11 +85,15 @@ def build_action_trace(
         retry_payload = retry.model_dump(exclude={"error_message"}) if retry else None
         if retry_payload is not None:
             retry_payload["error_code"] = terminal_failure_code
+        if retry and retry.reason_codes:
+            # 语义拒绝的终退仅暴露安全原因码，拒绝输出本身不能进入审计轨迹。
+            trace_raw_text = ""
+            trace_parsed_payload = None
         trace_parse_error = terminal_failure_code
         trace_failure_reason = terminal_failure_code
     return ActionTrace(
-        raw_text=raw_text,
-        parsed_action=parsed_payload,
+        raw_text=trace_raw_text,
+        parsed_action=trace_parsed_payload,
         final_action=final_payload,
         final_action_type=final_type_value,
         legal_actions=[action.value for action in context.legal_actions],
@@ -116,7 +122,7 @@ def build_action_trace(
         structured_failure_stage=structured_failure_stage,
         world_model_audit=build_world_model_audit_from_context(
             context,
-            parsed_action=parsed_payload,
+            parsed_action=trace_parsed_payload,
         ),
         execution_attempts=execution_attempts,
         decision_outcome=translated.outcome.value if translated else None,

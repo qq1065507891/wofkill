@@ -185,7 +185,7 @@ def test_terminal_trace_preserves_stable_failure_without_raw_error_text() -> Non
     trace = build_action_trace(
         _context(TaskType.SPEECH),
         raw_text="failed model text, not an exception body",
-        parsed_action=None,
+        parsed_action={"speech": "rejected non-semantic audit speech"},
         final_action_type=ActionType.SPEECH,
         final_action={
             "action_type": "speech",
@@ -210,7 +210,50 @@ def test_terminal_trace_preserves_stable_failure_without_raw_error_text() -> Non
     assert payload["failure_stage"] == "protocol"
     assert payload["fallback_kind"] == "ordinary_speech"
     assert payload["final_action"]["reason"] == "fallback speech"
+    assert payload["raw_text"] == "failed model text, not an exception body"
+    assert payload["parsed_action"] == {"speech": "rejected non-semantic audit speech"}
     assert "private provider exception body" not in trace.model_dump_json()
+
+
+def test_semantic_terminal_trace_redacts_rejected_output_but_keeps_reason_codes() -> None:
+    private_error = "private-semantic-error-sentinel"
+    rejected_raw_text = "private-rejected-raw-text-sentinel"
+    rejected_speech = "private-rejected-speech-sentinel"
+    trace = build_action_trace(
+        _context(TaskType.SPEECH),
+        raw_text=rejected_raw_text,
+        parsed_action={"speech": rejected_speech},
+        final_action_type=ActionType.SPEECH,
+        final_action={
+            "action_type": "speech",
+            "target_id": None,
+            "reason": "deterministic fallback speech",
+        },
+        retry=RetryInfo(
+            error_code="semantic_claim_retention",
+            error_message=private_error,
+            reason_codes=["unsupported_public_claim"],
+        ),
+        parse_error=private_error,
+        structured_failure_reason="semantic_claim_retention",
+        structured_failure_stage="semantic",
+        execution_attempts=_terminal_attempts(),
+        fallback_kind="ordinary_speech",
+    )
+
+    payload = trace.model_dump()
+    serialized = trace.model_dump_json()
+    assert payload["retry"]["reason_codes"] == ["unsupported_public_claim"]
+    assert payload["raw_text"] == ""
+    assert payload["parsed_action"] is None
+    assert payload["final_action"] == {
+        "action_type": "speech",
+        "target_id": None,
+        "reason": "deterministic fallback speech",
+    }
+    assert rejected_raw_text not in serialized
+    assert rejected_speech not in serialized
+    assert private_error not in serialized
 
 
 def test_terminal_trace_unknown_failure_code_fails_closed() -> None:

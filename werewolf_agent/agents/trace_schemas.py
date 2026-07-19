@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 
 使用示例:
     >>> from werewolf_agent.agents.trace_schemas import ActionTrace
@@ -144,6 +144,7 @@ class RetryInfo(BaseModel):
     max_retries: int = 3
     error_code: str | None = None
     error_message: str | None = None
+    reason_codes: list[str] = Field(default_factory=list)
     correction_hint: str | None = None
     # Pipeline-optimization Task 1: set when the retry loop short-circuits
     # because two consecutive attempts produced the same (error_code,

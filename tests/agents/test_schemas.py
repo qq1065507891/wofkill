@@ -245,6 +245,11 @@ class TestP2_1ExtraForbid:
                 unknown_field="x",  # type: ignore[call-arg]
             )
 
+    def test_retry_info_reason_codes_default_to_an_empty_list(self) -> None:
+        from werewolf_agent.agents.schemas import RetryInfo
+
+        assert RetryInfo().reason_codes == []
+
     def test_fallback_action_rejects_unknown_fields(self) -> None:
         from werewolf_agent.agents.schemas import FallbackAction
         with pytest.raises(ValidationError, match="extra_forbidden|Extra"):
