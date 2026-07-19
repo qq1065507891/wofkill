@@ -250,6 +250,49 @@ def test_semantic_repair_allows_adding_a_publicly_supported_claim() -> None:
     assert result.audit["unsupported_public_claim_count"] == 0
 
 
+def test_semantic_repair_deduplicates_repeated_violation_categories() -> None:
+    """同类违规出现多次时，V2 原因码仍只按固定顺序记录一次。"""
+    from werewolf_agent.agents.schemas import SpeechPlayerAction
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = AgentContext(
+        agent_id="p08", task_type=TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH], legal_targets=["p02"],
+        public_claim_ledger=[
+            {"speaker": "p05", "text": "我认为p02是狼人"},
+            {"speaker": "p06", "text": "我认为p02是狼人"},
+            {"speaker": "p07", "text": "我认为p03是预言家"},
+            {"speaker": "p09", "text": "我认为p03是预言家"},
+        ],
+    )
+    source = SpeechPlayerAction(
+        target_id="p02",
+        speech=(
+            "p05声称p02是狼人，p07声称p03是预言家，我怀疑p02。"
+        ),
+        reason="公开引用",
+        confidence=0.5,
+    )
+    final = source.model_copy(update={
+        "speech": (
+            "p06并未声称p02是狼人，p09并未声称p03是预言家，"
+            "p10声称自己是猎人，p11声称自己是女巫，我怀疑p02。"
+        ),
+    })
+
+    result = validate_semantic_repair(context, source, final)
+    expected = (
+        "unsupported_public_claim",
+        "speaker_attribution_changed",
+        "negation_changed",
+    )
+
+    assert result.reason_codes == expected
+    assert all(result.reason_codes.count(code) == 1 for code in expected)
+    assert result.audit["unsupported_public_claim_count"] == 2
+    assert result.audit["rejection_reason_codes"] == list(expected)
+
+
 def test_semantic_terminal_fallback_preserves_all_verified_claims() -> None:
     """终态 fallback 保持目标、全部已验证论点且不引入新 claim。"""
     from werewolf_agent.agents.schemas import FallbackAction, SpeechPlayerAction

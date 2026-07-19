@@ -227,7 +227,7 @@ def _speaker_attribution_preserved(
     source_claims: set[PublicClaimAuditKey],
     final_claims: set[PublicClaimAuditKey],
 ) -> bool:
-    """已有归因可删除但不可换人；空归因可由后续公开证据补齐。"""
+    """已有非空归因不可删除或换人；空归因可由后续公开证据补齐。"""
     changed_source_claims = source_claims - final_claims
     for final_claim in final_claims - source_claims:
         matching_source = [
@@ -243,6 +243,8 @@ def _speaker_attribution_preserved(
         attribution_was_missing = any(
             not claim.speaker_attribution for claim in matching_source
         )
+        if known_speakers and not final_claim.speaker_attribution:
+            return False
         if (
             final_claim.speaker_attribution
             and known_speakers

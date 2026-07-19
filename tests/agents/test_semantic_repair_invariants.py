@@ -71,6 +71,22 @@ def test_semantic_repair_rejects_changed_existing_speaker_attribution() -> None:
     assert result.audit["speaker_attribution_preserved"] is False
 
 
+def test_semantic_repair_rejects_removed_existing_speaker_attribution() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    source = _action("p05声称p02是狼人，我怀疑p02。")
+    unattributed = _action("有人声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(_context(), source, unattributed)
+
+    assert result.accepted is False
+    assert result.reason_codes == (
+        "unsupported_public_claim",
+        "speaker_attribution_changed",
+    )
+    assert result.audit["speaker_attribution_preserved"] is False
+
+
 def test_semantic_repair_rejects_changed_negation_relation() -> None:
     from werewolf_agent.agents.semantic_repair_audit import (
         validate_semantic_repair,
