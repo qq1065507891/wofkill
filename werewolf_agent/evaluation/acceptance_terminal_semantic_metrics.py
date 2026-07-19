@@ -31,6 +31,21 @@ _SEMANTIC_FALLBACK_KINDS = frozenset({
     "verified_claim",
     "task_specific",
 })
+_SEMANTIC_AUDIT_FIELDS = (
+    "repairable",
+    "semantic_gate_version",
+    "success",
+    "target_preserved",
+    "speaker_attribution_preserved",
+    "negation_preserved",
+    "introduced_claim_count",
+    "unsupported_public_claim_count",
+    "verified_claim_count",
+    "retained_verified_claim_count",
+    "rejection_reason_codes",
+    "generic_template_used",
+    "fallback_kind",
+)
 
 
 def compute_terminal_semantic_acceptance_metrics(
@@ -320,17 +335,10 @@ def _semantic_audit_rows_agree(
     standalone: Mapping[str, Any],
     nested: Mapping[str, Any],
 ) -> bool:
-    """比较决定语义门控结果的成对审计字段。"""
+    """比较完整语义审计 payload，排除 trace 等传输元数据。"""
     return all(
         standalone.get(field) == nested.get(field)
-        for field in (
-            "semantic_gate_version",
-            "success",
-            "speaker_attribution_preserved",
-            "negation_preserved",
-            "fallback_kind",
-            "unsupported_public_claim_count",
-        )
+        for field in _SEMANTIC_AUDIT_FIELDS
     )
 
 

@@ -697,12 +697,25 @@ def test_semantic_reconciliation_failures_close_the_public_evidence_threshold() 
         "type": "semantic_repair_audit",
         "payload": invalid_payload,
     })
-    conflicting_pair = deepcopy(paired_game)
-    conflicting_pair["events"][1]["payload"]["action_trace"][
-        "semantic_repair_audit"
-    ]["unsupported_public_claim_count"] = 1
+    conflicting_pairs = []
+    for nested_updates in (
+        {"repairable": False},
+        {"target_preserved": False},
+        {"introduced_claim_count": 1},
+        {"verified_claim_count": 2},
+        {"retained_verified_claim_count": 1},
+        {"generic_template_used": True},
+        {"unsupported_public_claim_count": 1},
+        {"rejection_reason_codes": ["unsupported_public_claim"]},
+    ):
+        conflicting_pair = deepcopy(paired_game)
+        nested = conflicting_pair["events"][1]["payload"]["action_trace"][
+            "semantic_repair_audit"
+        ]
+        nested.update(nested_updates)
+        conflicting_pairs.append(conflicting_pair)
 
-    for game in (invalid_identity, conflicting_pair):
+    for game in (invalid_identity, *conflicting_pairs):
         metrics = compute_acceptance_audit_metrics([game])
         result = evaluate_thresholds({**_passing_report(), **metrics})
 

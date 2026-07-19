@@ -271,11 +271,18 @@ def test_paired_semantic_audit_reconciliation_compares_every_decisive_field() ->
     )
 
     for nested_updates in (
+        {"repairable": False},
         {"semantic_gate_version": 1},
         {"success": False},
+        {"target_preserved": False},
         {"speaker_attribution_preserved": False},
         {"negation_preserved": False},
+        {"introduced_claim_count": 1},
+        {"verified_claim_count": 2},
+        {"retained_verified_claim_count": 0},
+        {"generic_template_used": True},
         {"fallback_kind": "task_specific"},
+        {"rejection_reason_codes": ["unsupported_public_claim"]},
     ):
         game = _game(
             speaker_preserved=True,
@@ -292,6 +299,7 @@ def test_paired_semantic_audit_reconciliation_compares_every_decisive_field() ->
 
         assert metrics["semantic_repair_metrics_supported"] is False
         assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is False
+        assert metrics["semantic_repair_public_evidence_safety_rate"] is None
 
 
 def test_acceptance_fails_closed_when_semantic_invariant_is_missing() -> None:
