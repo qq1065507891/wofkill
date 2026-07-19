@@ -239,13 +239,49 @@ def test_public_speech_history_respects_legacy_mapping_visibility() -> None:
             "type": "sheriff_speech",
             "payload": {"speaker": "p05", "text": "缺失可见性默认公开"},
         },
+        {
+            "type": "speech",
+            "visibility": None,
+            "payload": {
+                "speaker": "p06",
+                "text": "顶层 None 不能泄露",
+                "visibility": "moderator_only",
+            },
+        },
+        {
+            "type": "speech",
+            "visibility": "public",
+            "payload": {
+                "speaker": "p07",
+                "text": "顶层公开优先",
+                "visibility": "moderator_only",
+            },
+        },
     ]
 
     assert public_speech_history(events) == [
         ("p01", "顶层公开"),
         ("p02", "payload 公开"),
         ("p05", "缺失可见性默认公开"),
+        ("p07", "顶层公开优先"),
     ]
+    typed_private = GameEvent(type="speech", payload={
+        "speaker": "p06",
+        "text": "typed 私密",
+        "visibility": "moderator_only",
+    })
+    legacy_private = {
+        "type": "speech",
+        "visibility": None,
+        "payload": {
+            "speaker": "p06",
+            "text": "legacy 私密",
+            "visibility": "moderator_only",
+        },
+    }
+    assert public_speech_history([typed_private]) == public_speech_history([
+        legacy_private,
+    ]) == []
 
 
 def test_public_ledger_uses_v2_top_level_visibility_without_payload_marker() -> None:

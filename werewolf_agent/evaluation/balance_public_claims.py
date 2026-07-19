@@ -402,12 +402,9 @@ def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:
             payload = event.get("payload") or {}
             if not isinstance(payload, Mapping):
                 continue
-            if "visibility" in event:
-                visibility = event["visibility"]
-            elif "visibility" in payload:
-                visibility = payload["visibility"]
-            else:
-                visibility = "public"
+            visibility = event.get("visibility")
+            if visibility is None:
+                visibility = payload.get("visibility", "public")
             if EventVisibility.from_legacy(visibility) is not EventVisibility.PUBLIC:
                 continue
         elif isinstance(event, GameEvent):
