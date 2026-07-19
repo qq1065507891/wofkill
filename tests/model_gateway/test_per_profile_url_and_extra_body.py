@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Tests for per-profile base_url + extra_body plumbing (2026-07-15/16).
+每个模型配置的 base_url 与 extra_body 透传测试。
 
 覆盖范围：
 - ModelConfig 接受 base_url / extra_body 字段且 ``__hash__ = None`` 后仍可作为值对象传递。
@@ -8,11 +8,13 @@ Tests for per-profile base_url + extra_body plumbing (2026-07-15/16).
 - ``OpenAIProvider``/``AnthropicProvider``/``MiniMaxProvider``/``GLMProvider``
   在 generate 时优先使用 ``config.base_url``，缺失时回退到 provider 实例默认 URL。
 - ``_generate_openai_compatible`` 把 ``config.extra_body`` 合进 payload，不覆盖已有字段。
-- ``OpenAIProvider`` 在 base_url 指向 ``api.minimaxi.com`` 时改读
-  ``MINIMAX_NATIVE_API_KEY``（2026-07-16：解决 Ark/MiniMax key 隔离）。
+- ``OpenAIProvider`` 对 native MiniMax endpoint 按
+  ``MINIMAX_NATIVE_API_KEY`` → ``MINIMAX_API_KEY`` → MiniMax-scoped
+  ``ANTHROPIC_API_KEY`` 的优先级解析鉴权键；缺少合法键时 fail closed。
 
 作者：Mike
 创建日期：2026-07-15
+修改日期：2026-07-19
 """
 
 from __future__ import annotations
