@@ -79,6 +79,7 @@ class SemanticRepairValidationResult:
 `target_preserved`、`verified_claim_count`、`retained_verified_claim_count`、
 `introduced_claim_count` 等现有字段继续保留，便于观察策略漂移。新增：
 
+- `semantic_gate_version=2`；
 - `unsupported_public_claim_count`；
 - `rejection_reason_codes`。
 
@@ -112,6 +113,33 @@ class SemanticRepairValidationResult:
 摘要文本、moderator-only 事件或角色真值作为任一路径的权威事实来源。
 
 `RetryInfo.reason_codes` 使用空列表默认值，其他失败类型无需改动即可保持兼容。
+
+### 6.1 验收指标兼容
+
+运行时放宽后，验收器不能继续把“目标改变”“新增公开支持事实”或“删除旧论点”计为修复失败。
+语义审计必须按版本双读：
+
+- 缺少 `semantic_gate_version` 的历史记录按 V1 旧契约计算，保证历史 JSON 可回放；
+- `semantic_gate_version=2` 的记录以 `success=True`、`speaker_attribution_preserved=True`、
+  `negation_preserved=True` 且 `unsupported_public_claim_count=0` 作为成功条件；
+- `target_preserved`、`introduced_claim_count` 和完整论点保留率继续输出为观察指标，但不再是 V2
+  成功条件或发布硬门禁。
+
+固定 soak 的硬门禁删除 V2 不再要求的 `semantic_repair_target_preservation_rate == 1.0` 和
+`semantic_repair_no_new_claim_rate == 1.0`，同时删除
+`semantic_repair_verified_claim_retention_rate == 1.0`，改为要求新的
+`semantic_repair_public_evidence_safety_rate == 1.0`。说话人归属、否定关系、修复成功率和禁用通用模板
+的现有门禁继续保留。
+
+`semantic_repair_public_evidence_safety_rate` 的契约为：
+
+- 分母：当前报告中全部 `semantic_gate_version=2` 的可修复语义审计数；
+- 分子：上述审计中 `unsupported_public_claim_count == 0` 的数量；
+- support flag：`semantic_repair_public_evidence_safety_metrics_supported`；只有游戏投影受支持、
+  分母大于 0、报告里的全部可修复语义审计都是 V2，且每条都有非负整数
+  `unsupported_public_claim_count` 时才为 `True`；
+- V1-only 或 V1/V2 混合报告继续输出原有 V1 观察指标，但新安全率为 `None`、support flag 为
+  `False`。这类历史报告可读取和比较，但有意不能作为当前 V2 发布门禁证据。
 
 ## 7. 日志示例
 
@@ -161,6 +189,9 @@ last_reason_codes=unsupported_public_claim) -> fallback
   相同结论；私有事件不得进入任一权威证据快照。
 - 日志、retry metadata 和 action trace 只包含稳定原因码与固定安全文案，不包含被拒原文、私有角色
   或隐藏真值。
+- V1 历史语义审计继续按旧规则计算；V2 允许的目标变化、新增公开支持事实和删除旧论点不降低
+  `semantic_repair_success_rate`。
+- V2 无公开支持事实会降低 `semantic_repair_public_evidence_safety_rate`，并使硬门禁失败。
 - player retry、action trace、semantic acceptance metrics 和相关 runtime action audit 测试保持通过。
 - Ruff 与 `git diff --check` 通过。
 
@@ -171,4 +202,5 @@ last_reason_codes=unsupported_public_claim) -> fallback
 3. 无公开支持事实、说话人篡改和否定翻转仍会稳定失败。
 4. 每次失败可从 `RetryInfo` 和日志看到至少一个具体原因码。
 5. 终态 fallback action trace 保留最后一次拒绝的相同原因码。
-6. 所有相关自动化测试与静态检查通过。
+6. V1 历史报告保持可读；V2 验收成功条件与运行时门禁一致。
+7. 所有相关自动化测试与静态检查通过。
