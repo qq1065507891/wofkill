@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
@@ -59,6 +59,11 @@ _CORRECTION_HINTS = {
     "speaker_attribution_changed": "恢复公开记录中的说话人归属，或删除该声明",
     "negation_changed": "恢复公开记录中的否定关系，或删除该声明",
 }
+_FIRST_PERSON_EVIDENCE_REF = re.compile(r"(?:^|[，。；;])我")
+_FIRST_PERSON_DENIAL_REF = re.compile(
+    r"(?:^|[，。；;])我(?:没有|并未|未曾|从未|不)"
+    r"(?:说|声称|表示|宣称|自认|自称|是|知道|获知|掌握|认为)"
+)
 
 
 @dataclass(frozen=True)
@@ -348,16 +353,21 @@ def _has_same_polarity_public_evidence(
             supported = night_info_claim_supported(claim.target, speech)
         else:
             supported = False
-        if supported and claim in _classified_evidence_keys(claim, text):
+        if supported and claim in _classified_evidence_keys(
+            claim,
+            public_speaker,
+            text,
+        ):
             return True
     return False
 
 
 def _classified_evidence_keys(
     claim: PublicClaimAuditKey,
+    public_speaker: str,
     text: str,
 ) -> set[PublicClaimAuditKey]:
-    """把公开文本投影为与候选声明可比较且包含否定极性的键。"""
+    """优先保留直接归因，再规范化无标识的公开一人称证据。"""
     direct_keys = {
         public_claim_audit_key(evidence)
         for evidence in classify_public_claims(text)
@@ -365,18 +375,48 @@ def _classified_evidence_keys(
     matching_direct_keys = {
         evidence_key for evidence_key in direct_keys
         if evidence_key.content_identity == claim.content_identity
-        and evidence_key.speaker_attribution == claim.speaker_attribution
     }
     if matching_direct_keys:
         return matching_direct_keys
-    return {replace(claim, negated=_public_evidence_is_negated(claim, text))}
+    if not _is_normalizable_public_evidence(claim, text):
+        return set()
+    return {
+        PublicClaimAuditKey(
+            claim_type=claim.claim_type,
+            target=claim.target,
+            role=claim.role,
+            support_kind=claim.support_kind,
+            speaker_attribution=public_speaker,
+            negated=_public_evidence_is_negated(claim, text),
+        )
+    }
+
+
+def _is_normalizable_public_evidence(
+    claim: PublicClaimAuditKey,
+    text: str,
+) -> bool:
+    """仅把明确的一人称或直接目标身份判断补齐为账本说话人的证据。"""
+    if _FIRST_PERSON_EVIDENCE_REF.search(text):
+        return True
+    return bool(
+        claim.support_kind == "role_assignment"
+        and claim.role
+        and re.search(
+            rf"{re.escape(claim.target)}[^，。；;]{{0,8}}"
+            rf"(?:是|不是|并非|不为)[^，。；;]{{0,4}}{re.escape(claim.role)}",
+            text,
+        )
+    )
 
 
 def _public_evidence_is_negated(
     claim: PublicClaimAuditKey,
     text: str,
 ) -> bool:
-    """识别账本直接身份判断及权威前缀中的否定极性。"""
+    """识别一人称否认、直接身份判断及权威前缀中的否定极性。"""
+    if _FIRST_PERSON_DENIAL_REF.search(text):
+        return True
     target_start = text.find(claim.target)
     if target_start >= 0 and public_claim_is_negated(text, target_start):
         return True
