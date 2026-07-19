@@ -85,7 +85,9 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         semantic_events_by_identity: dict[
             tuple[str, str, int, str], list[dict[str, Any]]
         ] = {}
-        semantic_trace_identities: list[tuple[str, str, int, str]] = []
+        semantic_traces_by_identity: dict[
+            tuple[str, str, int, str], list[Mapping[str, Any]]
+        ] = {}
         for event in game.get("events", []):
             if not isinstance(event, Mapping):
                 continue
@@ -109,7 +111,9 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
                 )
             if event_type == "semantic_repair_audit" and payload.get("repairable") is True:
                 identity = _semantic_identity(payload)
-                if identity is not None:
+                if identity is None:
+                    semantic_reconciliation_complete = False
+                else:
                     semantic_events_by_identity.setdefault(identity, []).append(payload)
             if event_type != "action_trace_audit":
                 continue
@@ -124,26 +128,33 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
                 if identity is None:
                     semantic_reconciliation_complete = False
                 else:
-                    semantic_trace_identities.append(identity)
+                    semantic_traces_by_identity.setdefault(identity, []).append(semantic)
 
-        for identity in semantic_trace_identities:
+        for identity, traces in semantic_traces_by_identity.items():
             matches = semantic_events_by_identity.get(identity, [])
-            if len(matches) == 1:
+            if (
+                len(matches) == 1
+                and len(traces) == 1
+                and _semantic_audit_rows_agree(matches[0], traces[0])
+            ):
                 semantic_rows.append(matches[0])
             else:
                 semantic_reconciliation_complete = False
         if any(
-            identity not in semantic_trace_identities or len(rows) != 1
+            identity not in semantic_traces_by_identity or len(rows) != 1
             for identity, rows in semantic_events_by_identity.items()
         ):
             semantic_reconciliation_complete = False
 
     semantic_count = semantic_eligible_count
+    semantic_reconciliation_valid = _semantic_reconciliation_is_valid(
+        semantic_count,
+        semantic_rows,
+        semantic_reconciliation_complete,
+    )
     semantic_source_complete = (
         projection_is_supported
-        and semantic_count > 0
-        and semantic_reconciliation_complete
-        and len(semantic_rows) == semantic_count
+        and semantic_reconciliation_valid
         and all(
             isinstance(row.get("success"), bool)
             and isinstance(row.get("target_preserved"), bool)
@@ -211,9 +222,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
     )
     public_evidence_safety_supported = (
         projection_is_supported
-        and semantic_count > 0
-        and semantic_reconciliation_complete
-        and len(semantic_rows) == semantic_count
+        and semantic_reconciliation_valid
         and all(
             _is_semantic_gate_v2(row)
             and _is_non_negative_int(row.get("unsupported_public_claim_count"))
@@ -292,6 +301,37 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
             retained_verified_claims / len(retention_rows) if retention_rows else None
         ),
     }
+
+
+def _semantic_reconciliation_is_valid(
+    semantic_count: int,
+    semantic_rows: Sequence[Mapping[str, Any]],
+    reconciliation_complete: bool,
+) -> bool:
+    """确认每条语义 trace 都有且仅有一条一致的 standalone 审计。"""
+    return (
+        reconciliation_complete
+        and semantic_count > 0
+        and len(semantic_rows) == semantic_count
+    )
+
+
+def _semantic_audit_rows_agree(
+    standalone: Mapping[str, Any],
+    nested: Mapping[str, Any],
+) -> bool:
+    """比较决定语义门控结果的成对审计字段。"""
+    return all(
+        standalone.get(field) == nested.get(field)
+        for field in (
+            "semantic_gate_version",
+            "success",
+            "speaker_attribution_preserved",
+            "negation_preserved",
+            "fallback_kind",
+            "unsupported_public_claim_count",
+        )
+    )
 
 
 def _has_supported_semantic_gate_version(row: Mapping[str, Any]) -> bool:

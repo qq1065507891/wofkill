@@ -652,6 +652,66 @@ def test_real_runtime_semantic_event_flows_through_report_and_threshold() -> Non
     assert result["overall_pass"] is False
 
 
+def test_semantic_reconciliation_failures_close_the_public_evidence_threshold() -> None:
+    from scripts.evaluate_audit_closure_thresholds import evaluate_thresholds
+    from werewolf_agent.evaluation.balance_audit import compute_acceptance_audit_metrics
+
+    semantic = {
+        "repairable": True,
+        "semantic_gate_version": 2,
+        "success": True,
+        "target_preserved": True,
+        "speaker_attribution_preserved": True,
+        "negation_preserved": True,
+        "introduced_claim_count": 0,
+        "unsupported_public_claim_count": 0,
+        "verified_claim_count": 0,
+        "retained_verified_claim_count": 0,
+        "generic_template_used": False,
+        "fallback_kind": "no_fallback",
+    }
+    identity = {
+        "trace_id": "reconciliation-trace",
+        "game_id": "reconciliation-game",
+        "action_index": 1,
+        "task_type": "speech",
+    }
+    paired_game = {
+        "game_id": "reconciliation-game",
+        "players": {"p01": {"role": "villager"}},
+        "events": [
+            {"type": "semantic_repair_audit", "payload": {**semantic, **identity}},
+            {
+                "type": "action_trace_audit",
+                "payload": {
+                    **identity,
+                    "action_trace": {"semantic_repair_audit": dict(semantic)},
+                },
+            },
+        ],
+    }
+    invalid_identity = deepcopy(paired_game)
+    invalid_payload = dict(invalid_identity["events"][0]["payload"])
+    invalid_payload.pop("trace_id")
+    invalid_identity["events"].append({
+        "type": "semantic_repair_audit",
+        "payload": invalid_payload,
+    })
+    conflicting_pair = deepcopy(paired_game)
+    conflicting_pair["events"][1]["payload"]["action_trace"][
+        "semantic_repair_audit"
+    ]["unsupported_public_claim_count"] = 1
+
+    for game in (invalid_identity, conflicting_pair):
+        metrics = compute_acceptance_audit_metrics([game])
+        result = evaluate_thresholds({**_passing_report(), **metrics})
+
+        assert metrics["semantic_repair_metrics_supported"] is False
+        assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is False
+        assert metrics["semantic_repair_public_evidence_safety_rate"] is None
+        assert result["overall_pass"] is False
+
+
 def test_cli_writes_threshold_file_before_returning_failure(tmp_path) -> None:
     from scripts.evaluate_audit_closure_thresholds import main
 

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-15
+修改日期: 2026-07-19
 """
 
 from __future__ import annotations
@@ -727,6 +727,35 @@ def test_semantic_repair_rates_keep_invariants_as_independent_numerators() -> No
     assert metrics["semantic_repair_verified_claim_retention_metrics_supported"] is True
     assert metrics["semantic_repair_verified_claim_retention_rate"] == 0.5
     assert metrics["semantic_repair_generic_template_count"] == 1
+
+
+def test_balance_audit_propagates_v2_public_evidence_safety_metrics() -> None:
+    from werewolf_agent.evaluation.balance_audit import compute_balance_audit
+
+    report = compute_balance_audit([{
+        "game_id": "v2-semantic-report",
+        "winning_faction": "good",
+        "players": {"p01": {"role": "villager"}},
+        "events": _semantic_pair(
+            {
+                "repairable": True,
+                "semantic_gate_version": 2,
+                "success": True,
+                "target_preserved": True,
+                "introduced_claim_count": 0,
+                "unsupported_public_claim_count": 0,
+                "verified_claim_count": 0,
+                "retained_verified_claim_count": 0,
+                "generic_template_used": False,
+                "fallback_kind": "no_fallback",
+            },
+            action_index=1,
+            game_id="v2-semantic-report",
+        ),
+    }])
+
+    assert report["semantic_repair_public_evidence_safety_metrics_supported"] is True
+    assert report["semantic_repair_public_evidence_safety_rate"] == 1.0
 
 
 def test_report_exports_threshold_support_metrics() -> None:
