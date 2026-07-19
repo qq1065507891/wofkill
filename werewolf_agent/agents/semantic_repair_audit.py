@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-19
+修改日期: 2026-07-20
 
 使用示例:
     >>> validate_semantic_repair(context, source, final).accepted
@@ -253,8 +253,13 @@ def preserve_verified_claim_in_fallback(
 ) -> FallbackAction:
     """从源发言中仅复制已获公开支撑的最小 claim span 到确定性 fallback。"""
     public_speeches = _public_speeches(context)
-    source_claims, verified_claims = public_claim_audit_keys(
+    source_claims, legacy_verified_claims = public_claim_audit_keys(
         source.speech, public_speeches
+    )
+    verified_claims = _polarity_aware_verified_claims(
+        source_claims,
+        legacy_verified_claims,
+        public_speeches,
     )
     verified_texts: list[str] = []
     retained_keys: set[PublicClaimAuditKey] = set()
@@ -267,8 +272,18 @@ def preserve_verified_claim_in_fallback(
     source_target = _target(source)
     speech = fallback.speech
     target_id = source_target if source_target in context.legal_targets else None
-    fallback_claims, _ = public_claim_audit_keys(speech, public_speeches)
-    if fallback_claims - source_claims:
+    fallback_claims, fallback_legacy_verified_claims = public_claim_audit_keys(
+        speech,
+        public_speeches,
+    )
+    fallback_verified_claims = _polarity_aware_verified_claims(
+        fallback_claims,
+        fallback_legacy_verified_claims,
+        public_speeches,
+    )
+    if (fallback_claims - source_claims) or (
+        fallback_claims - fallback_verified_claims
+    ):
         speech = ""
     if source_target and source_target in context.legal_targets:
         speech = (
@@ -398,13 +413,19 @@ def _has_same_polarity_public_evidence(
         if claim.claim_type == "player_claim" and claim in direct_keys:
             return True
         if claim.support_kind == "role":
-            supported = role_claim_supported(claim.target, claim.role, speech)
+            supported = role_claim_supported(
+                claim.target,
+                claim.role,
+                speech,
+                negated=claim.negated,
+            )
         elif claim.support_kind == "role_assignment":
             supported = attributed_role_claim_supported(
                 claim.speaker_attribution,
                 claim.target,
                 claim.role,
                 speech,
+                negated=claim.negated,
             )
         elif claim.support_kind == "night_info":
             supported = night_info_claim_supported(claim.target, speech)

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-19
+修改日期: 2026-07-20
 
 使用示例:
     >>> from werewolf_agent.evaluation.balance_public_claims import (
@@ -24,17 +24,17 @@ from werewolf_agent.core.models import GameEvent
 
 _PUBLIC_ROLE_CLAIM_REF = re.compile(
     r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,10}"
-    r"(?:已?自认|认了?|自称|声称自己是|说自己是|(?<!对)跳)"
+    r"(?:已?自认|认了?|自称|声称自己(?:不是|并非|不为|是)|说自己(?:不是|并非|不为|是)|(?<!对)跳)"
     r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
 )
 _PUBLIC_ATTRIBUTED_ROLE_ASSIGNMENT_REF = re.compile(
     r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,10}"
-    r"(?:声称|说|表示|宣称)(p\d{2})(?:(?!p\d{2})[^，。；;]){0,8}是"
+    r"(?:声称|说|表示|宣称)(p\d{2})(?:(?!p\d{2})[^，。；;]){0,8}(?:不是|并非|不为|是)"
     r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
 )
 _PUBLIC_UNATTRIBUTED_ROLE_ASSIGNMENT_REF = re.compile(
     r"有人(?:(?!p\d{2})[^，。；;]){0,8}(?:声称|说|表示|宣称)"
-    r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,8}是"
+    r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,8}(?:不是|并非|不为|是)"
     r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
 )
 _PUBLIC_NIGHT_INFO_REF = re.compile(
@@ -199,6 +199,10 @@ _ROLE_MARKERS = {
     "村民": ("我是村民", "我是民", "我认民"),
     "民": ("我是村民", "我是民", "我认民"),
 }
+_ROLE_NEGATION_FORMS = ("不是", "并非", "不为")
+_ROLE_RELATION_PATTERN = "|".join(
+    ("不是", "并非", "不为", "是")
+)
 
 
 def unsupported_public_fact_claim_count(game: dict[str, Any]) -> int:
@@ -352,7 +356,12 @@ def _claim_is_supported(
     if claim.claim_type == PublicClaimType.CURRENT_PLAYER_INFERENCE:
         return True
     if claim.support_kind == "role" and claim.target and claim.role:
-        return role_claim_supported(claim.target, claim.role, public_speeches)
+        return role_claim_supported(
+            claim.target,
+            claim.role,
+            public_speeches,
+            negated=claim.negated,
+        )
     if (
         claim.support_kind == "role_assignment"
         and claim.speaker_attribution
@@ -364,6 +373,7 @@ def _claim_is_supported(
             claim.target,
             claim.role,
             public_speeches,
+            negated=claim.negated,
         )
     if claim.support_kind == "night_info" and claim.target:
         return night_info_claim_supported(claim.target, public_speeches)
@@ -389,7 +399,7 @@ def _player_claim_is_negated(text: str, claim_start: int, claim_end: int) -> boo
             r"(?:并未|没有|未曾|否认)[^，。；;]{0,8}"
             r"(?:声称|说|表示|宣称|自认)",
             relation,
-        )
+        ) or re.search(r"(?:不是|并非|不为)[^，。；;]{0,4}(?:狼人|预言家|女巫|猎人|白痴|村民|民)", relation)
     )
 
 
@@ -450,11 +460,25 @@ def role_claim_supported(
     player_id: str,
     role: str,
     public_speeches: list[tuple[str, str]],
+    *,
+    negated: bool = False,
 ) -> bool:
     """判断玩家公开发言是否已经支撑某个角色声明。"""
     markers = _ROLE_MARKERS.get(role, (role,))
+    if not negated:
+        return any(
+            speaker == player_id and any(marker in speech for marker in markers)
+            for speaker, speech in public_speeches
+        )
     return any(
-        speaker == player_id and any(marker in speech for marker in markers)
+        speaker == player_id
+        and _role_relation_supported_in_speech(
+            player_id,
+            role,
+            speech,
+            negated=True,
+            self_claim=True,
+        )
         for speaker, speech in public_speeches
     )
 
@@ -464,12 +488,52 @@ def attributed_role_claim_supported(
     target: str,
     role: str,
     public_speeches: list[tuple[str, str]],
+    *,
+    negated: bool = False,
 ) -> bool:
     """判断指定玩家是否曾公开对目标作出该角色归属声明。"""
     return any(
-        public_speaker == speaker and target in speech and role in speech
+        public_speaker == speaker
+        and _role_relation_supported_in_speech(
+            target,
+            role,
+            speech,
+            negated=negated,
+        )
         for public_speaker, speech in public_speeches
     )
+
+
+def _role_relation_supported_in_speech(
+    target: str,
+    role: str,
+    speech: str,
+    *,
+    negated: bool,
+    self_claim: bool = False,
+) -> bool:
+    """匹配同一玩家与角色的明确肯定或否定关系，避免只按词面判断。"""
+    target_ref = r"(?:我|自己)" if self_claim else re.escape(target)
+    if not self_claim and re.search(
+        rf"(?:我|自己)(?:并未|没有|未曾|否认)[^，。；;]{{0,8}}"
+        rf"{re.escape(target)}[^，。；;]{{0,4}}{re.escape(role)}",
+        speech,
+    ):
+        return negated
+    if re.search(
+        rf"{target_ref}(?:并未|没有|未曾|否认)[^，。；;]{{0,12}}"
+        rf"(?:声称|说|表示|宣称|自认)?[^，。；;]{{0,4}}{re.escape(role)}",
+        speech,
+    ):
+        return negated
+    match = re.search(
+        rf"{target_ref}(?P<between>[^，。；;]{{0,8}}?)(?P<relation>{_ROLE_RELATION_PATTERN})"
+        rf"[^，。；;]{{0,4}}{re.escape(role)}",
+        speech,
+    )
+    if match is None:
+        return (not negated) and target in speech and role in speech
+    return (match.group("relation") in _ROLE_NEGATION_FORMS) is negated
 
 
 def night_info_claim_supported(

@@ -235,6 +235,28 @@ def test_semantic_repair_allows_negated_claim_from_negated_evidence() -> None:
     assert result.audit["unsupported_public_claim_count"] == 0
 
 
+@pytest.mark.parametrize("negative_relation", ["不是", "并非", "不为"])
+def test_semantic_repair_rejects_direct_attributed_polarity_flip(
+    negative_relation: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p03", "text": "p05是狼人"},
+            {"speaker": "p03", "text": f"p05{negative_relation}狼人"},
+        ],
+    })
+    source = _action("p03声称p05是狼人，我怀疑p02。")
+    final = _action(f"p03声称p05{negative_relation}狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is False
+    assert "negation_changed" in result.reason_codes
+    assert result.audit["unsupported_public_claim_count"] == 0
+
+
 def test_semantic_repair_rejects_affirmative_self_role_from_denial() -> None:
     from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
 

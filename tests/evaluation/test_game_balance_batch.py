@@ -84,6 +84,23 @@ def test_public_claim_classifier_separates_semantic_types() -> None:
     ]
 
 
+@pytest.mark.parametrize("relation", ["是", "不是", "并非", "不为"])
+def test_public_claim_classifier_preserves_direct_attributed_role_polarity(
+    relation: str,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    claims = classify_public_claims(f"p03声称p05{relation}狼人")
+
+    assert len(claims) == 1
+    claim = claims[0]
+    assert claim.support_kind == "role_assignment"
+    assert claim.speaker_attribution == "p03"
+    assert claim.target == "p05"
+    assert claim.role == "狼人"
+    assert claim.negated is (relation != "是")
+
+
 def test_public_fact_guard_is_driven_by_authoritative_classifier(monkeypatch) -> None:
     from werewolf_agent.evaluation import balance_public_claims as claims_module
 

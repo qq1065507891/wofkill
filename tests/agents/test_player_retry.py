@@ -328,6 +328,50 @@ def test_semantic_terminal_fallback_preserves_all_verified_claims() -> None:
     assert audit["retained_verified_claim_count"] == audit["verified_claim_count"] == 2
 
 
+def test_semantic_terminal_fallback_drops_opposite_polarity_claims() -> None:
+    from werewolf_agent.agents.schemas import FallbackAction, SpeechPlayerAction
+    from werewolf_agent.agents.semantic_repair_audit import (
+        build_semantic_repair_audit,
+        preserve_verified_claim_in_fallback,
+    )
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+
+    context = AgentContext(
+        agent_id="p08", task_type=TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH], legal_targets=["p02"],
+        public_claim_ledger=[{"speaker": "p03", "text": "p05不是狼人"}],
+    )
+    source = SpeechPlayerAction(
+        target_id="p02",
+        speech="p03声称p05是狼人，我怀疑p02。",
+        reason="公开引用",
+        confidence=0.5,
+    )
+
+    fallback = preserve_verified_claim_in_fallback(
+        context,
+        source,
+        FallbackAction(action_type=ActionType.SPEECH),
+    )
+    sanitized, unsupported = sanitize_public_text(
+        fallback.speech,
+        [("p03", "p05不是狼人")],
+    )
+    audit = build_semantic_repair_audit(context, source, fallback, success=False)
+    rejected = build_semantic_repair_audit(
+        context,
+        source,
+        source,
+        success=False,
+    )
+
+    assert "p05是狼人" not in fallback.speech
+    assert "p05是狼人" not in sanitized
+    assert unsupported == 0
+    assert audit["retained_verified_claim_count"] == 0
+    assert rejected["unsupported_public_claim_count"] == 1
+
+
 def test_generic_fallback_classification_uses_actual_template_family() -> None:
     from werewolf_agent.agents.player_fallback_speech import (
         build_fallback_speech,
