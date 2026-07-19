@@ -139,6 +139,25 @@ def test_v2_public_evidence_safety_rate_counts_unsafe_rows() -> None:
     assert metrics["semantic_repair_public_evidence_safety_rate"] == 0.0
 
 
+def test_v2_boolean_unsupported_public_claim_count_is_not_success() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    metrics = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            unsupported_public_claim_count=False,
+        ),
+    ])
+
+    assert metrics["semantic_repair_success_count"] == 0
+    assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is False
+    assert metrics["semantic_repair_public_evidence_safety_rate"] is None
+
+
 def test_public_evidence_safety_fails_closed_for_mixed_or_incomplete_v2_rows() -> None:
     from werewolf_agent.evaluation.acceptance_audit import (
         compute_acceptance_audit_metrics,
@@ -169,6 +188,14 @@ def test_public_evidence_safety_fails_closed_for_mixed_or_incomplete_v2_rows() -
             unsupported_public_claim_count=-1,
         ),
     ])
+    string_v2_count = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            unsupported_public_claim_count="0",
+        ),
+    ])
 
     assert mixed["semantic_repair_public_evidence_safety_metrics_supported"] is False
     assert mixed["semantic_repair_public_evidence_safety_rate"] is None
@@ -176,11 +203,16 @@ def test_public_evidence_safety_fails_closed_for_mixed_or_incomplete_v2_rows() -
         missing_v2_count["semantic_repair_public_evidence_safety_metrics_supported"]
         is False
     )
+    assert missing_v2_count["semantic_repair_success_count"] == 0
     assert missing_v2_count["semantic_repair_public_evidence_safety_rate"] is None
+    assert malformed_v2_count["semantic_repair_success_count"] == 0
     assert malformed_v2_count[
         "semantic_repair_public_evidence_safety_metrics_supported"
     ] is False
     assert malformed_v2_count["semantic_repair_public_evidence_safety_rate"] is None
+    assert string_v2_count["semantic_repair_success_count"] == 0
+    assert string_v2_count["semantic_repair_public_evidence_safety_metrics_supported"] is False
+    assert string_v2_count["semantic_repair_public_evidence_safety_rate"] is None
 
 
 def test_acceptance_fails_closed_when_semantic_invariant_is_missing() -> None:

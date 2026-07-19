@@ -312,6 +312,7 @@ def _semantic_row_is_successful(row: Mapping[str, Any]) -> bool:
             row.get("success") is True
             and row.get("speaker_attribution_preserved") is True
             and row.get("negation_preserved") is True
+            and _is_non_negative_int(row.get("unsupported_public_claim_count"))
             and row.get("unsupported_public_claim_count") == 0
         )
     return (
