@@ -4,17 +4,15 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-16
+修改日期：2026-07-19
 
 支持 ``config.base_url`` 覆盖 provider 实例默认 URL（2026-07-15），
 用于同一 OpenAI 客户端服务多个 endpoint（``api.minimaxi.com/v1`` 与
 ``ark.cn-beijing.volces.com``）。``config.extra_body`` 在 payload 末尾合并，
 可携带 ``reasoning_split`` 等厂商私有开关。
 
-2026-07-16：native MiniMax endpoint 需要独立 API key（``MINIMAX_NATIVE_API_KEY``），
-与 ``OPENAI_API_KEY``（Ark 火山）隔离。``generate()`` 检测 ``config.base_url``
-指向 ``api.minimaxi.com`` 时改读 ``MINIMAX_NATIVE_API_KEY``，缺失则回退到
-``OPENAI_API_KEY``（理论上不会通过认证，但保证不挂死）。
+native MiniMax endpoint 按 dedicated、vendor、scoped Anthropic key 解析，
+缺少合法 key 时 fail closed，避免回退到 Ark 的 ``OPENAI_API_KEY``。
 
 使用示例：内部模块，无对外接口
 """
@@ -23,8 +21,12 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import urlparse
 
-from werewolf_agent.model_gateway.providers.base import _BaseHttpProvider
+from werewolf_agent.model_gateway.providers.base import (
+    ProviderConfigError,
+    _BaseHttpProvider,
+)
 from werewolf_agent.model_gateway.final_prompt_observer import (
     FinalPromptAssembly,
     FinalPromptObserver,
@@ -72,10 +74,11 @@ class OpenAIProvider(_BaseHttpProvider):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+        base_url = config.base_url or self._base_url
         return _generate_openai_compatible(
             provider=self,
-            base_url=config.base_url or self._base_url,
-            api_key=_resolve_api_key_for_config(config, self._api_key),
+            base_url=base_url,
+            api_key=_resolve_api_key_for_base_url(base_url, self._api_key),
             http_client=self._http_client,
             messages=messages,
             config=config,
@@ -88,24 +91,30 @@ class OpenAIProvider(_BaseHttpProvider):
 # -- OpenAI-compatible generation (shared with GLM) --
 
 
-def _resolve_api_key_for_config(config: ModelConfig, default_key: str) -> str:
-    """Per-call API key resolution (2026-07-16).
+_MINIMAX_NATIVE_HOST = "api.minimaxi.com"
 
-    ``api.minimaxi.com/v1`` (native MiniMax OpenAI-compatible endpoint)
-    requires a separate ``MINIMAX_NATIVE_API_KEY`` because the default
-    ``OPENAI_API_KEY`` is bound to the Ark Volcengine endpoint.  When
-    ``config.base_url`` matches the native MiniMax host we read the
-    dedicated env; otherwise we keep the provider's default key.
 
-    The match is a substring check on the host part to stay robust
-    against minor URL formatting differences.
-    """
-    base_url = config.base_url or ""
-    if "api.minimaxi.com" in base_url:
-        native_key = get_env("MINIMAX_NATIVE_API_KEY")
-        if native_key:
-            return native_key
-    return default_key
+def _resolve_api_key_for_base_url(base_url: str, default_key: str) -> str:
+    """按最终请求 URL 解析 OpenAI-compatible endpoint 的鉴权键。"""
+    parsed_url = urlparse(base_url)
+    if parsed_url.hostname != _MINIMAX_NATIVE_HOST:
+        return default_key
+    if parsed_url.scheme != "https":
+        raise ProviderConfigError("native MiniMax endpoint requires HTTPS")
+
+    # native 专用键优先，其次使用 MiniMax 厂商键。
+    for key_name in ("MINIMAX_NATIVE_API_KEY", "MINIMAX_API_KEY"):
+        api_key = get_env(key_name)
+        if api_key:
+            return api_key
+
+    # 仅当 Anthropic endpoint 同样精确指向 MiniMax 时，才能复用其鉴权键。
+    anthropic_base_url = get_env("ANTHROPIC_BASE_URL")
+    if urlparse(anthropic_base_url).hostname == _MINIMAX_NATIVE_HOST:
+        anthropic_key = get_env("ANTHROPIC_API_KEY")
+        if anthropic_key:
+            return anthropic_key
+    raise ProviderConfigError("native MiniMax API key is required")
 
 
 def _generate_openai_compatible(

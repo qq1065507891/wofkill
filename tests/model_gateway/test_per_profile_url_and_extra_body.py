@@ -220,19 +220,21 @@ class TestResolveConfigPlumbing:
 
 
 class _CapturingClient:
-    """记录最近一次 POST 的 URL 与 payload。"""
+    """记录最近一次 POST 的 URL、payload 与请求头。"""
 
     def __init__(self, response_data: dict | None = None) -> None:
         self.last_url: str | None = None
         self.last_payload: dict | None = None
+        self.last_headers: dict | None = None
         self._response = response_data or {
             "choices": [{"message": {"content": "ok"}}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
-    def post(self, url, *, json, **_kwargs):  # noqa: A002
+    def post(self, url, *, json, **kwargs):  # noqa: A002
         self.last_url = url
         self.last_payload = json
+        self.last_headers = kwargs["headers"]
         return _FakeResponse(self._response)
 
 
@@ -249,6 +251,15 @@ class _FakeResponse:
 
 
 class TestOpenAIProviderPerProfile:
+    @pytest.fixture(autouse=True)
+    def _provide_native_minimax_key(self, monkeypatch: pytest.MonkeyPatch):
+        from werewolf_agent.model_gateway.providers import env as env_mod
+
+        env_mod._ENV_OVERRIDES.clear()
+        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "test-native-key")
+        yield
+        env_mod._ENV_OVERRIDES.clear()
+
     def test_config_base_url_overrides_provider_default(self) -> None:
         """config.base_url 应优先于 provider 实例默认 URL。"""
         from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
@@ -500,102 +511,127 @@ class TestMiniMaxAnthropicProviderPerProfile:
 
 
 class TestNativeMiniMaxApiKeyRouting:
-    """``api.minimaxi.com/v1`` requires ``MINIMAX_NATIVE_API_KEY`` which is
-    different from the default ``OPENAI_API_KEY`` (Ark Volcengine).
+    """Native MiniMax 只接受专用、厂商或 scoped Anthropic 鉴权键。"""
 
-    The ``OpenAIProvider`` instance is constructed with ``OPENAI_API_KEY``
-    once.  When ``config.base_url`` points at the native MiniMax host, the
-    provider must switch to ``MINIMAX_NATIVE_API_KEY`` for that call only.
-    This is a per-call override; other endpoints keep the default key.
-    """
-
-    def test_native_endpoint_uses_minimax_native_key(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    @pytest.fixture(autouse=True)
+    def _isolate_minimax_key_environment(self, monkeypatch: pytest.MonkeyPatch):
         from werewolf_agent.model_gateway.providers import env as env_mod
-        env_mod.load_local_dotenv()
-        monkeypatch.setenv("OPENAI_API_KEY", "ark-key-should-not-leak")
-        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "minimax-native-key")
 
+        env_mod._ENV_OVERRIDES.clear()
+        for key in (
+            "MINIMAX_NATIVE_API_KEY",
+            "MINIMAX_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        yield
+        env_mod._ENV_OVERRIDES.clear()
+
+    @staticmethod
+    def _generate(
+        client: _CapturingClient,
+        *,
+        provider_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3",
+        config_base_url: str | None = "https://api.minimaxi.com/v1",
+    ) -> None:
         from werewolf_agent.model_gateway.providers.openai import OpenAIProvider
         from werewolf_agent.model_gateway.usage_records import ModelConfig
 
-        client = _CapturingClient()
-        provider = OpenAIProvider(
+        OpenAIProvider(
             api_key="ark-key-should-not-leak",
-            base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+            base_url=provider_base_url,
             http_client=client,
-        )
-        provider.generate(
+        ).generate(
             "hi",
             ModelConfig(
                 provider="openai",
                 model="MiniMax-M3",
-                base_url="https://api.minimaxi.com/v1",
+                base_url=config_base_url,
             ),
         )
-        # The CapturingClient doesn't capture headers, so verify via the
-        # provider's resolved key by reading the env path the helper takes.
-        from werewolf_agent.model_gateway.providers.env import get_env
-        assert get_env("MINIMAX_NATIVE_API_KEY") == "minimax-native-key"
 
-    def test_non_native_endpoint_keeps_default_key(
+    def test_native_endpoint_uses_minimax_native_key(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Ark endpoint stays on OPENAI_API_KEY even when MINIMAX_NATIVE_API_KEY
-        is set.  The key switch is base_url-gated, not global."""
-        from werewolf_agent.model_gateway.providers.openai import (
-            _resolve_api_key_for_config,
-        )
-        from werewolf_agent.model_gateway.usage_records import ModelConfig
+        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "dedicated-key")
+        monkeypatch.setenv("MINIMAX_API_KEY", "vendor-key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+        client = _CapturingClient()
+        self._generate(client)
+        assert client.last_headers == {
+            "Authorization": "Bearer dedicated-key",
+            "content-type": "application/json",
+        }
 
-        cfg = ModelConfig(
-            provider="openai", model="x",
-            base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
-        )
-        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "native-key")
-        assert _resolve_api_key_for_config(cfg, "ark-key") == "ark-key"
+    def test_vendor_key_outranks_scoped_anthropic_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MINIMAX_API_KEY", "vendor-key")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+        client = _CapturingClient()
+        self._generate(client)
+        assert client.last_headers is not None
+        assert client.last_headers["Authorization"] == "Bearer vendor-key"
 
-    def test_native_endpoint_with_no_native_key_falls_back(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """If MINIMAX_NATIVE_API_KEY is not set, fall back to default key
-        (this will likely 401 in production but won't crash the loop)."""
-        from werewolf_agent.model_gateway.providers.openai import (
-            _resolve_api_key_for_config,
-        )
-        from werewolf_agent.model_gateway.usage_records import ModelConfig
+    def test_scoped_anthropic_key_is_reused_when_native_keys_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.minimaxi.com/anthropic")
+        client = _CapturingClient()
+        self._generate(client)
+        assert client.last_headers is not None
+        assert client.last_headers["Authorization"] == "Bearer anthropic-key"
 
-        monkeypatch.delenv("MINIMAX_NATIVE_API_KEY", raising=False)
-        cfg = ModelConfig(
-            provider="openai", model="x",
-            base_url="https://api.minimaxi.com/v1",
-        )
-        assert _resolve_api_key_for_config(cfg, "default-key") == "default-key"
+    def test_missing_minimax_keys_fails_before_request(self) -> None:
+        from werewolf_agent.model_gateway.providers.base import ProviderConfigError
 
-    def test_native_endpoint_picks_native_key_when_set(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from werewolf_agent.model_gateway.providers.openai import (
-            _resolve_api_key_for_config,
-        )
-        from werewolf_agent.model_gateway.usage_records import ModelConfig
+        client = _CapturingClient()
+        with pytest.raises(ProviderConfigError):
+            self._generate(client)
+        assert client.last_url is None
 
-        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "native-key")
-        cfg = ModelConfig(
-            provider="openai", model="x",
-            base_url="https://api.minimaxi.com/v1",
+    def test_provider_default_minimax_url_uses_native_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "dedicated-key")
+        client = _CapturingClient()
+        self._generate(
+            client,
+            provider_base_url="https://api.minimaxi.com/v1",
+            config_base_url=None,
         )
-        assert _resolve_api_key_for_config(cfg, "default-key") == "native-key"
+        assert client.last_headers is not None
+        assert client.last_headers["Authorization"] == "Bearer dedicated-key"
 
-    def test_no_base_url_keeps_default_key(
-        self, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from werewolf_agent.model_gateway.providers.openai import (
-            _resolve_api_key_for_config,
+    def test_lookalike_hostname_uses_default_key(self) -> None:
+        client = _CapturingClient()
+        self._generate(client, config_base_url="https://api.minimaxi.com.evil.example/v1")
+        assert client.last_headers is not None
+        assert client.last_headers["Authorization"] == "Bearer ark-key-should-not-leak"
+
+    def test_non_https_native_minimax_url_fails_before_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from werewolf_agent.model_gateway.providers.base import ProviderConfigError
+
+        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "dedicated-key")
+        client = _CapturingClient()
+        with pytest.raises(ProviderConfigError):
+            self._generate(client, config_base_url="http://api.minimaxi.com/v1")
+        assert client.last_url is None
+
+    def test_unscoped_anthropic_key_is_not_reused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from werewolf_agent.model_gateway.providers.base import ProviderConfigError
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        client = _CapturingClient()
+        with pytest.raises(ProviderConfigError):
+            self._generate(client)
+        assert client.last_url is None
+
+    def test_ark_endpoint_uses_default_key_even_with_minimax_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "dedicated-key")
+        client = _CapturingClient()
+        self._generate(
+            client,
+            config_base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
         )
-        from werewolf_agent.model_gateway.usage_records import ModelConfig
-
-        monkeypatch.setenv("MINIMAX_NATIVE_API_KEY", "native-key")
-        cfg = ModelConfig(provider="openai", model="x", base_url=None)
-        assert _resolve_api_key_for_config(cfg, "default-key") == "default-key"
+        assert client.last_headers is not None
+        assert client.last_headers["Authorization"] == "Bearer ark-key-should-not-leak"
