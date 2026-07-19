@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
-修改日期: 2026-07-19
+修改日期: 2026-07-20
 
 使用示例:
     >>> from werewolf_agent.core.models import GameEvent
