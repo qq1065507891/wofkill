@@ -367,29 +367,45 @@ def _classified_evidence_keys(
     public_speaker: str,
     text: str,
 ) -> set[PublicClaimAuditKey]:
-    """优先保留直接归因，再规范化无标识的公开一人称证据。"""
-    direct_keys = {
-        public_claim_audit_key(evidence)
-        for evidence in classify_public_claims(text)
-    }
-    matching_direct_keys = {
-        evidence_key for evidence_key in direct_keys
-        if evidence_key.content_identity == claim.content_identity
-    }
-    if matching_direct_keys:
-        return matching_direct_keys
-    if not _is_normalizable_public_evidence(claim, text):
-        return set()
-    return {
-        PublicClaimAuditKey(
-            claim_type=claim.claim_type,
-            target=claim.target,
-            role=claim.role,
-            support_kind=claim.support_kind,
-            speaker_attribution=public_speaker,
-            negated=_public_evidence_is_negated(claim, text),
-        )
-    }
+    """按分句合并直接归因与规范化证据，避免跨句污染否定关系。"""
+    evidence_keys: set[PublicClaimAuditKey] = set()
+    for clause in _public_evidence_clauses(text):
+        direct_keys = {
+            public_claim_audit_key(evidence)
+            for evidence in classify_public_claims(clause)
+        }
+        matching_direct_keys = {
+            evidence_key for evidence_key in direct_keys
+            if evidence_key.content_identity == claim.content_identity
+        }
+        evidence_keys.update(matching_direct_keys)
+        if matching_direct_keys and any(
+            evidence_key.speaker_attribution != public_speaker
+            for evidence_key in matching_direct_keys
+        ):
+            continue
+        if _is_normalizable_public_evidence(claim, clause):
+            evidence_keys.add(
+                PublicClaimAuditKey(
+                    claim_type=claim.claim_type,
+                    target=claim.target,
+                    role=claim.role,
+                    support_kind=claim.support_kind,
+                    speaker_attribution=public_speaker,
+                    negated=_public_evidence_is_negated(claim, clause),
+                )
+            )
+    return evidence_keys
+
+
+def _public_evidence_clauses(text: str) -> list[str]:
+    """分离互不影响的公开陈述分句，保留各自的归因和否定范围。"""
+    clauses: list[str] = []
+    for clause in re.split(r"[，。；;！？]", text):
+        stripped_clause = clause.strip()
+        if stripped_clause:
+            clauses.append(stripped_clause)
+    return clauses
 
 
 def _is_normalizable_public_evidence(
@@ -397,7 +413,10 @@ def _is_normalizable_public_evidence(
     text: str,
 ) -> bool:
     """仅把明确的一人称或直接目标身份判断补齐为账本说话人的证据。"""
-    if _FIRST_PERSON_EVIDENCE_REF.search(text):
+    if _FIRST_PERSON_EVIDENCE_REF.search(text) and _clause_carries_claim(
+        claim,
+        text,
+    ):
         return True
     return bool(
         claim.support_kind == "role_assignment"
@@ -408,6 +427,20 @@ def _is_normalizable_public_evidence(
             text,
         )
     )
+
+
+def _clause_carries_claim(claim: PublicClaimAuditKey, text: str) -> bool:
+    """判断一人称分句是否实际包含候选声明的必要内容。"""
+    if claim.support_kind == "role":
+        return bool(claim.role and claim.role in text)
+    if claim.support_kind == "role_assignment":
+        return bool(claim.target in text and claim.role in text)
+    if claim.support_kind == "night_info":
+        return bool(
+            re.search(r"(?:知道|获知|掌握)", text)
+            and re.search(r"(?:狼刀|刀口|狼队刀|被刀)", text)
+        )
+    return False
 
 
 def _public_evidence_is_negated(
