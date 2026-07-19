@@ -379,6 +379,10 @@ def test_semantic_terminal_fallback_drops_opposite_polarity_claims() -> None:
     [
         ("p04不知道狼刀信息", "p04知道狼刀信息", "p04知道狼刀信息"),
         ("p04知道狼刀信息", "p04不知道狼刀信息", "p04不知道狼刀信息"),
+        ("我不知道狼刀信息", "p04知道狼刀信息", "p04知道狼刀信息"),
+        ("我知道狼刀信息", "p04不知道狼刀信息", "p04不知道狼刀信息"),
+        ("我并不知道狼刀信息", "p04知道狼刀信息", "p04知道狼刀信息"),
+        ("我未获知狼刀信息", "p04知道狼刀信息", "p04知道狼刀信息"),
     ],
 )
 def test_semantic_terminal_fallback_drops_opposite_night_info_claims(

@@ -640,8 +640,6 @@ def night_info_claim_supported(
     negated: bool = False,
 ) -> bool:
     """判断玩家公开发言是否已经支撑夜间信息来源声明。"""
-    knowledge_markers = ("知道", "获知", "掌握")
-    night_markers = ("狼刀", "刀口", "狼队刀", "被刀")
     for speaker, speech in public_speeches:
         if speaker != player_id:
             continue
@@ -652,12 +650,17 @@ def night_info_claim_supported(
             r"(?:狼刀|刀口|狼队刀|被刀)",
             speech,
         )
+        if match is None:
+            match = re.search(
+                rf"(?:我|自己)(?:(?!p\d{{2}})[^，。；;]){{0,8}}?"
+                rf"(?P<relation>{_NIGHT_INFO_RELATION_PATTERN})"
+                rf"(?:(?!p\d{{2}})[^，。；;]){{0,10}}"
+                r"(?:狼刀|刀口|狼队刀|被刀)",
+                speech,
+            )
         if match is not None:
             relation_negated = (
                 match.group("relation") in _NIGHT_INFO_NEGATION_FORMS
             )
             return relation_negated is negated
-        if not negated and any(marker in speech for marker in knowledge_markers):
-            if any(marker in speech for marker in night_markers):
-                return True
     return False
