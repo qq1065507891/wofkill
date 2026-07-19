@@ -191,6 +191,26 @@ def test_fallback_route_unavailable_remains_a_stable_terminal_classification() -
     assert result.terminal_failure_code == "fallback_route_unavailable"
 
 
+def test_semantic_claim_retention_remains_a_stable_terminal_classification() -> None:
+    attempts = (
+        _attempt(
+            1, RouteKind.PRIMARY, AttemptOutcome.FAILURE,
+            cause=RootCause.INVALID_OUTPUT,
+        ),
+        _attempt(
+            2, RouteKind.SAFE_FALLBACK, AttemptOutcome.FAILURE,
+            cause=RootCause.POLICY_REJECTION,
+        ),
+    )
+
+    result = translate_decision_outcome(
+        attempts,
+        structured_failure_reason="semantic_claim_retention",
+    )
+
+    assert result.terminal_failure_code == "semantic_claim_retention"
+
+
 @pytest.mark.parametrize(
     ("attempts", "expected_generated_by", "expected_outcome"),
     [

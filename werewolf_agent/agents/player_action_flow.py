@@ -109,6 +109,62 @@ def run_player_action_flow(
     active_structured_mode = structured_policy.primary_mode
     structured_output_mode = active_structured_mode.value
 
+    def _finalize_terminal_fallback(
+        *,
+        retry_info: RetryInfo | None,
+        attempt_raw_text: str,
+        attempt_parsed_action: PlayerAction | dict[str, Any] | None,
+        attempt_tool_call_required: bool,
+        attempt_tool_call_received: bool,
+        attempt_parse_success: bool,
+        attempt_parse_error: str | None,
+        failure_reason: str | None,
+        failure_stage: str | None,
+        metrics_error_code: str | None = None,
+    ) -> FallbackAction:
+        """统一终退收尾，确保修复源的安全 fallback 与审计不会被早退绕过。"""
+        generation_attempt_context.append_terminal_fallback(failure_reason)
+        fallback_action, fallback_kind = build_task_terminal_fallback(
+            context, agent._fallback_action(context)
+        )
+        if semantic_repair_source is not None:
+            fallback_action = preserve_verified_claim_in_fallback(
+                context, semantic_repair_source, fallback_action
+            )
+        return finalize_fallback_player_action(
+            agent=agent,
+            context=context,
+            fallback=fallback_action,
+            retry=retry_info,
+            raw_text=attempt_raw_text,
+            parsed_action=attempt_parsed_action,
+            tool_call_required=attempt_tool_call_required,
+            tool_call_received=attempt_tool_call_received,
+            parse_success=attempt_parse_success,
+            parse_error=attempt_parse_error,
+            retry_count=summarize_attempt_counts(
+                generation_attempt_context.attempts
+            ).retry_count,
+            structured_failure_reason=failure_reason,
+            structured_output_mode=structured_output_mode,
+            structured_failure_stage=failure_stage,
+            metrics_error_code=metrics_error_code,
+            execution_attempts=generation_attempt_context.attempts,
+            semantic_repair_audit=(
+                build_semantic_repair_audit(
+                    context,
+                    semantic_repair_source,
+                    fallback_action,
+                    success=False,
+                    generic_template_used=generic_fallback_speech_used(
+                        context, fallback_action.speech
+                    ),
+                )
+                if semantic_repair_source is not None else None
+            ),
+            fallback_kind=fallback_kind,
+        )
+
     while attempt < agent.max_retries:
         # Exponential-backoff jitter between successive attempts:
         # attempt 2 → ~ 0.5-1.5 s, attempt 3 → ~ 1-3 s, attempt 4+ → cap ~ 4-12 s.
@@ -127,6 +183,12 @@ def run_player_action_flow(
             reason_codes=retry.reason_codes,
             correction_hint=retry.correction_hint,
         )
+        # 每次请求只允许当前尝试的原文和解析结果进入终态轨迹。
+        raw_text = ""
+        parsed_action = None
+        parse_error_str = None
+        tool_call_received = False
+        parse_success = False
 
         generation_request = build_player_generation_request(
             agent,
@@ -146,30 +208,17 @@ def run_player_action_flow(
             # Provider does not support tool_choice
             structured_failure_reason = "structured_output_unsupported"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
-            generation_attempt_context.append_terminal_fallback()
-            fallback_action, fallback_kind = build_task_terminal_fallback(
-                context, agent._fallback_action(context)
-            )
-            fallback = finalize_fallback_player_action(
-                agent=agent,
-                context=context,
-                fallback=fallback_action,
-                retry=retry,
-                raw_text="",
-                parsed_action=None,
-                tool_call_required=tool_call_required,
-                tool_call_received=False,
-                parse_success=False,
-                parse_error="provider does not support tool_choice",
-                retry_count=summarize_attempt_counts(
-                    generation_attempt_context.attempts
-                ).retry_count,
-                structured_failure_reason=structured_failure_reason,
-                structured_output_mode=structured_output_mode,
-                structured_failure_stage=structured_failure_stage,
+            fallback = _finalize_terminal_fallback(
+                retry_info=retry,
+                attempt_raw_text=raw_text,
+                attempt_parsed_action=parsed_action,
+                attempt_tool_call_required=tool_call_required,
+                attempt_tool_call_received=False,
+                attempt_parse_success=False,
+                attempt_parse_error="provider does not support tool_choice",
+                failure_reason=structured_failure_reason,
+                failure_stage=structured_failure_stage,
                 metrics_error_code=structured_failure_reason,
-                execution_attempts=generation_attempt_context.attempts,
-                fallback_kind=fallback_kind,
             )
             return fallback, retry
 
@@ -232,32 +281,17 @@ def run_player_action_flow(
                         "using fallback action."
                     ),
                 )
-                generation_attempt_context.append_terminal_fallback(
-                    structured_failure_reason
-                )
-                fallback_action, fallback_kind = build_task_terminal_fallback(
-                    context, agent._fallback_action(context)
-                )
-                fallback = finalize_fallback_player_action(
-                    agent=agent,
-                    context=context,
-                    fallback=fallback_action,
-                    retry=retry,
-                    raw_text="",
-                    parsed_action=None,
-                    tool_call_required=tool_call_required,
-                    tool_call_received=False,
-                    parse_success=False,
-                    parse_error=public_failure_reason,
-                    retry_count=summarize_attempt_counts(
-                        generation_attempt_context.attempts
-                    ).retry_count,
-                    structured_failure_reason=structured_failure_reason,
-                    structured_output_mode=structured_output_mode,
-                    structured_failure_stage=structured_failure_stage,
+                fallback = _finalize_terminal_fallback(
+                    retry_info=retry,
+                    attempt_raw_text=raw_text,
+                    attempt_parsed_action=parsed_action,
+                    attempt_tool_call_required=tool_call_required,
+                    attempt_tool_call_received=False,
+                    attempt_parse_success=False,
+                    attempt_parse_error=public_failure_reason,
+                    failure_reason=structured_failure_reason,
+                    failure_stage=structured_failure_stage,
                     metrics_error_code=retry_error_code,
-                    execution_attempts=generation_attempt_context.attempts,
-                    fallback_kind=fallback_kind,
                 )
                 return fallback, retry
             failure_category = _categorize_failure_category(
@@ -577,44 +611,15 @@ def run_player_action_flow(
         ",".join(retry.reason_codes) if retry and retry.reason_codes else "none",
         exit_reason,
     )
-    generation_attempt_context.append_terminal_fallback()
-    fallback_action, fallback_kind = build_task_terminal_fallback(
-        context, agent._fallback_action(context)
-    )
-    if semantic_repair_source is not None:
-        fallback_action = preserve_verified_claim_in_fallback(
-            context, semantic_repair_source, fallback_action
-        )
-    fallback = finalize_fallback_player_action(
-        agent=agent,
-        context=context,
-        fallback=fallback_action,
-        retry=retry,
-        raw_text=raw_text,
-        parsed_action=parsed_action,
-        tool_call_required=tool_call_required,
-        tool_call_received=tool_call_received,
-        parse_success=parse_success,
-        parse_error=parse_error_str,
-        retry_count=summarize_attempt_counts(
-            generation_attempt_context.attempts
-        ).retry_count,
-        structured_failure_reason=structured_failure_reason,
-        structured_output_mode=structured_output_mode,
-        structured_failure_stage=structured_failure_stage,
-        execution_attempts=generation_attempt_context.attempts,
-        semantic_repair_audit=(
-            build_semantic_repair_audit(
-                context,
-                semantic_repair_source,
-                fallback_action,
-                success=False,
-                generic_template_used=generic_fallback_speech_used(
-                    context, fallback_action.speech
-                ),
-            )
-            if semantic_repair_source is not None else None
-        ),
-        fallback_kind=fallback_kind,
+    fallback = _finalize_terminal_fallback(
+        retry_info=retry,
+        attempt_raw_text=raw_text,
+        attempt_parsed_action=parsed_action,
+        attempt_tool_call_required=tool_call_required,
+        attempt_tool_call_received=tool_call_received,
+        attempt_parse_success=parse_success,
+        attempt_parse_error=parse_error_str,
+        failure_reason=structured_failure_reason,
+        failure_stage=structured_failure_stage,
     )
     return fallback, retry

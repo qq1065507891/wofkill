@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 """
 
 from __future__ import annotations
@@ -88,6 +88,7 @@ STABLE_TERMINAL_FAILURE_CODES = frozenset({
     "policy_rejection",
     "provider_error",
     "schema_validation",
+    "semantic_claim_retention",
     "speech_quality",
     "structured_output_unsupported",
     "timeout",
