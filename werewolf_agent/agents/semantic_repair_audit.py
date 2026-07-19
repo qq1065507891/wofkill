@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from werewolf_agent.agents.schemas import (
@@ -25,9 +26,13 @@ from werewolf_agent.agents.schemas import (
 )
 from werewolf_agent.evaluation.balance_public_claims import (
     PublicClaimAuditKey,
+    attributed_role_claim_supported,
     classify_public_claims,
+    night_info_claim_supported,
     public_claim_audit_key,
     public_claim_audit_keys,
+    public_claim_is_negated,
+    role_claim_supported,
 )
 from werewolf_agent.runtime.speech_quality import extract_speech_quality
 
@@ -94,7 +99,7 @@ def build_semantic_repair_audit(
     source_claims, verified_claims = public_claim_audit_keys(
         source.speech, public_speeches
     )
-    final_claims, final_verified_claims = public_claim_audit_keys(
+    final_claims, legacy_final_verified_claims = public_claim_audit_keys(
         final.speech, public_speeches
     )
     speaker_attribution_preserved = _speaker_attribution_preserved(
@@ -105,10 +110,14 @@ def build_semantic_repair_audit(
         claim for claim in final_claims
         if claim not in source_claims
         and not _is_supported_attribution_completion(
-            claim, source_claims, final_verified_claims
+            claim, source_claims, legacy_final_verified_claims
         )
     }
-    unsupported_final_claims = final_claims - final_verified_claims
+    v2_verified_claims = _polarity_aware_verified_claims(
+        legacy_final_verified_claims,
+        public_speeches,
+    )
+    unsupported_final_claims = final_claims - v2_verified_claims
     reason_codes = _semantic_repair_reason_codes(
         unsupported_public_claim_count=len(unsupported_final_claims),
         speaker_attribution_preserved=speaker_attribution_preserved,
@@ -263,13 +272,22 @@ def _negation_preserved(
     source_claims: set[PublicClaimAuditKey],
     final_claims: set[PublicClaimAuditKey],
 ) -> bool:
-    """同一内容的否定关系只能保留或删除，不可翻转。"""
+    """优先按同一说话人匹配，且不让归因变化掩盖可判定的否定翻转。"""
     changed_source_claims = source_claims - final_claims
     for final_claim in final_claims - source_claims:
-        matching_source = [
+        content_matches = [
             source_claim for source_claim in changed_source_claims
             if source_claim.content_identity == final_claim.content_identity
         ]
+        matching_source = [
+            source_claim for source_claim in content_matches
+            if source_claim.speaker_attribution == final_claim.speaker_attribution
+        ]
+        if not matching_source and final_claim.speaker_attribution:
+            matching_source = [
+                source_claim for source_claim in content_matches
+                if not source_claim.speaker_attribution
+            ]
         if matching_source and final_claim.negated not in {
             claim.negated for claim in matching_source
         }:
@@ -296,6 +314,82 @@ def _ordered_reason_codes(reason_codes: Iterable[str]) -> tuple[str, ...]:
     """过滤未知原因码，并按 V2 固定顺序去重。"""
     requested = set(reason_codes)
     return tuple(code for code in _REJECTION_REASON_ORDER if code in requested)
+
+
+def _polarity_aware_verified_claims(
+    legacy_verified_claims: set[PublicClaimAuditKey],
+    public_speeches: list[tuple[str, str]],
+) -> set[PublicClaimAuditKey]:
+    """仅保留存在同极性公开证据键的 V2 已支持声明。"""
+    return {
+        claim for claim in legacy_verified_claims
+        if claim.claim_type == "system_fact"
+        or _has_same_polarity_public_evidence(claim, public_speeches)
+    }
+
+
+def _has_same_polarity_public_evidence(
+    claim: PublicClaimAuditKey,
+    public_speeches: list[tuple[str, str]],
+) -> bool:
+    """逐条验证公开来源的说话人、内容和否定极性。"""
+    for public_speaker, text in public_speeches:
+        speech = [(public_speaker, text)]
+        if claim.support_kind == "role":
+            supported = role_claim_supported(claim.target, claim.role, speech)
+        elif claim.support_kind == "role_assignment":
+            supported = attributed_role_claim_supported(
+                claim.speaker_attribution,
+                claim.target,
+                claim.role,
+                speech,
+            )
+        elif claim.support_kind == "night_info":
+            supported = night_info_claim_supported(claim.target, speech)
+        else:
+            supported = False
+        if supported and claim in _classified_evidence_keys(claim, text):
+            return True
+    return False
+
+
+def _classified_evidence_keys(
+    claim: PublicClaimAuditKey,
+    text: str,
+) -> set[PublicClaimAuditKey]:
+    """把公开文本投影为与候选声明可比较且包含否定极性的键。"""
+    direct_keys = {
+        public_claim_audit_key(evidence)
+        for evidence in classify_public_claims(text)
+    }
+    matching_direct_keys = {
+        evidence_key for evidence_key in direct_keys
+        if evidence_key.content_identity == claim.content_identity
+        and evidence_key.speaker_attribution == claim.speaker_attribution
+    }
+    if matching_direct_keys:
+        return matching_direct_keys
+    return {replace(claim, negated=_public_evidence_is_negated(claim, text))}
+
+
+def _public_evidence_is_negated(
+    claim: PublicClaimAuditKey,
+    text: str,
+) -> bool:
+    """识别账本直接身份判断及权威前缀中的否定极性。"""
+    target_start = text.find(claim.target)
+    if target_start >= 0 and public_claim_is_negated(text, target_start):
+        return True
+    if claim.role and re.search(
+        rf"{re.escape(claim.target)}[^，。；;]{{0,8}}"
+        rf"(?:不是|并非|不为)[^，。；;]{{0,4}}{re.escape(claim.role)}",
+        text,
+    ):
+        return True
+    return bool(
+        claim.support_kind == "night_info"
+        and re.search(r"(?:不|并不|未|没有)(?:知道|获知|掌握)", text)
+    )
 
 
 def _is_supported_attribution_completion(

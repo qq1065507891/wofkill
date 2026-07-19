@@ -260,9 +260,9 @@ def test_semantic_repair_deduplicates_repeated_violation_categories() -> None:
         legal_actions=[ActionType.SPEECH], legal_targets=["p02"],
         public_claim_ledger=[
             {"speaker": "p05", "text": "我认为p02是狼人"},
-            {"speaker": "p06", "text": "我认为p02是狼人"},
+            {"speaker": "p06", "text": "p02不是狼人"},
             {"speaker": "p07", "text": "我认为p03是预言家"},
-            {"speaker": "p09", "text": "我认为p03是预言家"},
+            {"speaker": "p09", "text": "p03不是预言家"},
         ],
     )
     source = SpeechPlayerAction(
@@ -275,8 +275,8 @@ def test_semantic_repair_deduplicates_repeated_violation_categories() -> None:
     )
     final = source.model_copy(update={
         "speech": (
-            "p06并未声称p02是狼人，p09并未声称p03是预言家，"
-            "p10声称自己是猎人，p11声称自己是女巫，我怀疑p02。"
+            "p05并未声称p02是狼人，p06并未声称p02是狼人，"
+            "p07并未声称p03是预言家，p09并未声称p03是预言家，我怀疑p02。"
         ),
     })
 

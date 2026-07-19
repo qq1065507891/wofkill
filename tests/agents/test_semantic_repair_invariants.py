@@ -116,8 +116,123 @@ def test_semantic_repair_rejects_changed_negation_relation() -> None:
     result = validate_semantic_repair(_context(), source, changed)
 
     assert result.accepted is False
+    assert result.reason_codes == (
+        "unsupported_public_claim",
+        "negation_changed",
+    )
+    assert result.audit["unsupported_public_claim_count"] == 1
+    assert result.audit["negation_preserved"] is False
+
+
+def test_semantic_repair_matches_negation_to_the_exact_source_speaker() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": "我认为p02是狼人"},
+            {"speaker": "p06", "text": "我认为p02是狼人"},
+        ],
+    })
+    source = _action(
+        "p05声称p02是狼人，p06并未声称p02是狼人，我怀疑p02。"
+    )
+    changed = _action("p06声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, changed)
+
+    assert result.accepted is False
     assert result.reason_codes == ("negation_changed",)
     assert result.audit["negation_preserved"] is False
+
+
+def test_semantic_repair_does_not_compare_negation_across_speakers() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": "我认为p02是狼人"},
+            {"speaker": "p06", "text": "p02不是狼人"},
+        ],
+    })
+    source = _action("p05声称p02是狼人，我怀疑p02。")
+    changed = _action("p06并未声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, changed)
+
+    assert result.accepted is False
+    assert result.reason_codes == ("speaker_attribution_changed",)
+    assert result.audit["negation_preserved"] is True
+
+
+def test_semantic_repair_preserves_same_speaker_negation() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": "我认为p02是狼人"},
+            {"speaker": "p06", "text": "p02不是狼人"},
+        ],
+    })
+    source = _action(
+        "p05声称p02是狼人，p06并未声称p02是狼人，我怀疑p02。"
+    )
+    retained = _action("p06并未声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, retained)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["negation_preserved"] is True
+
+
+def test_semantic_repair_rejects_affirmative_claim_from_negated_evidence() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "p02不是狼人"}],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is False
+    assert result.reason_codes == ("unsupported_public_claim",)
+    assert result.audit["unsupported_public_claim_count"] == 1
+
+
+def test_semantic_repair_rejects_negated_claim_from_affirmative_evidence() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": "我认为p02是狼人"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05并未声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is False
+    assert result.reason_codes == ("unsupported_public_claim",)
+    assert result.audit["unsupported_public_claim_count"] == 1
+
+
+def test_semantic_repair_allows_negated_claim_from_negated_evidence() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "p02不是狼人"}],
+    })
+    source = _action("我怀疑p02。")
+    final = _action("p05并未声称p02是狼人，我怀疑p02。")
+
+    result = validate_semantic_repair(context, source, final)
+
+    assert result.accepted is True
+    assert result.reason_codes == ()
+    assert result.audit["unsupported_public_claim_count"] == 0
 
 
 def test_claim_key_records_prefix_negation_without_flipping_double_negation() -> None:
@@ -173,9 +288,11 @@ def test_semantic_repair_rejects_unsupported_public_claim() -> None:
 def test_semantic_repair_reports_all_rejection_reasons_in_stable_order() -> None:
     from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
 
-    source = _action("p05声称p02是狼人，我怀疑p02。")
+    source = _action(
+        "p05声称p02是狼人，p06声称p03是预言家，我怀疑p02。"
+    )
     changed = _action(
-        "p06并未声称p02是狼人，p07声称自己是猎人，我怀疑p02。"
+        "p05并未声称p02是狼人，p07声称p03是预言家，我怀疑p02。"
     )
 
     result = validate_semantic_repair(_context(), source, changed)
