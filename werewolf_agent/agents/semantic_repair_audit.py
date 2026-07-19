@@ -441,11 +441,12 @@ def _public_evidence_clauses(text: str) -> list[str]:
             and _REPORTING_ATTRIBUTION_FRAGMENT_REF.fullmatch(clause)
             and raw_clauses[index + 1][0]
         ):
-            continuation = _normalized_reporting_continuation(
-                clause,
-                raw_clauses[index + 1][0],
+            clauses.append(
+                _normalized_reporting_clause(
+                    clause,
+                    raw_clauses[index + 1][0],
+                )
             )
-            clauses.append(f"{clause}{continuation}")
             index += 2
             continue
         clauses.append(clause)
@@ -453,20 +454,30 @@ def _public_evidence_clauses(text: str) -> list[str]:
     return clauses
 
 
-def _normalized_reporting_continuation(
+def _normalized_reporting_clause(
     reporting_fragment: str,
     continuation: str,
 ) -> str:
     """只在已确认的转述后解包成对引号，保留转述者归因。"""
+    original_clause = f"{reporting_fragment}{continuation}"
     if not _REPORTING_ATTRIBUTION_FRAGMENT_REF.fullmatch(reporting_fragment):
-        return continuation
+        return original_clause
     opening_quote = continuation[:1]
     if _BALANCED_QUOTE_PAIRS.get(opening_quote) != continuation[-1:]:
-        return continuation
+        return original_clause
     quoted_claim = continuation[1:-1].strip()
+    reporter = reporting_fragment[:3]
+    if quoted_claim.startswith("我不是"):
+        return f"{reporter}并未声称自己是{quoted_claim[len('我不是'):]}"
+    target_negation = re.fullmatch(r"(p\d{2})不是(.+)", quoted_claim)
+    if target_negation:
+        return (
+            f"{reporter}并未声称{target_negation.group(1)}是"
+            f"{target_negation.group(2)}"
+        )
     if quoted_claim.startswith("我"):
         quoted_claim = f"自己{quoted_claim[1:]}"
-    return quoted_claim or continuation
+    return f"{reporting_fragment}{quoted_claim or continuation}"
 
 
 def _is_normalizable_public_evidence(

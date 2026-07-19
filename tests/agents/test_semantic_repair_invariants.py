@@ -648,6 +648,98 @@ def test_semantic_repair_preserves_quoted_reported_self_role_attribution(
 
 
 @pytest.mark.parametrize(
+    ("delimiter", "quoted_claim"),
+    [
+        ("：", "“p02不是狼人”"),
+        ("，", "“p02不是狼人”"),
+        (":", '"p02不是狼人"'),
+        (",", '"p02不是狼人"'),
+    ],
+)
+def test_semantic_repair_preserves_quoted_reported_target_polarity(
+    delimiter: str,
+    quoted_claim: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": f"p06声称{delimiter}{quoted_claim}"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+
+    negated = validate_semantic_repair(
+        context,
+        source,
+        _action("p06并未声称p02是狼人，我怀疑p02。"),
+    )
+    affirmative = validate_semantic_repair(
+        context,
+        source,
+        _action("p06声称p02是狼人，我怀疑p02。"),
+    )
+    ledger_speaker = validate_semantic_repair(
+        context,
+        source,
+        _action("p05并未声称p02是狼人，我怀疑p02。"),
+    )
+
+    assert negated.accepted is True
+    assert negated.reason_codes == ()
+    assert affirmative.accepted is False
+    assert affirmative.reason_codes == ("unsupported_public_claim",)
+    assert ledger_speaker.accepted is False
+    assert ledger_speaker.reason_codes == ("unsupported_public_claim",)
+
+
+@pytest.mark.parametrize(
+    ("delimiter", "quoted_claim"),
+    [
+        ("：", "“我不是预言家”"),
+        ("，", "“我不是预言家”"),
+        (":", '"我不是预言家"'),
+        (",", '"我不是预言家"'),
+    ],
+)
+def test_semantic_repair_preserves_quoted_reported_self_role_polarity(
+    delimiter: str,
+    quoted_claim: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": f"p06声称{delimiter}{quoted_claim}"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+
+    negated = validate_semantic_repair(
+        context,
+        source,
+        _action("p06并未声称自己是预言家，我怀疑p02。"),
+    )
+    affirmative = validate_semantic_repair(
+        context,
+        source,
+        _action("p06声称自己是预言家，我怀疑p02。"),
+    )
+    ledger_speaker = validate_semantic_repair(
+        context,
+        source,
+        _action("p05并未声称自己是预言家，我怀疑p02。"),
+    )
+
+    assert negated.accepted is True
+    assert negated.reason_codes == ()
+    assert affirmative.accepted is False
+    assert affirmative.reason_codes == ("unsupported_public_claim",)
+    assert ledger_speaker.accepted is False
+    assert ledger_speaker.reason_codes == ("unsupported_public_claim",)
+
+
+@pytest.mark.parametrize(
     ("prefix", "ledger_text", "final_text", "reason_codes"),
     [
         ("其实", "我是预言家", "p05声称自己是预言家，我怀疑p02。", ()),
