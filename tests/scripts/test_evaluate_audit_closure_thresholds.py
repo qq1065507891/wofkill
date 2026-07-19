@@ -707,6 +707,15 @@ def test_semantic_reconciliation_failures_close_the_public_evidence_threshold() 
         {"generic_template_used": True},
         {"unsupported_public_claim_count": 1},
         {"rejection_reason_codes": ["unsupported_public_claim"]},
+        {"introduced_claim_count": False},
+        {"unsupported_public_claim_count": False},
+        {"verified_claim_count": False},
+        {"retained_verified_claim_count": False},
+        {"success": 1},
+        {"target_preserved": 1},
+        {"speaker_attribution_preserved": 1},
+        {"negation_preserved": 1},
+        {"generic_template_used": 0},
     ):
         conflicting_pair = deepcopy(paired_game)
         nested = conflicting_pair["events"][1]["payload"]["action_trace"][

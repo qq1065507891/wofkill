@@ -337,7 +337,8 @@ def _semantic_audit_rows_agree(
 ) -> bool:
     """比较完整语义审计 payload，排除 trace 等传输元数据。"""
     return all(
-        standalone.get(field) == nested.get(field)
+        type(standalone.get(field)) is type(nested.get(field))
+        and standalone.get(field) == nested.get(field)
         for field in _SEMANTIC_AUDIT_FIELDS
     )
 

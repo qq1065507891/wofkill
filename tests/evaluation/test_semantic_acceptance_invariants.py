@@ -302,6 +302,44 @@ def test_paired_semantic_audit_reconciliation_compares_every_decisive_field() ->
         assert metrics["semantic_repair_public_evidence_safety_rate"] is None
 
 
+def test_paired_semantic_audit_reconciliation_is_type_sensitive() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    for semantic_overrides, nested_updates in (
+        ({}, {"introduced_claim_count": False}),
+        ({}, {"unsupported_public_claim_count": False}),
+        ({"verified_claim_count": 0}, {"verified_claim_count": False}),
+        (
+            {"verified_claim_count": 0, "retained_verified_claim_count": 0},
+            {"retained_verified_claim_count": False},
+        ),
+        ({}, {"success": 1}),
+        ({}, {"target_preserved": 1}),
+        ({}, {"speaker_attribution_preserved": 1}),
+        ({}, {"negation_preserved": 1}),
+        ({}, {"generic_template_used": 0}),
+    ):
+        game = _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            unsupported_public_claim_count=0,
+            **semantic_overrides,
+        )
+        nested = game["events"][1]["payload"]["action_trace"][
+            "semantic_repair_audit"
+        ]
+        nested.update(nested_updates)
+
+        metrics = compute_acceptance_audit_metrics([game])
+
+        assert metrics["semantic_repair_metrics_supported"] is False
+        assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is False
+        assert metrics["semantic_repair_public_evidence_safety_rate"] is None
+
+
 def test_acceptance_fails_closed_when_semantic_invariant_is_missing() -> None:
     from werewolf_agent.evaluation.acceptance_audit import (
         compute_acceptance_audit_metrics,
