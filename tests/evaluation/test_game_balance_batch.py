@@ -110,6 +110,12 @@ def test_public_claim_classifier_preserves_direct_attributed_role_polarity(
         ("p05声称自己不是预言家", [("p05", "我没有说我不是预言家")], 0),
         ("p03声称p05是狼人", [("p03", "我认为p05是狼人")], 0),
         ("p05声称自己是预言家", [("p05", "我声称自己是预言家")], 0),
+        (
+            "p03声称p05不是狼人",
+            [("p03", "我不认为p05发言可信，p06是狼人")],
+            1,
+        ),
+        ("p03声称p05不是狼人", [("p03", "我不认为p05发言可信")], 1),
     ],
 )
 def test_public_sanitizer_matches_v2_discourse_polarity(

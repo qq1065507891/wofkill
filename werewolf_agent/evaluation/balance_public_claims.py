@@ -530,30 +530,58 @@ def _role_relation_supported_in_speech(
 ) -> bool:
     """匹配同一玩家与角色的明确肯定或否定关系，避免只按词面判断。"""
     target_ref = r"(?:我|自己)" if self_claim else re.escape(target)
+    search_speech = speech
     if not self_claim:
-        target_start = speech.find(target)
-        if target_start >= 0 and public_claim_is_negated(speech, target_start):
-            return negated
+        search_speech = _clause_containing_target(speech, target)
+        if search_speech is None:
+            return False
     if not self_claim and re.search(
         rf"(?:我|自己)(?:并未|没有|未曾|否认)[^，。；;]{{0,8}}"
         rf"{re.escape(target)}[^，。；;]{{0,4}}{re.escape(role)}",
-        speech,
+        search_speech,
     ):
         return negated
     if re.search(
         rf"{target_ref}(?:并未|没有|未曾|否认)[^，。；;]{{0,12}}"
         rf"(?:声称|说|表示|宣称|自认)?[^，。；;]{{0,4}}{re.escape(role)}",
-        speech,
+        search_speech,
     ):
         return negated
     match = re.search(
         rf"{target_ref}(?P<between>[^，。；;]{{0,8}}?)(?P<relation>{_ROLE_RELATION_PATTERN})"
         rf"[^，。；;]{{0,4}}{re.escape(role)}",
-        speech,
+        search_speech,
     )
     if match is None:
-        return (not negated) and target in speech and role in speech
-    return (match.group("relation") in _ROLE_NEGATION_FORMS) is negated
+        if negated:
+            return False
+        return target in search_speech and role in search_speech
+    relation_negated = match.group("relation") in _ROLE_NEGATION_FORMS
+    if relation_negated:
+        return negated
+    target_start = search_speech.find(target)
+    prefix_negated = target_start >= 0 and public_claim_is_negated(
+        search_speech,
+        target_start,
+    )
+    if prefix_negated:
+        return negated
+    return not negated
+
+
+def _clause_containing_target(speech: str, target: str) -> str | None:
+    """返回包含目标的单个标点分句，避免跨目标拼接角色证据。"""
+    target_start = speech.find(target)
+    if target_start < 0:
+        return None
+    clauses = re.split(r"[，。；;！？!?:：]", speech)
+    offset = 0
+    for clause in clauses:
+        clause_end = offset + len(clause)
+        if offset <= target_start < clause_end:
+            return clause
+        offset = clause_end + 1
+    return None
 
 
 def night_info_claim_supported(
