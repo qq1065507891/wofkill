@@ -489,6 +489,141 @@ def test_semantic_repair_rejects_prefixed_denial_for_affirmative_self_role() -> 
     assert result.audit["unsupported_public_claim_count"] == 1
 
 
+@pytest.mark.parametrize("delimiter", ("，", ",", "：", ":"))
+def test_semantic_repair_preserves_reported_attribution_across_soft_delimiters(
+    delimiter: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": f"p06声称{delimiter}p02是狼人"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+
+    reported = validate_semantic_repair(
+        context,
+        source,
+        _action("p06声称p02是狼人，我怀疑p02。"),
+    )
+    ledger_speaker = validate_semantic_repair(
+        context,
+        source,
+        _action("p05声称p02是狼人，我怀疑p02。"),
+    )
+
+    assert reported.accepted is True
+    assert reported.reason_codes == ()
+    assert ledger_speaker.accepted is False
+    assert ledger_speaker.reason_codes == ("unsupported_public_claim",)
+
+
+def test_semantic_repair_stops_reported_attribution_at_sentence_terminator() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "p06声称。p02是狼人"}],
+    })
+    source = _action("我怀疑p02。")
+
+    reported = validate_semantic_repair(
+        context,
+        source,
+        _action("p06声称p02是狼人，我怀疑p02。"),
+    )
+    ledger_speaker = validate_semantic_repair(
+        context,
+        source,
+        _action("p05声称p02是狼人，我怀疑p02。"),
+    )
+
+    assert reported.accepted is False
+    assert reported.reason_codes == ("unsupported_public_claim",)
+    assert ledger_speaker.accepted is True
+    assert ledger_speaker.reason_codes == ()
+
+
+def test_semantic_repair_does_not_bridge_soft_delimiter_across_terminator() -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": "p06声称：。p02是狼人"}],
+    })
+    source = _action("我怀疑p02。")
+
+    reported = validate_semantic_repair(
+        context,
+        source,
+        _action("p06声称p02是狼人，我怀疑p02。"),
+    )
+    ledger_speaker = validate_semantic_repair(
+        context,
+        source,
+        _action("p05声称p02是狼人，我怀疑p02。"),
+    )
+
+    assert reported.accepted is False
+    assert reported.reason_codes == ("unsupported_public_claim",)
+    assert ledger_speaker.accepted is True
+    assert ledger_speaker.reason_codes == ()
+
+
+@pytest.mark.parametrize(
+    ("prefix", "ledger_text", "final_text", "reason_codes"),
+    [
+        ("其实", "我是预言家", "p05声称自己是预言家，我怀疑p02。", ()),
+        ("其实", "我是预言家", "p05并未声称自己是预言家，我怀疑p02。", ("unsupported_public_claim",)),
+        ("其实", "我没有说我是预言家", "p05并未声称自己是预言家，我怀疑p02。", ()),
+        ("其实", "我没有说我是预言家", "p05声称自己是预言家，我怀疑p02。", ("unsupported_public_claim",)),
+        ("不过", "我是预言家", "p05声称自己是预言家，我怀疑p02。", ()),
+        ("不过", "我是预言家", "p05并未声称自己是预言家，我怀疑p02。", ("unsupported_public_claim",)),
+        ("不过", "我没有说我是预言家", "p05并未声称自己是预言家，我怀疑p02。", ()),
+        ("不过", "我没有说我是预言家", "p05声称自己是预言家，我怀疑p02。", ("unsupported_public_claim",)),
+    ],
+)
+def test_semantic_repair_bounds_discourse_prefix_polarity(
+    prefix: str,
+    ledger_text: str,
+    final_text: str,
+    reason_codes: tuple[str, ...],
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": f"{prefix}{ledger_text}"}],
+    })
+
+    result = validate_semantic_repair(
+        context,
+        _action("我怀疑p02。"),
+        _action(final_text),
+    )
+
+    assert result.reason_codes == reason_codes
+    assert result.accepted is (not reason_codes)
+
+
+@pytest.mark.parametrize("ledger_text", ("随后我是预言家", "p06说我是预言家"))
+def test_semantic_repair_rejects_unbounded_or_third_party_prefixes(
+    ledger_text: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [{"speaker": "p05", "text": ledger_text}],
+    })
+
+    result = validate_semantic_repair(
+        context,
+        _action("我怀疑p02。"),
+        _action("p05声称自己是预言家，我怀疑p02。"),
+    )
+
+    assert result.accepted is False
+    assert result.reason_codes == ("unsupported_public_claim",)
+
+
 def test_claim_key_records_prefix_negation_without_flipping_double_negation() -> None:
     from werewolf_agent.evaluation.balance_public_claims import (
         public_claim_audit_keys,

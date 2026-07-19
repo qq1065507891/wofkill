@@ -59,11 +59,18 @@ _CORRECTION_HINTS = {
     "speaker_attribution_changed": "恢复公开记录中的说话人归属，或删除该声明",
     "negation_changed": "恢复公开记录中的否定关系，或删除该声明",
 }
-_FIRST_PERSON_EVIDENCE_REF = re.compile(r"^(?:其实)?我")
+_HARMLESS_FIRST_PERSON_PREFIXES = ("其实", "不过")
+_HARMLESS_FIRST_PERSON_PREFIX_PATTERN = "|".join(
+    re.escape(prefix) for prefix in _HARMLESS_FIRST_PERSON_PREFIXES
+)
+_FIRST_PERSON_EVIDENCE_REF = re.compile(
+    rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我"
+)
 _FIRST_PERSON_DENIAL_REF = re.compile(
-    r"^(?:其实)?我(?:没有|并未|未曾|从未|不)"
+    rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我(?:没有|并未|未曾|从未|不)"
     r"(?:说|声称|表示|宣称|自认|自称|是|知道|获知|掌握|认为)"
 )
+_SOFT_ATTRIBUTION_DELIMITERS = frozenset(("，", ",", "：", ":"))
 _REPORTING_ATTRIBUTION_FRAGMENT_REF = re.compile(
     r"^p\d{2}(?:(?!p\d{2})[^，。；;！？]){0,10}"
     r"(?:声称|说|表示|宣称)$"
@@ -413,21 +420,27 @@ def _classified_evidence_keys(
 
 def _public_evidence_clauses(text: str) -> list[str]:
     """分离互不影响的公开陈述分句，保留各自的归因和否定范围。"""
-    raw_clauses: list[str] = []
-    for clause in re.split(r"[，。；;！？]", text):
-        stripped_clause = clause.strip()
-        if stripped_clause:
-            raw_clauses.append(stripped_clause)
+    raw_clauses: list[tuple[str, str]] = []
+    parts = re.split(r"([，,：:。；;！？!?])", text)
+    for index in range(0, len(parts), 2):
+        stripped_clause = parts[index].strip()
+        delimiter = parts[index + 1] if index + 1 < len(parts) else ""
+        raw_clauses.append((stripped_clause, delimiter))
 
     clauses: list[str] = []
     index = 0
     while index < len(raw_clauses):
-        clause = raw_clauses[index]
+        clause, delimiter = raw_clauses[index]
+        if not clause:
+            index += 1
+            continue
         if (
             index + 1 < len(raw_clauses)
+            and delimiter in _SOFT_ATTRIBUTION_DELIMITERS
             and _REPORTING_ATTRIBUTION_FRAGMENT_REF.fullmatch(clause)
+            and raw_clauses[index + 1][0]
         ):
-            clauses.append(f"{clause}{raw_clauses[index + 1]}")
+            clauses.append(f"{clause}{raw_clauses[index + 1][0]}")
             index += 2
             continue
         clauses.append(clause)
