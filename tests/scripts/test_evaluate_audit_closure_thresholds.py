@@ -724,7 +724,23 @@ def test_semantic_reconciliation_failures_close_the_public_evidence_threshold() 
         nested.update(nested_updates)
         conflicting_pairs.append(conflicting_pair)
 
-    for game in (invalid_identity, *conflicting_pairs):
+    missing_version = deepcopy(paired_game)
+    missing_version["events"][0]["payload"].pop("semantic_gate_version")
+    missing_version["events"][1]["payload"]["action_trace"][
+        "semantic_repair_audit"
+    ]["semantic_gate_version"] = None
+    nested_list_collision = deepcopy(paired_game)
+    nested_list_collision["events"][0]["payload"]["rejection_reason_codes"] = [False]
+    nested_list_collision["events"][1]["payload"]["action_trace"][
+        "semantic_repair_audit"
+    ]["rejection_reason_codes"] = [0]
+
+    for game in (
+        invalid_identity,
+        *conflicting_pairs,
+        missing_version,
+        nested_list_collision,
+    ):
         metrics = compute_acceptance_audit_metrics([game])
         result = evaluate_thresholds({**_passing_report(), **metrics})
 

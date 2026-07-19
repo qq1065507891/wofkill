@@ -211,11 +211,15 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         if semantic_source_complete
         else 0
     )
-    retention_source_complete = projection_is_supported and semantic_count > 0 and all(
-        _is_non_negative_int(row.get("verified_claim_count"))
-        and _is_non_negative_int(row.get("retained_verified_claim_count"))
-        and row["retained_verified_claim_count"] <= row["verified_claim_count"]
-        for row in semantic_rows
+    retention_source_complete = (
+        projection_is_supported
+        and semantic_reconciliation_valid
+        and all(
+            _is_non_negative_int(row.get("verified_claim_count"))
+            and _is_non_negative_int(row.get("retained_verified_claim_count"))
+            and row["retained_verified_claim_count"] <= row["verified_claim_count"]
+            for row in semantic_rows
+        )
     )
     retention_rows = (
         [
@@ -335,12 +339,43 @@ def _semantic_audit_rows_agree(
     standalone: Mapping[str, Any],
     nested: Mapping[str, Any],
 ) -> bool:
-    """比较完整语义审计 payload，排除 trace 等传输元数据。"""
+    """递归严格比较语义审计字段，保留缺失字段与 JSON 类型差异。"""
     return all(
-        type(standalone.get(field)) is type(nested.get(field))
-        and standalone.get(field) == nested.get(field)
+        _semantic_audit_field_agrees(standalone, nested, field)
         for field in _SEMANTIC_AUDIT_FIELDS
     )
+
+
+def _semantic_audit_field_agrees(
+    standalone: Mapping[str, Any],
+    nested: Mapping[str, Any],
+    field: str,
+) -> bool:
+    """比较单个规范字段，区分双方缺失和一侧显式空值。"""
+    standalone_has_field = field in standalone
+    nested_has_field = field in nested
+    if standalone_has_field != nested_has_field:
+        return False
+    return not standalone_has_field or _strict_json_values_agree(
+        standalone[field],
+        nested[field],
+    )
+
+
+def _strict_json_values_agree(left: Any, right: Any) -> bool:
+    """按 JSON 结构递归比较值，避免 bool 与 int 等类型被隐式视为相等。"""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        return set(left) == set(right) and all(
+            _strict_json_values_agree(left[key], right[key]) for key in left
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _strict_json_values_agree(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return left == right
 
 
 def _has_supported_semantic_gate_version(row: Mapping[str, Any]) -> bool:
