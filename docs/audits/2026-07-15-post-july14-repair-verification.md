@@ -2,7 +2,7 @@
 
 > 状态：`PENDING_LIVE_SOAK`  
 > 代码与离线门禁：通过  
-> 固定十局真实模型 soak：尚未获准向外部模型提供商发送真实游戏提示，因此 Task 16 尚未最终关闭。
+> 固定十局真实模型 soak：用户已明确授权外发，但平台租户策略仍拒绝向未列入受信清单的外部模型目的地发送，因此 Task 16 尚未最终关闭。
 
 ## 1. 验收范围与结论
 
@@ -90,7 +90,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `
 | artifact root | 尚未生成 |
 | hard gate 真实样本结果 | `PENDING_LIVE_SOAK` |
 
-两次本地预启动均未调用模型：第一次被 PowerShell execution policy 拒绝；第二次因桌面沙箱阻止嵌套 PowerShell 写工作树 `artifacts/` 而失败。随后申请受控提权时，安全审查指出该命令会读取主检出目录 `.env`，并把真实游戏提示/响应发送到其中配置的外部模型目的地；由于尚无“这些外部目的地是受信系统”的证据，请求被拒绝。没有通过复制密钥、改变输出位置或其他方式绕过该限制。
+两次本地预启动均未调用模型：第一次被 PowerShell execution policy 拒绝；第二次因桌面沙箱阻止嵌套 PowerShell 写工作树 `artifacts/` 而失败。首次受控提权因缺少外发授权而被拒绝。用户随后于 2026-07-19 明确授权读取 `.env` 并向其中配置的外部模型提供商发送真实游戏提示与响应，但第二次受控提权仍被平台租户策略拒绝：外部模型目的地未被认定为受信或预批准系统。拒绝发生在进程创建前；复核确认 artifact root 不存在、有效模型 launch 仍为 0。没有通过复制密钥、改变输出位置或其他方式绕过该限制。
 
 ## 6. 最终判定
 
@@ -101,4 +101,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `
 - Task 16 总体：PENDING，不能提交“所有硬门禁全绿”的结论。
 - Task 17 的 30 个 finished 平衡批次不得启动；按计划，P1/稳定性十局未关闭前不能进入数值平衡结论。
 
-解除阻塞所需授权：用户明确同意读取 `E:\NLP\agent\wofkill\.env`，并向其中配置的外部模型提供商发送真实游戏提示与响应。授权后应重新执行上述精确十局命令，记录唯一 artifact root、10 次 launch、finished/aborted、44 项阈值 JSON，并据实更新本报告。
+解除阻塞不再缺少用户授权，而是需要平台管理员把 `.env` 中配置的模型目的地加入受信/预批准清单，或由用户在不受该租户外发策略约束的本机终端执行上述精确十局命令。生成 artifact 后应记录唯一 root、10 次 launch、finished/aborted、44 项阈值 JSON，并据实更新本报告。
