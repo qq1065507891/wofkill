@@ -41,6 +41,17 @@ _PUBLIC_NIGHT_INFO_REF = re.compile(
     r"(p\d{2})[^，。；;]{0,14}(?:声称|说|表示|宣称)?[^，。；;]{0,8}"
     r"(?:知道|获知|掌握)[^，。；;]{0,10}(?:狼刀|刀口|狼队刀|被刀)"
 )
+_NIGHT_INFO_NEGATION_FORMS = (
+    "不知道",
+    "并不知道",
+    "未获知",
+    "没有获知",
+    "未曾获知",
+    "没获知",
+)
+_NIGHT_INFO_RELATION_PATTERN = "|".join(
+    (*_NIGHT_INFO_NEGATION_FORMS, "知道", "获知", "掌握")
+)
 _SYSTEM_ROLE_FACT_REF = re.compile(
     r"(?:系统|主持人|法官)(?:(没有|并未|尚未|未))?(?:已经|已)?确认(p\d{2})是"
     r"(狼人|预言家|女巫|猎人|白痴|村民|民)"
@@ -376,7 +387,11 @@ def _claim_is_supported(
             negated=claim.negated,
         )
     if claim.support_kind == "night_info" and claim.target:
-        return night_info_claim_supported(claim.target, public_speeches)
+        return night_info_claim_supported(
+            claim.target,
+            public_speeches,
+            negated=claim.negated,
+        )
     return False
 
 
@@ -399,7 +414,17 @@ def _player_claim_is_negated(text: str, claim_start: int, claim_end: int) -> boo
             r"(?:并未|没有|未曾|否认)[^，。；;]{0,8}"
             r"(?:声称|说|表示|宣称|自认)",
             relation,
-        ) or re.search(r"(?:不是|并非|不为)[^，。；;]{0,4}(?:狼人|预言家|女巫|猎人|白痴|村民|民)", relation)
+        )
+        or re.search(
+            r"(?:不是|并非|不为)[^，。；;]{0,4}"
+            r"(?:狼人|预言家|女巫|猎人|白痴|村民|民)",
+            relation,
+        )
+        or re.search(
+            rf"(?:{'|'.join(_NIGHT_INFO_NEGATION_FORMS)})[^，。；;]{{0,10}}"
+            r"(?:狼刀|刀口|狼队刀|被刀)",
+            relation,
+        )
     )
 
 
@@ -611,13 +636,28 @@ def _clause_containing_target(speech: str, target: str) -> str | None:
 def night_info_claim_supported(
     player_id: str,
     public_speeches: list[tuple[str, str]],
+    *,
+    negated: bool = False,
 ) -> bool:
     """判断玩家公开发言是否已经支撑夜间信息来源声明。"""
     knowledge_markers = ("知道", "获知", "掌握")
     night_markers = ("狼刀", "刀口", "狼队刀", "被刀")
-    return any(
-        speaker == player_id
-        and any(marker in speech for marker in knowledge_markers)
-        and any(marker in speech for marker in night_markers)
-        for speaker, speech in public_speeches
-    )
+    for speaker, speech in public_speeches:
+        if speaker != player_id:
+            continue
+        match = re.search(
+            rf"{re.escape(player_id)}(?:(?!p\d{{2}})[^，。；;]){{0,14}}?"
+            rf"(?P<relation>{_NIGHT_INFO_RELATION_PATTERN})"
+            rf"(?:(?!p\d{{2}})[^，。；;]){{0,10}}"
+            r"(?:狼刀|刀口|狼队刀|被刀)",
+            speech,
+        )
+        if match is not None:
+            relation_negated = (
+                match.group("relation") in _NIGHT_INFO_NEGATION_FORMS
+            )
+            return relation_negated is negated
+        if not negated and any(marker in speech for marker in knowledge_markers):
+            if any(marker in speech for marker in night_markers):
+                return True
+    return False

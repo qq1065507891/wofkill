@@ -434,7 +434,11 @@ def _has_same_polarity_public_evidence(
                 negated=claim.negated,
             )
         elif claim.support_kind == "night_info":
-            supported = night_info_claim_supported(claim.target, speech)
+            supported = night_info_claim_supported(
+                claim.target,
+                speech,
+                negated=claim.negated,
+            )
         else:
             supported = False
         if supported and claim in normalized_keys:

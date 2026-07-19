@@ -102,6 +102,30 @@ def test_public_claim_classifier_preserves_direct_attributed_role_polarity(
 
 
 @pytest.mark.parametrize(
+    ("text", "expected_negated"),
+    [
+        ("p04知道狼刀信息", False),
+        ("p04不知道狼刀信息", True),
+        ("p04并不知道狼刀信息", True),
+        ("p04未获知狼刀信息", True),
+    ],
+)
+def test_public_claim_classifier_preserves_night_info_polarity(
+    text: str,
+    expected_negated: bool,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import classify_public_claims
+
+    claims = classify_public_claims(text)
+
+    assert len(claims) == 1
+    claim = claims[0]
+    assert claim.support_kind == "night_info"
+    assert claim.target == "p04"
+    assert claim.negated is expected_negated
+
+
+@pytest.mark.parametrize(
     ("claim", "history", "expected_unsupported"),
     [
         ("p03声称p05是狼人", [("p03", "我不认为p05是狼人")], 1),
@@ -126,6 +150,12 @@ def test_public_claim_classifier_preserves_direct_attributed_role_polarity(
         ("p05声称自己不是预言家", [("p05", "不应说我是预言家")], 0),
         ("p05声称自己是预言家", [("p05", "我不认为我是预言家")], 1),
         ("p05声称自己不是预言家", [("p05", "我不认为我是预言家")], 0),
+        ("p04知道狼刀信息", [("p04", "p04知道狼刀信息")], 0),
+        ("p04不知道狼刀信息", [("p04", "p04不知道狼刀信息")], 0),
+        ("p04知道狼刀信息", [("p04", "p04不知道狼刀信息")], 1),
+        ("p04不知道狼刀信息", [("p04", "p04知道狼刀信息")], 1),
+        ("p04知道狼刀信息", [("p04", "p04并不知道狼刀信息")], 1),
+        ("p04知道狼刀信息", [("p04", "p04未获知狼刀信息")], 1),
     ],
 )
 def test_public_sanitizer_matches_v2_discourse_polarity(

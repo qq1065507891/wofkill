@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from werewolf_agent.agents.schemas import ActionType, AgentContext, RetryInfo, TaskType
 
 
@@ -370,6 +372,47 @@ def test_semantic_terminal_fallback_drops_opposite_polarity_claims() -> None:
     assert unsupported == 0
     assert audit["retained_verified_claim_count"] == 0
     assert rejected["unsupported_public_claim_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("ledger_text", "source_text", "opposite_claim"),
+    [
+        ("p04不知道狼刀信息", "p04知道狼刀信息", "p04知道狼刀信息"),
+        ("p04知道狼刀信息", "p04不知道狼刀信息", "p04不知道狼刀信息"),
+    ],
+)
+def test_semantic_terminal_fallback_drops_opposite_night_info_claims(
+    ledger_text: str,
+    source_text: str,
+    opposite_claim: str,
+) -> None:
+    from werewolf_agent.agents.schemas import FallbackAction, SpeechPlayerAction
+    from werewolf_agent.agents.semantic_repair_audit import (
+        build_semantic_repair_audit,
+        preserve_verified_claim_in_fallback,
+    )
+
+    context = AgentContext(
+        agent_id="p08", task_type=TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH], legal_targets=["p02"],
+        public_claim_ledger=[{"speaker": "p04", "text": ledger_text}],
+    )
+    source = SpeechPlayerAction(
+        target_id="p02",
+        speech=f"{source_text}，我怀疑p02。",
+        reason="公开引用",
+        confidence=0.5,
+    )
+
+    fallback = preserve_verified_claim_in_fallback(
+        context,
+        source,
+        FallbackAction(action_type=ActionType.SPEECH),
+    )
+    audit = build_semantic_repair_audit(context, source, fallback, success=False)
+
+    assert opposite_claim not in fallback.speech
+    assert audit["retained_verified_claim_count"] == 0
 
 
 def test_generic_fallback_classification_uses_actual_template_family() -> None:
