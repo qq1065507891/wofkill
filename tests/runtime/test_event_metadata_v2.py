@@ -4,6 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-15
+修改日期: 2026-07-19
 """
 
 from __future__ import annotations
@@ -117,6 +118,24 @@ def test_v2_top_level_visibility_is_authoritative() -> None:
     )
 
     assert event_visibility(event) is EventVisibility.MODERATOR_ONLY
+
+
+def test_empty_typed_visibility_falls_back_to_payload_like_legacy() -> None:
+    public_event = GameEvent(type="speech", visibility="", payload={})
+    private_event = GameEvent(
+        type="speech",
+        visibility="",
+        payload={"visibility": "moderator_only"},
+    )
+    explicit_public_event = GameEvent(
+        type="speech",
+        visibility=EventVisibility.PUBLIC,
+        payload={"visibility": "moderator_only"},
+    )
+
+    assert event_visibility(public_event) is EventVisibility.PUBLIC
+    assert event_visibility(private_event) is EventVisibility.MODERATOR_ONLY
+    assert event_visibility(explicit_public_event) is EventVisibility.PUBLIC
 
 
 def test_event_serializer_round_trips_datetime_and_enum() -> None:

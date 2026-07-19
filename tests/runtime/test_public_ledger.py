@@ -293,6 +293,42 @@ def test_public_speech_history_respects_legacy_mapping_visibility() -> None:
     assert public_speech_history([typed_private]) == public_speech_history([
         legacy_private,
     ]) == []
+    typed_empty_public = GameEvent(
+        type="speech",
+        visibility="",
+        payload={"speaker": "p11", "text": "typed 空值公开"},
+    )
+    typed_empty_private = GameEvent(
+        type="speech",
+        visibility="",
+        payload={
+            "speaker": "p12",
+            "text": "typed 空值私密",
+            "visibility": "moderator_only",
+        },
+    )
+    legacy_empty_public = {
+        "type": "speech",
+        "visibility": "",
+        "payload": {"speaker": "p11", "text": "legacy 空值公开"},
+    }
+    legacy_empty_private = {
+        "type": "speech",
+        "visibility": "",
+        "payload": {
+            "speaker": "p12",
+            "text": "legacy 空值私密",
+            "visibility": "moderator_only",
+        },
+    }
+    assert public_speech_history([
+        typed_empty_public,
+        typed_empty_private,
+    ]) == [("p11", "typed 空值公开")]
+    assert public_speech_history([
+        legacy_empty_public,
+        legacy_empty_private,
+    ]) == [("p11", "legacy 空值公开")]
     event_like_public = SimpleNamespace(
         type="speech",
         payload={"speaker": "p09", "text": "属性型公开发言"},
