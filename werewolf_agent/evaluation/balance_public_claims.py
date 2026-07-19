@@ -466,10 +466,26 @@ def role_claim_supported(
     """判断玩家公开发言是否已经支撑某个角色声明。"""
     markers = _ROLE_MARKERS.get(role, (role,))
     if not negated:
-        return any(
-            speaker == player_id and any(marker in speech for marker in markers)
-            for speaker, speech in public_speeches
-        )
+        for speaker, speech in public_speeches:
+            if speaker != player_id:
+                continue
+            if _role_relation_supported_in_speech(
+                player_id,
+                role,
+                speech,
+                negated=True,
+                self_claim=True,
+            ):
+                continue
+            if _role_relation_supported_in_speech(
+                player_id,
+                role,
+                speech,
+                negated=False,
+                self_claim=True,
+            ) or any(marker in speech for marker in markers):
+                return True
+        return False
     return any(
         speaker == player_id
         and _role_relation_supported_in_speech(
@@ -514,6 +530,10 @@ def _role_relation_supported_in_speech(
 ) -> bool:
     """匹配同一玩家与角色的明确肯定或否定关系，避免只按词面判断。"""
     target_ref = r"(?:我|自己)" if self_claim else re.escape(target)
+    if not self_claim:
+        target_start = speech.find(target)
+        if target_start >= 0 and public_claim_is_negated(speech, target_start):
+            return negated
     if not self_claim and re.search(
         rf"(?:我|自己)(?:并未|没有|未曾|否认)[^，。；;]{{0,8}}"
         rf"{re.escape(target)}[^，。；;]{{0,4}}{re.escape(role)}",

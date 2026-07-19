@@ -101,6 +101,55 @@ def test_public_claim_classifier_preserves_direct_attributed_role_polarity(
     assert claim.negated is (relation != "是")
 
 
+@pytest.mark.parametrize(
+    ("claim", "history", "expected_unsupported"),
+    [
+        ("p03声称p05是狼人", [("p03", "我不认为p05是狼人")], 1),
+        ("p03声称p05不是狼人", [("p03", "我不认为p05不是狼人")], 0),
+        ("p05声称自己是预言家", [("p05", "我没有说我是预言家")], 1),
+        ("p05声称自己不是预言家", [("p05", "我没有说我不是预言家")], 0),
+        ("p03声称p05是狼人", [("p03", "我认为p05是狼人")], 0),
+        ("p05声称自己是预言家", [("p05", "我声称自己是预言家")], 0),
+    ],
+)
+def test_public_sanitizer_matches_v2_discourse_polarity(
+    claim: str,
+    history: list[tuple[str, str]],
+    expected_unsupported: int,
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import sanitize_public_text
+    from werewolf_agent.agents.schemas import (
+        ActionType,
+        AgentContext,
+        SpeechPlayerAction,
+        TaskType,
+    )
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    sanitized, unsupported = sanitize_public_text(claim, history)
+    context = AgentContext(
+        agent_id="p08",
+        task_type=TaskType.SPEECH,
+        legal_actions=[ActionType.SPEECH],
+        legal_targets=["p02"],
+        public_claim_ledger=[{"speaker": speaker, "text": text} for speaker, text in history],
+    )
+    source = SpeechPlayerAction(
+        target_id="p02", speech="我怀疑p02。", reason="test", confidence=0.5
+    )
+    final = SpeechPlayerAction(
+        target_id="p02", speech=claim, reason="test", confidence=0.5
+    )
+    v2 = validate_semantic_repair(context, source, final)
+
+    assert unsupported == expected_unsupported
+    assert (unsupported > 0) == ("unsupported_public_claim" in v2.reason_codes)
+    if expected_unsupported:
+        assert sanitized != claim
+    else:
+        assert sanitized == claim
+
+
 def test_public_fact_guard_is_driven_by_authoritative_classifier(monkeypatch) -> None:
     from werewolf_agent.evaluation import balance_public_claims as claims_module
 
