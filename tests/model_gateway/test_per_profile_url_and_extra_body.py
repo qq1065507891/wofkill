@@ -582,12 +582,16 @@ class TestNativeMiniMaxApiKeyRouting:
         assert client.last_headers is not None
         assert client.last_headers["Authorization"] == "Bearer anthropic-key"
 
-    def test_missing_minimax_keys_fails_before_request(self) -> None:
+    def test_native_endpoint_without_minimax_key_fails_before_post(self) -> None:
         from werewolf_agent.model_gateway.providers.base import ProviderConfigError
 
         client = _CapturingClient()
-        with pytest.raises(ProviderConfigError):
+        with pytest.raises(ProviderConfigError) as exc_info:
             self._generate(client)
+        message = str(exc_info.value)
+        assert "MINIMAX_NATIVE_API_KEY" in message
+        assert "MINIMAX_API_KEY" in message
+        assert "ANTHROPIC_API_KEY" in message
         assert client.last_url is None
 
     def test_provider_default_minimax_url_uses_native_key(self, monkeypatch: pytest.MonkeyPatch) -> None:

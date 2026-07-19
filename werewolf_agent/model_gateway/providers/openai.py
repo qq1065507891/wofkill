@@ -114,7 +114,11 @@ def _resolve_api_key_for_base_url(base_url: str, default_key: str) -> str:
         anthropic_key = get_env("ANTHROPIC_API_KEY")
         if anthropic_key:
             return anthropic_key
-    raise ProviderConfigError("native MiniMax API key is required")
+    raise ProviderConfigError(
+        "native MiniMax API key is required: set MINIMAX_NATIVE_API_KEY or "
+        "MINIMAX_API_KEY, or set ANTHROPIC_API_KEY with ANTHROPIC_BASE_URL "
+        "scoped to api.minimaxi.com"
+    )
 
 
 def _generate_openai_compatible(
