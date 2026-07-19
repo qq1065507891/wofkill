@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from werewolf_agent.core.event_visibility import EventVisibility
 from werewolf_agent.core.models import GameEvent, GameState
-from werewolf_agent.runtime.public_ledger import build_public_ledger
+from werewolf_agent.evaluation.balance_public_claims import (
+    public_claim_audit_keys,
+    public_speech_history,
+    sanitize_public_text,
+)
+from werewolf_agent.runtime.public_ledger import (
+    build_public_claim_text_ledger,
+    build_public_ledger,
+)
 
 
 def test_public_ledger_extracts_role_claims_check_claims_and_badge_flow() -> None:
@@ -116,8 +124,6 @@ def test_public_ledger_excludes_wolf_plan_and_action_trace_private_role() -> Non
 
 
 def test_public_claim_text_ledger_is_complete_ordered_and_public_only() -> None:
-    from werewolf_agent.runtime.public_ledger import build_public_claim_text_ledger
-
     events = [
         GameEvent(type="speech", payload={"speaker": "p01", "text": "最早公开声明"}),
         *[
@@ -136,6 +142,110 @@ def test_public_claim_text_ledger_is_complete_ordered_and_public_only() -> None:
     }
     assert ledger[-1]["event_index"] == 12
     assert "私密声明" not in str(ledger)
+
+
+def test_public_evidence_snapshots_match_and_exclude_private_role_claims() -> None:
+    game_state = GameState(game_id="g-public-parity", events=[
+        GameEvent(type="speech", payload={
+            "speaker": "p05", "text": "我是预言家",
+        }),
+        GameEvent(
+            type="speech",
+            payload={
+                "speaker": "p06",
+                "text": "我是狼人，真实身份已确认",
+                "role_truth": "werewolf",
+            },
+            visibility=EventVisibility.MODERATOR_ONLY,
+            schema_version="2",
+        ),
+        GameEvent(type="sheriff_speech", payload={
+            "speaker": "p07", "text": "警长竞选发言",
+        }),
+        GameEvent(type="sheriff_pk_speech", payload={
+            "speaker": "p08", "text": "PK 发言",
+        }),
+        GameEvent(type="exile_last_words", payload={
+            "speaker": "p09", "text": "最后遗言",
+        }),
+        GameEvent(type="tie_pk_speech", payload={
+            "speaker": "p10", "text": "平票 PK 发言",
+        }),
+        GameEvent(type="night_death_last_words", payload={
+            "speaker": "p11", "text": "夜亡遗言",
+        }),
+    ])
+    claim_ledger = build_public_claim_text_ledger(game_state)
+    history = public_speech_history(game_state.events)
+    candidate = "p05自认预言家，p06自认狼人。"
+
+    assert [(item["speaker"], item["text"]) for item in claim_ledger] == history
+    assert history == [
+        ("p05", "我是预言家"),
+        ("p07", "警长竞选发言"),
+        ("p08", "PK 发言"),
+        ("p09", "最后遗言"),
+        ("p10", "平票 PK 发言"),
+        ("p11", "夜亡遗言"),
+    ]
+    assert "p06" not in str(claim_ledger)
+    assert "狼人" not in str(claim_ledger)
+
+    ledger_speeches = [
+        (item["speaker"], item["text"])
+        for item in claim_ledger
+    ]
+    assert public_claim_audit_keys(candidate, ledger_speeches) == (
+        public_claim_audit_keys(candidate, history)
+    )
+    assert sanitize_public_text(candidate, ledger_speeches) == (
+        sanitize_public_text(candidate, history)
+    )
+    assert sanitize_public_text(candidate, history) == (
+        "p05自认预言家，对p06的身份声明暂不采信，需继续核验。",
+        1,
+    )
+
+
+def test_public_speech_history_respects_legacy_mapping_visibility() -> None:
+    events = [
+        {
+            "type": "speech",
+            "visibility": "public",
+            "payload": {"speaker": "p01", "text": "顶层公开"},
+        },
+        {
+            "type": "tie_pk_speech",
+            "payload": {
+                "speaker": "p02",
+                "text": "payload 公开",
+                "visibility": "public",
+            },
+        },
+        {
+            "type": "night_death_last_words",
+            "visibility": "moderator_only",
+            "payload": {"speaker": "p03", "text": "顶层私密"},
+        },
+        {
+            "type": "speech",
+            "payload": {
+                "speaker": "p04",
+                "text": "payload 私密",
+                "visibility": "moderator_only",
+            },
+        },
+        {
+            "type": "sheriff_speech",
+            "payload": {"speaker": "p05", "text": "缺失可见性默认公开"},
+        },
+    ]
+
+    assert public_speech_history(events) == [
+        ("p01", "顶层公开"),
+        ("p02", "payload 公开"),
+        ("p05", "缺失可见性默认公开"),
+    ]
 
 
 def test_public_ledger_uses_v2_top_level_visibility_without_payload_marker() -> None:

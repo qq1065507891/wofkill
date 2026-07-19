@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-08
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 
 使用示例:
     >>> from werewolf_agent.evaluation.balance_public_claims import (
@@ -18,6 +18,9 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
+
+from werewolf_agent.core.event_visibility import EventVisibility, event_visibility
+from werewolf_agent.core.models import GameEvent
 
 _PUBLIC_ROLE_CLAIM_REF = re.compile(
     r"(p\d{2})(?:(?!p\d{2})[^，。；;]){0,10}"
@@ -394,11 +397,26 @@ def public_speech_history(events: list[Any]) -> list[tuple[str, str]]:
     """提取当前事件之前已经公开的发言，供发布前事实校验使用。"""
     history: list[tuple[str, str]] = []
     for event in events:
-        event_type = getattr(event, "type", None)
-        payload = getattr(event, "payload", {}) or {}
         if isinstance(event, Mapping):
             event_type = event.get("type")
             payload = event.get("payload") or {}
+            if not isinstance(payload, Mapping):
+                continue
+            if "visibility" in event:
+                visibility = event["visibility"]
+            elif "visibility" in payload:
+                visibility = payload["visibility"]
+            else:
+                visibility = "public"
+            if EventVisibility.from_legacy(visibility) is not EventVisibility.PUBLIC:
+                continue
+        elif isinstance(event, GameEvent):
+            event_type = event.type
+            payload = event.payload or {}
+            if event_visibility(event) is not EventVisibility.PUBLIC:
+                continue
+        else:
+            continue
         if event_type not in {
             "speech",
             "sheriff_speech",
