@@ -570,6 +570,84 @@ def test_semantic_repair_does_not_bridge_soft_delimiter_across_terminator() -> N
 
 
 @pytest.mark.parametrize(
+    ("delimiter", "quoted_claim"),
+    [
+        ("：", "“p02是狼人”"),
+        ("，", "“p02是狼人”"),
+        (":", '"p02是狼人"'),
+        (",", '"p02是狼人"'),
+    ],
+)
+def test_semantic_repair_preserves_quoted_reported_target_attribution(
+    delimiter: str,
+    quoted_claim: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": f"p06声称{delimiter}{quoted_claim}"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+
+    reported = validate_semantic_repair(
+        context,
+        source,
+        _action("p06声称p02是狼人，我怀疑p02。"),
+    )
+    ledger_speaker = validate_semantic_repair(
+        context,
+        source,
+        _action("p05声称p02是狼人，我怀疑p02。"),
+    )
+
+    assert reported.accepted is True
+    assert reported.reason_codes == ()
+    assert ledger_speaker.accepted is False
+    assert ledger_speaker.reason_codes == ("unsupported_public_claim",)
+
+
+@pytest.mark.parametrize(
+    ("delimiter", "quoted_claim"),
+    [
+        ("：", "“我是预言家”"),
+        ("，", "“我是预言家”"),
+        (":", '"我是预言家"'),
+        (",", '"我是预言家"'),
+    ],
+)
+def test_semantic_repair_preserves_quoted_reported_self_role_attribution(
+    delimiter: str,
+    quoted_claim: str,
+) -> None:
+    from werewolf_agent.agents.semantic_repair_audit import validate_semantic_repair
+
+    context = _context().model_copy(update={
+        "public_claim_ledger": [
+            {"speaker": "p05", "text": f"p06声称{delimiter}{quoted_claim}"},
+        ],
+    })
+    source = _action("我怀疑p02。")
+
+    reported = validate_semantic_repair(
+        context,
+        source,
+        _action("p06声称自己是预言家，我怀疑p02。"),
+    )
+    ledger_speaker = validate_semantic_repair(
+        context,
+        source,
+        _action("p05声称自己是预言家，我怀疑p02。"),
+    )
+
+    assert reported.accepted is True
+    assert reported.reason_codes == ()
+    assert ledger_speaker.accepted is False
+    assert ledger_speaker.reason_codes == ("unsupported_public_claim",)
+
+
+@pytest.mark.parametrize(
     ("prefix", "ledger_text", "final_text", "reason_codes"),
     [
         ("其实", "我是预言家", "p05声称自己是预言家，我怀疑p02。", ()),

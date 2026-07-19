@@ -71,6 +71,7 @@ _FIRST_PERSON_DENIAL_REF = re.compile(
     r"(?:说|声称|表示|宣称|自认|自称|是|知道|获知|掌握|认为)"
 )
 _SOFT_ATTRIBUTION_DELIMITERS = frozenset(("，", ",", "：", ":"))
+_BALANCED_QUOTE_PAIRS = {"“": "”", '"': '"'}
 _REPORTING_ATTRIBUTION_FRAGMENT_REF = re.compile(
     r"^p\d{2}(?:(?!p\d{2})[^，。；;！？]){0,10}"
     r"(?:声称|说|表示|宣称)$"
@@ -440,12 +441,32 @@ def _public_evidence_clauses(text: str) -> list[str]:
             and _REPORTING_ATTRIBUTION_FRAGMENT_REF.fullmatch(clause)
             and raw_clauses[index + 1][0]
         ):
-            clauses.append(f"{clause}{raw_clauses[index + 1][0]}")
+            continuation = _normalized_reporting_continuation(
+                clause,
+                raw_clauses[index + 1][0],
+            )
+            clauses.append(f"{clause}{continuation}")
             index += 2
             continue
         clauses.append(clause)
         index += 1
     return clauses
+
+
+def _normalized_reporting_continuation(
+    reporting_fragment: str,
+    continuation: str,
+) -> str:
+    """只在已确认的转述后解包成对引号，保留转述者归因。"""
+    if not _REPORTING_ATTRIBUTION_FRAGMENT_REF.fullmatch(reporting_fragment):
+        return continuation
+    opening_quote = continuation[:1]
+    if _BALANCED_QUOTE_PAIRS.get(opening_quote) != continuation[-1:]:
+        return continuation
+    quoted_claim = continuation[1:-1].strip()
+    if quoted_claim.startswith("我"):
+        quoted_claim = f"自己{quoted_claim[1:]}"
+    return quoted_claim or continuation
 
 
 def _is_normalizable_public_evidence(
