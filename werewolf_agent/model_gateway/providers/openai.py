@@ -1,9 +1,21 @@
 ﻿# -*- coding: utf-8 -*-
 """
 功能描述：OpenAI 兼容 Chat Completions Provider 及 GLM 共享生成辅助函数
+
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-13
+修改日期：2026-07-16
+
+支持 ``config.base_url`` 覆盖 provider 实例默认 URL（2026-07-15），
+用于同一 OpenAI 客户端服务多个 endpoint（``api.minimaxi.com/v1`` 与
+``ark.cn-beijing.volces.com``）。``config.extra_body`` 在 payload 末尾合并，
+可携带 ``reasoning_split`` 等厂商私有开关。
+
+2026-07-16：native MiniMax endpoint 需要独立 API key（``MINIMAX_NATIVE_API_KEY``），
+与 ``OPENAI_API_KEY``（Ark 火山）隔离。``generate()`` 检测 ``config.base_url``
+指向 ``api.minimaxi.com`` 时改读 ``MINIMAX_NATIVE_API_KEY``，缺失则回退到
+``OPENAI_API_KEY``（理论上不会通过认证，但保证不挂死）。
+
 使用示例：内部模块，无对外接口
 """
 
@@ -62,8 +74,8 @@ class OpenAIProvider(_BaseHttpProvider):
         messages.append({"role": "user", "content": prompt})
         return _generate_openai_compatible(
             provider=self,
-            base_url=self._base_url,
-            api_key=self._api_key,
+            base_url=config.base_url or self._base_url,
+            api_key=_resolve_api_key_for_config(config, self._api_key),
             http_client=self._http_client,
             messages=messages,
             config=config,
@@ -74,6 +86,26 @@ class OpenAIProvider(_BaseHttpProvider):
 
 
 # -- OpenAI-compatible generation (shared with GLM) --
+
+
+def _resolve_api_key_for_config(config: ModelConfig, default_key: str) -> str:
+    """Per-call API key resolution (2026-07-16).
+
+    ``api.minimaxi.com/v1`` (native MiniMax OpenAI-compatible endpoint)
+    requires a separate ``MINIMAX_NATIVE_API_KEY`` because the default
+    ``OPENAI_API_KEY`` is bound to the Ark Volcengine endpoint.  When
+    ``config.base_url`` matches the native MiniMax host we read the
+    dedicated env; otherwise we keep the provider's default key.
+
+    The match is a substring check on the host part to stay robust
+    against minor URL formatting differences.
+    """
+    base_url = config.base_url or ""
+    if "api.minimaxi.com" in base_url:
+        native_key = get_env("MINIMAX_NATIVE_API_KEY")
+        if native_key:
+            return native_key
+    return default_key
 
 
 def _generate_openai_compatible(
@@ -100,6 +132,11 @@ def _generate_openai_compatible(
         ] = config.max_tokens
     if config.reasoning_requested and config.reasoning_level != "none":
         payload["reasoning_effort"] = config.reasoning_level
+    # 2026-07-15: per-profile extra_body 合并。必须在 structured_output /
+    # tool_choice 之后追加，避免覆盖同名显式字段（payload[...] = 更靠右的赋值优先）。
+    if config.extra_body:
+        for key, value in config.extra_body.items():
+            payload.setdefault(key, value)
     mode = resolve_structured_output_mode(
         provider=config.provider,
         configured_mode=config.structured_output_mode,

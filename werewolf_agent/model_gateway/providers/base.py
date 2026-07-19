@@ -73,6 +73,9 @@ PROVIDER_DOTENV_KEYS = {
     "SILICONFLOW_BASE_URL",
     "MINIMAX_API_KEY",
     "MINIMAX_BASE_URL",
+    # NEW (2026-07-16): dedicated key for native MiniMax OpenAI-compatible
+    # endpoint ``api.minimaxi.com/v1``. Distinct from OPENAI_API_KEY (Ark).
+    "MINIMAX_NATIVE_API_KEY",
 }
 
 

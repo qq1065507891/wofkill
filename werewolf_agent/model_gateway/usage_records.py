@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 
 使用示例:
     >>> from werewolf_agent.model_gateway.usage_records import ModelConfig
@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from werewolf_agent.model_gateway.execution_records import AttemptExecutionRecord
@@ -27,7 +27,18 @@ from werewolf_agent.model_gateway.final_prompt_observer import (
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """单次模型调用解析后的配置。"""
+    """单次模型调用解析后的配置。
+
+    ``base_url`` 与 ``extra_body`` 是 2026-07-15 新增字段，用于在不新增
+    provider_name 的前提下，让同一 ``provider: openai`` 客户端同时服务
+    多个 endpoint（例如 ``api.minimaxi.com/v1`` 与
+    ``ark.cn-beijing.volces.com``）。``base_url=None`` 时回退到 provider
+    实例默认 URL；``extra_body`` 在 payload 末尾合并进 JSON 请求体，覆盖
+    默认字段必须用 kwargs spread。
+
+    ``extra_body`` 为 dict，不可哈希，故显式 ``__hash__ = None``。
+    路由侧把 ModelConfig 作为值对象传递，不放入 set/dict key，所以无影响。
+    """
     provider: str
     model: str
     temperature: float = 0.5
@@ -41,6 +52,10 @@ class ModelConfig:
     reasoning_level: str = "none"
     reasoning_requested: bool = False
     reasoning_capability: str = "none"
+    base_url: str | None = None
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    __hash__ = None  # type: ignore[assignment]
 
 
 @dataclass(frozen=True)

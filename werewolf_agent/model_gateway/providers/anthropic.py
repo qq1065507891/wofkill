@@ -1,9 +1,14 @@
 ﻿# -*- coding: utf-8 -*-
 """
 功能描述：Anthropic Messages API Provider 及响应解析器
+
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-13
+修改日期：2026-07-15
+
+2026-07-15 新增：``config.base_url`` 覆盖 provider 实例默认 URL；``config.extra_body``
+合并进 payload（不覆盖已有字段）。用于同一 Anthropic 兼容客户端服务多个 endpoint。
+
 使用示例：内部模块，无对外接口
 """
 
@@ -98,6 +103,10 @@ class AnthropicProvider(_BaseHttpProvider):
             payload["tools"] = tools
         if tool_choice and mode == StructuredOutputMode.NATIVE_TOOL:
             payload["tool_choice"] = tool_choice
+        # 2026-07-15: per-profile extra_body 合并，setdefault 不覆盖显式字段。
+        if config.extra_body:
+            for key, value in config.extra_body.items():
+                payload.setdefault(key, value)
 
         if final_prompt_observer is not None:
             system_content = str(payload.get("system") or "")
@@ -112,7 +121,7 @@ class AnthropicProvider(_BaseHttpProvider):
 
         start = time.monotonic()
         response = self._http_client.post(
-            f"{self._base_url}/v1/messages",
+            f"{config.base_url or self._base_url}/v1/messages",
             headers={
                 "x-api-key": self._api_key,
                 "anthropic-version": "2023-06-01",

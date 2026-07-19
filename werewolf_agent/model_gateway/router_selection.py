@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 
 使用示例:
     >>> _resolve_config(model_profiles={}, llm_profiles={}, player_assignments={}, agent_id="p01", task_type="speech")[0].provider
@@ -69,6 +69,8 @@ def _resolve_config(
         reasoning_level=enforced_level.value,
         reasoning_requested=enforced_level.value != "none",
         reasoning_capability=configured_level,
+        base_url=_resolve_base_url(model_profile),
+        extra_body=_resolve_extra_body(model_profile),
     )
 
     fallback_plan = build_fallback_routes(
@@ -204,6 +206,8 @@ def _fallback_config(
         reasoning_level=_reasoning_level(model_profile),
         reasoning_requested=bool(_reasoning_level(model_profile) != "none"),
         reasoning_capability=_reasoning_level(model_profile),
+        base_url=_resolve_base_url(model_profile),
+        extra_body=_resolve_extra_body(model_profile),
     )
 
 
@@ -215,6 +219,23 @@ def _reasoning_level(model_profile: dict[str, Any]) -> str:
     if isinstance(value, dict):
         value = value.get("level", "none")
     return str(value or "none")
+
+
+def _resolve_base_url(model_profile: dict[str, Any]) -> str | None:
+    """读 model_profile.base_url，缺失或非字符串返回 None（=用 provider 默认 URL）。"""
+    value = model_profile.get("base_url")
+    if not value or not isinstance(value, str):
+        return None
+    return value.rstrip("/")
+
+
+def _resolve_extra_body(model_profile: dict[str, Any]) -> dict[str, Any]:
+    """读 model_profile.extra_body，必须是 dict；非 dict 一律视为空（防 YAML 误填）。"""
+    value = model_profile.get("extra_body")
+    if not isinstance(value, dict):
+        return {}
+    # 浅拷贝防 caller mutate
+    return dict(value)
 
 
 def _level_satisfies(capability: str, required: str) -> bool:
