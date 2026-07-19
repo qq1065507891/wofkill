@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-18
+修改日期: 2026-07-19
 
 使用示例:
     python scripts/evaluate_audit_closure_thresholds.py report.json thresholds.json
@@ -42,12 +42,11 @@ _THRESHOLDS = (
     ("reasoning_fallback_disabled_count", "==", 0, "decision_execution_metrics_supported"),
     ("unsupported_public_fact_claim_count", "==", 0, "games"),
     ("reflection_persisted_rejected_fact_count", "==", 0, "reflection_contamination_metrics_supported"),
-    ("semantic_repair_target_preservation_rate", "==", 1.0, "semantic_repair_metrics_supported"),
     ("semantic_repair_speaker_attribution_preservation_rate", "==", 1.0, "semantic_repair_metrics_supported"),
     ("semantic_repair_negation_preservation_rate", "==", 1.0, "semantic_repair_metrics_supported"),
-    ("semantic_repair_no_new_claim_rate", "==", 1.0, "semantic_repair_metrics_supported"),
     ("semantic_repair_success_rate", ">=", 0.95, "semantic_repair_metrics_supported"),
     ("semantic_repair_generic_template_count", "==", 0, "semantic_repair_metrics_supported"),
+    ("semantic_repair_public_evidence_safety_rate", "==", 1.0, "semantic_repair_public_evidence_safety_metrics_supported"),
     ("possible_world_unique_rate", "==", 1.0, "possible_world_metrics_supported"),
     ("possible_world_evidence_coverage_rate", "==", 1.0, "possible_world_metrics_supported"),
     ("power_role_evidence_completeness_rate", "==", 1.0, "power_role_evidence_metrics_supported"),
@@ -62,7 +61,6 @@ _THRESHOLDS = (
     ("empty_reflection_success_count", "==", 0, "reflection_transaction_metrics_supported"),
     ("source_event_id_traceability_rate", "==", 1.0, "source_event_traceability_metrics_supported"),
     ("public_skill_resolution_leak_count", "==", 0, "public_exposure_metrics_supported"),
-    ("semantic_repair_verified_claim_retention_rate", "==", 1.0, "semantic_repair_verified_claim_retention_metrics_supported"),
 )
 
 

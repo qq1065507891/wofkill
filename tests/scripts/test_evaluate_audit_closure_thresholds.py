@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-13
-修改日期: 2026-07-15
+修改日期: 2026-07-19
 """
 
 from __future__ import annotations
@@ -162,6 +162,8 @@ def _passing_report() -> dict[str, object]:
         "semantic_repair_generic_template_count": 0,
         "semantic_repair_verified_claim_retention_metrics_supported": True,
         "semantic_repair_verified_claim_retention_rate": 1.0,
+        "semantic_repair_public_evidence_safety_metrics_supported": True,
+        "semantic_repair_public_evidence_safety_rate": 1.0,
         "possible_world_metrics_supported": True,
         "possible_world_unique_rate": 1.0,
         "possible_world_evidence_coverage_rate": 1.0,
@@ -210,7 +212,7 @@ def test_all_hard_thresholds_pass_with_complete_descriptors() -> None:
         "finished_count": 10,
         "aborted_count": 0,
     }
-    assert len(result["thresholds"]) == 44
+    assert len(result["thresholds"]) == 42
     assert all(set(item) == {
         "name", "supported", "actual", "operator", "expected", "passed"
     } for item in result["thresholds"])
@@ -540,6 +542,58 @@ def test_semantic_relation_invariants_are_hard_thresholds() -> None:
     assert result["overall_pass"] is False
 
 
+def test_semantic_observational_rates_do_not_gate_public_evidence_safety() -> None:
+    from scripts.evaluate_audit_closure_thresholds import evaluate_thresholds
+
+    report = _passing_report()
+    report.update({
+        "semantic_repair_target_preservation_rate": 0.0,
+        "semantic_repair_no_new_claim_rate": 0.0,
+        "semantic_repair_verified_claim_retention_rate": 0.0,
+    })
+
+    result = evaluate_thresholds(report)
+    by_name = {item["name"]: item for item in result["thresholds"]}
+
+    assert "semantic_repair_target_preservation_rate" not in by_name
+    assert "semantic_repair_no_new_claim_rate" not in by_name
+    assert "semantic_repair_verified_claim_retention_rate" not in by_name
+    assert by_name["semantic_repair_public_evidence_safety_rate"] == {
+        "name": "semantic_repair_public_evidence_safety_rate",
+        "supported": True,
+        "actual": 1.0,
+        "operator": "==",
+        "expected": 1.0,
+        "passed": True,
+    }
+    assert result["overall_pass"] is True
+
+
+@pytest.mark.parametrize(
+    ("support", "rate"),
+    [(False, 1.0), (True, None)],
+)
+def test_semantic_public_evidence_safety_gate_fails_closed_without_v2_evidence(
+    support: object,
+    rate: object,
+) -> None:
+    from scripts.evaluate_audit_closure_thresholds import evaluate_thresholds
+
+    report = _passing_report()
+    report.update({
+        "semantic_repair_public_evidence_safety_metrics_supported": support,
+        "semantic_repair_public_evidence_safety_rate": rate,
+    })
+
+    result = evaluate_thresholds(report)
+    by_name = {item["name"]: item for item in result["thresholds"]}
+
+    assert by_name["semantic_repair_public_evidence_safety_rate"]["supported"] is False
+    assert by_name["semantic_repair_public_evidence_safety_rate"]["actual"] is None
+    assert by_name["semantic_repair_public_evidence_safety_rate"]["passed"] is False
+    assert result["overall_pass"] is False
+
+
 def test_dispatched_threshold_does_not_mislabel_unconfirmed_as_confirmed() -> None:
     from scripts.evaluate_audit_closure_thresholds import evaluate_thresholds
 
@@ -591,9 +645,11 @@ def test_real_runtime_semantic_event_flows_through_report_and_threshold() -> Non
     by_name = {item["name"]: item for item in result["thresholds"]}
 
     assert by_name["semantic_repair_success_rate"]["passed"] is True
-    assert by_name["semantic_repair_target_preservation_rate"]["passed"] is True
-    assert by_name["semantic_repair_no_new_claim_rate"]["passed"] is True
-    assert by_name["semantic_repair_verified_claim_retention_rate"]["passed"] is True
+    assert "semantic_repair_target_preservation_rate" not in by_name
+    assert "semantic_repair_no_new_claim_rate" not in by_name
+    assert "semantic_repair_verified_claim_retention_rate" not in by_name
+    assert by_name["semantic_repair_public_evidence_safety_rate"]["supported"] is False
+    assert result["overall_pass"] is False
 
 
 def test_cli_writes_threshold_file_before_returning_failure(tmp_path) -> None:

@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-投影终局后调用与语义修复验收指标。
+投影终局后调用与 V1/V2 语义修复验收指标。
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 """
 
 from __future__ import annotations
@@ -150,6 +150,11 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
             and isinstance(row.get("speaker_attribution_preserved"), bool)
             and isinstance(row.get("negation_preserved"), bool)
             and _is_non_negative_int(row.get("introduced_claim_count"))
+            and _has_supported_semantic_gate_version(row)
+            and (
+                not _is_semantic_gate_v2(row)
+                or _is_non_negative_int(row.get("unsupported_public_claim_count"))
+            )
             and row.get("fallback_kind") in _SEMANTIC_FALLBACK_KINDS
             and (
                 (row.get("success") is True and row.get("fallback_kind") == "no_fallback")
@@ -162,12 +167,7 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         )
     )
     semantic_success = sum(
-        row.get("success") is True
-        and row.get("target_preserved") is True
-        and row.get("speaker_attribution_preserved") is True
-        and row.get("negation_preserved") is True
-        and row.get("introduced_claim_count") == 0
-        and row.get("retained_verified_claim_count") == row.get("verified_claim_count")
+        _semantic_row_is_successful(row)
         for row in semantic_rows
     )
     target_preserved = sum(row.get("target_preserved") is True for row in semantic_rows)
@@ -209,6 +209,21 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         if semantic_source_complete
         else None
     )
+    public_evidence_safety_supported = (
+        projection_is_supported
+        and semantic_count > 0
+        and semantic_reconciliation_complete
+        and len(semantic_rows) == semantic_count
+        and all(
+            _is_semantic_gate_v2(row)
+            and _is_non_negative_int(row.get("unsupported_public_claim_count"))
+            for row in semantic_rows
+        )
+    )
+    public_evidence_safe_count = sum(
+        row.get("unsupported_public_claim_count") == 0
+        for row in semantic_rows
+    )
     terminal_metrics_supported = (
         projection_is_supported
         and terminal_fallback_count > 0
@@ -246,6 +261,14 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
         "semantic_repair_success_rate": (
             semantic_success / semantic_count if semantic_source_complete else None
         ),
+        "semantic_repair_public_evidence_safety_metrics_supported": (
+            public_evidence_safety_supported
+        ),
+        "semantic_repair_public_evidence_safety_rate": (
+            public_evidence_safe_count / semantic_count
+            if public_evidence_safety_supported
+            else None
+        ),
         "semantic_repair_target_preservation_rate": (
             target_preserved / semantic_count if semantic_source_complete else None
         ),
@@ -269,6 +292,36 @@ def _compute_terminal_semantic_acceptance_metrics_from_normalized(
             retained_verified_claims / len(retention_rows) if retention_rows else None
         ),
     }
+
+
+def _has_supported_semantic_gate_version(row: Mapping[str, Any]) -> bool:
+    """无版本行保持 V1 兼容；显式版本只能是 V2。"""
+    return "semantic_gate_version" not in row or _is_semantic_gate_v2(row)
+
+
+def _is_semantic_gate_v2(row: Mapping[str, Any]) -> bool:
+    """判断语义审计行是否声明了受支持的 V2 门控。"""
+    version = row.get("semantic_gate_version")
+    return isinstance(version, int) and not isinstance(version, bool) and version == 2
+
+
+def _semantic_row_is_successful(row: Mapping[str, Any]) -> bool:
+    """按行版本计算成功，避免用 V1 观察指标否决 V2。"""
+    if _is_semantic_gate_v2(row):
+        return (
+            row.get("success") is True
+            and row.get("speaker_attribution_preserved") is True
+            and row.get("negation_preserved") is True
+            and row.get("unsupported_public_claim_count") == 0
+        )
+    return (
+        row.get("success") is True
+        and row.get("target_preserved") is True
+        and row.get("speaker_attribution_preserved") is True
+        and row.get("negation_preserved") is True
+        and row.get("introduced_claim_count") == 0
+        and row.get("retained_verified_claim_count") == row.get("verified_claim_count")
+    )
 
 
 def _semantic_identity(

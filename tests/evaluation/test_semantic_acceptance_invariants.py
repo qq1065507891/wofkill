@@ -1,16 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-验证语义修复说话者归属与否定关系进入最终验收指标。
+验证 V1/V2 语义修复验收指标与公开证据安全门控。
 
 作者: Project contributors
 创建日期: 2026-07-14
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 """
 
 from __future__ import annotations
 
 
-def _game(*, speaker_preserved: object, negation_preserved: object) -> dict[str, object]:
+def _game(
+    *,
+    speaker_preserved: object,
+    negation_preserved: object,
+    game_id: str = "g1",
+    action_index: int = 1,
+    **semantic_overrides: object,
+) -> dict[str, object]:
     semantic = {
         "repairable": True,
         "success": True,
@@ -22,15 +29,16 @@ def _game(*, speaker_preserved: object, negation_preserved: object) -> dict[str,
         "retained_verified_claim_count": 1,
         "generic_template_used": False,
         "fallback_kind": "no_fallback",
+        **semantic_overrides,
     }
     identity = {
         "trace_id": "trace-1",
-        "game_id": "g1",
-        "action_index": 1,
+        "game_id": game_id,
+        "action_index": action_index,
         "task_type": "speech",
     }
     return {
-        "game_id": "g1",
+        "game_id": game_id,
         "players": {"p01": {"role": "villager"}},
         "events": [
             {
@@ -60,6 +68,119 @@ def test_acceptance_reports_speaker_and_negation_preservation_rates() -> None:
     assert metrics["semantic_repair_metrics_supported"] is True
     assert metrics["semantic_repair_speaker_attribution_preservation_rate"] == 1.0
     assert metrics["semantic_repair_negation_preservation_rate"] == 1.0
+
+
+def test_v1_semantic_success_calculation_remains_unchanged_without_version() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    metrics = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            target_preserved=False,
+            introduced_claim_count=1,
+            retained_verified_claim_count=0,
+        ),
+    ])
+
+    assert metrics["semantic_repair_success_count"] == 0
+    assert metrics["semantic_repair_success_rate"] == 0.0
+    assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is False
+    assert metrics["semantic_repair_public_evidence_safety_rate"] is None
+
+
+def test_v2_success_uses_public_evidence_safety_not_observational_metrics() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    metrics = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            target_preserved=False,
+            introduced_claim_count=1,
+            verified_claim_count=2,
+            retained_verified_claim_count=1,
+            unsupported_public_claim_count=0,
+        ),
+    ])
+
+    assert metrics["semantic_repair_success_count"] == 1
+    assert metrics["semantic_repair_success_rate"] == 1.0
+    assert metrics["semantic_repair_target_preservation_rate"] == 0.0
+    assert metrics["semantic_repair_no_new_claim_rate"] == 0.0
+    assert metrics["semantic_repair_verified_claim_retention_rate"] == 0.0
+    assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is True
+    assert metrics["semantic_repair_public_evidence_safety_rate"] == 1.0
+
+
+def test_v2_public_evidence_safety_rate_counts_unsafe_rows() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    metrics = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            success=False,
+            generic_template_used=True,
+            fallback_kind="generic_template",
+            unsupported_public_claim_count=1,
+        ),
+    ])
+
+    assert metrics["semantic_repair_public_evidence_safety_metrics_supported"] is True
+    assert metrics["semantic_repair_public_evidence_safety_rate"] == 0.0
+
+
+def test_public_evidence_safety_fails_closed_for_mixed_or_incomplete_v2_rows() -> None:
+    from werewolf_agent.evaluation.acceptance_audit import (
+        compute_acceptance_audit_metrics,
+    )
+
+    mixed = compute_acceptance_audit_metrics([
+        _game(speaker_preserved=True, negation_preserved=True),
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            game_id="g2",
+            semantic_gate_version=2,
+            unsupported_public_claim_count=0,
+        ),
+    ])
+    missing_v2_count = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+        ),
+    ])
+    malformed_v2_count = compute_acceptance_audit_metrics([
+        _game(
+            speaker_preserved=True,
+            negation_preserved=True,
+            semantic_gate_version=2,
+            unsupported_public_claim_count=-1,
+        ),
+    ])
+
+    assert mixed["semantic_repair_public_evidence_safety_metrics_supported"] is False
+    assert mixed["semantic_repair_public_evidence_safety_rate"] is None
+    assert (
+        missing_v2_count["semantic_repair_public_evidence_safety_metrics_supported"]
+        is False
+    )
+    assert missing_v2_count["semantic_repair_public_evidence_safety_rate"] is None
+    assert malformed_v2_count[
+        "semantic_repair_public_evidence_safety_metrics_supported"
+    ] is False
+    assert malformed_v2_count["semantic_repair_public_evidence_safety_rate"] is None
 
 
 def test_acceptance_fails_closed_when_semantic_invariant_is_missing() -> None:
