@@ -4176,6 +4176,125 @@ def test_semantic_repair_allows_supported_revision(monkeypatch) -> None:
     }
 
 
+def test_not_implemented_provider_returns_aligned_terminal_retry() -> None:
+    """首次 tool_choice 不支持时，返回 retry 必须与终态轨迹一致。"""
+    from unittest.mock import patch
+    from werewolf_agent.model_gateway.execution_records import (
+        AttemptExecutionRecord,
+        AttemptOutcome,
+        EvidenceKind,
+        ReasoningLevel,
+        ReasoningStatus,
+        RootCause,
+        RouteKind,
+    )
+
+    provider = _SequenceJsonProvider([])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+
+    def _raise_not_implemented(_agent, _context, _request, attempt_context):
+        attempt_context.accept((AttemptExecutionRecord(
+            opaque_request_id=attempt_context.opaque_request_id,
+            ordinal=1,
+            provider="mock",
+            model="mock",
+            route_kind=RouteKind.PRIMARY,
+            root_cause=RootCause.INVALID_OUTPUT,
+            attempt_outcome=AttemptOutcome.FAILURE,
+            requested_reasoning_level=ReasoningLevel.HIGH,
+            normalized_reasoning_status=ReasoningStatus.REQUESTED_UNCONFIRMED,
+            reasoning_token_count=0,
+            evidence_kind=EvidenceKind.NONE,
+        ),))
+        raise NotImplementedError("private provider detail")
+
+    with patch(
+        "werewolf_agent.agents.player_action_flow.call_player_generation_request",
+        side_effect=_raise_not_implemented,
+    ):
+        action, retry = agent.act(context)
+
+    assert retry.attempt == 1
+    assert retry.max_retries == 2
+    assert retry.error_code == "structured_output_unsupported"
+    assert retry.error_message == "当前模型不支持结构化工具调用。"
+    assert retry.correction_hint == "请切换到支持结构化工具调用的模型后重试。"
+    assert retry.reason_codes == []
+    assert action.trace is not None
+    assert action.trace.retry is not None
+    assert action.trace.retry["error_code"] == "structured_output_unsupported"
+    assert action.trace.terminal_failure_code == "structured_output_unsupported"
+    assert action.trace.original_failure_code == "structured_output_unsupported"
+    assert action.trace.structured_failure_reason == "structured_output_unsupported"
+
+
+def test_speech_repair_then_no_tool_returns_aligned_semantic_fallback(
+    monkeypatch,
+) -> None:
+    """修复源后 tool_choice 不支持时，retry 对齐且 fallback 审计继续保留。"""
+    from unittest.mock import patch
+
+    from werewolf_agent.agents import player_action_flow
+
+    provider = _SequenceJsonProvider([
+        _semantic_speech_payload("p03声称自己是预言家，我怀疑p05。"),
+    ])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+        public_claim_ledger=[{"speaker": "p03", "text": "我是预言家。"}],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    original_call = player_action_flow.call_player_generation_request
+    calls = 0
+
+    def _raise_on_repair(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise NotImplementedError("private provider detail")
+        return original_call(*args)
+
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复"]), patch(
+        "werewolf_agent.agents.player_action_flow.call_player_generation_request",
+        side_effect=_raise_on_repair,
+    ):
+        action, retry = agent.act(context)
+
+    assert provider.calls == 1
+    assert calls == 2
+    assert retry.attempt == 2
+    assert retry.max_retries == 2
+    assert retry.error_code == "structured_output_unsupported"
+    assert retry.reason_codes == []
+    assert action.trace is not None
+    assert action.trace.retry is not None
+    assert action.trace.retry["error_code"] == "structured_output_unsupported"
+    assert action.trace.retry["reason_codes"] == []
+    assert action.trace.terminal_failure_code == "structured_output_unsupported"
+    assert action.trace.original_failure_code == "structured_output_unsupported"
+    assert action.trace.structured_failure_reason == "structured_output_unsupported"
+    assert action.trace.semantic_repair_audit is not None
+    assert action.trace.semantic_repair_audit["success"] is False
+    assert action.trace.semantic_repair_audit["retained_verified_claim_count"] == 1
+
+
 def test_semantic_repair_runs_before_speech_quality(monkeypatch) -> None:
     """语义门拒绝不受支持的公开断言时，不能再进入发言质量检查。"""
     from unittest.mock import patch

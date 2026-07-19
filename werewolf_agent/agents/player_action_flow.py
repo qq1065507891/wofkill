@@ -208,6 +208,17 @@ def run_player_action_flow(
             # Provider does not support tool_choice
             structured_failure_reason = "structured_output_unsupported"
             structured_failure_stage = StructuredFailureStage.PROTOCOL.value
+            retry = RetryInfo(
+                attempt=attempt,
+                max_retries=agent.max_retries,
+                error_code=structured_failure_reason,
+                error_message="当前模型不支持结构化工具调用。",
+                reason_codes=(
+                    list(retry.reason_codes)
+                    if semantic_repair_source is not None else []
+                ),
+                correction_hint="请切换到支持结构化工具调用的模型后重试。",
+            )
             fallback = _finalize_terminal_fallback(
                 retry_info=retry,
                 attempt_raw_text=raw_text,
