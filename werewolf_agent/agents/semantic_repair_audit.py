@@ -63,12 +63,45 @@ _HARMLESS_FIRST_PERSON_PREFIXES = ("其实", "不过")
 _HARMLESS_FIRST_PERSON_PREFIX_PATTERN = "|".join(
     re.escape(prefix) for prefix in _HARMLESS_FIRST_PERSON_PREFIXES
 )
+_ROLE_NEGATION_FORMS = ("不是", "并非", "不为")
+_ROLE_NEGATION_PATTERN = "|".join(
+    re.escape(form) for form in _ROLE_NEGATION_FORMS
+)
+_FIRST_PERSON_DENIAL_PREFIXES = ("没有", "并未", "未曾", "从未", "不")
+_FIRST_PERSON_DENIAL_PREFIX_PATTERN = "|".join(
+    re.escape(prefix) for prefix in _FIRST_PERSON_DENIAL_PREFIXES
+)
+_FIRST_PERSON_DENIAL_VERBS = (
+    "说",
+    "声称",
+    "表示",
+    "宣称",
+    "自认",
+    "自称",
+    "是",
+    "知道",
+    "获知",
+    "掌握",
+    "认为",
+)
+_FIRST_PERSON_DENIAL_VERB_PATTERN = "|".join(
+    re.escape(verb) for verb in _FIRST_PERSON_DENIAL_VERBS
+)
 _FIRST_PERSON_EVIDENCE_REF = re.compile(
     rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我"
 )
 _FIRST_PERSON_DENIAL_REF = re.compile(
-    rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我(?:没有|并未|未曾|从未|不)"
-    r"(?:说|声称|表示|宣称|自认|自称|是|知道|获知|掌握|认为)"
+    rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我"
+    rf"(?:{_FIRST_PERSON_DENIAL_PREFIX_PATTERN})"
+    rf"(?:{_FIRST_PERSON_DENIAL_VERB_PATTERN})"
+)
+_QUOTED_NEGATED_ROLE_REF = re.compile(
+    rf"^(?P<subject>p\d{{2}}|我)(?:{_ROLE_NEGATION_PATTERN})(?P<role>.+)$"
+)
+_QUOTED_SELF_DENIAL_ROLE_REF = re.compile(
+    rf"^(?:{_HARMLESS_FIRST_PERSON_PREFIX_PATTERN})?我"
+    rf"(?:{_FIRST_PERSON_DENIAL_PREFIX_PATTERN})"
+    rf"(?:{_FIRST_PERSON_DENIAL_VERB_PATTERN})(?:我|自己)是(?P<role>.+)$"
 )
 _SOFT_ATTRIBUTION_DELIMITERS = frozenset(("，", ",", "：", ":"))
 _BALANCED_QUOTE_PAIRS = {"“": "”", '"': '"'}
@@ -467,17 +500,25 @@ def _normalized_reporting_clause(
         return original_clause
     quoted_claim = continuation[1:-1].strip()
     reporter = reporting_fragment[:3]
-    if quoted_claim.startswith("我不是"):
-        return f"{reporter}并未声称自己是{quoted_claim[len('我不是'):]}"
-    target_negation = re.fullmatch(r"(p\d{2})不是(.+)", quoted_claim)
-    if target_negation:
-        return (
-            f"{reporter}并未声称{target_negation.group(1)}是"
-            f"{target_negation.group(2)}"
-        )
+    if negated_claim := _canonical_quoted_negated_claim(reporter, quoted_claim):
+        return negated_claim
     if quoted_claim.startswith("我"):
         quoted_claim = f"自己{quoted_claim[1:]}"
     return f"{reporting_fragment}{quoted_claim or continuation}"
+
+
+def _canonical_quoted_negated_claim(reporter: str, quoted_claim: str) -> str | None:
+    """把受限引号内的角色否定转换为既有的否认声明形式。"""
+    self_denial = _QUOTED_SELF_DENIAL_ROLE_REF.fullmatch(quoted_claim)
+    if self_denial:
+        return f"{reporter}并未声称自己是{self_denial.group('role')}"
+    negated_role = _QUOTED_NEGATED_ROLE_REF.fullmatch(quoted_claim)
+    if not negated_role:
+        return None
+    subject = negated_role.group("subject")
+    if subject == "我":
+        subject = "自己"
+    return f"{reporter}并未声称{subject}是{negated_role.group('role')}"
 
 
 def _is_normalizable_public_evidence(
@@ -495,7 +536,8 @@ def _is_normalizable_public_evidence(
         and claim.role
         and re.search(
             rf"{re.escape(claim.target)}[^，。；;]{{0,8}}"
-            rf"(?:是|不是|并非|不为)[^，。；;]{{0,4}}{re.escape(claim.role)}",
+            rf"(?:是|{_ROLE_NEGATION_PATTERN})[^，。；;]{{0,4}}"
+            rf"{re.escape(claim.role)}",
             text,
         )
     )
@@ -527,7 +569,8 @@ def _public_evidence_is_negated(
         return True
     if claim.role and re.search(
         rf"{re.escape(claim.target)}[^，。；;]{{0,8}}"
-        rf"(?:不是|并非|不为)[^，。；;]{{0,4}}{re.escape(claim.role)}",
+        rf"(?:{_ROLE_NEGATION_PATTERN})[^，。；;]{{0,4}}"
+        rf"{re.escape(claim.role)}",
         text,
     ):
         return True
