@@ -4569,8 +4569,8 @@ def test_semantic_repair_then_later_parse_or_illegal_output_stays_private(
     assert private_sentinel not in caplog.text
 
 
-def test_terminal_fallback_preserves_verified_claim_and_source_target(monkeypatch) -> None:
-    """重试耗尽时，确定性 fallback 保留公开论点并尽量保留原目标。"""
+def test_semantic_repair_accepts_supported_revision_with_v2_audit(monkeypatch) -> None:
+    """V2 接受删除旧论点并改变合法目标的修复发言。"""
     from unittest.mock import patch
 
     speeches = (
@@ -4603,17 +4603,29 @@ def test_terminal_fallback_preserves_verified_claim_and_source_target(monkeypatc
         "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
     )
     with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None]):
-        action, _ = agent.act(context)
+        action, retry = agent.act(context)
 
-    assert "p03" in action.speech and "预言家" in action.speech
-    assert "p05" in action.speech
-    assert "前后矛盾" not in action.speech
-    assert "我继续关注p05" in action.speech
+    assert provider.calls == 2
+    assert action.speech == speeches[-1]
+    assert action.target_id == "p07"
+    assert retry.error_code == "speech_quality"
+    assert retry.reason_codes == []
     assert action.trace is not None
-    assert action.trace.semantic_repair_audit["success"] is False
-    assert action.trace.semantic_repair_audit["target_preserved"] is True
-    assert action.trace.semantic_repair_audit["retained_verified_claim_count"] == 1
-    assert action.trace.semantic_repair_audit["introduced_claim_count"] == 0
+    assert action.trace.semantic_repair_audit == {
+        "semantic_gate_version": 2,
+        "repairable": True,
+        "success": True,
+        "target_preserved": False,
+        "speaker_attribution_preserved": True,
+        "negation_preserved": True,
+        "introduced_claim_count": 0,
+        "unsupported_public_claim_count": 0,
+        "verified_claim_count": 1,
+        "retained_verified_claim_count": 0,
+        "rejection_reason_codes": [],
+        "generic_template_used": False,
+        "fallback_kind": "no_fallback",
+    }
 
 
 def test_semantic_fallback_without_target_or_verified_claim_is_task_safe(
