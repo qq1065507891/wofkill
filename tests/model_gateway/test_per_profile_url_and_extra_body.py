@@ -592,6 +592,8 @@ class TestNativeMiniMaxApiKeyRouting:
         assert "MINIMAX_NATIVE_API_KEY" in message
         assert "MINIMAX_API_KEY" in message
         assert "ANTHROPIC_API_KEY" in message
+        assert "ANTHROPIC_BASE_URL" in message
+        assert "api.minimaxi.com" in message
         assert client.last_url is None
 
     def test_provider_default_minimax_url_uses_native_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
