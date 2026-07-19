@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-16
+修改日期: 2026-07-19
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -45,7 +45,9 @@ from werewolf_agent.agents.player_action_result import (
 from werewolf_agent.agents.semantic_repair_audit import (
     build_semantic_repair_audit,
     preserve_verified_claim_in_fallback,
-    semantic_repair_retains_verified_claim,
+    semantic_repair_correction_hint,
+    semantic_repair_rejection_message,
+    validate_semantic_repair,
 )
 from werewolf_agent.agents.player_fallback_speech import (
     build_task_terminal_fallback,
@@ -91,6 +93,7 @@ def run_player_action_flow(
     structured_output_mode = ""
     generation_attempt_context = GenerationAttemptContext(run_scope=context.agent_id)
     semantic_repair_source: PlayerAction | None = None
+    semantic_repair_audit: dict[str, Any] | None = None
 
     attempt = 0
     # Pipeline-optimization Task 1: track previous attempt's error signature
@@ -121,6 +124,7 @@ def run_player_action_flow(
             max_retries=agent.max_retries,
             error_code=retry.error_code,
             error_message=retry.error_message,
+            reason_codes=retry.reason_codes,
             correction_hint=retry.correction_hint,
         )
 
@@ -468,6 +472,44 @@ def run_player_action_flow(
                 break
             generation_attempt_context.reject_latest_output()
             continue
+        if semantic_repair_source is not None:
+            semantic_validation = validate_semantic_repair(
+                context, semantic_repair_source, action
+            )
+            if not semantic_validation.accepted:
+                structured_failure_reason = "semantic_claim_retention"
+                structured_failure_stage = StructuredFailureStage.SEMANTIC.value
+                reason_codes = list(semantic_validation.reason_codes)
+                retry = RetryInfo(
+                    attempt=attempt,
+                    max_retries=agent.max_retries,
+                    error_code="semantic_claim_retention",
+                    error_message=semantic_repair_rejection_message(reason_codes),
+                    reason_codes=reason_codes,
+                    correction_hint=semantic_repair_correction_hint(reason_codes),
+                )
+                logger.warning(
+                    "semantic repair rejected agent=%s task=%s attempt=%d reason_codes=%s",
+                    context.agent_id,
+                    context.task_type.value,
+                    attempt,
+                    ",".join(reason_codes),
+                )
+                should_short_circuit, last_error_signature = (
+                    agent._check_repeat_error_signature(
+                        retry,
+                        raw_text,
+                        attempt,
+                        last_error_signature,
+                        structured_output_mode=structured_output_mode,
+                    )
+                )
+                if should_short_circuit:
+                    generation_attempt_context.reject_latest_output()
+                    break
+                generation_attempt_context.reject_latest_output()
+                continue
+            semantic_repair_audit = semantic_validation.audit
         speech_quality_err = agent._speech_quality_error(context, action)
         if speech_quality_err:
             if semantic_repair_source is None:
@@ -507,38 +549,6 @@ def run_player_action_flow(
             generation_attempt_context.reject_latest_output()
             continue
 
-        if (
-            semantic_repair_source is not None
-            and not semantic_repair_retains_verified_claim(
-                context, semantic_repair_source, action
-            )
-        ):
-            structured_failure_reason = "speech_quality"
-            structured_failure_stage = StructuredFailureStage.SEMANTIC.value
-            retry = RetryInfo(
-                attempt=attempt,
-                max_retries=agent.max_retries,
-                error_code="semantic_claim_retention",
-                error_message="修复结果未完整保持目标与公开论点边界。",
-                correction_hint=(
-                    "保持源目标和全部已有公开来源支撑的论点，且不得新增事实声明。"
-                ),
-            )
-            should_short_circuit, last_error_signature = (
-                agent._check_repeat_error_signature(
-                    retry,
-                    raw_text,
-                    attempt,
-                    last_error_signature,
-                    structured_output_mode=structured_output_mode,
-                )
-            )
-            if should_short_circuit:
-                generation_attempt_context.reject_latest_output()
-                break
-            generation_attempt_context.reject_latest_output()
-            continue
-
         return finalize_successful_player_action(
             agent=agent,
             context=context,
@@ -554,23 +564,17 @@ def run_player_action_flow(
             ).retry_count,
             structured_output_mode=structured_output_mode,
             execution_attempts=generation_attempt_context.attempts,
-            semantic_repair_audit=(
-                build_semantic_repair_audit(
-                    context,
-                    semantic_repair_source,
-                    action,
-                    success=True,
-                )
-                if semantic_repair_source is not None else None
-            ),
+            semantic_repair_audit=semantic_repair_audit,
         ), retry
 
     # Fallback
     exit_reason = f" early_exit={retry.early_exit_reason}" if retry and retry.early_exit_reason else ""
     logger.warning(
-        "Agent %s exhausted retries (task=%s, attempts=%d, last_error=%s) → fallback%s",
+        "Agent %s exhausted retries (task=%s, attempts=%d, last_error=%s, "
+        "last_reason_codes=%s) → fallback%s",
         context.agent_id, context.task_type, attempt,
         retry.error_code if retry else "none",
+        ",".join(retry.reason_codes) if retry and retry.reason_codes else "none",
         exit_reason,
     )
     generation_attempt_context.append_terminal_fallback()

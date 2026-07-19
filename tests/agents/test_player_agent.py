@@ -4073,33 +4073,137 @@ def test_speech_quality_retry_records_real_semantic_repair_audit(monkeypatch) ->
 
     assert action.trace is not None
     assert action.trace.semantic_repair_audit == {
+        "semantic_gate_version": 2,
         "repairable": True, "success": True, "target_preserved": True,
         "speaker_attribution_preserved": True, "negation_preserved": True,
-        "introduced_claim_count": 0, "verified_claim_count": 0,
-        "retained_verified_claim_count": 0, "generic_template_used": False,
+        "introduced_claim_count": 0, "unsupported_public_claim_count": 0,
+        "verified_claim_count": 0, "retained_verified_claim_count": 0,
+        "rejection_reason_codes": [], "generic_template_used": False,
         "fallback_kind": "no_fallback",
     }
 
 
-def test_semantic_repair_retries_until_verified_claim_is_retained(monkeypatch) -> None:
-    """语义修复不得接受丢失已有公开支撑论点的输出。"""
-    from unittest.mock import patch
-
-    speeches = (
-        "p03声称自己是预言家，我怀疑p05。",
-        "我是好人，我怀疑p05，依据其发言矛盾，我倾向投p05。",
-        "p03声称自己是预言家。我是好人，我怀疑p05，依据其发言矛盾，我倾向投p05。",
-    )
-    payloads = [json.dumps({
-        "action_type": "speech", "target_id": "p05", "speech": speech,
-        "reason": "公开发言", "confidence": 0.6,
+def _semantic_speech_payload(
+    speech: str,
+    *,
+    target: str | None = "p05",
+    reason: str = "公开发言",
+) -> str:
+    """构造通过结构化解析的公开发言 payload。"""
+    return json.dumps({
+        "action_type": "speech", "target_id": target, "speech": speech,
+        "reason": reason, "confidence": 0.6,
         "private_intent": {
             "true_role": "villager", "faction_goal": "find_wolves",
             "claimed_view": "good_player_without_night_info",
-            "pressure_target": "p05", "risk_flags": [],
+            "pressure_target": target, "risk_flags": [],
         },
-    }, ensure_ascii=False) for speech in speeches]
+    }, ensure_ascii=False)
+
+
+def test_semantic_repair_allows_supported_revision(monkeypatch) -> None:
+    """V2 允许修复发言改变合法怀疑目标，不再强制保留旧论点。"""
+    from unittest.mock import patch
+
+    speeches = (
+        "我怀疑p05。",
+        "我是好人，我怀疑p07，依据其发言矛盾，我倾向投p07。",
+    )
+    payloads = [
+        _semantic_speech_payload(speech, target=target)
+        for speech, target in zip(speeches, ("p05", "p07"), strict=True)
+    ]
     provider = _SequenceJsonProvider(payloads)
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH],
+        legal_targets=["p05", "p07"],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None]):
+        action, _ = agent.act(context)
+
+    assert provider.calls == 2
+    assert action.speech == speeches[-1]
+    assert action.trace is not None
+    assert action.trace.semantic_repair_audit == {
+        "semantic_gate_version": 2,
+        "repairable": True,
+        "success": True,
+        "target_preserved": False,
+        "speaker_attribution_preserved": True,
+        "negation_preserved": True,
+        "introduced_claim_count": 0,
+        "unsupported_public_claim_count": 0,
+        "verified_claim_count": 0,
+        "retained_verified_claim_count": 0,
+        "rejection_reason_codes": [],
+        "generic_template_used": False,
+        "fallback_kind": "no_fallback",
+    }
+
+
+def test_semantic_repair_runs_before_speech_quality(monkeypatch) -> None:
+    """语义门拒绝不受支持的公开断言时，不能再进入发言质量检查。"""
+    from unittest.mock import patch
+
+    provider = _SequenceJsonProvider([
+        _semantic_speech_payload("我怀疑p05。"),
+        _semantic_speech_payload("p07声称自己是猎人，我怀疑p05。"),
+    ])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+    quality_calls: list[str] = []
+
+    def _speech_quality_once(_context, action):
+        quality_calls.append(action.speech)
+        if len(quality_calls) > 1:
+            raise AssertionError("speech quality must not inspect semantic rejection")
+        return "需修复"
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", side_effect=_speech_quality_once):
+        action, retry = agent.act(context)
+
+    assert provider.calls == 2
+    assert quality_calls == ["我怀疑p05。"]
+    assert retry.error_code == "semantic_claim_retention"
+    assert retry.reason_codes == ["unsupported_public_claim"]
+    assert action.trace is not None
+    assert action.trace.retry is not None
+    assert action.trace.retry["reason_codes"] == ["unsupported_public_claim"]
+
+
+def test_semantic_repair_reason_codes_reach_prompt_and_success_trace(monkeypatch) -> None:
+    """语义拒绝的稳定原因码进入下一轮提示，并保留在成功轨迹中。"""
+    from unittest.mock import patch
+
+    private_sentinel = "PRIVATE_SENTINEL"
+    rejected_speech = "REJECTED_SPEECH_SENTINEL"
+    provider = _SequenceJsonProvider([
+        _semantic_speech_payload("我怀疑p05。"),
+        _semantic_speech_payload(
+            f"p07声称自己是猎人，{rejected_speech}", reason=private_sentinel,
+        ),
+        _semantic_speech_payload("我是好人，我怀疑p05，依据其发言矛盾。"),
+    ])
     router = ModelRouter(
         model_profiles={}, llm_profiles={},
         player_assignments={"p01": "default"}, providers={"mock": provider},
@@ -4108,19 +4212,71 @@ def test_semantic_repair_retries_until_verified_claim_is_retained(monkeypatch) -
     context = AgentContext(
         agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
         own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
-        public_claim_ledger=[{"speaker": "p03", "text": "我是预言家。"}],
     )
 
     monkeypatch.setattr(
         "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
     )
-    with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None, None]):
-        action, _ = agent.act(context)
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复", None]):
+        action, retry = agent.act(context)
 
-    assert provider.calls == 3
-    assert action.speech == speeches[-1]
+    prompt = provider.prompts[-1]
+    assert "输出包含缺少公开证据支持的事实声明" in prompt
+    assert "删除或改写缺少公开证据支持的事实声明" in prompt
+    assert "说话人归属发生变化" not in prompt
+    assert "否定关系发生变化" not in prompt
+    assert rejected_speech not in prompt
+    assert private_sentinel not in prompt
+    assert "不得新增任何事实" not in prompt
+    assert "保留全部论点" not in prompt
+    assert retry.reason_codes == ["unsupported_public_claim"]
     assert action.trace is not None
-    assert action.trace.semantic_repair_audit["retained_verified_claim_count"] == 1
+    assert action.trace.retry is not None
+    assert action.trace.retry["reason_codes"] == ["unsupported_public_claim"]
+
+
+def test_semantic_repair_terminal_log_trace_privacy(monkeypatch, caplog) -> None:
+    """语义终退日志和轨迹只保留稳定码，不泄露被拒输出或私有字段。"""
+    from unittest.mock import patch
+
+    rejected_speech = "REJECTED_SPEECH_SENTINEL"
+    private_sentinel = "PRIVATE_SENTINEL"
+    provider = _SequenceJsonProvider([
+        _semantic_speech_payload("我怀疑p05。"),
+        _semantic_speech_payload(
+            f"p07声称自己是猎人，{rejected_speech}", reason=private_sentinel,
+        ),
+    ])
+    router = ModelRouter(
+        model_profiles={}, llm_profiles={},
+        player_assignments={"p01": "default"}, providers={"mock": provider},
+    )
+    agent = PlayerAgent(agent_id="p01", model_router=router, max_retries=2)
+    context = AgentContext(
+        agent_id="p01", task_type=TaskType.SPEECH, phase="day", day_number=2,
+        own_role="villager", legal_actions=[ActionType.SPEECH], legal_targets=["p05"],
+    )
+
+    monkeypatch.setattr(
+        "werewolf_agent.agents.player_action_flow.time.sleep", lambda _delay: None
+    )
+    with patch.object(agent, "_speech_quality_error", side_effect=["需修复"]):
+        action, retry = agent.act(context)
+
+    logs = caplog.text
+    assert "agent=p01 task=speech attempt=2 reason_codes=unsupported_public_claim" in logs
+    assert "last_error=semantic_claim_retention" in logs
+    assert "last_reason_codes=unsupported_public_claim" in logs
+    assert rejected_speech not in logs
+    assert private_sentinel not in logs
+    assert action.trace is not None
+    assert action.trace.raw_text == ""
+    assert action.trace.parsed_action is None
+    assert action.trace.final_action is not None
+    assert action.trace.retry is not None
+    assert action.trace.retry["reason_codes"] == ["unsupported_public_claim"]
+    assert "error_message" not in action.trace.retry
+    assert retry.reason_codes == action.trace.retry["reason_codes"]
 
 
 def test_terminal_fallback_preserves_verified_claim_and_source_target(monkeypatch) -> None:
