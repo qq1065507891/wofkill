@@ -556,7 +556,7 @@ def _is_normalizable_public_evidence(
         claim.support_kind == "role_assignment"
         and claim.role
         and re.search(
-            rf"{re.escape(claim.target)}[^，。；;]{{0,8}}"
+            rf"{re.escape(claim.target)}(?:(?!p\d{{2}})[^，。；;]){{0,8}}"
             rf"(?:是|{_ROLE_NEGATION_PATTERN})[^，。；;]{{0,4}}"
             rf"{re.escape(claim.role)}",
             text,
@@ -589,7 +589,7 @@ def _public_evidence_is_negated(
     if target_start >= 0 and public_claim_is_negated(text, target_start):
         return True
     if claim.role and re.search(
-        rf"{re.escape(claim.target)}[^，。；;]{{0,8}}"
+        rf"{re.escape(claim.target)}(?:(?!p\d{{2}})[^，。；;]){{0,8}}"
         rf"(?:{_ROLE_NEGATION_PATTERN})[^，。；;]{{0,4}}"
         rf"{re.escape(claim.role)}",
         text,
