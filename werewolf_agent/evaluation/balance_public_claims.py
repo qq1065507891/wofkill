@@ -662,5 +662,6 @@ def night_info_claim_supported(
             relation_negated = (
                 match.group("relation") in _NIGHT_INFO_NEGATION_FORMS
             )
-            return relation_negated is negated
+            if relation_negated is negated:
+                return True
     return False

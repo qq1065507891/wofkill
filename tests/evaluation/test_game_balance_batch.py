@@ -126,6 +126,24 @@ def test_public_claim_classifier_preserves_night_info_polarity(
 
 
 @pytest.mark.parametrize(
+    "history",
+    [
+        [("p04", "p04知道狼刀信息"), ("p04", "p04不知道狼刀信息")],
+        [("p04", "p04不知道狼刀信息"), ("p04", "p04知道狼刀信息")],
+    ],
+)
+def test_night_info_support_scans_all_polarity_matches(
+    history: list[tuple[str, str]],
+) -> None:
+    from werewolf_agent.evaluation.balance_public_claims import (
+        night_info_claim_supported,
+    )
+
+    assert night_info_claim_supported("p04", history) is True
+    assert night_info_claim_supported("p04", history, negated=True) is True
+
+
+@pytest.mark.parametrize(
     ("claim", "history", "expected_unsupported"),
     [
         ("p03声称p05是狼人", [("p03", "我不认为p05是狼人")], 1),
@@ -164,6 +182,26 @@ def test_public_claim_classifier_preserves_night_info_polarity(
         ("p04知道狼刀信息", [("p04", "我并不知道狼刀信息")], 1),
         ("p04不知道狼刀信息", [("p04", "我未获知狼刀信息")], 0),
         ("p04知道狼刀信息", [("p04", "我未获知狼刀信息")], 1),
+        (
+            "p04知道狼刀信息",
+            [("p04", "p04知道狼刀信息"), ("p04", "p04不知道狼刀信息")],
+            0,
+        ),
+        (
+            "p04不知道狼刀信息",
+            [("p04", "p04知道狼刀信息"), ("p04", "p04不知道狼刀信息")],
+            0,
+        ),
+        (
+            "p04知道狼刀信息",
+            [("p04", "p04不知道狼刀信息"), ("p04", "p04知道狼刀信息")],
+            0,
+        ),
+        (
+            "p04不知道狼刀信息",
+            [("p04", "p04不知道狼刀信息"), ("p04", "p04知道狼刀信息")],
+            0,
+        ),
     ],
 )
 def test_public_sanitizer_matches_v2_discourse_polarity(
