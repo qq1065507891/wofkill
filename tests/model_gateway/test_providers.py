@@ -203,3 +203,84 @@ class TestProviderConfigError:
     def test_provider_config_error_is_runtime_error(self) -> None:
         from werewolf_agent.model_gateway.providers import ProviderConfigError
         assert issubclass(ProviderConfigError, RuntimeError)
+
+
+class TestStripThinkingPrefix:
+    def test_removes_think_tags(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import (
+            _strip_thinking_prefix,
+        )
+        content = "<think>The user asks 1+1=?</think>\n\n1+1=2。"
+        clean, thinking = _strip_thinking_prefix(content)
+        assert clean == "1+1=2。"
+        assert "1+1=?" in thinking
+
+    def test_no_think_tags_is_noop(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import (
+            _strip_thinking_prefix,
+        )
+        content = "1+1=2。"
+        clean, thinking = _strip_thinking_prefix(content)
+        assert clean == "1+1=2。"
+        assert thinking == ""
+
+    def test_multiple_think_tags_concatenated(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import (
+            _strip_thinking_prefix,
+        )
+        content = "<think>step1</think>\n<think>step2</think>\nanswer"
+        clean, thinking = _strip_thinking_prefix(content)
+        assert clean == "answer"
+        assert "step1" in thinking
+        assert "step2" in thinking
+
+    def test_whitespace_inside_think_tag(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import (
+            _strip_thinking_prefix,
+        )
+        content = "< think >reasoning< / think >\nanswer"
+        clean, thinking = _strip_thinking_prefix(content)
+        assert clean == "answer"
+        assert "reasoning" in thinking
+
+    def test_ark_models_already_clean(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import (
+            _strip_thinking_prefix,
+        )
+        # Ark 端点: content 纯答案, reasoning_content 独立
+        content = "1+1等于2。"
+        clean, thinking = _strip_thinking_prefix(content)
+        assert clean == "1+1等于2。"
+        assert thinking == ""
+
+    def test_empty_content_returns_empty(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import (
+            _strip_thinking_prefix,
+        )
+        clean, thinking = _strip_thinking_prefix("")
+        assert clean == ""
+        assert thinking == ""
+
+    def test_only_think_tag_returns_empty_clean(self) -> None:
+        from werewolf_agent.model_gateway.providers.openai import (
+            _strip_thinking_prefix,
+        )
+        content = "<think>just thinking, no output</think>"
+        clean, thinking = _strip_thinking_prefix(content)
+        assert clean == ""
+        assert "just thinking" in thinking
+
+
+class TestGenerateResultThinkingText:
+    def test_thinking_text_defaults_to_empty_string(self) -> None:
+        from werewolf_agent.model_gateway.usage_records import GenerateResult
+        result = GenerateResult(text="{}", provider="openai", model="test")
+        assert result.thinking_text == ""
+
+    def test_thinking_text_preserves_explicit_value(self) -> None:
+        from werewolf_agent.model_gateway.usage_records import GenerateResult
+        result = GenerateResult(
+            text="{}", provider="openai", model="test",
+            thinking_text="推理链内容",
+        )
+        assert result.thinking_text == "推理链内容"
