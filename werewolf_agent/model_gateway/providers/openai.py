@@ -19,6 +19,7 @@ native MiniMax endpoint 按 dedicated、vendor、scoped Anthropic key 解析，
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -92,6 +93,30 @@ class OpenAIProvider(_BaseHttpProvider):
 
 
 _MINIMAX_NATIVE_HOST = "api.minimaxi.com"
+
+_THINK_TAG = re.compile(r"<\s*think\s*>(.*?)<\s*/\s*think\s*>", re.DOTALL)
+
+
+def _strip_thinking_prefix(content: str) -> tuple[str, str]:
+    """从 MiniMax native content 剥离 <think> 标签。
+
+    MiniMax native OpenAI 兼容端点将推理链以 <think> XML 标签嵌入 content
+    字符串, 违反了 OpenAI Chat Completions 的 content/reasoning_content
+    字段分离契约。此函数在 provider 出口将响应标准化: content 只保留最终
+    答案, 推理链通过独立通道传递给 GenerateResult.thinking_text 供审计。
+
+    Ark/DeepSeek 等符合标准的端点走 message.reasoning_content 独立字段,
+    其 content 不含 <think>, 此函数自然是空操作。
+
+    返回 (clean_text, thinking_text)。
+    """
+    thinking_parts: list[str] = []
+    clean = content
+    for match in _THINK_TAG.finditer(content):
+        thinking_parts.append(match.group(1).strip())
+    if thinking_parts:
+        clean = _THINK_TAG.sub("", content).strip()
+    return clean, "\n---\n".join(thinking_parts)
 
 
 def _resolve_api_key_for_base_url(base_url: str, default_key: str) -> str:
@@ -223,12 +248,20 @@ def _generate_openai_compatible(
     message = data.get("choices", [{}])[0].get("message", {})
     tool_call_received = bool(message.get("tool_calls"))
     text = message.get("content", "") or _extract_openai_tool_text(message)
+    thinking_text = message.get("reasoning_content") or message.get("reasoning") or ""
+    # 标准化: 将 MiniMax native 的非标准 <think> 嵌入剥离, 与推理字段合并。
+    # Ark 等符合标准的端点 message.content 不含 <think>,
+    # _strip_thinking_prefix 是空操作; 其 reasoning_content 独立字段通过
+    # thinking_text 走入审计通道。
+    clean_text, embedded_thinking = _strip_thinking_prefix(text)
+    thinking_text = thinking_text or embedded_thinking
+    text = clean_text
     usage = data.get("usage", {})
     details = usage.get("completion_tokens_details") or {}
     reasoning_tokens = int(details.get("reasoning_tokens", 0) or 0)
-    message_reasoning = message.get("reasoning_content") or message.get("reasoning")
     return GenerateResult(
         text=text,
+        thinking_text=thinking_text,
         provider=provider.name,
         model=config.model,
         tool_call_required=forcing_tool,
@@ -249,7 +282,7 @@ def _generate_openai_compatible(
         structured_output_mode=mode.value,
         reasoning_status=(
             "confirmed"
-            if reasoning_tokens or message_reasoning
+            if reasoning_tokens or thinking_text
             else "requested_unconfirmed" if config.reasoning_requested
             else "not_requested"
         ),

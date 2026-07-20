@@ -144,6 +144,7 @@ class GenerateResult:
     reasoning_level: str = "none"
     reasoning_status: str = "not_requested"
     reasoning_tokens: int = 0
+    thinking_text: str = ""  # 2026-07-21: reasoning 原文, 不进 text。Ark reasoning_content / MiniMax <think> 剥离内容统一走此字段。
     attempts: tuple[AttemptExecutionRecord, ...] = ()
 
     def __post_init__(self) -> None:
