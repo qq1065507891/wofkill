@@ -3117,6 +3117,37 @@ def test_speech_quality_retry_hint_targets_public_record_grounding():
     assert "不要继续声称公开记录已经证明" in retry.correction_hint
 
 
+def test_speech_quality_retry_hint_echoes_rejected_speech():
+    """回传被拒发言原文，让 LLM 能定点修改而非凭抽象提示重写。"""
+    from werewolf_agent.agents.player_quality_retries import build_speech_quality_retry
+
+    rejected = "我是好人阵营。p11遗言自认白痴，我怀疑p02利用遗言做身份，倾向投p02。"
+    retry = build_speech_quality_retry(
+        "发言不完整。不要把推测写成“公开记录”，无法确认时改成“我推测/我质疑”。",
+        attempt=2,
+        max_retries=3,
+        rejected_speech=rejected,
+    )
+
+    # 原文片段进入提示，且明确要求定点修改、保留其余论点。
+    assert "p02" in retry.correction_hint
+    assert "定点修改" in retry.correction_hint
+    assert rejected[:20] in retry.correction_hint
+
+
+def test_speech_quality_retry_hint_omits_echo_when_no_rejected_speech():
+    """未提供原文时向后兼容：不追加“上一条被拒发言”回显块。"""
+    from werewolf_agent.agents.player_quality_retries import build_speech_quality_retry
+
+    retry = build_speech_quality_retry(
+        "发言不完整。需要表明你的身份立场（如'我是好人阵营'）。",
+        attempt=1,
+        max_retries=3,
+    )
+
+    assert "上一条被拒发言" not in retry.correction_hint
+
+
 def test_vote_quality_hint_specific():
     """P1-S6 (residual): vote_quality retry → short specific correction_hint.
 

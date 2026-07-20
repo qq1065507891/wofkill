@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-07
-修改日期: 2026-07-19
+修改日期: 2026-07-20
 
 使用示例:
     >>> from werewolf_agent.agents.player_action_flow import run_player_action_flow
@@ -565,14 +565,14 @@ def run_player_action_flow(
                 speech_quality_err,
                 attempt=attempt,
                 max_retries=agent.max_retries,
+                # 回传被拒发言原文，让重试提示支持定点修改而非抽象重写。
+                rejected_speech=action.speech,
             )
-            should_short_circuit, last_error_signature = agent._check_repeat_error_signature(
-                retry, raw_text, attempt, last_error_signature,
-                structured_output_mode=structured_output_mode,
-            )
-            if should_short_circuit:
-                generation_attempt_context.reject_latest_output()
-                break
+            # speech_quality 不做 repeat-signature 短路：correction_hint 现在
+            # 携带被拒原文，模型可定点修改；两次措辞近似不再等于“卡死”，
+            # 直接短路会白白放弃修复机会。重复失败靠 max_retries 自然兜底。
+            # 重置签名，避免残留状态影响后续跨类失败对比。
+            last_error_signature = None
             generation_attempt_context.reject_latest_output()
             continue
         vote_quality_err = agent._vote_quality_error(context, action)
