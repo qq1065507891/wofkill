@@ -4462,3 +4462,47 @@ test_live_runtime.py -p no:cacheprovider -q`
 - GREEN:
   `python -m pytest tests/agents/test_output_parser.py tests/cognition/test_cognition.py tests/runtime/test_private_memory_sanitize.py tests/runtime/test_visible_state.py tests/runtime/test_context.py tests/rules/test_rule_engine_v1.py tests/runtime/test_vote_flow.py tests/runtime/test_witch_flow.py tests/runtime/test_night_flow.py tests/api/test_auth.py tests/api/test_api.py tests/api/test_views.py tests/api/test_caller_role_warn.py`
   → 507 passed。
+
+## 2026-07-20 stance-text-align: 协议层与 stance 证据同源 + fallback 白名单扩展
+
+**触发**: 真实对局 N1 空刀 debug 日志
+```
+[狼人密谈] 第1轮已达成共识，提前结束讨论  (text 路径多数)
+[wolf_team_plan_node] fallback path used, reason=schema_validation_failed
+[狼人决策] _planned_wolf_kill primary: status=all_abstain target=None supporters={}
+[狼人决策] _planned_wolf_kill 空刀: reason=plan_generation_failed
+```
+
+**根因**: `wolf_strategy.summarize_wolf_consensus`(看 text 正则)与
+`derive_wolf_consensus_evidence`(看 `target_stance` 结构化字段)读不同源。
+LLM agent 在 `WolfDiscussionSpeechPlayerAction.speech` 里输出 "同意刀 p05",
+但 `target_stance` 字段留 None, `build_validated_wolf_target_stance` 默认填
+`{stance:"abstain", target_id:None}` → 协议层看 text 判定达成共识提前结束,
+共识证据看 stance 算出 all_abstain → 空刀。
+
+**修复**:
+- `werewolf_agent/runtime/wolf_strategy.py`
+  `should_end_discussion_early` 新增 `positive_stance_count` kwarg,
+  为 0 时强制返回 False (text 即使看似有共识, 只要没人 propose/support 结构化
+  目标就不准提前结束)。
+- `werewolf_agent/runtime/nodes/wolf_discussion.py`
+  `wolf_discussion` 节点调用前从 `collect_current_wolf_target_stances` 数
+  本夜 primary positive stance, 传给 `should_end_discussion_early`。
+- `werewolf_agent/runtime/nodes/node_helpers.py`
+  `_trusted_wolf_plan_failure_reason` 区分两类失败:
+  provider/captain/registry 不可用 → `provider_unavailable`;
+  其余 agent_wolf_team_plan 真实失败 (schema_validation_failed /
+  json_parse_failed / membership_validation_failed / empty_response /
+  generate_error) → 原 reason 透传, 用于精确诊断 LLM 战术层。
+  `_planned_wolf_kill.no_kill` 增加 `raw_reason` 参数, 把非枚举 reason
+  规范化到 `plan_generation_failed` 同时塞 `extra_payload.raw_reason`。
+- `tests/runtime/test_wolf_strategy.py` 新增 3 测试 + 修正 1 旧测试
+  (固化 stance 同源契约: 旧 `test_wolf_discussion_can_end_early_after_consensus`
+  必须显式传 `positive_stance_count`)。
+
+**测试**: 1703 passed, 1 skipped (全 runtime 域回归无破坏)。
+
+**未修的根因**(P0 model 行为层,非代码层):
+`WolfDiscussionSpeechPlayerAction.target_stance` 仍 optional, LLM prompt 没强制
+要求 WOLF_DISCUSSION 任务同时填结构化字段。本次只修"防御性同源", 让 text/stance
+脱钩不再自动触发 N1 空刀; LLM 战术层需要单独 task 调 prompt 引导。

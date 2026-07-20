@@ -239,13 +239,25 @@ def summarize_wolf_consensus(
 def should_end_discussion_early(
     consensus: dict[str, Any],
     alive_wolves_count: int,
+    *,
+    positive_stance_count: int = 0,
 ) -> bool:
     """Check if discussion can end early after consensus.
 
     Requires strict majority (>50%) agreement on kill target AND roles assigned.
+    ``positive_stance_count`` is the number of structural ``target_stance``
+    entries with stance in {propose, support} and target_id != None; when 0
+    the discussion has produced no actionable intent even if the free-text
+    path did, so we must not early-end (defense against text/stance
+    desynchronization, e.g. LLM emitted a target in ``speech`` but left
+    ``target_stance`` empty and the validator defaulted it to ``abstain``).
     """
     if alive_wolves_count <= 1:
         return True  # 单狼无需讨论
+
+    if positive_stance_count == 0:
+        # 没有人 propose/support 结构化目标, 即便 text 看似有共识也不准收
+        return False
 
     agreement = consensus.get("agreement_count", 0)
     # 2 狼需要完全一致，>2 狼需要严格多数

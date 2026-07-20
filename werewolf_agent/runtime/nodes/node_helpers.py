@@ -39,6 +39,7 @@ from werewolf_agent.runtime.event_metadata import (
 from werewolf_agent.runtime.timers import timed_call
 from werewolf_agent.runtime.timeline import phase_label
 from werewolf_agent.runtime.wolf_no_kill_policy import (
+    NO_KILL_REASON_CODES,
     NoKillPolicy,
     NoKillReasonCode,
     no_kill_policy_for_state,
@@ -311,9 +312,25 @@ def _first_alive_target(gs: GameState, player_id: str | None) -> str | None:
 def _trusted_wolf_plan_failure_reason(
     gs: GameState,
 ) -> NoKillReasonCode | None:
-    """仅从本夜私有 V2 fallback 事件读取失败类别，不授予目标执行权。"""
+    """仅从本夜私有 V2 fallback 事件读取失败类别，不授予目标执行权。
+
+    区分两类失败:
+    - provider/captain/registry 不可用 → ``provider_unavailable`` (用于 no_kill
+      reason 标签, 让审计看到这是工具栈问题, 不是协议失败)
+    - LLM 输出了结构化内容但 schema/membership/parse 不通过 →
+      原 ``reason`` 字符串直接透传 (例如 ``schema_validation_failed`` /
+      ``json_parse_failed`` / ``membership_validation_failed`` /
+      ``empty_response`` / ``generate_error``), 用于精确诊断 LLM 战术层问题。
+    """
     if not _v2_event_log_identity_is_authoritative(gs):
         return None
+    _PROVIDER_UNAVAILABLE_REASONS = frozenset({
+        "llm_failed_or_unavailable",
+        "provider_unavailable",
+        "captain_agent_missing",
+        "no_registry",
+        "no_alive_wolves",
+    })
     for event in reversed(gs.events):
         if event.type != "wolf_team_plan_fallback":
             continue
@@ -332,12 +349,7 @@ def _trusted_wolf_plan_failure_reason(
             continue
         normalized = raw_reason.strip().lower()
         if (
-            normalized in {
-                "llm_failed_or_unavailable",
-                "provider_unavailable",
-                "captain_agent_missing",
-                "no_registry",
-            }
+            normalized in _PROVIDER_UNAVAILABLE_REASONS
             or normalized.startswith((
                 "agent_exception:",
                 "provider_exception:",
@@ -345,7 +357,8 @@ def _trusted_wolf_plan_failure_reason(
             ))
         ):
             return "provider_unavailable"
-        return "plan_generation_failed"
+        # 原样透传 agent_wolf_team_plan 的真实失败 reason
+        return raw_reason
     return None
 
 
@@ -433,6 +446,7 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     def no_kill(
         priority: WolfPriorityConsensus,
         reason: NoKillReasonCode,
+        raw_reason: str | None = None,
     ) -> dict[str, Any]:
         logger.debug(
             "  [狼人决策] _planned_wolf_kill 空刀: reason=%s priority=%s status=%s quorum=%s supporters=%s",
@@ -446,24 +460,39 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
                 in priority.supporters_by_target.items()
             },
         )
+        extra_payload: dict[str, Any] = {
+            "consensus_priority": priority.priority,
+            "consensus_status": priority.status,
+            "quorum": consensus.quorum,
+            "supporters": {
+                target_id: list(supporters)
+                for target_id, supporters
+                in priority.supporters_by_target.items()
+            },
+        }
+        if raw_reason and raw_reason != reason:
+            extra_payload["raw_reason"] = raw_reason
         return no_kill_policy_for_state(state).resolve(
             gs,
             reason_code=reason,
             primary_positive_support=positive_support(consensus.primary),
             backup_positive_support=positive_support(consensus.backup),
-            extra_payload={
-                "consensus_priority": priority.priority,
-                "consensus_status": priority.status,
-                "quorum": consensus.quorum,
-                "supporters": {
-                    target_id: list(supporters)
-                    for target_id, supporters
-                    in priority.supporters_by_target.items()
-                },
-            },
+            extra_payload=extra_payload,
         )
     authorized_statuses = {"majority", "single_wolf"}
-    trusted_plan_failure = _trusted_wolf_plan_failure_reason(gs)
+    # ``trusted_plan_failure`` 可能是 agent_wolf_team_plan 真实失败 reason
+    # (如 schema_validation_failed / json_parse_failed / membership_validation_failed),
+    # 这些不在 NoKillReasonCode 字面量枚举内, 必须规范化到 enum 才能让
+    # no_kill_policy.resolve 接受, 同时把原 reason 透传到 extra_payload 用于诊断。
+    _PLAN_GENERATION_FAILURE_FALLBACK: NoKillReasonCode = "plan_generation_failed"
+    _NO_KILL_REASON_CODES_SET = NO_KILL_REASON_CODES
+    raw_trusted = _trusted_wolf_plan_failure_reason(gs)
+    if raw_trusted is not None and raw_trusted not in _NO_KILL_REASON_CODES_SET:
+        trusted_plan_failure: NoKillReasonCode | None = _PLAN_GENERATION_FAILURE_FALLBACK
+        raw_plan_failure_reason = raw_trusted
+    else:
+        trusted_plan_failure = raw_trusted  # type: ignore[assignment]
+        raw_plan_failure_reason = None
     primary = consensus.primary
     logger.debug(
         "  [狼人决策] _planned_wolf_kill primary: status=%s target=%s supporters=%s quorum=%s",
@@ -473,14 +502,17 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
         consensus.quorum,
     )
     if primary.status not in authorized_statuses or primary.target_id is None:
-        reason_by_status = {
+        reason_by_status: dict[str, NoKillReasonCode] = {
             "tie": "true_tie",
             "insufficient": "insufficient_quorum",
             "all_abstain": (
                 trusted_plan_failure or "strategic_abstain"
             ),
         }
-        return no_kill(primary, reason_by_status[primary.status])
+        return no_kill(
+            primary, reason_by_status[primary.status],
+            raw_reason=raw_plan_failure_reason,
+        )
 
     primary_target = _first_alive_target(gs, primary.target_id)
     if primary_target is not None:

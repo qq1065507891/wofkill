@@ -279,13 +279,16 @@ class TestWolfDiscussionEarlyStop:
 
     def test_wolf_discussion_can_end_early_after_consensus(self):
         from werewolf_agent.runtime.wolf_strategy import should_end_discussion_early
-        # 3 out of 4 wolves agree on target and roles in round 1
+        # 3 out of 4 wolves agree on target and roles in round 1, AND structural
+        # stance evidence also supports majority (text/stance must align).
         consensus = {
             "night_kill_primary": "p08",
             "agreement_count": 3,
             "total_wolves": 4,
         }
-        assert should_end_discussion_early(consensus, 4) is True
+        assert should_end_discussion_early(
+            consensus, 4, positive_stance_count=3,
+        ) is True
 
     def test_no_early_stop_without_majority(self):
         from werewolf_agent.runtime.wolf_strategy import should_end_discussion_early
@@ -319,6 +322,69 @@ class TestRoundRequirements:
         reqs = round_requirements(night_number=2, round_number=1)
         # Later nights should focus on review, not role assignment
         assert reqs is not None
+
+
+class TestStanceTextAlignment:
+    """协议层 early-end 与 stance 证据必须同源,防 text/stance 脱钩导致空刀。"""
+
+    def test_should_not_end_early_when_text_has_target_but_stance_all_abstain(self):
+        """text 提议了 target 但 stance 全 abstrain (LLM 未填结构化字段)
+        时, 不应触发 early-end, 留给后续 round 校准。
+        """
+        from werewolf_agent.runtime.wolf_strategy import should_end_discussion_early
+
+        consensus = {
+            "night_kill_primary": "p05",
+            "agreement_count": 4,
+            "total_wolves": 4,
+        }
+        # 当前实现仅看 agreement_count, 会返回 True → 触发 N1 round 1 提前结束
+        assert should_end_discussion_early(
+            consensus, 4, positive_stance_count=0,
+        ) is False
+
+    def test_should_end_early_when_stance_also_supports(self):
+        """当 stance 证据也支持 majority 时, 仍可正常 early-end。"""
+        from werewolf_agent.runtime.wolf_strategy import should_end_discussion_early
+
+        consensus = {
+            "night_kill_primary": "p05",
+            "agreement_count": 4,
+            "total_wolves": 4,
+        }
+        assert should_end_discussion_early(
+            consensus, 4, positive_stance_count=4,
+        ) is True
+
+
+class TestTrustedFallbackReasonWhitelist:
+    """_trusted_wolf_plan_failure_reason 白名单应覆盖 schema_validation_failed
+    等真实 agent 失败原因, 不被错误降级为 plan_generation_failed。"""
+
+    def test_schema_validation_failed_is_preserved(self):
+        from werewolf_agent.core.models import GameEvent, PlayerState
+        from werewolf_agent.core.event_visibility import EventVisibility
+        from werewolf_agent.runtime.event_metadata import new_game_event
+        from werewolf_agent.runtime.nodes.node_helpers import (
+            _trusted_wolf_plan_failure_reason,
+        )
+
+        players = {
+            f"p{i:02d}": PlayerState(id=f"p{i:02d}", role="werewolf" if i <= 4 else "villager", alive=True)
+            for i in range(1, 13)
+        }
+        gs = GameState(game_id="g1", players=players, night_number=1)
+        ev = new_game_event(
+            gs,
+            "wolf_team_plan_fallback",
+            {"night_number": 1, "reason": "schema_validation_failed",
+             "visibility": "werewolf_team_only"},
+            visibility=EventVisibility.WEREWOLF_TEAM_ONLY,
+        )
+        gs = replace(gs, events=[*gs.events, ev])
+
+        # 当前实现把 schema_validation_failed 降级为 plan_generation_failed
+        assert _trusted_wolf_plan_failure_reason(gs) == "schema_validation_failed"
 
 
 class TestNegationCharClassAlignment:

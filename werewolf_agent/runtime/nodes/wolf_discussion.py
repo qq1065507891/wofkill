@@ -256,13 +256,32 @@ def wolf_discussion(state: RuntimeState) -> dict[str, Any]:
 
             )
 
+            from werewolf_agent.runtime.wolf_discussion_directives import (
+                collect_current_wolf_target_stances,
+            )
+
             mid_consensus = summarize_wolf_consensus(
 
                 gs.events, wolves, night_number=gs.night_number
 
             )
 
-            if should_end_discussion_early(mid_consensus, len(wolves)):
+            # 协议层必须与 stance 证据同源: text 即使达成 majority, 只要本轮
+            # 没有 positive (propose/support + target_id) stance, 就不准提前
+            # 结束, 留给后续 round 让 LLM 校准结构化字段或触发 _planned_wolf_kill
+            # 走 no_kill。这防止 text/stance 脱钩导致的 N1 空刀。
+            positive_stance_count = sum(
+                1
+                for stance in collect_current_wolf_target_stances(gs)
+                if stance.get("priority") == "primary"
+                and stance.get("stance") in {"propose", "support"}
+                and stance.get("target_id") is not None
+            )
+
+            if should_end_discussion_early(
+                mid_consensus, len(wolves),
+                positive_stance_count=positive_stance_count,
+            ):
 
                 logger.debug(f"  [狼人密谈] 第{round_number}轮已达成共识，提前结束讨论")
 
