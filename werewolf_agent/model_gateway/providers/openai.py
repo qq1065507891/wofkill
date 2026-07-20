@@ -4,7 +4,7 @@
 
 作者：Mike
 创建日期：2025-01-15
-修改日期：2026-07-19
+修改日期：2026-07-21
 
 支持 ``config.base_url`` 覆盖 provider 实例默认 URL（2026-07-15），
 用于同一 OpenAI 客户端服务多个 endpoint（``api.minimaxi.com/v1`` 与
@@ -111,11 +111,12 @@ def _strip_thinking_prefix(content: str) -> tuple[str, str]:
     返回 (clean_text, thinking_text)。
     """
     thinking_parts: list[str] = []
-    clean = content
     for match in _THINK_TAG.finditer(content):
         thinking_parts.append(match.group(1).strip())
     if thinking_parts:
         clean = _THINK_TAG.sub("", content).strip()
+    else:
+        clean = content
     return clean, "\n---\n".join(thinking_parts)
 
 
@@ -327,7 +328,6 @@ def _openai_chat_completions_url(base_url: str) -> str:
       ``https://api.openai.com``: default to /v1/chat/completions.
     - URL already ends in ``/chat/completions``: return as-is.
     """
-    import re
     normalized = base_url.rstrip("/")
     # Pass through if the URL is already a chat-completions URL.
     if normalized.endswith("/chat/completions"):

@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-19
+修改日期: 2026-07-21
 
 使用示例:
     >>> from werewolf_agent.model_gateway.usage_records import ModelConfig
