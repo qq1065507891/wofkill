@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-16
-修改日期: 2026-07-18
+修改日期: 2026-07-20
 
 使用示例:
     >>> policy = NoKillPolicy(max_consecutive_pre_resolution_no_kill=2)
@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, Mapping
 
@@ -23,6 +24,9 @@ from werewolf_agent.runtime.event_metadata import (
     validate_v2_event_log_identity,
 )
 from werewolf_agent.runtime.wolf_decision_trace import new_wolf_decision_event
+
+
+logger = logging.getLogger("werewolf_agent.runtime.wolf_no_kill_policy")
 
 
 NoKillReasonCode = Literal[
@@ -120,6 +124,12 @@ class NoKillPolicy:
             raise ValueError(f"reserved no-kill payload keys: {names}")
         already_resolved, existing_target = _current_night_wolf_choice(game_state)
         if already_resolved:
+            logger.debug(
+                "  [狼人决策] NoKillPolicy.resolve 入口: reason=%s already_resolved=%s existing_target=%s",
+                reason_code,
+                already_resolved,
+                existing_target,
+            )
             return {
                 "game_state": game_state,
                 "wolf_kill_target_id": existing_target,
@@ -127,6 +137,13 @@ class NoKillPolicy:
 
         prior_reasons = _consecutive_no_kill_reasons(game_state)
         count = len(prior_reasons) + 1
+        logger.debug(
+            "  [狼人决策] NoKillPolicy.resolve: reason=%s prior_reasons=%s count=%d threshold=%d",
+            reason_code,
+            list(prior_reasons),
+            count,
+            self._max_consecutive,
+        )
         if count <= self._max_consecutive:
             decision = NoKillDecision(
                 reason_code=reason_code,

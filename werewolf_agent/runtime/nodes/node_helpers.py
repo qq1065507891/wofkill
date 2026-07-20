@@ -4,7 +4,7 @@
 
 作者: Project contributors
 创建日期: 2026-07-06
-修改日期: 2026-07-18
+修改日期: 2026-07-20
 
 使用示例:
     >>> from werewolf_agent.runtime.nodes.node_helpers import _alive_wolves
@@ -371,13 +371,23 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
 
     gs: GameState = state["game_state"]
     alive_wolves = tuple(_alive_wolves(gs))
+    logger.debug(
+        "  [狼人决策] _planned_wolf_kill 入口: night=%d alive_wolves=%s",
+        gs.night_number,
+        list(alive_wolves),
+    )
     if not alive_wolves:
+        logger.debug("  [狼人决策] _planned_wolf_kill 无存活狼人, 返回 None")
         return None
 
     raw_stances = collect_current_wolf_target_stances(gs)
     stances = tuple(
         WolfTargetStance.model_validate(raw_stance)
         for raw_stance in raw_stances
+    )
+    logger.debug(
+        "  [狼人决策] _planned_wolf_kill stance 数=%d",
+        len(stances),
     )
     try:
         consensus = derive_wolf_consensus_evidence(
@@ -386,6 +396,12 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
             stances,
         )
     except ConsensusInvariantViolation as exc:
+        logger.debug(
+            "  [狼人决策] _planned_wolf_kill 共识不变量违反: reason=%s priority=%s targets=%s",
+            exc.reason_code,
+            exc.priority,
+            list(exc.targets),
+        )
         event = GameEvent(
             type="wolf_consensus_invariant_violation",
             payload={
@@ -418,6 +434,18 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
         priority: WolfPriorityConsensus,
         reason: NoKillReasonCode,
     ) -> dict[str, Any]:
+        logger.debug(
+            "  [狼人决策] _planned_wolf_kill 空刀: reason=%s priority=%s status=%s quorum=%s supporters=%s",
+            reason,
+            priority.priority,
+            priority.status,
+            consensus.quorum,
+            {
+                target_id: list(supporters)
+                for target_id, supporters
+                in priority.supporters_by_target.items()
+            },
+        )
         return no_kill_policy_for_state(state).resolve(
             gs,
             reason_code=reason,
@@ -437,6 +465,13 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
     authorized_statuses = {"majority", "single_wolf"}
     trusted_plan_failure = _trusted_wolf_plan_failure_reason(gs)
     primary = consensus.primary
+    logger.debug(
+        "  [狼人决策] _planned_wolf_kill primary: status=%s target=%s supporters=%s quorum=%s",
+        primary.status,
+        primary.target_id,
+        positive_support(primary),
+        consensus.quorum,
+    )
     if primary.status not in authorized_statuses or primary.target_id is None:
         reason_by_status = {
             "tie": "true_tie",
@@ -454,6 +489,11 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
         selected_consensus_status = primary.status
     else:
         backup = consensus.backup
+        logger.debug(
+            "  [狼人决策] _planned_wolf_kill primary 目标非法, 降级到 backup: backup_status=%s backup_target=%s",
+            backup.status,
+            backup.target_id,
+        )
         if backup.status not in authorized_statuses or backup.target_id is None:
             reason_by_status = {
                 "tie": "true_tie",
@@ -465,6 +505,9 @@ def _planned_wolf_kill(state: RuntimeState) -> dict[str, Any] | None:
             return no_kill(backup, reason_by_status[backup.status])
         selected_target = _first_alive_target(gs, backup.target_id)
         if selected_target is None:
+            logger.debug(
+                "  [狼人决策] _planned_wolf_kill backup 目标也非法, 空刀",
+            )
             return no_kill(backup, "invalid_backup")
         plan_key = "night_kill_backup"
         selected_consensus_status = backup.status
